@@ -5,6 +5,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::time::Instant;
 
 /// Default content ceiling for one NanoHost Image Store.
 pub const IMAGE_STORE_DEFAULT_CAPACITY_BYTES: u64 = 200 * 1024 * 1024 * 1024;
@@ -199,6 +200,17 @@ pub struct ImageStore {
     index_root: PathBuf,
 }
 
+/// Transaction guard that explicitly releases a lock shared with inherited descriptors.
+struct StoreLockGuard {
+    root: File,
+}
+
+impl Drop for StoreLockGuard {
+    fn drop(&mut self) {
+        let _ = File::unlock(&self.root);
+    }
+}
+
 impl ImageStore {
     /// Opens the fixed store shared by service and local administration.
     ///
@@ -268,7 +280,7 @@ impl ImageStore {
             Err(_) => return Err(StoreError::DigestMismatch),
         }
         source.seek(SeekFrom::Start(0))?;
-        match self.open_verified_locked(digest) {
+        match self.open_verified_locked(digest, None) {
             Ok(_) => return Ok(()),
             Err(StoreError::Missing | StoreError::Corrupt) => {}
             Err(StoreError::InvalidMetadata) => {}
@@ -340,7 +352,26 @@ impl ImageStore {
     pub fn read_verified(&self, digest: &str) -> Result<File, StoreError> {
         validate_digest(digest)?;
         let lock = self.try_lock()?;
-        let result = self.open_verified_locked(digest);
+        let result = self.open_verified_locked(digest, None);
+        drop(lock);
+        result
+    }
+
+    /// Opens and re-verifies one retained archive before an absolute build deadline.
+    ///
+    /// The returned descriptor is rewound and the store lock is released.
+    ///
+    /// # Errors
+    ///
+    /// Preserves retained bytes and reports unavailable state when the deadline expires.
+    pub fn read_verified_before(
+        &self,
+        digest: &str,
+        deadline: Instant,
+    ) -> Result<File, StoreError> {
+        validate_digest(digest)?;
+        let lock = self.try_lock()?;
+        let result = self.open_verified_locked(digest, Some(deadline));
         drop(lock);
         result
     }
@@ -392,7 +423,7 @@ impl ImageStore {
         self.content_path_checked(digest).expect("test digest")
     }
 
-    fn try_lock(&self) -> Result<File, StoreError> {
+    fn try_lock(&self) -> Result<StoreLockGuard, StoreError> {
         reject_symlink(&self.root)?;
         let root = OpenOptions::new()
             .read(true)
@@ -402,13 +433,17 @@ impl ImageStore {
             return Err(StoreError::UnsafePlacement);
         }
         match root.try_lock() {
-            Ok(()) => Ok(root),
+            Ok(()) => Ok(StoreLockGuard { root }),
             Err(TryLockError::WouldBlock) => Err(StoreError::Busy),
             Err(TryLockError::Error(_)) => Err(StoreError::Io),
         }
     }
 
-    fn open_verified_locked(&self, digest: &str) -> Result<File, StoreError> {
+    fn open_verified_locked(
+        &self,
+        digest: &str,
+        deadline: Option<Instant>,
+    ) -> Result<File, StoreError> {
         let content_path = self.content_path_checked(digest)?;
         let index_path = self.index_path(digest)?;
         let staged_path = self
@@ -441,8 +476,15 @@ impl ImageStore {
         if entry.digest != digest {
             return Err(StoreError::InvalidMetadata);
         }
-        if let Err(error) = crate::image_acquisition::verify_oci_archive(&mut content, Some(digest))
-        {
+        let verification = match deadline {
+            Some(deadline) => crate::image_acquisition::verify_oci_archive_before(
+                &mut content,
+                Some(digest),
+                deadline,
+            ),
+            None => crate::image_acquisition::verify_oci_archive(&mut content, Some(digest)),
+        };
+        if let Err(error) = verification {
             drop(content);
             return self.handle_archive_failure(digest, error);
         }
@@ -580,7 +622,7 @@ impl ImageStore {
             .cloned()
             .collect::<Vec<_>>();
         for digest in verify {
-            match self.open_verified_locked(&digest) {
+            match self.open_verified_locked(&digest, None) {
                 Ok(_) => {
                     if let Some(row) = rows.get_mut(&digest) {
                         row.status = StoreEntryStatus::Usable;
@@ -947,6 +989,7 @@ mod tests {
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
 
     use super::{
         IMAGE_STORE_DEFAULT_CAPACITY_BYTES, ImageStore, StoreEntry, StoreEntryStatus, StoreError,
@@ -1029,6 +1072,30 @@ mod tests {
     }
 
     #[test]
+    fn transaction_guard_unlocks_while_a_cloned_descriptor_remains_open() {
+        let root = fixture_root();
+        let store = open_store(&root);
+        let guard = store.try_lock().expect("hold transaction lock");
+        let inherited = guard
+            .root
+            .try_clone()
+            .expect("simulate inherited open-file description");
+        let independent_store = open_store(&root);
+        assert_eq!(independent_store.capacity().unwrap_err(), StoreError::Busy);
+
+        drop(guard);
+        assert_eq!(
+            independent_store
+                .capacity()
+                .expect("guard explicitly released transaction lock")
+                .used,
+            0
+        );
+        drop(inherited);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
     fn capacity_counts_incomplete_content_and_retains_it_when_lowered() {
         assert_eq!(IMAGE_STORE_DEFAULT_CAPACITY_BYTES, 214_748_364_800);
         let root = fixture_root();
@@ -1077,6 +1144,34 @@ mod tests {
         );
         store.remove(&digest).expect("exact incomplete cleanup");
         assert_eq!(store.capacity().unwrap().used, 0);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn deadline_expiry_preserves_verified_content_and_index() {
+        let root = fixture_root();
+        let store = open_store(&root);
+        let (archive, digest, bytes) = archive(&root, "deadline-preservation");
+        store
+            .admit_oci_file(
+                &digest,
+                archive,
+                StoreLineage::LocalArchive(digest.clone()),
+                10,
+            )
+            .expect("admit archive");
+        let content_path = store.content_path(&digest);
+        let index_path = store.index_path(&digest).expect("index path");
+        let index_before = fs::read(&index_path).expect("retained index");
+
+        assert_eq!(
+            store
+                .read_verified_before(&digest, Instant::now() - Duration::from_millis(1))
+                .unwrap_err(),
+            StoreError::Io
+        );
+        assert_eq!(fs::read(&content_path).expect("retained content"), bytes);
+        assert_eq!(fs::read(&index_path).expect("retained index"), index_before);
         fs::remove_dir_all(root).expect("remove fixture");
     }
 

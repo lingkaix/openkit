@@ -52,6 +52,9 @@ const OCI_DOCUMENT_MAX_BYTES: usize = 512 * 1024;
 /// Maximum transfer and hashing chunk retained in memory.
 const ARCHIVE_CHUNK_BYTES: usize = 64 * 1024;
 
+/// Fixed private Docker repository reserved for retained-parent resolver aliases.
+const RETAINED_PARENT_ALIAS_REPOSITORY: &str = "openkit.invalid/retained-parent";
+
 /// The only callers authorized to initiate acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcquisitionTrigger {
@@ -821,35 +824,35 @@ impl BuildCapabilities {
     /// # Errors
     ///
     /// Returns a fail-closed capability error for unavailable or ambiguous output.
-    pub fn probe(docker_socket: &Path) -> Result<Self, AcquisitionError> {
+    pub fn probe(
+        docker_socket: &Path,
+        build_root: &Path,
+        deadline: Instant,
+    ) -> Result<Self, AcquisitionError> {
         validate_owned_path(docker_socket)?;
-        let buildx = Command::new("/usr/bin/docker")
+        let mut buildx = Command::new("/usr/bin/docker");
+        buildx
             .args(["buildx", "version"])
             .env("DOCKER_HOST", format!("unix://{}", docker_socket.display()))
-            .env_remove("BUILDX_BUILDER")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
-        if !buildx.status.success() {
-            return Err(AcquisitionError::UnsupportedBuildCapability);
-        }
-        let buildx_output = String::from_utf8(buildx.stdout)
-            .map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
+            .env_remove("BUILDX_BUILDER");
+        let buildx_output = bounded_command_output(
+            &mut buildx,
+            &build_root.join("buildx-version.txt"),
+            deadline,
+        )?;
         let buildx_version =
             first_semver(&buildx_output).ok_or(AcquisitionError::UnsupportedBuildCapability)?;
 
-        let inspect = Command::new("/usr/bin/docker")
+        let mut inspect = Command::new("/usr/bin/docker");
+        inspect
             .args(["buildx", "inspect", "--bootstrap"])
             .env("DOCKER_HOST", format!("unix://{}", docker_socket.display()))
-            .env_remove("BUILDX_BUILDER")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
-        if !inspect.status.success() {
-            return Err(AcquisitionError::UnsupportedBuildCapability);
-        }
-        let inspect_output = String::from_utf8(inspect.stdout)
-            .map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
+            .env_remove("BUILDX_BUILDER");
+        let inspect_output = bounded_command_output(
+            &mut inspect,
+            &build_root.join("buildx-inspect.txt"),
+            deadline,
+        )?;
         let buildkit_version = inspect_output
             .lines()
             .find_map(|line| line.trim().strip_prefix("BuildKit version:").map(str::trim))
@@ -910,8 +913,21 @@ impl BuildPlan {
             .iter()
             .map(|reference| reference.canonical.clone())
             .collect();
-        let policy_contents =
-            render_policy(declared_registries, &definition.egress_grants, &image_refs);
+        let retained_parent_aliases = from_references
+            .iter()
+            .map(|reference| {
+                Ok((
+                    retained_parent_alias(&reference.digest)?,
+                    reference.digest.clone(),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, AcquisitionError>>()?;
+        let policy_contents = render_policy(
+            declared_registries,
+            &definition.egress_grants,
+            &image_refs,
+            &retained_parent_aliases,
+        );
         let context_root = build_root.join("context");
         let output_path = build_root.join("result.oci.tar");
         let metadata_path = build_root.join("metadata.json");
@@ -963,7 +979,15 @@ impl BuildPlan {
     /// Fails closed before execution on missing capabilities, then on timeout,
     /// command failure, output overflow, layer overflow, or digest mismatch.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn execute(&self, store: &ImageStore) -> Result<VerifiedOciImage, AcquisitionError> {
+    pub fn execute<F>(
+        &self,
+        store: &ImageStore,
+        bind_retained_parent: &mut F,
+    ) -> Result<VerifiedOciImage, AcquisitionError>
+    where
+        F: FnMut(&str, &str, File, Instant) -> Result<(), AcquisitionError>,
+    {
+        let deadline = Instant::now() + self.definition.time_limit;
         let mut owns_build_root = false;
         let result = (|| {
             create_private_dir(&self.build_root)?;
@@ -973,8 +997,15 @@ impl BuildPlan {
             if fs::read_dir(&context_root)?.next().transpose()?.is_some() {
                 return Err(AcquisitionError::InvalidBuildDefinition);
             }
-            BuildCapabilities::probe(&self.docker_socket)?;
-            let args = self.prepare_build_args(store, IMAGE_ARCHIVE_MAX_BYTES)?;
+            ensure_before(deadline)?;
+            BuildCapabilities::probe(&self.docker_socket, &self.build_root, deadline)?;
+            let args = self.prepare_build_args(
+                store,
+                IMAGE_ARCHIVE_MAX_BYTES,
+                deadline,
+                bind_retained_parent,
+            )?;
+            ensure_before(deadline)?;
             write_private_file(
                 &self.build_root.join("Dockerfile"),
                 self.definition.dockerfile.as_bytes(),
@@ -983,6 +1014,7 @@ impl BuildPlan {
                 &self.build_root.join("policy.rego"),
                 self.policy_contents.as_bytes(),
             )?;
+            ensure_before(deadline)?;
             let mut child = Command::new(&self.program)
                 .args(&args)
                 .envs(self.env.iter().cloned())
@@ -993,14 +1025,16 @@ impl BuildPlan {
                 .stderr(Stdio::inherit())
                 .spawn()
                 .map_err(|_| AcquisitionError::Backend)?;
-            if !wait_for_child(&mut child, self.definition.time_limit)? {
+            if !wait_for_child(&mut child, deadline)? {
                 return Err(AcquisitionError::Backend);
             }
+            ensure_before(deadline)?;
             verify_oci_result(
                 &self.build_root.join("result.oci.tar"),
                 &self.build_root.join("metadata.json"),
                 self.definition.output_limit_bytes,
                 self.definition.layer_limit,
+                deadline,
             )
         })();
         if owns_build_root {
@@ -1019,12 +1053,16 @@ impl BuildPlan {
     ///
     /// Returns a build or store-verification failure without changing epoch health.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn execute_and_admit(
+    pub fn execute_and_admit<F>(
         &self,
         store: &ImageStore,
         acquired_at: u64,
-    ) -> Result<String, AcquisitionError> {
-        let result = self.execute(store)?;
+        mut bind_retained_parent: F,
+    ) -> Result<String, AcquisitionError>
+    where
+        F: FnMut(&str, &str, File, Instant) -> Result<(), AcquisitionError>,
+    {
+        let result = self.execute(store, &mut bind_retained_parent)?;
         store
             .admit_oci_file(
                 &result.digest,
@@ -1051,38 +1089,70 @@ impl BuildPlan {
         &self.args
     }
 
-    /// Prepares exact invocation-local OCI contexts for retained parent images.
-    fn prepare_build_args(
+    /// Prepares exact private aliases for retained parent images.
+    fn prepare_build_args<F>(
         &self,
         store: &ImageStore,
         retained_parent_limit: u64,
-    ) -> Result<Vec<String>, AcquisitionError> {
-        let mut retained = BTreeMap::<String, Option<PathBuf>>::new();
-        let mut projected_bytes = 0_u64;
+        deadline: Instant,
+        bind_retained_parent: &mut F,
+    ) -> Result<Vec<String>, AcquisitionError>
+    where
+        F: FnMut(&str, &str, File, Instant) -> Result<(), AcquisitionError>,
+    {
+        if retained_parent_limit > IMAGE_ARCHIVE_MAX_BYTES {
+            return Err(AcquisitionError::InvalidBuildDefinition);
+        }
+        let mut retained_archives = BTreeMap::<String, Option<File>>::new();
+        let mut retained_archive_bytes = 0_u64;
         for reference in &self.from_references {
-            if retained.contains_key(&reference.digest) {
+            if retained_archives.contains_key(&reference.digest) {
                 continue;
             }
-            match store.read_verified(&reference.digest) {
-                Ok(mut archive) => {
+            ensure_before(deadline)?;
+            match store.read_verified_before(&reference.digest, deadline) {
+                Ok(archive) => {
+                    retained_archive_bytes = retained_archive_bytes
+                        .checked_add(archive.metadata()?.len())
+                        .filter(|total| *total <= retained_parent_limit)
+                        .ok_or(AcquisitionError::InvalidOciResult)?;
+                    retained_archives.insert(reference.digest.clone(), Some(archive));
+                }
+                Err(StoreError::Missing) => {
+                    retained_archives.insert(reference.digest.clone(), None);
+                }
+                Err(_) => return Err(AcquisitionError::InvalidOciResult),
+            }
+        }
+
+        let mut retained = BTreeMap::<String, Option<String>>::new();
+        let mut projected_bytes = 0_u64;
+        for (digest, archive) in retained_archives {
+            ensure_before(deadline)?;
+            match archive {
+                Some(mut archive) => {
+                    ensure_before(deadline)?;
                     let parents_root = self.build_root.join("parents");
                     if !parents_root.exists() {
                         create_private_dir(&parents_root)?;
                     }
-                    let layout_root = parents_root.join(digest_hex(&reference.digest)?);
-                    materialize_verified_oci_layout(
+                    let archive_path =
+                        parents_root.join(format!("{}.oci.tar", digest_hex(&digest)?));
+                    let normalized = create_naming_neutral_oci_archive(
                         &mut archive,
-                        &reference.digest,
-                        &layout_root,
+                        &digest,
+                        &archive_path,
                         &mut projected_bytes,
                         retained_parent_limit,
+                        deadline,
                     )?;
-                    retained.insert(reference.digest.clone(), Some(layout_root));
+                    let alias = retained_parent_alias(&digest)?;
+                    bind_retained_parent(&digest, &alias, normalized, deadline)?;
+                    retained.insert(digest, Some(alias));
                 }
-                Err(StoreError::Missing) => {
-                    retained.insert(reference.digest.clone(), None);
+                None => {
+                    retained.insert(digest, None);
                 }
-                Err(_) => return Err(AcquisitionError::InvalidOciResult),
             }
         }
 
@@ -1093,17 +1163,12 @@ impl BuildPlan {
             .ok_or(AcquisitionError::InvalidBuildDefinition)?;
         let mut args = self.args[..self.args.len() - 1].to_vec();
         for reference in &self.from_references {
-            if let Some(layout_root) = retained
+            if let Some(alias) = retained
                 .get(&reference.digest)
                 .ok_or(AcquisitionError::InvalidOciResult)?
             {
                 args.push("--build-context".into());
-                args.push(format!(
-                    "{}=oci-layout://{}@{}",
-                    reference.authored,
-                    layout_root.display(),
-                    reference.digest
-                ));
+                args.push(format!("{}=docker-image://{}", reference.authored, alias));
             }
         }
         args.push(context);
@@ -1190,6 +1255,10 @@ fn validate_build_definition(
         return Err(AcquisitionError::InvalidBuildDefinition);
     }
     let dockerfile_lower = definition.dockerfile.to_ascii_lowercase();
+    // The private resolver namespace is never authored Dockerfile content, including comments.
+    if dockerfile_lower.contains(RETAINED_PARENT_ALIAS_REPOSITORY) {
+        return Err(AcquisitionError::InvalidBuildDefinition);
+    }
     for forbidden in [
         "--mount=type=bind",
         "--network=host",
@@ -1228,6 +1297,7 @@ fn render_policy(
     registries: &BTreeSet<String>,
     grants: &BTreeSet<String>,
     image_refs: &BTreeSet<String>,
+    retained_parent_aliases: &BTreeMap<String, String>,
 ) -> String {
     let mut lines = vec![
         "package docker".to_string(),
@@ -1289,6 +1359,15 @@ fn render_policy(
             "}".into(),
         ]);
     }
+    for (alias, digest) in retained_parent_aliases {
+        lines.extend([
+            String::new(),
+            "allow if {".into(),
+            format!("\tinput.image.ref == \"{alias}\""),
+            format!("\tinput.image.checksum == \"{digest}\""),
+            "}".into(),
+        ]);
+    }
     lines.extend([
         String::new(),
         "deny_msg := [\"source or build egress endpoint is outside the declared ceiling\"] if not allow".into(),
@@ -1296,6 +1375,18 @@ fn render_policy(
         String::new(),
     ]);
     lines.join("\n")
+}
+
+/// Returns the deterministic epoch-private resolver alias for one manifest digest.
+///
+/// # Errors
+///
+/// Rejects a non-canonical digest before forming a Docker reference.
+pub(crate) fn retained_parent_alias(digest: &str) -> Result<String, AcquisitionError> {
+    Ok(format!(
+        "{RETAINED_PARENT_ALIAS_REPOSITORY}:{}",
+        digest_hex(digest)?
+    ))
 }
 
 /// One exact immutable parent reference, preserving both source spelling and identity.
@@ -1528,13 +1619,102 @@ fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), AcquisitionErr
     Ok(())
 }
 
-/// Waits for one direct child within the declared build bound.
-fn wait_for_child(child: &mut Child, limit: Duration) -> Result<bool, AcquisitionError> {
-    let deadline = Instant::now() + limit;
+/// Runs one fixed Docker capability command inside the whole-build deadline.
+fn bounded_command_output(
+    command: &mut Command,
+    output_path: &Path,
+    deadline: Instant,
+) -> Result<String, AcquisitionError> {
+    ensure_before(deadline).map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(output_path)?;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output))
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
+    if !wait_for_child(&mut child, deadline)
+        .map_err(|_| AcquisitionError::UnsupportedBuildCapability)?
+    {
+        return Err(AcquisitionError::UnsupportedBuildCapability);
+    }
+    ensure_before(deadline).map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
+    let output = read_bounded_regular_utf8(output_path, OCI_DOCUMENT_MAX_BYTES)
+        .map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
+    ensure_before(deadline).map_err(|_| AcquisitionError::UnsupportedBuildCapability)?;
+    Ok(output)
+}
+
+/// Returns the positive duration remaining in one whole-build deadline.
+fn remaining_before(deadline: Instant) -> Result<Duration, AcquisitionError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(AcquisitionError::Backend)
+}
+
+/// Fails when local preparation consumed the complete build deadline.
+fn ensure_before(deadline: Instant) -> Result<(), AcquisitionError> {
+    remaining_before(deadline).map(|_| ())
+}
+
+/// Read-and-seek view that checks one absolute deadline around every bounded operation.
+struct DeadlineReader<'a, R> {
+    inner: &'a mut R,
+    deadline: Instant,
+}
+
+impl<'a, R> DeadlineReader<'a, R> {
+    fn new(inner: &'a mut R, deadline: Instant) -> Self {
+        Self { inner, deadline }
+    }
+
+    fn check(&self) -> io::Result<()> {
+        if Instant::now() < self.deadline {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "archive operation exceeded its deadline",
+            ))
+        }
+    }
+}
+
+impl<R: Read> Read for DeadlineReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.check()?;
+        let bounded = buffer.len().min(ARCHIVE_CHUNK_BYTES);
+        let read = self.inner.read(&mut buffer[..bounded])?;
+        self.check()?;
+        Ok(read)
+    }
+}
+
+impl<R: Seek> Seek for DeadlineReader<'_, R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.check()?;
+        let offset = self.inner.seek(position)?;
+        self.check()?;
+        Ok(offset)
+    }
+}
+
+/// Waits for one direct child until the absolute build deadline.
+fn wait_for_child(child: &mut Child, deadline: Instant) -> Result<bool, AcquisitionError> {
     while Instant::now() < deadline {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status.success()),
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Ok(None) => thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(50)),
+            ),
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -1553,12 +1733,15 @@ fn verify_oci_result(
     metadata_path: &Path,
     output_limit: u64,
     layer_limit: u32,
+    deadline: Instant,
 ) -> Result<VerifiedOciImage, AcquisitionError> {
+    ensure_before(deadline)?;
     let size = fs::metadata(archive_path)?.len();
     if size == 0 || size > output_limit || size > BUILD_MAX_OUTPUT_BYTES {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let metadata = read_bounded_regular_utf8(metadata_path, OCI_DOCUMENT_MAX_BYTES)?;
+    let metadata =
+        read_bounded_regular_utf8_before(metadata_path, OCI_DOCUMENT_MAX_BYTES, deadline)?;
     let metadata_digest = json_string(&metadata, "containerimage.digest")
         .ok_or(AcquisitionError::InvalidOciResult)?;
     validate_digest(&metadata_digest).map_err(|_| AcquisitionError::InvalidOciResult)?;
@@ -1569,7 +1752,7 @@ fn verify_oci_result(
     if !archive.metadata()?.is_file() {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let verified = verify_oci_archive(&mut archive, Some(&metadata_digest))?;
+    let verified = verify_oci_archive_before(&mut archive, Some(&metadata_digest), deadline)?;
     let digest = verified.digest;
     if digest != metadata_digest {
         return Err(AcquisitionError::InvalidOciResult);
@@ -1578,6 +1761,7 @@ fn verify_oci_result(
     if layers > layer_limit {
         return Err(AcquisitionError::InvalidOciResult);
     }
+    ensure_before(deadline)?;
     Ok(VerifiedOciImage {
         digest,
         archive,
@@ -1731,20 +1915,10 @@ pub(crate) fn verify_oci_archive<R: Read + Seek>(
     }
     let descriptors = validated_descriptor_sizes(&manifest, manifest_bytes.len() as u64)?;
     verify_descriptor_members(archive, &manifest.config.digest, &descriptors)?;
-    let mut members = BTreeMap::from([
-        (
-            "oci-layout".to_string(),
-            VerifiedArchiveMember::from_bytes(&layout_bytes),
-        ),
-        (
-            "index.json".to_string(),
-            VerifiedArchiveMember::from_bytes(&index_bytes),
-        ),
-        (
-            manifest_name,
-            VerifiedArchiveMember::from_bytes(&manifest_bytes),
-        ),
-    ]);
+    let mut members = BTreeMap::from([(
+        manifest_name,
+        VerifiedArchiveMember::from_bytes(&manifest_bytes),
+    )]);
     for (descriptor_digest, size) in descriptors {
         let name = format!("blobs/sha256/{}", digest_hex(&descriptor_digest)?);
         if members
@@ -1764,18 +1938,128 @@ pub(crate) fn verify_oci_archive<R: Read + Seek>(
     Ok(VerifiedArchive {
         digest,
         layers: manifest.layers.len() as u32,
+        manifest_media_type: media_type.to_string(),
+        config_digest: manifest.config.digest,
         members,
     })
+}
+
+/// Verifies one OCI archive while enforcing an absolute caller deadline.
+pub(crate) fn verify_oci_archive_before<R: Read + Seek>(
+    archive: &mut R,
+    expected_digest: Option<&str>,
+    deadline: Instant,
+) -> Result<VerifiedArchive, AcquisitionError> {
+    let mut bounded = DeadlineReader::new(archive, deadline);
+    verify_oci_archive(&mut bounded, expected_digest)
+}
+
+/// Rejects archive-carried names that could mutate the retained-parent alias namespace.
+///
+/// # Errors
+///
+/// Rejects malformed or ambiguous naming metadata and any normalized name in the
+/// fixed private retained-parent repository. The reader is rewound on success.
+pub(crate) fn verify_raw_import_names<R: Read + Seek>(
+    archive: &mut R,
+) -> Result<(), AcquisitionError> {
+    let index_bytes = read_bounded_tar_member(archive, "index.json", OCI_DOCUMENT_MAX_BYTES)?
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let index: serde_json::Value =
+        serde_json::from_slice(&index_bytes).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let manifests = index
+        .as_object()
+        .and_then(|index| index.get("manifests"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let [descriptor] = manifests.as_slice() else {
+        return Err(AcquisitionError::InvalidOciResult);
+    };
+    if let Some(annotations) = descriptor
+        .as_object()
+        .ok_or(AcquisitionError::InvalidOciResult)?
+        .get("annotations")
+    {
+        let annotations = annotations
+            .as_object()
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        for key in [
+            "io.containerd.image.name",
+            "org.opencontainers.image.ref.name",
+        ] {
+            if let Some(value) = annotations.get(key) {
+                let value = value.as_str().ok_or(AcquisitionError::InvalidOciResult)?;
+                if image_name_uses_reserved_alias(value)? {
+                    return Err(AcquisitionError::InvalidOciResult);
+                }
+            }
+        }
+    }
+
+    if let Some(compatibility_bytes) =
+        read_bounded_tar_member(archive, "manifest.json", OCI_DOCUMENT_MAX_BYTES)?
+    {
+        let compatibility: serde_json::Value = serde_json::from_slice(&compatibility_bytes)
+            .map_err(|_| AcquisitionError::InvalidOciResult)?;
+        let entries = compatibility
+            .as_array()
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        let [entry] = entries.as_slice() else {
+            return Err(AcquisitionError::InvalidOciResult);
+        };
+        let entry = entry
+            .as_object()
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        if let Some(repo_tags) = entry.get("RepoTags")
+            && !repo_tags.is_null()
+        {
+            let repo_tags = repo_tags
+                .as_array()
+                .ok_or(AcquisitionError::InvalidOciResult)?;
+            for repo_tag in repo_tags {
+                let repo_tag = repo_tag
+                    .as_str()
+                    .ok_or(AcquisitionError::InvalidOciResult)?;
+                if image_name_uses_reserved_alias(repo_tag)? {
+                    return Err(AcquisitionError::InvalidOciResult);
+                }
+            }
+        }
+    }
+    archive.seek(SeekFrom::Start(0))?;
+    Ok(())
+}
+
+/// Verifies raw import names while enforcing an absolute caller deadline.
+pub(crate) fn verify_raw_import_names_before<R: Read + Seek>(
+    archive: &mut R,
+    deadline: Instant,
+) -> Result<(), AcquisitionError> {
+    let mut bounded = DeadlineReader::new(archive, deadline);
+    verify_raw_import_names(&mut bounded)
+}
+
+/// Normalizes one Docker image name before comparing the reserved repository.
+fn image_name_uses_reserved_alias(value: &str) -> Result<bool, AcquisitionError> {
+    if value.is_empty() || value.contains(['\r', '\n', '\0']) {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let reference = Reference::try_from(value).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    Ok(reference.registry().eq_ignore_ascii_case("openkit.invalid")
+        && reference.repository() == "retained-parent")
 }
 
 /// Bounded verification result needed by store and build admission.
 pub(crate) struct VerifiedArchive {
     digest: String,
     layers: u32,
+    manifest_media_type: String,
+    config_digest: String,
     members: BTreeMap<String, VerifiedArchiveMember>,
 }
 
 /// Exact member identity for one verified OCI image graph projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct VerifiedArchiveMember {
     size: u64,
     sha256: String,
@@ -1791,57 +2075,114 @@ impl VerifiedArchiveMember {
     }
 }
 
-/// Projects one verified retained archive as a private native OCI layout.
-fn materialize_verified_oci_layout<R: Read + Seek>(
+/// Creates one naming-neutral retained-parent archive under the owned build root.
+fn create_naming_neutral_oci_archive<R: Read + Seek>(
     archive: &mut R,
     expected_digest: &str,
-    layout_root: &Path,
+    output_path: &Path,
     projected_bytes: &mut u64,
     aggregate_limit: u64,
-) -> Result<(), AcquisitionError> {
+    deadline: Instant,
+) -> Result<File, AcquisitionError> {
     if aggregate_limit > IMAGE_ARCHIVE_MAX_BYTES {
         return Err(AcquisitionError::InvalidBuildDefinition);
     }
-    let verified = verify_oci_archive(archive, Some(expected_digest))?;
-    create_private_dir(layout_root)?;
-    let blobs_root = layout_root.join("blobs");
-    create_private_dir(&blobs_root)?;
-    let sha256_root = blobs_root.join("sha256");
-    create_private_dir(&sha256_root)?;
+    let verified = verify_oci_archive_before(archive, Some(expected_digest), deadline)?;
+    ensure_before(deadline)?;
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(output_path)?;
+    let layout_bytes = b"{\"imageLayoutVersion\":\"1.0.0\"}\n";
+    let manifest = verified
+        .members
+        .get(&format!("blobs/sha256/{}", digest_hex(&verified.digest)?))
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let index = format!(
+        "{{\"schemaVersion\":2,\"manifests\":[{{\"mediaType\":{},\"digest\":{},\"size\":{}}}]}}\n",
+        serde_json::to_string(&verified.manifest_media_type)
+            .map_err(|_| AcquisitionError::InvalidOciResult)?,
+        serde_json::to_string(&verified.digest).map_err(|_| AcquisitionError::InvalidOciResult)?,
+        manifest.size,
+    );
+    append_projected_tar_bytes(
+        &mut output,
+        "oci-layout",
+        layout_bytes,
+        projected_bytes,
+        aggregate_limit,
+        deadline,
+    )?;
+    append_projected_tar_bytes(
+        &mut output,
+        "index.json",
+        index.as_bytes(),
+        projected_bytes,
+        aggregate_limit,
+        deadline,
+    )?;
 
     let mut remaining = verified.members.keys().cloned().collect::<BTreeSet<_>>();
+    let mut layout_seen = false;
+    let mut index_seen = false;
     let mut blobs_directory_seen = false;
     let mut sha256_directory_seen = false;
     let mut compatibility_manifest_seen = false;
-    archive.seek(SeekFrom::Start(0))?;
-    while let Some(header) = next_tar_header(archive)? {
+    let mut bounded_archive = DeadlineReader::new(archive, deadline);
+    bounded_archive.seek(SeekFrom::Start(0))?;
+    while let Some(header) = next_tar_header(&mut bounded_archive)? {
         if let Some(expected) = verified.members.get(&header.name) {
             if !remaining.remove(&header.name) || !header.regular || header.size != expected.size {
                 return Err(AcquisitionError::InvalidOciResult);
             }
-            let destination = layout_root.join(&header.name);
-            let mut output = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(destination)?;
+            append_projected_tar_header(
+                &mut output,
+                &header.name,
+                header.size,
+                projected_bytes,
+                aggregate_limit,
+                deadline,
+            )?;
             let mut hasher = Sha256::new();
-            read_member_stream(archive, header.size, |chunk| {
-                *projected_bytes = projected_bytes
-                    .checked_add(chunk.len() as u64)
-                    .filter(|total| *total <= aggregate_limit)
-                    .ok_or(AcquisitionError::InvalidOciResult)?;
+            read_member_stream(&mut bounded_archive, header.size, |chunk| {
                 hasher.update(chunk);
-                output.write_all(chunk)?;
-                Ok(())
+                write_projected_bytes(
+                    &mut output,
+                    chunk,
+                    projected_bytes,
+                    aggregate_limit,
+                    deadline,
+                )
             })?;
-            output.sync_all()?;
             if format!("sha256:{:x}", hasher.finalize()) != expected.sha256 {
                 return Err(AcquisitionError::InvalidOciResult);
             }
+            append_projected_tar_padding(
+                &mut output,
+                header.size,
+                projected_bytes,
+                aggregate_limit,
+                deadline,
+            )?;
         } else {
             match header.name.as_str() {
+                "oci-layout" => {
+                    if layout_seen || !header.regular || header.size > OCI_DOCUMENT_MAX_BYTES as u64
+                    {
+                        return Err(AcquisitionError::InvalidOciResult);
+                    }
+                    layout_seen = true;
+                }
+                "index.json" => {
+                    if index_seen || !header.regular || header.size > OCI_DOCUMENT_MAX_BYTES as u64
+                    {
+                        return Err(AcquisitionError::InvalidOciResult);
+                    }
+                    index_seen = true;
+                }
                 "blobs" | "blobs/" => {
                     if blobs_directory_seen || header.regular || header.size != 0 {
                         return Err(AcquisitionError::InvalidOciResult);
@@ -1865,17 +2206,108 @@ fn materialize_verified_oci_layout<R: Read + Seek>(
                 }
                 _ => return Err(AcquisitionError::InvalidOciResult),
             }
-            read_member_stream(archive, header.size, |_| Ok(()))?;
+            read_member_stream(&mut bounded_archive, header.size, |_| Ok(()))?;
         }
-        seek_tar_padding(archive, header.size)?;
+        seek_tar_padding(&mut bounded_archive, header.size)?;
     }
-    if !remaining.is_empty() {
+    if !layout_seen || !index_seen || !remaining.is_empty() {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    sync_dir(&sha256_root)?;
-    sync_dir(&blobs_root)?;
-    sync_dir(layout_root)?;
-    archive.seek(SeekFrom::Start(0))?;
+    write_projected_bytes(
+        &mut output,
+        &[0_u8; 1024],
+        projected_bytes,
+        aggregate_limit,
+        deadline,
+    )?;
+    output.sync_all()?;
+    output.seek(SeekFrom::Start(0))?;
+    let normalized = verify_oci_archive_before(&mut output, Some(expected_digest), deadline)?;
+    if normalized.manifest_media_type != verified.manifest_media_type
+        || normalized.config_digest != verified.config_digest
+        || normalized.members != verified.members
+        || normalized.layers != verified.layers
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    verify_raw_import_names_before(&mut output, deadline)?;
+    bounded_archive.seek(SeekFrom::Start(0))?;
+    output.seek(SeekFrom::Start(0))?;
+    Ok(output)
+}
+
+/// Appends one bounded generated tar member to the normalized parent archive.
+fn append_projected_tar_bytes(
+    output: &mut File,
+    name: &str,
+    contents: &[u8],
+    projected_bytes: &mut u64,
+    aggregate_limit: u64,
+    deadline: Instant,
+) -> Result<(), AcquisitionError> {
+    append_projected_tar_header(
+        output,
+        name,
+        contents.len() as u64,
+        projected_bytes,
+        aggregate_limit,
+        deadline,
+    )?;
+    write_projected_bytes(output, contents, projected_bytes, aggregate_limit, deadline)?;
+    append_projected_tar_padding(
+        output,
+        contents.len() as u64,
+        projected_bytes,
+        aggregate_limit,
+        deadline,
+    )
+}
+
+/// Appends one deterministic regular-file ustar header under the shared bound.
+fn append_projected_tar_header(
+    output: &mut File,
+    name: &str,
+    size: u64,
+    projected_bytes: &mut u64,
+    aggregate_limit: u64,
+    deadline: Instant,
+) -> Result<(), AcquisitionError> {
+    let header = regular_tar_header(name, size)?;
+    write_projected_bytes(output, &header, projected_bytes, aggregate_limit, deadline)
+}
+
+/// Appends deterministic zero padding for one generated tar member.
+fn append_projected_tar_padding(
+    output: &mut File,
+    size: u64,
+    projected_bytes: &mut u64,
+    aggregate_limit: u64,
+    deadline: Instant,
+) -> Result<(), AcquisitionError> {
+    let padding = ((512 - size % 512) % 512) as usize;
+    write_projected_bytes(
+        output,
+        &[0_u8; 512][..padding],
+        projected_bytes,
+        aggregate_limit,
+        deadline,
+    )
+}
+
+/// Writes one archive slice while enforcing aggregate bytes and the whole deadline.
+fn write_projected_bytes(
+    output: &mut File,
+    contents: &[u8],
+    projected_bytes: &mut u64,
+    aggregate_limit: u64,
+    deadline: Instant,
+) -> Result<(), AcquisitionError> {
+    ensure_before(deadline)?;
+    *projected_bytes = projected_bytes
+        .checked_add(contents.len() as u64)
+        .filter(|total| *total <= aggregate_limit)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    output.write_all(contents)?;
     Ok(())
 }
 
@@ -2034,6 +2466,22 @@ fn append_tar_file(
         .checked_add(required)
         .filter(|size| *size <= IMAGE_ARCHIVE_MAX_BYTES)
         .ok_or(AcquisitionError::InvalidOciResult)?;
+    let header = regular_tar_header(name, contents_len)?;
+    archive.write_all(&header)?;
+    let copied = copy_reader(&mut source, archive, contents_len)?;
+    if copied != contents_len {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let padding = ((512 - contents_len % 512) % 512) as usize;
+    archive.write_all(&[0_u8; 512][..padding])?;
+    Ok(())
+}
+
+/// Encodes one deterministic regular-file ustar header.
+fn regular_tar_header(name: &str, contents_len: u64) -> Result<[u8; 512], AcquisitionError> {
+    if !name.is_ascii() || name.len() > 100 {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
     let mut header = [0_u8; 512];
     header[..name.len()].copy_from_slice(name.as_bytes());
     write_tar_octal(&mut header[100..108], 0o600)?;
@@ -2051,14 +2499,7 @@ fn append_tar_file(
         return Err(AcquisitionError::InvalidOciResult);
     }
     header[148..156].copy_from_slice(checksum.as_bytes());
-    archive.write_all(&header)?;
-    let copied = copy_reader(&mut source, archive, contents_len)?;
-    if copied != contents_len {
-        return Err(AcquisitionError::InvalidOciResult);
-    }
-    let padding = ((512 - contents_len % 512) % 512) as usize;
-    archive.write_all(&[0_u8; 512][..padding])?;
-    Ok(())
+    Ok(header)
 }
 
 /// Encodes one bounded ustar numeric field.
@@ -2261,10 +2702,39 @@ fn read_bounded_regular_utf8(path: &Path, limit: usize) -> Result<String, Acquis
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit as u64 {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let capacity =
-        usize::try_from(metadata.len()).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    read_bounded_utf8(&mut file, metadata.len(), limit)
+}
+
+/// Reads one bounded regular UTF-8 file before an absolute deadline.
+fn read_bounded_regular_utf8_before(
+    path: &Path,
+    limit: usize,
+    deadline: Instant,
+) -> Result<String, AcquisitionError> {
+    ensure_before(deadline)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    ensure_before(deadline)?;
+    let metadata = file.metadata()?;
+    ensure_before(deadline)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit as u64 {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let mut bounded = DeadlineReader::new(&mut file, deadline);
+    read_bounded_utf8(&mut bounded, metadata.len(), limit)
+}
+
+/// Reads an already-sized bounded UTF-8 document from its current position.
+fn read_bounded_utf8<R: Read>(
+    reader: &mut R,
+    size: u64,
+    limit: usize,
+) -> Result<String, AcquisitionError> {
+    let capacity = usize::try_from(size).map_err(|_| AcquisitionError::InvalidOciResult)?;
     let mut bytes = Vec::with_capacity(capacity);
-    Read::by_ref(&mut file)
+    Read::by_ref(reader)
         .take(limit as u64 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() != capacity {
@@ -2366,10 +2836,10 @@ fn json_string(input: &str, key: &str) -> Option<String> {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs::{self, File};
-    use std::io::Cursor;
+    use std::io::{self, Cursor, Read, Seek, SeekFrom};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use sha2::{Digest, Sha256};
 
@@ -2384,6 +2854,24 @@ mod tests {
     const EMPTY_CONTEXT_REF: &str = "build-context://empty/v1";
     const EMPTY_CONTEXT_DIGEST: &str =
         "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    struct SlowReader {
+        inner: Cursor<Vec<u8>>,
+        delay: Duration,
+    }
+
+    impl Read for SlowReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            std::thread::sleep(self.delay);
+            self.inner.read(buffer)
+        }
+    }
+
+    impl Seek for SlowReader {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(position)
+        }
+    }
 
     /// Returns the canonical SHA-256 image address for fixture bytes.
     fn digest(bytes: &[u8]) -> String {
@@ -2450,6 +2938,37 @@ mod tests {
             .map(|byte| u64::from(*byte))
             .sum::<u64>();
         archive[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+    }
+
+    /// Replaces one fixture member while preserving a complete bounded ustar archive.
+    fn replace_tar_member(archive: &[u8], wanted: &str, replacement: &[u8]) -> Vec<u8> {
+        let mut input = Cursor::new(archive);
+        let mut output = Vec::new();
+        let mut replaced = false;
+        while let Some(header) = super::next_tar_header(&mut input).expect("valid fixture header") {
+            let mut contents = Vec::new();
+            super::read_member_stream(&mut input, header.size, |chunk| {
+                contents.extend_from_slice(chunk);
+                Ok(())
+            })
+            .expect("read fixture member");
+            super::seek_tar_padding(&mut input, header.size).expect("fixture padding");
+            if header.name == wanted {
+                assert!(!replaced, "fixture member is unique");
+                super::append_test_tar_entry(&mut output, wanted, replacement, b'0');
+                replaced = true;
+            } else {
+                super::append_test_tar_entry(
+                    &mut output,
+                    &header.name,
+                    &contents,
+                    if header.regular { b'0' } else { b'5' },
+                );
+            }
+        }
+        assert!(replaced, "fixture member exists");
+        output.extend_from_slice(&[0_u8; 1024]);
+        output
     }
 
     /// Returns one accepted build definition using the exact supplied Dockerfile.
@@ -2893,7 +3412,7 @@ mod tests {
         );
         let source = include_str!("image_acquisition.rs");
         let probe_source = source
-            .split_once("pub fn probe(docker_socket: &Path)")
+            .split_once("pub fn probe(")
             .expect("BuildCapabilities probe source")
             .1
             .split_once("/// Direct, fixed Buildx execution plan")
@@ -2908,7 +3427,7 @@ mod tests {
             "both Buildx capability commands must remove inherited builder selection"
         );
         let execute_source = source
-            .split_once("pub fn execute(&self, store: &ImageStore)")
+            .split_once("pub fn execute<F>(")
             .expect("BuildPlan execute source")
             .1
             .split_once("pub fn execute_and_admit(")
@@ -3095,31 +3614,45 @@ mod tests {
         )
         .expect("factory build plan");
         super::create_private_dir(&build_root).expect("private build root");
+        let mut bound = Vec::new();
+        let mut bind = |digest: &str,
+                        alias: &str,
+                        mut archive: File,
+                        deadline: Instant|
+         -> Result<(), AcquisitionError> {
+            assert!(deadline > Instant::now());
+            let verified = super::verify_oci_archive(&mut archive, Some(digest))?;
+            super::verify_raw_import_names(&mut archive)?;
+            bound.push((
+                digest.to_string(),
+                alias.to_string(),
+                verified.config_digest,
+            ));
+            Ok(())
+        };
         let args = plan
-            .prepare_build_args(&store, super::IMAGE_ARCHIVE_MAX_BYTES)
+            .prepare_build_args(
+                &store,
+                super::IMAGE_ARCHIVE_MAX_BYTES,
+                Instant::now() + Duration::from_secs(60),
+                &mut bind,
+            )
             .expect("retained parent projection");
 
         assert_eq!(plan.definition.dockerfile, dockerfile);
+        let retained_alias = super::retained_parent_alias(&retained_digest).expect("private alias");
+        assert_eq!(bound.len(), 1, "one retained digest must bind once");
+        assert_eq!(bound[0].0, retained_digest);
+        assert_eq!(bound[0].1, retained_alias);
         let context_specs = args
             .windows(2)
             .filter_map(|pair| (pair[0] == "--build-context").then_some(pair[1].clone()))
             .collect::<BTreeSet<_>>();
-        let layout_root = build_root.join("parents").join(
-            retained_digest
-                .strip_prefix("sha256:")
-                .expect("validated digest"),
-        );
         assert_eq!(
             context_specs,
             BTreeSet::from([
-                format!(
-                    "{first_reference}=oci-layout://{}@{retained_digest}",
-                    layout_root.display()
-                ),
-                format!(
-                    "{alias_reference}=oci-layout://{}@{retained_digest}",
-                    layout_root.display()
-                ),
+                format!("{first_reference}=docker-image://{retained_alias}"),
+                format!("{alias_reference}=docker-image://{retained_alias}"),
             ])
         );
         assert!(
@@ -3129,40 +3662,15 @@ mod tests {
         );
         assert_eq!(
             fs::read_dir(build_root.join("parents"))
-                .expect("parent layouts")
+                .expect("normalized parent archives")
                 .count(),
             1,
-            "same retained digest must be materialized once"
+            "same retained digest must be normalized once"
         );
-        let files = layout_files(&layout_root);
-        assert_eq!(files.len(), 5);
-        assert!(files.contains("oci-layout"));
-        assert!(files.contains("index.json"));
-        assert!(!files.contains("manifest.json"));
-        for member in files
-            .iter()
-            .filter(|member| member.starts_with("blobs/sha256/"))
-        {
-            let bytes = fs::read(layout_root.join(member)).expect("projected graph blob");
-            assert_eq!(
-                digest(&bytes),
-                format!(
-                    "sha256:{}",
-                    member
-                        .strip_prefix("blobs/sha256/")
-                        .expect("content-addressed member")
-                )
-            );
-        }
-        let mut source = Cursor::new(&archive);
-        for member in ["oci-layout", "index.json"] {
-            assert_eq!(
-                fs::read(layout_root.join(member)).expect("projected metadata"),
-                super::read_bounded_tar_member(&mut source, member, super::OCI_DOCUMENT_MAX_BYTES)
-                    .expect("read source metadata")
-                    .expect("source metadata member")
-            );
-        }
+        let policy = plan.policy_contents();
+        assert!(policy.contains(&format!("input.image.ref == \"{retained_alias}\"")));
+        assert!(policy.contains(&format!("input.image.checksum == \"{retained_digest}\"")));
+        assert!(!policy.contains("input.image.host == \"openkit.invalid:443\""));
         fs::remove_dir_all(root).expect("remove retained-parent fixture");
     }
 
@@ -3187,12 +3695,91 @@ mod tests {
         )
         .expect("factory build plan");
         super::create_private_dir(&build_root).expect("private build root");
+        let mut bind = |_: &str, _: &str, _: File, _: Instant| Ok(());
         assert_eq!(
-            plan.prepare_build_args(&store, super::IMAGE_ARCHIVE_MAX_BYTES),
+            plan.prepare_build_args(
+                &store,
+                super::IMAGE_ARCHIVE_MAX_BYTES,
+                Instant::now() + Duration::from_secs(60),
+                &mut bind,
+            ),
             Err(AcquisitionError::InvalidOciResult)
         );
         assert!(!build_root.join("parents").exists());
         fs::remove_dir_all(root).expect("remove corrupt-parent fixture");
+    }
+
+    #[test]
+    fn retained_parent_source_aggregate_is_refused_before_first_import() {
+        let root = test_root("retained-parent-source-aggregate");
+        let store = open_store(&root);
+        let first_archive = super::test_oci_archive(b"first-retained-parent-layer");
+        let second_archive = super::test_oci_archive(b"second-retained-parent-layer");
+        let first_digest = admit_archive(&store, &root, &first_archive, "first-parent");
+        let second_digest = admit_archive(&store, &root, &second_archive, "second-parent");
+        let build_root = root.join("build");
+        let plan = BuildPlan::validate(
+            build_definition(format!(
+                "FROM docker.io/openkit/first@{first_digest}\nFROM docker.io/openkit/second@{second_digest}\n"
+            )),
+            &BTreeSet::from(["docker.io".to_string()]),
+            Path::new("/run/openkit/nanohost/epoch/docker.sock"),
+            &build_root,
+        )
+        .expect("factory build plan");
+        super::create_private_dir(&build_root).expect("private build root");
+        let mut imported = false;
+        let mut bind = |_: &str, _: &str, _: File, _: Instant| {
+            imported = true;
+            Ok(())
+        };
+        let aggregate_limit = (first_archive.len() + second_archive.len() - 1) as u64;
+        assert_eq!(
+            plan.prepare_build_args(
+                &store,
+                aggregate_limit,
+                Instant::now() + Duration::from_secs(60),
+                &mut bind,
+            ),
+            Err(AcquisitionError::InvalidOciResult)
+        );
+        assert!(!imported, "source aggregate must be known before import");
+        assert!(!build_root.join("parents").exists());
+        fs::remove_dir_all(root).expect("remove source-aggregate fixture");
+    }
+
+    #[test]
+    fn retained_parent_preparation_obeys_the_whole_build_deadline() {
+        let root = test_root("retained-parent-deadline");
+        let store = open_store(&root);
+        let archive = super::test_oci_archive(b"deadline-parent-layer");
+        let retained_digest = admit_archive(&store, &root, &archive, "deadline-parent");
+        let build_root = root.join("build");
+        let plan = BuildPlan::validate(
+            build_definition(format!("FROM docker.io/openkit/base@{retained_digest}\n")),
+            &BTreeSet::from(["docker.io".to_string()]),
+            Path::new("/run/openkit/nanohost/epoch/docker.sock"),
+            &build_root,
+        )
+        .expect("factory build plan");
+        super::create_private_dir(&build_root).expect("private build root");
+        let mut called = false;
+        let mut bind = |_: &str, _: &str, _: File, _: Instant| {
+            called = true;
+            Ok(())
+        };
+        assert_eq!(
+            plan.prepare_build_args(
+                &store,
+                super::IMAGE_ARCHIVE_MAX_BYTES,
+                Instant::now() - Duration::from_millis(1),
+                &mut bind,
+            ),
+            Err(AcquisitionError::Backend)
+        );
+        assert!(!called);
+        assert!(!build_root.join("parents").exists());
+        fs::remove_dir_all(root).expect("remove deadline fixture");
     }
 
     #[test]
@@ -3250,8 +3837,14 @@ mod tests {
             )
             .expect("factory build plan");
             super::create_private_dir(&build_root).expect("private build root");
+            let mut bind = |_: &str, _: &str, _: File, _: Instant| Ok(());
             assert_eq!(
-                plan.prepare_build_args(&store, super::IMAGE_ARCHIVE_MAX_BYTES),
+                plan.prepare_build_args(
+                    &store,
+                    super::IMAGE_ARCHIVE_MAX_BYTES,
+                    Instant::now() + Duration::from_secs(60),
+                    &mut bind,
+                ),
                 Err(AcquisitionError::InvalidOciResult),
                 "{state} must fail rather than selecting registry fallback"
             );
@@ -3265,7 +3858,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_parent_projection_rejects_duplicate_unsafe_and_overlimit_archives() {
+    fn retained_parent_normalization_rejects_duplicate_unsafe_and_overlimit_archives() {
         let mut duplicate = super::test_oci_archive(b"duplicate-parent-layer");
         duplicate.truncate(duplicate.len() - 1024);
         super::append_test_tar_member(&mut duplicate, "manifest.json", b"first");
@@ -3273,18 +3866,20 @@ mod tests {
         duplicate.extend_from_slice(&[0_u8; 1024]);
         let duplicate_digest = super::oci_manifest_digest(&duplicate).expect("verified graph");
         let duplicate_root = test_root("duplicate-layout");
+        fs::create_dir_all(&duplicate_root).expect("duplicate root");
         let mut duplicate_archive = Cursor::new(&duplicate);
         let mut duplicate_bytes = 0;
-        assert_eq!(
-            super::materialize_verified_oci_layout(
+        assert!(matches!(
+            super::create_naming_neutral_oci_archive(
                 &mut duplicate_archive,
                 &duplicate_digest,
-                &duplicate_root,
+                &duplicate_root.join("parent.oci.tar"),
                 &mut duplicate_bytes,
                 super::IMAGE_ARCHIVE_MAX_BYTES,
+                Instant::now() + Duration::from_secs(60),
             ),
             Err(AcquisitionError::InvalidOciResult)
-        );
+        ));
 
         let mut unique_extras = super::test_oci_archive(b"unique-extra-parent-layer");
         unique_extras.truncate(unique_extras.len() - 1024);
@@ -3299,17 +3894,19 @@ mod tests {
         let unique_extras_digest =
             super::oci_manifest_digest(&unique_extras).expect("verified graph with extras");
         let unique_extras_root = test_root("unique-extras-layout");
+        fs::create_dir_all(&unique_extras_root).expect("unique extras root");
         let mut unique_extras_bytes = 0;
-        assert_eq!(
-            super::materialize_verified_oci_layout(
+        assert!(matches!(
+            super::create_naming_neutral_oci_archive(
                 &mut Cursor::new(&unique_extras),
                 &unique_extras_digest,
-                &unique_extras_root,
+                &unique_extras_root.join("parent.oci.tar"),
                 &mut unique_extras_bytes,
                 super::IMAGE_ARCHIVE_MAX_BYTES,
+                Instant::now() + Duration::from_secs(60),
             ),
             Err(AcquisitionError::InvalidOciResult)
-        );
+        ));
         for (label, name, type_flag) in [
             ("link", "oci-layout", b'2'),
             ("traversal", "../escape", b'0'),
@@ -3317,55 +3914,74 @@ mod tests {
             let mut unsafe_archive = super::test_oci_archive(label.as_bytes());
             rewrite_first_tar_header(&mut unsafe_archive, name, type_flag);
             let unsafe_root = test_root(label);
+            fs::create_dir_all(&unsafe_root).expect("unsafe root");
             let mut projected = 0;
-            assert_eq!(
-                super::materialize_verified_oci_layout(
+            assert!(matches!(
+                super::create_naming_neutral_oci_archive(
                     &mut Cursor::new(&unsafe_archive),
                     &digest(b"untrusted expected digest"),
-                    &unsafe_root,
+                    &unsafe_root.join("parent.oci.tar"),
                     &mut projected,
                     super::IMAGE_ARCHIVE_MAX_BYTES,
+                    Instant::now() + Duration::from_secs(60),
                 ),
                 Err(AcquisitionError::InvalidOciResult)
-            );
-            assert!(!unsafe_root.exists());
+            ));
+            fs::remove_dir_all(unsafe_root).expect("remove unsafe root");
         }
 
         let archive = super::test_oci_archive(b"bounded-parent-layer");
         let archive_digest = super::oci_manifest_digest(&archive).expect("valid bounded fixture");
         let complete_root = test_root("complete-layout");
+        fs::create_dir_all(&complete_root).expect("complete root");
         let mut complete_bytes = 0;
-        super::materialize_verified_oci_layout(
+        let mut normalized = super::create_naming_neutral_oci_archive(
             &mut Cursor::new(&archive),
             &archive_digest,
-            &complete_root,
+            &complete_root.join("parent.oci.tar"),
             &mut complete_bytes,
             super::IMAGE_ARCHIVE_MAX_BYTES,
+            Instant::now() + Duration::from_secs(60),
         )
         .expect("complete retained projection");
+        assert_eq!(normalized.metadata().unwrap().len(), complete_bytes);
+        assert_eq!(
+            super::verify_oci_archive(&mut normalized, Some(&archive_digest))
+                .expect("reverified normalized graph")
+                .digest,
+            archive_digest
+        );
+        assert_eq!(super::verify_raw_import_names(&mut normalized), Ok(()));
+        assert_eq!(
+            super::read_bounded_tar_member(
+                &mut normalized,
+                "manifest.json",
+                super::OCI_DOCUMENT_MAX_BYTES,
+            ),
+            Ok(None)
+        );
         assert!(complete_bytes > 1);
         let limited_root = test_root("limited-layout");
+        fs::create_dir_all(&limited_root).expect("limited root");
         let mut limited_bytes = 0;
-        assert_eq!(
-            super::materialize_verified_oci_layout(
+        assert!(matches!(
+            super::create_naming_neutral_oci_archive(
                 &mut Cursor::new(&archive),
                 &archive_digest,
-                &limited_root,
+                &limited_root.join("parent.oci.tar"),
                 &mut limited_bytes,
                 complete_bytes - 1,
+                Instant::now() + Duration::from_secs(60),
             ),
             Err(AcquisitionError::InvalidOciResult)
-        );
+        ));
         assert!(limited_bytes < complete_bytes);
-        let actual_limited_bytes = layout_files(&limited_root)
-            .iter()
-            .map(|member| {
-                fs::metadata(limited_root.join(member))
-                    .expect("limited projection member")
-                    .len()
-            })
-            .sum::<u64>();
-        assert!(actual_limited_bytes < complete_bytes);
+        assert_eq!(
+            fs::metadata(limited_root.join("parent.oci.tar"))
+                .expect("limited normalized archive")
+                .len(),
+            limited_bytes
+        );
 
         for root in [
             duplicate_root,
@@ -3374,6 +3990,76 @@ mod tests {
             limited_root,
         ] {
             fs::remove_dir_all(root).expect("remove projection fixture");
+        }
+    }
+
+    #[test]
+    fn raw_import_guard_rejects_reserved_private_alias_names() {
+        let mut archive = super::test_oci_archive(b"reserved-alias-import");
+        archive.truncate(archive.len() - 1024);
+        super::append_test_tar_member(
+            &mut archive,
+            "manifest.json",
+            br#"[{"Config":"config","RepoTags":["openkit.invalid/retained-parent:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"Layers":[]}]"#,
+        );
+        archive.extend_from_slice(&[0_u8; 1024]);
+
+        let mut named = Cursor::new(&archive);
+        assert_eq!(
+            super::verify_raw_import_names(&mut named),
+            Err(AcquisitionError::InvalidOciResult)
+        );
+
+        let mut neutral = Cursor::new(super::test_oci_archive(b"neutral-import"));
+        assert_eq!(super::verify_raw_import_names(&mut neutral), Ok(()));
+
+        let base = super::test_oci_archive(b"reserved-index-alias");
+        let mut base_reader = Cursor::new(&base);
+        let index = super::read_bounded_tar_member(
+            &mut base_reader,
+            "index.json",
+            super::OCI_DOCUMENT_MAX_BYTES,
+        )
+        .expect("read fixture index")
+        .expect("fixture index");
+        let mut index: serde_json::Value = serde_json::from_slice(&index).expect("fixture JSON");
+        let descriptor = index
+            .get_mut("manifests")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|manifests| manifests.first_mut())
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("fixture descriptor");
+        descriptor.insert(
+            "annotations".to_string(),
+            serde_json::json!({
+                "io.containerd.image.name": "openkit.invalid/retained-parent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }),
+        );
+        let index_named = replace_tar_member(
+            &base,
+            "index.json",
+            &serde_json::to_vec(&index).expect("encode named index"),
+        );
+        assert_eq!(
+            super::verify_raw_import_names(&mut Cursor::new(index_named)),
+            Err(AcquisitionError::InvalidOciResult)
+        );
+
+        for malformed in [
+            br#"{}"#.as_slice(),
+            br#"[]"#.as_slice(),
+            br#"[{"RepoTags":"openkit.invalid/retained-parent:latest"}]"#.as_slice(),
+            br#"[{"RepoTags":[42]}]"#.as_slice(),
+            br#"[{"RepoTags":["OPENKIT.invalid/retained-parent:latest"]}]"#.as_slice(),
+        ] {
+            let mut malformed_archive = super::test_oci_archive(b"malformed-naming");
+            malformed_archive.truncate(malformed_archive.len() - 1024);
+            super::append_test_tar_member(&mut malformed_archive, "manifest.json", malformed);
+            malformed_archive.extend_from_slice(&[0_u8; 1024]);
+            assert_eq!(
+                super::verify_raw_import_names(&mut Cursor::new(malformed_archive)),
+                Err(AcquisitionError::InvalidOciResult)
+            );
         }
     }
 
@@ -3484,6 +4170,74 @@ mod tests {
                 "rejected declared exact-digest FROM {reference}"
             );
         }
+    }
+
+    #[test]
+    fn expired_capability_deadline_spawns_no_child() {
+        let root = test_root("expired-capability-deadline");
+        fs::create_dir_all(&root).expect("capability deadline root");
+        let canary = root.join("child-ran");
+        let output = root.join("capability-output");
+        let mut command = std::process::Command::new("/usr/bin/touch");
+        command.arg(&canary);
+        assert_eq!(
+            super::bounded_command_output(
+                &mut command,
+                &output,
+                Instant::now() - Duration::from_millis(1),
+            ),
+            Err(AcquisitionError::UnsupportedBuildCapability)
+        );
+        assert!(!canary.exists(), "expired deadline started a child");
+        assert!(!output.exists(), "expired deadline created command output");
+        fs::remove_dir_all(root).expect("remove capability deadline root");
+    }
+
+    #[test]
+    fn archive_verification_deadline_fails_during_streaming_reads() {
+        let archive = super::test_oci_archive(&vec![b'x'; super::ARCHIVE_CHUNK_BYTES * 2]);
+        let digest = super::oci_manifest_digest(&archive).expect("valid slow-reader fixture");
+        let deadline = Instant::now() + Duration::from_millis(1);
+        let mut slow = SlowReader {
+            inner: Cursor::new(archive.clone()),
+            delay: Duration::from_millis(5),
+        };
+        assert!(matches!(
+            super::verify_oci_archive_before(&mut slow, Some(&digest), deadline),
+            Err(AcquisitionError::Io)
+        ));
+
+        let mut slow_names = SlowReader {
+            inner: Cursor::new(archive),
+            delay: Duration::from_millis(5),
+        };
+        assert!(matches!(
+            super::verify_raw_import_names_before(
+                &mut slow_names,
+                Instant::now() + Duration::from_millis(1),
+            ),
+            Err(AcquisitionError::Io)
+        ));
+    }
+
+    #[test]
+    fn authored_dockerfile_cannot_name_the_private_retained_parent_repository() {
+        let root = test_root("authored-private-retained-parent");
+        let digest = digest(b"retained parent");
+        let private_alias = super::retained_parent_alias(&digest).expect("private alias");
+        let definition = build_definition(format!(
+            "FROM docker.io/openkit/base@{digest} AS base\nCOPY --from={private_alias} /bin/tool /bin/tool\n"
+        ));
+        assert!(matches!(
+            BuildPlan::validate(
+                definition,
+                &BTreeSet::from(["docker.io".to_string()]),
+                Path::new("/run/openkit/nanohost/epoch/docker.sock"),
+                &root,
+            ),
+            Err(AcquisitionError::InvalidBuildDefinition)
+        ));
+        assert!(!root.exists());
     }
 
     #[test]

@@ -34,6 +34,7 @@ use crate::epoch_evidence::{
 use crate::image_acquisition::{
     AcquisitionTrigger, BuildDefinition, BuildPlan, EMPTY_BUILD_CONTEXT_DIGEST,
     EMPTY_BUILD_CONTEXT_REF, ImageEffectEvidence, ImageEffectRequest, RegistryAcquisition,
+    retained_parent_alias, verify_raw_import_names_before,
 };
 use crate::image_store::{ImageStore, StoreError};
 use crate::nanocore_session::OuterRouteProjection;
@@ -699,6 +700,72 @@ pub trait ImageBackend {
     fn inspect_digest(&mut self, digest: &str) -> Result<String, ImageImportError>;
 }
 
+/// Captures one small Docker metadata reply under the build and per-command bounds.
+///
+/// Output is nonblocking and capped, so an unavailable daemon or malformed reply
+/// cannot hold the lifecycle owner indefinitely or allocate an unbounded buffer.
+fn run_image_metadata_command(
+    mut command: Command,
+    deadline: Instant,
+) -> Result<String, ImageImportError> {
+    let deadline = deadline.min(Instant::now() + MID_EPOCH_IMPORT_TIMEOUT);
+    if Instant::now() >= deadline {
+        return Err(ImageImportError::Inspect);
+    }
+    let (mut stdout, writer) = UnixStream::pair().map_err(|_| ImageImportError::Inspect)?;
+    stdout
+        .set_nonblocking(true)
+        .map_err(|_| ImageImportError::Inspect)?;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(OwnedFd::from(writer)))
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|_| ImageImportError::Inspect)?;
+    drop(command);
+    let result = (|| {
+        let mut output = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        let mut eof = false;
+        loop {
+            loop {
+                match stdout.read(&mut buffer) {
+                    Ok(0) => {
+                        eof = true;
+                        break;
+                    }
+                    Ok(count) => {
+                        if output.len() + count > 8192 {
+                            return Err(ImageImportError::Inspect);
+                        }
+                        output.extend_from_slice(&buffer[..count]);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => return Err(ImageImportError::Inspect),
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(ImageImportError::Inspect);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) if !status.success() => return Err(ImageImportError::Inspect),
+                Ok(Some(_)) if eof => {
+                    return String::from_utf8(output).map_err(|_| ImageImportError::Inspect);
+                }
+                Ok(_) => {}
+                Err(_) => return Err(ImageImportError::Inspect),
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    result
+}
+
 /// Direct Docker CLI projection bound to the epoch-private socket.
 pub struct DockerImageBackend {
     docker_socket: PathBuf,
@@ -724,6 +791,122 @@ impl DockerImageBackend {
         );
         command
     }
+
+    /// Reads the selected manifest descriptor, never a configuration ID or mutable tag identity.
+    fn inspect_manifest(
+        &self,
+        reference: &str,
+        deadline: Instant,
+    ) -> Result<String, ImageImportError> {
+        let mut command = self.command();
+        command.args([
+            "image",
+            "inspect",
+            "--format",
+            "{{.Descriptor.digest}}",
+            reference,
+        ]);
+        let output = run_image_metadata_command(command, deadline)?;
+        let digest = output.trim();
+        if !is_canonical_local_digest(digest) {
+            return Err(ImageImportError::DigestMismatch);
+        }
+        Ok(digest.to_string())
+    }
+
+    /// Distinguishes a proved absent private alias from backend or binding uncertainty.
+    fn retained_alias_digest(
+        &self,
+        alias: &str,
+        deadline: Instant,
+    ) -> Result<Option<String>, ImageImportError> {
+        let filter = format!("reference={alias}");
+        let mut command = self.command();
+        command.args([
+            "image",
+            "ls",
+            "--filter",
+            &filter,
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+        ]);
+        let output = run_image_metadata_command(command, deadline)?;
+        if output.is_empty() {
+            return Ok(None);
+        }
+        if output.trim() != alias {
+            return Err(ImageImportError::Inspect);
+        }
+        self.inspect_manifest(alias, deadline).map(Some)
+    }
+
+    /// Binds verified retained content without repairing or overwriting any existing alias.
+    ///
+    /// The caller supplies a naming-neutral, content-verified archive and the one
+    /// whole-build deadline. Only the serialized lifecycle owner invokes this path.
+    fn bind_retained_parent(
+        &mut self,
+        digest: &str,
+        alias: &str,
+        content: File,
+        deadline: Instant,
+    ) -> Result<(), ImageImportError> {
+        if !is_canonical_local_digest(digest)
+            || alias
+                != retained_parent_alias(digest).map_err(|_| ImageImportError::DigestMismatch)?
+        {
+            return Err(ImageImportError::DigestMismatch);
+        }
+        if let Some(actual) = self.retained_alias_digest(alias, deadline)? {
+            return if actual == digest {
+                Ok(())
+            } else {
+                Err(ImageImportError::DigestMismatch)
+            };
+        }
+        self.import_verified_before(content, deadline)?;
+        if self.inspect_manifest(digest, deadline)? != digest {
+            return Err(ImageImportError::DigestMismatch);
+        }
+        match self.retained_alias_digest(alias, deadline)? {
+            Some(actual) if actual == digest => return Ok(()),
+            Some(_) => return Err(ImageImportError::DigestMismatch),
+            None => {}
+        }
+        let mut command = self.command();
+        command.args(["image", "tag", digest, alias]);
+        run_image_metadata_command(command, deadline)?;
+        if self.retained_alias_digest(alias, deadline)?.as_deref() != Some(digest) {
+            return Err(ImageImportError::DigestMismatch);
+        }
+        Ok(())
+    }
+    /// Loads verified content without extending the caller's absolute deadline.
+    fn import_verified_before(
+        &self,
+        mut content: File,
+        deadline: Instant,
+    ) -> Result<(), ImageImportError> {
+        let deadline = deadline.min(Instant::now() + MID_EPOCH_IMPORT_TIMEOUT);
+        verify_raw_import_names_before(&mut content, deadline)
+            .map_err(|_| ImageImportError::Load)?;
+        if Instant::now() >= deadline {
+            return Err(ImageImportError::Load);
+        }
+        let mut child = self
+            .command()
+            .args(["image", "load"])
+            .stdin(Stdio::from(content))
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|_| ImageImportError::Load)?;
+        if wait_for_child_success(&mut child, deadline) {
+            Ok(())
+        } else {
+            Err(ImageImportError::Load)
+        }
+    }
 }
 
 impl ImageBackend for DockerImageBackend {
@@ -747,39 +930,17 @@ impl ImageBackend for DockerImageBackend {
         content: File,
         import_timeout: Duration,
     ) -> Result<(), ImageImportError> {
-        let child = self
-            .command()
-            .args(["image", "load"])
-            .stdin(Stdio::from(content))
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn();
-        child
-            .map_err(|_| ImageImportError::Load)
-            .and_then(|mut child| {
-                if wait_for_child_success(&mut child, import_timeout) {
-                    Ok(())
-                } else {
-                    Err(ImageImportError::Load)
-                }
-            })
+        self.import_verified_before(
+            content,
+            Instant::now() + import_timeout.min(MID_EPOCH_IMPORT_TIMEOUT),
+        )
     }
 
-    /// Re-verifies the installed content digest through the private daemon.
+    /// Re-verifies the installed manifest digest through the private daemon.
     fn inspect_digest(&mut self, digest: &str) -> Result<String, ImageImportError> {
-        let mut command = self.command();
-        let output = command
-            .args(["image", "inspect", "--format", "{{.Id}}", digest])
-            .stdin(Stdio::null())
-            .stderr(Stdio::inherit())
-            .output()
-            .map_err(|_| ImageImportError::Inspect)?;
-        if !output.status.success() {
-            return Err(ImageImportError::Inspect);
-        }
-        let output = String::from_utf8(output.stdout).map_err(|_| ImageImportError::Inspect)?;
-        if output.trim() == digest {
-            Ok(digest.to_string())
+        let actual = self.inspect_manifest(digest, Instant::now() + MID_EPOCH_IMPORT_TIMEOUT)?;
+        if actual == digest {
+            Ok(actual)
         } else {
             Err(ImageImportError::DigestMismatch)
         }
@@ -1634,7 +1795,15 @@ impl EpochCoordinator {
             .map_err(|_| "image.build clock unavailable")?
             .as_secs();
         let digest = plan
-            .execute_and_admit(&self.image_store, acquired_at)
+            .execute_and_admit(
+                &self.image_store,
+                acquired_at,
+                |digest, alias, content, deadline| {
+                    self.image_backend
+                        .bind_retained_parent(digest, alias, content, deadline)
+                        .map_err(|_| crate::image_acquisition::AcquisitionError::Backend)
+                },
+            )
             .map_err(|_| "image.build failed")?;
         import_attempt_image(&self.image_store, &digest, &mut self.image_backend)
             .map_err(|_| "image.build import failed")?;
@@ -2376,13 +2545,16 @@ fn wait_for_success(child: &mut Child) -> Result<(), &'static str> {
     Err("timeout")
 }
 
-/// Waits a caller-bounded interval for a direct child to succeed.
-fn wait_for_child_success(child: &mut Child, limit: Duration) -> bool {
-    let deadline = std::time::Instant::now() + limit;
+/// Waits for a direct child without extending the caller's absolute deadline.
+fn wait_for_child_success(child: &mut Child, deadline: Instant) -> bool {
     while std::time::Instant::now() < deadline {
         match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Ok(Some(status)) => return status.success() && Instant::now() < deadline,
+            Ok(None) => thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(25)),
+            ),
             Err(_) => break,
         }
     }
@@ -2421,7 +2593,7 @@ mod tests {
     use std::sync::Arc;
     #[cfg(target_os = "linux")]
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::{
         AttemptImportOutcome, CreateCertaintyLossPoint, CreateUncertainty, EpochAction,
@@ -2430,7 +2602,8 @@ mod tests {
         MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, dockerd_dns_arguments,
         gateway_cert_command, has_up_tap0_default_route, import_attempt_image,
         invalidation_report_fields, invalidation_trigger, is_canonical_local_digest,
-        preflight_lifecycle_result, resolve_epoch_nameservers, wait_for_success,
+        preflight_lifecycle_result, resolve_epoch_nameservers, run_image_metadata_command,
+        wait_for_success,
     };
     #[cfg(target_os = "linux")]
     use super::{EpochMemberSpec, spawn_member, wait_for_child_success};
@@ -2678,12 +2851,12 @@ mod tests {
             .expect("spawn private namespace joiner");
         let joiner_succeeded = wait_for_child_success(
             children.last_mut().expect("private namespace joiner"),
-            Duration::from_secs(10),
+            Instant::now() + Duration::from_secs(10),
         );
         fs::write(&stop_path, b"stop").expect("signal creator stop");
         let creator_succeeded = wait_for_child_success(
             children.first_mut().expect("private namespace creator"),
-            Duration::from_secs(10),
+            Instant::now() + Duration::from_secs(10),
         );
         assert_eq!(
             fs::read("/etc/resolv.conf").expect("re-read host resolver"),
@@ -2965,7 +3138,7 @@ mod tests {
         assert_eq!(children.len(), 1);
         assert!(wait_for_child_success(
             children.first_mut().expect("spawned child"),
-            Duration::from_secs(1),
+            Instant::now() + Duration::from_secs(1),
         ));
     }
 
@@ -3852,6 +4025,26 @@ mod tests {
     }
 
     #[test]
+    fn image_import_deadline_is_not_rebased_and_expiry_reaps_the_child() {
+        let (store, digest, root) = admitted_store("expired-import", b"deadline-content");
+        let content = store.read_verified(&digest).expect("verified fixture");
+        let backend = super::DockerImageBackend::new(root.join("absent-docker.sock"));
+        assert_eq!(
+            backend.import_verified_before(content, Instant::now()),
+            Err(ImageImportError::Load),
+        );
+        let mut child = Command::new("/bin/sleep")
+            .arg("10")
+            .spawn()
+            .expect("slow child");
+        let deadline = Instant::now() + Duration::from_millis(20);
+        assert!(!super::wait_for_child_success(&mut child, deadline));
+        assert!(child.try_wait().expect("reaped child").is_some());
+        assert!(Instant::now() < deadline + Duration::from_secs(1));
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
     fn image_import_streams_one_verified_file_and_checks_the_exact_digest() {
         let production = include_str!("epoch_coordinator.rs")
             .split("#[cfg(test)]")
@@ -3868,11 +4061,11 @@ mod tests {
             .split_once("fn import_verified")
             .expect("end of Docker presence probe")
             .0;
-        let import_source = docker_backend
-            .split_once("fn import_verified")
+        let import_source = production
+            .split_once("fn import_verified_before")
             .expect("Docker import implementation")
             .1
-            .split_once("fn inspect_digest")
+            .split_once("impl ImageBackend for DockerImageBackend")
             .expect("end of Docker import implementation")
             .0;
         let inspect_source = docker_backend
@@ -3886,7 +4079,7 @@ mod tests {
         assert!(contains_source.contains("ImageImportError::Probe"));
         assert!(import_source.contains(r#".args(["image", "load"])"#));
         assert!(import_source.contains(".stdin(Stdio::from(content))"));
-        assert!(import_source.contains("wait_for_child_success(&mut child, import_timeout)"));
+        assert!(import_source.contains("wait_for_child_success(&mut child, deadline)"));
         assert!(import_source.contains(".stderr(Stdio::inherit())"));
         for forbidden in [
             "--input",
@@ -3900,10 +4093,11 @@ mod tests {
             );
         }
         assert!(
-            inspect_source
-                .contains(r#".args(["image", "inspect", "--format", "{{.Id}}", digest])"#)
+            inspect_source.contains(
+                "self.inspect_manifest(digest, Instant::now() + MID_EPOCH_IMPORT_TIMEOUT)"
+            )
         );
-        assert!(inspect_source.contains("output.trim() == digest"));
+        assert!(inspect_source.contains("actual == digest"));
         assert!(inspect_source.contains("Err(ImageImportError::DigestMismatch)"));
         for forbidden in [
             "RepoDigests",
@@ -3913,6 +4107,31 @@ mod tests {
             assert!(!inspect_source.contains(forbidden));
             assert!(!import_source.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn image_metadata_command_is_bounded_and_requires_success() {
+        let mut success = Command::new("/bin/sh");
+        success.args(["-c", "printf manifest"]);
+        assert_eq!(
+            run_image_metadata_command(success, Instant::now() + Duration::from_secs(1)),
+            Ok("manifest".to_string())
+        );
+        let mut failure = Command::new("/bin/sh");
+        failure.args(["-c", "printf manifest; exit 1"]);
+        assert!(
+            run_image_metadata_command(failure, Instant::now() + Duration::from_secs(1)).is_err()
+        );
+        let mut timeout = Command::new("/bin/sh");
+        timeout.args(["-c", "exec sleep 10"]);
+        let started = Instant::now();
+        assert!(run_image_metadata_command(timeout, started + Duration::from_millis(20)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let mut oversized = Command::new("/bin/sh");
+        oversized.args(["-c", "head -c 8193 /dev/zero"]);
+        assert!(
+            run_image_metadata_command(oversized, Instant::now() + Duration::from_secs(1)).is_err()
+        );
     }
 
     #[test]
