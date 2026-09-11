@@ -32,7 +32,7 @@ NanoCore derives private AEP and Context input paths from the admitted AgentSess
 ## Prerequisites
 
 - real governed worker sessions require one configured Linux/systemd NanoHost running the stock OpenShell Gateway at exactly `0.0.99` with its private container backend and the exact image needed by that workload
-- every reference uses `image.acquire` before read-only image inspection and Sandbox creation; an exact lowercase `sha256:` digest with pull policy `never` selects verified local Image Store content without registry or build fallback, including after a fresh backend epoch
+- every reference uses `image.acquire` before read-only image inspection and Sandbox creation; an exact lowercase `sha256:` digest with pull policy `never` selects verified local Image Store content without registry or build fallback, including after a fresh backend epoch; `image.inspect` carries only its image digest and request identity, while Core session lineage remains in request-identity derivation
 - NanoCore accepts NanoHost admission only on a native HTTP/2 physical connection with a valid dedicated `nanohost-transport` Token; it allocates generation one or durable high-water plus one and binds dispatch authority to that exact server-created connection context
 - synthetic application requests and caller-provided NanoHost connection handles or generations are not selectable runtime paths
 - subscription-backed inference requires a prepared provider-subscription account and bound provider profile; worker-runtime authentication remains a separate adapter concern

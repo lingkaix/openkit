@@ -2187,7 +2187,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     input: Readonly<Record<string, unknown>>
   ): NanoHostSessionEffectRequest {
     const commandInput =
-      operation === 'bridge.open'
+      operation === 'bridge.open' || operation === 'image.inspect'
         ? input
         : {
             backendSessionId: identity.backendSessionId,

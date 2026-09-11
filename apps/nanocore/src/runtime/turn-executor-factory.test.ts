@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +10,10 @@ import {
 } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
+import {
+  createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
+} from '../auth/nanohost-transport-session.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import {
@@ -41,6 +47,7 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
+import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
 import {
   createConfiguredTurnExecutor,
   createConfiguredWorkerLifecycleRuntime,
@@ -297,6 +304,146 @@ describe('createConfiguredTurnExecutor', () => {
       kind: 'openshell',
       version: '0.0.99',
     });
+  });
+
+  it('keeps strict image inspection carriage closed while retaining lifecycle effect identity', async () => {
+    const coreDb = createFactoryCoreDb();
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
+    const runtimeTarget = {
+      coreDb,
+      deploymentId: 'deployment_effect_carriage',
+      identityId: 'identity_effect_carriage',
+      targetId: 'target_effect_carriage',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...runtimeTarget,
+      observedAt: '2026-09-11T00:00:00.000Z',
+    });
+    let acceptPhysical!: (connection: object) => void;
+    const physicalReady = new Promise<object>((resolve) => {
+      acceptPhysical = resolve;
+    });
+    const server = createHttp2Server((request, response) => {
+      const physical = readNanoHostPhysicalConnectionContext(request);
+      if (physical) acceptPhysical(physical);
+      response.writeHead(204).end();
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      client.request({ ':method': 'POST', ':path': '/' }).end();
+      const physical = await physicalReady;
+      authority.admit({
+        connectionGeneration: 1,
+        identityId: runtimeTarget.identityId,
+        physicalConnection: physical,
+      });
+      await dispatch.readiness!(physical, Buffer.from('{}'), runtimeTarget);
+
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: dispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const requestBuilder = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: {
+            createEffectRequest(
+              identity: WorkerGovernanceBackendSessionIdentity,
+              leaseId: string,
+              operation: 'image.inspect' | 'sandbox.create',
+              input: Readonly<Record<string, unknown>>
+            ): NanoHostSessionEffectRequest;
+          };
+        }
+      ).backend;
+      const identity: WorkerGovernanceBackendSessionIdentity = {
+        agentSessionId: 'as_effect_carriage',
+        backendKind: 'openshell',
+        backendSessionId: 'sandbox-effect-carriage',
+        deploymentId: runtimeTarget.deploymentId,
+        packageSnapshotId: 'aepsnap_effect_carriage',
+        runtimeTargetId: runtimeTarget.targetId,
+        stagingDirectoryRef: 'runtime-staging/effect-carriage',
+        transientProviderInstanceId: null,
+      };
+      const imageDigest = `sha256:${'d'.repeat(64)}`;
+      const imageInspection = requestBuilder.createEffectRequest(
+        identity,
+        'lease_effect_carriage',
+        'image.inspect',
+        { imageDigest }
+      );
+      const otherLeaseInspection = requestBuilder.createEffectRequest(
+        identity,
+        'lease_effect_carriage_other',
+        'image.inspect',
+        { imageDigest }
+      );
+      expect(imageInspection.input).toEqual({ imageDigest });
+      expect(imageInspection.requestId).toMatch(/^[0-9a-f]{64}$/);
+      expect(otherLeaseInspection.input).toEqual({ imageDigest });
+      expect(otherLeaseInspection.requestId).not.toBe(imageInspection.requestId);
+
+      const pendingInspection = dispatch.effect(imageInspection);
+      void pendingInspection.catch(() => undefined);
+      await expect(dispatch.poll(physical, 'image.inspect')).resolves.toEqual({
+        imageDigest,
+        requestId: imageInspection.requestId,
+      });
+      await dispatch.result(physical, 'image.inspect', {
+        digest: imageDigest,
+        requestId: imageInspection.requestId,
+      });
+      await expect(pendingInspection).resolves.toEqual({ digest: imageDigest });
+
+      const sandboxCreate = requestBuilder.createEffectRequest(
+        identity,
+        'lease_effect_carriage',
+        'sandbox.create',
+        {
+          imageDigest,
+          sandboxId: 'sandbox-effect-carriage',
+          storage: {
+            attachmentGeneration: 1,
+            layoutDigest: `sha256:${'a'.repeat(64)}`,
+            scopeDigest: `sha256:${'b'.repeat(64)}`,
+            storageRef: 'wst_effect_carriage',
+            targets: [{ target: '/workspace', volumeRef: 'wsv_effect_carriage' }],
+          },
+        }
+      );
+      expect(sandboxCreate.input).toMatchObject({
+        backendSessionId: identity.backendSessionId,
+        leaseId: 'lease_effect_carriage',
+        packageSnapshotId: identity.packageSnapshotId,
+        storage: { storageRef: 'wst_effect_carriage' },
+      });
+      const pendingSandbox = dispatch.effect(sandboxCreate);
+      void pendingSandbox.catch(() => undefined);
+      await expect(dispatch.poll(physical, 'sandbox.create')).resolves.toEqual({
+        ...sandboxCreate.input,
+        requestId: sandboxCreate.requestId,
+      });
+      await dispatch.result(physical, 'sandbox.create', {
+        failureCode: 'effect_failed',
+        requestId: sandboxCreate.requestId,
+      });
+      await expect(pendingSandbox).rejects.toMatchObject({
+        message: 'NanoHost effect failed: effect_failed.',
+        status: 500,
+      });
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+    }
   });
 
   it('keeps NanoHost session construction on the configured runtime target', () => {
@@ -2909,9 +3056,10 @@ describe('createConfiguredTurnExecutor', () => {
         kind: 'image.acquire',
       });
       expect(effects[1]).toMatchObject({
-        input: { imageDigest: localDigest, leaseId: 'lease_b_current' },
+        input: { imageDigest: localDigest },
         kind: 'image.inspect',
       });
+      expect(effects[1]?.input).not.toHaveProperty('leaseId');
       expect(effects[2]).toMatchObject({
         input: { imageDigest: localDigest, leaseId: 'lease_b_current' },
         kind: 'sandbox.create',
