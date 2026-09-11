@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 # Storage Model
 
@@ -49,6 +49,14 @@ Normal Turn/AgentSession cleanup, Sandbox replacement, Runtime Epoch invalidatio
 OpenKit-injected credentials, control state, route bindings and temporary grants MUST remain outside generic retained volumes and be recreated through their current owners. Preserved user files are data, never an authorization source. Retained native configuration cannot override current admission, provider, capability, network or credential policy. Preservation does not authorize new collection of private reasoning or raw data beyond the existing runtime and evidence owners.
 
 Purge requires explicit resource-deletion authority, current audience and hold checks, and proved writer fencing. Pressure or quota exhaustion refuses new writes/admission or requests authorized cleanup; it MUST NOT silently evict retained work. Backup/export coverage MUST name execution-host volumes separately from NanoCore storage and report an unavailable or omitted volume truthfully. A persistent local volume is not an off-host backup or a guarantee against physical disk loss. Observable conformance requires unknown, untracked and ignored bytes to survive compatible replacement without promotion to product truth, and missing, conflicted, unsafe or unavailable storage to preserve data and block false recovery.
+
+## Local Execution Image Supply
+
+An execution host SHOULD retain verified immutable image content independently of its replaceable execution runtime. Public and private registries are acquisition sources for Worker images, not prerequisites imposed by OpenKit for starting NanoCore, connecting an execution host or reusing Worker image content already held locally. This does not replace a selected external runtime's own supported bootstrap behavior or dependencies. Startup establishes the execution substrate and its authenticated control connection; each workload separately proves availability and integrity of its exact image before execution. Missing content blocks the dependent preparation or workload without invalidating unrelated healthy execution.
+
+NanoCore owns desired image declarations, authorization, preparation lineage and accepted results. The execution host owns locally acquired or built image bytes and their verified import into its runtime. This does not make NanoCore a registry or duplicate large image blobs in Core storage. An explicitly supplied local archive may establish image availability without a registry; a new remote acquisition or build can still require its declared external sources. Local availability is neither publication nor authority to execute, and a local image copy is not an off-host backup.
+
+Verified retained images MUST NOT be automatically evicted. Capacity exhaustion refuses new image admission and requires an explicit administrator capacity change or cleanup, without interrupting running Workers. Removal is an explicit exact-image decision: it may make future environment creation unavailable and must not claim that a registry can always reproduce the bytes. Image replacement and deletion do not delete retained working volumes. A removed or corrupt image cannot be silently replaced by a different image under the same digest. Recovery uses verified identical content or a newly authorized image selection; it does not claim that preserved volume bytes alone can reproduce unavailable software.
 
 ## Storage Hierarchy
 

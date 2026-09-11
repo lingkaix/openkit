@@ -24,6 +24,8 @@ Finish any App replacement before starting a newly provisioned NanoHost readines
 
 ### Initial NanoHost Provisioning
 
+The current pinned stock OpenShell Gateway may contact GHCR to obtain its Supervisor during startup, before Gateway health and NanoCore readiness. This accepted upstream dependency is separate from OpenKit's Worker-image provisioning; an already prepared Worker image does not prove that NanoHost can start offline. Diagnose the exact bootstrap failure and authorized host network access without bypassing TLS or changing the pinned release.
+
 Complete image supply and credential enrollment before the first NanoHost service start. Build or retrieve the declared required images off the readiness path, import and verify their exact digests in the NanoHost Image Store, install the configured binary/unit, and enroll the configured identity/deployment pair into its safe credential sink. Then start the service and observe the normal authoritative connection, predecessor fence, readiness and fresh-empty gates. A Core test-data reset invalidates old transport credentials even when their sink files remain; reenroll before starting NanoHost against the fresh Core.
 
 The [NanoHost owner](../specs/20260802-nanohost_runtime_and_transport.md) preserves the first timestamp across an unresolved fence-to-ready interval. An expired interval remains failed through process restart; removing its marker is not a recovery operation. Preserve its bounded non-secret evidence and diagnose the original pre-expiry failure rather than repeatedly restarting the service.

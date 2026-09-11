@@ -5,6 +5,8 @@ status: Accepted
 
 Operate only the selected deployment and requested effect. Keep its persistent Data Root, external Vault key, protected authentication configuration and NanoHost transport credentials intact. NanoCore/Web replacement does not authorize NanoHost, unrelated containers or host reverse-proxy maintenance.
 
+NanoHost startup and Worker-image availability are separate checks. The accepted stock OpenShell Supervisor bootstrap may contact GHCR before readiness; a locally retained Worker image does not remove that dependency. Follow [NanoHost Runtime](nanocore-deployment-modes.en.md#nanohost-runtime) when diagnosing registry-related startup failure. NanoCore/Web updates do not authorize a NanoHost restart to test this behavior.
+
 ## Inspect A Running Deployment
 
 With the public `openkit` Skill installed, run its `scripts/openkit doctor`, search for `diagnostics`, describe the matching operation and perform an authorized read. Inspect the relevant Workspace, Thread, Task, Artifact, Evidence, Audit or Usage records through their public operations. A server-admin credential does not itself grant private Workspace content.
