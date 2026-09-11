@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::{self, Cursor, Read, Write};
+use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
@@ -22,7 +22,7 @@ use oci_client::{Client, Reference, RegistryOperation};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWrite;
 
-use crate::image_store::{IMAGE_STORE_MAX_BYTES, ImageStore, StoreLineage};
+use crate::image_store::{IMAGE_ARCHIVE_MAX_BYTES, ImageStore, StoreError, StoreLineage};
 
 /// Hard build wall-clock ceiling.
 pub const BUILD_MAX_TIME: Duration = Duration::from_secs(30 * 60);
@@ -47,7 +47,10 @@ pub const EMPTY_BUILD_CONTEXT_DIGEST: &str =
 const REGISTRY_MAX_TIME: Duration = Duration::from_secs(15 * 60);
 
 /// Hard in-memory raw-manifest bound before descriptor parsing.
-const REGISTRY_MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+const OCI_DOCUMENT_MAX_BYTES: usize = 512 * 1024;
+
+/// Maximum transfer and hashing chunk retained in memory.
+const ARCHIVE_CHUNK_BYTES: usize = 64 * 1024;
 
 /// The only callers authorized to initiate acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +161,9 @@ impl ImageEffectRequest {
         }
         match &self.input {
             ImageEffectInput::Reference(reference) => {
+                if validate_digest(reference).is_ok() {
+                    return Ok(());
+                }
                 let parsed = Reference::try_from(reference.as_str())
                     .map_err(|_| AcquisitionError::InvalidRegistryReference)?;
                 let digest = parsed
@@ -314,10 +320,14 @@ impl RegistryAcquisition {
     pub async fn acquire(
         &self,
         staging_root: &Path,
-        store: &mut ImageStore,
-        protected: &BTreeSet<String>,
+        store: &ImageStore,
         acquired_at: u64,
     ) -> Result<String, AcquisitionError> {
+        match store.read_verified(&self.digest) {
+            Ok(_) => return Ok(self.digest.clone()),
+            Err(StoreError::Missing) => {}
+            Err(_) => return Err(AcquisitionError::InvalidOciResult),
+        }
         validate_owned_path(staging_root)?;
         if staging_root.exists() {
             return Err(AcquisitionError::InvalidRegistryReference);
@@ -334,20 +344,16 @@ impl RegistryAcquisition {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err(AcquisitionError::Io),
         };
-        cleanup_result?;
         let archive = archive_result?;
-        if oci_manifest_digest(&archive)? != self.digest {
-            return Err(AcquisitionError::DigestMismatch);
-        }
         store
-            .admit_oci(
+            .admit_oci_file(
                 &self.digest,
-                &archive,
+                archive,
                 StoreLineage::Registry(self.reference.whole()),
                 acquired_at,
-                protected,
             )
             .map_err(|_| AcquisitionError::InvalidOciResult)?;
+        cleanup_result?;
         Ok(self.digest.clone())
     }
 
@@ -355,7 +361,7 @@ impl RegistryAcquisition {
     async fn retrieve_registry_archive(
         &self,
         staging_root: &Path,
-    ) -> Result<Vec<u8>, AcquisitionError> {
+    ) -> Result<File, AcquisitionError> {
         let client = Client::try_from(ClientConfig {
             protocol: ClientProtocol::Https,
             accept_invalid_certificates: false,
@@ -366,7 +372,7 @@ impl RegistryAcquisition {
             ..Default::default()
         })
         .map_err(|_| AcquisitionError::Backend)?;
-        client
+        let bearer_token = client
             .auth(
                 &self.reference,
                 &RegistryAuth::Anonymous,
@@ -374,17 +380,7 @@ impl RegistryAcquisition {
             )
             .await
             .map_err(|_| AcquisitionError::Backend)?;
-        let (raw_manifest, actual_digest) = client
-            .pull_manifest_raw(
-                &self.reference,
-                &RegistryAuth::Anonymous,
-                &[OCI_IMAGE_MEDIA_TYPE, IMAGE_MANIFEST_MEDIA_TYPE],
-            )
-            .await
-            .map_err(|_| AcquisitionError::Backend)?;
-        if actual_digest != self.digest {
-            return Err(AcquisitionError::DigestMismatch);
-        }
+        let raw_manifest = pull_manifest_bounded(&self.reference, bearer_token.as_deref()).await?;
         self.verify_content(&raw_manifest)?;
         let manifest = parse_image_manifest(&raw_manifest)?;
         let descriptor_sizes =
@@ -420,6 +416,98 @@ impl RegistryAcquisition {
         }
         archive_registry_layout(staging_root, &self.digest, &descriptor_sizes)
     }
+}
+
+/// Retrieves one raw manifest with a pre-allocation and running byte ceiling.
+async fn pull_manifest_bounded(
+    reference: &Reference,
+    bearer_token: Option<&str>,
+) -> Result<Vec<u8>, AcquisitionError> {
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(REGISTRY_MAX_TIME)
+        .timeout(REGISTRY_MAX_TIME)
+        .build()
+        .map_err(|_| AcquisitionError::Backend)?;
+    let digest = reference
+        .digest()
+        .ok_or(AcquisitionError::InvalidRegistryReference)?;
+    let url = format!(
+        "https://{}/v2/{}/manifests/{digest}",
+        reference.resolve_registry(),
+        reference.repository(),
+    );
+    let mut request = client.get(url).header(
+        reqwest::header::ACCEPT,
+        format!("{OCI_IMAGE_MEDIA_TYPE}, {IMAGE_MANIFEST_MEDIA_TYPE}"),
+    );
+    if let Some(token) = bearer_token {
+        request = request.bearer_auth(token);
+    }
+    let mut response = request
+        .send()
+        .await
+        .map_err(|_| AcquisitionError::Backend)?;
+    if response.status() != reqwest::StatusCode::OK {
+        return Err(AcquisitionError::Backend);
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if !matches!(
+        content_type,
+        OCI_IMAGE_MEDIA_TYPE | IMAGE_MANIFEST_MEDIA_TYPE
+    ) {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    if let Some(length) = response.content_length()
+        && length > OCI_DOCUMENT_MAX_BYTES as u64
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    if let Some(header_digest) = response.headers().get("docker-content-digest") {
+        let header_digest = header_digest
+            .to_str()
+            .map_err(|_| AcquisitionError::InvalidOciResult)?;
+        if header_digest != digest {
+            return Err(AcquisitionError::DigestMismatch);
+        }
+    }
+    let mut raw_manifest = Vec::with_capacity(OCI_DOCUMENT_MAX_BYTES);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| AcquisitionError::Backend)?
+    {
+        extend_manifest_bounded(&mut raw_manifest, &chunk)?;
+    }
+    if raw_manifest.is_empty() || format!("sha256:{:x}", Sha256::digest(&raw_manifest)) != digest {
+        return Err(AcquisitionError::DigestMismatch);
+    }
+    Ok(raw_manifest)
+}
+
+fn extend_manifest_bounded(
+    manifest: &mut Vec<u8>,
+    response_chunk: &[u8],
+) -> Result<(), AcquisitionError> {
+    for chunk in response_chunk.chunks(ARCHIVE_CHUNK_BYTES) {
+        if manifest
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|length| length > OCI_DOCUMENT_MAX_BYTES)
+        {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        manifest.extend_from_slice(chunk);
+    }
+    Ok(())
 }
 
 /// Stages already retrieved manifest and blob bytes as one minimal verified OCI layout.
@@ -475,7 +563,7 @@ pub(crate) fn stage_registry_layout(
 
 /// Parses and restricts raw registry bytes to one concrete image manifest.
 fn parse_image_manifest(raw_manifest: &[u8]) -> Result<OciImageManifest, AcquisitionError> {
-    if raw_manifest.is_empty() || raw_manifest.len() > REGISTRY_MAX_MANIFEST_BYTES {
+    if raw_manifest.is_empty() || raw_manifest.len() > OCI_DOCUMENT_MAX_BYTES {
         return Err(AcquisitionError::InvalidOciResult);
     }
     let manifest: OciManifest =
@@ -543,6 +631,12 @@ fn validated_descriptor_sizes(
     manifest: &OciImageManifest,
     manifest_size: u64,
 ) -> Result<BTreeMap<String, u64>, AcquisitionError> {
+    if manifest.layers.len() > BUILD_MAX_LAYERS as usize
+        || manifest.config.size < 0
+        || manifest.config.size as usize > OCI_DOCUMENT_MAX_BYTES
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
     let mut total = manifest_size;
     let mut descriptors = BTreeMap::new();
     for descriptor in std::iter::once(&manifest.config).chain(manifest.layers.iter()) {
@@ -560,7 +654,7 @@ fn validated_descriptor_sizes(
         total = total
             .checked_add(size)
             .ok_or(AcquisitionError::InvalidOciResult)?;
-        if total > IMAGE_STORE_MAX_BYTES {
+        if total > IMAGE_ARCHIVE_MAX_BYTES {
             return Err(AcquisitionError::InvalidOciResult);
         }
     }
@@ -622,12 +716,17 @@ impl AsyncWrite for BoundedBlobWriter {
         context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        if buffer.len() as u64 > self.limit.saturating_sub(self.written) {
+        let remaining = self.limit.saturating_sub(self.written);
+        if remaining == 0 && !buffer.is_empty() {
             return Poll::Ready(Err(io::Error::other(
                 "registry blob exceeded descriptor size",
             )));
         }
-        match Pin::new(&mut self.file).poll_write(context, buffer) {
+        let chunk = buffer
+            .len()
+            .min(ARCHIVE_CHUNK_BYTES)
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        match Pin::new(&mut self.file).poll_write(context, &buffer[..chunk]) {
             Poll::Ready(Ok(written)) => {
                 self.written += written as u64;
                 Poll::Ready(Ok(written))
@@ -915,18 +1014,16 @@ impl BuildPlan {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn execute_and_admit(
         &self,
-        store: &mut ImageStore,
-        protected: &BTreeSet<String>,
+        store: &ImageStore,
         acquired_at: u64,
     ) -> Result<String, AcquisitionError> {
         let result = self.execute()?;
         store
-            .admit_oci(
+            .admit_oci_file(
                 &result.digest,
-                &result.content,
+                result.archive,
                 StoreLineage::Build(self.lineage()),
                 acquired_at,
-                protected,
             )
             .map_err(|_| AcquisitionError::InvalidOciResult)?;
         Ok(result.digest)
@@ -989,12 +1086,12 @@ impl BuildPlan {
 }
 
 /// Verified OCI-only build output retained outside runtime state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct VerifiedOciImage {
     /// Exact OCI manifest digest reported and re-verified from the archive.
     pub digest: String,
-    /// Verified OCI archive bytes retained only until Image Store admission.
-    pub content: Vec<u8>,
+    /// Rewound verified archive descriptor retained across build-root cleanup.
+    pub archive: File,
     /// Verified archive byte size.
     pub size: u64,
     /// Verified manifest layer count.
@@ -1383,23 +1480,29 @@ fn verify_oci_result(
     if size == 0 || size > output_limit || size > BUILD_MAX_OUTPUT_BYTES {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let metadata = fs::read_to_string(metadata_path)?;
+    let metadata = read_bounded_regular_utf8(metadata_path, OCI_DOCUMENT_MAX_BYTES)?;
     let metadata_digest = json_string(&metadata, "containerimage.digest")
         .ok_or(AcquisitionError::InvalidOciResult)?;
     validate_digest(&metadata_digest).map_err(|_| AcquisitionError::InvalidOciResult)?;
-    let content = fs::read(archive_path)?;
-    let digest = oci_manifest_digest(&content)?;
+    let mut archive = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(archive_path)?;
+    if !archive.metadata()?.is_file() {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let verified = verify_oci_archive(&mut archive, Some(&metadata_digest))?;
+    let digest = verified.digest;
     if digest != metadata_digest {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let manifest = parse_image_manifest(&oci_manifest_bytes(&content, &digest)?)?;
-    let layers = manifest.layers.len() as u32;
+    let layers = verified.layers;
     if layers > layer_limit {
         return Err(AcquisitionError::InvalidOciResult);
     }
     Ok(VerifiedOciImage {
         digest,
-        content,
+        archive,
         size,
         layers,
     })
@@ -1410,10 +1513,31 @@ fn verify_oci_result(
 /// # Errors
 ///
 /// Rejects malformed archives, missing index/blob members, and blob mismatch.
-pub(crate) fn oci_manifest_digest(content: &[u8]) -> Result<String, AcquisitionError> {
-    let mut archive = Cursor::new(content);
-    let index =
-        tar_member(&mut archive, "index.json")?.ok_or(AcquisitionError::InvalidOciResult)?;
+pub(crate) fn verify_oci_archive<R: Read + Seek>(
+    archive: &mut R,
+    expected_digest: Option<&str>,
+) -> Result<VerifiedArchive, AcquisitionError> {
+    let archive_size = archive.seek(SeekFrom::End(0))?;
+    if archive_size == 0 || archive_size > IMAGE_ARCHIVE_MAX_BYTES {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let layout = read_bounded_tar_member(archive, "oci-layout", OCI_DOCUMENT_MAX_BYTES)?
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let layout: serde_json::Value =
+        serde_json::from_slice(&layout).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let layout = layout
+        .as_object()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if layout.len() != 1
+        || layout
+            .get("imageLayoutVersion")
+            .and_then(serde_json::Value::as_str)
+            != Some("1.0.0")
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let index = read_bounded_tar_member(archive, "index.json", OCI_DOCUMENT_MAX_BYTES)?
+        .ok_or(AcquisitionError::InvalidOciResult)?;
     let index: serde_json::Value =
         serde_json::from_slice(&index).map_err(|_| AcquisitionError::InvalidOciResult)?;
     let index = index
@@ -1512,7 +1636,15 @@ pub(crate) fn oci_manifest_digest(content: &[u8]) -> Result<String, AcquisitionE
         }
     }
     validate_digest(&digest).map_err(|_| AcquisitionError::InvalidOciResult)?;
-    let manifest_bytes = oci_manifest_bytes(content, &digest)?;
+    if expected_digest.is_some_and(|expected| expected != digest) {
+        return Err(AcquisitionError::DigestMismatch);
+    }
+    let manifest_name = format!("blobs/sha256/{}", digest_hex(&digest)?);
+    let manifest_bytes = read_bounded_tar_member(archive, &manifest_name, OCI_DOCUMENT_MAX_BYTES)?
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if format!("sha256:{:x}", Sha256::digest(&manifest_bytes)) != digest {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
     let manifest = parse_image_manifest(&manifest_bytes)?;
     if manifest_bytes.len() as u64 != declared_size
         || manifest.media_type.as_deref() != Some(media_type)
@@ -1520,35 +1652,92 @@ pub(crate) fn oci_manifest_digest(content: &[u8]) -> Result<String, AcquisitionE
         return Err(AcquisitionError::InvalidOciResult);
     }
     let descriptors = validated_descriptor_sizes(&manifest, manifest_bytes.len() as u64)?;
-    for (descriptor_digest, declared_size) in descriptors {
-        let blob_name = format!("blobs/sha256/{}", digest_hex(&descriptor_digest)?);
-        let mut archive = Cursor::new(content);
-        let blob =
-            tar_member(&mut archive, &blob_name)?.ok_or(AcquisitionError::InvalidOciResult)?;
-        if blob.len() as u64 != declared_size
-            || format!("sha256:{:x}", Sha256::digest(&blob)) != descriptor_digest
-        {
-            return Err(AcquisitionError::InvalidOciResult);
-        }
-    }
-    Ok(digest)
+    verify_descriptor_members(archive, &manifest.config.digest, &descriptors)?;
+    archive.seek(SeekFrom::Start(0))?;
+    Ok(VerifiedArchive {
+        digest,
+        layers: manifest.layers.len() as u32,
+    })
 }
 
-/// Returns and verifies the exact OCI manifest blob.
-fn oci_manifest_bytes(content: &[u8], digest: &str) -> Result<Vec<u8>, AcquisitionError> {
-    let blob_name = format!(
-        "blobs/sha256/{}",
-        digest
-            .strip_prefix("sha256:")
-            .ok_or(AcquisitionError::InvalidOciResult)?
-    );
-    let mut archive = Cursor::new(content);
-    let manifest =
-        tar_member(&mut archive, &blob_name)?.ok_or(AcquisitionError::InvalidOciResult)?;
-    if format!("sha256:{:x}", Sha256::digest(&manifest)) != digest {
-        return Err(AcquisitionError::InvalidOciResult);
+/// Bounded verification result needed by store and build admission.
+pub(crate) struct VerifiedArchive {
+    digest: String,
+    layers: u32,
+}
+
+/// Byte-slice adapter retained only for compact test fixtures.
+#[cfg(test)]
+pub(crate) fn oci_manifest_digest(content: &[u8]) -> Result<String, AcquisitionError> {
+    let mut archive = std::io::Cursor::new(content);
+    verify_oci_archive(&mut archive, None).map(|verified| verified.digest)
+}
+
+/// Verifies all referenced blobs in one streaming archive pass.
+fn verify_descriptor_members<R: Read + Seek>(
+    archive: &mut R,
+    config_digest: &str,
+    descriptors: &BTreeMap<String, u64>,
+) -> Result<(), AcquisitionError> {
+    let mut remaining = descriptors.clone();
+    let mut observed = BTreeSet::new();
+    archive.seek(SeekFrom::Start(0))?;
+    while let Some(header) = next_tar_header(archive)? {
+        let wanted_digest = header
+            .name
+            .strip_prefix("blobs/sha256/")
+            .map(|stem| format!("sha256:{stem}"));
+        if let Some(digest) = wanted_digest
+            .as_ref()
+            .filter(|digest| descriptors.contains_key(*digest))
+        {
+            if !header.regular {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+            if !observed.insert(digest.clone()) {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+            let expected_size = *remaining
+                .get(digest)
+                .ok_or(AcquisitionError::InvalidOciResult)?;
+            if header.size != expected_size {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+            let capture_config = digest == config_digest;
+            if capture_config && header.size > OCI_DOCUMENT_MAX_BYTES as u64 {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+            let mut hasher = Sha256::new();
+            let mut captured = if capture_config {
+                Vec::with_capacity(header.size as usize)
+            } else {
+                Vec::new()
+            };
+            read_member_stream(archive, header.size, |chunk| {
+                hasher.update(chunk);
+                if capture_config {
+                    captured.extend_from_slice(chunk);
+                }
+                Ok(())
+            })?;
+            if format!("sha256:{:x}", hasher.finalize()) != *digest {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+            if capture_config {
+                serde_json::from_slice::<serde_json::Value>(&captured)
+                    .map_err(|_| AcquisitionError::InvalidOciResult)?;
+            }
+            remaining.remove(digest);
+        } else {
+            read_member_stream(archive, header.size, |_| Ok(()))?;
+        }
+        seek_tar_padding(archive, header.size)?;
     }
-    Ok(manifest)
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(AcquisitionError::InvalidOciResult)
+    }
 }
 
 /// Archives one verified minimal layout in the fixed uncompressed OCI tar shape.
@@ -1556,7 +1745,7 @@ fn archive_registry_layout(
     staging_root: &Path,
     manifest_digest: &str,
     descriptor_sizes: &BTreeMap<String, u64>,
-) -> Result<Vec<u8>, AcquisitionError> {
+) -> Result<File, AcquisitionError> {
     let mut members = vec!["oci-layout".to_string(), "index.json".to_string()];
     members.push(format!("blobs/sha256/{}", digest_hex(manifest_digest)?));
     members.extend(
@@ -1565,44 +1754,79 @@ fn archive_registry_layout(
             .map(|digest| digest_hex(digest).map(|stem| format!("blobs/sha256/{stem}")))
             .collect::<Result<Vec<_>, _>>()?,
     );
-    let mut archive = Vec::new();
+    let archive_path = staging_root.join("result.oci.tar");
+    let mut archive = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&archive_path)?;
+    let mut archive_size = 0_u64;
     for member in members {
-        let contents = fs::read(staging_root.join(&member))?;
-        append_tar_member(&mut archive, &member, &contents)?;
-        if archive.len() as u64 > IMAGE_STORE_MAX_BYTES {
-            return Err(AcquisitionError::InvalidOciResult);
-        }
+        append_tar_file(
+            &mut archive,
+            &staging_root.join(&member),
+            &member,
+            &mut archive_size,
+        )?;
     }
-    archive.extend_from_slice(&[0_u8; 1024]);
+    archive_size = archive_size
+        .checked_add(1024)
+        .filter(|size| *size <= IMAGE_ARCHIVE_MAX_BYTES)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    archive.write_all(&[0_u8; 1024])?;
+    archive.sync_all()?;
+    sync_dir(staging_root)?;
+    archive.seek(SeekFrom::Start(0))?;
+    debug_assert_eq!(archive.metadata()?.len(), archive_size);
     Ok(archive)
 }
 
-/// Appends one regular ustar member with deterministic metadata.
-fn append_tar_member(
-    archive: &mut Vec<u8>,
+#[cfg(test)]
+fn archived_layout_digest(
+    staging_root: &Path,
+    manifest_digest: &str,
+    descriptor_sizes: &BTreeMap<String, u64>,
+) -> Result<String, AcquisitionError> {
+    let mut archive = archive_registry_layout(staging_root, manifest_digest, descriptor_sizes)?;
+    fs::remove_file(staging_root.join("result.oci.tar"))?;
+    verify_oci_archive(&mut archive, None).map(|verified| verified.digest)
+}
+
+/// Appends one regular file to a deterministic ustar archive in bounded chunks.
+fn append_tar_file(
+    archive: &mut File,
+    source_path: &Path,
     name: &str,
-    contents: &[u8],
+    archive_size: &mut u64,
 ) -> Result<(), AcquisitionError> {
     if !name.is_ascii() || name.len() > 100 {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let required = 512_u64
-        .checked_add(contents.len() as u64)
-        .and_then(|size| size.checked_add((512 - contents.len() as u64 % 512) % 512))
-        .ok_or(AcquisitionError::InvalidOciResult)?;
-    if (archive.len() as u64)
-        .checked_add(required)
-        .filter(|size| *size <= IMAGE_STORE_MAX_BYTES)
-        .is_none()
-    {
+    let mut source = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(source_path)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() {
         return Err(AcquisitionError::InvalidOciResult);
     }
+    let contents_len = metadata.len();
+    let required = 512_u64
+        .checked_add(contents_len)
+        .and_then(|size| size.checked_add((512 - contents_len % 512) % 512))
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    *archive_size = archive_size
+        .checked_add(required)
+        .filter(|size| *size <= IMAGE_ARCHIVE_MAX_BYTES)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
     let mut header = [0_u8; 512];
     header[..name.len()].copy_from_slice(name.as_bytes());
     write_tar_octal(&mut header[100..108], 0o600)?;
     write_tar_octal(&mut header[108..116], 0)?;
     write_tar_octal(&mut header[116..124], 0)?;
-    write_tar_octal(&mut header[124..136], contents.len() as u64)?;
+    write_tar_octal(&mut header[124..136], contents_len)?;
     write_tar_octal(&mut header[136..148], 0)?;
     header[148..156].fill(b' ');
     header[156] = b'0';
@@ -1614,9 +1838,13 @@ fn append_tar_member(
         return Err(AcquisitionError::InvalidOciResult);
     }
     header[148..156].copy_from_slice(checksum.as_bytes());
-    archive.extend_from_slice(&header);
-    archive.extend_from_slice(contents);
-    archive.resize(archive.len() + ((512 - contents.len() % 512) % 512), 0);
+    archive.write_all(&header)?;
+    let copied = copy_reader(&mut source, archive, contents_len)?;
+    if copied != contents_len {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let padding = ((512 - contents_len % 512) % 512) as usize;
+    archive.write_all(&[0_u8; 512][..padding])?;
     Ok(())
 }
 
@@ -1630,42 +1858,167 @@ fn write_tar_octal(field: &mut [u8], value: u64) -> Result<(), AcquisitionError>
     Ok(())
 }
 
-/// Reads one regular-file member from an uncompressed POSIX tar archive.
-fn tar_member<R: Read>(file: &mut R, wanted: &str) -> Result<Option<Vec<u8>>, AcquisitionError> {
-    loop {
-        let mut header = [0_u8; 512];
-        match file.read_exact(&mut header) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(error) => return Err(error.into()),
-        }
-        if header.iter().all(|byte| *byte == 0) {
-            return Ok(None);
-        }
-        let name = tar_text(&header[0..100])?;
-        let prefix = tar_text(&header[345..500])?;
-        let name = if prefix.is_empty() {
-            name
+struct TarHeader {
+    name: String,
+    size: u64,
+    regular: bool,
+}
+
+/// Reads one bounded regular member while seeking past all unrelated payloads.
+fn read_bounded_tar_member<R: Read + Seek>(
+    archive: &mut R,
+    wanted: &str,
+    limit: usize,
+) -> Result<Option<Vec<u8>>, AcquisitionError> {
+    archive.seek(SeekFrom::Start(0))?;
+    let mut found = None;
+    while let Some(header) = next_tar_header(archive)? {
+        if header.name == wanted {
+            if found.is_some() || !header.regular || header.size > limit as u64 {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+            let capacity =
+                usize::try_from(header.size).map_err(|_| AcquisitionError::InvalidOciResult)?;
+            let mut contents = Vec::with_capacity(capacity);
+            read_member_stream(archive, header.size, |chunk| {
+                contents.extend_from_slice(chunk);
+                Ok(())
+            })?;
+            found = Some(contents);
         } else {
-            format!("{prefix}/{name}")
-        };
-        let size_text = tar_text(&header[124..136])?;
-        let size = u64::from_str_radix(size_text.trim(), 8)
-            .map_err(|_| AcquisitionError::InvalidOciResult)?;
-        if size > BUILD_MAX_OUTPUT_BYTES {
+            read_member_stream(archive, header.size, |_| Ok(()))?;
+        }
+        seek_tar_padding(archive, header.size)?;
+    }
+    Ok(found)
+}
+
+/// Parses one validated ustar header and leaves the reader at member data.
+fn next_tar_header<R: Read>(archive: &mut R) -> Result<Option<TarHeader>, AcquisitionError> {
+    let mut header = [0_u8; 512];
+    let first = archive.read(&mut header[..1])?;
+    if first == 0 {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    read_archive_exact(archive, &mut header[1..])?;
+    if header.iter().all(|byte| *byte == 0) {
+        let mut second = [0_u8; 512];
+        read_archive_exact(archive, &mut second)?;
+        if second.iter().any(|byte| *byte != 0) {
             return Err(AcquisitionError::InvalidOciResult);
         }
-        let mut contents = vec![0_u8; size as usize];
-        file.read_exact(&mut contents)?;
-        let padding = (512 - size % 512) % 512;
-        if padding > 0 {
-            let mut discard = vec![0_u8; padding as usize];
-            file.read_exact(&mut discard)?;
+        let mut trailing = [0_u8; ARCHIVE_CHUNK_BYTES];
+        loop {
+            let read = archive.read(&mut trailing)?;
+            if read == 0 {
+                break;
+            }
+            if trailing[..read].iter().any(|byte| *byte != 0) {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
         }
-        if name == wanted {
-            return Ok(Some(contents));
-        }
+        return Ok(None);
     }
+    let stored_checksum = tar_octal(&header[148..156])?;
+    let mut checksum_header = header;
+    checksum_header[148..156].fill(b' ');
+    let actual_checksum: u64 = checksum_header.iter().map(|byte| u64::from(*byte)).sum();
+    if stored_checksum != actual_checksum {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let name = tar_text(&header[0..100])?;
+    let prefix = tar_text(&header[345..500])?;
+    let name = if prefix.is_empty() {
+        name
+    } else {
+        format!("{prefix}/{name}")
+    };
+    if name.is_empty()
+        || Path::new(&name).is_absolute()
+        || Path::new(&name)
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let size = tar_octal(&header[124..136])?;
+    if size > IMAGE_ARCHIVE_MAX_BYTES {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let regular = matches!(header[156], 0 | b'0');
+    if !regular && header[156] != b'5' {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    Ok(Some(TarHeader {
+        name,
+        size,
+        regular,
+    }))
+}
+
+fn tar_octal(bytes: &[u8]) -> Result<u64, AcquisitionError> {
+    let value = tar_text(bytes)?;
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    u64::from_str_radix(value, 8).map_err(|_| AcquisitionError::InvalidOciResult)
+}
+
+fn read_member_stream<R: Read>(
+    reader: &mut R,
+    size: u64,
+    mut consume: impl FnMut(&[u8]) -> Result<(), AcquisitionError>,
+) -> Result<(), AcquisitionError> {
+    let mut remaining = size;
+    let mut buffer = [0_u8; ARCHIVE_CHUNK_BYTES];
+    while remaining > 0 {
+        let chunk = usize::try_from(remaining.min(ARCHIVE_CHUNK_BYTES as u64))
+            .map_err(|_| AcquisitionError::InvalidOciResult)?;
+        read_archive_exact(reader, &mut buffer[..chunk])?;
+        consume(&buffer[..chunk])?;
+        remaining -= chunk as u64;
+    }
+    Ok(())
+}
+
+fn read_archive_exact<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<(), AcquisitionError> {
+    reader.read_exact(buffer).map_err(|error| {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            AcquisitionError::InvalidOciResult
+        } else {
+            AcquisitionError::Io
+        }
+    })
+}
+
+fn seek_tar_padding<R: Read>(reader: &mut R, size: u64) -> Result<(), AcquisitionError> {
+    let padding = (512 - size % 512) % 512;
+    read_member_stream(reader, padding, |_| Ok(()))
+}
+
+fn copy_reader<R: Read, W: Write>(
+    source: &mut R,
+    destination: &mut W,
+    size: u64,
+) -> Result<u64, AcquisitionError> {
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; ARCHIVE_CHUNK_BYTES];
+    while copied < size {
+        let chunk = usize::try_from((size - copied).min(ARCHIVE_CHUNK_BYTES as u64))
+            .map_err(|_| AcquisitionError::InvalidOciResult)?;
+        let read = source.read(&mut buffer[..chunk])?;
+        if read == 0 {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        destination.write_all(&buffer[..read])?;
+        copied += read as u64;
+    }
+    let mut extra = [0_u8; 1];
+    if source.read(&mut extra)? != 0 {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    Ok(copied)
 }
 
 /// Parses a NUL-terminated UTF-8 tar header field.
@@ -1675,6 +2028,106 @@ fn tar_text(bytes: &[u8]) -> Result<String, AcquisitionError> {
         .position(|byte| *byte == 0)
         .unwrap_or(bytes.len());
     String::from_utf8(bytes[..end].to_vec()).map_err(|_| AcquisitionError::InvalidOciResult)
+}
+
+fn sync_dir(path: &Path) -> Result<(), AcquisitionError> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?
+        .sync_all()?;
+    Ok(())
+}
+
+fn read_bounded_regular_utf8(path: &Path, limit: usize) -> Result<String, AcquisitionError> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit as u64 {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let capacity =
+        usize::try_from(metadata.len()).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let mut bytes = Vec::with_capacity(capacity);
+    Read::by_ref(&mut file)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() != capacity {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    String::from_utf8(bytes).map_err(|_| AcquisitionError::InvalidOciResult)
+}
+
+/// Produces one compact OCI archive for cross-module store tests.
+#[cfg(test)]
+pub(crate) fn test_oci_archive(payload: &[u8]) -> Vec<u8> {
+    let config = format!(
+        "{{\"architecture\":\"arm64\",\"os\":\"linux\",\"label\":\"{:x}\"}}",
+        Sha256::digest(payload)
+    );
+    let layer = if payload.is_empty() {
+        b"layer".as_slice()
+    } else {
+        payload
+    };
+    let config_digest = format!("sha256:{:x}", Sha256::digest(config.as_bytes()));
+    let layer_digest = format!("sha256:{:x}", Sha256::digest(layer));
+    let manifest = format!(
+        "{{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\"{config_digest}\",\"size\":{}}},\"layers\":[{{\"mediaType\":\"application/vnd.oci.image.layer.v1.tar\",\"digest\":\"{layer_digest}\",\"size\":{}}}]}}",
+        config.len(),
+        layer.len(),
+    );
+    let manifest_digest = format!("sha256:{:x}", Sha256::digest(manifest.as_bytes()));
+    let index = format!(
+        "{{\"schemaVersion\":2,\"manifests\":[{{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"{manifest_digest}\",\"size\":{}}}]}}",
+        manifest.len(),
+    );
+    let mut archive = Vec::new();
+    append_test_tar_member(
+        &mut archive,
+        "oci-layout",
+        b"{\"imageLayoutVersion\":\"1.0.0\"}\n",
+    );
+    append_test_tar_member(&mut archive, "index.json", index.as_bytes());
+    append_test_tar_member(
+        &mut archive,
+        &format!("blobs/sha256/{}", digest_hex(&manifest_digest).unwrap()),
+        manifest.as_bytes(),
+    );
+    append_test_tar_member(
+        &mut archive,
+        &format!("blobs/sha256/{}", digest_hex(&config_digest).unwrap()),
+        config.as_bytes(),
+    );
+    append_test_tar_member(
+        &mut archive,
+        &format!("blobs/sha256/{}", digest_hex(&layer_digest).unwrap()),
+        layer,
+    );
+    archive.extend_from_slice(&[0_u8; 1024]);
+    archive
+}
+
+#[cfg(test)]
+fn append_test_tar_member(archive: &mut Vec<u8>, name: &str, contents: &[u8]) {
+    let mut header = [0_u8; 512];
+    header[..name.len()].copy_from_slice(name.as_bytes());
+    write_tar_octal(&mut header[100..108], 0o600).unwrap();
+    write_tar_octal(&mut header[108..116], 0).unwrap();
+    write_tar_octal(&mut header[116..124], 0).unwrap();
+    write_tar_octal(&mut header[124..136], contents.len() as u64).unwrap();
+    write_tar_octal(&mut header[136..148], 0).unwrap();
+    header[148..156].fill(b' ');
+    header[156] = b'0';
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    let checksum = header.iter().map(|byte| u64::from(*byte)).sum::<u64>();
+    header[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+    archive.extend_from_slice(&header);
+    archive.extend_from_slice(contents);
+    archive.resize(archive.len() + ((512 - contents.len() % 512) % 512), 0);
 }
 
 /// Extracts one JSON string field from trusted-size generated OCI JSON.
@@ -1699,7 +2152,7 @@ mod tests {
     use super::{
         AcquisitionError, AcquisitionTrigger, BUILD_MAX_OUTPUT_BYTES, BUILD_MAX_TIME,
         BuildCapabilities, BuildDefinition, BuildPlan, ImageEffectEvidence, ImageEffectRequest,
-        RegistryAcquisition, archive_registry_layout, oci_manifest_digest, stage_registry_layout,
+        RegistryAcquisition, archived_layout_digest, stage_registry_layout,
     };
 
     static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -1948,10 +2401,8 @@ mod tests {
                 (config_digest.clone(), config.len() as u64),
                 (layer_digest.clone(), layer.len() as u64),
             ]);
-            let archive = archive_registry_layout(&layout, &manifest_digest, &descriptor_sizes)
-                .expect("archive generated OCI layout");
             assert_eq!(
-                oci_manifest_digest(&archive),
+                archived_layout_digest(&layout, &manifest_digest, &descriptor_sizes),
                 Ok(manifest_digest.clone()),
                 "archive verifier did not select manifests[0].digest"
             );
@@ -1967,11 +2418,8 @@ mod tests {
                 );
                 fs::write(layout.join("index.json"), &standard_index)
                     .expect("replace stock Buildx OCI index fixture");
-                let standard_archive =
-                    archive_registry_layout(&layout, &manifest_digest, &descriptor_sizes)
-                        .expect("archive stock Buildx OCI index fixture");
                 assert_eq!(
-                    oci_manifest_digest(&standard_archive),
+                    archived_layout_digest(&layout, &manifest_digest, &descriptor_sizes),
                     Ok(manifest_digest.clone()),
                     "archive verifier rejected standard OCI index fields"
                 );
@@ -2016,11 +2464,8 @@ mod tests {
                 ] {
                     fs::write(layout.join("index.json"), invalid_index)
                         .expect("replace invalid OCI index fixture");
-                    let invalid_archive =
-                        archive_registry_layout(&layout, &manifest_digest, &descriptor_sizes)
-                            .expect("archive invalid-index fixture");
                     assert_eq!(
-                        oci_manifest_digest(&invalid_archive),
+                        archived_layout_digest(&layout, &manifest_digest, &descriptor_sizes),
                         Err(AcquisitionError::InvalidOciResult)
                     );
                 }
@@ -2032,11 +2477,8 @@ mod tests {
                     b"mismatched manifest blob",
                 )
                 .expect("replace mismatched manifest blob fixture");
-                let mismatched_blob_archive =
-                    archive_registry_layout(&layout, &manifest_digest, &descriptor_sizes)
-                        .expect("archive mismatched manifest blob fixture");
                 assert_eq!(
-                    oci_manifest_digest(&mismatched_blob_archive),
+                    archived_layout_digest(&layout, &manifest_digest, &descriptor_sizes),
                     Err(AcquisitionError::InvalidOciResult)
                 );
             }
@@ -2549,6 +2991,14 @@ mod tests {
 
     #[test]
     fn wp5_image_effect_accepts_only_exact_reference_or_build_lineage_and_digest_evidence() {
+        assert!(
+            ImageEffectRequest::reference(
+                "request-local-digest",
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .validate()
+            .is_ok()
+        );
         let reference = ImageEffectRequest::reference(
             "request-reference",
             "ghcr.io/openkit/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2599,5 +3049,100 @@ mod tests {
                 "missing image effect owner {owner}"
             );
         }
+    }
+
+    #[test]
+    fn oci_verifier_streams_a_layer_larger_than_document_buffers() {
+        let layer = vec![0x5a; super::OCI_DOCUMENT_MAX_BYTES + 65_537];
+        let archive = super::test_oci_archive(&layer);
+        assert!(super::oci_manifest_digest(&archive).is_ok());
+        let production = include_str!("image_acquisition.rs")
+            .split_once("#[cfg(test)]")
+            .expect("production source")
+            .0;
+        assert!(production.contains("ARCHIVE_CHUNK_BYTES: usize = 64 * 1024"));
+        assert!(!production.contains("vec![0_u8; size as usize]"));
+    }
+
+    #[test]
+    fn oci_verifier_rejects_non_regular_required_blobs_and_truncated_skips() {
+        let layer = b"required-layer";
+        let layer_digest = format!("sha256:{:x}", Sha256::digest(layer));
+        let layer_name = format!(
+            "blobs/sha256/{}",
+            layer_digest.strip_prefix("sha256:").unwrap()
+        );
+        let mut non_regular = super::test_oci_archive(layer);
+        let header = tar_header_offset(&non_regular, &layer_name);
+        non_regular[header + 156] = b'5';
+        non_regular[header + 148..header + 156].fill(b' ');
+        let checksum = non_regular[header..header + 512]
+            .iter()
+            .map(|byte| u64::from(*byte))
+            .sum::<u64>();
+        non_regular[header + 148..header + 156]
+            .copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+        assert_eq!(
+            super::oci_manifest_digest(&non_regular),
+            Err(AcquisitionError::InvalidOciResult)
+        );
+
+        let mut truncated = super::test_oci_archive(layer);
+        truncated.truncate(truncated.len() - 1024);
+        let mut extra = Vec::new();
+        super::append_test_tar_member(&mut extra, "unreferenced", b"0123456789");
+        truncated.extend_from_slice(&extra[..513]);
+        assert!(super::oci_manifest_digest(&truncated).is_err());
+    }
+
+    #[test]
+    fn registry_manifest_collector_refuses_growth_above_document_bound() {
+        let mut manifest = Vec::with_capacity(super::OCI_DOCUMENT_MAX_BYTES);
+        super::extend_manifest_bounded(&mut manifest, &vec![0x61; super::OCI_DOCUMENT_MAX_BYTES])
+            .expect("exact document ceiling");
+        assert_eq!(manifest.len(), super::OCI_DOCUMENT_MAX_BYTES);
+        assert_eq!(
+            super::extend_manifest_bounded(&mut manifest, b"x"),
+            Err(AcquisitionError::InvalidOciResult)
+        );
+        assert_eq!(manifest.len(), super::OCI_DOCUMENT_MAX_BYTES);
+        let production = include_str!("image_acquisition.rs")
+            .split_once("#[cfg(test)]")
+            .expect("production source")
+            .0;
+        assert!(!production.contains("pull_manifest_raw"));
+        assert!(production.contains("redirect(reqwest::redirect::Policy::none())"));
+        assert!(production.contains("Vec::with_capacity(OCI_DOCUMENT_MAX_BYTES)"));
+    }
+
+    fn tar_header_offset(archive: &[u8], wanted: &str) -> usize {
+        let mut offset = 0_usize;
+        while offset + 512 <= archive.len() {
+            let header = &archive[offset..offset + 512];
+            if header.iter().all(|byte| *byte == 0) {
+                break;
+            }
+            let name_end = header[..100]
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(100);
+            let name = std::str::from_utf8(&header[..name_end]).unwrap();
+            if name == wanted {
+                return offset;
+            }
+            let size_end = header[124..136]
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(12);
+            let size = u64::from_str_radix(
+                std::str::from_utf8(&header[124..124 + size_end])
+                    .unwrap()
+                    .trim(),
+                8,
+            )
+            .unwrap() as usize;
+            offset += 512 + size + (512 - size % 512) % 512;
+        }
+        panic!("missing tar member {wanted}");
     }
 }

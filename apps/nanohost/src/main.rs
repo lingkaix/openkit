@@ -10,6 +10,7 @@ mod epoch_coordinator;
 mod epoch_evidence;
 mod image_acquisition;
 mod image_store;
+mod image_store_cli;
 mod nanocore_session;
 mod openshell_client;
 mod openshell_release;
@@ -74,33 +75,6 @@ fn successor_connect_remaining(started_at: Option<Instant>) -> Option<Duration> 
     started_at.map(|started_at| OUTER_SESSION_RECONNECT_BOUND.saturating_sub(started_at.elapsed()))
 }
 
-/// Parses the required deployment image digests from one fixed environment value.
-///
-/// # Errors
-///
-/// Returns an error unless the value contains one to four unique canonical
-/// lowercase SHA-256 digests separated only by commas.
-fn parse_required_deployment_image_digests(
-    value: Option<&str>,
-) -> Result<BTreeSet<String>, &'static str> {
-    let value = value
-        .filter(|value| !value.is_empty())
-        .ok_or("nanohost required deployment images missing")?;
-    let mut digests = BTreeSet::new();
-    for digest in value.split(',') {
-        let valid = digest.strip_prefix("sha256:").is_some_and(|hash| {
-            hash.len() == 64
-                && hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-        });
-        if !valid || !digests.insert(digest.to_string()) || digests.len() > 4 {
-            return Err("nanohost required deployment images invalid");
-        }
-    }
-    Ok(digests)
-}
-
 /// Parses and validates the sole `/etc/openkit/nanohost.env` projection.
 ///
 /// # Errors
@@ -111,7 +85,7 @@ fn parse_required_deployment_image_digests(
 fn parse_nanohost_session_inputs(
     environment: &BTreeMap<String, String>,
 ) -> Result<NanoHostSessionInputs, &'static str> {
-    const REQUIRED_KEYS: [&str; 8] = [
+    const REQUIRED_KEYS: [&str; 7] = [
         "OPENKIT_NANOHOST_IDENTITY_ID",
         "OPENKIT_NANOHOST_DEPLOYMENT_ID",
         "OPENKIT_NANOHOST_NANOCORE_RENDEZVOUS_URL",
@@ -119,7 +93,6 @@ fn parse_nanohost_session_inputs(
         "OPENKIT_NANOHOST_TOKEN_SLOT_A_COMPANION_FILE",
         "OPENKIT_NANOHOST_TOKEN_SLOT_B_SECRET_FILE",
         "OPENKIT_NANOHOST_TOKEN_SLOT_B_COMPANION_FILE",
-        "OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS",
     ];
     const OPTIONAL_CA_KEY: &str = "OPENKIT_NANOHOST_NANOCORE_CA_FILE";
     for key in environment
@@ -160,11 +133,6 @@ fn parse_nanohost_session_inputs(
     {
         return Err("nanohost credential slot references invalid");
     }
-    parse_required_deployment_image_digests(
-        environment
-            .get("OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS")
-            .map(String::as_str),
-    )?;
     let trust = match environment.get(OPTIONAL_CA_KEY) {
         None => TlsTrustMaterial::Platform,
         Some(reference) if Path::new(reference).is_absolute() && !reference.is_empty() => {
@@ -950,11 +918,6 @@ fn execute_effect_command(
 async fn run() -> Result<(), NanoHostRunFailure> {
     let environment = std::env::vars().collect::<BTreeMap<_, _>>();
     let session_inputs = parse_nanohost_session_inputs(&environment)?;
-    let required_deployment = parse_required_deployment_image_digests(
-        environment
-            .get("OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS")
-            .map(String::as_str),
-    )?;
     if configured_backend("docker") != Ok(RuntimeBackend::Docker) {
         return Err("nanohost runtime backend rejected".into());
     }
@@ -996,23 +959,17 @@ async fn run() -> Result<(), NanoHostRunFailure> {
             Path::new("/run/openkit/nanohost"),
         )
         .map_err(|_| "nanohost prior-epoch cleanup failed")?;
-    let mut image_store = Some(
-        match ImageStore::open(
-            PathBuf::from("/var/lib/openkit/nanohost-images"),
-            PathBuf::from("/var/lib/openkit/nanohost"),
-            &[PathBuf::from("/var/lib/openkit/nanohost-credentials")],
-        ) {
-            Ok(image_store) => image_store,
-            Err(_) => {
-                let _ = evidence.export_invalidation(
-                    EpochInvalidationTrigger::EpochCreationFailure,
-                    &[("fence", "not-started")],
-                    Instant::now(),
-                );
-                return Err("nanohost image store unavailable".into());
-            }
-        },
-    );
+    let mut image_store = Some(match ImageStore::open_fixed() {
+        Ok(image_store) => image_store,
+        Err(_) => {
+            let _ = evidence.export_invalidation(
+                EpochInvalidationTrigger::EpochCreationFailure,
+                &[("fence", "not-started")],
+                Instant::now(),
+            );
+            return Err("nanohost image store unavailable".into());
+        }
+    });
     let plan = match EpochPlan::fresh(
         Path::new("/var/lib/openkit/nanohost"),
         Path::new("/run/openkit/nanohost"),
@@ -1029,10 +986,7 @@ async fn run() -> Result<(), NanoHostRunFailure> {
             return Err("nanohost epoch planning failed".into());
         }
     };
-    let mut image_backend = Some(DockerImageBackend::new(
-        plan.docker_socket().to_path_buf(),
-        plan.run_root().join("image-import"),
-    ));
+    let mut image_backend = Some(DockerImageBackend::new(plan.docker_socket().to_path_buf()));
     let mut persistent_volume_store =
         PersistentVolumeStore::open(plan.docker_socket().to_path_buf())
             .map_err(|_| "nanohost persistent volume store unavailable")?;
@@ -1051,7 +1005,6 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         client,
         evidence,
         &mut image_store,
-        &required_deployment,
         &mut image_backend,
         &mut persistent_volumes,
     )
@@ -1449,17 +1402,36 @@ async fn run() -> Result<(), NanoHostRunFailure> {
     }
 }
 
-/// Reports the binary version or starts the fixed NanoHost V1 Runtime Epoch.
+/// Maps one closed local image administration failure to bounded stderr text.
+fn image_store_cli_error_message(error: image_store_cli::ImageStoreCliError) -> &'static str {
+    match error {
+        image_store_cli::ImageStoreCliError::Store(image_store::StoreError::Busy) => {
+            "nanohost image store busy"
+        }
+        image_store_cli::ImageStoreCliError::Usage
+        | image_store_cli::ImageStoreCliError::Store(_) => "nanohost image command failed",
+    }
+}
+
+/// Reports the version, executes local image administration, or starts the Runtime Epoch.
 fn main() {
-    let mut args = std::env::args();
-    let _program = args.next();
-    let argument = args.next();
-    let extra = args.next();
-    if argument.as_deref() == Some("--version") && extra.is_none() {
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).map(String::as_str) == Some("--version") && args.len() == 2 {
         println!(env!("CARGO_PKG_VERSION"));
         return;
     }
-    if argument.is_some() {
+    match image_store_cli::dispatch(&args[1..]) {
+        Ok(image_store_cli::ImageStoreCliOutcome::Completed(output)) => {
+            println!("{output}");
+            return;
+        }
+        Ok(image_store_cli::ImageStoreCliOutcome::NotHandled) => {}
+        Err(error) => {
+            eprintln!("{}", image_store_cli_error_message(error));
+            std::process::exit(1);
+        }
+    }
+    if args.len() != 1 {
         eprintln!("nanohost arguments invalid");
         std::process::exit(1);
     }
@@ -1484,9 +1456,9 @@ mod tests {
 
     use super::{
         OUTER_SESSION_RECONNECT_BOUND, OUTER_SESSION_RECONNECT_DELAY,
-        parse_nanohost_session_inputs, parse_required_deployment_image_digests,
-        parse_sandbox_environment, parse_sandbox_policy, parse_storage_attachment,
-        storage_targets_allowed, successor_connect_remaining,
+        image_store_cli_error_message, parse_nanohost_session_inputs, parse_sandbox_environment,
+        parse_sandbox_policy, parse_storage_attachment, storage_targets_allowed,
+        successor_connect_remaining,
     };
     use crate::epoch_coordinator::{RuntimeBackend, configured_backend};
     use crate::nanocore_session::{OuterSessionFailure, OuterSessionOperation, OuterSessionStage};
@@ -1594,10 +1566,6 @@ mod tests {
                 "OPENKIT_NANOHOST_TOKEN_SLOT_B_COMPANION_FILE",
                 "/etc/openkit/nanohost-token-b.json",
             ),
-            (
-                "OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS",
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -1672,39 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn wp3c_wp5_required_images_precede_epoch_and_outer_session_activation() {
-        let digests = ['a', 'b', 'c', 'd', 'e']
-            .map(|value| format!("sha256:{}", value.to_string().repeat(64)));
-        assert_eq!(
-            parse_required_deployment_image_digests(Some(&digests[0])),
-            Ok([digests[0].clone()].into())
-        );
-        let four = digests[..4].join(",");
-        assert_eq!(
-            parse_required_deployment_image_digests(Some(&four)),
-            Ok(digests[..4].iter().cloned().collect())
-        );
-
-        let uppercase = format!("sha256:{}", "A".repeat(64));
-        let bare = "a".repeat(64);
-        let spaced = format!("{}, {}", digests[0], digests[1]);
-        let duplicate = format!("{},{}", digests[0], digests[0]);
-        let five = digests.join(",");
-        for rejected in [
-            None,
-            Some(""),
-            Some(uppercase.as_str()),
-            Some(bare.as_str()),
-            Some(spaced.as_str()),
-            Some(duplicate.as_str()),
-            Some(five.as_str()),
-        ] {
-            assert!(
-                parse_required_deployment_image_digests(rejected).is_err(),
-                "accepted invalid required-image input {rejected:?}"
-            );
-        }
-
+    fn empty_image_store_configuration_precedes_epoch_and_outer_session_activation() {
         let valid_environment = valid_nanohost_environment();
         assert!(parse_nanohost_session_inputs(&valid_environment).is_ok());
         for required in [
@@ -1715,7 +1651,6 @@ mod tests {
             "OPENKIT_NANOHOST_TOKEN_SLOT_A_COMPANION_FILE",
             "OPENKIT_NANOHOST_TOKEN_SLOT_B_SECRET_FILE",
             "OPENKIT_NANOHOST_TOKEN_SLOT_B_COMPANION_FILE",
-            "OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS",
         ] {
             let mut missing = valid_environment.clone();
             missing.remove(required);
@@ -1757,6 +1692,12 @@ mod tests {
             "okt_forbidden_environment_material".to_string(),
         );
         assert!(parse_nanohost_session_inputs(&raw_token).is_err());
+        let mut retired_required_images = valid_environment.clone();
+        retired_required_images.insert(
+            "OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS".to_string(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        assert!(parse_nanohost_session_inputs(&retired_required_images).is_err());
 
         let production = include_str!("main.rs")
             .split("#[cfg(test)]")
@@ -1772,11 +1713,10 @@ mod tests {
         let binding_start = run
             .find("parse_nanohost_session_inputs(")
             .expect("bounded NanoHost session-input parsing");
-        let required_binding = run[binding_start..]
-            .split_once(';')
-            .expect("complete required deployment binding")
-            .0;
-        let binding_end = binding_start + required_binding.len() + 1;
+        let binding_end = run[binding_start..]
+            .find(';')
+            .map(|offset| binding_start + offset + 1)
+            .expect("complete session input binding");
         let evidence = run
             .find("EpochEvidenceWriter::new")
             .expect("private evidence writer");
@@ -1801,17 +1741,11 @@ mod tests {
         ] {
             assert!(
                 binding_end < first_effect,
-                "required deployment parsing occurs after {owner}"
+                "session parsing occurs after {owner}"
             );
         }
-        assert!(!run[..start].contains("let required_deployment = BTreeSet::new()"));
-        assert!(
-            run[start..]
-                .split_once(".map_err")
-                .expect("bounded Runtime Epoch start")
-                .0
-                .contains("&required_deployment")
-        );
+        assert!(!run.contains("required_deployment"));
+        assert!(!production.contains("OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS"));
         assert!(start < session_activation);
 
         let (session_call, after_session_call) = run[session_activation..]
@@ -2226,7 +2160,7 @@ mod tests {
     }
 
     #[test]
-    fn wp3b_readiness_composes_store_import_without_acquisition() {
+    fn readiness_accepts_an_empty_image_store_without_acquisition() {
         let main_source = include_str!("main.rs")
             .split("#[cfg(test)]")
             .next()
@@ -2235,13 +2169,6 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("coordinator production section");
-
-        for owner in ["ImageStore", "required_deployment", "DockerImageBackend"] {
-            assert!(
-                main_source.contains(owner),
-                "missing readiness owner {owner}"
-            );
-        }
         let run_source = main_source
             .split_once("fn run()")
             .expect("NanoHost run path")
@@ -2249,49 +2176,21 @@ mod tests {
             .split_once("fn main()")
             .expect("end of NanoHost run path")
             .0;
-        let store_open = run_source
-            .find("ImageStore::open")
-            .expect("Image Store open");
         let prior_epoch_cleanup = run_source
             .find("remove_prior_epoch_roots(")
             .expect("prior epoch cleanup");
-        let required_input = run_source
-            .find("let required_deployment =")
-            .expect("required deployment input");
+        let store_open = run_source
+            .find("ImageStore::open")
+            .expect("Image Store open");
         let backend = run_source
             .find("DockerImageBackend::new")
             .expect("private image backend");
         let start = run_source
             .find("EpochCoordinator::start(")
             .expect("Runtime Epoch start");
-        let required_binding = run_source[required_input..]
-            .split_once(';')
-            .expect("complete required deployment binding")
-            .0;
-        assert!(required_binding.contains("parse_required_deployment_image_digests("));
-        assert!(
-            required_input < prior_epoch_cleanup
-                && prior_epoch_cleanup < store_open
-                && store_open < backend
-                && backend < start
-        );
-        let start_call = run_source[start..]
-            .split_once(".map_err")
-            .expect("bounded Epoch start result")
-            .0;
-        for direct_owner in [
-            "&plan",
-            "client",
-            "&mut image_store",
-            "&required_deployment",
-            "&mut image_backend",
-        ] {
-            assert!(
-                start_call.contains(direct_owner),
-                "Epoch start does not receive {direct_owner} directly"
-            );
-        }
-        assert!(!run_source[start + start_call.len()..].contains("import_required_images("));
+        assert!(prior_epoch_cleanup < store_open && store_open < backend && backend < start);
+        assert!(!run_source.contains("required_images"));
+        assert!(!run_source.contains("required_deployment"));
 
         let startup = coordinator_source
             .split_once("pub fn start")
@@ -2306,9 +2205,6 @@ mod tests {
         let dockerd_ready = startup
             .find("docker_socket()")
             .expect("dockerd socket proof");
-        let required_import = startup
-            .find("import_required_images(")
-            .expect("required image import gate");
         let gateway_spawn = startup
             .find("plan.members()[3]")
             .expect("Gateway member spawn");
@@ -2317,29 +2213,10 @@ mod tests {
             .expect("typed Gateway health");
         assert!(
             containerd_ready < dockerd_ready
-                && dockerd_ready < required_import
-                && required_import < gateway_spawn
+                && dockerd_ready < gateway_spawn
                 && gateway_spawn < typed_health
         );
-        let import_failure = &startup[required_import..gateway_spawn];
-        assert!(import_failure.contains("terminate_children(&mut children)"));
-        assert!(import_failure.contains("return Err(EpochFault::PartialStart)"));
-
-        let import_owner = coordinator_source
-            .split_once("pub fn import_required_images")
-            .expect("required import owner")
-            .1
-            .split_once("pub fn import_attempt_image")
-            .expect("end of required import owner")
-            .0;
-        let import_effect = import_owner
-            .find("import_verified")
-            .expect("bounded store import");
-        let post_inspect = import_owner
-            .find("inspect_digest")
-            .expect("post-import digest inspection");
-        assert!(import_effect < post_inspect);
-
+        assert!(!startup.contains("import_required_images("));
         for forbidden in [
             "acquire_registry",
             "acquire_build",
@@ -2364,6 +2241,9 @@ mod tests {
             .expect("binary process entry")
             .1;
         let ring_provider = "rustls::crypto::ring::default_provider()";
+        let image_cli = main_body
+            .find("image_store_cli::dispatch(&args[1..])")
+            .expect("local image administration entry");
 
         assert_eq!(main_body.matches(ring_provider).count(), 1);
         assert_eq!(main_body.matches("install_default()").count(), 1);
@@ -2375,8 +2255,31 @@ mod tests {
             .map(|offset| install + offset)
             .expect("provider installation Result must be required");
         let runtime_entry = main_body.find("run()").expect("runtime entry");
-        assert!(install <= require_success && require_success < runtime_entry);
+        assert!(
+            image_cli < install && install <= require_success && require_success < runtime_entry
+        );
         assert!(!main_body[..runtime_entry].contains("aws_lc_rs::default_provider"));
+    }
+
+    #[test]
+    fn local_image_cli_reports_busy_without_exposing_other_store_failures() {
+        use crate::image_store::StoreError;
+        use crate::image_store_cli::ImageStoreCliError;
+
+        assert_eq!(
+            image_store_cli_error_message(ImageStoreCliError::Store(StoreError::Busy)),
+            "nanohost image store busy"
+        );
+        for error in [
+            ImageStoreCliError::Usage,
+            ImageStoreCliError::Store(StoreError::Io),
+            ImageStoreCliError::Store(StoreError::Corrupt),
+        ] {
+            assert_eq!(
+                image_store_cli_error_message(error),
+                "nanohost image command failed"
+            );
+        }
     }
 }
 

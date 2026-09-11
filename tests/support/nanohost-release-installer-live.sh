@@ -288,11 +288,11 @@ test_live_completion_output() {
   run_case install ''
   expect_status 0 live-install
   expect_output '^installation=complete$' live-install
-  expect_output '^remaining=configuration,enrollment,deployment-images,service-start$' live-install
+  expect_output '^remaining=configuration,enrollment,service-start$' live-install
   run_case reinstall ''
   expect_status 0 live-reinstall
   expect_output '^installation=already-installed$' live-reinstall
-  expect_output '^remaining=configuration,enrollment,deployment-images,service-start$' live-reinstall
+  expect_output '^remaining=configuration,enrollment,service-start$' live-reinstall
 }
 
 test_partial_cleanup() {

@@ -55,6 +55,22 @@ If the Vault is locked, inspect its non-secret status and exact external-key ava
 
 Retain the exact failure and partial outcome. A fresh task may continue after recovery; no script or Agent may relabel the interrupted attempt as successful.
 
+### Maintain Local Worker Images
+
+Use these commands on the selected NanoHost only with authorized host administrator access. They operate on `/var/lib/openkit/nanohost-images` and do not read transport credentials, connect to NanoCore or start the service:
+
+```bash
+sudo /usr/lib/openkit/nanohost image list
+sudo /usr/lib/openkit/nanohost image capacity
+sudo /usr/lib/openkit/nanohost image import /absolute/path/worker.oci.tar sha256:<expected-manifest-digest>
+sudo /usr/lib/openkit/nanohost image capacity <positive-byte-count>
+sudo /usr/lib/openkit/nanohost image remove sha256:<exact-manifest-digest>
+```
+
+Replace placeholders with the reviewed archive, exact lowercase digest or positive integer byte count before execution. Import verifies the archive and does not fetch missing images or run its contents. The default capacity is 214748364800 bytes (200 GiB); changes take effect without a restart. Lowering it below usage keeps all stored images and running Workers but refuses further growth. Images are not automatically evicted. Listing includes incomplete entries and attributed temporary content so an interrupted import can be inspected and explicitly removed by exact digest. A busy store fails the current command; wait for the active transaction and make a fresh authorized request.
+
+Before removing an image, inspect affected Agent configurations through public operations. The local command cannot determine which NanoCore configurations reference it. Removal can block later admissions, and local-only content may not be recoverable without its source archive. It does not delete backend containers, retained Worker volumes or running processes. Never remove the whole store or restart NanoHost to resolve capacity pressure.
+
 ## Prepare And Reuse A Worker Environment
 
 Use the installed public `openkit` Skill to discover and describe Worker environment operations. If the installed server does not expose them, report the version prerequisite; do not substitute Docker commands against NanoHost's private runtime. These technical operations require the requesting user's current administrator authority and independent access to the Agent configuration and every affected Workspace and source audience. Ordinary Workspace membership and a user's willingness to continue do not grant administration authority.

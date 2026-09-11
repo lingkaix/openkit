@@ -261,7 +261,7 @@ printf 'destination=%s\n' "$disposition"
 [ "${1-}" != --check ] || exit 0
 [ "$disposition" != already-installed ] || {
   printf '%s\n' 'installation=already-installed'
-  printf '%s\n' 'remaining=configuration,enrollment,deployment-images,service-start'
+  printf '%s\n' 'remaining=configuration,enrollment,service-start'
   exit 0
 }
 
@@ -324,4 +324,4 @@ if [ "$(file_state "$UNIT_TEMP" "$UNIT_SOURCE" 644)" = exact ]; then rm -f -- "$
 install_complete=true
 trap - EXIT HUP INT TERM
 printf '%s\n' 'installation=complete'
-printf '%s\n' 'remaining=configuration,enrollment,deployment-images,service-start'
+printf '%s\n' 'remaining=configuration,enrollment,service-start'

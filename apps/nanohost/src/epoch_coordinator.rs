@@ -565,12 +565,6 @@ impl EpochFault {
     }
 }
 
-/// Returns whether capacity may be advertised after the required image proof.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn capacity_ready(image_import_proved: bool) -> bool {
-    image_import_proved
-}
-
 /// Preflights lifecycle effects against the exact retained single-Sandbox state.
 ///
 /// A fresh-empty epoch can prove an old bridge and Sandbox already absent without
@@ -617,7 +611,7 @@ fn preflight_lifecycle_result(
     Ok(None)
 }
 
-/// Hard bound for one required or mid-epoch image import.
+/// Hard bound for one attempt-local image import.
 pub const MID_EPOCH_IMPORT_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Attempt-local image import outcome.
@@ -636,8 +630,6 @@ pub enum AttemptImportOutcome {
 pub enum ImageImportError {
     /// Store content is missing, corrupt, or otherwise unusable.
     Store,
-    /// Local import staging failed before the Docker subprocess.
-    Backend,
     /// The exact-image presence probe could not execute.
     Probe,
     /// The bounded stock Docker image load failed.
@@ -646,8 +638,6 @@ pub enum ImageImportError {
     Inspect,
     /// Post-import inspection did not return the exact requested digest.
     DigestMismatch,
-    /// A mid-epoch request attempted to install a deployment digest.
-    DeploymentDigest,
 }
 
 impl From<StoreError> for ImageImportError {
@@ -666,7 +656,7 @@ pub trait ImageBackend {
     fn import_verified(
         &mut self,
         digest: &str,
-        content: &[u8],
+        content: File,
         timeout: Duration,
     ) -> Result<(), ImageImportError>;
 
@@ -677,16 +667,12 @@ pub trait ImageBackend {
 /// Direct Docker CLI projection bound to the epoch-private socket.
 pub struct DockerImageBackend {
     docker_socket: PathBuf,
-    staging_root: PathBuf,
 }
 
 impl DockerImageBackend {
-    /// Creates one direct backend projection with private staging.
-    pub fn new(docker_socket: PathBuf, staging_root: PathBuf) -> Self {
-        Self {
-            docker_socket,
-            staging_root,
-        }
+    /// Creates one direct backend projection for the epoch-private daemon.
+    pub fn new(docker_socket: PathBuf) -> Self {
+        Self { docker_socket }
     }
 
     /// Returns the exact epoch-private Docker socket used by image effects.
@@ -722,25 +708,18 @@ impl ImageBackend for DockerImageBackend {
     /// Loads an OCI archive into the private daemon within the hard bound.
     fn import_verified(
         &mut self,
-        digest: &str,
-        content: &[u8],
+        _digest: &str,
+        content: File,
         import_timeout: Duration,
     ) -> Result<(), ImageImportError> {
-        create_private_dir(&self.staging_root).map_err(|_| ImageImportError::Backend)?;
-        let stem = digest
-            .strip_prefix("sha256:")
-            .filter(|stem| stem.len() == 64)
-            .ok_or(ImageImportError::DigestMismatch)?;
-        let archive = self.staging_root.join(format!("{stem}.oci.tar"));
-        write_private_bytes(&archive, content).map_err(|_| ImageImportError::Backend)?;
         let child = self
             .command()
-            .args(["image", "load", "--input", &path_arg(&archive)])
-            .stdin(Stdio::null())
+            .args(["image", "load"])
+            .stdin(Stdio::from(content))
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn();
-        let result = child
+        child
             .map_err(|_| ImageImportError::Load)
             .and_then(|mut child| {
                 if wait_for_child_success(&mut child, import_timeout) {
@@ -748,10 +727,7 @@ impl ImageBackend for DockerImageBackend {
                 } else {
                     Err(ImageImportError::Load)
                 }
-            });
-        let _ = fs::remove_file(archive);
-        let _ = fs::remove_dir(&self.staging_root);
-        result
+            })
     }
 
     /// Re-verifies the installed content digest through the private daemon.
@@ -775,66 +751,40 @@ impl ImageBackend for DockerImageBackend {
     }
 }
 
-/// Imports every non-empty required deployment digest from the store only.
-pub fn import_required_images<B: ImageBackend>(
-    store: &mut ImageStore,
-    required: &BTreeSet<String>,
-    backend: &mut B,
-) -> bool {
-    if required.is_empty() {
-        return false;
-    }
-    for digest in required {
-        let content = match store.read_verified(digest) {
-            Ok(content) => content,
-            Err(_) => return false,
-        };
-        if backend
-            .import_verified(digest, &content, MID_EPOCH_IMPORT_TIMEOUT)
-            .is_err()
-            || backend.inspect_digest(digest).as_deref() != Ok(digest.as_str())
-        {
-            return false;
-        }
-        let imported_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs());
-        if store.mark_imported(digest, imported_at).is_err() {
-            return false;
-        }
-    }
-    true
-}
-
 /// Imports one already-authorized attempt digest without changing epoch identity.
 ///
 /// # Errors
 ///
-/// Returns an attempt-local failure for deployment digests, store failure,
-/// backend failure, timeout, or post-import mismatch.
+/// Returns an attempt-local failure for store failure, backend failure, timeout,
+/// or post-import mismatch.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn import_attempt_image<B: ImageBackend>(
-    store: &mut ImageStore,
+    store: &ImageStore,
     digest: &str,
-    required: &BTreeSet<String>,
     backend: &mut B,
 ) -> Result<AttemptImportOutcome, ImageImportError> {
-    if required.contains(digest) {
-        return Err(ImageImportError::DeploymentDigest);
-    }
+    let content = store.read_verified(digest)?;
     if backend.contains_digest(digest)? {
+        if backend.inspect_digest(digest)? != digest {
+            return Err(ImageImportError::DigestMismatch);
+        }
         return Ok(AttemptImportOutcome::AlreadyPresent);
     }
-    let content = store.read_verified(digest)?;
-    backend.import_verified(digest, &content, MID_EPOCH_IMPORT_TIMEOUT)?;
+    backend.import_verified(digest, content, MID_EPOCH_IMPORT_TIMEOUT)?;
     if backend.inspect_digest(digest)? != digest {
         return Err(ImageImportError::DigestMismatch);
     }
-    let imported_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    store.mark_imported(digest, imported_at)?;
     Ok(AttemptImportOutcome::Imported)
+}
+
+/// Returns whether an acquire reference is an exact local-only content digest.
+fn is_canonical_local_digest(reference: &str) -> bool {
+    reference.strip_prefix("sha256:").is_some_and(|hash| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
 }
 
 /// Owns all child processes in one fresh Runtime Epoch.
@@ -846,7 +796,6 @@ pub struct EpochCoordinator {
     image_store: ImageStore,
     image_backend: DockerImageBackend,
     persistent_volumes: PersistentVolumeStore,
-    required_images: BTreeSet<String>,
     run_root: PathBuf,
     bridge: Option<OpenSandboxBridge>,
     route_projection: OuterRouteProjection,
@@ -983,18 +932,17 @@ impl EpochCoordinator {
     /// # Errors
     ///
     /// Returns [`EpochFault::PartialStart`] after stopping every child already
-    /// started when setup, member start, or required-image import fails.
+    /// started when setup or member start fails.
     pub fn start(
         plan: &EpochPlan,
         mut client: NanoHostOpenShellClient,
         evidence: EpochEvidenceWriter,
         image_store: &mut Option<ImageStore>,
-        required_images: &BTreeSet<String>,
         image_backend: &mut Option<DockerImageBackend>,
         persistent_volumes: &mut Option<PersistentVolumeStore>,
     ) -> Result<Self, EpochFault> {
-        let mut image_store = image_store.take().ok_or(EpochFault::PartialStart)?;
-        let mut image_backend = image_backend.take().ok_or(EpochFault::PartialStart)?;
+        let image_store = image_store.take().ok_or(EpochFault::PartialStart)?;
+        let image_backend = image_backend.take().ok_or(EpochFault::PartialStart)?;
         let persistent_volumes = persistent_volumes.take().ok_or(EpochFault::PartialStart)?;
         let mut children = Vec::with_capacity(plan.members().len());
         let runtime = {
@@ -1108,12 +1056,6 @@ impl EpochCoordinator {
                 return Err(EpochFault::PartialStart);
             }
 
-            if !import_required_images(&mut image_store, required_images, &mut image_backend) {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
-                return Err(EpochFault::PartialStart);
-            }
-
             if spawn_member(
                 &mut children,
                 &plan.members()[3],
@@ -1188,7 +1130,6 @@ impl EpochCoordinator {
             image_store,
             image_backend,
             persistent_volumes,
-            required_images: required_images.clone(),
             run_root: plan.run_root().to_path_buf(),
             bridge: None,
             route_projection: OuterRouteProjection::new(),
@@ -1508,12 +1449,12 @@ impl EpochCoordinator {
         }
     }
 
-    /// Acquires, stores, and imports one exact fixed-registry attempt image.
+    /// Verifies and imports one retained digest or exact fixed-registry image.
     ///
     /// # Errors
     ///
-    /// Returns an attempt-local failure without widening the fixed registry set
-    /// or treating validation as successful acquisition evidence.
+    /// Returns an attempt-local failure without registry fallback for a local
+    /// digest or treating validation as successful acquisition evidence.
     pub fn acquire_image(
         &mut self,
         request_id: &str,
@@ -1521,37 +1462,33 @@ impl EpochCoordinator {
     ) -> Result<ImageEffectEvidence, &'static str> {
         let request = ImageEffectRequest::reference(request_id, reference);
         request.validate().map_err(|_| "image.acquire rejected")?;
-        let registries = BTreeSet::from(["docker.io".to_string(), "ghcr.io".to_string()]);
-        let acquisition = RegistryAcquisition::validate(
-            AcquisitionTrigger::AuthorizedAttempt,
-            reference,
-            &registries,
-        )
-        .map_err(|_| "image.acquire rejected")?;
-        let staging = self
-            .run_root
-            .join("acquisitions")
-            .join(format!("{:x}", Sha256::digest(request_id.as_bytes())));
         let acquired_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "image.acquire clock unavailable")?
             .as_secs();
-        let digest = tokio::task::block_in_place(|| {
-            self.runtime.block_on(acquisition.acquire(
-                &staging,
-                &mut self.image_store,
-                &self.required_images,
-                acquired_at,
-            ))
-        })
-        .map_err(|_| "image.acquire failed")?;
-        import_attempt_image(
-            &mut self.image_store,
-            &digest,
-            &self.required_images,
-            &mut self.image_backend,
-        )
-        .map_err(|_| "image.acquire import failed")?;
+        let local_digest = is_canonical_local_digest(reference);
+        let digest = if local_digest {
+            reference.to_string()
+        } else {
+            let registries = BTreeSet::from(["docker.io".to_string(), "ghcr.io".to_string()]);
+            let acquisition = RegistryAcquisition::validate(
+                AcquisitionTrigger::AuthorizedAttempt,
+                reference,
+                &registries,
+            )
+            .map_err(|_| "image.acquire rejected")?;
+            let staging = self
+                .run_root
+                .join("acquisitions")
+                .join(format!("{:x}", Sha256::digest(request_id.as_bytes())));
+            tokio::task::block_in_place(|| {
+                self.runtime
+                    .block_on(acquisition.acquire(&staging, &self.image_store, acquired_at))
+            })
+            .map_err(|_| "image.acquire failed")?
+        };
+        import_attempt_image(&self.image_store, &digest, &mut self.image_backend)
+            .map_err(|_| "image.acquire import failed")?;
         let evidence = ImageEffectEvidence::new(request.request_id(), &digest);
         evidence
             .validate_result_identity(request_id)
@@ -1624,15 +1561,10 @@ impl EpochCoordinator {
             .map_err(|_| "image.build clock unavailable")?
             .as_secs();
         let digest = plan
-            .execute_and_admit(&mut self.image_store, &self.required_images, acquired_at)
+            .execute_and_admit(&self.image_store, acquired_at)
             .map_err(|_| "image.build failed")?;
-        import_attempt_image(
-            &mut self.image_store,
-            &digest,
-            &self.required_images,
-            &mut self.image_backend,
-        )
-        .map_err(|_| "image.build import failed")?;
+        import_attempt_image(&self.image_store, &digest, &mut self.image_backend)
+            .map_err(|_| "image.build import failed")?;
         let evidence = ImageEffectEvidence::new(request_id, &digest);
         evidence
             .validate_result_identity(request_id)
@@ -1979,17 +1911,6 @@ fn write_private_file(path: &Path, contents: &str) -> io::Result<()> {
     fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
 }
 
-/// Writes one new binary staging file with mode `0600`.
-fn write_private_bytes(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(contents)?;
-    file.sync_all()
-}
-
 /// Generates the stock epoch-local TLS and JWT bundle within the startup bound.
 fn generate_gateway_auth(plan: &EpochPlan) -> bool {
     for directory in [
@@ -2318,7 +2239,6 @@ fn terminate_children(children: &mut [Child]) {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    #[cfg(target_os = "linux")]
     use std::fs::File;
     #[cfg(target_os = "linux")]
     use std::io::Read;
@@ -2334,11 +2254,10 @@ mod tests {
         AttemptImportOutcome, CreateCertaintyLossPoint, CreateUncertainty, EpochAction,
         EpochEvidenceWriter, EpochFault, EpochInvalidationTrigger, EpochMemberMonitor,
         EpochNetworkNamespaceMode, EpochPlan, EpochProcessRole, ImageBackend, ImageImportError,
-        MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, capacity_ready,
-        dockerd_dns_arguments, gateway_cert_command, has_up_tap0_default_route,
-        import_attempt_image, import_required_images, invalidation_report_fields,
-        invalidation_trigger, preflight_lifecycle_result, resolve_epoch_nameservers,
-        wait_for_success,
+        MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, dockerd_dns_arguments,
+        gateway_cert_command, has_up_tap0_default_route, import_attempt_image,
+        invalidation_report_fields, invalidation_trigger, is_canonical_local_digest,
+        preflight_lifecycle_result, resolve_epoch_nameservers, wait_for_success,
     };
     #[cfg(target_os = "linux")]
     use super::{EpochMemberSpec, spawn_member, wait_for_child_success};
@@ -2602,12 +2521,12 @@ mod tests {
         fn import_verified(
             &mut self,
             digest: &str,
-            _content: &[u8],
+            _content: File,
             timeout: Duration,
         ) -> Result<(), ImageImportError> {
             self.imports.push((digest.to_string(), timeout));
             if self.fail_import {
-                return Err(ImageImportError::Backend);
+                return Err(ImageImportError::Load);
             }
             self.present.insert(digest.to_string());
             Ok(())
@@ -2624,23 +2543,27 @@ mod tests {
 
     /// Creates an isolated store and admits one verified image fixture.
     fn admitted_store(label: &str, content: &[u8]) -> (ImageStore, String, std::path::PathBuf) {
-        use sha2::{Digest, Sha256};
-
         let root = std::env::temp_dir().join(format!(
             "openkit-wp3b-import-{}-{label}",
             std::process::id()
         ));
-        let digest = format!("sha256:{:x}", Sha256::digest(content));
-        let mut store = ImageStore::open(
+        let archive = crate::image_acquisition::test_oci_archive(content);
+        let digest = crate::image_acquisition::oci_manifest_digest(&archive)
+            .expect("fixture manifest digest");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("fixture root");
+        let archive_path = root.join("fixture.oci.tar");
+        std::fs::write(&archive_path, archive).expect("fixture archive");
+        let store = ImageStore::open(
             root.join("store"),
             root.join("epoch"),
             &[root.join("credentials")],
         )
         .expect("isolated store");
         store
-            .admit(
+            .admit_oci_file(
                 &digest,
-                content,
+                File::open(archive_path).expect("open fixture archive"),
                 StoreLineage::Registry(format!("ghcr.io/openkit/worker@{digest}")),
                 1,
             )
@@ -2915,7 +2838,6 @@ mod tests {
         ] {
             assert_eq!(fault.action(), EpochAction::TerminateProcess);
         }
-        assert!(!capacity_ready(false));
     }
 
     #[test]
@@ -3457,9 +3379,7 @@ mod tests {
     }
 
     #[test]
-    fn wp3b_required_import_is_store_only_verified_and_fail_closed() {
-        use sha2::{Digest, Sha256};
-
+    fn image_import_streams_one_verified_file_and_checks_the_exact_digest() {
         let production = include_str!("epoch_coordinator.rs")
             .split("#[cfg(test)]")
             .next()
@@ -3486,186 +3406,69 @@ mod tests {
             .split_once("fn inspect_digest")
             .expect("Docker digest inspection")
             .1
-            .split_once("/// Imports every non-empty required deployment digest")
+            .split_once("/// Imports one already-authorized attempt digest")
             .expect("end of Docker digest inspection")
             .0;
-        let inspect_args = inspect_source
-            .split_once(".args([")
-            .expect("direct Docker inspect argv")
-            .1
-            .split_once("])")
-            .expect("end of Docker inspect argv")
-            .0;
-        let image = inspect_args
-            .find("\"image\"")
-            .expect("Docker image command");
-        let inspect = inspect_args
-            .find("\"inspect\"")
-            .expect("Docker inspect command");
-        let format = inspect_args
-            .find("\"--format\"")
-            .expect("Docker inspect format");
-        let image_id = inspect_args
-            .find("\"{{.Id}}\"")
-            .expect("digest-only image Id projection");
-        let requested = inspect_args
-            .rfind("digest")
-            .expect("requested image digest");
-        assert!(image < inspect && inspect < format && format < image_id && image_id < requested);
-        assert!(inspect_source.contains("self.command()"));
-        let trim = inspect_source
-            .find(".trim()")
-            .expect("trimmed Docker output");
-        let exact = inspect_source[trim..]
-            .find("== digest")
-            .map(|offset| trim + offset)
-            .expect("exact requested-digest equality");
-        let success = inspect_source[exact..]
-            .find("Ok(digest.to_string())")
-            .map(|offset| exact + offset)
-            .expect("canonical requested digest result");
-        let mismatch = inspect_source[success..]
-            .find("Err(ImageImportError::DigestMismatch)")
-            .map(|offset| success + offset)
-            .expect("empty, other, or substring mismatch rejection");
-        assert!(trim < exact && exact < success && success < mismatch);
-        assert!(!inspect_source.contains(".contains(digest)"));
+
+        assert!(contains_source.contains("ImageImportError::Probe"));
+        assert!(import_source.contains(r#".args(["image", "load"])"#));
+        assert!(import_source.contains(".stdin(Stdio::from(content))"));
+        assert!(import_source.contains("wait_for_child_success(&mut child, import_timeout)"));
+        assert!(import_source.contains(".stderr(Stdio::inherit())"));
+        for forbidden in [
+            "--input",
+            "staging_root",
+            "write_private_bytes",
+            "fs::read(",
+        ] {
+            assert!(
+                !import_source.contains(forbidden),
+                "import retained {forbidden}"
+            );
+        }
+        assert!(
+            inspect_source
+                .contains(r#".args(["image", "inspect", "--format", "{{.Id}}", digest])"#)
+        );
+        assert!(inspect_source.contains("output.trim() == digest"));
+        assert!(inspect_source.contains("Err(ImageImportError::DigestMismatch)"));
         for forbidden in [
             "RepoDigests",
             "org.opencontainers.image.ref.name",
             "io.containerd.image.name",
-            "failed to validate image signature",
         ] {
             assert!(!inspect_source.contains(forbidden));
             assert!(!import_source.contains(forbidden));
         }
-        assert!(
-            contains_source.contains("ImageImportError::Probe")
-                && !contains_source.contains("ImageImportError::Backend"),
-            "presence-probe failure collapsed into another backend operation"
-        );
-        let load_source = import_source
-            .split_once("let child =")
-            .expect("stock Docker image-load command")
-            .1;
-        assert!(
-            load_source.contains(".args([\"image\", \"load\", \"--input\", &path_arg(&archive)])")
-                && load_source.contains(".stderr(Stdio::inherit())")
-                && load_source.contains("ImageImportError::Load")
-                && !load_source.contains("ImageImportError::Backend"),
-            "image-load failure or diagnostics collapsed into another backend operation"
-        );
-        assert!(
-            inspect_source.contains(".stderr(Stdio::inherit())")
-                && inspect_source.contains("ImageImportError::Inspect")
-                && !inspect_source.contains("ImageImportError::Backend"),
-            "post-inspect failure or diagnostics collapsed into another backend operation"
-        );
-        let load_result = import_source
-            .find("let result = child")
-            .expect("bounded load result retained through cleanup");
-        let archive_cleanup = import_source[load_result..]
-            .find("fs::remove_file(archive)")
-            .map(|offset| load_result + offset)
-            .expect("attempt-local archive cleanup");
-        let staging_cleanup = import_source[archive_cleanup..]
-            .find("fs::remove_dir(&self.staging_root)")
-            .map(|offset| archive_cleanup + offset)
-            .expect("attempt-local empty staging-root cleanup");
-        let load_return = import_source[staging_cleanup..]
-            .find("\n        result")
-            .map(|offset| staging_cleanup + offset)
-            .expect("load result returned after cleanup");
-        assert!(load_result < archive_cleanup && archive_cleanup < staging_cleanup);
-        assert!(staging_cleanup < load_return);
-        assert!(!import_source.contains("remove_dir_all(&self.staging_root)"));
-
-        let private_dir_source = production
-            .split_once("fn create_private_dir")
-            .expect("fresh-only private directory helper")
-            .1
-            .split_once("fn write_private_file")
-            .expect("end of private directory helper")
-            .0;
-        assert!(
-            private_dir_source.contains("DirBuilder::new().mode(0o700).create(path)?"),
-            "global epoch directory creation no longer refuses an existing root"
-        );
-
-        let (mut store, digest, root) = admitted_store("required", b"deployment image");
-        let second_content = b"second deployment image";
-        let second_digest = format!("sha256:{:x}", Sha256::digest(second_content));
-        store
-            .admit(
-                &second_digest,
-                second_content,
-                StoreLineage::Registry(format!("docker.io/openkit/worker@{second_digest}")),
-                2,
-            )
-            .expect("second required image");
-        let required = BTreeSet::from([digest.clone(), second_digest.clone()]);
-        let mut backend = ImportBackend::default();
-
-        assert!(import_required_images(&mut store, &required, &mut backend));
-        assert_eq!(backend.imports.len(), 2);
-        assert_eq!(
-            backend
-                .imports
-                .iter()
-                .map(|(digest, _)| digest.clone())
-                .collect::<BTreeSet<_>>(),
-            required
-        );
-        assert!(
-            backend
-                .imports
-                .iter()
-                .all(|(_, timeout)| *timeout == Duration::from_secs(45))
-        );
-        assert!(capacity_ready(true));
-
-        let mut missing_backend = ImportBackend::default();
-        assert!(!import_required_images(
-            &mut store,
-            &BTreeSet::from(["sha256:missing".to_string()]),
-            &mut missing_backend,
-        ));
-        assert!(missing_backend.imports.is_empty());
-        assert!(!capacity_ready(false));
-
-        let mut mismatch_backend = ImportBackend {
-            inspected: BTreeMap::from([(digest.clone(), "sha256:other".to_string())]),
-            ..ImportBackend::default()
-        };
-        assert!(!import_required_images(
-            &mut store,
-            &required,
-            &mut mismatch_backend,
-        ));
-        assert!(!capacity_ready(false));
-        drop(store);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn wp3b_mid_epoch_import_is_bounded_noop_and_failure_isolated() {
+    fn attempt_import_verifies_store_before_backend_hit_and_is_failure_isolated() {
         assert_eq!(MID_EPOCH_IMPORT_TIMEOUT, Duration::from_secs(45));
-        let (mut store, digest, root) = admitted_store("attempt", b"attempt image");
-        let required = BTreeSet::from(["sha256:deployment".to_string()]);
+        let (store, digest, root) = admitted_store("attempt", b"attempt image");
 
         let mut already_present = ImportBackend {
             present: BTreeSet::from([digest.clone()]),
             ..ImportBackend::default()
         };
         assert_eq!(
-            import_attempt_image(&mut store, &digest, &required, &mut already_present),
+            import_attempt_image(&store, &digest, &mut already_present),
             Ok(AttemptImportOutcome::AlreadyPresent)
         );
         assert!(already_present.imports.is_empty());
+        let mut mismatched_present = ImportBackend {
+            present: BTreeSet::from([digest.clone()]),
+            inspected: BTreeMap::from([(digest.clone(), format!("sha256:{}", "0".repeat(64)))]),
+            ..ImportBackend::default()
+        };
+        assert_eq!(
+            import_attempt_image(&store, &digest, &mut mismatched_present),
+            Err(ImageImportError::DigestMismatch)
+        );
 
         let mut imported = ImportBackend::default();
         assert_eq!(
-            import_attempt_image(&mut store, &digest, &required, &mut imported),
+            import_attempt_image(&store, &digest, &mut imported),
             Ok(AttemptImportOutcome::Imported)
         );
         assert_eq!(
@@ -3678,24 +3481,34 @@ mod tests {
             ..ImportBackend::default()
         };
         assert_eq!(
-            import_attempt_image(&mut store, &digest, &required, &mut failed),
-            Err(ImageImportError::Backend)
+            import_attempt_image(&store, &digest, &mut failed),
+            Err(ImageImportError::Load)
         );
-        assert!(
-            capacity_ready(true),
-            "attempt failure invalidated healthy epoch"
-        );
+        let absent = format!("sha256:{}", "f".repeat(64));
+        let mut backend_hit_without_store = ImportBackend {
+            present: BTreeSet::from([absent.clone()]),
+            ..ImportBackend::default()
+        };
         assert_eq!(
-            import_attempt_image(
-                &mut store,
-                "sha256:deployment",
-                &required,
-                &mut ImportBackend::default(),
-            ),
-            Err(ImageImportError::DeploymentDigest)
+            import_attempt_image(&store, &absent, &mut backend_hit_without_store),
+            Err(ImageImportError::Store)
         );
         drop(store);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_image_acquire_accepts_only_one_canonical_digest_shape() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        assert!(is_canonical_local_digest(&digest));
+        for rejected in [
+            "sha256:abc".to_string(),
+            format!("sha256:{}", "A".repeat(64)),
+            format!("docker.io/openkit/worker@{digest}"),
+            digest.trim_start_matches("sha256:").to_string(),
+        ] {
+            assert!(!is_canonical_local_digest(&rejected));
+        }
     }
 
     #[test]
@@ -3852,7 +3665,7 @@ mod tests {
             .split_once("pub fn execute_lifecycle_effect(")
             .expect("lifecycle effect owner")
             .1
-            .split_once("/// Acquires, stores, and imports")
+            .split_once("pub fn acquire_image(")
             .expect("end of lifecycle effect owner")
             .0;
         let sandbox_deleted = lifecycle
@@ -4037,7 +3850,7 @@ mod tests {
             .split_once("pub fn execute_lifecycle_effect(")
             .expect("lifecycle effect owner")
             .1
-            .split_once("/// Acquires, stores, and imports")
+            .split_once("pub fn acquire_image(")
             .expect("end of lifecycle effect owner")
             .0;
         let created = lifecycle

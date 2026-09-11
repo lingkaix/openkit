@@ -1276,6 +1276,7 @@ dependencies = [
  "oci-client",
  "openshell-sdk",
  "prost-types",
+ "reqwest 0.13.4",
  "rustls",
  "serde_json",
  "sha2 0.10.9",
