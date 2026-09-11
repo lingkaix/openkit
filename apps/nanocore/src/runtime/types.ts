@@ -131,7 +131,7 @@ export interface TurnExecutor {
   commitPreparedAgentSessionForTurn?(
     store: FsStore,
     input: CommitPreparedAgentSessionForTurnInput
-  ): Promise<void>;
+  ): Promise<SchedulerWorkerStorageChoice | undefined>;
 
   /**
    * Starts executing one turn.

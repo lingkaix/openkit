@@ -17,7 +17,10 @@ import {
 } from '@openkit/worker-protocol';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
-import { requireSchedulerSessionLeaseAdmissionContext } from '../scheduler-records.js';
+import {
+  requireSchedulerSessionLeaseAdmissionContext,
+  type SchedulerWorkerStorageChoice,
+} from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
@@ -877,6 +880,36 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
+  /** Projects the exact selected-storage authorization used before one Sandbox replacement. */
+  private workerStorageReplacementSelection(
+    environmentPackage: AgentEnvironmentPackage,
+    choice: SchedulerWorkerStorageChoice | undefined,
+    responsibleUserId: string,
+    authorizeContributor: WorkerStorageSelectionInput['authorizeContributor']
+  ):
+    | (Omit<WorkerStorageSelectionInput, 'layout'> & {
+        readonly reuseWorkSlotRef?: string;
+      })
+    | undefined {
+    return choice?.kind === 'selected'
+      ? {
+          ...(choice.adjudicatedThreadIds
+            ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
+            : {}),
+          authorizeContributor,
+          expectedRevision: choice.expectedRevision,
+          ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
+          purpose: choice.purpose,
+          responsibleUserId,
+          ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
+          storageRef: choice.storageRef,
+          ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
+          threadId: environmentPackage.scope.threadId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        }
+      : undefined;
+  }
+
   /** Proves exact retained continuity or closes one durable AgentSession-local binding. */
   public async prepareAgentSessionContinuity(
     input: WorkerGovernanceAgentSessionContinuityInput
@@ -916,13 +949,39 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       ) {
         throw new Error('NanoHost restart-unproved retirement lacks admission package lineage.');
       }
-      await this.evictIncompatibleIdleSandbox(
+      const responsibleUserId = responsibleUserIdForActor(
+        input.environmentPackage.scope.triggerActor
+      );
+      if (!responsibleUserId) {
+        throw new Error('Worker storage requires one responsible user.');
+      }
+      const releasedBinding = await this.evictIncompatibleIdleSandbox(
         input.environmentPackage,
         this.planSession(input.environmentPackage),
         input.admissionLeaseId,
-        true
+        true,
+        this.workerStorageReplacementSelection(
+          input.environmentPackage,
+          input.workerStorageChoice,
+          responsibleUserId,
+          currentWorkerStorageAudienceAuthorizer(
+            this.coreDb,
+            input.environmentPackage.scope.workspaceId,
+            responsibleUserId
+          )
+        )
       );
-      return 'closed';
+      return releasedBinding && input.workerStorageChoice?.kind === 'selected'
+        ? {
+            disposition: 'closed',
+            storageRevisionAdvance: {
+              attachmentGeneration: releasedBinding.attachmentGeneration,
+              previousRevision: input.workerStorageChoice.expectedRevision,
+              revision: releasedBinding.revision,
+              storageRef: releasedBinding.storageRef,
+            },
+          }
+        : 'closed';
     }
     if (input.reuseAllowed) {
       return inspection.reusable ? 'reusable' : 'replacement-required';
@@ -1476,24 +1535,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       environmentPackage.scope.workspaceId,
       responsibleUserId
     );
-    const replacementSelection =
-      choice?.kind === 'selected'
-        ? {
-            ...(choice.adjudicatedThreadIds
-              ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
-              : {}),
-            authorizeContributor,
-            expectedRevision: choice.expectedRevision,
-            ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
-            purpose: choice.purpose,
-            responsibleUserId,
-            ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
-            storageRef: choice.storageRef,
-            ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
-            threadId: environmentPackage.scope.threadId,
-            workspaceId: environmentPackage.scope.workspaceId,
-          }
-        : undefined;
+    const replacementSelection = this.workerStorageReplacementSelection(
+      environmentPackage,
+      choice,
+      responsibleUserId,
+      authorizeContributor
+    );
     if (
       image.kind === 'build' &&
       (image.contextRef !== EMPTY_BUILD_CONTEXT_REF ||

@@ -279,12 +279,16 @@ export async function runSchedulerDispatchLoop(
           409
         );
       }
+      let workerStorageChoice = dispatch.entry.workerStorageChoice ?? undefined;
       if (input.turnExecutor.commitPreparedAgentSessionForTurn) {
-        await input.turnExecutor.commitPreparedAgentSessionForTurn(store, {
+        const committed = await input.turnExecutor.commitPreparedAgentSessionForTurn(store, {
           leaseId: dispatch.lease.leaseId,
           prepared: preparedAgentSession,
           preparation: prepareInput,
         });
+        if (committed) {
+          workerStorageChoice = committed;
+        }
       } else if (preparedAgentSession.replacementRequired) {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -317,9 +321,7 @@ export async function runSchedulerDispatchLoop(
           turnExecutor: input.turnExecutor,
           turnId: dispatch.entry.turnId,
           workspaceCwd: dispatch.entry.workspaceCwd,
-          ...(dispatch.entry.workerStorageChoice
-            ? { workerStorageChoice: dispatch.entry.workerStorageChoice }
-            : {}),
+          ...(workerStorageChoice ? { workerStorageChoice } : {}),
           workspaceId: dispatch.entry.workspaceId,
           ...(workspaceConfig ? { workspaceConfig } : {}),
           ...(userConfig ? { userConfig } : {}),

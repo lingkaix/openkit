@@ -65,10 +65,24 @@ export interface WorkerGovernanceAgentSessionContinuityInput {
   readonly environmentPackage?: AgentEnvironmentPackage;
   /** Whether the product owner permits reuse if backend hygiene is exact. */
   readonly reuseAllowed: boolean;
+  /** Exact retained-storage selection whose attached Sandbox may be retired. */
+  readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   /** Bound Thread lineage. */
   readonly threadId: string;
   /** Bound Workspace lineage. */
   readonly workspaceId: string;
+}
+
+/** Cleanup-owned retained-storage revision advance carried only into the admitted successor. */
+export interface WorkerGovernanceStorageRevisionAdvance {
+  /** Attachment generation whose exact Sandbox cleanup released the association. */
+  readonly attachmentGeneration: number;
+  /** Caller-selected revision authorized before cleanup. */
+  readonly previousRevision: number;
+  /** Revision produced by that one proved release. */
+  readonly revision: number;
+  /** Exact selected retained-storage association. */
+  readonly storageRef: string;
 }
 
 /** Result of inspecting or closing one exact AgentSession runtime binding. */
@@ -78,6 +92,12 @@ export type WorkerGovernanceAgentSessionContinuityDisposition =
   /** The durable binding lacks process-local proof and requires whole-Sandbox retirement. */
   | 'sandbox-replacement-required'
   | 'closed'
+  | {
+      /** The predecessor was closed through one proved whole-Sandbox cleanup. */
+      readonly disposition: 'closed';
+      /** Exact selected association revision produced by that cleanup. */
+      readonly storageRevisionAdvance: WorkerGovernanceStorageRevisionAdvance;
+    }
   | 'absent';
 
 /** Signals that existing scheduler admission must remain queued for physical runtime capacity. */

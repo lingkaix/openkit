@@ -39,6 +39,7 @@ import {
 import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-manager.js';
 import { ArtifactAuthorityError, type FsStore } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
+import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -140,6 +141,13 @@ import {
 
 const WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE =
   'Worker requested human input without an exact product Gate.';
+
+/** Returns the closed continuity disposition while retaining any cleanup proof separately. */
+function workerGovernanceContinuityDisposition(
+  result: WorkerGovernanceAgentSessionContinuityDisposition
+): 'reusable' | 'replacement-required' | 'sandbox-replacement-required' | 'closed' | 'absent' {
+  return typeof result === 'string' ? result : result.disposition;
+}
 
 /** Mutable exact-backend lifecycle retained while one turn executes and cleans up. */
 interface WorkerTurnBackendLifecycle {
@@ -715,7 +723,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      if (disposition !== 'absent') {
+      if (workerGovernanceContinuityDisposition(disposition) !== 'absent') {
         throw new TurnStartValidationError(
           'recovery_required',
           'Fresh AgentSession admission did not prove absent durable continuity.',
@@ -785,7 +793,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       status: current.status,
       updatedAt: current.updatedAt,
     };
-    if (reuseAllowed && disposition === 'reusable') {
+    if (reuseAllowed && workerGovernanceContinuityDisposition(disposition) === 'reusable') {
       return {
         agentSessionId: current.id,
         currentAgentSession,
@@ -795,7 +803,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
     if (
       !['reusable', 'replacement-required', 'sandbox-replacement-required', 'absent'].includes(
-        disposition
+        workerGovernanceContinuityDisposition(disposition)
       )
     ) {
       throw new TurnStartValidationError(
@@ -821,7 +829,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   public async commitPreparedAgentSessionForTurn(
     store: FsStore,
     input: CommitPreparedAgentSessionForTurnInput
-  ): Promise<void> {
+  ): Promise<SchedulerWorkerStorageChoice | undefined> {
     const { prepared, preparation } = input;
     const currentSessions = store
       .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
@@ -847,6 +855,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           agentSessionId,
           environmentPackage,
           reuseAllowed,
+          ...(preparation.workerStorageChoice
+            ? { workerStorageChoice: preparation.workerStorageChoice }
+            : {}),
           threadId: preparation.turn.threadId,
           workspaceId: preparation.turn.workspaceId,
         });
@@ -889,7 +900,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         freshEnvironmentPackage,
         true
       );
-      if (disposition !== 'absent') {
+      if (workerGovernanceContinuityDisposition(disposition) !== 'absent') {
         throw new TurnStartValidationError(
           'recovery_required',
           'Fresh AgentSession admission no longer has absent durable continuity.',
@@ -967,7 +978,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         currentEnvironmentPackage,
         true
       );
-      if (disposition !== 'reusable') {
+      if (workerGovernanceContinuityDisposition(disposition) !== 'reusable') {
         throw new TurnStartValidationError(
           'recovery_required',
           'Reusable AgentSession continuity changed after scheduler dispatch.',
@@ -1011,7 +1022,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     );
     if (
       !['reusable', 'replacement-required', 'sandbox-replacement-required', 'absent'].includes(
-        inspected
+        workerGovernanceContinuityDisposition(inspected)
       )
     ) {
       throw new TurnStartValidationError(
@@ -1020,19 +1031,38 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    if (inspected !== 'absent') {
+    let committedWorkerStorageChoice: SchedulerWorkerStorageChoice | undefined;
+    if (workerGovernanceContinuityDisposition(inspected) !== 'absent') {
       const closed = await inspectBackendContinuity(
         current.id,
         currentCompatibilityKey,
         freshEnvironmentPackage,
         false
       );
-      if (closed !== 'closed' && closed !== 'absent') {
+      const closedDisposition = workerGovernanceContinuityDisposition(closed);
+      if (closedDisposition !== 'closed' && closedDisposition !== 'absent') {
         throw new TurnStartValidationError(
           'recovery_required',
           'The worker backend did not retire predecessor AgentSession continuity.',
           409
         );
+      }
+      if (typeof closed !== 'string') {
+        const choice = preparation.workerStorageChoice;
+        const advance = closed.storageRevisionAdvance;
+        if (
+          choice?.kind !== 'selected' ||
+          advance.storageRef !== choice.storageRef ||
+          advance.previousRevision !== choice.expectedRevision ||
+          advance.revision !== choice.expectedRevision + 1
+        ) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The worker backend returned a mismatched retained-storage cleanup revision.',
+            409
+          );
+        }
+        committedWorkerStorageChoice = { ...choice, expectedRevision: advance.revision };
       }
     }
     store.updateAgentSession(current.id, {
@@ -1051,6 +1081,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
+    return committedWorkerStorageChoice;
   }
 
   /** Rejects admission when the current NanoHost target cannot host the resolved package. */

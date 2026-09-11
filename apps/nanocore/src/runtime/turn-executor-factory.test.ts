@@ -16,6 +16,7 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
@@ -26,7 +27,10 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
@@ -48,10 +52,12 @@ import type {
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
 import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
+import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
   createConfiguredTurnExecutor,
   createConfiguredWorkerLifecycleRuntime,
 } from './turn-executor-factory.js';
+import type { PrepareAgentSessionForTurnInput } from './types.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import {
@@ -4199,6 +4205,317 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
       ).toEqual({ count: 0 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      concurrentRevisionAdvance: false,
+      expectedError: 'injected stop after selected storage reattachment',
+      predecessorStatus: 'idle' as const,
+    },
+    {
+      concurrentRevisionAdvance: true,
+      expectedError: 'Worker storage revision changed.',
+      predecessorStatus: 'idle' as const,
+    },
+    {
+      concurrentRevisionAdvance: false,
+      expectedError: 'injected stop after selected storage reattachment',
+      predecessorStatus: 'failed' as const,
+    },
+  ])('carries only its proved cleanup revision through restart-unproved Task admission: predecessor=$predecessorStatus concurrent=$concurrentRevisionAdvance', async ({
+    concurrentRevisionAdvance,
+    expectedError,
+    predecessorStatus,
+  }) => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    let predecessorCleanupCompleted = false;
+    let concurrentAdvanceApplied = false;
+    let selectedStorageRef: string | null = null;
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        if (request.kind === 'bridge.close') return { state: 'closed' };
+        if (request.kind === 'sandbox.delete') {
+          predecessorCleanupCompleted = true;
+          return { state: 'deleted' };
+        }
+        if (request.kind === 'image.acquire') {
+          if (
+            concurrentRevisionAdvance &&
+            predecessorCleanupCompleted &&
+            !concurrentAdvanceApplied
+          ) {
+            if (!selectedStorageRef) throw new Error('Selected storage fixture is unavailable.');
+            const released = getWorkerStorageBinding(coreDb, {
+              storageRef: selectedStorageRef,
+            });
+            reserveWorkerStorageAttachment(coreDb, {
+              agentSessionId: 'as_restart_selected_competing',
+              authorizeContributor: () => true,
+              expectedRevision: released.revision,
+              layout: released.layout,
+              purpose: 'work',
+              responsibleUserId: 'user_fixture',
+              runtimeTargetId: 'target_restart_selected',
+              storageRef: selectedStorageRef,
+              threadId: 'thread_restart_selected',
+              workspaceId: 'workspace_restart_selected',
+            });
+            concurrentAdvanceApplied = true;
+          }
+          return { digest: `sha256:${'4'.repeat(64)}` };
+        }
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+        if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
+        if (request.kind === 'bridge.open') {
+          throw new Error('injected stop after selected storage reattachment');
+        }
+        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+               target_id, identity_id, deployment_id, connection_generation,
+               predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             ) VALUES ('target_restart_selected', 'identity_restart_selected',
+                       'deployment_restart_selected', 1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-09-11T00:00:00.000Z');
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: 'test',
+        harnessBindingRef: 'harness-binding-restart-selected',
+        harnessCompatibilityKey: '5'.repeat(64),
+        harnessInstanceId: 'harness-restart-selected',
+        imageDigest: `sha256:${'4'.repeat(64)}`,
+        runtimeTargetId: 'target_restart_selected',
+        sandboxBindingRef: 'sandbox-binding-restart-selected',
+        sandboxCompatibilityKey: '6'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-restart-selected',
+        sandboxRuntimeId: 'sandbox-runtime-restart-selected',
+        timestamp: '2026-09-11T00:00:00.000Z',
+      });
+      const scopePackage = completeNanoHostPackage({
+        scope: {
+          agentSessionId: 'as_restart_selected_idle',
+          threadId: 'thread_restart_selected',
+          triggerActor: { kind: 'user', id: 'user_fixture' },
+          turnId: 'turn_restart_selected_previous',
+          workspaceId: 'workspace_restart_selected',
+        },
+        snapshotId: 'snapshot_restart_selected_previous',
+      });
+      authorizeNanoHostPackage(coreDb, scopePackage);
+      const attached = attachNanoHostStorageFixture(coreDb, {
+        agentSessionId: 'as_restart_selected_idle',
+        deploymentId: 'deployment_restart_selected',
+        runtimeTargetId: 'target_restart_selected',
+        sandboxBindingRef: 'sandbox-binding-restart-selected',
+        threadId: 'thread_restart_selected',
+        workspaceId: 'workspace_restart_selected',
+      });
+      selectedStorageRef = attached.storageRef;
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: '7'.repeat(64),
+        agentSessionId: 'as_restart_selected_idle',
+        agentSessionRuntimeBindingId: 'binding-restart-selected-idle',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-restart-selected',
+        threadId: 'thread_restart_selected',
+        timestamp: '2026-09-11T00:00:01.000Z',
+        workspaceId: 'workspace_restart_selected',
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+             SET lifecycle_state = 'open', native_handle_state = 'ready',
+                 native_handle_digest = ?, cleanup_state = 'clean'`
+        )
+        .run('8'.repeat(64));
+      const store = new FsStore({ dataRoot: coreDb.dataRoot });
+      const requestId = '00000000-0000-4000-8000-00000000e501';
+      const selectedChoice = {
+        expectedRevision: attached.revision,
+        goalId: null,
+        kind: 'selected' as const,
+        purpose: 'work' as const,
+        storageRef: attached.storageRef,
+        taskId: null,
+      };
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        store,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const previewInput = {
+        agentSetup: createTestAgentSetup(),
+        freshAgentSessionId: 'as_restart_selected_next',
+        requestId,
+        turn: {
+          completedAt: null,
+          configVersion: null,
+          durationMs: null,
+          error: null,
+          humanGate: null,
+          id: 'turn_restart_selected_next',
+          items: [],
+          startedAt: '2999-09-11T00:00:03.000Z',
+          status: 'running' as const,
+          threadId: 'thread_restart_selected',
+          triggerActor: { kind: 'user' as const, id: 'user_fixture' },
+          workspaceId: 'workspace_restart_selected',
+        },
+        turnInput: 'Continue from the retained restart-selected workspace.',
+        workerStorageChoice: selectedChoice,
+        workspaceCwd: null,
+        workspaceRoots: [],
+      } satisfies PrepareAgentSessionForTurnInput;
+      const currentCompatibilityKey = (
+        runtime.turnExecutor as unknown as {
+          previewAgentSessionCompatibilityKey(
+            agentSessionId: string,
+            input: PrepareAgentSessionForTurnInput
+          ): string;
+        }
+      ).previewAgentSessionCompatibilityKey('as_restart_selected_idle', previewInput);
+      store.createAgentSession({
+        agentId: 'agent_codex_host',
+        createdAt: '2026-09-11T00:00:01.000Z',
+        environmentPackageSnapshotId: scopePackage.snapshotId,
+        id: 'as_restart_selected_idle',
+        message: null,
+        policySnapshotId: 'worker_turn_launch_policy',
+        sessionCompatibilityKey: currentCompatibilityKey,
+        status: predecessorStatus,
+        threadId: 'thread_restart_selected',
+        updatedAt: '2026-09-11T00:00:01.000Z',
+        workspaceId: 'workspace_restart_selected',
+        workspaceRoots: [],
+      });
+      upsertSchedulerWorkerPool(coreDb, {
+        allowedBackendKinds: ['openshell'],
+        allowedPlacements: ['local'],
+        allowedWorkspaceScopes: ['local'],
+        budgetClass: 'interactive',
+        currentAdmittedSessionCount: 0,
+        currentQueueDepth: 1,
+        defaultTimeoutMs: 900_000,
+        healthSummary: 'ready',
+        maxConcurrentSessions: 1,
+        poolId: 'pool_restart_selected',
+        queueLimit: 20,
+        status: 'active',
+      });
+      upsertSchedulerCapacityRecord(coreDb, {
+        capacityClass: 'local',
+        concurrencyCeiling: 1,
+        inUseCount: 0,
+        observationSource: 'configured',
+        observedAt: '2026-09-11T00:00:02.000Z',
+        poolId: 'pool_restart_selected',
+        queueDepth: 1,
+        targetId: 'scheduler-target-restart-selected',
+      });
+      upsertSchedulerTargetHealthRecord(coreDb, {
+        checkResults: [],
+        consecutiveFailureCount: 0,
+        consecutiveSuccessCount: 1,
+        healthState: 'healthy',
+        lastProbeAt: '2026-09-11T00:00:02.000Z',
+        nextProbeAt: '2026-09-11T00:01:02.000Z',
+        targetId: 'scheduler-target-restart-selected',
+      });
+      createSchedulerAdmissionEntry(coreDb, {
+        now: () => '2026-09-11T00:00:02.000Z',
+        priorityClass: 'interactive',
+        profileRef: 'default',
+        queueEntryId: 'queue_restart_selected',
+        requestId,
+        requestedAgentId: 'agent_codex_host',
+        requiredPoolConstraints: ['openshell.local'],
+        threadId: 'thread_restart_selected',
+        turnId: 'turn_restart_selected_next',
+        turnInput: 'Continue from the retained restart-selected workspace.',
+        triggerActor: { kind: 'user', id: 'user_fixture' },
+        workerStorageChoice: selectedChoice,
+        workspaceId: 'workspace_restart_selected',
+      });
+      const providerRegistry = new ProviderRegistry([
+        {
+          baseUrl: 'http://127.0.0.1:11434/v1',
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Restart-selected fixture provider',
+          id: 'agent-openrouter',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]);
+
+      let observedError: unknown;
+      try {
+        await runSchedulerDispatchLoop({
+          agentManifests: [createTestAgentSetup().manifest],
+          coreDb,
+          createAgentSessionId: () => 'as_restart_selected_next',
+          createLeaseId: () => 'lease_restart_selected_next',
+          createPlanId: () => 'plan_restart_selected_next',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          gatewayConfig: createTestGatewayConfig(),
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          maxDispatches: 1,
+          now: () => '2999-09-11T00:00:03.000Z',
+          providerRegistry,
+          schedulerEpoch: 1,
+          startupTimeoutMs: 120_000,
+          store,
+          turnExecutor: runtime.turnExecutor,
+        });
+      } catch (error) {
+        observedError = error;
+      }
+      const errorMessages = (error: unknown): string[] => [
+        ...(error instanceof Error ? [error.message] : [String(error)]),
+        ...(error instanceof AggregateError
+          ? error.errors.flatMap((nested) => errorMessages(nested))
+          : []),
+      ];
+      expect(errorMessages(observedError)).toContain(expectedError);
+
+      const replacementCreates = effects.filter((effect) => effect.kind === 'sandbox.create');
+      if (concurrentRevisionAdvance) {
+        expect(concurrentAdvanceApplied).toBe(true);
+        expect(replacementCreates).toEqual([]);
+      } else {
+        expect(replacementCreates).toHaveLength(1);
+        expect(replacementCreates[0]?.input.storage).toMatchObject({
+          attachmentGeneration: attached.attachmentGeneration + 1,
+          storageRef: attached.storageRef,
+        });
+      }
+      expect(store.getAgentSession('as_restart_selected_idle').status).toBe(
+        predecessorStatus === 'idle' ? 'closed' : 'failed'
+      );
     } finally {
       coreDb.sqlite.close();
     }

@@ -53,6 +53,7 @@ import {
   buildWorkspaceMaterializationRecords,
 } from '../runtime/workspace-materializer.js';
 import { recordWorkspaceBackendHandoff } from '../runtime/workspace-sync-records.js';
+import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import { markSchedulerSessionLeaseReleasing } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -264,7 +265,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   public async commitPreparedAgentSessionForTurn(
     store: FsStore,
     input: CommitPreparedAgentSessionForTurnInput
-  ): Promise<void> {
+  ): Promise<SchedulerWorkerStorageChoice | undefined> {
     const { prepared, preparation } = input;
     const currentSessions = store
       .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
