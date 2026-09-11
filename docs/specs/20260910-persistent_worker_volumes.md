@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Partial
+implementation: Implemented
 date: 2026-09-10
 ---
 # Persistent Worker Volumes And Environment Replacement
@@ -140,7 +140,7 @@ Routine NanoCore/Web updates do not restart NanoHost or erase retained roots. A 
 
 ## Implementation Status
 
-The image store/build path, shared Sandbox runtime, scoped AgentSession control and bounded reconnect owners exist. Retained mounts, inherited storage-layout admission, durable storage associations, portable selection clearing, Server Agent preparation/activation, exact configuration CAS, private candidate recovery and durable pre-acknowledgment image settlement are implemented and locally tested. Empty-image startup and exact local-digest reimport remain under implementation. Real-host mounted-volume continuity and compatible image replacement require their named acceptance evidence; local implementation is not deployed readiness.
+Retained whole-volume mounts, inherited layout admission, scoped storage associations and Agent-selected reuse, portable selection clearing, exact Server Agent preparation/activation CAS, private candidate recovery and durable pre-acknowledgment image settlement are implemented. NanoHost starts without Worker-image preload, supports local digest-verified import and retained-parent builds, and retains verified images under configurable capacity without automatic eviction. The physical-Epoch owner separates durable storage from live execution and supports bounded same-Epoch Worker reconnect after NanoCore restart. Focused regressions cover authorization, incompatible or missing storage, competing writers, recovery, replay and failure semantics. A1 acceptance exercises original tracked/ignored files and native runtime history across Host recovery, a completed Worker through an App-only restart, and Web/private-Agent preparation plus compatible replacement followed by successful successor tool execution and full data readback. Packaged Desktop Skill replay returns the original activation result without another configuration, attachment or Task transition. These observations qualify this retained-environment chain; they do not certify every NanoHost platform, unrelated release qualification, or arbitrary native-format rollback.
 
 ## Related Specifications
 
