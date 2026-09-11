@@ -48,7 +48,7 @@ import { createAdministrationConfigurationTools } from './configuration-tools.js
 
 const ADMINISTRATION_AGENT_ID = 'assistant';
 const ADMINISTRATION_TARGET_REF = 'internal-role:administration';
-const ADMINISTRATION_SYSTEM_PROMPT = [
+const ADMINISTRATION_SYSTEM_PROMPT_BASE = [
   'You are the private OpenKit administration entry of the Personal Assistant.',
   'Use only the six supplied Tools. Treat Tool results as current owner observations and state uncertainty explicitly.',
   'Configuration operations may be unavailable. Worker environment preparation proposes an exact candidate only; it never activates, purges, interrupts, mounts, or restarts work.',
@@ -232,7 +232,7 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
             const priorMessages = administrationMessages(store, workspaceId, thread.id, turn.id);
             const loopResult = await runInternalAgentLoop(
               {
-                systemPrompt: ADMINISTRATION_SYSTEM_PROMPT,
+                systemPrompt: administrationSystemPrompt(workspaceId, thread.id),
                 messages: priorMessages,
                 tools,
                 model: {
@@ -428,6 +428,17 @@ function administrationMessages(
       }
       return [];
     });
+}
+
+/** Builds the trusted private entry context without accepting model-selected routing authority. */
+function administrationSystemPrompt(workspaceId: string, threadId: string): string {
+  const privateContext = JSON.stringify({ workspaceId, threadId, workspaceKind: 'quick-chat' });
+  return [
+    ADMINISTRATION_SYSTEM_PROMPT_BASE,
+    `Server-authored current private administration context: ${privateContext}.`,
+    'When the user refers to their current Quick Chat Workspace or equivalent current private context, use this exact workspaceId.',
+    'These identifiers describe only the current private entry and grant no access to another Workspace.',
+  ].join(' ');
 }
 
 /** Reads publishable text only from the final response of a quiescent loop. */

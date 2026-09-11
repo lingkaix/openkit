@@ -285,6 +285,8 @@ The Workspace sharing App API exposes the fifteen exact operations owned by [Sin
 
 Access-token administration is available in server mode to presented `server-admin` Tokens and Better Auth sessions with currently resolved Token-derived deployment-admin authority at `GET /api/app/auth/tokens`, `POST /api/app/auth/tokens`, `POST /api/app/auth/tokens/:tokenId/revoke`, and `POST /api/app/auth/tokens/:tokenId/rotate`. Issue may name another exact active canonical `ownerUserId`, with target-owner membership validation for Workspace scopes. Session-only `GET /api/app/auth/my-admin-tokens` and `PUT /api/app/auth/my-admin-tokens/default` expose the signed-in User's redacted `server-admin` Token metadata and effective default selection. Workspace-scoped Tokens are denied; plaintext Tokens are returned only once by create and rotate.
 
+The private administration entry resolves its current user's Quick Chat Workspace and administration Thread before assembling the internal Agent request. It supplies those exact identities as trusted conversational context so the Agent can refer to its own private Workspace without asking for an opaque ID. This context does not select another Workspace, grant access, or replace the existing per-call authorization of environment tools.
+
 Start in server mode:
 
 ```bash

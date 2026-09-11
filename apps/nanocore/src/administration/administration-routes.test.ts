@@ -29,6 +29,181 @@ afterEach(() => {
 });
 
 describe('administration conversation route', () => {
+  it('supplies server-authored private context for a two-round environment list call', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-administration-private-context-'));
+    const coreDb = openCoreDb(dataRoot);
+    openDatabases.push(coreDb);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      expiresAt: '2999-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'tok_administration_private_context',
+      workspaceIds: [],
+    });
+    const actor: Actor = {
+      kind: 'token',
+      tokenId: token.tokenId,
+      tokenScope: 'server-admin',
+      tokenWorkspaceIds: [],
+      userId: 'user_local',
+    };
+    const store = createDemoStore({ dataRoot });
+    const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
+    const thread = store.createThread(
+      workspaceId,
+      'Administration',
+      'thread_administration_private_context',
+      'administration'
+    );
+    const providerProfile = {
+      baseUrl: 'https://provider.invalid/v1',
+      displayName: 'Provider',
+      id: 'provider',
+      kind: 'custom' as const,
+      modelMetadata: {
+        model: {
+          family: 'test',
+          limit: { context: 20_000, output: 1_000 },
+          modalities: { input: ['text'], output: ['text'] },
+          tool_call: true,
+        },
+      },
+      models: ['model'],
+    };
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'administration',
+        logicalModels: [
+          {
+            id: 'administration',
+            displayName: 'Administration',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+            routes: [
+              { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
+            ],
+          },
+        ],
+      },
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        defaultLogicalModelId: 'administration',
+        profiles: [],
+      },
+      providerRegistry: new ProviderRegistry([providerProfile]),
+    });
+    const listEnvironments = vi.fn(async () => ({
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ environments: [], nextAfter: null, workspaceId }),
+        },
+      ],
+    }));
+    const inertTools = inertEnvironmentTools();
+    const environmentTools = [
+      {
+        name: 'worker_environment.list',
+        description: 'List retained Worker environments in one exact Workspace.',
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { workspaceId: { type: 'string', minLength: 1 } },
+          required: ['workspaceId'],
+        },
+        execute: listEnvironments,
+      },
+      inertTools[1],
+      inertTools[2],
+    ] as const satisfies AdministrationEnvironmentTools;
+    const createResponses = vi
+      .fn()
+      .mockImplementationOnce(async (_provider, request) => {
+        expect(request.instructions).toContain(
+          `{"workspaceId":"${workspaceId}","threadId":"${thread.id}","workspaceKind":"quick-chat"}`
+        );
+        return {
+          id: 'resp_administration_private_context_tool',
+          object: 'response',
+          status: 'completed',
+          output: [
+            {
+              type: 'function_call',
+              call_id: 'call_environment_list',
+              name: 'worker_environment.list',
+              arguments: JSON.stringify({ workspaceId }),
+            },
+          ],
+        };
+      })
+      .mockResolvedValueOnce({
+        id: 'resp_administration_private_context_answer',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'No retained Worker environments.' }],
+          },
+        ],
+      });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (context, next) => {
+      context.set('actor', actor);
+      await next();
+    });
+    registerAdministrationRoutes({
+      app,
+      coreDb,
+      environmentToolsForTurn: () => environmentTools,
+      inflightCommands: new WeakMap(),
+      llmGatewayDispatcher: { createResponses },
+      quickChatWorkspaceIdForUser,
+      requestStore: () => store,
+      runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+      resolveGatewayProvider: () =>
+        ({
+          adapterId: 'provider',
+          apiKey: 'unused',
+          baseUrl: providerProfile.baseUrl,
+          displayName: providerProfile.displayName,
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+          id: providerProfile.id,
+          models: providerProfile.models,
+          requiresApiKey: true,
+        }) satisfies ResolvedLLMProviderConfig,
+      runtimeConfig: () => snapshot,
+    });
+
+    const response = await app.request('/api/app/administration/conversation-turns', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        input: 'List retained Worker environments in my current Quick Chat Workspace.',
+        requestId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        threadId: thread.id,
+      }),
+    });
+    const body = (await response.json()) as { outcome: string; turn: { status: string } };
+
+    expect(response.status).toBe(200);
+    expect(body, JSON.stringify(body)).toMatchObject({
+      outcome: 'answered',
+      turn: { status: 'completed' },
+    });
+    expect(listEnvironments).toHaveBeenCalledWith(
+      { workspaceId },
+      expect.objectContaining({ callId: 'call_environment_list' })
+    );
+    expect(createResponses).toHaveBeenCalledTimes(2);
+  });
+
   it('does not republish a prior answer when the final provider response is empty', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-administration-empty-answer-'));
     const coreDb = openCoreDb(dataRoot);
