@@ -426,35 +426,44 @@ export function createNanoHostSessionDispatch(
       if (!readyPhysicalConnections.has(physicalConnection)) {
         throw new Error('NanoHost physical connection has not completed durable readiness.');
       }
-      const pendingResultOnly = [...pendingEffects.values()].find(
-        (candidate) => candidate.resultOnlyGroup
+      const priorConnectionEffects = [...pendingEffects.entries()].filter(
+        ([, candidate]) =>
+          candidate.resultOnlyGroup ||
+          (candidate.accepted && candidate.acceptedConnection !== physicalConnection)
       );
-      if (pendingResultOnly) {
+      if (priorConnectionEffects.length > 0) {
+        const mutatingOutcomeUnknown = priorConnectionEffects.some(
+          ([candidateOperation, candidate]) =>
+            candidate.resultOnlyGroup || !isConnectionEphemeralEffect(candidateOperation)
+        );
         const unknown = effectTransportError(
           409,
-          'NanoHost accepted effect outcome is unknown; successor connection fenced.'
+          mutatingOutcomeUnknown
+            ? 'NanoHost accepted effect outcome is unknown; successor connection fenced.'
+            : 'NanoHost accepted effect outcome is unknown after connection replacement.'
         );
-        removePendingEffectGroup(pendingEffects, operation, pendingResultOnly);
-        pendingResultOnly.reject(unknown);
-        input.sessionAuthority.closePhysicalConnection(physicalConnection);
-        throw unknown;
+        const rejectedResultOnlyGroups = new Set<NanoHostResultOnlyGroup>();
+        for (const [candidateOperation, candidate] of priorConnectionEffects) {
+          if (
+            candidate.resultOnlyGroup &&
+            rejectedResultOnlyGroups.has(candidate.resultOnlyGroup)
+          ) {
+            continue;
+          }
+          if (candidate.resultOnlyGroup) {
+            rejectedResultOnlyGroups.add(candidate.resultOnlyGroup);
+          }
+          removePendingEffectGroup(pendingEffects, candidateOperation, candidate);
+          candidate.reject(unknown);
+        }
+        if (mutatingOutcomeUnknown) {
+          input.sessionAuthority.closePhysicalConnection(physicalConnection);
+          throw unknown;
+        }
       }
       const pending = pendingEffects.get(operation);
       if (!pending) {
         return null;
-      }
-      if (pending.accepted && pending.acceptedConnection !== physicalConnection) {
-        const unknown = effectTransportError(
-          409,
-          'NanoHost accepted effect outcome is unknown after connection replacement.'
-        );
-        removePendingEffectGroup(pendingEffects, operation, pending);
-        pending.reject(unknown);
-        if (isConnectionEphemeralEffect(operation)) {
-          return null;
-        }
-        input.sessionAuthority.closePhysicalConnection(physicalConnection);
-        throw unknown;
       }
       if (pending.accepted) {
         return null;

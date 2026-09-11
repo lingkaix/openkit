@@ -356,7 +356,7 @@ describe('authoritative NanoHost session dispatch', () => {
       const dockerfile = 'é'.repeat(965_971);
       const dockerfileDigest = `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`;
       const buildRequestId = 'f'.repeat(64);
-      void dispatch.effect({
+      const buildPromise = dispatch.effect({
         input: {
           arguments: { NODE_VERSION: '24.16.0' },
           argumentsDigest: `sha256:${'1'.repeat(64)}`,
@@ -381,6 +381,11 @@ describe('authoritative NanoHost session dispatch', () => {
       });
       expect(buildMetadata).not.toHaveProperty('dockerfile');
       expect(Buffer.byteLength(JSON.stringify(buildMetadata))).toBeLessThanOrEqual(512 * 1024);
+      await dispatch.result(successorPhysical, 'image.build', {
+        digest: `sha256:${'f'.repeat(64)}`,
+        requestId: buildRequestId,
+      });
+      await expect(buildPromise).resolves.toEqual({ digest: `sha256:${'f'.repeat(64)}` });
 
       const bridgeRequestId = 'c'.repeat(64);
       const bridgePromise = dispatch.effect({
@@ -405,42 +410,6 @@ describe('authoritative NanoHost session dispatch', () => {
         integrationReady: true,
         state: 'open',
       });
-
-      const specialRequests = [
-        {
-          input: {
-            body: new Uint8Array(),
-            byteLength: 0,
-            relativePath: 'package.json',
-            sandboxId: 'sandbox-special',
-            sha256: `sha256:${'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}`,
-            slot: 'package-config',
-          },
-          kind: 'reference.import' as const,
-          requestId: 'd'.repeat(64),
-        },
-        {
-          input: {
-            maxByteLength: 268435456,
-            presence: 'required',
-            relativePath: 'transcript.jsonl',
-            sandboxId: 'sandbox-special',
-            slot: 'outputs',
-          },
-          kind: 'file.export' as const,
-          requestId: 'e'.repeat(64),
-        },
-      ];
-      for (const request of specialRequests) {
-        void dispatch.effect(request);
-        await dispatch.poll(successorPhysical, request.kind);
-        await expect(
-          dispatch.result(successorPhysical, request.kind, {
-            failureCode: 'effect_failed',
-            requestId: request.requestId,
-          })
-        ).rejects.toThrow(/special|sensitive|raw|failure|result/i);
-      }
 
       const pollOrder = [
         'sandbox.create',
@@ -532,6 +501,42 @@ describe('authoritative NanoHost session dispatch', () => {
       });
       await expect(freshInspect).resolves.toEqual({ digest: `sha256:${'a'.repeat(64)}` });
 
+      const specialRequests = [
+        {
+          input: {
+            body: new Uint8Array(),
+            byteLength: 0,
+            relativePath: 'package.json',
+            sandboxId: 'sandbox-special',
+            sha256: `sha256:${'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}`,
+            slot: 'package-config',
+          },
+          kind: 'reference.import' as const,
+          requestId: 'd'.repeat(64),
+        },
+        {
+          input: {
+            maxByteLength: 268435456,
+            presence: 'required',
+            relativePath: 'transcript.jsonl',
+            sandboxId: 'sandbox-special',
+            slot: 'outputs',
+          },
+          kind: 'file.export' as const,
+          requestId: 'e'.repeat(64),
+        },
+      ];
+      for (const request of specialRequests) {
+        void dispatch.effect(request);
+        await dispatch.poll(thirdPhysical, request.kind);
+        await expect(
+          dispatch.result(thirdPhysical, request.kind, {
+            failureCode: 'effect_failed',
+            requestId: request.requestId,
+          })
+        ).rejects.toThrow(/special|sensitive|raw|failure|result/i);
+      }
+
       const unknownRequestId = '9'.repeat(64);
       const unknownOutcome = dispatch.expectResultOnly!([
         { kind: 'sandbox.delete', requestId: unknownRequestId },
@@ -573,6 +578,162 @@ describe('authoritative NanoHost session dispatch', () => {
       successorClient?.destroy();
       thirdClient?.destroy();
       fourthClient?.destroy();
+      server.close();
+      await once(server, 'close');
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('settles prior accepted uncertainty once and preserves unaccepted work', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-create-cleanup-order-')));
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
+    const target = {
+      coreDb,
+      deploymentId: 'deployment-create-cleanup-order',
+      identityId: 'nanohost-create-cleanup-order',
+      targetId: 'nanohost-create-cleanup-order',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: '2026-09-11T06:12:00.000Z',
+    });
+
+    let acceptConnection: ((physicalConnection: object) => void) | undefined;
+    const server = createHttp2Server((request, response) => {
+      const physicalConnection = readNanoHostPhysicalConnectionContext(request);
+      if (physicalConnection) acceptConnection?.(physicalConnection);
+      response.writeHead(204).end();
+    });
+    let firstClient: ReturnType<typeof connectHttp2> | undefined;
+    let successorClient: ReturnType<typeof connectHttp2> | undefined;
+    let freshClient: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Create-cleanup test server did not expose an address.');
+      }
+      const origin = `http://127.0.0.1:${address.port}`;
+      const firstPhysicalPromise = new Promise<object>((resolve) => {
+        acceptConnection = resolve;
+      });
+      firstClient = connectHttp2(origin);
+      await once(firstClient, 'connect');
+      firstClient.request({ ':method': 'POST', ':path': '/' }).end();
+      const firstPhysical = await firstPhysicalPromise;
+      expect(
+        authority.admit({
+          connectionGeneration: 1,
+          identityId: target.identityId,
+          physicalConnection: firstPhysical,
+        }).role
+      ).toBe('authoritative');
+      await dispatch.readiness?.(firstPhysical, new TextEncoder().encode('{}'), target);
+
+      const createRequestId = '6'.repeat(64);
+      let createSettled = false;
+      const createOutcome = dispatch
+        .effect({
+          input: {
+            backendSessionId: 'backend-create-cleanup-order',
+            imageDigest: `sha256:${'a'.repeat(64)}`,
+            leaseId: 'lease-create-cleanup-order',
+            packageSnapshotId: 'aepsnap-create-cleanup-order',
+            sandboxId: 'sandbox-create-cleanup-order',
+          },
+          kind: 'sandbox.create',
+          requestId: createRequestId,
+        })
+        .then(
+          () => null,
+          (error: unknown) => error
+        )
+        .finally(() => {
+          createSettled = true;
+        });
+      await expect(dispatch.poll(firstPhysical, 'sandbox.create')).resolves.toMatchObject({
+        requestId: createRequestId,
+      });
+
+      const cleanupOutcome = dispatch.expectResultOnly!([
+        { kind: 'bridge.close', requestId: '7'.repeat(64) },
+        { kind: 'sandbox.delete', requestId: '8'.repeat(64) },
+      ]).catch((error: unknown) => error);
+      const queuedRequestId = '9'.repeat(64);
+      const queuedOutcome = dispatch.effect({
+        input: { imageReference: `sha256:${'b'.repeat(64)}` },
+        kind: 'image.acquire',
+        requestId: queuedRequestId,
+      });
+      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: '2026-09-11T06:38:00.000Z',
+      });
+      const successorPhysicalPromise = new Promise<object>((resolve) => {
+        acceptConnection = resolve;
+      });
+      successorClient = connectHttp2(origin);
+      await once(successorClient, 'connect');
+      successorClient.request({ ':method': 'POST', ':path': '/' }).end();
+      const successorPhysical = await successorPhysicalPromise;
+      expect(
+        authority.admit({
+          connectionGeneration: 2,
+          identityId: target.identityId,
+          physicalConnection: successorPhysical,
+        }).role
+      ).toBe('candidate');
+      authority.fencePredecessor(target.identityId, 1);
+      await dispatch.readiness?.(successorPhysical, new TextEncoder().encode('{}'), target);
+
+      await expect(dispatch.poll(successorPhysical, 'image.acquire')).rejects.toThrow(
+        /unknown|fenc/i
+      );
+      await Promise.resolve();
+      expect(createSettled).toBe(true);
+      const createError = await createOutcome;
+      expect(createError).toBeInstanceOf(Error);
+      expect((createError as Error).message).toMatch(/unknown|connection replacement/i);
+      const cleanupError = await cleanupOutcome;
+      expect(cleanupError).toBeInstanceOf(Error);
+      expect((cleanupError as Error).message).toMatch(/unknown/i);
+
+      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: '2026-09-11T06:39:00.000Z',
+      });
+      const freshPhysicalPromise = new Promise<object>((resolve) => {
+        acceptConnection = resolve;
+      });
+      freshClient = connectHttp2(origin);
+      await once(freshClient, 'connect');
+      freshClient.request({ ':method': 'POST', ':path': '/' }).end();
+      const freshPhysical = await freshPhysicalPromise;
+      expect(
+        authority.admit({
+          connectionGeneration: 3,
+          identityId: target.identityId,
+          physicalConnection: freshPhysical,
+        }).role
+      ).toBe('authoritative');
+      await dispatch.readiness?.(freshPhysical, new TextEncoder().encode('{}'), target);
+
+      await expect(dispatch.poll(freshPhysical, 'image.acquire')).resolves.toMatchObject({
+        requestId: queuedRequestId,
+      });
+      await dispatch.result(freshPhysical, 'image.acquire', {
+        digest: `sha256:${'b'.repeat(64)}`,
+        requestId: queuedRequestId,
+      });
+      await expect(queuedOutcome).resolves.toEqual({ digest: `sha256:${'b'.repeat(64)}` });
+      expect(authority.mayCarryWork(freshPhysical)).toBe(true);
+    } finally {
+      firstClient?.destroy();
+      successorClient?.destroy();
+      freshClient?.destroy();
       server.close();
       await once(server, 'close');
       coreDb.sqlite.close();
