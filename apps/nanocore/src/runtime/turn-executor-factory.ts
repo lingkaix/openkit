@@ -1045,7 +1045,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (durableCleanupFailure) {
       return;
     }
-    const result = this.createCleanupRecoveryResult(identity);
+    const result = this.createCleanupRecoveryResult(
+      identity,
+      this.requireCleanupOriginPhysicalEpoch(identity, durableSandbox?.originPhysicalEpoch)
+    );
     if (!result) {
       throw new Error('NanoHost result-only cleanup dispatcher is unavailable.');
     }
@@ -1114,7 +1117,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           };
           const recoveryResult = !session
             ? (this.cleanupRecoveryResults.get(identity.packageSnapshotId) ??
-              this.createCleanupRecoveryResult(identity))
+              this.createCleanupRecoveryResult(
+                identity,
+                this.requireCleanupOriginPhysicalEpoch(
+                  identity,
+                  durableSandbox?.originPhysicalEpoch
+                )
+              ))
             : null;
           if (recoveryResult) {
             const retained = await recoveryResult.finally(() =>
@@ -2386,10 +2395,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Creates one bounded cleanup expectation set containing no command or token. */
-  private createCleanupRecoveryResult(identity: WorkerGovernanceBackendSessionIdentity) {
+  private createCleanupRecoveryResult(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    originPhysicalEpoch: string
+  ) {
     if (!this.sessionDispatch?.expectResultOnly) {
       return null;
     }
+    requireStoredNanoHostPhysicalEpoch(originPhysicalEpoch);
     const leaseId = this.requireLeaseId(identity.packageSnapshotId);
     const cleanupInput = {
       leaseId,
@@ -2397,7 +2410,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
     const expectations = (['bridge.close', 'sandbox.delete'] as const).map((operation) => {
       const request = this.createEffectRequest(identity, leaseId, operation, cleanupInput);
-      return { kind: operation, requestId: request.requestId! };
+      return { kind: operation, originPhysicalEpoch, requestId: request.requestId! };
     });
     return this.sessionDispatch.expectResultOnly(expectations);
   }
@@ -2470,6 +2483,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private findDurableBackendCleanupFailure(
     identity: WorkerGovernanceBackendSessionIdentity
   ): WorkerBackendSessionRecord | null {
+    const session = this.findDurableBackendSession(identity);
+    return session?.state === 'cleanup-failed' ? session : null;
+  }
+
+  /** Reads one exact durable backend anchor without choosing its cleanup target. */
+  private findDurableBackendSession(
+    identity: WorkerGovernanceBackendSessionIdentity
+  ): WorkerBackendSessionRecord | null {
     const session = getWorkerBackendSession(
       this.coreDb,
       this.requireLeaseId(identity.packageSnapshotId)
@@ -2487,9 +2508,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       session.stagingDirectoryRef !== identity.stagingDirectoryRef ||
       session.transientProviderInstanceId !== identity.transientProviderInstanceId
     ) {
-      throw new Error('NanoHost cleanup failure does not match the requested backend lineage.');
+      throw new Error('NanoHost cleanup does not match the requested backend lineage.');
     }
-    return session.state === 'cleanup-failed' ? session : null;
+    return session;
+  }
+
+  /** Selects the immutable origin of the Sandbox being cleaned, or its pre-Sandbox anchor. */
+  private requireCleanupOriginPhysicalEpoch(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    sandboxOriginPhysicalEpoch?: string
+  ): string {
+    if (sandboxOriginPhysicalEpoch !== undefined) {
+      return requireStoredNanoHostPhysicalEpoch(sandboxOriginPhysicalEpoch);
+    }
+    const backendSession = this.findDurableBackendSession(identity);
+    if (!backendSession) {
+      throw new Error('NanoHost cleanup physical Epoch anchor is unavailable.');
+    }
+    return requireStoredNanoHostPhysicalEpoch(backendSession.originPhysicalEpoch);
   }
 
   /** Requires a different fresh physical Epoch before an unknown cleanup can settle. */

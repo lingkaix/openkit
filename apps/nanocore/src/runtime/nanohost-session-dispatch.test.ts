@@ -118,6 +118,17 @@ describe('authoritative NanoHost session dispatch', () => {
       await expect(
         restarted.expectResultOnly!([{ kind: 'image.acquire', requestId, imageSettlement }])
       ).resolves.toEqual({ kind: 'image.acquire', result: { digest: result.digest } });
+      expect(() =>
+        restarted.expectResultOnly!([
+          {
+            kind: 'bridge.close',
+            originPhysicalEpoch: 'pre-witness',
+            requestId: 'f'.repeat(64),
+          },
+          { kind: 'image.acquire', requestId, imageSettlement },
+        ])
+      ).toThrow(/one image group|one cleanup origin group/i);
+      await expect(restarted.poll(physical, 'bridge.close')).resolves.toBeNull();
       await expect(
         restarted.result(physical, 'image.acquire', {
           ...result,
@@ -570,9 +581,46 @@ describe('authoritative NanoHost session dispatch', () => {
         ).rejects.toThrow(/special|sensitive|raw|failure|result/i);
       }
 
+      expect(() =>
+        dispatch.expectResultOnly!([
+          {
+            kind: 'bridge.close',
+            originPhysicalEpoch: 'pre-witness',
+            requestId: '5'.repeat(64),
+          },
+          {
+            kind: 'sandbox.delete',
+            originPhysicalEpoch: 'a'.repeat(64),
+            requestId: '6'.repeat(64),
+          },
+        ])
+      ).toThrow(/one image group|one cleanup origin group/i);
+
+      const replacedCleanupOutcome = dispatch.expectResultOnly!([
+        {
+          kind: 'bridge.close',
+          originPhysicalEpoch: 'pre-witness',
+          requestId: '7'.repeat(64),
+        },
+        {
+          kind: 'sandbox.delete',
+          originPhysicalEpoch: 'pre-witness',
+          requestId: '8'.repeat(64),
+        },
+      ]).catch((error: unknown) => error);
+      await expect(dispatch.poll(thirdPhysical, 'sandbox.create')).resolves.toBeNull();
+      const replacedCleanupError = await replacedCleanupOutcome;
+      expect(replacedCleanupError).toBeInstanceOf(Error);
+      expect((replacedCleanupError as Error).message).toMatch(/physical Epoch/i);
+      expect(authority.mayCarryWork(thirdPhysical)).toBe(true);
+
       const unknownRequestId = '9'.repeat(64);
       const unknownOutcome = dispatch.expectResultOnly!([
-        { kind: 'sandbox.delete', requestId: unknownRequestId },
+        {
+          kind: 'sandbox.delete',
+          originPhysicalEpoch: 'a'.repeat(64),
+          requestId: unknownRequestId,
+        },
       ]).then(
         () => null,
         (error: unknown) => error
@@ -700,8 +748,16 @@ describe('authoritative NanoHost session dispatch', () => {
       });
 
       const cleanupOutcome = dispatch.expectResultOnly!([
-        { kind: 'bridge.close', requestId: '7'.repeat(64) },
-        { kind: 'sandbox.delete', requestId: '8'.repeat(64) },
+        {
+          kind: 'bridge.close',
+          originPhysicalEpoch: 'a'.repeat(64),
+          requestId: '7'.repeat(64),
+        },
+        {
+          kind: 'sandbox.delete',
+          originPhysicalEpoch: 'a'.repeat(64),
+          requestId: '8'.repeat(64),
+        },
       ]).catch((error: unknown) => error);
       const queuedRequestId = '9'.repeat(64);
       const queuedOutcome = dispatch.effect({

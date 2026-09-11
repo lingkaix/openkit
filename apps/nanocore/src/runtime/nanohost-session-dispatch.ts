@@ -26,6 +26,7 @@ import {
 import {
   getNanoHostRuntimeTarget,
   requireNanoHostPhysicalEpoch,
+  requireStoredNanoHostPhysicalEpoch,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import {
@@ -152,13 +153,28 @@ export interface NanoHostSessionEffectRequest {
   readonly requestId?: string;
 }
 
-/** One exact accepted effect identity reconstructed without replay authority. */
-export interface NanoHostResultOnlyExpectation {
-  /** Immutable provenance reconstructed from the authored preparation candidate. */
-  readonly imageSettlement?: WorkerImageSettlementIdentity;
-  readonly kind: 'bridge.close' | 'image.acquire' | 'image.build' | 'sandbox.delete';
+/** One exact accepted cleanup identity reconstructed without replay authority. */
+interface NanoHostCleanupResultOnlyExpectation {
+  readonly imageSettlement?: never;
+  readonly kind: 'bridge.close' | 'sandbox.delete';
+  /** Immutable origin of the physical cleanup target. */
+  readonly originPhysicalEpoch: string;
   readonly requestId: string;
 }
+
+/** One exact accepted preparation-image identity reconstructed without replay authority. */
+interface NanoHostImageResultOnlyExpectation {
+  /** Immutable provenance reconstructed from the authored preparation candidate. */
+  readonly imageSettlement?: WorkerImageSettlementIdentity;
+  readonly kind: 'image.acquire' | 'image.build';
+  readonly originPhysicalEpoch?: never;
+  readonly requestId: string;
+}
+
+/** One exact accepted effect identity reconstructed without replay authority. */
+export type NanoHostResultOnlyExpectation =
+  | NanoHostCleanupResultOnlyExpectation
+  | NanoHostImageResultOnlyExpectation;
 
 /** One exact retained result matched to its reconstructed effect identity. */
 export interface NanoHostResultOnlySettlement {
@@ -421,22 +437,49 @@ export function createNanoHostSessionDispatch(
         throw new Error('NanoHost result-only expectations are empty, duplicate, or unbounded.');
       }
       for (const expectation of expectations) {
+        const cleanupExpectation =
+          expectation.kind === 'bridge.close' || expectation.kind === 'sandbox.delete';
+        if (cleanupExpectation !== (expectation.originPhysicalEpoch !== undefined)) {
+          throw new Error('NanoHost result-only cleanup physical Epoch origin is invalid.');
+        }
+        if (cleanupExpectation) {
+          requireStoredNanoHostPhysicalEpoch(expectation.originPhysicalEpoch);
+        }
         if (!expectation.imageSettlement) continue;
         WorkerImageSettlementIdentitySchema.parse(expectation.imageSettlement);
         if (!input.coreDb || !['image.acquire', 'image.build'].includes(expectation.kind)) {
           throw new Error('Preparation image settlement recovery is unavailable.');
         }
-        const known = readWorkerImageSettlement(input.coreDb, expectation.requestId);
-        if (!known) continue;
-        return Promise.resolve({
-          kind: expectation.kind,
-          result: settledImageResult(
-            known,
-            expectation.imageSettlement,
-            expectation.requestId,
-            expectation.kind
-          ),
-        });
+      }
+      const cleanupExpectations = expectations.filter(
+        (expectation): expectation is NanoHostCleanupResultOnlyExpectation =>
+          expectation.kind === 'bridge.close' || expectation.kind === 'sandbox.delete'
+      );
+      if (
+        cleanupExpectations.length !== 0 &&
+        (cleanupExpectations.length !== expectations.length ||
+          new Set(cleanupExpectations.map(({ originPhysicalEpoch }) => originPhysicalEpoch))
+            .size !== 1)
+      ) {
+        throw new Error(
+          'NanoHost result-only expectations must be one image group or one cleanup origin group.'
+        );
+      }
+      if (input.coreDb) {
+        for (const expectation of expectations) {
+          if (!expectation.imageSettlement) continue;
+          const known = readWorkerImageSettlement(input.coreDb, expectation.requestId);
+          if (!known) continue;
+          return Promise.resolve({
+            kind: expectation.kind,
+            result: settledImageResult(
+              known,
+              expectation.imageSettlement,
+              expectation.requestId,
+              expectation.kind
+            ),
+          });
+        }
       }
       for (const expectation of expectations) {
         if (
@@ -462,6 +505,9 @@ export function createNanoHostSessionDispatch(
             requestId: expectation.requestId,
             resolve: (value) => resolve(value as NanoHostResultOnlySettlement),
             resultOnlyGroup: group,
+            ...(expectation.originPhysicalEpoch !== undefined
+              ? { originPhysicalEpoch: expectation.originPhysicalEpoch }
+              : {}),
           });
         }
       });
@@ -476,6 +522,21 @@ export function createNanoHostSessionDispatch(
         throw new Error('NanoHost physical connection has not completed durable readiness.');
       }
       const pollingPhysicalEpoch = requireCurrentReadiness(pollingReadiness);
+      for (const [candidateOperation, candidate] of pendingEffects) {
+        if (
+          !candidate.resultOnlyGroup ||
+          candidate.originPhysicalEpoch === undefined ||
+          candidate.originPhysicalEpoch === pollingPhysicalEpoch
+        ) {
+          continue;
+        }
+        removePendingEffectGroup(pendingEffects, candidateOperation, candidate);
+        candidate.reject(
+          new Error(
+            'NanoHost cleanup result-only origin physical Epoch is absent from the current coordinator.'
+          )
+        );
+      }
       const priorConnectionEffects = [...pendingEffects.entries()].filter(
         ([, candidate]) =>
           candidate.resultOnlyGroup ||

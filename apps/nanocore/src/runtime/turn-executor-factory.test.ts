@@ -555,6 +555,159 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it('retires one pre-witness cleanup through the first different fresh Epoch without dispatch', async () => {
+    const coreDb = createFactoryCoreDb();
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const runtimeTarget = {
+      coreDb,
+      deploymentId: 'deployment_pre_witness_cleanup',
+      identityId: 'identity_pre_witness_cleanup',
+      targetId: 'target_pre_witness_cleanup',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...runtimeTarget,
+      observedAt: '2026-09-11T00:00:00.000Z',
+    });
+    let acceptPhysical!: (connection: object) => void;
+    const physicalReady = new Promise<object>((resolve) => {
+      acceptPhysical = resolve;
+    });
+    const server = createHttp2Server((request, response) => {
+      const physical = readNanoHostPhysicalConnectionContext(request);
+      if (physical) acceptPhysical(physical);
+      response.writeHead(204).end();
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      client.request({ ':method': 'POST', ':path': '/' }).end();
+      const physical = await physicalReady;
+      authority.admit({
+        connectionGeneration: 1,
+        identityId: runtimeTarget.identityId,
+        physicalConnection: physical,
+      });
+      await dispatch.readiness!(
+        physical,
+        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        runtimeTarget
+      );
+
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: dispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = () => 'lease_pre_witness_cleanup';
+      const identity = backend.planSession(
+        completeNanoHostPackage({
+          scope: {
+            agentSessionId: 'as_pre_witness_cleanup',
+            threadId: 'thread_pre_witness_cleanup',
+            turnId: 'turn_pre_witness_cleanup',
+            workspaceId: 'workspace_pre_witness_cleanup',
+          },
+          snapshotId: 'aepsnap_pre_witness_cleanup',
+        })
+      );
+      const sandboxCompatibilityKey = `${identity.backendSessionId.slice(3, 19)}${'c'.repeat(48)}`;
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-pre-witness-cleanup',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-pre-witness-cleanup',
+        imageDigest: `sha256:${'1'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
+        sandboxBindingRef: 'sandbox-binding-pre-witness-cleanup',
+        sandboxCompatibilityKey,
+        sandboxIntegrationBindingRef: 'integration-pre-witness-cleanup',
+        sandboxRuntimeId: 'sandbox-runtime-pre-witness-cleanup',
+        runtimeTargetId: identity.runtimeTargetId,
+        timestamp: '2026-09-11T00:00:00.000Z',
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE sandbox_runtime_records SET origin_physical_epoch = 'pre-witness'
+           WHERE sandbox_runtime_id = 'sandbox-runtime-pre-witness-cleanup'`
+        )
+        .run();
+      const storage = attachNanoHostStorageFixture(coreDb, {
+        agentSessionId: identity.agentSessionId,
+        deploymentId: identity.deploymentId,
+        runtimeTargetId: identity.runtimeTargetId,
+        sandboxBindingRef: 'sandbox-binding-pre-witness-cleanup',
+        threadId: 'thread_pre_witness_cleanup',
+        workspaceId: 'workspace_pre_witness_cleanup',
+      });
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO worker_backend_sessions (
+             lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, backend_kind, deployment_id, backend_session_id,
+             runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
+             staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
+           ) VALUES (
+             'lease_pre_witness_cleanup', 'workspace_pre_witness_cleanup',
+             'thread_pre_witness_cleanup', 'turn_pre_witness_cleanup', ?, ?, 'openshell', ?, ?, ?,
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
+             'lease-binding:pre-witness-cleanup', ?, 'pending',
+             'cleanup-pending', ?, ?
+           )`
+        )
+        .run(
+          identity.agentSessionId,
+          identity.packageSnapshotId,
+          identity.deploymentId,
+          identity.backendSessionId,
+          identity.runtimeTargetId,
+          identity.stagingDirectoryRef,
+          '2026-09-11T00:00:00.000Z',
+          '2026-09-11T00:00:00.000Z'
+        );
+
+      runtime.prepareBackendCleanup(identity);
+      const initialCleanup = runtime.cleanupBackendSession(identity);
+      await expect(dispatch.poll(physical, 'sandbox.create')).resolves.toBeNull();
+      await expect(initialCleanup).rejects.toThrow(/physical Epoch/i);
+      expect(authority.mayCarryWork(physical)).toBe(true);
+
+      runtime.prepareBackendCleanup(identity);
+      await expect(runtime.cleanupBackendSession(identity)).resolves.toBeUndefined();
+      await expect(dispatch.poll(physical, 'bridge.close')).resolves.toBeNull();
+      await expect(dispatch.poll(physical, 'sandbox.delete')).resolves.toBeNull();
+      expect(getWorkerStorageBinding(coreDb, { storageRef: storage.storageRef })).toMatchObject({
+        revision: storage.revision + 2,
+        state: 'idle',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT COUNT(*) AS count FROM sandbox_runtime_records
+             WHERE sandbox_runtime_id = 'sandbox-runtime-pre-witness-cleanup'`
+          )
+          .get()
+      ).toEqual({ count: 0 });
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+    }
+  });
+
   it('rechecks the anchored physical Epoch immediately before effect dispatch', async () => {
     const coreDb = createFactoryCoreDb();
     const effect = vi.fn(async () => ({}));
