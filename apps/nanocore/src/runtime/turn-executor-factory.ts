@@ -635,9 +635,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     harnessCompatibilityKey: string,
     runtimeTargetId: string,
     adapterId: 'codex' | 'opencode' | 'pi',
-    adapterVersion: string
+    adapterVersion: string,
+    durableOriginPhysicalEpoch?: string
   ): NanoHostSharedHarness | null {
-    const currentPhysicalEpoch = this.requireCurrentPhysicalEpoch(runtimeTargetId);
+    const currentPhysicalEpoch = this.resolveRestorationPhysicalEpoch(
+      runtimeTargetId,
+      durableOriginPhysicalEpoch
+    );
     const mapKey = nanoHostSharedHarnessMapKey(sandboxCompatibilityKey, harnessCompatibilityKey);
     const existing = this.sharedHarnesses.get(mapKey);
     if (existing) {
@@ -777,12 +781,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const adapterId = nanoHostAdapterId(environmentPackage);
     const expectedSessionKey = nanoHostAgentSessionCompatibilityKey(environmentPackage);
     const identity = this.planSession(environmentPackage);
+    const durableSession = this.findDurableBackendSession(identity);
+    if (!durableSession || durableSession.leaseId !== leaseId) {
+      throw new Error('NanoHost restart backend anchor is missing or incompatible.');
+    }
     const sharedHarness = this.restoreSharedHarness(
       expectedSandboxKey,
       expectedHarnessKey,
       requireNanoHostRuntimeTargetId(identity),
       adapterId,
-      environmentPackage.agent.runtimeVersion
+      environmentPackage.agent.runtimeVersion,
+      durableSession.originPhysicalEpoch
     );
     const binding = sharedHarness?.bindings.get(environmentPackage.scope.agentSessionId);
     if (!sharedHarness || !binding || binding.agentSessionCompatibilityKey !== expectedSessionKey) {
@@ -2574,6 +2583,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost current physical Epoch authority is unavailable.');
     }
     return physicalEpoch;
+  }
+
+  /** Resolves a durable restore origin without treating it as current effect authority. */
+  private resolveRestorationPhysicalEpoch(
+    runtimeTargetId: string,
+    durableOriginPhysicalEpoch?: string
+  ): string {
+    if (durableOriginPhysicalEpoch === undefined) {
+      return this.requireCurrentPhysicalEpoch(runtimeTargetId);
+    }
+    const durableOrigin = requireStoredNanoHostPhysicalEpoch(durableOriginPhysicalEpoch);
+    const currentPhysicalEpoch = this.readCurrentPhysicalEpoch(runtimeTargetId);
+    if (currentPhysicalEpoch !== null && currentPhysicalEpoch !== durableOrigin) {
+      throw new Error('NanoHost restart backend belongs to a different physical Epoch.');
+    }
+    return durableOrigin;
   }
 
   /** Reads current authenticated Epoch authority without changing admission state. */

@@ -16,6 +16,7 @@ import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
+  recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
 import { runSchedulerLeaseMaintenanceOnce } from './runtime/scheduler-lease-maintenance-service.js';
@@ -359,13 +360,39 @@ describe('worker control routes', () => {
       'original process key',
       createHash('sha256').update('route-process-key').digest('base64url'),
       true,
+      false,
+      false,
+      null,
+      null,
     ],
     [
       'different process key',
       createHash('sha256').update('wrong-route-process-key').digest('base64url'),
       false,
+      false,
+      false,
+      null,
+      null,
     ],
-  ] as const)('accepts restart heartbeat only for the %s', async (_case, reconnectKey, accepted) => {
+    [
+      'original process key before RuntimeTarget readiness returns',
+      createHash('sha256').update('route-process-key').digest('base64url'),
+      false,
+      true,
+      false,
+      503,
+      'worker_control_reconnect_required',
+    ],
+    [
+      'original process key after backend cleanup starts',
+      createHash('sha256').update('route-process-key').digest('base64url'),
+      false,
+      false,
+      true,
+      403,
+      'worker_control_lease_not_live',
+    ],
+  ] as const)('accepts restart heartbeat only for the %s', async (_case, reconnectKey, accepted, clearRuntimeTargetReadiness, beginBackendCleanup, expectedStatus, expectedErrorCode) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-reconnect-route-')));
     const fixture = createWorkerControlRouteFixture();
     const originalKey = createHash('sha256').update('route-process-key').digest('base64url');
@@ -427,6 +454,21 @@ describe('worker control routes', () => {
            WHERE lease_id = 'lease_process_key_reconnect'`
         )
         .run();
+      if (clearRuntimeTargetReadiness) {
+        recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+          authoritativeGeneration: null,
+          closedGeneration: 1,
+          observedAt: '2026-07-05T00:00:01.000Z',
+          targetId: 'runtime-target-test',
+        });
+      }
+      if (beginBackendCleanup) {
+        transitionWorkerBackendSessionState(coreDb, {
+          fromState: 'launching',
+          leaseId,
+          toState: 'cleanup-pending',
+        });
+      }
 
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
       registerDurableWorkerControlSession(restartedGateway, fixture.environmentPackage, binding);
@@ -459,6 +501,10 @@ describe('worker control routes', () => {
       );
 
       expect(reconnect.status === 200).toBe(accepted);
+      if (expectedErrorCode) {
+        expect(reconnect.status).toBe(expectedStatus);
+        expect(await reconnect.clone().json()).toMatchObject({ code: expectedErrorCode });
+      }
       expect(lease).toMatchObject(
         accepted
           ? { lastWorkerSequence: 1, recoveryDeadline: null, recoveryState: null }

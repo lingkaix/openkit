@@ -539,6 +539,13 @@ function throwSchedulerHeartbeatGatewayError(error: unknown): never {
       409
     );
   }
+  if (error.reason === 'reconnect-required') {
+    throw new WorkerControlGatewayError(
+      'worker_control_reconnect_required',
+      'Worker control session must reconnect after NanoCore restart.',
+      503
+    );
+  }
   throw new WorkerControlGatewayError(
     'worker_control_lease_not_live',
     'Worker control request lease is not live.',

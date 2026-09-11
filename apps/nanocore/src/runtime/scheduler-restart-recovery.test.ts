@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import {
+  type AgentEnvironmentPackage,
+  planSessionWorkspaceMaterialization,
+} from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
@@ -24,9 +27,18 @@ import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import {
+  listExportableAgentEnvironmentPackageSnapshots,
+  requireAgentEnvironmentPackageSnapshot,
+} from './aep-snapshot-ledger.js';
+import {
+  deriveNanoHostAgentSessionCompatibilityKey,
+  openNanoHostAgentSessionBinding,
+} from './nanohost-harness-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
+  recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import type {
@@ -2145,6 +2157,295 @@ describe('minimal scheduler reconnect contract', () => {
         recoveryState: 'awaiting-reconnect',
       });
       expect(projectionCalls).toBe(0);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('hydrates one same-Epoch survivor while readiness is absent and rejects a different Epoch', async () => {
+    const coreDb = createMigratedCoreDb();
+    const suffix = 'graceful_same_epoch_reconnect';
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    store.createThread('ws_demo', 'Same-Epoch restart fixture', `thread_${suffix}`);
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-07-05T00:00:01.000Z',
+      environmentPackageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
+      id: `as_${suffix}`,
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey: null,
+      status: 'busy',
+      threadId: `thread_${suffix}`,
+      updatedAt: '2026-07-05T00:00:01.000Z',
+      workspaceId: 'ws_demo',
+      workspaceRoots: [],
+    });
+    const fixture = prepareReconnectLease(coreDb, suffix);
+    const leaseId = `lease_${suffix}`;
+    const runtimeTargetId = 'runtime-target-test';
+    let cleanupRegistrations = 0;
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(
+        requestOrConnection: object,
+        carriedRequest?: NanoHostSessionEffectRequest
+      ): Promise<unknown> {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        if (request.kind === 'image.acquire') {
+          return { digest: `sha256:${'c'.repeat(64)}` };
+        }
+        if (request.kind === 'image.inspect') {
+          return {
+            digest: request.input.imageDigest,
+            platform: { architecture: 'amd64', os: 'linux' },
+            storageLayout: {
+              family: 'openkit-worker',
+              gid: 1000,
+              targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+              uid: 1000,
+              version: '1',
+              workingDirectory: '/tmp/openkit-bootstrap',
+            },
+          };
+        }
+        if (request.kind === 'sandbox.create') {
+          const storage = request.input.storage as {
+            readonly attachmentGeneration: number;
+            readonly layoutDigest: string;
+            readonly scopeDigest: string;
+            readonly storageRef: string;
+            readonly targets: readonly { readonly target: string; readonly volumeRef: string }[];
+          };
+          return {
+            sandboxId: request.input.sandboxId,
+            state: 'created',
+            storage: {
+              ...storage,
+              targets: storage.targets.map((target) => ({ ...target, initialized: true })),
+            },
+          };
+        }
+        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+      },
+      expectResultOnly() {
+        cleanupRegistrations += 1;
+        return new Promise<never>(() => undefined);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT OR IGNORE INTO users (
+             id, display_name, email, email_verified, kind, status, created_at, updated_at
+           ) VALUES (?, ?, ?, 0, 'human', 'active', 0, 0)`
+        )
+        .run(LOCAL_USER_ID, LOCAL_USER_ID, 'local@restart-fixture.openkit.invalid');
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_demo',
+      });
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      let environmentPackage: AgentEnvironmentPackage;
+      try {
+        applyScopedMigrations(workspaceDb);
+        environmentPackage = requireAgentEnvironmentPackageSnapshot(
+          workspaceDb,
+          'ws_demo',
+          `aepsnap_turn_${suffix}_as_${suffix}`
+        ).snapshot;
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+
+      const initialRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const initialBackend = (
+        initialRuntime.turnExecutor as unknown as {
+          readonly backend: {
+            materialize(
+              environmentPackage: AgentEnvironmentPackage,
+              context: { readonly workspaceRoots: [] }
+            ): Promise<unknown>;
+            planSession(environmentPackage: AgentEnvironmentPackage): {
+              readonly backendSessionId: string;
+            };
+          };
+        }
+      ).backend;
+      coreDb.sqlite
+        .prepare(
+          `UPDATE worker_backend_sessions
+           SET backend_session_id = ?
+           WHERE lease_id = ?`
+        )
+        .run(initialBackend.planSession(environmentPackage).backendSessionId, leaseId);
+      await initialBackend.materialize(environmentPackage, { workspaceRoots: [] });
+      const harness = coreDb.sqlite
+        .prepare(
+          `SELECT h.adapter_id AS adapterId, h.adapter_version AS adapterVersion,
+                  h.harness_compatibility_key AS harnessCompatibilityKey,
+                  h.harness_instance_id AS harnessInstanceId
+           FROM harness_instance_records h
+           JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+           WHERE s.origin_physical_epoch = ?`
+        )
+        .get('a'.repeat(64)) as {
+        readonly adapterId: 'codex';
+        readonly adapterVersion: string;
+        readonly harnessCompatibilityKey: string;
+        readonly harnessInstanceId: string;
+      };
+      const agentSessionCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
+        adapterId: harness.adapterId,
+        adapterVersion: harness.adapterVersion,
+        harnessCompatibilityKey: harness.harnessCompatibilityKey,
+        sessionCompatibilityKey: planSessionWorkspaceMaterialization({ environmentPackage })
+          .compatibilityKey.digest,
+        threadId: environmentPackage.scope.threadId,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey,
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: `binding_${suffix}`,
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: harness.harnessInstanceId,
+        threadId: environmentPackage.scope.threadId,
+        timestamp: '2026-07-05T00:00:07.000Z',
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+      effects.length = 0;
+      recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+        authoritativeGeneration: null,
+        closedGeneration: 1,
+        observedAt: '2026-07-05T00:00:08.000Z',
+        targetId: runtimeTargetId,
+      });
+
+      const restartedRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      await expect(
+        restartedRuntime.restoreBackendSession(getWorkerBackendSession(coreDb, leaseId)!)
+      ).resolves.toBeUndefined();
+      await runSchedulerRestartRecovery(coreDb, {
+        cleanupBackendSession: restartedRuntime.cleanupBackendSession,
+        now: () => '2026-07-05T00:01:00.000Z',
+        prepareBackendCleanup: restartedRuntime.prepareBackendCleanup,
+        projectRecoveredTurn: async () => ({ status: 'failed' }),
+        restoreBackendSession: restartedRuntime.restoreBackendSession,
+      });
+
+      expect(requireSchedulerSessionLease(coreDb, leaseId)).toMatchObject({
+        recoveryState: 'awaiting-reconnect',
+        status: 'active',
+      });
+      expect(cleanupRegistrations).toBe(0);
+      expect(effects).toEqual([]);
+      const restartedBackend = (
+        restartedRuntime.turnExecutor as unknown as {
+          readonly backend: {
+            prepareAgentSessionContinuity(input: {
+              readonly agentSessionCompatibilityKey: string;
+              readonly agentSessionId: string;
+              readonly reuseAllowed: true;
+              readonly threadId: string;
+              readonly workspaceId: string;
+            }): Promise<unknown>;
+          };
+        }
+      ).backend;
+      await expect(
+        restartedBackend.prepareAgentSessionContinuity({
+          agentSessionCompatibilityKey,
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          reuseAllowed: true,
+          threadId: environmentPackage.scope.threadId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        })
+      ).rejects.toThrow(/not ready for admission/i);
+      expect(() =>
+        adoptSchedulerLeaseReconnect(coreDb, {
+          acceptedAt: '2026-07-05T00:01:01.000Z',
+          lineage: fixture.lineage,
+          reconnectKey: fixture.reconnectKey,
+          sandboxBindingRef: `lease-binding:${leaseId}`,
+          workerSequence: 2,
+        })
+      ).toThrow(
+        expect.objectContaining({
+          reason: 'reconnect-required',
+        })
+      );
+
+      const differentGeneration = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'identity-test',
+        observedAt: '2026-07-05T00:01:02.000Z',
+        targetId: runtimeTargetId,
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...differentGeneration,
+        freshEmpty: true,
+        observedAt: '2026-07-05T00:01:03.000Z',
+        physicalEpoch: 'b'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      expect(() =>
+        adoptSchedulerLeaseReconnect(coreDb, {
+          acceptedAt: '2026-07-05T00:01:04.000Z',
+          lineage: fixture.lineage,
+          reconnectKey: fixture.reconnectKey,
+          sandboxBindingRef: `lease-binding:${leaseId}`,
+          workerSequence: 2,
+        })
+      ).toThrow(
+        expect.objectContaining({
+          reason: 'lease-changed',
+        })
+      );
+
+      const sameGeneration = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'identity-test',
+        observedAt: '2026-07-05T00:01:05.000Z',
+        targetId: runtimeTargetId,
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...sameGeneration,
+        freshEmpty: true,
+        observedAt: '2026-07-05T00:01:06.000Z',
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      expect(
+        adoptSchedulerLeaseReconnect(coreDb, {
+          acceptedAt: '2026-07-05T00:01:07.000Z',
+          lineage: fixture.lineage,
+          reconnectKey: fixture.reconnectKey,
+          sandboxBindingRef: `lease-binding:${leaseId}`,
+          workerSequence: 2,
+        })
+      ).toMatchObject({ recoveryState: null, status: 'active' });
     } finally {
       coreDb.sqlite.close();
     }

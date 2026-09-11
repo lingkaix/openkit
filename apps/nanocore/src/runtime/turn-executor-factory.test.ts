@@ -4565,7 +4565,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      recoveringBackend.restoreSession(firstPackage, 'lease-active-recovery');
+      recoveringBackend.restoreSession(firstPackage, `lease-${firstPackage.snapshotId}`);
       await expect(
         recoveringBackend.prepareAgentSessionContinuity?.({
           agentSessionCompatibilityKey: sessionCompatibilityKey,

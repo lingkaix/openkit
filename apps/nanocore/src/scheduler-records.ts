@@ -2,6 +2,8 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import { type ActorRef, ActorRefSchema, type TurnStatus } from '@openkit/protocol';
 import { WorkerProcessKeySchema } from '@openkit/worker-protocol';
+import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
+import { getWorkerBackendSession } from './runtime/worker-backend-sessions.js';
 import type { CoreDb } from './storage/db.js';
 import type {
   SchedulerAdmissionDenialReason,
@@ -900,7 +902,11 @@ export interface BindSchedulerLeaseRouteTokenHashesInput {
 /** Stable scheduler-domain failure raised when a lease cannot accept a worker heartbeat. */
 export class SchedulerLeaseHeartbeatRejectedError extends Error {
   /** Stable rejection reason for protocol projection. */
-  public readonly reason: 'lease-not-live' | 'sequence-stale' | 'lease-changed';
+  public readonly reason:
+    | 'lease-not-live'
+    | 'sequence-stale'
+    | 'lease-changed'
+    | 'reconnect-required';
 
   /**
    * Creates one scheduler heartbeat rejection.
@@ -1683,6 +1689,39 @@ export function adoptSchedulerLeaseReconnect(
     : Buffer.alloc(0);
   if (storedHash.length !== presentedHash.length || !timingSafeEqual(storedHash, presentedHash)) {
     throwReconnectRejected('lease-changed', 'Worker reconnect process key does not match.');
+  }
+  const backendSession = getWorkerBackendSession(coreDb, lease.leaseId);
+  if (
+    !backendSession ||
+    backendSession.workspaceId !== lease.workspaceId ||
+    backendSession.threadId !== lease.threadId ||
+    backendSession.turnId !== lease.turnId ||
+    backendSession.agentSessionId !== lease.agentSessionId ||
+    backendSession.packageSnapshotId !== lease.packageSnapshotId ||
+    backendSession.sandboxBindingRef !== lease.sandboxBindingRef
+  ) {
+    throwReconnectRejected('lease-changed', 'Worker reconnect backend lineage changed.');
+  }
+  if (backendSession.state !== 'launching' || backendSession.workspaceHandoffState !== 'complete') {
+    throwReconnectRejected('lease-not-live', 'Worker reconnect backend is not live.');
+  }
+  const runtimeTarget = getNanoHostRuntimeTarget(coreDb, backendSession.runtimeTargetId);
+  if (!runtimeTarget || runtimeTarget.deploymentId !== backendSession.deploymentId) {
+    throwReconnectRejected('lease-changed', 'Worker reconnect RuntimeTarget identity changed.');
+  }
+  if (
+    !runtimeTarget.predecessorFenced ||
+    !runtimeTarget.ready ||
+    !runtimeTarget.freshEmpty ||
+    runtimeTarget.physicalEpoch === null
+  ) {
+    throwReconnectRejected(
+      'reconnect-required',
+      'Worker reconnect is waiting for current physical Epoch authority.'
+    );
+  }
+  if (runtimeTarget.physicalEpoch !== backendSession.originPhysicalEpoch) {
+    throwReconnectRejected('lease-changed', 'Worker reconnect physical Epoch identity changed.');
   }
   const update = coreDb.sqlite
     .prepare(
