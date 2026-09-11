@@ -60,8 +60,8 @@ compile_error!("NanoHost supports only linux/amd64 and linux/arm64 Supervisor im
 /// Maximum time allowed for each dependency readiness proof.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Calls Linux `setns`, or fails closed on unsupported build hosts.
-unsafe fn setns(fd: i32) -> i32 {
+/// Enters one retained Linux network namespace.
+unsafe fn setns_network(fd: i32) -> i32 {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: the caller owns the retained descriptor and namespace type.
@@ -74,8 +74,22 @@ unsafe fn setns(fd: i32) -> i32 {
     }
 }
 
-/// Calls Linux `unshare`, or fails closed on unsupported build hosts.
-unsafe fn unshare() -> i32 {
+/// Enters one retained Linux mount namespace.
+unsafe fn setns_mount(fd: i32) -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: the caller owns the retained mount namespace descriptor.
+        unsafe { libc::setns(fd, libc::CLONE_NEWNS) }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = fd;
+        -1
+    }
+}
+
+/// Creates one fresh Linux network namespace.
+unsafe fn unshare_network() -> i32 {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: the caller supplies the fixed supported namespace flag.
@@ -834,14 +848,20 @@ struct EpochMemberMonitor {
 /// Child-handle aggregate whose normal drop always kills and reaps the group.
 struct OwnedEpochChildren {
     children: Vec<Child>,
-    namespace_descriptor: Option<Arc<OwnedFd>>,
+    private_namespaces: Option<PrivateNamespaceDescriptors>,
+}
+
+/// Retains the exact network and mount namespaces created by containerd.
+struct PrivateNamespaceDescriptors {
+    network: Arc<OwnedFd>,
+    mount: Arc<OwnedFd>,
 }
 
 impl Drop for OwnedEpochChildren {
     /// Performs normal fail-stop teardown without creating invalidation evidence.
     fn drop(&mut self) {
         terminate_children(&mut self.children);
-        self.namespace_descriptor.take();
+        self.private_namespaces.take();
     }
 }
 
@@ -849,13 +869,13 @@ impl EpochMemberMonitor {
     /// Starts the one monitor that owns every member handle during long effects.
     #[allow(dead_code)]
     fn start(children: Vec<Child>, evidence: EpochEvidenceWriter) -> Self {
-        Self::start_with_namespace(children, None, evidence)
+        Self::start_with_namespaces(children, None, evidence)
     }
 
-    /// Starts the monitor while retaining the proved private namespace descriptor.
-    fn start_with_namespace(
+    /// Starts the monitor while retaining the proved private namespace descriptors.
+    fn start_with_namespaces(
         children: Vec<Child>,
-        namespace_descriptor: Option<Arc<OwnedFd>>,
+        private_namespaces: Option<PrivateNamespaceDescriptors>,
         mut evidence: EpochEvidenceWriter,
     ) -> Self {
         let (fence, fence_rx) = mpsc::sync_channel(1);
@@ -863,7 +883,7 @@ impl EpochMemberMonitor {
         let worker = thread::spawn(move || {
             let mut children = OwnedEpochChildren {
                 children,
-                namespace_descriptor,
+                private_namespaces,
             };
             loop {
                 let observed = children
@@ -1034,11 +1054,11 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
             }
-            let namespace_descriptor = match children
+            let private_namespaces = match children
                 .last_mut()
                 .ok_or(EpochFault::PartialStart)
                 .and_then(|child| {
-                    retain_private_namespace(child).map_err(|_| EpochFault::PartialStart)
+                    retain_private_namespaces(child).map_err(|_| EpochFault::PartialStart)
                 }) {
                 Ok(descriptor) => descriptor,
                 Err(fault) => {
@@ -1059,15 +1079,22 @@ impl EpochCoordinator {
             let slirp_ready = match spawn_member(
                 &mut children,
                 &plan.members()[1],
-                Some(&namespace_descriptor),
+                Some(&private_namespaces),
                 None,
             ) {
                 Ok(Some(ready_reader)) => children.last_mut().is_some_and(|child| {
-                    wait_for_slirp_ready(child, ready_reader, Arc::clone(&namespace_descriptor))
+                    wait_for_slirp_ready(
+                        child,
+                        ready_reader,
+                        Arc::clone(&private_namespaces.network),
+                    )
                 }),
                 Ok(None) | Err(_) => false,
             };
-            if !slirp_ready {
+            let containerd_running = children
+                .first_mut()
+                .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+            if !slirp_ready || !containerd_running {
                 export_before_fence(EpochFault::PartialStart);
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
@@ -1076,8 +1103,8 @@ impl EpochCoordinator {
             if spawn_member(
                 &mut children,
                 &plan.members()[2],
-                Some(&namespace_descriptor),
-                Some((plan.resolver_path(), &resolver_target)),
+                Some(&private_namespaces),
+                None,
             )
             .is_err()
             {
@@ -1086,10 +1113,13 @@ impl EpochCoordinator {
                 return Err(EpochFault::PartialStart);
             }
             let dockerd_ready = children.last_mut().is_some_and(|child| {
-                wait_for_member_namespace(child, &namespace_descriptor)
+                wait_for_member_namespaces(child, &private_namespaces)
                     && wait_for_socket(child, plan.docker_socket())
             });
-            if !dockerd_ready {
+            let containerd_running = children
+                .first_mut()
+                .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+            if !dockerd_ready || !containerd_running {
                 export_before_fence(EpochFault::PartialStart);
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
@@ -1098,20 +1128,23 @@ impl EpochCoordinator {
             if spawn_member(
                 &mut children,
                 &plan.members()[3],
-                Some(&namespace_descriptor),
-                Some((plan.resolver_path(), &resolver_target)),
+                Some(&private_namespaces),
+                None,
             )
             .is_err()
                 || !children
                     .last_mut()
-                    .is_some_and(|child| wait_for_member_namespace(child, &namespace_descriptor))
+                    .is_some_and(|child| wait_for_member_namespaces(child, &private_namespaces))
+                || !children
+                    .first_mut()
+                    .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
             {
                 export_before_fence(EpochFault::PartialStart);
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
             }
             if client
-                .bind_network_namespace(Arc::clone(&namespace_descriptor))
+                .bind_network_namespace(Arc::clone(&private_namespaces.network))
                 .is_err()
             {
                 export_before_fence(EpochFault::PartialStart);
@@ -1142,10 +1175,10 @@ impl EpochCoordinator {
                     .await
                 })
             });
-            let gateway_running = children
-                .last_mut()
-                .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-            if !matches!(health, Ok(Ok(()))) || !gateway_running {
+            let members_running = children
+                .iter_mut()
+                .all(|child| matches!(child.try_wait(), Ok(None)));
+            if !matches!(health, Ok(Ok(()))) || !members_running {
                 let fault = match health {
                     Ok(Err(fault)) => fault,
                     Err(_) | Ok(Ok(())) => EpochFault::PartialStart,
@@ -1154,15 +1187,15 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(fault);
             }
-            (runtime, namespace_descriptor)
+            (runtime, private_namespaces)
         };
 
-        let (runtime, namespace_descriptor) = runtime;
+        let (runtime, private_namespaces) = runtime;
 
         Ok(Self {
-            monitor: EpochMemberMonitor::start_with_namespace(
+            monitor: EpochMemberMonitor::start_with_namespaces(
                 children,
-                Some(namespace_descriptor),
+                Some(private_namespaces),
                 evidence,
             ),
             runtime,
@@ -2012,7 +2045,7 @@ fn gateway_cert_command(plan: &EpochPlan) -> Command {
 fn spawn_member(
     children: &mut Vec<Child>,
     member: &EpochMemberSpec,
-    namespace_descriptor: Option<&Arc<OwnedFd>>,
+    private_namespaces: Option<&PrivateNamespaceDescriptors>,
     resolver_projection: Option<(&Path, &Path)>,
 ) -> io::Result<Option<UnixStream>> {
     let mut command = Command::new(member.program());
@@ -2030,7 +2063,7 @@ fn spawn_member(
             // calls with owned C strings retained through spawn.
             unsafe {
                 command.pre_exec(move || {
-                    if unshare() == 0
+                    if unshare_network() == 0
                         && mount_private_resolver(
                             resolver_source.as_ptr(),
                             resolver_target.as_ptr(),
@@ -2044,19 +2077,16 @@ fn spawn_member(
             }
         }
         EpochNetworkNamespaceMode::JoinPrivate => {
-            let namespace_fd = namespace_descriptor
-                .ok_or_else(|| io::Error::other("private namespace descriptor missing"))?
-                .as_raw_fd();
-            let (resolver_source, resolver_target) = resolver_mount(resolver_projection)?;
-            // SAFETY: the closure uses only async-signal-safe namespace and mount
-            // calls with owned descriptors and C strings retained through spawn.
+            let private_namespaces = private_namespaces
+                .ok_or_else(|| io::Error::other("private namespace descriptors missing"))?;
+            let network_namespace_fd = private_namespaces.network.as_raw_fd();
+            let mount_namespace_fd = private_namespaces.mount.as_raw_fd();
+            // SAFETY: the closure uses only async-signal-safe namespace calls
+            // with owned descriptors retained through spawn.
             unsafe {
                 command.pre_exec(move || {
-                    if setns(namespace_fd) == 0
-                        && mount_private_resolver(
-                            resolver_source.as_ptr(),
-                            resolver_target.as_ptr(),
-                        ) == 0
+                    if setns_network(network_namespace_fd) == 0
+                        && setns_mount(mount_namespace_fd) == 0
                     {
                         Ok(())
                     } else {
@@ -2066,8 +2096,9 @@ fn spawn_member(
             }
         }
         EpochNetworkNamespaceMode::Host if member.role() == EpochProcessRole::Slirp4netns => {
-            let namespace_fd = namespace_descriptor
-                .ok_or_else(|| io::Error::other("private namespace descriptor missing"))?
+            let namespace_fd = private_namespaces
+                .ok_or_else(|| io::Error::other("private namespace descriptors missing"))?
+                .network
                 .as_raw_fd();
             let (reader, writer) = UnixStream::pair()?;
             // SAFETY: `fcntl` returns a new owned descriptor on success.
@@ -2193,41 +2224,65 @@ fn namespace_identity(path: &Path) -> io::Result<(u64, u64)> {
     Ok((metadata.dev(), metadata.ino()))
 }
 
-/// Opens and proves the fresh namespace created by the containerd child.
-fn retain_private_namespace(child: &mut Child) -> io::Result<Arc<OwnedFd>> {
-    let host_identity = namespace_identity(Path::new("/proc/self/ns/net"))?;
-    let namespace_path = PathBuf::from(format!("/proc/{}/ns/net", child.id()));
+/// Opens and proves both fresh namespaces created by the containerd child.
+fn retain_private_namespaces(child: &mut Child) -> io::Result<PrivateNamespaceDescriptors> {
+    let host_network_identity = namespace_identity(Path::new("/proc/self/ns/net"))?;
+    let host_mount_identity = namespace_identity(Path::new("/proc/self/ns/mnt"))?;
+    let network_path = PathBuf::from(format!("/proc/{}/ns/net", child.id()));
+    let mount_path = PathBuf::from(format!("/proc/{}/ns/mnt", child.id()));
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
         if !matches!(child.try_wait(), Ok(None)) {
             return Err(io::Error::other("containerd exited before namespace proof"));
         }
-        if let Ok(file) = File::open(&namespace_path)
-            && let Ok(metadata) = file.metadata()
-            && (metadata.dev(), metadata.ino()) != host_identity
-            && namespace_identity(&namespace_path).ok() == Some((metadata.dev(), metadata.ino()))
+        if let (Ok(network), Ok(mount)) = (File::open(&network_path), File::open(&mount_path))
+            && let (Ok(network_metadata), Ok(mount_metadata)) =
+                (network.metadata(), mount.metadata())
+            && (network_metadata.dev(), network_metadata.ino()) != host_network_identity
+            && (mount_metadata.dev(), mount_metadata.ino()) != host_mount_identity
+            && namespace_identity(&network_path).ok()
+                == Some((network_metadata.dev(), network_metadata.ino()))
+            && namespace_identity(&mount_path).ok()
+                == Some((mount_metadata.dev(), mount_metadata.ino()))
+            && matches!(child.try_wait(), Ok(None))
         {
-            return Ok(Arc::new(OwnedFd::from(file)));
+            return Ok(PrivateNamespaceDescriptors {
+                network: Arc::new(OwnedFd::from(network)),
+                mount: Arc::new(OwnedFd::from(mount)),
+            });
         }
         thread::sleep(Duration::from_millis(25));
     }
     Err(io::Error::other("private namespace proof timed out"))
 }
 
-/// Proves one child is running in the retained namespace.
-fn wait_for_member_namespace(child: &mut Child, namespace_descriptor: &OwnedFd) -> bool {
-    let expected = namespace_identity(Path::new(&format!(
+/// Proves one child is running in both retained private namespaces.
+fn wait_for_member_namespaces(
+    child: &mut Child,
+    private_namespaces: &PrivateNamespaceDescriptors,
+) -> bool {
+    let expected_network = namespace_identity(Path::new(&format!(
         "/proc/self/fd/{}",
-        namespace_descriptor.as_raw_fd()
+        private_namespaces.network.as_raw_fd()
     )))
     .ok();
-    let member_path = PathBuf::from(format!("/proc/{}/ns/net", child.id()));
+    let expected_mount = namespace_identity(Path::new(&format!(
+        "/proc/self/fd/{}",
+        private_namespaces.mount.as_raw_fd()
+    )))
+    .ok();
+    let member_network_path = PathBuf::from(format!("/proc/{}/ns/net", child.id()));
+    let member_mount_path = PathBuf::from(format!("/proc/{}/ns/mnt", child.id()));
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
         if !matches!(child.try_wait(), Ok(None)) {
             return false;
         }
-        if expected.is_some() && namespace_identity(&member_path).ok() == expected {
+        if expected_network.is_some()
+            && expected_mount.is_some()
+            && namespace_identity(&member_network_path).ok() == expected_network
+            && namespace_identity(&member_mount_path).ok() == expected_mount
+        {
             return true;
         }
         thread::sleep(Duration::from_millis(25));
@@ -2266,7 +2321,7 @@ fn wait_for_slirp_ready(
     thread::spawn(move || {
         // SAFETY: the dedicated probe thread changes only its own network
         // namespace and exits immediately after the bounded local inspection.
-        if unsafe { setns(namespace_descriptor.as_raw_fd()) } != 0 {
+        if unsafe { setns_network(namespace_descriptor.as_raw_fd()) } != 0 {
             return false;
         }
         let mut route = String::new();
@@ -2359,7 +2414,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::net::UdpSocket;
     #[cfg(target_os = "linux")]
-    use std::os::fd::OwnedFd;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
     use std::process::Command;
     #[cfg(target_os = "linux")]
@@ -2384,6 +2439,14 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     const RESOLVER_CHILD_ENV: &str = "OPENKIT_NANOHOST_TEST_RESOLVER_CHILD";
+    #[cfg(target_os = "linux")]
+    const PRIVATE_MOUNT_SOURCE_ENV: &str = "OPENKIT_NANOHOST_TEST_MOUNT_SOURCE";
+    #[cfg(target_os = "linux")]
+    const PRIVATE_MOUNT_TARGET_ENV: &str = "OPENKIT_NANOHOST_TEST_MOUNT_TARGET";
+    #[cfg(target_os = "linux")]
+    const PRIVATE_MOUNT_READY_ENV: &str = "OPENKIT_NANOHOST_TEST_MOUNT_READY";
+    #[cfg(target_os = "linux")]
+    const PRIVATE_MOUNT_STOP_ENV: &str = "OPENKIT_NANOHOST_TEST_MOUNT_STOP";
 
     #[cfg(target_os = "linux")]
     fn answer_test_dns(socket: UdpSocket) {
@@ -2429,12 +2492,97 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    fn set_test_loopback_up() {
+        #[repr(C)]
+        struct InterfaceRequest {
+            name: [libc::c_char; libc::IFNAMSIZ],
+            flags: libc::c_short,
+            padding: [u8; 22],
+        }
+
+        let mut request = InterfaceRequest {
+            name: [0; libc::IFNAMSIZ],
+            flags: libc::IFF_UP as libc::c_short,
+            padding: [0; 22],
+        };
+        request.name[..2].copy_from_slice(&[b'l' as libc::c_char, b'o' as libc::c_char]);
+        // SAFETY: the fixed AF_INET control socket and Linux ifreq layout are
+        // used only by this privileged Linux namespace regression.
+        let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        assert!(socket >= 0, "create loopback control socket");
+        // SAFETY: `request` is a live writable Linux ifreq for the fixed `lo` name.
+        let status = unsafe { libc::ioctl(socket, libc::SIOCSIFFLAGS, &mut request) };
+        // SAFETY: `socket` is owned by this helper and no longer used.
+        unsafe { libc::close(socket) };
+        assert_eq!(status, 0, "bring private loopback up");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_private_namespace_test_child(role: &str) {
+        let source = std::env::var_os(PRIVATE_MOUNT_SOURCE_ENV)
+            .map(std::path::PathBuf::from)
+            .expect("private mount source");
+        let target = std::env::var_os(PRIVATE_MOUNT_TARGET_ENV)
+            .map(std::path::PathBuf::from)
+            .expect("private mount target");
+        match role {
+            "creator" => {
+                set_test_loopback_up();
+                let source = CString::new(source.as_os_str().as_bytes()).expect("mount source");
+                let target = CString::new(target.as_os_str().as_bytes()).expect("mount target");
+                // SAFETY: both paths name live test-owned directories, and the
+                // creator already occupies its recursively private mount tree.
+                assert_eq!(
+                    unsafe {
+                        libc::mount(
+                            source.as_ptr(),
+                            target.as_ptr(),
+                            std::ptr::null(),
+                            libc::MS_BIND,
+                            std::ptr::null(),
+                        )
+                    },
+                    0,
+                    "create private bind mount"
+                );
+                let socket = UdpSocket::bind(("127.0.0.1", 53)).expect("bind private test DNS");
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("bound private DNS timeout");
+                fs::write(
+                    std::env::var_os(PRIVATE_MOUNT_READY_ENV).expect("ready path"),
+                    b"ready",
+                )
+                .expect("publish creator readiness");
+                answer_test_dns(socket);
+                let stop = std::env::var_os(PRIVATE_MOUNT_STOP_ENV)
+                    .map(std::path::PathBuf::from)
+                    .expect("stop path");
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !stop.exists() && std::time::Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert!(stop.exists(), "creator stop signal");
+            }
+            "joiner" => {
+                assert_test_dns_resolution();
+                assert_eq!(
+                    fs::read_to_string(target.join("marker")).expect("read private mount marker"),
+                    "private-view",
+                    "joiner must observe the creator's private mount"
+                );
+            }
+            _ => panic!("unknown private namespace test role"),
+        }
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     #[ignore = "requires root namespace privileges and an unused 127.0.0.1:53"]
     fn nhc_imp_5o_private_member_resolver_mount_drives_real_dns() {
-        if std::env::var_os(RESOLVER_CHILD_ENV).is_some() {
-            assert_test_dns_resolution();
+        if let Some(role) = std::env::var_os(RESOLVER_CHILD_ENV) {
+            run_private_namespace_test_child(&role.to_string_lossy());
             return;
         }
 
@@ -2451,55 +2599,105 @@ mod tests {
         ));
         fs::create_dir(&fixture_root).expect("create resolver fixture");
         let resolver_source = fixture_root.join("resolv.conf");
+        let mount_source = fixture_root.join("mount-source");
+        let mount_target = fixture_root.join("mount-target");
+        let ready_path = fixture_root.join("creator-ready");
+        let stop_path = fixture_root.join("creator-stop");
+        fs::create_dir(&mount_source).expect("create mount source");
+        fs::create_dir(&mount_target).expect("create mount target");
+        fs::write(mount_source.join("marker"), b"private-view").expect("write private marker");
+        fs::write(mount_target.join("marker"), b"host-view").expect("write host marker");
         let mut resolver = File::create(&resolver_source).expect("create resolver projection");
         resolver
             .write_all(b"nameserver 127.0.0.1\noptions attempts:1 timeout:1\n")
             .expect("write resolver projection");
         drop(resolver);
 
-        let socket = UdpSocket::bind(("127.0.0.1", 53)).expect("bind test DNS");
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("bound DNS timeout");
-        let responder = thread::spawn(move || answer_test_dns(socket));
-        let namespace_descriptor = Arc::new(
-            File::open("/proc/self/ns/net")
-                .expect("current network namespace")
+        let child_args = vec![
+            "--exact".into(),
+            "epoch_coordinator::tests::nhc_imp_5o_private_member_resolver_mount_drives_real_dns"
                 .into(),
-        );
-        let member = EpochMemberSpec {
-            role: EpochProcessRole::OpenShellGateway,
+            "--ignored".into(),
+            "--nocapture".into(),
+        ];
+        let child_env = |role: &str| {
+            vec![
+                (RESOLVER_CHILD_ENV.into(), role.into()),
+                (
+                    PRIVATE_MOUNT_SOURCE_ENV.into(),
+                    mount_source.display().to_string(),
+                ),
+                (
+                    PRIVATE_MOUNT_TARGET_ENV.into(),
+                    mount_target.display().to_string(),
+                ),
+                (
+                    PRIVATE_MOUNT_READY_ENV.into(),
+                    ready_path.display().to_string(),
+                ),
+                (
+                    PRIVATE_MOUNT_STOP_ENV.into(),
+                    stop_path.display().to_string(),
+                ),
+            ]
+        };
+        let creator = EpochMemberSpec {
+            role: EpochProcessRole::Containerd,
             program: std::env::current_exe().expect("current test binary"),
-            args: vec![
-                "--exact".into(),
-                "epoch_coordinator::tests::nhc_imp_5o_private_member_resolver_mount_drives_real_dns"
-                    .into(),
-                "--ignored".into(),
-                "--nocapture".into(),
-            ],
-            env: vec![(RESOLVER_CHILD_ENV.into(), "1".into())],
-            network_namespace_mode: EpochNetworkNamespaceMode::JoinPrivate,
+            args: child_args.clone(),
+            env: child_env("creator"),
+            network_namespace_mode: EpochNetworkNamespaceMode::CreatePrivate,
             inherited_descriptor_targets: Vec::new(),
         };
         let mut children = Vec::new();
         spawn_member(
             &mut children,
-            &member,
-            Some(&namespace_descriptor),
+            &creator,
+            None,
             Some((&resolver_source, &resolver_target)),
         )
-        .expect("spawn private resolver member");
-        assert!(wait_for_child_success(
-            children.last_mut().expect("resolver child"),
+        .expect("spawn private namespace creator");
+        let private_namespaces =
+            super::retain_private_namespaces(children.last_mut().expect("namespace creator child"))
+                .expect("retain creator namespaces");
+        let ready_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready_path.exists() && std::time::Instant::now() < ready_deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready_path.exists(), "creator readiness");
+
+        let joiner = EpochMemberSpec {
+            role: EpochProcessRole::OpenShellGateway,
+            program: std::env::current_exe().expect("current test binary"),
+            args: child_args,
+            env: child_env("joiner"),
+            network_namespace_mode: EpochNetworkNamespaceMode::JoinPrivate,
+            inherited_descriptor_targets: Vec::new(),
+        };
+        spawn_member(&mut children, &joiner, Some(&private_namespaces), None)
+            .expect("spawn private namespace joiner");
+        let joiner_succeeded = wait_for_child_success(
+            children.last_mut().expect("private namespace joiner"),
             Duration::from_secs(10),
-        ));
-        responder.join().expect("DNS responder");
+        );
+        fs::write(&stop_path, b"stop").expect("signal creator stop");
+        let creator_succeeded = wait_for_child_success(
+            children.first_mut().expect("private namespace creator"),
+            Duration::from_secs(10),
+        );
         assert_eq!(
             fs::read("/etc/resolv.conf").expect("re-read host resolver"),
             host_resolver,
-            "child-private resolver mount must preserve host bytes"
+            "shared private resolver mount must preserve host bytes"
+        );
+        assert_eq!(
+            fs::read_to_string(mount_target.join("marker")).expect("read host mount marker"),
+            "host-view",
+            "creator's private mount must not propagate to the host"
         );
         fs::remove_dir_all(fixture_root).expect("remove resolver fixture");
+        assert!(creator_succeeded, "namespace creator exits cleanly");
+        assert!(joiner_succeeded, "namespace joiner exits cleanly");
     }
 
     #[test]
@@ -2524,34 +2722,48 @@ mod tests {
             .split_once("#[cfg(test)]")
             .expect("epoch coordinator production section")
             .0;
-        let setns_wrapper = production
-            .split_once("unsafe fn setns(fd: i32) -> i32 {")
-            .expect("setns wrapper")
+        let setns_network_wrapper = production
+            .split_once("unsafe fn setns_network(fd: i32) -> i32 {")
+            .expect("network setns wrapper")
             .1
-            .split_once("/// Calls Linux `unshare`")
-            .expect("end of setns wrapper")
+            .split_once("/// Enters one retained Linux mount namespace.")
+            .expect("end of network setns wrapper")
             .0;
         assert_eq!(
-            setns_wrapper
+            setns_network_wrapper
                 .matches("libc::setns(fd, libc::CLONE_NEWNET)")
                 .count(),
             1
         );
-        assert_eq!(setns_wrapper.matches("\n        -1\n").count(), 1);
-        let unshare_wrapper = production
-            .split_once("unsafe fn unshare() -> i32 {")
-            .expect("unshare wrapper")
+        assert_eq!(setns_network_wrapper.matches("\n        -1\n").count(), 1);
+        let setns_mount_wrapper = production
+            .split_once("unsafe fn setns_mount(fd: i32) -> i32 {")
+            .expect("mount setns wrapper")
             .1
-            .split_once("/// Monotonic in-process discriminator")
-            .expect("end of unshare wrapper")
+            .split_once("/// Creates one fresh Linux network namespace.")
+            .expect("end of mount setns wrapper")
             .0;
         assert_eq!(
-            unshare_wrapper
+            setns_mount_wrapper
+                .matches("libc::setns(fd, libc::CLONE_NEWNS)")
+                .count(),
+            1
+        );
+        assert_eq!(setns_mount_wrapper.matches("\n        -1\n").count(), 1);
+        let unshare_network_wrapper = production
+            .split_once("unsafe fn unshare_network() -> i32 {")
+            .expect("network unshare wrapper")
+            .1
+            .split_once("/// Monotonic in-process discriminator")
+            .expect("end of network unshare wrapper")
+            .0;
+        assert_eq!(
+            unshare_network_wrapper
                 .matches("libc::unshare(libc::CLONE_NEWNET)")
                 .count(),
             1
         );
-        assert_eq!(unshare_wrapper.matches("\n        -1\n").count(), 1);
+        assert_eq!(unshare_network_wrapper.matches("\n        -1\n").count(), 1);
 
         let spawn = production
             .split_once("fn spawn_member(")
@@ -2571,19 +2783,24 @@ mod tests {
             .find("command.pre_exec")
             .expect("CreatePrivate pre-exec owner");
         let create_call = create_private
-            .find("if unshare() == 0")
+            .find("if unshare_network() == 0")
             .expect("CreatePrivate unshare success polarity");
+        let resolver_projection = create_private
+            .find("mount_private_resolver(")
+            .expect("creator resolver projection");
         let create_success = create_private.find("Ok(())").expect("unshare success");
         let create_failure = create_private
             .find("Err(io::Error::last_os_error())")
             .expect("unshare failure");
         assert!(
             create_pre_exec < create_call
-                && create_call < create_success
+                && create_call < resolver_projection
+                && resolver_projection < create_success
                 && create_success < create_failure
         );
         assert_eq!(create_private.matches("command.pre_exec").count(), 1);
-        assert_eq!(create_private.matches("unshare()").count(), 1);
+        assert_eq!(create_private.matches("unshare_network()").count(), 1);
+        assert_eq!(create_private.matches("mount_private_resolver(").count(), 1);
 
         let join_private = spawn
             .split_once("EpochNetworkNamespaceMode::JoinPrivate => {")
@@ -2592,31 +2809,39 @@ mod tests {
             .split_once("EpochNetworkNamespaceMode::Host if member.role()")
             .expect("end of JoinPrivate arm")
             .0;
-        let retained_descriptor = join_private
-            .find("let namespace_fd = namespace_descriptor")
-            .expect("retained namespace descriptor");
-        let raw_descriptor = join_private
-            .find(".as_raw_fd()")
-            .expect("retained namespace raw fd");
+        let network_descriptor = join_private
+            .find("let network_namespace_fd = private_namespaces.network.as_raw_fd()")
+            .expect("retained network namespace descriptor");
+        let mount_descriptor = join_private
+            .find("let mount_namespace_fd = private_namespaces.mount.as_raw_fd()")
+            .expect("retained mount namespace descriptor");
         let join_pre_exec = join_private
             .find("command.pre_exec")
             .expect("JoinPrivate pre-exec owner");
-        let join_call = join_private
-            .find("if setns(namespace_fd) == 0")
-            .expect("JoinPrivate setns success polarity");
+        let join_network = join_private
+            .find("if setns_network(network_namespace_fd) == 0")
+            .expect("JoinPrivate network setns success polarity");
+        let join_mount = join_private
+            .find("&& setns_mount(mount_namespace_fd) == 0")
+            .expect("JoinPrivate mount setns success polarity");
         let join_success = join_private.find("Ok(())").expect("setns success");
         let join_failure = join_private
             .find("Err(io::Error::last_os_error())")
             .expect("setns failure");
         assert!(
-            retained_descriptor < raw_descriptor
-                && raw_descriptor < join_pre_exec
-                && join_pre_exec < join_call
-                && join_call < join_success
+            network_descriptor < mount_descriptor
+                && mount_descriptor < join_pre_exec
+                && join_pre_exec < join_network
+                && join_network < join_mount
+                && join_mount < join_success
                 && join_success < join_failure
         );
         assert_eq!(join_private.matches("command.pre_exec").count(), 1);
-        assert_eq!(join_private.matches("setns(namespace_fd)").count(), 1);
+        assert_eq!(join_private.matches("setns_network(").count(), 1);
+        assert_eq!(join_private.matches("setns_mount(").count(), 1);
+        assert!(!join_private.contains("mount_private_resolver"));
+        assert!(!join_private.contains("resolver_projection"));
+        assert!(!join_private.contains("unshare"));
 
         let startup = production
             .split_once("pub fn start(")
@@ -2634,7 +2859,7 @@ mod tests {
             .0;
         assert_eq!(
             dockerd
-                .matches("wait_for_member_namespace(child, &namespace_descriptor)")
+                .matches("wait_for_member_namespaces(child, &private_namespaces)")
                 .count(),
             1
         );
@@ -2642,12 +2867,12 @@ mod tests {
             .find("&plan.members()[3]")
             .expect("Gateway spawn owner");
         let namespace_bind = startup
-            .find(".bind_network_namespace(Arc::clone(&namespace_descriptor))")
+            .find(".bind_network_namespace(Arc::clone(&private_namespaces.network))")
             .expect("Gateway namespace binding");
         let gateway = &startup[gateway_start..namespace_bind];
         assert_eq!(
             gateway
-                .matches("wait_for_member_namespace(child, &namespace_descriptor)")
+                .matches("wait_for_member_namespaces(child, &private_namespaces)")
                 .count(),
             1
         );
@@ -2698,16 +2923,18 @@ mod tests {
             network_namespace_mode: EpochNetworkNamespaceMode::Host,
             inherited_descriptor_targets: vec![3, 4],
         };
-        let namespace_path = if cfg!(target_os = "linux") {
-            "/proc/self/ns/net"
-        } else {
-            "/dev/null"
+        let private_namespaces = super::PrivateNamespaceDescriptors {
+            network: Arc::new(
+                File::open("/proc/self/ns/net")
+                    .expect("current network namespace descriptor")
+                    .into(),
+            ),
+            mount: Arc::new(
+                File::open("/proc/self/ns/mnt")
+                    .expect("current mount namespace descriptor")
+                    .into(),
+            ),
         };
-        let namespace_descriptor: Arc<OwnedFd> = Arc::new(
-            File::open(namespace_path)
-                .expect("current network namespace descriptor")
-                .into(),
-        );
         let mut children = Vec::new();
 
         let effective_capabilities = std::fs::read_to_string("/proc/self/status")
@@ -2716,7 +2943,7 @@ mod tests {
             .find_map(|line| line.strip_prefix("CapEff:\t"))
             .and_then(|value| u64::from_str_radix(value, 16).ok())
             .expect("effective Linux capabilities");
-        let spawn = spawn_member(&mut children, &member, Some(&namespace_descriptor), None);
+        let spawn = spawn_member(&mut children, &member, Some(&private_namespaces), None);
         if effective_capabilities & (1 << 21) == 0 {
             let error = spawn.expect_err("mount namespace creation fails without CAP_SYS_ADMIN");
             assert_eq!(error.raw_os_error(), Some(libc::EPERM));
@@ -3047,7 +3274,7 @@ mod tests {
     }
 
     #[test]
-    fn nhc_imp_5o_reaps_network_members_before_releasing_the_namespace_descriptor() {
+    fn nhc_imp_5o_reaps_members_before_releasing_the_private_namespace_descriptors() {
         let production = include_str!("epoch_coordinator.rs")
             .split_once("#[cfg(test)]")
             .expect("epoch coordinator production section")
@@ -3063,7 +3290,7 @@ mod tests {
             .find("terminate_children")
             .expect("member termination and reap");
         let release = owner
-            .find("namespace_descriptor.take()")
+            .find("private_namespaces.take()")
             .expect("retained namespace descriptor release");
         assert!(terminate < release);
     }

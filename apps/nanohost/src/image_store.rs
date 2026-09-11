@@ -172,7 +172,7 @@ pub enum StoreError {
     Busy,
     /// A content address is not canonical SHA-256.
     InvalidDigest,
-    /// The selected digest has no complete retained entry.
+    /// The selected digest has no attributed content, staging, or index state.
     Missing,
     /// Content does not match its claimed digest.
     DigestMismatch,
@@ -411,14 +411,25 @@ impl ImageStore {
     fn open_verified_locked(&self, digest: &str) -> Result<File, StoreError> {
         let content_path = self.content_path_checked(digest)?;
         let index_path = self.index_path(digest)?;
-        if !path_exists_nofollow(&content_path)? || !path_exists_nofollow(&index_path)? {
-            return Err(StoreError::Missing);
-        }
         let staged_path = self
             .content_root
             .join(format!("{}.content.tmp", digest_stem(digest)?));
-        if path_exists_nofollow(&staged_path)? {
-            return Err(StoreError::InvalidMetadata);
+        let staged_index_path = self
+            .index_root
+            .join(format!("{}.meta.tmp", digest_stem(digest)?));
+        let content_exists = path_exists_nofollow(&content_path)?;
+        let index_exists = path_exists_nofollow(&index_path)?;
+        let staged_exists = path_exists_nofollow(&staged_path)?;
+        match (content_exists, staged_exists, index_exists) {
+            (false, false, false) => {
+                return if path_exists_nofollow(&staged_index_path)? {
+                    Err(StoreError::InvalidMetadata)
+                } else {
+                    Err(StoreError::Missing)
+                };
+            }
+            (true, false, true) => {}
+            _ => return Err(StoreError::InvalidMetadata),
         }
         let entry = match read_entry_file(&index_path) {
             Ok(entry) => entry,
@@ -436,6 +447,9 @@ impl ImageStore {
             return self.handle_archive_failure(digest, error);
         }
         if entry.size != size {
+            return Err(StoreError::InvalidMetadata);
+        }
+        if path_exists_nofollow(&staged_index_path)? {
             return Err(StoreError::InvalidMetadata);
         }
         content.seek(SeekFrom::Start(0))?;
