@@ -44,7 +44,8 @@ export interface ModalProps {
  * OpenKit modal trigger and overlay.
  *
  * React Aria owns opening, Escape dismissal, focus containment, and focus
- * restoration; this wrapper supplies only Spectrum-tokened presentation.
+ * restoration; this wrapper supplies Spectrum-tokened presentation and keeps
+ * long content scrollable inside the padded viewport.
  */
 export function Modal({ trigger, children }: ModalProps) {
   return (
@@ -54,7 +55,7 @@ export function Modal({ trigger, children }: ModalProps) {
         isDismissable
         className="fixed inset-0 z-50 flex items-center justify-center bg-fg/40 p-6"
       >
-        <AriaModal className="w-full max-w-lg rounded-ok-lg border border-border bg-elevated p-5 shadow-ok-menu outline-none">
+        <AriaModal className="max-h-full w-full max-w-lg overflow-y-auto rounded-ok-lg border border-border bg-elevated p-5 shadow-ok-menu outline-none">
           {children}
         </AriaModal>
       </ModalOverlay>

@@ -51,3 +51,43 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   expect(viewport.bodyWidth).toBeLessThanOrEqual(viewport.viewportWidth);
   expect(runtimeErrors).toEqual([]);
 });
+
+/**
+ * Shared modal layout keeps an action reachable when dialog content exceeds the viewport.
+ */
+test('keeps a tall dialog action reachable by normal pointer interaction', async ({ page }) => {
+  stack = await startIsolatedWebStack({ mode: 'server', useSimulator: true });
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(stack.webUrl);
+  await expect(page.getByRole('heading', { name: 'Account access' })).toBeVisible();
+  await page.getByRole('button', { name: 'Sign up' }).click();
+  await page.getByRole('textbox', { name: 'Name' }).fill('Dialog Test User');
+  await page.getByRole('textbox', { name: 'Email' }).fill('dialog@example.test');
+  await page.getByLabel('Password').fill('OpenKit-dialog-test-password-2026!');
+  await page.getByRole('button', { name: 'Sign up' }).last().click();
+  await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
+  await page.getByRole('button', { name: /^Settings$/ }).click();
+  await page.getByRole('button', { name: /^Debug$/ }).click();
+
+  const trigger = page.getByRole('button', { name: 'Open dialog' });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'Confirm change' });
+  await expect(dialog).toBeVisible();
+
+  await page.setViewportSize({ width: 800, height: 120 });
+  const modalBounds = await dialog.locator('..').boundingBox();
+  expect(modalBounds).not.toBeNull();
+  expect(modalBounds!.y).toBeGreaterThanOrEqual(0);
+  expect(modalBounds!.y + modalBounds!.height).toBeLessThanOrEqual(120);
+  const action = page.getByRole('button', { name: 'Done' });
+  await action.scrollIntoViewIfNeeded();
+  const actionBounds = await action.boundingBox();
+  expect(actionBounds).not.toBeNull();
+  expect(actionBounds!.y).toBeGreaterThanOrEqual(0);
+  expect(actionBounds!.y + actionBounds!.height).toBeLessThanOrEqual(120);
+  await action.click();
+  await page.keyboard.press('Escape');
+
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
