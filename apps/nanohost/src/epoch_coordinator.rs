@@ -1,10 +1,12 @@
 //! Closed Docker Runtime Epoch process coordination.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
@@ -243,6 +245,8 @@ pub struct EpochPlan {
     gateway_config_path: PathBuf,
     gateway_config_contents: String,
     gateway_program: PathBuf,
+    resolver_path: PathBuf,
+    resolver_contents: String,
     members: Vec<EpochMemberSpec>,
 }
 
@@ -272,6 +276,11 @@ impl EpochPlan {
         let gateway_config_path = epoch_root.join("gateway.toml");
         let gateway_database_path = epoch_root.join("gateway.db");
         let gateway_program = gateway.to_path_buf();
+        let resolver_path = epoch_root.join("resolv.conf");
+        let resolver_contents = nameservers
+            .iter()
+            .map(|address| format!("nameserver {address}\n"))
+            .collect();
         let gateway_config_contents = gateway_config(&docker_socket, &gateway_auth_path)?;
         let containerd_namespace = format!("openkit-{epoch_name}");
         let containerd_plugins_namespace = format!("openkit-plugins-{epoch_name}");
@@ -379,6 +388,8 @@ impl EpochPlan {
             gateway_config_path,
             gateway_config_contents,
             gateway_program,
+            resolver_path,
+            resolver_contents,
             members,
         })
     }
@@ -413,6 +424,16 @@ impl EpochPlan {
     /// Returns the Gateway TOML projection for the supported OpenShell release.
     pub fn gateway_config_contents(&self) -> &str {
         &self.gateway_config_contents
+    }
+
+    /// Returns the epoch-private resolver projection path.
+    fn resolver_path(&self) -> &Path {
+        &self.resolver_path
+    }
+
+    /// Returns the resolver projection rendered from the accepted fixed set.
+    fn resolver_contents(&self) -> &str {
+        &self.resolver_contents
     }
 
     /// Returns the fixed epoch-local Gateway endpoint.
@@ -981,9 +1002,18 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
             }
+            let resolver_target = match fs::canonicalize("/etc/resolv.conf") {
+                Ok(path) if path.is_file() => path,
+                _ => {
+                    export_before_fence(EpochFault::PartialStart);
+                    terminate_children(&mut children);
+                    return Err(EpochFault::PartialStart);
+                }
+            };
             if !generate_gateway_auth(plan)
                 || write_private_file(&plan.gateway_config_path, plan.gateway_config_contents())
                     .is_err()
+                || write_private_file(plan.resolver_path(), plan.resolver_contents()).is_err()
             {
                 export_before_fence(EpochFault::PartialStart);
                 terminate_children(&mut children);
@@ -992,7 +1022,14 @@ impl EpochCoordinator {
 
             let runtime = Handle::current();
 
-            if spawn_member(&mut children, &plan.members()[0], None).is_err() {
+            if spawn_member(
+                &mut children,
+                &plan.members()[0],
+                None,
+                Some((plan.resolver_path(), &resolver_target)),
+            )
+            .is_err()
+            {
                 export_before_fence(EpochFault::PartialStart);
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
@@ -1023,6 +1060,7 @@ impl EpochCoordinator {
                 &mut children,
                 &plan.members()[1],
                 Some(&namespace_descriptor),
+                None,
             ) {
                 Ok(Some(ready_reader)) => children.last_mut().is_some_and(|child| {
                     wait_for_slirp_ready(child, ready_reader, Arc::clone(&namespace_descriptor))
@@ -1039,6 +1077,7 @@ impl EpochCoordinator {
                 &mut children,
                 &plan.members()[2],
                 Some(&namespace_descriptor),
+                Some((plan.resolver_path(), &resolver_target)),
             )
             .is_err()
             {
@@ -1060,6 +1099,7 @@ impl EpochCoordinator {
                 &mut children,
                 &plan.members()[3],
                 Some(&namespace_descriptor),
+                Some((plan.resolver_path(), &resolver_target)),
             )
             .is_err()
                 || !children
@@ -1973,6 +2013,7 @@ fn spawn_member(
     children: &mut Vec<Child>,
     member: &EpochMemberSpec,
     namespace_descriptor: Option<&Arc<OwnedFd>>,
+    resolver_projection: Option<(&Path, &Path)>,
 ) -> io::Result<Option<UnixStream>> {
     let mut command = Command::new(member.program());
     command
@@ -1984,11 +2025,17 @@ fn spawn_member(
     let mut ready_reader = None;
     match member.network_namespace_mode() {
         EpochNetworkNamespaceMode::CreatePrivate => {
-            // SAFETY: `unshare` is async-signal-safe and this closure runs after
-            // fork, before exec, without touching shared Rust state.
+            let (resolver_source, resolver_target) = resolver_mount(resolver_projection)?;
+            // SAFETY: the closure uses only async-signal-safe namespace and mount
+            // calls with owned C strings retained through spawn.
             unsafe {
-                command.pre_exec(|| {
-                    if unshare() == 0 {
+                command.pre_exec(move || {
+                    if unshare() == 0
+                        && mount_private_resolver(
+                            resolver_source.as_ptr(),
+                            resolver_target.as_ptr(),
+                        ) == 0
+                    {
                         Ok(())
                     } else {
                         Err(io::Error::last_os_error())
@@ -2000,11 +2047,17 @@ fn spawn_member(
             let namespace_fd = namespace_descriptor
                 .ok_or_else(|| io::Error::other("private namespace descriptor missing"))?
                 .as_raw_fd();
-            // SAFETY: `setns` is async-signal-safe and receives the retained
-            // namespace descriptor, which remains open through spawn.
+            let (resolver_source, resolver_target) = resolver_mount(resolver_projection)?;
+            // SAFETY: the closure uses only async-signal-safe namespace and mount
+            // calls with owned descriptors and C strings retained through spawn.
             unsafe {
                 command.pre_exec(move || {
-                    if setns(namespace_fd) == 0 {
+                    if setns(namespace_fd) == 0
+                        && mount_private_resolver(
+                            resolver_source.as_ptr(),
+                            resolver_target.as_ptr(),
+                        ) == 0
+                    {
                         Ok(())
                     } else {
                         Err(io::Error::last_os_error())
@@ -2075,6 +2128,63 @@ fn spawn_member(
     let child = command.spawn()?;
     children.push(child);
     Ok(ready_reader)
+}
+
+/// Converts the one required private-member resolver projection before fork.
+fn resolver_mount(projection: Option<(&Path, &Path)>) -> io::Result<(CString, CString)> {
+    let (source, target) =
+        projection.ok_or_else(|| io::Error::other("private resolver projection missing"))?;
+    Ok((
+        CString::new(source.as_os_str().as_bytes())
+            .map_err(|_| io::Error::other("private resolver source rejected"))?,
+        CString::new(target.as_os_str().as_bytes())
+            .map_err(|_| io::Error::other("private resolver target rejected"))?,
+    ))
+}
+
+/// Creates a private mount view and installs one read-only resolver file in it.
+unsafe fn mount_private_resolver(source: *const libc::c_char, target: *const libc::c_char) -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: the caller supplies live NUL-terminated paths and runs before exec.
+        if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0
+            || unsafe {
+                libc::mount(
+                    std::ptr::null(),
+                    c"/".as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_REC | libc::MS_PRIVATE,
+                    std::ptr::null(),
+                )
+            } != 0
+            || unsafe {
+                libc::mount(
+                    source,
+                    target,
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                )
+            } != 0
+        {
+            return -1;
+        }
+        // SAFETY: the preceding bind created this mount in the child-private tree.
+        unsafe {
+            libc::mount(
+                std::ptr::null(),
+                target,
+                std::ptr::null(),
+                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+                std::ptr::null(),
+            )
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (source, target);
+        -1
+    }
 }
 
 /// Returns one namespace object's stable device and inode identity.
@@ -2239,15 +2349,23 @@ fn terminate_children(children: &mut [Child]) {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    #[cfg(target_os = "linux")]
+    use std::ffi::CString;
+    #[cfg(target_os = "linux")]
+    use std::fs;
     use std::fs::File;
     #[cfg(target_os = "linux")]
-    use std::io::Read;
+    use std::io::{Read, Write};
+    #[cfg(target_os = "linux")]
+    use std::net::UdpSocket;
     #[cfg(target_os = "linux")]
     use std::os::fd::OwnedFd;
     use std::path::Path;
     use std::process::Command;
     #[cfg(target_os = "linux")]
     use std::sync::Arc;
+    #[cfg(target_os = "linux")]
+    use std::thread;
     use std::time::Duration;
 
     use super::{
@@ -2263,6 +2381,126 @@ mod tests {
     use super::{EpochMemberSpec, spawn_member, wait_for_child_success};
     use crate::image_store::{ImageStore, StoreLineage};
     use crate::openshell_client::{LifecycleEffectKind, LifecycleEffectRequest};
+
+    #[cfg(target_os = "linux")]
+    const RESOLVER_CHILD_ENV: &str = "OPENKIT_NANOHOST_TEST_RESOLVER_CHILD";
+
+    #[cfg(target_os = "linux")]
+    fn answer_test_dns(socket: UdpSocket) {
+        let mut query = [0_u8; 512];
+        let (length, peer) = socket.recv_from(&mut query).expect("receive DNS query");
+        let mut cursor = 12;
+        while cursor < length && query[cursor] != 0 {
+            cursor += usize::from(query[cursor]) + 1;
+        }
+        let question_end = cursor + 5;
+        assert!(question_end <= length, "DNS question is bounded");
+        assert_eq!(&query[question_end - 4..question_end], &[0, 1, 0, 1]);
+        let mut response = query[..question_end].to_vec();
+        response[2..12].copy_from_slice(&[0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]);
+        response.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 192, 0, 2, 17]);
+        socket.send_to(&response, peer).expect("send DNS answer");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_test_dns_resolution() {
+        let host = CString::new("daemon-resolver.openkit.test").expect("DNS test host");
+        // SAFETY: zero initializes the optional addrinfo hints.
+        let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+        hints.ai_family = libc::AF_INET;
+        hints.ai_socktype = libc::SOCK_STREAM;
+        let mut result = std::ptr::null_mut();
+        // SAFETY: the host and hints remain live and the result is released below.
+        let status =
+            unsafe { libc::getaddrinfo(host.as_ptr(), std::ptr::null(), &hints, &mut result) };
+        assert_eq!(status, 0, "private member must use projected DNS");
+        assert!(!result.is_null(), "DNS resolution must return one address");
+        // SAFETY: AF_INET success returns a sockaddr_in at ai_addr.
+        let address = unsafe { &*((*result).ai_addr.cast::<libc::sockaddr_in>()) };
+        assert_eq!(address.sin_addr.s_addr.to_ne_bytes(), [192, 0, 2, 17]);
+        // SAFETY: getaddrinfo returned this owned result list.
+        unsafe { libc::freeaddrinfo(result) };
+        assert!(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/etc/resolv.conf")
+                .is_err(),
+            "private resolver mount must be read-only"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "requires root namespace privileges and an unused 127.0.0.1:53"]
+    fn nhc_imp_5o_private_member_resolver_mount_drives_real_dns() {
+        if std::env::var_os(RESOLVER_CHILD_ENV).is_some() {
+            assert_test_dns_resolution();
+            return;
+        }
+
+        assert_eq!(unsafe { libc::geteuid() }, 0, "test requires root");
+        let host_resolver = fs::read("/etc/resolv.conf").expect("read host resolver");
+        let resolver_target = fs::canonicalize("/etc/resolv.conf").expect("resolver target");
+        let fixture_root = std::env::temp_dir().join(format!(
+            "nanohost-private-resolver-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir(&fixture_root).expect("create resolver fixture");
+        let resolver_source = fixture_root.join("resolv.conf");
+        let mut resolver = File::create(&resolver_source).expect("create resolver projection");
+        resolver
+            .write_all(b"nameserver 127.0.0.1\noptions attempts:1 timeout:1\n")
+            .expect("write resolver projection");
+        drop(resolver);
+
+        let socket = UdpSocket::bind(("127.0.0.1", 53)).expect("bind test DNS");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("bound DNS timeout");
+        let responder = thread::spawn(move || answer_test_dns(socket));
+        let namespace_descriptor = Arc::new(
+            File::open("/proc/self/ns/net")
+                .expect("current network namespace")
+                .into(),
+        );
+        let member = EpochMemberSpec {
+            role: EpochProcessRole::OpenShellGateway,
+            program: std::env::current_exe().expect("current test binary"),
+            args: vec![
+                "--exact".into(),
+                "epoch_coordinator::tests::nhc_imp_5o_private_member_resolver_mount_drives_real_dns"
+                    .into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+            env: vec![(RESOLVER_CHILD_ENV.into(), "1".into())],
+            network_namespace_mode: EpochNetworkNamespaceMode::JoinPrivate,
+            inherited_descriptor_targets: Vec::new(),
+        };
+        let mut children = Vec::new();
+        spawn_member(
+            &mut children,
+            &member,
+            Some(&namespace_descriptor),
+            Some((&resolver_source, &resolver_target)),
+        )
+        .expect("spawn private resolver member");
+        assert!(wait_for_child_success(
+            children.last_mut().expect("resolver child"),
+            Duration::from_secs(10),
+        ));
+        responder.join().expect("DNS responder");
+        assert_eq!(
+            fs::read("/etc/resolv.conf").expect("re-read host resolver"),
+            host_resolver,
+            "child-private resolver mount must preserve host bytes"
+        );
+        fs::remove_dir_all(fixture_root).expect("remove resolver fixture");
+    }
 
     #[test]
     fn nhc_imp_5o_requires_one_up_tap0_default_route() {
@@ -2478,7 +2716,7 @@ mod tests {
             .find_map(|line| line.strip_prefix("CapEff:\t"))
             .and_then(|value| u64::from_str_radix(value, 16).ok())
             .expect("effective Linux capabilities");
-        let spawn = spawn_member(&mut children, &member, Some(&namespace_descriptor));
+        let spawn = spawn_member(&mut children, &member, Some(&namespace_descriptor), None);
         if effective_capabilities & (1 << 21) == 0 {
             let error = spawn.expect_err("mount namespace creation fails without CAP_SYS_ADMIN");
             assert_eq!(error.raw_os_error(), Some(libc::EPERM));
@@ -2593,6 +2831,14 @@ mod tests {
         assert_ne!(first.docker_socket(), second.docker_socket());
         assert_ne!(first.gateway_auth_path(), second.gateway_auth_path());
         assert!(first.epoch_root().starts_with(state_root));
+        assert_eq!(
+            first.resolver_path(),
+            first.epoch_root().join("resolv.conf")
+        );
+        assert_eq!(
+            first.resolver_contents(),
+            "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+        );
         for path in [first.containerd_socket(), first.docker_socket()] {
             assert!(path.starts_with(run_root));
         }
