@@ -6,6 +6,7 @@ import {
   type CredentialInfo,
   type CredentialStore,
   calculateCost,
+  createAssistantMessageEventStream,
   createModels,
   fauxAssistantMessage,
   fauxProvider,
@@ -2235,6 +2236,166 @@ describe('PiAiGatewayClient', () => {
     expect(events.some((event) => event.type === 'response.custom_tool_call_input.done')).toBe(
       false
     );
+  });
+
+  it('does not require an encrypted reasoning capsule for a chat provider field marker', async () => {
+    const faux = fauxProvider({
+      api: 'openai-completions',
+      provider: 'openrouter',
+      models: [{ id: 'stealth/ox-alpha', reasoning: true }],
+    });
+    const message = fauxAssistantMessage(
+      [
+        fauxThinking('Provider reasoning summary.'),
+        fauxToolCall('exec', { input: 'text(true);' }, { id: 'call_exec' }),
+      ],
+      { stopReason: 'toolUse' }
+    );
+    const reasoning = message.content[0];
+    const toolCall = message.content[1];
+    if (reasoning?.type !== 'thinking' || toolCall?.type !== 'toolCall') {
+      throw new Error('Invalid reasoning marker fixture');
+    }
+    reasoning.thinkingSignature = 'reasoning_content';
+    // The stock faux stream drops thinkingSignature from partial events. Emit the exact
+    // semantic events produced by pi-ai's OpenAI-compatible parser for this boundary.
+    Object.assign(faux.provider, {
+      stream: () => {
+        const stream = createAssistantMessageEventStream();
+        queueMicrotask(() => {
+          const base = { ...message, content: [], stopReason: 'pending' as const };
+          stream.push({ type: 'start', partial: base });
+          stream.push({
+            type: 'thinking_start',
+            contentIndex: 0,
+            partial: { ...base, content: [{ ...reasoning, thinking: '' }] },
+          });
+          stream.push({
+            type: 'thinking_delta',
+            contentIndex: 0,
+            delta: reasoning.thinking,
+            partial: { ...base, content: [reasoning] },
+          });
+          stream.push({
+            type: 'thinking_end',
+            contentIndex: 0,
+            content: reasoning.thinking,
+            partial: { ...base, content: [reasoning] },
+          });
+          stream.push({
+            type: 'toolcall_start',
+            contentIndex: 1,
+            partial: { ...base, content: [reasoning, { ...toolCall, arguments: {} }] },
+          });
+          stream.push({
+            type: 'toolcall_delta',
+            contentIndex: 1,
+            delta: JSON.stringify(toolCall.arguments),
+            partial: { ...base, content: [reasoning, toolCall] },
+          });
+          stream.push({
+            type: 'toolcall_end',
+            contentIndex: 1,
+            toolCall,
+            partial: { ...base, content: [reasoning, toolCall] },
+          });
+          stream.push({ type: 'done', reason: message.stopReason, message });
+          stream.end(message);
+        });
+        return stream;
+      },
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const observedUsage: unknown[] = [];
+    const resolvedProvider = providerConfig({
+      adapterId: 'openrouter',
+      apiKey: 'openrouter-secret',
+      displayName: 'OpenRouter',
+      gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+      id: 'openrouter-a1',
+      models: ['stealth/ox-alpha'],
+      subscriptionProviderId: 'openrouter',
+    });
+    const request: Parameters<PiAiGatewayClient['createResponsesStream']>[1] = {
+      include: ['reasoning.encrypted_content'],
+      input: [
+        {
+          role: 'developer',
+          tools: [
+            {
+              description: 'Run code.',
+              name: 'exec',
+              parameters: { properties: { input: { type: 'string' } }, type: 'object' },
+              strict: false,
+              type: 'function',
+            },
+          ],
+          type: 'additional_tools',
+        },
+        { role: 'user', content: [{ type: 'input_text', text: 'Run the check.' }] },
+      ],
+      model: 'stealth/ox-alpha',
+      store: false,
+      stream: true,
+      tools: [],
+    };
+    const client = new PiAiGatewayClient();
+
+    const stream = await client.createResponsesStream(
+      resolvedProvider,
+      request,
+      (usage) => observedUsage.push(usage),
+      {},
+      models
+    );
+
+    const body = await new Response(stream).text();
+    const events = body
+      .split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
+    const completedReasoning = events
+      .filter((event) => event.type === 'response.output_item.done')
+      .map((event) => event.item)
+      .find(
+        (item) =>
+          item !== null &&
+          typeof item === 'object' &&
+          (item as Record<string, unknown>).type === 'reasoning'
+      ) as Record<string, unknown> | undefined;
+
+    expect(completedReasoning).toMatchObject({
+      type: 'reasoning',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: 'Provider reasoning summary.' }],
+    });
+    expect(completedReasoning).not.toHaveProperty('encrypted_content');
+    expect(events.map((event) => event.type)).toContain('response.function_call_arguments.done');
+    expect(events.at(-1)?.type).toBe('response.completed');
+    expect(body).toContain('data: [DONE]');
+    expect(observedUsage).toHaveLength(1);
+
+    reasoning.thinkingSignature = JSON.stringify({
+      encrypted_content: null,
+      id: 'reasoning_native',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: reasoning.thinking }],
+      type: 'reasoning',
+    });
+    const missingCapsuleUsage: unknown[] = [];
+    const missingCapsuleStream = await client.createResponsesStream(
+      resolvedProvider,
+      request,
+      (usage) => missingCapsuleUsage.push(usage),
+      {},
+      models
+    );
+    await expect(new Response(missingCapsuleStream).text()).rejects.toMatchObject({
+      code: 'unsupported_gateway_feature',
+      feature: 'pi-ai Responses reasoning encrypted content',
+    });
+    expect(missingCapsuleUsage).toHaveLength(1);
   });
 
   it('advertises function-only additional_tools on a non-stream chat-native Responses bridge', async () => {

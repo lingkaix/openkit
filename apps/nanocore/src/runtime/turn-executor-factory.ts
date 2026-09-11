@@ -89,6 +89,7 @@ import {
   authorizeAttachedWorkerStorageReplacement,
   createWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
+  listWorkerStorageBindings,
   markWorkerStorageAttachmentUnknown,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
@@ -1024,6 +1025,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           durableCleanupFailure.updatedAt,
           identity.deploymentId
         );
+        this.releaseWorkerStorageForFailedMaterialization(durableCleanupFailure);
         return;
       }
       if (session?.turnStarted && session.terminalInspectionComplete) {
@@ -1130,6 +1132,39 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       cleanupProved: true,
       expectedRevision: binding.revision,
       sandboxBindingRef,
+      storageRef: binding.storageRef,
+    });
+  }
+
+  /** Releases the sole active reservation owned by one failed materialization lineage. */
+  private releaseWorkerStorageForFailedMaterialization(
+    session: WorkerBackendSessionRecord
+  ): WorkerStorageBinding | null {
+    const bindings = listWorkerStorageBindings(this.coreDb, {
+      authorizeContributor: () => true,
+      workspaceId: session.workspaceId,
+    }).filter(
+      (binding) =>
+        (binding.state === 'reserved' ||
+          binding.state === 'attached' ||
+          binding.state === 'unknown') &&
+        binding.currentAgentSessionId === session.agentSessionId &&
+        binding.currentThreadId === session.threadId &&
+        binding.deploymentId === session.deploymentId &&
+        binding.runtimeTargetId === session.runtimeTargetId
+    );
+    if (bindings.length > 1) {
+      throw new Error(
+        'NanoHost failed materialization matches more than one Worker storage binding.'
+      );
+    }
+    const binding = bindings[0];
+    if (!binding) return null;
+    return releaseWorkerStorageAttachment(this.coreDb, {
+      attachmentGeneration: binding.attachmentGeneration,
+      cleanupProved: true,
+      expectedRevision: binding.revision,
+      sandboxBindingRef: binding.currentSandboxBindingRef,
       storageRef: binding.storageRef,
     });
   }

@@ -2194,13 +2194,7 @@ function responsesReasoningItem(
   block: Extract<AssistantMessage['content'][number], { type: 'thinking' }>,
   fallbackId: string
 ): Record<string, unknown> {
-  let persisted: Record<string, unknown> | undefined;
-  try {
-    persisted = readRecord(JSON.parse(block.thinkingSignature ?? ''));
-  } catch {
-    persisted = undefined;
-  }
-  const native = persisted?.type === 'reasoning' ? persisted : undefined;
+  const native = readNativeResponsesReasoningItem(block.thinkingSignature);
   return {
     ...native,
     id: typeof native?.id === 'string' && native.id ? native.id : fallbackId,
@@ -2213,6 +2207,18 @@ function responsesReasoningItem(
           : []
         : native.summary,
   };
+}
+
+/** Reads an exact native Responses reasoning item from pi-ai's opaque signature carrier. */
+function readNativeResponsesReasoningItem(
+  thinkingSignature: string | undefined
+): Record<string, unknown> | undefined {
+  try {
+    const persisted = readRecord(JSON.parse(thinkingSignature ?? ''));
+    return persisted?.type === 'reasoning' ? persisted : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -2557,7 +2563,7 @@ function toResponsesSseStream(
             );
             if (
               requireEncryptedReasoning &&
-              block.thinkingSignature &&
+              readNativeResponsesReasoningItem(block.thinkingSignature) &&
               typeof item.encrypted_content !== 'string'
             ) {
               pendingReasoning.add(event.contentIndex);

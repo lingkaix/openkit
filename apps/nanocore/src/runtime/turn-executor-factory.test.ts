@@ -63,6 +63,7 @@ import {
 import {
   activateWorkerStorageAttachment,
   createWorkerStorageBinding,
+  getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
@@ -1601,6 +1602,194 @@ describe('createConfiguredTurnExecutor', () => {
         expect(sandbox).toBeUndefined();
       }
       expect(operations).toEqual(['bridge.close', 'sandbox.delete']);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('releases a no-Sandbox storage reservation only after later fresh-ready cleanup proof', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(
+        requestOrConnection: object,
+        carriedRequest?: NanoHostSessionEffectRequest
+      ): Promise<unknown> {
+        effects.push(carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest));
+        return {};
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+
+    try {
+      const failureAt = '2026-08-21T00:00:00.000Z';
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_reserved_cleanup', 'identity_reserved_cleanup',
+                     'deployment_reserved_cleanup', 1, 1, 1, 1, ?, 1)`
+        )
+        .run(failureAt);
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = () => 'lease_reserved_cleanup';
+      const environmentPackage = completeNanoHostPackage({
+        scope: {
+          agentSessionId: 'as_reserved_cleanup',
+          threadId: 'thread_reserved_cleanup',
+          turnId: 'turn_reserved_cleanup',
+          workspaceId: 'workspace_reserved_cleanup',
+        },
+        snapshotId: 'aepsnap_reserved_cleanup',
+      });
+      const identity = backend.planSession(environmentPackage);
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO worker_backend_sessions (
+             lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, backend_kind, deployment_id, backend_session_id,
+             runtime_target_id, backend_lineage_json, sandbox_binding_ref,
+             staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
+           ) VALUES (
+             'lease_reserved_cleanup', ?, ?, ?, ?, ?, 'openshell', ?, ?, ?, ?,
+             'lease-binding:reserved-cleanup', ?, 'pending', 'cleanup-failed', ?, ?
+           )`
+        )
+        .run(
+          environmentPackage.scope.workspaceId,
+          environmentPackage.scope.threadId,
+          environmentPackage.scope.turnId,
+          identity.agentSessionId,
+          identity.packageSnapshotId,
+          identity.deploymentId,
+          identity.backendSessionId,
+          identity.runtimeTargetId,
+          JSON.stringify({ imageRef: 'openkit/worker-codex:dev' }),
+          identity.stagingDirectoryRef,
+          failureAt,
+          failureAt
+        );
+      const layout = {
+        family: 'openkit-worker',
+        gid: 1000,
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+        uid: 1000,
+        version: '1',
+        workingDirectory: '/tmp/openkit-bootstrap',
+      };
+      const created = createWorkerStorageBinding(coreDb, {
+        deploymentId: identity.deploymentId,
+        layout,
+        runtimeTargetId: identity.runtimeTargetId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+      const reserved = reserveWorkerStorageAttachment(coreDb, {
+        agentSessionId: identity.agentSessionId,
+        authorizeContributor: () => true,
+        expectedRevision: created.revision,
+        layout,
+        purpose: 'work',
+        responsibleUserId: 'user-factory',
+        runtimeTargetId: identity.runtimeTargetId,
+        storageRef: created.storageRef,
+        threadId: environmentPackage.scope.threadId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+      expect(reserved).toMatchObject({
+        attachmentGeneration: 1,
+        currentAgentSessionId: identity.agentSessionId,
+        currentSandboxBindingRef: null,
+        revision: 2,
+        state: 'reserved',
+      });
+      const duplicateCreated = createWorkerStorageBinding(coreDb, {
+        deploymentId: identity.deploymentId,
+        layout,
+        runtimeTargetId: identity.runtimeTargetId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+      const duplicateReserved = reserveWorkerStorageAttachment(coreDb, {
+        agentSessionId: identity.agentSessionId,
+        authorizeContributor: () => true,
+        expectedRevision: duplicateCreated.revision,
+        layout,
+        purpose: 'work',
+        responsibleUserId: 'user-factory',
+        runtimeTargetId: identity.runtimeTargetId,
+        storageRef: duplicateCreated.storageRef,
+        threadId: environmentPackage.scope.threadId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+
+      await expect(runtime.cleanupBackendSession(identity)).rejects.toThrow(
+        /no later fresh-ready proof/i
+      );
+      expect(getWorkerStorageBinding(coreDb, { storageRef: reserved.storageRef })).toMatchObject({
+        currentAgentSessionId: identity.agentSessionId,
+        revision: 2,
+        state: 'reserved',
+      });
+      expect(
+        getWorkerStorageBinding(coreDb, { storageRef: duplicateReserved.storageRef })
+      ).toMatchObject({ revision: 2, state: 'reserved' });
+      expect(effects).toEqual([]);
+
+      const freshAt = '2026-08-21T00:00:00.001Z';
+      coreDb.sqlite
+        .prepare(
+          `UPDATE nanohost_runtime_targets
+           SET observed_at = ?, last_fresh_ready_at = ?
+           WHERE target_id = ?`
+        )
+        .run(freshAt, freshAt, identity.runtimeTargetId);
+      await expect(runtime.cleanupBackendSession(identity)).rejects.toThrow(
+        /matches more than one Worker storage binding/i
+      );
+      expect(getWorkerStorageBinding(coreDb, { storageRef: reserved.storageRef })).toMatchObject({
+        revision: 2,
+        state: 'reserved',
+      });
+      expect(
+        getWorkerStorageBinding(coreDb, { storageRef: duplicateReserved.storageRef })
+      ).toMatchObject({ revision: 2, state: 'reserved' });
+      releaseWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: duplicateReserved.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: duplicateReserved.revision,
+        storageRef: duplicateReserved.storageRef,
+      });
+      await expect(runtime.cleanupBackendSession(identity)).resolves.toBeUndefined();
+
+      expect(getWorkerStorageBinding(coreDb, { storageRef: reserved.storageRef })).toMatchObject({
+        attachmentGeneration: 1,
+        currentAgentSessionId: null,
+        currentSandboxBindingRef: null,
+        currentThreadId: null,
+        currentWorkSlotRef: null,
+        revision: 3,
+        state: 'idle',
+      });
+      expect(effects).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }
