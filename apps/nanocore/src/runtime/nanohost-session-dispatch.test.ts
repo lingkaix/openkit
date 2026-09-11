@@ -141,6 +141,21 @@ describe('authoritative NanoHost session dispatch', () => {
       await expect(restarted.result(physical, 'image.acquire', result)).rejects.toMatchObject({
         status: 409,
       });
+
+      const unknownImageOutcome = restarted.expectResultOnly!([
+        {
+          kind: 'image.build',
+          imageSettlement,
+          requestId: 'f'.repeat(64),
+        },
+      ]).catch((error: unknown) => error);
+      await expect(restarted.poll(physical, 'image.inspect')).rejects.toMatchObject({
+        status: 409,
+      });
+      expect(authority.mayCarryWork(physical)).toBe(false);
+      const unknownImageError = await unknownImageOutcome;
+      expect(unknownImageError).toBeInstanceOf(Error);
+      expect((unknownImageError as Error).message).toMatch(/unknown/i);
     } finally {
       client?.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
