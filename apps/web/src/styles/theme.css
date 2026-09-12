@@ -115,6 +115,11 @@
   #root {
     height: 100%;
   }
+  select,
+  option {
+    color: var(--text-color-default);
+    background-color: var(--surface-card);
+  }
   body {
     margin: 0;
     font-family: var(--font-sans);

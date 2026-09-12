@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
