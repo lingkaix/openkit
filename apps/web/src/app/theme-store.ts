@@ -1,3 +1,4 @@
+import { useEffect, useLayoutEffect } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
@@ -32,3 +33,25 @@ export const useThemeStore = create<ThemeState>()(
     { name: 'openkit-theme' }
   )
 );
+
+/** Apply the saved theme to the whole document, including portaled controls and account pages. */
+export function useDocumentTheme() {
+  const theme = useThemeStore((state) => state.theme);
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const themeClass = THEME_CLASS[theme];
+    if (themeClass) root.classList.add(themeClass);
+    return () => {
+      if (themeClass) root.classList.remove(themeClass);
+    };
+  }, [theme]);
+
+  useEffect(() => {
+    /** Rehydrate another tab's persisted selection without writing it back. */
+    function syncTheme(event: StorageEvent) {
+      if (event.key === 'openkit-theme') void useThemeStore.persist.rehydrate();
+    }
+    window.addEventListener('storage', syncTheme);
+    return () => window.removeEventListener('storage', syncTheme);
+  }, []);
+}

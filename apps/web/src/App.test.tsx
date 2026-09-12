@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -279,6 +279,21 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 });
 
 describe('app shell — theme lives in Settings, not a header (DESIGN.md §4.5)', () => {
+  it('redirects an admitted /login visit to Overview', async () => {
+    await renderAt('/login');
+    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeInTheDocument();
+  });
+
+  it('syncs themes from another tab onto the document root', async () => {
+    await renderAt('/settings/appearance');
+    localStorage.setItem('openkit-theme', JSON.stringify({ state: { theme: 'noir' }, version: 0 }));
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', { key: 'openkit-theme' }));
+    });
+    expect(document.documentElement).toHaveClass('ok-theme-noir');
+    expect(screen.getByRole('radio', { name: /Noir/ })).toBeChecked();
+  });
+
   it('offers no theme switcher on the Overview surface', async () => {
     await renderAt('/');
     expect(screen.queryByRole('radio', { name: /Noir/ })).not.toBeInTheDocument();
@@ -289,6 +304,7 @@ describe('app shell — theme lives in Settings, not a header (DESIGN.md §4.5)'
     await renderAt('/settings/appearance');
     await user.click(screen.getByRole('radio', { name: /Noir/ }));
     expect(useThemeStore.getState().theme).toBe('noir');
+    expect(document.documentElement).toHaveClass('ok-theme-noir');
     expect(localStorage.getItem('openkit-theme')).toContain('noir');
   });
 });
