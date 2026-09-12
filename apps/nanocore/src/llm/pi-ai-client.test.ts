@@ -903,6 +903,76 @@ describe('PiAiGatewayClient', () => {
     expect(priced.output).toBe((stockTier.output / 1_000_000) * longUsage.output);
   });
 
+  it('dispatches an explicitly configured uncatalogued Codex flagship with its exact API id', async () => {
+    let seenModel: Model<string> | undefined;
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-5.6-sol' }],
+    });
+    const pairModels = createModels();
+    pairModels.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
+    const originalModels = pairModels.getModels('openai-codex');
+    faux.setResponses([
+      (_context, _options, _state, model) => {
+        seenModel = model;
+        return fauxAssistantMessage('Astra response');
+      },
+    ]);
+    const config = providerConfig({
+      accountSlotId: 'work',
+      adapterId: 'openai-codex',
+      subscriptionProviderId: 'openai-codex',
+      id: 'codex-work',
+      apiKey: null,
+      requiresApiKey: false,
+      models: ['openai-codex/gpt-6-astra'],
+      modelMetadata: {
+        'openai-codex/gpt-6-astra': {
+          limit: { context: 256_000, output: 128_000 },
+          reasoning: true,
+          modalities: { input: ['text', 'image'], output: ['text'] },
+          cost: { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
+        },
+      },
+    });
+    const request = {
+      messages: [{ content: 'Hello', role: 'user' as const }],
+      model: 'openai-codex/gpt-6-astra',
+    };
+    await new PiAiGatewayClient().createChatCompletion(config, request, undefined, {}, pairModels);
+    expect(seenModel).toMatchObject({
+      id: 'gpt-6-astra',
+      provider: 'openai-codex',
+      api: 'openai-codex-responses',
+      contextWindow: 256_000,
+      maxTokens: 128_000,
+      reasoning: true,
+      input: ['text', 'image'],
+      cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    });
+    expect(pairModels.getModels('openai-codex')).toEqual(originalModels);
+    expect(pairModels.getModel('openai-codex', 'gpt-6-astra')).toBeUndefined();
+    await expect(
+      new PiAiGatewayClient().createChatCompletion(
+        { ...config, models: [] },
+        request,
+        undefined,
+        {},
+        pairModels
+      )
+    ).rejects.toThrow('does not expose model');
+    await expect(
+      new PiAiGatewayClient().createChatCompletion(
+        { ...config, modelMetadata: {} },
+        request,
+        undefined,
+        {},
+        pairModels
+      )
+    ).rejects.toThrow('does not expose model');
+  });
+
   it('clones a subscription pair model without mutating nested pair objects', async () => {
     const nestedCost = { cacheRead: 0.1, cacheWrite: 1, input: 1, output: 2 };
     const nestedInput: Array<'text'> = ['text'];
@@ -1503,7 +1573,10 @@ describe('PiAiGatewayClient', () => {
     ).rejects.toBeInstanceOf(GatewayUnsupportedFeatureError);
   });
 
-  it('lowers client tool search through the stock Codex parser and activates discovered tools', async () => {
+  it.each([
+    'gpt-5.6-sol',
+    'gpt-6-astra',
+  ])('preserves stock Codex tool search for %s', async (apiModelId) => {
     const accessToken = [
       'e30',
       Buffer.from(
@@ -1571,7 +1644,7 @@ describe('PiAiGatewayClient', () => {
     const responseBody = (items: readonly Record<string, unknown>[]): string => {
       const events: Record<string, unknown>[] = [
         {
-          response: { id: 'resp_search', model: 'gpt-5.6-sol', output: [], status: 'in_progress' },
+          response: { id: 'resp_search', model: apiModelId, output: [], status: 'in_progress' },
           type: 'response.created',
         },
       ];
@@ -1610,7 +1683,7 @@ describe('PiAiGatewayClient', () => {
       events.push({
         response: {
           id: 'resp_search',
-          model: 'gpt-5.6-sol',
+          model: apiModelId,
           output: items,
           status: 'completed',
           usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 },
@@ -1722,7 +1795,13 @@ describe('PiAiGatewayClient', () => {
       apiKey: null,
       gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
       id: 'codex-team',
-      models: ['openai-codex/gpt-5.6-sol'],
+      models: [`openai-codex/${apiModelId}`],
+      modelMetadata: {
+        [`openai-codex/${apiModelId}`]: {
+          limit: { context: 256_000, output: 128_000 },
+          reasoning: true,
+        },
+      },
       requiresApiKey: false,
       subscriptionProviderId: 'openai-codex',
     } as Partial<ResolvedLLMProviderConfig>);
@@ -1738,13 +1817,14 @@ describe('PiAiGatewayClient', () => {
             { content: 'Find local tools.', role: 'user' },
           ],
           instructions: 'Retain this request instruction.',
-          model: 'openai-codex/gpt-5.6-sol',
+          model: `openai-codex/${apiModelId}`,
           tools: [],
         },
         undefined,
         {},
         models
       );
+      expect(upstreamRequests[0]?.model).toBe(apiModelId);
       const publicSearchCall = first.output?.[0];
       expect(publicSearchCall).toEqual({
         arguments: { query: 'local tools', limit: 2 },
@@ -1793,7 +1873,7 @@ describe('PiAiGatewayClient', () => {
               type: 'tool_search_output',
             },
           ],
-          model: 'openai-codex/gpt-5.6-sol',
+          model: `openai-codex/${apiModelId}`,
           stream: true,
           tools: [],
         },

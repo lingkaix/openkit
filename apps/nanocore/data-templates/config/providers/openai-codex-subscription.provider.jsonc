@@ -1,0 +1,95 @@
+// Opt-in example; merge into the existing profile before activating.
+// Official metadata verified 2026-09-12: https://developers.openai.com/api/docs/models
+// Subscription context is capped at 256000 by OpenKit product policy; output limits remain official.
+// Astra: https://developers.openai.com/api/docs/models/gpt-6-astra
+// See README.md for supported reasoning efforts, pricing scope, and Gateway routes.
+{
+  "id": "openai_codex",
+  "displayName": "OpenAI Codex",
+  "kind": "oauth",
+  "vendor": "openai_codex",
+  "models": [
+    "openai-codex/gpt-6-astra",
+    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-5.6-terra",
+    "openai-codex/gpt-5.6-luna"
+  ],
+  "modelMetadata": {
+    "openai-codex/gpt-6-astra": {
+      "limit": {
+        "context": 256000,
+        "output": 128000
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "cost": {
+        "input": 10,
+        "cache_read": 1,
+        "output": 50,
+        "cache_write": 12.5
+      }
+    },
+    "openai-codex/gpt-5.6-sol": {
+      "limit": {
+        "context": 256000,
+        "output": 128000
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "cost": {
+        "input": 4,
+        "cache_read": 0.4,
+        "output": 20
+      }
+    },
+    "openai-codex/gpt-5.6-terra": {
+      "limit": {
+        "context": 256000,
+        "output": 128000
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "cost": {
+        "input": 2,
+        "cache_read": 0.2,
+        "output": 12
+      }
+    },
+    "openai-codex/gpt-5.6-luna": {
+      "limit": {
+        "context": 256000,
+        "output": 128000
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "cost": {
+        "input": 0.2,
+        "cache_read": 0.02,
+        "output": 1.2
+      }
+    }
+  },
+  "extensions": {
+    "openkit": {
+      "subscriptionAccount": {
+        "accountSlotId": "operator-selected-slot"
+      }
+    }
+  }
+}
