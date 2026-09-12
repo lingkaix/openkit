@@ -127,6 +127,7 @@ function createFixture() {
     })
   );
   app.post('/api/app/workspace-imports/dry-run', (c) => c.json(c.get('actor')));
+  app.post('/api/workspaces', (c) => c.json({ actor: c.get('actor') }));
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.post('/api/turns/:turnId/feedback', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.get('/api/app/workspaces/:workspaceId/dashboard', (c) =>
@@ -354,6 +355,13 @@ describe('central Workspace operation authorizer', () => {
       method: 'POST',
     });
 
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'token_admin',
+      workspaceIds: [],
+    });
     fixture.actorState.current = {
       kind: 'token',
       tokenId: 'token_admin',
@@ -393,9 +401,12 @@ describe('central Workspace operation authorizer', () => {
     await expect(tokenWithoutAttribution.json()).resolves.toMatchObject({
       code: 'workspace_access_denied',
     });
-    expect(adminAttributed.status).toBe(403);
-    await expect(adminAttributed.json()).resolves.toMatchObject({
-      code: 'workspace_access_denied',
+    expect(adminAttributed.status).toBe(200);
+    await expect(adminAttributed.json()).resolves.toEqual({
+      effectiveRole: 'owner',
+      kind: 'workspace',
+      policyOperation: 'llm.gateway.use',
+      workspaceId: fixture.workspace.id,
     });
     expect(adminUnattributed.status).toBe(200);
     await expect(adminUnattributed.json()).resolves.toBeNull();
@@ -526,10 +537,17 @@ describe('central Workspace operation authorizer', () => {
     await expect(mutation.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
   });
 
-  it('does not let server-admin credentials become Workspace content authority', async () => {
+  it('lets usable server-admin bearer tokens act as Workspace owner authority', async () => {
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'token_admin_content',
+      workspaceIds: [],
+    });
     fixture.actorState.current = {
       kind: 'token',
-      tokenId: 'token_admin',
+      tokenId: 'token_admin_content',
       tokenScope: 'server-admin',
       tokenWorkspaceIds: [],
       userId: 'user_local',
@@ -539,8 +557,89 @@ describe('central Workspace operation authorizer', () => {
       `/api/app/workspaces/${fixture.workspace.id}/dashboard`
     );
 
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      effectiveRole: 'owner',
+      kind: 'workspace',
+      policyOperation: 'workspace.read',
+      workspaceId: fixture.workspace.id,
+    });
+  });
+
+  it('grants usable server-admin bearer tokens owner access without membership and lists all active Workspaces', async () => {
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_missing',
+      scope: 'server-admin',
+      tokenId: 'token_admin_no_membership',
+      workspaceIds: [],
+    });
+    fixture.actorState.current = {
+      kind: 'token',
+      tokenId: 'token_admin_no_membership',
+      tokenScope: 'server-admin',
+      tokenWorkspaceIds: [],
+      userId: 'user_missing',
+    };
+
+    const dashboard = await fixture.app.request(
+      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+    );
+    const collection = await fixture.app.request('/api/app/workspaces');
+    const create = await fixture.app.request('/api/workspaces', { method: 'POST' });
+
+    expect(dashboard.status).toBe(200);
+    await expect(dashboard.json()).resolves.toMatchObject({
+      effectiveRole: 'owner',
+      workspaceId: fixture.workspace.id,
+    });
+    expect(collection.status).toBe(200);
+    const collectionBody = (await collection.json()) as {
+      kind: string;
+      workspaceIds: string[];
+    };
+    expect(collectionBody).toMatchObject({
+      kind: 'workspace-set',
+      workspaceIds: expect.arrayContaining([
+        fixture.quickChatWorkspace.id,
+        fixture.workspace.id,
+        fixture.foreignWorkspace.id,
+      ]),
+    });
+    expect(collectionBody.workspaceIds).not.toContain(fixture.filesystemOnlyWorkspace.id);
+    expect(create.status).toBe(200);
+  });
+
+  it('still denies revoked server-admin bearer tokens for Workspace product routes', async () => {
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'token_admin_revoked',
+      workspaceIds: [],
+    });
+    fixture.coreDb.sqlite
+      .prepare(
+        `UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?`
+      )
+      .run(new Date().toISOString(), 'token_admin_revoked');
+    fixture.actorState.current = {
+      kind: 'token',
+      tokenId: 'token_admin_revoked',
+      tokenScope: 'server-admin',
+      tokenWorkspaceIds: [],
+      userId: 'user_local',
+    };
+
+    const response = await fixture.app.request(
+      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+    );
+    const create = await fixture.app.request('/api/workspaces', { method: 'POST' });
+
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    expect(create.status).toBe(403);
+    await expect(create.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
   });
 
   it('intersects current usable deployment administration with current Workspace access', async () => {
@@ -570,7 +669,7 @@ describe('central Workspace operation authorizer', () => {
     expect(afterRevocation.status).toBe(403);
   });
 
-  it('requires a presented admin Token to remain usable and independently requires membership', async () => {
+  it('requires a presented admin Token to remain usable and grants owner without membership', async () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -602,12 +701,16 @@ describe('central Workspace operation authorizer', () => {
       tokenWorkspaceIds: [],
       userId: 'user_missing',
     };
-    const denied = await fixture.app.request(
+    const withoutMembership = await fixture.app.request(
       `/api/app/workspaces/${fixture.workspace.id}/worker-environments`
     );
 
     expect(allowed.status).toBe(200);
-    expect(denied.status).toBe(403);
+    expect(withoutMembership.status).toBe(200);
+    await expect(withoutMembership.json()).resolves.toMatchObject({
+      effectiveRole: 'owner',
+      workspaceId: fixture.workspace.id,
+    });
   });
 
   it('intersects Workspace token bindings with current membership', async () => {
@@ -639,7 +742,7 @@ describe('central Workspace operation authorizer', () => {
     });
   });
 
-  it('limits canonical-user operations to local and session actors', async () => {
+  it('limits canonical-user operations to local, session, and usable server-admin actors', async () => {
     const session = await fixture.app.request('/api/app/workspace-imports/dry-run', {
       method: 'POST',
     });
@@ -653,9 +756,27 @@ describe('central Workspace operation authorizer', () => {
     const token = await fixture.app.request('/api/app/workspace-imports/dry-run', {
       method: 'POST',
     });
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'token_admin_canonical',
+      workspaceIds: [],
+    });
+    fixture.actorState.current = {
+      kind: 'token',
+      tokenId: 'token_admin_canonical',
+      tokenScope: 'server-admin',
+      tokenWorkspaceIds: [],
+      userId: 'user_local',
+    };
+    const admin = await fixture.app.request('/api/app/workspace-imports/dry-run', {
+      method: 'POST',
+    });
 
     expect(session.status).toBe(200);
     expect(token.status).toBe(403);
     await expect(token.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    expect(admin.status).toBe(200);
   });
 });

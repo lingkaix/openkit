@@ -15,6 +15,7 @@ import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.
 import { evaluateWorkspaceRoleAccess, type ProductOperation } from '../policy/workspace-access.js';
 import type { CoreDb } from '../storage/db.js';
 import {
+  listActiveWorkspaceIds,
   listActiveWorkspaceIdsForActor,
   resolveWorkspaceRole,
   type WorkspaceRole,
@@ -328,7 +329,12 @@ async function authorizeOperation(
 
   if (route.access.scope === 'user') {
     if (route.access.authentication === 'canonical-user') {
-      return actor.kind === 'local' || actor.kind === 'session' ? null : workspaceAccessDenied();
+      if (actor.kind === 'local' || actor.kind === 'session') {
+        return null;
+      }
+      return isUsablePresentedServerAdminToken(input.coreDb, actor)
+        ? null
+        : workspaceAccessDenied();
     }
     return authorizeGatewayOperation(context, actor, route.access, input.coreDb);
   }
@@ -344,8 +350,6 @@ async function authorizeOperation(
       }
       throw error;
     }
-  } else if (actor.kind === 'token' && actor.tokenScope === 'server-admin') {
-    return workspaceAccessDenied();
   }
 
   return authorizeWorkspaceOperation(context, actor, { ...route, access: route.access }, input);
@@ -409,7 +413,10 @@ async function authorizeWorkspaceOperation(
     if (readonlyTokenCannotMutate(actor, route.access)) {
       return workspaceAccessDenied();
     }
-    const workspaceIds = listActiveWorkspaceIdsForActor(input.coreDb, actor.userId).filter(
+    const candidateWorkspaceIds = isUsablePresentedServerAdminToken(input.coreDb, actor)
+      ? listActiveWorkspaceIds(input.coreDb)
+      : listActiveWorkspaceIdsForActor(input.coreDb, actor.userId);
+    const workspaceIds = candidateWorkspaceIds.filter(
       (workspaceId) =>
         !input.workspaceMutationAdmission.isClosed(workspaceId) &&
         authorizeWorkspace(input.coreDb, actor, workspaceId, route.access) !== null
@@ -528,10 +535,19 @@ function authorizeWorkspace(
     readonly authentication?: PublicOperationAccess['authentication'];
   }
 ): AuthorizedWorkspace | null {
-  if (
-    !tokenIncludesWorkspace(actor, workspaceId, access.authentication) ||
-    readonlyTokenCannotMutate(actor, access)
-  ) {
+  if (readonlyTokenCannotMutate(actor, access)) {
+    return null;
+  }
+  if (actor.kind === 'token' && actor.tokenScope === 'server-admin') {
+    if (
+      !isUsablePresentedServerAdminToken(coreDb, actor) ||
+      !isActiveRegisteredWorkspace(coreDb, workspaceId)
+    ) {
+      return null;
+    }
+    return { effectiveRole: 'owner', workspaceId };
+  }
+  if (!tokenIncludesWorkspace(actor, workspaceId, access.authentication)) {
     return null;
   }
   const effectiveRole = currentWorkspaceAuthority(
@@ -621,6 +637,51 @@ async function gatewayWorkspaceId(
       .catch(() => null)
   );
   return parsed.success ? parsed.data.metadata?.openkit?.workspaceId : null;
+}
+
+/**
+ * True when the actor is a presented usable server-admin bearer token.
+ *
+ * Session-derived deployment administration does not qualify; only the bearer itself does.
+ *
+ * @param coreDb Core identity and Token authority.
+ * @param actor Authenticated request actor.
+ * @param now Current time for Token usability evaluation.
+ * @returns True only for a usable presented server-admin Token actor.
+ */
+function isUsablePresentedServerAdminToken(
+  coreDb: CoreDb,
+  actor: Actor,
+  now = new Date()
+): boolean {
+  if (actor.kind !== 'token' || actor.tokenScope !== 'server-admin' || !actor.tokenId) {
+    return false;
+  }
+  if (!isCanonicalUserActive(coreDb, actor.userId)) {
+    return false;
+  }
+  const token = listOpenKitAccessTokenRecords(coreDb).find(
+    (candidate) => candidate.tokenId === actor.tokenId
+  );
+  return (
+    token?.ownerUserId === actor.userId &&
+    token.scope === 'server-admin' &&
+    evaluateOpenKitAccessTokenUsability(token, now).usable
+  );
+}
+
+/**
+ * True when the Workspace registry currently marks the id as active.
+ *
+ * @param coreDb Core Workspace authority.
+ * @param workspaceId Canonical Workspace id.
+ * @returns True only for an active registry row.
+ */
+function isActiveRegisteredWorkspace(coreDb: CoreDb, workspaceId: string): boolean {
+  const row = coreDb.sqlite
+    .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
+    .get(workspaceId) as { status: string } | undefined;
+  return row?.status === 'active';
 }
 
 /**
