@@ -17,6 +17,8 @@ NanoCore derives private AEP and Context input paths from the admitted AgentSess
 - Goal Mode planning, task supervision, actionable human review, stored verification evidence, and terminal summaries
 - real HTTP + SSE protocol surface
 
+Current OpenAI flagship API and Codex subscription profiles are available as opt-in [provider templates](./data-templates/config/providers/README.md#current-openai-flagships), with official metadata overlays and exact GPT-6 routing instructions.
+
 ## Runtime
 
 - `nanocore` admits governed worker sessions only through the configured NanoHost RuntimeTarget and its current native HTTP/2 connection generation.

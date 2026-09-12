@@ -25,7 +25,11 @@ const CONFIG_TEMPLATE_SUFFIXES = {
   agents: '.agent.jsonc',
 } as const;
 /** Provider templates copied as `.example` so they stay discoverable without becoming active first-boot profiles. */
-const EXAMPLE_PROVIDER_TEMPLATE_FILES = new Set(['openai-compatible-custom.provider.jsonc']);
+const EXAMPLE_PROVIDER_TEMPLATE_FILES = new Set([
+  'openai-compatible-custom.provider.jsonc',
+  'openai-flagship.provider.jsonc',
+  'openai-codex-subscription.provider.jsonc',
+]);
 const DATA_ROOT_LAYOUT_VERSION = 2;
 const DATA_ROOT_TEXT_RECORD_EXTENSIONS = new Set([
   '.json',

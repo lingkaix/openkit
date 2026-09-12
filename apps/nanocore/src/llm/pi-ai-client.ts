@@ -472,6 +472,31 @@ export class PiAiGatewayClient {
           : undefined;
       const pairModel = exact ?? stripped;
 
+      if (!pairModel && providerId === 'openai-codex' && provider.models.includes(modelId)) {
+        const pairProvider = models.getProvider(providerId);
+        const effective = resolveEffectiveModelMetadata(metadataProfile(provider), modelId);
+        if (pairProvider?.baseUrl && effective.limit?.context) {
+          // Auth and transport stay on the selected pair; the inventory is not an ID allowlist.
+          const nativeId = modelId.startsWith(prefix) ? modelId.slice(prefix.length) : modelId;
+          return this.applyEffectiveModel(
+            provider,
+            modelId,
+            {
+              api: 'openai-codex-responses',
+              baseUrl: pairProvider.baseUrl,
+              contextWindow: effective.limit.context,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              id: nativeId,
+              input: ['text'],
+              maxTokens: 32000,
+              name: nativeId,
+              provider: providerId,
+              reasoning: false,
+            },
+            false
+          );
+        }
+      }
       if (!pairModel) {
         throw new PiAiGatewayConfigurationError(
           `Provider ${provider.id} does not expose model ${modelId}.`
