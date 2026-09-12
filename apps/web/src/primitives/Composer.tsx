@@ -10,6 +10,8 @@ import {
 } from 'react';
 import {
   Button as AriaButton,
+  Dialog,
+  DialogTrigger,
   ListBox,
   ListBoxItem,
   Popover,
@@ -195,15 +197,66 @@ export function Composer({
         </fieldset>
       ) : null}
       <div className="mt-2 flex items-center gap-2">
-        <AriaButton
-          type="button"
-          aria-label="Add artifact or upload attachment"
-          isDisabled={disabled || pendingImport}
-          onPress={() => setAttachmentsOpen((open) => !open)}
-          className="flex size-8 items-center justify-center rounded-full text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus disabled:text-disabled-fg"
-        >
-          <Icon name={pendingImport ? 'spinner' : 'add'} />
-        </AriaButton>
+        <DialogTrigger isOpen={attachmentsOpen} onOpenChange={setAttachmentsOpen}>
+          <AriaButton
+            type="button"
+            aria-label="Add artifact or upload attachment"
+            isDisabled={disabled || pendingImport}
+            className="flex size-8 items-center justify-center rounded-full text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus disabled:text-disabled-fg"
+          >
+            <Icon name={pendingImport ? 'spinner' : 'add'} />
+          </AriaButton>
+          <Popover
+            placement="top start"
+            className="z-20 w-72 rounded-ok border border-border bg-elevated p-2 text-fg shadow-ok-menu"
+          >
+            <Dialog aria-label="Attachments" className="outline-none">
+              <p className="px-2 py-1 text-xs font-bold text-fg-muted">Artifacts</p>
+              <div className="max-h-40 overflow-y-auto">
+                {artifacts.map((artifact) => (
+                  <button
+                    key={`${artifact.id}:${artifact.version}`}
+                    type="button"
+                    onClick={() => {
+                      setSelectedArtifacts((current) =>
+                        current.some((candidate) => candidate.id === artifact.id)
+                          ? current.filter((candidate) => candidate.id !== artifact.id)
+                          : [...current, artifact]
+                      );
+                    }}
+                    className="block w-full rounded-ok px-2 py-1.5 text-left text-sm text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+                  >
+                    {artifact.label}
+                  </button>
+                ))}
+                {!artifacts.length ? (
+                  <p className="px-2 py-1.5 text-sm text-fg-muted">No existing Artifacts.</p>
+                ) : null}
+              </div>
+              {onImportFile ? (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".md,.txt,.json,text/markdown,text/plain,application/json"
+                    className="sr-only"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void importFile(file);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="mt-1 w-full rounded-ok border-t border-separator px-2 py-2 text-left text-sm font-medium text-accent-content outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+                  >
+                    Upload text file
+                  </button>
+                </>
+              ) : null}
+            </Dialog>
+          </Popover>
+        </DialogTrigger>
         <InlineSelect
           ariaLabel="Conversation agent"
           selectedKey={targetRef}
@@ -233,53 +286,6 @@ export function Composer({
           <Icon name={pending ? 'spinner' : 'send'} />
         </AriaButton>
       </div>
-      {attachmentsOpen ? (
-        <div className="absolute bottom-14 left-3 z-20 w-72 rounded-ok border border-border bg-elevated p-2 shadow-ok-menu">
-          <p className="px-2 py-1 text-xs font-bold text-fg-muted">Artifacts</p>
-          <div className="max-h-40 overflow-y-auto">
-            {artifacts.map((artifact) => (
-              <button
-                key={`${artifact.id}:${artifact.version}`}
-                type="button"
-                onClick={() => {
-                  setSelectedArtifacts((current) =>
-                    current.some((candidate) => candidate.id === artifact.id)
-                      ? current.filter((candidate) => candidate.id !== artifact.id)
-                      : [...current, artifact]
-                  );
-                }}
-                className="block w-full rounded-ok px-2 py-1.5 text-left text-sm text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
-              >
-                {artifact.label}
-              </button>
-            ))}
-            {!artifacts.length ? (
-              <p className="px-2 py-1.5 text-sm text-fg-muted">No existing Artifacts.</p>
-            ) : null}
-          </div>
-          {onImportFile ? (
-            <>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".md,.txt,.json,text/markdown,text/plain,application/json"
-                className="sr-only"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) void importFile(file);
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="mt-1 w-full rounded-ok border-t border-separator px-2 py-2 text-left text-sm font-medium text-accent-content outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
-              >
-                Upload text file
-              </button>
-            </>
-          ) : null}
-        </div>
-      ) : null}
     </form>
   );
 }

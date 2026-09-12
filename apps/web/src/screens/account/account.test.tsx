@@ -900,6 +900,19 @@ describe('protected-read account gate', () => {
     expectNoDeploymentAdmissionProbes(forbidden);
   });
 
+  it('offers theme selection on direct logged-out /login', async () => {
+    const user = userEvent.setup();
+    const { client } = makeClient({
+      listAuthorizedWorkspaces: vi.fn().mockRejectedValue(AUTH_REQUIRED()),
+    });
+    renderApp('/login', client);
+    await screen.findByRole('form', { name: /account access/i });
+    await user.click(screen.getByRole('button', { name: /Color theme/ }));
+    await user.click(screen.getByRole('option', { name: 'Noir' }));
+    expect(document.documentElement).toHaveClass('ok-theme-noir');
+    expect(screen.getByRole('button', { name: /sign in/i })).toBeEnabled();
+  });
+
   it('opens the accessible reference-composed gate only for typed unauthenticated, including deep routes', async () => {
     const failure = AUTH_REQUIRED();
     const listAuthorizedWorkspaces = vi.fn().mockRejectedValue(failure);

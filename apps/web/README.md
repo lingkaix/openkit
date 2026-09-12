@@ -134,6 +134,8 @@ The current account boundary uses `client.app.listAuthorizedWorkspaces()` for ad
 
 Selected-Workspace owner member administration, owner-issued invitation administration, the membership-independent account-level My invitations direct read with pending accept and decline decisions plus terminal rows, and selected active non-owner self-leave are focused-test-backed implementations through the existing Account route and the isolated server-mode browser journey; real-use and program-exit proof remain pending. The ordinary-user operation guard covers all 141 included operations; only Automation CRUD and Knowledge proposal draft/reversal remain deliberately unpublished under R092, R070, and R072. The stack specification remains `Partial` because the Spectrum token package is still absent even though official A2UI v0.9 renderer packages are pinned for Chat Item rendering. Follow the current design→code loop in [`docs/cookbooks/claude-design-web-ui-loop.md`](../../docs/cookbooks/claude-design-web-ui-loop.md).
 
+Theme selection applies to the document root, so account pages, native selects, and React Aria portals share the selected semantic tokens and color scheme. Existing tabs rehydrate theme changes from browser storage. The sign-in form also offers the three themes and fills the viewport. `/login` uses the same account boundary as other routes and redirects admitted users to Overview. Composer attachments use a React Aria popover dialog with Escape, outside-interaction dismissal, and focus restoration.
+
 ## Related docs
 
 - Canonical design guide — [`DESIGN.md`](../../DESIGN.md)

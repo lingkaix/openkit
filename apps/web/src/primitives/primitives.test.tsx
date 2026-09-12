@@ -603,6 +603,49 @@ describe('primitive tier — behavior', () => {
     expect(onChange).toHaveBeenCalledWith(true);
   });
 
+  it('dismisses Composer attachments with Escape and outside interaction and restores focus', async () => {
+    const user = userEvent.setup();
+    render(<Composer />);
+    const trigger = screen.getByRole('button', { name: 'Add artifact or upload attachment' });
+    await user.click(trigger);
+    expect(screen.getByRole('dialog', { name: 'Attachments' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await user.click(trigger);
+    await user.click(document.body);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps selected and uploaded artifacts when the attachment dialog closes', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const uploaded = { id: 'uploaded', version: 1, label: 'Notes' };
+    const onImportFile = vi.fn().mockResolvedValue(uploaded);
+    render(
+      <Composer
+        artifacts={[{ id: 'existing', version: 2, label: 'Brief' }]}
+        onImportFile={onImportFile}
+        onSubmit={onSubmit}
+      />
+    );
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByRole('button', { name: 'Brief' }));
+    const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(onImportFile).toHaveBeenCalledWith(file);
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifactRefs: [
+          { artifactId: 'existing', artifactVersion: 2 },
+          { artifactId: 'uploaded', artifactVersion: 1 },
+        ],
+      })
+    );
+  });
+
   it('Composer submits the structured draft and clears', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
