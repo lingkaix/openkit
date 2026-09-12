@@ -42,7 +42,7 @@ Inspect the actual terminal result and meaningful output, then retrieve only the
 
 ## Mode Two: External Agent Uses The Product
 
-Start a fresh Skill-capable Agent session outside the source checkout with the packaged Skill and secure connection already available. Provide only the user persona and goal; do not provide the story assertions, implementation guidance, expected answer or a fixed sequence of operations. Normal host instructions and public documentation are allowed. Keep engineering SSH tools out of the Actor's product flow; the Agent in a separate authorized operator phase, or another operator, can use them for diagnosis after the attempt.
+Start a fresh Skill-capable AgentSession outside the source checkout with the packaged Skill and secure connection already available. Provide only the user persona and goal; do not provide the story assertions, implementation guidance, expected answer or a fixed sequence of operations. Normal host instructions and public documentation are allowed. Keep engineering SSH tools out of the Actor's product flow; the Agent in a separate authorized operator phase, or another operator, can use them for diagnosis after the attempt.
 
 For L6, select an admitted story under `tests/stories/`, preserve the prompt and relevant redacted observations, and have an independent Judge inspect the story and evidence. The Judge recomputes a deciding public fact. Apply the existing repeated-run admission rule when admitting or materially revising a story. Reuse the same deployment between repetitions; vary only scenario-owned names/inputs where necessary.
 
