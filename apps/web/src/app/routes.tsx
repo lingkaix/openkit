@@ -37,6 +37,7 @@ import { AppShell } from './AppShell';
 import { isSurfaceLive } from './flags';
 import { SURFACES, type Surface } from './surfaces';
 import { ThemePicker } from './ThemePicker';
+import { useDocumentTheme } from './theme-store';
 
 function NotFound() {
   return (
@@ -109,6 +110,7 @@ function elementFor(surface: Surface) {
  * drift. Wide content scrolls within the main region, never the body.
  */
 export function AppRoutes() {
+  useDocumentTheme();
   return (
     <AccountBoundary>
       <Routes>
@@ -116,6 +118,7 @@ export function AppRoutes() {
           {SURFACES.filter(isSurfaceLive).map((surface) => (
             <Route key={surface.id} path={surface.path} element={elementFor(surface)} />
           ))}
+          <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={<Navigate to="/settings/account" replace />} />
           <Route path="*" element={<NotFound />} />
         </Route>

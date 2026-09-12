@@ -1,6 +1,6 @@
 import { type FormEvent, type ReactNode, useState } from 'react';
-import { THEME_CLASS, useThemeStore } from '../../app/theme-store';
-import { Button, Card, ErrorBanner, Page, PageHeader, TextField } from '../../primitives';
+import { type ThemeName, useThemeStore } from '../../app/theme-store';
+import { Button, Card, ErrorBanner, Page, PageHeader, Select, TextField } from '../../primitives';
 import { InvitationsPanel } from './InvitationsPanel';
 import { MembersScreen } from './MembersScreen';
 import {
@@ -12,11 +12,10 @@ import {
 
 /** Full-viewport account-state frame shown before the product shell is admitted. */
 function AccountFrame({ children }: { children: ReactNode }) {
-  const theme = useThemeStore((state) => state.theme);
   return (
     <main
       aria-label="Account access"
-      className={`${THEME_CLASS[theme]} flex min-h-[600px] min-w-[800px] items-center justify-center bg-canvas px-6 py-8 text-fg`}
+      className="flex min-h-dvh items-center justify-center bg-canvas px-6 py-8 text-fg"
     >
       <div className="w-full max-w-sm">{children}</div>
     </main>
@@ -61,6 +60,8 @@ export function AccountBoundary({ children }: { children: ReactNode }) {
 
 /** Email/password account gate backed only by existing Core Client auth operations. */
 export function SignInScreen() {
+  const theme = useThemeStore((state) => state.theme);
+  const setTheme = useThemeStore((state) => state.setTheme);
   const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -142,6 +143,16 @@ export function SignInScreen() {
             </Button>
           </div>
         </form>
+        <Select
+          label="Color theme"
+          selectedKey={theme}
+          onSelectionChange={(key) => setTheme(key as ThemeName)}
+          items={[
+            { id: 'spectrum', label: 'Spectrum' },
+            { id: 'paper', label: 'Paper' },
+            { id: 'noir', label: 'Noir' },
+          ]}
+        />
       </Card>
     </AccountFrame>
   );
