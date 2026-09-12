@@ -185,6 +185,25 @@ export function resolveWorkspaceRole(
 }
 
 /**
+ * Lists every active Workspace registry id in stable identifier order.
+ *
+ * @param coreDb Core database containing Workspace identity facts.
+ * @returns Sorted active Workspace identifiers without consulting membership edges.
+ */
+export function listActiveWorkspaceIds(coreDb: CoreDb): string[] {
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT workspace_id
+       FROM workspace_registry
+       WHERE status = 'active'
+       ORDER BY workspace_id`
+    )
+    .all() as Array<{ workspace_id: string }>;
+
+  return rows.map((row) => row.workspace_id);
+}
+
+/**
  * Lists active, internally consistent Workspace candidates for one actor in stable identifier order.
  *
  * @param coreDb Core database containing Workspace identity facts.

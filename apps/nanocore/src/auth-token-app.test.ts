@@ -160,13 +160,14 @@ describe('server-mode access-token auth', () => {
     }
   });
 
-  it('authenticates admin routes without granting bearer tokens ordinary Workspace access', async () => {
+  it('authenticates admin routes and grants usable server-admin bearer tokens Workspace authority', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-app-'));
     const coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
+      insertCanonicalUser(coreDb, 'user_member', 'Member', 'member@example.com');
       const issued = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
         ownerUserId: 'user_owner',
@@ -181,9 +182,36 @@ describe('server-mode access-token auth', () => {
       });
 
       const denied = await app.request('/api/workspaces');
-      const adminWorkspaceDenied = await app.request('/api/workspaces', {
+      const memberWorkspace = await app.request('/api/workspaces', {
+        method: 'POST',
+        headers: {
+          [MEMBER_SESSION_HEADER]: '1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'Member owned workspace',
+          requestId: '11111111-1111-4111-8111-111111111111',
+        }),
+      });
+      const memberWorkspaceBody = (await memberWorkspace.json()) as { id: string };
+      const adminWorkspaceList = await app.request('/api/workspaces', {
         headers: { authorization: `Bearer ${issued.secret}` },
       });
+      const adminWorkspaceListBody = (await adminWorkspaceList.json()) as {
+        items: Array<{ id: string }>;
+      };
+      const adminCreated = await app.request('/api/workspaces', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${issued.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'Admin created workspace',
+          requestId: '22222222-2222-4222-8222-222222222222',
+        }),
+      });
+      const adminCreatedBody = (await adminCreated.json()) as { id: string; ownerUserId?: string };
       const sessionAllowed = await app.request('/api/workspaces', {
         headers: { [OWNER_SESSION_HEADER]: '1' },
       });
@@ -201,17 +229,29 @@ describe('server-mode access-token auth', () => {
           lastUsedSource: string | null;
         }>;
       };
+      coreDb.sqlite
+        .prepare(
+          `UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?`
+        )
+        .run(new Date().toISOString(), issued.tokenId);
+      const revokedDenied = await app.request('/api/workspaces', {
+        headers: { authorization: `Bearer ${issued.secret}` },
+      });
 
       expect(denied.status).toBe(401);
-      expect(adminWorkspaceDenied.status).toBe(403);
-      await expect(adminWorkspaceDenied.json()).resolves.toMatchObject({
-        code: 'workspace_access_denied',
-      });
+      expect(memberWorkspace.status).toBe(201);
+      expect(adminWorkspaceList.status).toBe(200);
+      expect(adminWorkspaceListBody.items.map((item) => item.id)).toEqual(
+        expect.arrayContaining([memberWorkspaceBody.id])
+      );
+      expect(adminCreated.status).toBe(201);
+      expect(adminCreatedBody.id).toEqual(expect.any(String));
       expect(sessionAllowed.status).toBe(200);
       expect(listed.status).toBe(200);
       expect(listedBody.items[0]?.lastUsedAt).toEqual(expect.any(String));
       expect(listedBody.items[0]?.lastUsedChannel).toBe('mcp');
       expect(listedBody.items[0]?.lastUsedSource).toBe('desktop-agent');
+      expect(revokedDenied.status).toBe(401);
       expect(await denied.text()).not.toContain(issued.secret);
     } finally {
       coreDb.sqlite.close();
