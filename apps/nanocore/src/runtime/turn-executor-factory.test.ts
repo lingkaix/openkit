@@ -2004,9 +2004,11 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it.each([
-    ['definite delete', false],
-    ['uncertain delete', true],
-  ] as const)('%s updates the durable Sandbox even without a process-local session', async (_, uncertain) => {
+    ['definite delete', false, true],
+    ['uncertain delete', true, true],
+    ['definite delete with missing storage', false, false],
+    ['uncertain delete with missing storage', true, false],
+  ] as const)('%s updates the durable Sandbox even without a process-local session', async (_, uncertain, storagePresent) => {
     const coreDb = createFactoryCoreDb();
     const operations: string[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -2078,14 +2080,16 @@ describe('createConfiguredTurnExecutor', () => {
         runtimeTargetId: 'target_absent_cleanup',
         timestamp: '2026-08-21T00:00:00.000Z',
       });
-      attachNanoHostStorageFixture(coreDb, {
-        agentSessionId: environmentPackage.scope.agentSessionId,
-        deploymentId: 'deployment_absent_cleanup',
-        runtimeTargetId: 'target_absent_cleanup',
-        sandboxBindingRef: identity.backendSessionId,
-        threadId: environmentPackage.scope.threadId,
-        workspaceId: environmentPackage.scope.workspaceId,
-      });
+      if (storagePresent) {
+        attachNanoHostStorageFixture(coreDb, {
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          deploymentId: 'deployment_absent_cleanup',
+          runtimeTargetId: 'target_absent_cleanup',
+          sandboxBindingRef: identity.backendSessionId,
+          threadId: environmentPackage.scope.threadId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        });
+      }
 
       const cleanup = runtime.cleanupBackendSession(identity);
       if (uncertain) {
@@ -2110,6 +2114,23 @@ describe('createConfiguredTurnExecutor', () => {
         });
       } else {
         expect(sandbox).toBeUndefined();
+      }
+      if (!storagePresent) {
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+        ).toEqual({ count: 0 });
+        if (uncertain) {
+          await expect(runtime.cleanupBackendSession(identity)).rejects.toThrow(
+            /no different fresh physical Epoch proof/i
+          );
+          coreDb.sqlite
+            .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
+            .run('b'.repeat(64));
+          await expect(runtime.cleanupBackendSession(identity)).resolves.toBeUndefined();
+          expect(
+            coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+          ).toEqual({ count: 0 });
+        }
       }
       expect(operations).toEqual(['bridge.close', 'sandbox.delete']);
     } finally {
@@ -4768,22 +4789,38 @@ describe('createConfiguredTurnExecutor', () => {
 
   it.each([
     {
+      missingStorage: false,
       concurrentRevisionAdvance: false,
       expectedError: 'injected stop after selected storage reattachment',
       predecessorStatus: 'idle' as const,
     },
     {
+      missingStorage: false,
       concurrentRevisionAdvance: true,
       expectedError: 'Worker storage revision changed.',
       predecessorStatus: 'idle' as const,
     },
     {
+      missingStorage: false,
       concurrentRevisionAdvance: false,
       expectedError: 'injected stop after selected storage reattachment',
       predecessorStatus: 'failed' as const,
     },
-  ])('carries only its proved cleanup revision through restart-unproved Task admission: predecessor=$predecessorStatus concurrent=$concurrentRevisionAdvance', async ({
+    {
+      missingStorage: true,
+      concurrentRevisionAdvance: false,
+      expectedError: 'injected stop after selected storage reattachment',
+      predecessorStatus: 'idle' as const,
+    },
+    {
+      missingStorage: true,
+      concurrentRevisionAdvance: false,
+      expectedError: 'injected stop after selected storage reattachment',
+      predecessorStatus: 'failed' as const,
+    },
+  ])('carries only its proved cleanup revision through restart-unproved Task admission: predecessor=$predecessorStatus concurrent=$concurrentRevisionAdvance missingStorage=$missingStorage', async ({
     concurrentRevisionAdvance,
+    missingStorage,
     expectedError,
     predecessorStatus,
   }) => {
@@ -4830,6 +4867,13 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
         if (request.kind === 'bridge.open') {
+          expect(
+            coreDb.sqlite
+              .prepare(
+                'SELECT state, current_sandbox_binding_ref AS sandboxBindingRef FROM worker_storage_bindings'
+              )
+              .all()
+          ).toEqual([{ state: 'attached', sandboxBindingRef: expect.any(String) }]);
           throw new Error('injected stop after selected storage reattachment');
         }
         throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
@@ -4879,15 +4923,17 @@ describe('createConfiguredTurnExecutor', () => {
         snapshotId: 'snapshot_restart_selected_previous',
       });
       authorizeNanoHostPackage(coreDb, scopePackage);
-      const attached = attachNanoHostStorageFixture(coreDb, {
-        agentSessionId: 'as_restart_selected_idle',
-        deploymentId: 'deployment_restart_selected',
-        runtimeTargetId: 'target_restart_selected',
-        sandboxBindingRef: 'sandbox-binding-restart-selected',
-        threadId: 'thread_restart_selected',
-        workspaceId: 'workspace_restart_selected',
-      });
-      selectedStorageRef = attached.storageRef;
+      const attached = missingStorage
+        ? null
+        : attachNanoHostStorageFixture(coreDb, {
+            agentSessionId: 'as_restart_selected_idle',
+            deploymentId: 'deployment_restart_selected',
+            runtimeTargetId: 'target_restart_selected',
+            sandboxBindingRef: 'sandbox-binding-restart-selected',
+            threadId: 'thread_restart_selected',
+            workspaceId: 'workspace_restart_selected',
+          });
+      selectedStorageRef = attached?.storageRef ?? null;
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: '7'.repeat(64),
         agentSessionId: 'as_restart_selected_idle',
@@ -4907,14 +4953,16 @@ describe('createConfiguredTurnExecutor', () => {
         .run('8'.repeat(64));
       const store = new FsStore({ dataRoot: coreDb.dataRoot });
       const requestId = '00000000-0000-4000-8000-00000000e501';
-      const selectedChoice = {
-        expectedRevision: attached.revision,
-        goalId: null,
-        kind: 'selected' as const,
-        purpose: 'work' as const,
-        storageRef: attached.storageRef,
-        taskId: null,
-      };
+      const selectedChoice = attached
+        ? {
+            expectedRevision: attached.revision,
+            goalId: null,
+            kind: 'selected' as const,
+            purpose: 'work' as const,
+            storageRef: attached.storageRef,
+            taskId: null,
+          }
+        : { kind: 'fresh' as const, goalId: null, taskId: null };
       const runtime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         env: {},
@@ -5066,10 +5114,14 @@ describe('createConfiguredTurnExecutor', () => {
       } else {
         expect(replacementCreates).toHaveLength(1);
         expect(replacementCreates[0]?.input.storage).toMatchObject({
-          attachmentGeneration: attached.attachmentGeneration + 1,
-          storageRef: attached.storageRef,
+          attachmentGeneration: attached ? attached.attachmentGeneration + 1 : 1,
+          storageRef: attached?.storageRef ?? expect.any(String),
         });
       }
+      expect(effects.slice(0, 2).map(({ kind }) => kind)).toEqual([
+        'bridge.close',
+        'sandbox.delete',
+      ]);
       expect(store.getAgentSession('as_restart_selected_idle').status).toBe(
         predecessorStatus === 'idle' ? 'closed' : 'failed'
       );
