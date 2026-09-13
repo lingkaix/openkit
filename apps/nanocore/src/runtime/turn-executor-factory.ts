@@ -1215,11 +1215,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   }
 
-  /** Releases one exact retained attachment after complete Sandbox writer cleanup proof. */
-  private releaseWorkerStorageForSandbox(sandboxBindingRef: string): WorkerStorageBinding {
+  /** Releases an existing attachment after writer cleanup proof without reconstructing missing storage. */
+  private releaseWorkerStorageForSandbox(sandboxBindingRef: string): WorkerStorageBinding | null {
     const binding = getWorkerStorageBindingForSandbox(this.coreDb, { sandboxBindingRef });
     if (!binding) {
-      throw new Error('NanoHost Sandbox storage binding is missing.');
+      console.warn(
+        'NanoHost Sandbox storage binding is missing after proved writer cleanup; retiring only the runtime projection.'
+      );
+      return null;
     }
     return releaseWorkerStorageAttachment(this.coreDb, {
       attachmentGeneration: binding.attachmentGeneration,
@@ -1556,6 +1559,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       removeNanoHostSandboxRuntimeByBinding(this.coreDb, eviction.sandboxBindingRef);
       this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
       return authorizedReplacementBinding &&
+        releasedBinding &&
         releasedBinding.storageRef === authorizedReplacementBinding.storageRef &&
         releasedBinding.attachmentGeneration ===
           authorizedReplacementBinding.attachmentGeneration &&

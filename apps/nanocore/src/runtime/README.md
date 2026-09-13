@@ -20,6 +20,8 @@ This directory owns accepted-turn execution, scheduler dispatch integration, wor
 - Accepted Worker `aborted` outcomes use the shared canonical mapping to Turn `interrupted` in live closeout and restart recovery; Task Mode separately projects that intentional stop as Task `cancelled`.
 - Recovery code must preserve workspace, thread, turn, request, package, and scheduler lineage before changing terminal state. The post-migration phase-8 checkpoint scan reopens only the existing Workspace database because the same boot already verified its complete layout.
 
+After proved whole-Sandbox writer cleanup, `turn-executor-factory.ts` retires stale runtime projections even if their storage association is missing. It reports the missing association without reconstructing or purging retained storage; fresh admission still inspects the image and reserves and attaches its own storage. Unknown cleanup continues to require the existing different fresh physical Epoch proof.
+
 ## File Groups
 
 - `worker-*-executor.ts`, `worker-*-backend.ts`, and `worker-*-gateway.ts` own governed worker execution and transport.
