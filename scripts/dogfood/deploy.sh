@@ -19,6 +19,8 @@ NANOHOST_ENV_SOURCE="${BASE_DIR}/nanohost.env"
 SEED_IMAGE_HELPER="${BASE_DIR}/seed-nanohost-image.py"
 DATA_ROOT="${HOME}/.openkit"
 REPO_URL="https://github.com/lingkaix/openkit.git"
+LINKED_REPOS_DIR="${BASE_DIR}/workspaces-repos"
+LINKED_REPOS_PIN="${BASE_DIR}/current-linked-repos"
 CONTAINER_NAME="openkit-staging"
 PREVIOUS_CONTAINER_NAME="openkit-staging-previous"
 HOST_PORT="7080"
@@ -27,12 +29,12 @@ TARGET="${1:-all}"
 
 # Report the supported component targets.
 usage() {
-  echo "Usage: $0 [web|nanocore|nanohost|all]" >&2
+  echo "Usage: $0 [web|nanocore|nanohost|linked-repos|all]" >&2
   exit 64
 }
 
 case "${TARGET}" in
-  web | nanocore | nanohost | all) ;;
+  web | nanocore | nanohost | linked-repos | all) ;;
   *) usage ;;
 esac
 
@@ -120,6 +122,54 @@ update_source() {
     exit 1
   fi
   chmod -R a+rX "${REPO_DIR}"
+}
+
+# Fast-forward clean linked dogfood checkouts under workspaces-repos to public origin/main.
+# Refuse dirty or divergent trees so dogfood patches are never silently discarded.
+sync_linked_repos() {
+  mkdir -p "${LINKED_REPOS_DIR}"
+  if [[ ! -d "${LINKED_REPOS_DIR}/openkit/.git" ]]; then
+    git clone --branch main --single-branch "${REPO_URL}" "${LINKED_REPOS_DIR}/openkit"
+  fi
+
+  pin_tmp="${LINKED_REPOS_PIN}.tmp"
+  : >"${pin_tmp}"
+  chmod 600 "${pin_tmp}"
+
+  shopt -s nullglob
+  for repo in "${LINKED_REPOS_DIR}"/*/; do
+    if [[ ! -d "${repo}/.git" ]]; then
+      continue
+    fi
+    name="$(basename "${repo}")"
+    if [[ -n "$(git -C "${repo}" status --porcelain)" ]]; then
+      echo "Linked repository has local changes; back it up before syncing: ${repo}" >&2
+      exit 1
+    fi
+    origin_url="$(git -C "${repo}" remote get-url origin 2>/dev/null || true)"
+    if [[ "${origin_url}" != "${REPO_URL}" ]]; then
+      head="$(git -C "${repo}" rev-parse HEAD)"
+      printf '%s=%s pin\n' "${name}" "${head}" >>"${pin_tmp}"
+      echo "Leaving linked repository ${name} at ${head} (origin is not the public OpenKit URL)."
+      continue
+    fi
+    git -C "${repo}" fetch --prune origin main
+    git -C "${repo}" switch main
+    if ! git -C "${repo}" merge --ff-only origin/main; then
+      echo "Linked repository ${name} cannot fast-forward to origin/main; backup and resolve before dogfood." >&2
+      exit 1
+    fi
+    head="$(git -C "${repo}" rev-parse HEAD)"
+    if [[ "${head}" != "$(git -C "${repo}" rev-parse origin/main)" ]]; then
+      echo "Linked repository ${name} does not match origin/main." >&2
+      exit 1
+    fi
+    printf '%s=%s\n' "${name}" "${head}" >>"${pin_tmp}"
+    echo "Linked repository ${name} is at ${head}."
+  done
+  shopt -u nullglob
+
+  mv "${pin_tmp}" "${LINKED_REPOS_PIN}"
 }
 
 # Extract built Web assets and switch the persistent current link.
@@ -334,8 +384,12 @@ start_nanohost() {
 
 sudo -n docker info >/dev/null
 update_source
+sync_linked_repos
 
 case "${TARGET}" in
+  linked-repos)
+    echo "Linked dogfood repositories match public origin/main."
+    ;;
   web)
     build_web
     ensure_web_mount

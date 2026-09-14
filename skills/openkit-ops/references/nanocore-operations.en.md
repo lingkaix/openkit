@@ -132,7 +132,20 @@ pnpm --filter @openkit/nanocore run thread-visibility:migrate -- \
 The migrator acquires the ordinary data-root lock, copies each rewritten `thread.json` into the backup root, and writes canonical envelopes with `openkit.thread-visibility.v1`. Without `--ambiguous-default`, ambiguous Threads remain unchanged and the command exits blocked. The only supported ambiguous default is `workspace`. Do not invent private owners for project history. Restore from the external backup only onto a stopped target when rolling back the classification writes.
 
 
+## Sync A2 Dogfood Linked Repositories
+
+A2 dogfood Workspaces that edit OpenKit bind the host checkout `$HOME/openkit/workspaces-repos/openkit` at `/srv/repos/openkit`. That tree is separate from the clean `$HOME/openkit/source` build checkout. `scripts/dogfood/deploy.sh` fast-forwards clean public OpenKit linked checkouts to `origin/main` on every deploy target and records SHAs in `$HOME/openkit/current-linked-repos`.
+
+For dogfood prep without rebuilding images:
+
+```bash
+"$HOME/openkit/deploy.sh" linked-repos
+```
+
+Refuse dirty or divergent linked trees; backup under `$HOME/openkit/backups/linked-repos/` before any intentional reset. Verify with `git -C "$HOME/openkit/workspaces-repos/openkit" rev-parse HEAD` against public `origin/main` and by reading a file that only exists on the expected tip.
+
 ## Dogfood Task Smoke With Admin Bearer
+
 
 Non-interactive ops that only have a usable `server-admin` bearer can:
 

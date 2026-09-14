@@ -20,13 +20,27 @@ install -m 0755 "$HOME/openkit/source/scripts/dogfood/deploy.sh" "$HOME/openkit/
 "$HOME/openkit/deploy.sh" all
 ```
 
-Run during an authorized maintenance window with active work coordinated. Targets are `web`, `nanocore`, `nanohost`, or `all` (default). The helper fetches main and records the deployed commit; it does not deploy the caller's arbitrary working tree. NanoHost updates remove `OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS` from the host source environment before installing `/etc/openkit/nanohost.env`; unrelated settings remain intact. Image verification and seeding remain separate from the session environment. App replacement keeps all bind mounts and environment arguments in one Docker invocation.
+Run during an authorized maintenance window with active work coordinated. Targets are `web`, `nanocore`, `nanohost`, `linked-repos`, or `all` (default). The helper fetches main and records the deployed commit; it does not deploy the caller's arbitrary working tree. NanoHost updates remove `OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS` from the host source environment before installing `/etc/openkit/nanohost.env`; unrelated settings remain intact. Image verification and seeding remain separate from the session environment. App replacement keeps all bind mounts and environment arguments in one Docker invocation. Every target also fast-forwards clean public OpenKit checkouts under `$HOME/openkit/workspaces-repos` to `origin/main` and writes `$HOME/openkit/current-linked-repos`.
+
+## Linked Workspace Repositories
+
+Dogfood Workspaces bind `/srv/repos/openkit` (host `$HOME/openkit/workspaces-repos/openkit`) into the App. That checkout is not the clean `source` tree used for builds; it was historically a one-time clone and stayed stale across deploys. `deploy.sh` now syncs it on every run.
+
+Use the lightweight target when only the linked tree needs refresh:
+
+```bash
+"$HOME/openkit/deploy.sh" linked-repos
+git -C "$HOME/openkit/workspaces-repos/openkit" rev-parse HEAD
+cat "$HOME/openkit/current-linked-repos"
+```
+
+The sync refuses dirty or non-fast-forward trees. Before a destructive reset, create a backup under `$HOME/openkit/backups/linked-repos/` (for example `git -C ... bundle create ... --all`), inspect local work, then either commit/stash it or reset intentionally. Non-OpenKit remotes under `workspaces-repos` are left pinned and recorded with a `pin` marker.
 
 ## Worker PR Handoff
 
 For dogfood repository Tasks and Goals, prefer a plan+patch handoff when worker push or PR creation is unavailable because of missing GitHub credentials or TLS failures. The worker retains the plan and patch locally and closes out with their exact locations, repository/base revision, check results, and the publication failure without secrets. A human or local agent retrieves and reviews the handoff, applies the patch in a local checkout, runs the relevant checks, pushes a branch, and opens the PR. Report the handoff as complete only when it meets the agreed stop condition; keep PR publication explicitly pending until confirmed.
 
-Do not provision broad worker GitHub write credentials without an explicit house decision. Worker publication failure is a reason to hand off, not authorization to expand credential access. Linked-repository sync is separate work tracked in [#60](https://github.com/lingkaix/openkit/issues/60).
+Do not provision broad worker GitHub write credentials without an explicit house decision. Worker publication failure is a reason to hand off, not authorization to expand credential access.
 
 ## Focused Verification
 
