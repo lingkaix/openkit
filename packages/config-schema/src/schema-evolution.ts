@@ -27,6 +27,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection.',
   },
+  'openkit.thread-visibility.v1': {
+    id: 'openkit.thread-visibility.v1',
+    status: 'active',
+    description:
+      'Thread records require explicit private or Workspace audience and exact private ownership.',
+  },
   'openkit.thread-entry.v1': {
     id: 'openkit.thread-entry.v1',
     status: 'active',
