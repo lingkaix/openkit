@@ -139,10 +139,9 @@ export function migrateThreadVisibilityCutover(
             path: threadPath,
             reason: 'has-visibility-feature',
             threadId,
-            visibility:
-              raw.visibility === 'private' || raw.visibility === 'workspace'
-                ? raw.visibility
-                : undefined,
+            ...(raw.visibility === 'private' || raw.visibility === 'workspace'
+              ? { visibility: raw.visibility }
+              : {}),
             workspaceId,
           });
           continue;
@@ -336,7 +335,12 @@ export function parseThreadVisibilityCutoverMigrationArgs(argv: readonly string[
   if (!dataRoot) throw new Error('Missing required Thread visibility cutover flag: --data-root');
   if (!backupRoot)
     throw new Error('Missing required Thread visibility cutover flag: --backup-root');
-  return { ambiguousDefault, backupRoot, dataRoot, dryRun };
+  return {
+    ...(ambiguousDefault !== undefined ? { ambiguousDefault } : {}),
+    backupRoot,
+    dataRoot,
+    dryRun,
+  };
 }
 
 /** Runs the Thread visibility cutover migration CLI and prints a path-free summary. */
