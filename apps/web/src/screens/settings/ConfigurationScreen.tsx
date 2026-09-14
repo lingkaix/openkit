@@ -2,6 +2,7 @@ import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createScanner } from 'jsonc-parser';
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { Collection, Link, Tree, TreeItem, TreeItemContent } from 'react-aria-components';
 import { useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -21,12 +22,15 @@ type RuntimeConfigFileSummary = RuntimeConfigFileList['files'][number];
 type RuntimeConfigValidation = Awaited<ReturnType<CoreClient['runtimeConfig']['validate']>>;
 type RuntimeConfigReload = Awaited<ReturnType<CoreClient['runtimeConfig']['reload']>>;
 
+/** One relative-path entry in the authorized configuration tree. */
 interface ConfigTreeNode {
+  id: string;
   name: string;
   children: ConfigTreeNode[];
   file: RuntimeConfigFileSummary | null;
 }
 
+/** Mutable folder used only while assembling the relative-path tree. */
 interface MutableConfigTreeNode {
   name: string;
   children: Map<string, MutableConfigTreeNode>;
@@ -37,6 +41,7 @@ interface MutableConfigTreeNode {
 export function ConfigurationScreen() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
+  const [filesVisible, setFilesVisible] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [savedContent, setSavedContent] = useState('');
@@ -121,12 +126,14 @@ export function ConfigurationScreen() {
   });
   const tree = useMemo(() => buildConfigTree(files.data?.files ?? []), [files.data?.files]);
 
+  /** Opens another file only after resolving any unsaved draft. */
   function selectFile(id: string) {
     if (id === selectedId) return;
     if (dirty && !window.confirm('Discard the unsaved configuration draft?')) return;
     setSelectedId(id);
   }
 
+  /** Explicitly replaces the editor with the server file after draft confirmation. */
   function reloadFile() {
     if (dirty && !window.confirm('Discard the unsaved configuration draft?')) return;
     void file.refetch();
@@ -141,6 +148,19 @@ export function ConfigurationScreen() {
         title="Configuration"
         subtitle="Inspect and edit the JSONC documents that currently configure this OpenKit deployment."
       />
+
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-ok bg-sunken p-3">
+        <p className="text-sm text-fg-muted">
+          For everyday configuration, use NanoCore’s Server Operation Agent in Administration with
+          permissions you grant. Use this file editor for inspection and careful manual edits.
+        </p>
+        <Link
+          href="/settings/administration"
+          className="rounded-ok text-sm font-bold text-accent-content outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
+        >
+          Open Administration
+        </Link>
+      </div>
 
       {files.isLoading ? (
         <Skeleton lines={6} />
@@ -167,106 +187,128 @@ export function ConfigurationScreen() {
           hint="NanoCore did not report any authored runtime configuration documents."
         />
       ) : (
-        <div className="grid min-w-0 grid-cols-[260px_minmax(0,1fr)] gap-4">
-          <Card className="min-w-0 self-start p-2">
-            <ConfigTree nodes={tree} selectedId={selectedId} onSelect={selectFile} />
-          </Card>
-
-          <div className="flex min-w-0 flex-col gap-3">
-            {file.isLoading ? (
-              <Skeleton lines={8} />
-            ) : file.isError ? (
-              <ErrorBanner
-                message="Couldn't load this configuration file."
-                onRetry={() => void file.refetch()}
-              />
-            ) : selectedFile && file.data ? (
-              <Card className="flex min-w-0 flex-col gap-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h2 className="truncate text-sm font-bold text-fg-strong">
-                      {selectedFile.path}
-                    </h2>
-                    <p className="text-xs text-fg-muted">
-                      {selectedFile.kind} · JSON with comments · revision protected
-                    </p>
-                  </div>
-                  <StatusChip tone={dirty ? 'notice' : 'positive'}>
-                    {saveFile.isPending ? 'Saving' : dirty ? 'Unsaved' : 'Saved'}
-                  </StatusChip>
-                </div>
-
-                <JsoncEditor
-                  label={`${selectedFile.path} source`}
-                  value={draft}
-                  onChange={setDraft}
-                />
-
-                {validation ? <ValidationResult result={validation} /> : null}
-                {validateDraft.isError ? (
-                  <ErrorBanner
-                    message="Couldn't validate this draft."
-                    onRetry={() => validateDraft.mutate()}
-                  />
-                ) : null}
-                {saveFile.isError ? (
-                  <ErrorBanner
-                    message={saveErrorMessage(saveFile.error)}
-                    onRetry={() => saveFile.mutate()}
-                  />
-                ) : null}
-                {applyConfiguration.isError ? (
-                  <ErrorBanner
-                    message="Couldn't apply the saved configuration."
-                    onRetry={() => applyConfiguration.mutate()}
-                  />
-                ) : null}
-                {reload ? <ReloadResult result={reload} /> : null}
-
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button
-                    variant="quiet"
-                    size="sm"
-                    isDisabled={file.isFetching || saveFile.isPending}
-                    onPress={reloadFile}
-                  >
-                    Reload file
-                  </Button>
-                  <Button
-                    variant="quiet"
-                    size="sm"
-                    isDisabled={!dirty || saveFile.isPending}
-                    onPress={() => setDraft(savedContent)}
-                  >
-                    Reset draft
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    isDisabled={!selectedId || validateDraft.isPending || saveFile.isPending}
-                    onPress={() => validateDraft.mutate()}
-                  >
-                    Validate draft
-                  </Button>
-                  <Button
-                    size="sm"
-                    isDisabled={!dirty || saveFile.isPending || validateDraft.isPending}
-                    onPress={() => saveFile.mutate()}
-                  >
-                    Save file
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    isDisabled={dirty || saveFile.isPending || applyConfiguration.isPending}
-                    onPress={() => applyConfiguration.mutate()}
-                  >
-                    Apply saved configuration
-                  </Button>
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="quiet"
+              size="sm"
+              aria-expanded={filesVisible}
+              aria-controls="configuration-files"
+              onPress={() => setFilesVisible((visible) => !visible)}
+            >
+              <Icon name="folder" size="sm" />
+              {filesVisible ? 'Hide files' : 'Show files'}
+            </Button>
+            <span className="text-xs text-fg-muted">{files.data?.files.length} files</span>
+          </div>
+          <div
+            className={`grid min-w-0 gap-4 ${filesVisible ? 'grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]' : 'grid-cols-1'}`}
+          >
+            <div id="configuration-files" hidden={!filesVisible} className="min-w-0 self-start">
+              <Card className="min-w-0 p-2">
+                <h2 className="px-2 py-1.5 text-xs font-bold text-fg-muted">Configuration files</h2>
+                <div className="max-h-96 overflow-auto">
+                  <ConfigTree nodes={tree} selectedId={selectedId} onSelect={selectFile} />
                 </div>
               </Card>
-            ) : null}
-            {selectedFile ? <SchemaReference kind={selectedFile.kind} /> : null}
+            </div>
+
+            <div className="flex min-w-0 flex-col gap-3">
+              {file.isLoading ? (
+                <Skeleton lines={8} />
+              ) : file.isError ? (
+                <ErrorBanner
+                  message="Couldn't load this configuration file."
+                  onRetry={() => void file.refetch()}
+                />
+              ) : selectedFile && file.data ? (
+                <Card className="flex min-w-0 flex-col gap-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h2 className="break-all font-mono text-sm font-bold text-fg-strong">
+                        {selectedFile.path}
+                      </h2>
+                      <p className="text-xs text-fg-muted">
+                        {selectedFile.kind} · JSON with comments · revision protected
+                      </p>
+                    </div>
+                    <StatusChip tone={dirty ? 'notice' : 'positive'}>
+                      {saveFile.isPending ? 'Saving' : dirty ? 'Unsaved' : 'Saved'}
+                    </StatusChip>
+                  </div>
+
+                  <JsoncEditor
+                    label={`${selectedFile.path} source`}
+                    value={draft}
+                    onChange={setDraft}
+                  />
+
+                  {validation ? <ValidationResult result={validation} /> : null}
+                  {validateDraft.isError ? (
+                    <ErrorBanner
+                      message="Couldn't validate this draft."
+                      onRetry={() => validateDraft.mutate()}
+                    />
+                  ) : null}
+                  {saveFile.isError ? (
+                    <ErrorBanner
+                      message={saveErrorMessage(saveFile.error)}
+                      onRetry={() => saveFile.mutate()}
+                    />
+                  ) : null}
+                  {applyConfiguration.isError ? (
+                    <ErrorBanner
+                      message="Couldn't apply the saved configuration."
+                      onRetry={() => applyConfiguration.mutate()}
+                    />
+                  ) : null}
+                  {reload ? <ReloadResult result={reload} /> : null}
+
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      isDisabled={file.isFetching || saveFile.isPending}
+                      onPress={reloadFile}
+                    >
+                      Reload file
+                    </Button>
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      isDisabled={!dirty || saveFile.isPending}
+                      onPress={() => setDraft(savedContent)}
+                    >
+                      Reset draft
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isDisabled={!selectedId || validateDraft.isPending || saveFile.isPending}
+                      onPress={() => validateDraft.mutate()}
+                    >
+                      Validate draft
+                    </Button>
+                    <Button
+                      size="sm"
+                      isDisabled={!dirty || saveFile.isPending || validateDraft.isPending}
+                      onPress={() => saveFile.mutate()}
+                    >
+                      Save file
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isDisabled={dirty || saveFile.isPending || applyConfiguration.isPending}
+                      onPress={() => applyConfiguration.mutate()}
+                    >
+                      Apply saved configuration
+                    </Button>
+                  </div>
+                </Card>
+              ) : null}
+              {selectedFile ? <SchemaReference kind={selectedFile.kind} /> : null}
+            </div>
           </div>
         </div>
       )}
@@ -357,71 +399,82 @@ function buildConfigTree(files: RuntimeConfigFileSummary[]): ConfigTreeNode[] {
 }
 
 /** Converts one mutable tree level into sorted render nodes. */
-function freezeTree(node: MutableConfigTreeNode): ConfigTreeNode[] {
+function freezeTree(node: MutableConfigTreeNode, parentPath = ''): ConfigTreeNode[] {
   return [...node.children.values()]
     .sort((left, right) => {
       const folderOrder = Number(Boolean(left.file)) - Number(Boolean(right.file));
       return folderOrder || left.name.localeCompare(right.name);
     })
     .map((child) => ({
+      id: child.file?.id ?? `folder:${parentPath}${child.name}`,
       name: child.name,
       file: child.file,
-      children: freezeTree(child),
+      children: freezeTree(child, `${parentPath}${child.name}/`),
     }));
 }
 
-/** Renders the accessible configuration folder tree. */
+/** Renders a React Aria tree with folder expansion, keyboard navigation, and controlled file selection. */
 function ConfigTree({
   nodes,
   selectedId,
   onSelect,
-  nested = false,
 }: {
   nodes: ConfigTreeNode[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  nested?: boolean;
 }) {
+  const entries = nodes.flatMap(function flatten(node): ConfigTreeNode[] {
+    return [node, ...node.children.flatMap(flatten)];
+  });
   return (
-    <ul
-      role={nested ? 'group' : 'tree'}
-      aria-label={nested ? undefined : 'Configuration files'}
-      className={nested ? 'ml-4 border-l border-separator pl-1' : 'flex flex-col gap-0.5'}
+    <Tree
+      aria-label="Configuration files"
+      items={nodes}
+      defaultExpandedKeys={entries.filter((node) => !node.file).map((node) => node.id)}
+      selectionMode="single"
+      selectedKeys={selectedId ? [selectedId] : []}
+      onSelectionChange={(keys) => {
+        const entry = entries.find((node) => keys !== 'all' && keys.has(node.id));
+        if (entry?.file) onSelect(entry.file.id);
+      }}
+      className="min-w-0 text-xs"
     >
-      {nodes.map((node) => (
-        <li key={node.file?.id ?? `folder:${node.name}`} role="none">
-          {node.file ? (
-            <button
-              type="button"
-              role="treeitem"
-              aria-selected={node.file.id === selectedId}
-              className={`flex w-full min-w-0 items-center gap-2 rounded-ok px-2 py-1.5 text-left text-xs outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus ${
-                node.file.id === selectedId
-                  ? 'bg-selected font-bold text-accent-content'
-                  : 'text-fg'
-              }`}
-              onClick={() => onSelect(node.file?.id ?? '')}
-            >
+      {renderConfigTreeNode}
+    </Tree>
+  );
+}
+
+/** Renders one uniquely keyed folder or file using React Aria's disclosure control. */
+function renderConfigTreeNode(node: ConfigTreeNode): ReactNode {
+  return (
+    <TreeItem
+      id={node.id}
+      textValue={node.name}
+      aria-label={node.name}
+      className="rounded-ok outline-none hover:bg-overlay data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus data-[selected]:bg-selected data-[selected]:font-bold data-[selected]:text-accent-content"
+    >
+      <TreeItemContent>
+        {({ isExpanded, level }) => (
+          <div
+            className="flex min-w-0 items-center gap-2 py-1.5 pr-2"
+            style={{ paddingInlineStart: `calc(${level} * var(--spacing) * 2)` }}
+          >
+            {node.file ? (
               <Icon name="file" size="sm" />
-              <span className="truncate">{node.name}</span>
-            </button>
-          ) : (
-            <div role="treeitem" aria-expanded="true" tabIndex={0} className="outline-none">
-              <span className="flex items-center gap-2 rounded-ok px-2 py-1.5 text-xs font-bold text-fg-muted focus-within:ring-2 focus-within:ring-focus">
+            ) : (
+              <Button slot="chevron" variant="quiet" size="sm" className="shrink-0 px-1">
+                <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size="sm" />
                 <Icon name="folder" size="sm" />
-                {node.name}
-              </span>
-              <ConfigTree
-                nodes={node.children}
-                selectedId={selectedId}
-                onSelect={onSelect}
-                nested
-              />
-            </div>
-          )}
-        </li>
-      ))}
-    </ul>
+              </Button>
+            )}
+            <span className="truncate" title={node.file?.path ?? node.name}>
+              {node.name}
+            </span>
+          </div>
+        )}
+      </TreeItemContent>
+      <Collection items={node.children}>{renderConfigTreeNode}</Collection>
+    </TreeItem>
   );
 }
 

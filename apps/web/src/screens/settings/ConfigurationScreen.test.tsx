@@ -107,7 +107,9 @@ describe('Configuration settings', () => {
     const client = makeClient(vi.fn().mockResolvedValue(FILES));
     const { container } = renderScreen(client);
 
-    expect(await screen.findByRole('tree', { name: 'Configuration files' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('treegrid', { name: 'Configuration files' })
+    ).toBeInTheDocument();
     expect(screen.getByText('providers')).toBeInTheDocument();
     const editor = await screen.findByRole('textbox', { name: 'server.jsonc source' });
     expect(container.querySelector('[data-jsonc-token="comment"]')).not.toBeNull();
@@ -139,6 +141,131 @@ describe('Configuration settings', () => {
       expect(client.runtimeConfig.reload).toHaveBeenCalledWith({ dryRun: false, mode: 'safe' })
     );
     expect(await screen.findByText('Configuration applied')).toBeInTheDocument();
+  });
+
+  it('collapses folders by mouse and keyboard without disturbing the draft', async () => {
+    const user = userEvent.setup();
+    const client = makeClient(vi.fn().mockResolvedValue(FILES));
+    renderScreen(client);
+    const editor = await screen.findByRole('textbox', { name: 'server.jsonc source' });
+    fireEvent.change(editor, { target: { value: '// Keep this draft\n{}' } });
+
+    await user.click(screen.getByRole('button', { name: 'Collapse providers' }));
+    expect(screen.getByRole('row', { name: 'providers' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    );
+    expect(screen.queryByRole('row', { name: 'openai.provider.jsonc' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Expand providers' }));
+    expect(screen.getByRole('row', { name: 'openai.provider.jsonc' })).toBeInTheDocument();
+
+    screen.getByRole('row', { name: 'providers' }).focus();
+    await user.keyboard('{ArrowLeft}');
+    expect(screen.getByRole('row', { name: 'providers' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    );
+    await user.keyboard('{ArrowRight}{ArrowDown}');
+    expect(screen.getByRole('row', { name: 'openai.provider.jsonc' })).toHaveFocus();
+    expect(editor).toHaveValue('// Keep this draft\n{}');
+    expect(client.runtimeConfig.getFile).toHaveBeenCalledTimes(1);
+    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+  });
+
+  it('hides and restores the file pane while retaining folder state and the draft', async () => {
+    const user = userEvent.setup();
+    const client = makeClient(vi.fn().mockResolvedValue(FILES));
+    renderScreen(client);
+    const editor = await screen.findByRole('textbox', { name: 'server.jsonc source' });
+    fireEvent.change(editor, { target: { value: '// Unsaved\n{}' } });
+    await user.click(screen.getByRole('button', { name: 'Collapse providers' }));
+    await user.click(screen.getByRole('button', { name: 'Hide files' }));
+    expect(screen.queryByRole('treegrid', { name: 'Configuration files' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show files' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    );
+    expect(screen.getByRole('heading', { name: 'server.jsonc' })).toBeInTheDocument();
+    expect(editor).toHaveValue('// Unsaved\n{}');
+    await user.click(screen.getByRole('button', { name: 'Show files' }));
+    expect(screen.getByRole('row', { name: 'providers' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    );
+    expect(editor).toHaveValue('// Unsaved\n{}');
+    expect(client.runtimeConfig.getFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps identically named nested folders independent', async () => {
+    const user = userEvent.setup();
+    const nestedFiles = [
+      { ...FILES.files[1], id: 'agents/shared/config.jsonc', path: 'agents/shared/config.jsonc' },
+      {
+        ...FILES.files[1],
+        id: 'providers/shared/config.jsonc',
+        path: 'providers/shared/config.jsonc',
+      },
+    ];
+    const client = makeClient(
+      vi.fn().mockResolvedValue({ files: [FILES.files[0], ...nestedFiles] })
+    );
+    vi.mocked(client.runtimeConfig.getFile).mockImplementation(async (id) => ({
+      file: [FILES.files[0], ...nestedFiles].find((file) => file.id === id)!,
+      content: '{}',
+    }));
+    renderScreen(client);
+    await screen.findByRole('textbox', { name: 'server.jsonc source' });
+    await user.click(screen.getAllByRole('button', { name: 'Collapse shared' })[0]);
+    expect(screen.getAllByRole('row', { name: 'config.jsonc' })).toHaveLength(1);
+    await user.click(screen.getByRole('row', { name: 'config.jsonc' }));
+    expect(
+      await screen.findByRole('textbox', { name: 'providers/shared/config.jsonc source' })
+    ).toBeInTheDocument();
+    expect(client.runtimeConfig.getFile).toHaveBeenLastCalledWith('providers/shared/config.jsonc');
+    await user.click(screen.getByRole('button', { name: 'Expand shared' }));
+    expect(screen.getAllByRole('row', { name: 'config.jsonc' })).toHaveLength(2);
+  });
+
+  it('keeps selection when discarding is cancelled and opens the exact nested file after confirmation', async () => {
+    const user = userEvent.setup();
+    const client = makeClient(vi.fn().mockResolvedValue(FILES));
+    vi.mocked(client.runtimeConfig.getFile).mockImplementation(async (id) => ({
+      file: FILES.files.find((file) => file.id === id)!,
+      content: id === 'server.jsonc' ? '{}' : '// Provider\n{}',
+    }));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderScreen(client);
+    const editor = await screen.findByRole('textbox', { name: 'server.jsonc source' });
+    fireEvent.change(editor, { target: { value: '// Draft\n{}' } });
+    await user.click(screen.getByRole('row', { name: 'openai.provider.jsonc' }));
+    expect(confirm).toHaveBeenCalledWith('Discard the unsaved configuration draft?');
+    expect(editor).toHaveValue('// Draft\n{}');
+    expect(screen.getByRole('row', { name: 'server.jsonc' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    expect(client.runtimeConfig.getFile).toHaveBeenCalledTimes(1);
+
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByRole('row', { name: 'openai.provider.jsonc' }));
+    expect(
+      await screen.findByRole('textbox', { name: 'providers/openai.provider.jsonc source' })
+    ).toHaveValue('// Provider\n{}');
+    expect(
+      screen.getByRole('heading', { name: 'providers/openai.provider.jsonc' })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('row', { name: 'openai.provider.jsonc' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    expect(client.runtimeConfig.getFile).toHaveBeenLastCalledWith(
+      'providers/openai.provider.jsonc'
+    );
+    expect(screen.getByRole('link', { name: 'Open Administration' })).toHaveAttribute(
+      'href',
+      '/settings/administration'
+    );
+    expect(screen.getByText(/Server Operation Agent/)).toBeInTheDocument();
   });
 
   it('shows access denied with retry and never asks for a server-admin token', async () => {
@@ -213,7 +340,7 @@ describe('Configuration settings', () => {
       file: FILES.files[1],
       content: '{}',
     });
-    await user.click(screen.getByRole('treeitem', { name: 'openai.provider.jsonc' }));
+    await user.click(screen.getByRole('row', { name: 'openai.provider.jsonc' }));
     expect(
       await screen.findByRole('heading', { name: 'Provider configuration' })
     ).toBeInTheDocument();
