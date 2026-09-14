@@ -23,3 +23,5 @@ The operations package contains its entrypoint, directly linked canonical operat
 Keep one maintained source per topic. `docs/manual/` points to the operations package; release packaging includes each complete Skill tree and license with matching checksums. Changes to supported behavior update the affected reference in the same slice. Skill metadata and package checks do not replace a real-use proof.
 
 Worker-side MCP and Skill supply retain their Agent Capability and catalog owners. Neither package introduces a user-facing MCP server, developer-mode product client, fleet, daemon or self-improvement harness.
+
+`workspace.dashboard`, `thread.dashboard`, and `app.search` use existing public Core Client reads. NanoCore filters Thread and Artifact-origin visibility before discovery, including for administrator credentials. Public `thread.create` defaults to private; use explicit `visibility: workspace` when creating formal Task/Goal work.
