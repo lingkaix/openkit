@@ -185,3 +185,102 @@ build_app
   assert.match(effects, /docker build --file .*\/containers\/app\/Dockerfile/);
   assert.doesNotMatch(effects, /nanocore\.Dockerfile/);
 });
+
+test('sync_linked_repos fast-forwards a clean public OpenKit checkout and records the pin', (t) => {
+  const root = fixture(t);
+  const base = join(root, 'base');
+  const linked = join(base, 'workspaces-repos', 'openkit');
+  const remote = join(root, 'remote.git');
+  mkdirSync(join(base, 'workspaces-repos'), { recursive: true });
+  const init = spawnSync(
+    'bash',
+    [
+      '-c',
+      `
+set -Eeuo pipefail
+git init --bare "$REMOTE"
+git clone "$REMOTE" "$LINKED"
+git -C "$LINKED" checkout -b main
+printf 'one\\n' > "$LINKED/README.md"
+git -C "$LINKED" add README.md
+git -C "$LINKED" -c user.name=test -c user.email=test@example.com commit -m one
+git -C "$LINKED" push -u origin main
+printf 'two\\n' > "$LINKED/README.md"
+git -C "$LINKED" add README.md
+git -C "$LINKED" -c user.name=test -c user.email=test@example.com commit -m two
+git -C "$LINKED" push
+git -C "$LINKED" reset --hard HEAD~1
+`,
+    ],
+    {
+      env: { ...process.env, REMOTE: remote, LINKED: linked },
+      encoding: 'utf8',
+    }
+  );
+  assert.equal(init.status, 0, init.stderr);
+  const tip = spawnSync('git', ['-C', remote, 'rev-parse', 'main'], { encoding: 'utf8' });
+  assert.equal(tip.status, 0, tip.stderr);
+  const expected = tip.stdout.trim();
+  const result = runFunction(
+    'sync_linked_repos',
+    `
+BASE_DIR="$BASE"
+LINKED_REPOS_DIR="$BASE/workspaces-repos"
+LINKED_REPOS_PIN="$BASE/current-linked-repos"
+REPO_URL="$REMOTE"
+sync_linked_repos
+`,
+    { BASE: base, REMOTE: remote }
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const head = spawnSync('git', ['-C', linked, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  assert.equal(head.status, 0, head.stderr);
+  assert.equal(head.stdout.trim(), expected);
+  assert.equal(
+    readFileSync(join(base, 'current-linked-repos'), 'utf8').trim(),
+    `openkit=${expected}`
+  );
+});
+
+test('sync_linked_repos refuses a dirty linked checkout', (t) => {
+  const root = fixture(t);
+  const base = join(root, 'base');
+  const linked = join(base, 'workspaces-repos', 'openkit');
+  const remote = join(root, 'remote.git');
+  mkdirSync(join(base, 'workspaces-repos'), { recursive: true });
+  const init = spawnSync(
+    'bash',
+    [
+      '-c',
+      `
+set -Eeuo pipefail
+git init --bare "$REMOTE"
+git clone "$REMOTE" "$LINKED"
+git -C "$LINKED" checkout -b main
+printf 'one\\n' > "$LINKED/README.md"
+git -C "$LINKED" add README.md
+git -C "$LINKED" -c user.name=test -c user.email=test@example.com commit -m one
+git -C "$LINKED" push -u origin main
+printf 'dirty\\n' > "$LINKED/README.md"
+`,
+    ],
+    {
+      env: { ...process.env, REMOTE: remote, LINKED: linked },
+      encoding: 'utf8',
+    }
+  );
+  assert.equal(init.status, 0, init.stderr);
+  const result = runFunction(
+    'sync_linked_repos',
+    `
+BASE_DIR="$BASE"
+LINKED_REPOS_DIR="$BASE/workspaces-repos"
+LINKED_REPOS_PIN="$BASE/current-linked-repos"
+REPO_URL="$REMOTE"
+sync_linked_repos
+`,
+    { BASE: base, REMOTE: remote }
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /local changes/);
+});
