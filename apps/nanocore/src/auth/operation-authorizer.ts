@@ -286,6 +286,7 @@ export function isWorkspaceOperationAuthorized(
  * @param actor Immutable actor responsible for the effect.
  * @param operation Concrete product operation, including unknown values that must fail closed.
  * @param effectAuthority Whether the caller's existing effect-specific authority remains valid.
+ * @param requestActor Optional authenticating request actor; a presented usable server-admin bearer grants owner authority without membership.
  * @returns The current effective Workspace role, or null when any authority component denies the effect.
  */
 export function currentWorkspaceAuthority(
@@ -293,10 +294,19 @@ export function currentWorkspaceAuthority(
   workspaceId: string,
   actor: ActorRef,
   operation: string,
-  effectAuthority: boolean
+  effectAuthority: boolean,
+  requestActor?: Actor
 ): WorkspaceRole | null {
   if (!effectAuthority) {
     return null;
+  }
+  if (
+    requestActor &&
+    isUsablePresentedServerAdminToken(coreDb, requestActor) &&
+    isActiveRegisteredWorkspace(coreDb, workspaceId)
+  ) {
+    const role: WorkspaceRole = 'owner';
+    return evaluateWorkspaceRoleAccess({ operation, role }).effect === 'allow' ? role : null;
   }
   const responsibleUserId = responsibleUserIdForActor(actor);
   if (!responsibleUserId) {
@@ -649,7 +659,7 @@ async function gatewayWorkspaceId(
  * @param now Current time for Token usability evaluation.
  * @returns True only for a usable presented server-admin Token actor.
  */
-function isUsablePresentedServerAdminToken(
+export function isUsablePresentedServerAdminToken(
   coreDb: CoreDb,
   actor: Actor,
   now = new Date()

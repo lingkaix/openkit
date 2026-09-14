@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { recordServerAuditEvent } from './audit-events.js';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
@@ -220,6 +221,45 @@ describe('Workspace sharing routes', () => {
       body: { items: [{ effectiveRole: 'owner', workspace: { id: fixture.workspaceId } }] },
       status: 200,
     });
+  });
+
+  it('projects owner summaries for usable server-admin bearer without membership', async () => {
+    const fixture = createFixture();
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_admin',
+      scope: 'server-admin',
+      tokenId: 'token_admin_list',
+      workspaceIds: [],
+    });
+    fixture.actorState.current = {
+      kind: 'token',
+      tokenId: 'token_admin_list',
+      tokenScope: 'server-admin',
+      tokenWorkspaceIds: [],
+      userId: 'user_admin',
+    };
+    // Authorizer-admitted set includes a Workspace the admin does not belong to.
+    const app = fixture.app;
+    // Override the middleware workspace-set by wrapping a one-off request path is already set
+    // in createFixture to fixture.workspaceId; admin has no membership there.
+    const response = await app.request('/api/app/workspaces');
+    const body = (await response.json()) as {
+      items: Array<{
+        effectiveRole: string;
+        membershipRevision: number;
+        workspace: { id: string };
+      }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.items).toEqual([
+      expect.objectContaining({
+        effectiveRole: 'owner',
+        membershipRevision: 1,
+        workspace: expect.objectContaining({ id: fixture.workspaceId }),
+      }),
+    ]);
   });
 
   it('hides own invitations for fenced and deleting Workspaces', async () => {

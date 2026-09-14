@@ -40,7 +40,8 @@ import {
   resolveSessionDeploymentAdminTokenId,
   verifyOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { ensureLocalUser, isDeploymentAdminActor } from './auth/identity.js';
+import { type Actor, ensureLocalUser, isDeploymentAdminActor } from './auth/identity.js';
+// Actor type used by mode worker turn request credential threading
 import {
   type AuthVariables,
   type BetterAuthServer,
@@ -1137,6 +1138,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   async function startModeWorkerTurn(input: {
     readonly store: FsStore;
     readonly triggerActor: ActorRef;
+    readonly requestActor?: Actor;
     readonly workspaceId: string;
     readonly threadId: string;
     readonly prompt: string;
@@ -1162,6 +1164,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       requestedAgentId: input.requestedAgentId,
       ...(input.reservedTurnId ? { reservedTurnId: input.reservedTurnId } : {}),
       ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
+      ...(input.requestActor ? { requestActor: input.requestActor } : {}),
       schedulerEpoch,
       snapshot,
       store: input.store,

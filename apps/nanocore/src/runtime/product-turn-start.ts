@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { ActorRef, SubmitTurnInputRequestSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import { selectAgent } from '../agents/selector.js';
+import type { Actor } from '../auth/identity.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { type RuntimeConfigSnapshot, resolveDefaultAgentId } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
@@ -30,6 +31,8 @@ interface StartProductTurnInput {
   readonly input: Extract<z.infer<typeof SubmitTurnInputRequestSchema>, { input: string }>;
   /** Exact actor that triggered this scheduler admission. */
   readonly triggerActor: ActorRef;
+  /** Authenticating request actor when the caller still holds the HTTP credential context. */
+  readonly requestActor?: Actor;
   /** Resolver used to prove provider profile credentials before worker admission. */
   readonly providerCredentialResolver: ProviderCredentialResolver;
   /** Runtime config snapshot captured for this turn. */
@@ -82,7 +85,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
       input.input.workspaceId,
       canonicalTriggerActor,
       'runtime.launch',
-      true
+      true,
+      input.requestActor
     )
   ) {
     throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);

@@ -9,7 +9,7 @@ NanoHost startup and Worker-image availability are separate checks. The accepted
 
 ## Inspect A Running Deployment
 
-With the public `openkit` Skill installed, run its `scripts/openkit doctor`, search for `diagnostics`, describe the matching operation and perform an authorized read. Inspect the relevant Workspace, Thread, Task, Artifact, Evidence, Audit or Usage records through their public operations. A server-admin credential does not itself grant private Workspace content.
+With the public `openkit` Skill installed, run its `scripts/openkit doctor`, search for `diagnostics`, describe the matching operation and perform an authorized read. Inspect the relevant Workspace, Thread, Task, Artifact, Evidence, Audit or Usage records through their public operations. A presented usable `server-admin` bearer admits active Workspace product routes as owner (including Task start). Prefer a workspace-scoped token for least privilege when only one Workspace is needed. Session cookies remain membership-bound.
 
 Observe product-work readiness and its individual reasons rather than treating every degraded state as failure or success. Retain the actual boot and deployed image/source identity. Current optional telemetry consists of explicit HTTP response-handoff spans and process diagnostics; it does not trace a complete Worker task. Use retained product records to establish that outcome. Inspect deployment-owned rotated logs or Collector files through authorized host tools only for the missing diagnostic question, without dumping credentials, full configuration or unrelated transcripts.
 
@@ -131,3 +131,13 @@ pnpm --filter @openkit/nanocore run thread-visibility:migrate -- \
 
 The migrator acquires the ordinary data-root lock, copies each rewritten `thread.json` into the backup root, and writes canonical envelopes with `openkit.thread-visibility.v1`. Without `--ambiguous-default`, ambiguous Threads remain unchanged and the command exits blocked. The only supported ambiguous default is `workspace`. Do not invent private owners for project history. Restore from the external backup only onto a stopped target when rolling back the classification writes.
 
+
+## Dogfood Task Smoke With Admin Bearer
+
+Non-interactive ops that only have a usable `server-admin` bearer can:
+
+1. `openkit ops call workspace.list --input -` with `{}` (App authorized set; expects 200).
+2. Create or select a **workspace-visible** Thread in the target Workspace.
+3. `openkit ops call task.start` (or `POST .../threads/{threadId}/task`) with an actionable prompt and `workerStorageChoice: { "kind": "fresh" }`.
+
+Do not print token secrets. Prefer rotating into a named local destination via `token.create` / `token.rotate` when issuing dedicated automation credentials.

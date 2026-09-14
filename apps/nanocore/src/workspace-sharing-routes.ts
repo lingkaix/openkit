@@ -34,6 +34,7 @@ import { type Actor, isDeploymentAdminActor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   assertAuthorizedWorkspaceLineage,
+  isUsablePresentedServerAdminToken,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
@@ -50,6 +51,7 @@ import {
 import type { CoreDb } from './storage/db.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import {
+  type AuthorizedWorkspaceRegistryFact,
   acceptWorkspaceInvitation,
   type CreateWorkspaceInvitationResult,
   changeWorkspaceMemberAccess,
@@ -129,15 +131,16 @@ export function registerWorkspaceSharingRoutes(input: RegisterWorkspaceSharingRo
         throw accessDenied();
       }
       const store = requestStore(context);
-      const actorId = requireActor(context).userId;
+      const actor = requireActor(context);
       const facts = new Map(
-        listAuthorizedWorkspaceRegistryFacts(coreDb, actorId).map((fact) => [
+        listAuthorizedWorkspaceRegistryFacts(coreDb, actor.userId).map((fact) => [
           fact.workspaceId,
           fact,
         ])
       );
       const items = access.workspaceIds.map((workspaceId) => {
-        const fact = facts.get(workspaceId);
+        const fact =
+          facts.get(workspaceId) ?? serverAdminAuthorizedWorkspaceFact(coreDb, actor, workspaceId);
         if (!fact) {
           throw accessDenied();
         }
@@ -887,6 +890,38 @@ function requireShareableWorkspace(coreDb: CoreDb, workspaceId: string): void {
 }
 
 /** Returns the uniform non-enumerating access failure. */
+/**
+ * Projects owner Workspace registry facts for a presented usable server-admin bearer
+ * when the caller has no membership edge.
+ *
+ * Synthetic membershipRevision is 1 and is not a membership CAS authority.
+ *
+ * @param coreDb Core Workspace authority.
+ * @param actor Authenticated request actor.
+ * @param workspaceId Canonical Workspace id already admitted by the authorizer set.
+ * @returns Owner fact for an active registry row, or null when the actor is not a usable presented server-admin.
+ */
+function serverAdminAuthorizedWorkspaceFact(
+  coreDb: CoreDb,
+  actor: Actor,
+  workspaceId: string
+): AuthorizedWorkspaceRegistryFact | null {
+  if (!isUsablePresentedServerAdminToken(coreDb, actor)) {
+    return null;
+  }
+  const registry = getWorkspaceRegistryFact(coreDb, workspaceId);
+  if (!registry) {
+    return null;
+  }
+  return {
+    workspaceId: registry.workspaceId,
+    ownerUserId: registry.ownerUserId,
+    registryRevision: registry.registryRevision,
+    effectiveRole: 'owner',
+    membershipRevision: 1,
+  };
+}
+
 function accessDenied(): WorkspaceSharingRouteError {
   return new WorkspaceSharingRouteError('workspace_access_denied', 'Workspace access denied.', 403);
 }

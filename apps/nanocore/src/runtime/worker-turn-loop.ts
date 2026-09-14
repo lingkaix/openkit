@@ -1,5 +1,6 @@
 import type { ActorRef, StopReason } from '@openkit/protocol';
 
+import type { Actor } from '../auth/identity.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { recordWorkerTurnLaunchDecision } from '../policy/permission-decisions.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -109,6 +110,8 @@ export interface RunWorkerTurnLoopInput {
   readonly coreDb: CoreDb;
   /** Immutable actor responsible for this worker effect. */
   readonly triggerActor: ActorRef;
+  /** Authenticating request actor when the caller still holds the HTTP credential context. */
+  readonly requestActor?: Actor;
   /** Open workspace-scope database handle for worker checkpoint storage. */
   readonly workspaceDb: WorkspaceDb;
   /** Workspace that owns the worker turn. */
@@ -179,7 +182,8 @@ export async function runWorkerTurnLoop(
       input.workspaceId,
       input.triggerActor,
       'runtime.launch',
-      true
+      true,
+      input.requestActor
     )
   ) {
     throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
