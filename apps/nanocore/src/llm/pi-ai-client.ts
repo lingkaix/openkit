@@ -376,6 +376,9 @@ export class PiAiGatewayClient {
         request.model,
         additionalTools,
         Array.isArray(request.include) && request.include.includes('reasoning.encrypted_content'),
+        ['openai-codex-responses', 'openai-responses', 'azure-openai-responses'].includes(
+          model.api
+        ),
         (usage) => publishObservedUsage(onUsage, usage, model, knownCost),
         signal,
         (reason) => localAbortController.abort(reason),
@@ -2202,15 +2205,34 @@ function toResponsesResponse(
       if (block.type === 'toolCall') {
         return responsesToolCallItem(block, additionalTools, 'completed', false, bridgeNames);
       }
-      return {
-        id: `message_${index}`,
-        type: 'message',
-        role: 'assistant',
-        status: 'completed',
-        content: [{ type: 'output_text', text: block.text }],
-      };
+      return responsesTextItem(block, `message_${index}`);
     }),
     usage: toResponsesUsage(message.usage),
+  };
+}
+
+/** Restores the pinned pi-ai v1 text signature without exposing its private carrier. */
+function responsesTextItem(
+  block: Extract<AssistantMessage['content'][number], { type: 'text' }>,
+  fallbackId: string
+): Record<string, unknown> {
+  let signature: Record<string, unknown> | undefined;
+  try {
+    signature = readRecord(JSON.parse(block.textSignature ?? ''));
+  } catch {
+    // Chat providers need not supply native Responses identity.
+  }
+  const native =
+    signature?.v === 1 && typeof signature.id === 'string' && signature.id ? signature : undefined;
+  return {
+    id: native?.id ?? fallbackId,
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    ...(native?.phase === 'commentary' || native?.phase === 'final_answer'
+      ? { phase: native.phase }
+      : {}),
+    content: [{ type: 'output_text', text: block.text }],
   };
 }
 
@@ -2387,6 +2409,7 @@ function piAiStreamFailure(message: string, code: string, stopReason?: string): 
  * @param requestModel Model id authored by the caller.
  * @param additionalTools Message-anchored tool kinds used to recover custom calls.
  * @param requireEncryptedReasoning Whether stateless reasoning replay requires terminal backfill.
+ * @param preserveNativeTextIdentity Wait for native text identity and phase at text_end.
  * @param onUsage Optional raw terminal usage observer.
  * @param signal Combined caller and downstream cancellation signal.
  * @param abortUpstream Aborts provider work when the downstream stream stops.
@@ -2399,6 +2422,7 @@ function toResponsesSseStream(
   requestModel: string,
   additionalTools: ResponsesAdditionalTools | undefined,
   requireEncryptedReasoning: boolean,
+  preserveNativeTextIdentity: boolean,
   onUsage: ((usage: unknown) => void) | undefined,
   signal: AbortSignal,
   abortUpstream: (reason?: unknown) => void,
@@ -2414,6 +2438,30 @@ function toResponsesSseStream(
   const pendingToolCalls = new Set<number>();
   const encodeEvent = (event: Record<string, unknown>) =>
     encoder.encode(responsesStreamEvent({ ...event, sequence_number: sequenceNumber++ }));
+
+  /** Opens one text item and its content part under the same identity used by completion. */
+  function enqueueTextStart(
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    contentIndex: number,
+    item: Record<string, unknown>
+  ): void {
+    controller.enqueue(
+      encodeEvent({
+        type: 'response.output_item.added',
+        output_index: contentIndex,
+        item: { type: 'message', role: 'assistant', ...item, status: 'in_progress', content: [] },
+      })
+    );
+    controller.enqueue(
+      encodeEvent({
+        type: 'response.content_part.added',
+        item_id: item.id,
+        output_index: contentIndex,
+        content_index: 0,
+        part: { type: 'output_text', text: '', annotations: [], logprobs: [] },
+      })
+    );
+  }
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -2449,32 +2497,18 @@ function toResponsesSseStream(
             return;
           }
           if (event.type === 'text_start') {
-            const itemId = `message_${event.contentIndex}`;
-            controller.enqueue(
-              encodeEvent({
-                type: 'response.output_item.added',
-                output_index: event.contentIndex,
-                item: {
-                  id: itemId,
-                  type: 'message',
-                  role: 'assistant',
-                  status: 'in_progress',
-                  content: [],
-                },
-              })
-            );
-            controller.enqueue(
-              encodeEvent({
-                type: 'response.content_part.added',
-                item_id: itemId,
-                output_index: event.contentIndex,
-                content_index: 0,
-                part: { type: 'output_text', text: '', annotations: [], logprobs: [] },
-              })
-            );
+            if (preserveNativeTextIdentity) {
+              continue;
+            }
+            enqueueTextStart(controller, event.contentIndex, {
+              id: `message_${event.contentIndex}`,
+            });
             return;
           }
           if (event.type === 'text_delta') {
+            if (preserveNativeTextIdentity) {
+              continue;
+            }
             controller.enqueue(
               encodeEvent({
                 type: 'response.output_text.delta',
@@ -2487,7 +2521,25 @@ function toResponsesSseStream(
             return;
           }
           if (event.type === 'text_end') {
-            const itemId = `message_${event.contentIndex}`;
+            const block = event.partial.content[event.contentIndex];
+            if (!block || block.type !== 'text') {
+              throw new GatewayUnsupportedFeatureError('pi-ai Responses text stream');
+            }
+            const item = responsesTextItem(block, `message_${event.contentIndex}`);
+            const itemId = item.id;
+            if (preserveNativeTextIdentity) {
+              // The stock parser exposes native id and phase only at text_end.
+              enqueueTextStart(controller, event.contentIndex, item);
+              controller.enqueue(
+                encodeEvent({
+                  type: 'response.output_text.delta',
+                  delta: event.content,
+                  item_id: itemId,
+                  output_index: event.contentIndex,
+                  content_index: 0,
+                })
+              );
+            }
             const part = {
               type: 'output_text',
               text: event.content,
@@ -2517,13 +2569,7 @@ function toResponsesSseStream(
               encodeEvent({
                 type: 'response.output_item.done',
                 output_index: event.contentIndex,
-                item: {
-                  id: itemId,
-                  type: 'message',
-                  role: 'assistant',
-                  status: 'completed',
-                  content: [part],
-                },
+                item: { ...item, content: [part] },
               })
             );
             return;

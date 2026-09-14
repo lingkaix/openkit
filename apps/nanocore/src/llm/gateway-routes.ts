@@ -1281,7 +1281,15 @@ function createGatewayTerminalErrorSse(
     stopReason,
   };
 
-  return `data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`;
+  const event =
+    endpoint === 'responses'
+      ? {
+          type: 'response.failed',
+          response: { status: 'failed', error: payload.error },
+          stopReason,
+        }
+      : payload;
+  return `data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`;
 }
 
 /**
