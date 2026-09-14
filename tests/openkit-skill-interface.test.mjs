@@ -2498,3 +2498,53 @@ function runCli(args, env = {}, input = '{}', imports = [], interruptOn, executa
     child.stdin.end(input);
   });
 }
+
+test('dashboard and search catalog mappings replace exactly their exclusions', async () => {
+  const { operationCatalog, operationExclusions } = await operations();
+  for (const [id, operationId, method, input, args] of [
+    [
+      'workspace.dashboard',
+      'getWorkspaceDashboard',
+      'getWorkspaceDashboard',
+      { workspaceId: 'ws_team' },
+      ['ws_team'],
+    ],
+    [
+      'thread.dashboard',
+      'getThreadDashboard',
+      'getThreadDashboard',
+      { workspaceId: 'ws_team', threadId: 'th_shared' },
+      ['ws_team', 'th_shared'],
+    ],
+    ['app.search', 'searchApp', 'search', { query: 'needle' }, ['needle']],
+  ]) {
+    const entry = operationCatalog.find((candidate) => candidate.id === id);
+    assert.ok(entry);
+    assert.equal(entry.appOperationId, operationId);
+    assert.equal(entry.mutating, false);
+    assert.equal(
+      operationExclusions.some((candidate) => candidate.name === operationId),
+      false
+    );
+    let observed;
+    const result = await entry.handler(
+      {
+        client: {
+          app: {
+            [method]: async (...values) => {
+              observed = values;
+              return { items: [] };
+            },
+          },
+        },
+      },
+      entry.inputSchema.parse(input)
+    );
+    assert.deepEqual(observed, args);
+    assert.deepEqual(result, { items: [] });
+    assert.equal(
+      entry.inputSchema.safeParse({ ...input, privateOwnerUserId: 'user_other' }).success,
+      false
+    );
+  }
+});

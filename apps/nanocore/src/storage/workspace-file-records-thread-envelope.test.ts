@@ -29,7 +29,7 @@ describe('Thread canonical record envelope', () => {
       id: thread.id,
       ownerScope: 'workspace',
       recordType: 'thread',
-      requiredFeatures: ['openkit.thread-entry.v1'],
+      requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
       schemaVersion: 1,
       workspaceId: workspace.id,
     });
@@ -53,7 +53,7 @@ describe('Thread canonical record envelope', () => {
   it('classifies a pre-envelope Thread as conversation and rewrites the gated envelope', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-cutover-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Cutover workspace');
+    const workspace = store.ensureQuickChatWorkspace('user_local');
     const thread = store.createThread(workspace.id, 'Cutover thread');
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     const legacy = { ...persisted.value };
@@ -68,16 +68,22 @@ describe('Thread canonical record envelope', () => {
       'requiredFeatures',
       'schemaVersion',
       'sensitivity',
+      'visibility',
+      'privateOwnerUserId',
     ]) {
       delete legacy[field];
     }
     writeFileSync(persisted.path, `${JSON.stringify(legacy)}\n`);
 
     const restarted = new FsStore({ dataRoot });
-    expect(restarted.getThread(workspace.id, thread.id).entryPath).toBe('conversation');
+    expect(restarted.getThread(workspace.id, thread.id)).toMatchObject({
+      entryPath: 'conversation',
+      visibility: 'private',
+      privateOwnerUserId: 'user_local',
+    });
     expect(threadRecord(dataRoot, workspace.id, thread.id).value).toMatchObject({
       entryPath: 'conversation',
-      requiredFeatures: ['openkit.thread-entry.v1'],
+      requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
       recordType: 'thread',
     });
   });
