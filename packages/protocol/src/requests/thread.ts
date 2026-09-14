@@ -11,6 +11,7 @@ export const CreateThreadRequestSchema = z.object({
   requestId: RequestIdSchema,
   workspaceId: WorkspaceIdSchema,
   name: z.string().min(1),
+  visibility: z.enum(['private', 'workspace']).optional(),
 });
 
 /**

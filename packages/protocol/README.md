@@ -17,3 +17,5 @@ The TypeScript and Zod schemas in this package are the machine-readable source o
 - `pnpm --filter @openkit/protocol test`
 - `pnpm --filter @openkit/protocol typecheck`
 - `pnpm --filter @openkit/protocol build`
+
+Thread visibility is explicit and immutable. Private Threads require `privateOwnerUserId`; shared Threads omit it. Public creation defaults to private and binds ownership to the requesting user; formal Task/Goal callers request `visibility: workspace` at creation. Quick Chat and administration stay private.
