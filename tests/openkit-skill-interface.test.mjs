@@ -1471,6 +1471,63 @@ test('named credentials isolate endpoint admin storage, names, endpoints, and de
   assert.equal(restarted.readNamedToken({ ...slot, destination: 'other' }), 'okt_fake_other');
 });
 
+test('named backend selection prevents stale replacement and deletion across outages and restart', async (t) => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  const configDir = mkdtempSync(join(tmpdir(), 'openkit-named-backends-'));
+  t.after(() => rmSync(configDir, { force: true, recursive: true }));
+  const credentials = new Map();
+  let available = true;
+  const options = {
+    configDir,
+    platform: 'linux',
+    machineId: 'fake-machine',
+    warn() {},
+    execFile(_command, args, execution) {
+      if (!available) throw new Error('keychain unavailable');
+      const key = args.slice(args.indexOf('application')).join('|');
+      if (args[0] === 'store') {
+        credentials.set(key, execution.input);
+        return '';
+      }
+      if (args[0] === 'clear') {
+        credentials.delete(key);
+        return '';
+      }
+      return credentials.get(key) ?? '';
+    },
+  };
+  const slot = { baseUrl: 'https://nanocore.example', destination: 'automation' };
+  const store = createDefaultOpenKitCredentialStore(options);
+  assert.equal(store.writeNamedToken({ ...slot, token: 'okt_fake_old_keychain' }), 'os-keychain');
+  available = false;
+  assert.equal(
+    store.writeNamedToken({ ...slot, token: 'okt_fake_new_fallback' }),
+    'encrypted-file'
+  );
+  available = true;
+  const restarted = createDefaultOpenKitCredentialStore(options);
+  assert.equal(restarted.readNamedToken(slot), 'okt_fake_new_fallback');
+  assert.equal(
+    restarted.writeNamedToken({ ...slot, token: 'okt_fake_latest_keychain' }),
+    'os-keychain'
+  );
+  available = false;
+  assert.equal(createDefaultOpenKitCredentialStore(options).readNamedToken(slot), null);
+  assert.equal(restarted.deleteNamedToken(slot), true);
+  available = true;
+  assert.equal(createDefaultOpenKitCredentialStore(options).readNamedToken(slot), null);
+  assert.equal(restarted.deleteNamedToken(slot), false);
+  assert.equal(
+    restarted.writeNamedToken({ ...slot, token: 'okt_fake_next_keychain' }),
+    'os-keychain'
+  );
+  available = false;
+  restarted.writeNamedToken({ ...slot, token: 'okt_fake_next_fallback' });
+  assert.equal(restarted.deleteNamedToken(slot), true);
+  available = true;
+  assert.equal(createDefaultOpenKitCredentialStore(options).readNamedToken(slot), null);
+});
+
 test('named fallback delivery refuses links to the endpoint admin credential', async (t) => {
   const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
   const configDir = mkdtempSync(join(tmpdir(), 'openkit-named-link-'));
@@ -1546,12 +1603,15 @@ test('named credential methods reject unsafe and reserved destinations before st
   assert.equal(calls, 0);
 });
 
-test('named keychain entries have distinct identities and stdin-only writes on supported platforms', async () => {
+test('named keychain entries have distinct identities and stdin-only writes on supported platforms', async (t) => {
   const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  const configDir = mkdtempSync(join(tmpdir(), 'openkit-named-keychain-'));
+  t.after(() => rmSync(configDir, { force: true, recursive: true }));
   for (const platform of ['linux', 'win32', 'darwin']) {
     const calls = [];
     const store = createDefaultOpenKitCredentialStore({
       platform,
+      configDir,
       execFile(command, args, options) {
         calls.push({ command, args, options });
         return 'okt_fake_keychain';
