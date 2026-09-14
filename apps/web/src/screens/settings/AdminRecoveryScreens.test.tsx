@@ -315,7 +315,7 @@ describe('Web admin recovery and user disable', () => {
     let finish = () => {};
     vi.mocked(client.app[method]).mockImplementationOnce(
       () =>
-        new Promise((resolve) => {
+        new Promise<never>((resolve) => {
           finish = () => resolve((method === 'disableUser' ? DISABLED : RECOVERY) as never);
         })
     );
