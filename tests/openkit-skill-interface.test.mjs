@@ -334,10 +334,8 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
-    'app-api:createOpenKitAccessToken',
     'app-api:getThreadDashboard',
     'app-api:getWorkspaceDashboard',
-    'app-api:rotateOpenKitAccessToken',
     'app-api:searchApp',
     'core-projection:listWorkspaces',
     'core-projection:subscribeTurnEvents',
@@ -1422,6 +1420,351 @@ test('the encrypted-file Vault cutover removes only the obsolete NanoCore Keycha
   }
 
   assert.deepEqual(violations, []);
+});
+
+test('named credentials isolate endpoint admin storage, names, endpoints, and deletion', async (t) => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  const configDir = mkdtempSync(join(tmpdir(), 'openkit-named-'));
+  t.after(() => rmSync(configDir, { force: true, recursive: true }));
+  const options = {
+    configDir,
+    platform: 'darwin',
+    machineId: 'fake-machine',
+    warn() {},
+    execFile() {
+      throw new Error('no keychain');
+    },
+  };
+  const store = createDefaultOpenKitCredentialStore(options);
+  const baseUrl = 'https://nanocore.example';
+  store.writeToken({ baseUrl, token: 'okt_fake_admin' });
+  const adminDirectory = join(configDir, 'credentials', 'nanocore');
+  const adminFile = join(adminDirectory, readdirSync(adminDirectory)[0]);
+  const adminBytes = readFileSync(adminFile);
+  const slot = { baseUrl, destination: 'automation' };
+  store.preflightNamedWrite(slot);
+  assert.equal(store.readNamedToken(slot), null);
+  assert.equal(store.writeNamedToken({ ...slot, token: 'okt_fake_issued' }), 'encrypted-file');
+  assert.equal(store.readNamedToken(slot), 'okt_fake_issued');
+  store.writeNamedToken({ ...slot, destination: 'other', token: 'okt_fake_other' });
+  store.writeNamedToken({ ...slot, baseUrl: 'https://other.example', token: 'okt_fake_endpoint' });
+  store.writeNamedToken({ ...slot, token: 'okt_fake_rotated' });
+  const restarted = createDefaultOpenKitCredentialStore(options);
+  assert.equal(restarted.readNamedToken(slot), 'okt_fake_rotated');
+  assert.equal(restarted.readNamedToken({ ...slot, destination: 'other' }), 'okt_fake_other');
+  assert.equal(
+    restarted.readNamedToken({ ...slot, baseUrl: 'https://other.example' }),
+    'okt_fake_endpoint'
+  );
+  assert.equal(restarted.readToken({ baseUrl }), 'okt_fake_admin');
+  assert.deepEqual(readFileSync(adminFile), adminBytes);
+  for (const file of listFiles(configDir)) {
+    const path = join(configDir, file);
+    assert.doesNotMatch(readFileSync(path, 'utf8'), /okt_fake_/);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+  }
+  assert.equal(restarted.deleteNamedToken(slot), true);
+  assert.equal(restarted.deleteNamedToken(slot), false);
+  assert.equal(restarted.readNamedToken(slot), null);
+  assert.equal(restarted.readToken({ baseUrl }), 'okt_fake_admin');
+  restarted.deleteToken({ baseUrl });
+  assert.equal(restarted.readNamedToken({ ...slot, destination: 'other' }), 'okt_fake_other');
+});
+
+test('named credential methods reject unsafe and reserved destinations before storage access', async () => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  let calls = 0;
+  const store = createDefaultOpenKitCredentialStore({
+    execFile() {
+      calls++;
+    },
+  });
+  for (const destination of [
+    undefined,
+    null,
+    '',
+    ' ',
+    'admin',
+    'endpoint',
+    'default',
+    'current',
+    'ADMIN',
+    '../admin',
+    '/admin',
+    'a/b',
+    'a:b',
+    ' a',
+    'a ',
+    'okt_fake_secret',
+    'a'.repeat(65),
+  ]) {
+    for (const method of [
+      'readNamedToken',
+      'writeNamedToken',
+      'deleteNamedToken',
+      'preflightNamedWrite',
+    ]) {
+      assert.throws(
+        () =>
+          store[method]({
+            baseUrl: 'https://nanocore.example',
+            destination,
+            token: 'okt_fake_issued',
+          }),
+        { code: 'invalid_credential_destination' }
+      );
+    }
+  }
+  assert.equal(calls, 0);
+});
+
+test('named keychain entries have distinct identities and stdin-only writes on supported platforms', async () => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  for (const platform of ['linux', 'win32', 'darwin']) {
+    const calls = [];
+    const store = createDefaultOpenKitCredentialStore({
+      platform,
+      execFile(command, args, options) {
+        calls.push({ command, args, options });
+        return 'okt_fake_keychain';
+      },
+    });
+    const slot = { baseUrl: 'https://nanocore.example', destination: 'automation' };
+    store.readToken(slot);
+    const adminRead = calls.at(-1);
+    assert.equal(store.readNamedToken(slot), 'okt_fake_keychain');
+    const namedRead = calls.at(-1);
+    assert.notDeepEqual(namedRead.args, adminRead.args);
+    if (platform === 'linux') {
+      assert.notEqual(namedRead.args[namedRead.args.indexOf('application') + 1], 'openkit');
+    } else {
+      assert.ok(!namedRead.args.includes('openkit.nanocore.token'));
+    }
+    store.readNamedToken({ ...slot, destination: 'other' });
+    assert.notDeepEqual(calls.at(-1).args, namedRead.args);
+    store.readNamedToken({ ...slot, baseUrl: 'https://other.example' });
+    assert.notDeepEqual(calls.at(-1).args, namedRead.args);
+    if (platform !== 'darwin') {
+      assert.equal(store.writeNamedToken({ ...slot, token: 'okt_fake_stdin_only' }), 'os-keychain');
+      const write = calls.at(-1);
+      assert.doesNotMatch(JSON.stringify(write.args), /okt_fake_/);
+      assert.equal(write.options.input, 'okt_fake_stdin_only');
+      assert.deepEqual(write.options.stdio, ['pipe', 'ignore', 'ignore']);
+    }
+    store.deleteToken(slot);
+    const adminDelete = calls.at(-1);
+    store.deleteNamedToken(slot);
+    assert.notDeepEqual(calls.at(-1).args, adminDelete.args);
+  }
+});
+
+test('token create and rotate require named delivery and preflight before the public client call', async () => {
+  const { operationCatalog } = await operations();
+  for (const action of ['create', 'rotate']) {
+    const operation = operationCatalog.find((entry) => entry.id === `token.${action}`);
+    assert.ok(operation);
+    const method = `${action}OpenKitAccessToken`;
+    assert.equal(operation.appOperationId, method);
+    assert.equal(operation.clientMethod, `app.${method}`);
+    assert.match(operation.requiredAccess, /deployment admin.*server-admin bearer.*server mode/);
+    const body =
+      action === 'create'
+        ? {
+            scope: 'workspace',
+            workspaceIds: ['ws_demo'],
+            ownerUserId: 'user_demo',
+            expiresAt: '2027-01-01T00:00:00.000Z',
+          }
+        : { graceSeconds: 60 };
+    const input = {
+      ...body,
+      destination: 'automation',
+      ...(action === 'rotate' ? { tokenId: 'tok_old' } : {}),
+    };
+    for (const destination of [undefined, '', 'admin', '../admin', 'okt_fake_secret']) {
+      assert.equal(operation.inputSchema.safeParse({ ...input, destination }).success, false);
+    }
+    assert.equal(
+      operation.inputSchema.safeParse({ ...input, baseUrl: 'https://other.example' }).success,
+      false
+    );
+    const record = { tokenId: 'tok_new' };
+    const rotatedRecord = { tokenId: 'tok_old' };
+    const response = {
+      token: 'okt_fake_issued',
+      record,
+      ...(action === 'rotate' ? { rotatedRecord } : {}),
+    };
+    const events = [];
+    const slot = { baseUrl: 'https://nanocore.example', destination: 'automation' };
+    const context = {
+      endpoint: slot.baseUrl,
+      client: {
+        app: {
+          [method]: async (...args) => {
+            events.push(['request', args]);
+            return response;
+          },
+        },
+      },
+      credentialStore: {
+        preflightNamedWrite(value) {
+          events.push(['preflight', value]);
+        },
+        writeNamedToken(value) {
+          events.push(['write', value]);
+          return 'os-keychain';
+        },
+        writeToken() {
+          assert.fail('endpoint administration credential must never be written');
+        },
+      },
+    };
+    const result = await operation.handler(context, operation.inputSchema.parse(input));
+    assert.deepEqual(events, [
+      ['preflight', slot],
+      ['request', action === 'create' ? [body] : ['tok_old', body]],
+      ['write', { ...slot, token: response.token }],
+    ]);
+    assert.deepEqual(result, {
+      record,
+      ...(action === 'rotate' ? { rotatedRecord } : {}),
+      credentialStorageBackend: 'os-keychain',
+      destination: 'automation',
+    });
+    assert.doesNotMatch(JSON.stringify(result), /okt_fake_|"token":/);
+    for (const credentialStore of [
+      undefined,
+      { writeToken() {} },
+      {
+        preflightNamedWrite() {
+          throw new Error('unwritable');
+        },
+        writeNamedToken() {},
+      },
+    ]) {
+      events.length = 0;
+      await assert.rejects(operation.handler({ ...context, credentialStore }, input), {
+        code: 'credential_storage_unavailable',
+      });
+      assert.deepEqual(events, []);
+    }
+    events.length = 0;
+    context.credentialStore.writeNamedToken = () => {
+      throw new Error('okt_fake_issued');
+    };
+    await assert.rejects(operation.handler(context, input), (error) => {
+      assert.equal(error.code, 'credential_storage_failed');
+      assert.doesNotMatch(error.message, /okt_fake_/);
+      return true;
+    });
+    assert.deepEqual(
+      events.map(([event]) => event),
+      ['preflight', 'request']
+    );
+  }
+});
+
+test('bundled token create and rotate preserve transport, redaction, and auth denials', async (t) => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'openkit-token-cli-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const endpoint = 'https://nanocore.example';
+  const env = {
+    XDG_CONFIG_HOME: root,
+    PATH: root,
+    OPENKIT_NANOCORE_URL: endpoint,
+    OPENKIT_NANOCORE_TOKEN: 'okt_fake_admin',
+  };
+  const record = {
+    tokenId: 'tok_new',
+    ownerUserId: 'user_demo',
+    scope: 'workspace',
+    workspaceIds: ['ws_demo'],
+    status: 'active',
+    issuedAt: '2026-09-14T00:00:00.000Z',
+    expiresAt: '2027-01-01T00:00:00.000Z',
+    revokedAt: null,
+    predecessorTokenId: null,
+    rotatedGraceExpiresAt: null,
+    lastUsedAt: null,
+    lastUsedChannel: null,
+    lastUsedSource: null,
+  };
+  const store = createDefaultOpenKitCredentialStore({
+    configDir: join(root, 'openkit'),
+    execFile() {
+      throw new Error('unavailable');
+    },
+    warn() {},
+  });
+  store.writeToken({ baseUrl: endpoint, token: 'okt_fake_stored_admin' });
+  for (const action of ['create', 'rotate']) {
+    const body =
+      action === 'create'
+        ? { scope: 'workspace', workspaceIds: ['ws_demo'], expiresAt: record.expiresAt }
+        : { graceSeconds: 60 };
+    const input = {
+      ...body,
+      destination: 'automation',
+      ...(action === 'rotate' ? { tokenId: 'tok_old' } : {}),
+    };
+    const response = {
+      token: `okt_fake_${action}`,
+      record,
+      ...(action === 'rotate'
+        ? { rotatedRecord: { ...record, tokenId: 'tok_old', status: 'rotated' } }
+        : {}),
+    };
+    const url = `${endpoint}/api/app/auth/tokens${action === 'rotate' ? '/tok_old/rotate' : ''}`;
+    const args = ['ops', 'call', `token.${action}`, '--input', '-'];
+    const transport = dataModule(`
+      globalThis.fetch = async (url, options) => {
+        const headers = new Headers(options.headers);
+        if (url !== ${JSON.stringify(url)} || options.method !== 'POST') throw new Error('wrong route');
+        if (headers.get('authorization') !== 'Bearer okt_fake_admin') throw new Error('wrong credential');
+        if (headers.get('x-openkit-client-channel') !== 'openkit-cli' || headers.get('x-openkit-client-source') !== 'agent-skill') throw new Error('wrong audit metadata');
+        if (JSON.stringify(JSON.parse(options.body)) !== ${JSON.stringify(JSON.stringify(body))}) throw new Error('wrong body');
+        return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+    `);
+    const result = await runCli(args, env, JSON.stringify(input), [transport]);
+    assert.equal(result.code, 0, result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout).data, {
+      record,
+      ...(action === 'rotate' ? { rotatedRecord: response.rotatedRecord } : {}),
+      credentialStorageBackend: 'encrypted-file',
+      destination: 'automation',
+    });
+    assert.match(result.stderr, /encrypted-file/);
+    assert.doesNotMatch(result.stdout + result.stderr, /okt_fake_/);
+    assert.equal(
+      store.readNamedToken({ baseUrl: endpoint, destination: 'automation' }),
+      response.token
+    );
+    assert.equal(store.readToken({ baseUrl: endpoint }), 'okt_fake_stored_admin');
+    for (const status of [401, 403]) {
+      const denied = await runCli(args, env, JSON.stringify(input), [
+        responseModule(status, {
+          code: 'access_token_admin_forbidden',
+          message: 'Denied okt_fake_admin',
+          protocolVersion: '0.4.0',
+        }),
+      ]);
+      assert.equal(denied.code, 3, denied.stdout);
+      assert.equal(JSON.parse(denied.stdout).error.code, 'access_token_admin_forbidden');
+      assert.doesNotMatch(denied.stdout + denied.stderr, /okt_fake_/);
+      assert.equal(
+        store.readNamedToken({ baseUrl: endpoint, destination: 'automation' }),
+        response.token
+      );
+    }
+    const invalid = await runCli(args, env, JSON.stringify({ ...input, destination: 'admin' }), [
+      dataModule(`globalThis.fetch = async () => { throw new Error('must not request'); };`),
+    ]);
+    assert.equal(invalid.code, 2);
+    assert.equal(JSON.parse(invalid.stdout).error.code, 'invalid_input');
+  }
 });
 
 test('credential resolution is endpoint-scoped, fail-closed, and redacted', async (t) => {
