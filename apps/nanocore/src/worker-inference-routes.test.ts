@@ -1629,6 +1629,17 @@ describe('worker inference routes', () => {
     const body = await response.text();
     expect(body).toContain('gateway_stream_failed');
     expect(body).not.toContain('private upstream stream failure');
+    const terminal = body
+      .split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice(6)))
+      .find((event) => event.type === 'response.failed');
+    expect(terminal).toMatchObject({
+      response: {
+        status: 'failed',
+        error: { code: 'gateway_stream_failed', message: 'Worker inference stream failed.' },
+      },
+    });
     expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
       expect.objectContaining({
         errorCode: 'worker_inference_stream_failed',
