@@ -247,7 +247,7 @@ describe('Configuration settings', () => {
     ).toBeInTheDocument();
     expect(screen.queryByLabelText('server JSON Schema')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /retry/i }));
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByLabelText('server JSON Schema')).toHaveTextContent('"bind"');
     expect(editor).toHaveValue('{"mode":"local"}');
     expect(client.runtimeConfig.getSchemas).toHaveBeenCalledTimes(2);

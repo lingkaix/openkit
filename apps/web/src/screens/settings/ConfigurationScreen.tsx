@@ -6,6 +6,7 @@ import { useCoreClient } from '../../app/core-client';
 import {
   Button,
   Card,
+  CodeView,
   EmptyState,
   ErrorBanner,
   Icon,
@@ -265,6 +266,7 @@ export function ConfigurationScreen() {
                 </div>
               </Card>
             ) : null}
+            {selectedFile ? <SchemaReference kind={selectedFile.kind} /> : null}
           </div>
         </div>
       )}
@@ -275,6 +277,64 @@ export function ConfigurationScreen() {
         runtime owner.
       </p>
     </Page>
+  );
+}
+
+/** Shows the selected file kind's server-owned schema on explicit administrator request. */
+function SchemaReference({ kind }: { kind: RuntimeConfigFileSummary['kind'] }) {
+  const client = useCoreClient();
+  const [expanded, setExpanded] = useState(false);
+  const catalog = useQuery({
+    queryKey: ['settings', 'configuration', 'schemas'],
+    queryFn: () => client.runtimeConfig.getSchemas(),
+    enabled: expanded,
+    gcTime: 0,
+    retry: false,
+  });
+  const entry = catalog.data?.schemas.find((schema) => schema.kind === kind);
+
+  return (
+    <Card className="flex min-w-0 flex-col gap-3">
+      <div>
+        <Button
+          variant="quiet"
+          size="sm"
+          aria-expanded={expanded}
+          aria-controls="configuration-schema"
+          onPress={() => setExpanded((value) => !value)}
+        >
+          {expanded ? 'Hide schema' : 'Show schema'}
+        </Button>
+      </div>
+      <div id="configuration-schema" hidden={!expanded}>
+        {expanded ? (
+          catalog.isLoading ? (
+            <Skeleton lines={4} />
+          ) : catalog.isError ? (
+            <ErrorBanner
+              message={
+                isAdminDenied(catalog.error)
+                  ? 'Schema access denied. Deployment-admin authority is required.'
+                  : "Couldn't load configuration schemas."
+              }
+              onRetry={() => void catalog.refetch()}
+            />
+          ) : entry ? (
+            <div className="flex min-w-0 flex-col gap-3">
+              <h2 className="text-sm font-bold text-fg-strong">{entry.title}</h2>
+              <div className="max-h-96 overflow-auto">
+                <CodeView
+                  label={`${kind} JSON Schema`}
+                  value={JSON.stringify(entry.schema, null, 2)}
+                />
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-fg-muted">No schema available for {kind}.</p>
+          )
+        ) : null}
+      </div>
+    </Card>
   );
 }
 
