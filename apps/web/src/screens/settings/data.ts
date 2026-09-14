@@ -169,8 +169,8 @@ export interface UsageRecordRow {
   quantity: number;
 }
 
-/** Whitelisted Workspace audit metadata exposed to Usage & audit. */
-export interface WorkspaceAuditEventRow {
+/** Whitelisted audit metadata shared by the separate Workspace and server surfaces. */
+export interface AuditEventDisplayRow {
   id: string;
   category: string;
   action: string;
@@ -178,8 +178,8 @@ export interface WorkspaceAuditEventRow {
   summary: string;
 }
 
-/** Whitelisted Workspace permission-decision metadata exposed to Usage & audit. */
-export interface WorkspacePermissionDecisionRow {
+/** Whitelisted permission metadata shared by the separate Workspace and server surfaces. */
+export interface PermissionDecisionDisplayRow {
   decisionId: string;
   action: string;
   result: string;
@@ -189,8 +189,8 @@ export interface WorkspacePermissionDecisionRow {
 export interface UsageAndAuditProjection {
   capabilityCalls: CapabilityUsageCallRow[];
   usageRecords: UsageRecordRow[];
-  auditEvents: WorkspaceAuditEventRow[];
-  permissionDecisions: WorkspacePermissionDecisionRow[];
+  auditEvents: AuditEventDisplayRow[];
+  permissionDecisions: PermissionDecisionDisplayRow[];
 }
 
 /**
@@ -355,6 +355,23 @@ export function projectUsageAndAudit(
       unit: projectSafeValue(record.unit) as string,
       quantity: record.quantity,
     })),
+    ...projectAuditAndDecisions(audit, decisions),
+  };
+}
+
+/**
+ * Whitelists and redacts audit and decision metadata before query caching.
+ * @param audit Server or Workspace audit response.
+ * @param decisions Server or Workspace permission response.
+ * @returns Only fields displayed by the read-only evidence rows.
+ */
+function projectAuditAndDecisions(
+  audit: Awaited<ReturnType<CoreClient['app']['listServerAuditEvents']>>,
+  decisions: {
+    permissionDecisions: readonly { decisionId: string; action: string; result: string }[];
+  }
+): Pick<UsageAndAuditProjection, 'auditEvents' | 'permissionDecisions'> {
+  return {
     auditEvents: audit.auditEvents.map((event) => ({
       id: projectSafeValue(event.id) as string,
       category: projectSafeValue(event.category) as string,
@@ -663,5 +680,21 @@ export function useUpdateWorkspaceName(workspaceId: string | null) {
       void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
       return projectWorkspace(workspace);
     },
+  });
+}
+
+/** Loads deployment-admin audit and decisions through the current session, independent of Workspace selection. */
+export function useServerAudit() {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: ['settings', 'server-audit'],
+    queryFn: async () => {
+      const [audit, decisions] = await Promise.all([
+        client.app.listServerAuditEvents(),
+        client.app.listServerPermissionDecisions(),
+      ]);
+      return projectAuditAndDecisions(audit, decisions);
+    },
+    retry: false,
   });
 }

@@ -19,6 +19,7 @@ import {
   DebugScreen,
   GeneralSettingsScreen,
   MyAdminAccessScreen,
+  ServerAuditScreen,
   UsageScreen,
   VaultScreen,
 } from '../screens/settings';
@@ -68,6 +69,7 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   'ai-interface': <AiInterfaceScreen />,
   'my-admin-access': <MyAdminAccessScreen />,
   'access-tokens': <AccessTokensScreen />,
+  'server-audit': <ServerAuditScreen />,
   chat: <ChatStarter />,
   'chat-thread': <ThreadScreen mode="chat" />,
   'task-thread': <ThreadScreen mode="task" />,

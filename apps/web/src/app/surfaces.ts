@@ -366,6 +366,17 @@ export const SURFACES: Surface[] = [
     wp: 'WP-7',
   },
 
+  {
+    id: 'server-audit',
+    title: 'Server audit',
+    path: '/settings/server-audit',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'usage',
+    board: '10/17',
+    wp: 'WP-7',
+  },
+
   // Settings (Tier B, unpublished)
   {
     id: 'channels',
