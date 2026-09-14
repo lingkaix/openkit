@@ -4274,7 +4274,7 @@ describe('createConfiguredTurnExecutor', () => {
     [true, false],
     [false, false],
     [true, true],
-  ])('retires a failed pre-witness resident with missing storage (Harness: %s, storage: %s) before fresh materialization', async (withHarness, withStorage) => {
+  ])('retires a failed pre-witness resident (Harness: %s, storage: %s) before fresh materialization', async (withHarness, withStorage) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     try {
@@ -4386,6 +4386,8 @@ describe('createConfiguredTurnExecutor', () => {
       expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
       coreDb.sqlite.exec('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL');
       if (withHarness) {
+        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        coreDb.sqlite.exec("UPDATE agent_session_runtime_bindings SET lifecycle_state = 'open'");
         coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 1');
         expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
         coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
@@ -4402,6 +4404,18 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
       ).toEqual({ count: 1 });
       anchorNanoHostMaterialization(coreDb, backend, desiredPackage);
+      const lease = coreDb.sqlite
+        .prepare(
+          'SELECT lease_id AS leaseId, sandbox_binding_ref AS bindingRef FROM scheduler_session_leases'
+        )
+        .get() as { leaseId: string; bindingRef: string };
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_session_leases SET sandbox_binding_ref = ? WHERE lease_id = ?')
+        .run('sandbox-binding-capacity-guard', lease.leaseId);
+      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_session_leases SET sandbox_binding_ref = ? WHERE lease_id = ?')
+        .run(lease.bindingRef, lease.leaseId);
       await backend.materialize(desiredPackage, { workspaceRoots: [] });
       expect(effects.map((effect) => effect.kind)).toEqual([
         'image.acquire',
