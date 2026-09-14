@@ -274,7 +274,10 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  it('binds token hashes at dispatch, never redelivers, and settles only exact results', () => {
+  it.each([
+    'succeeded',
+    'refused',
+  ] as const)('binds token hashes and settles exact %s results with closed diagnostics', (disposition) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-sequence-')));
     try {
       applyMigrations(coreDb);
@@ -375,13 +378,39 @@ describe('private NanoHost Harness records', () => {
       ).toBeNull();
 
       const result = {
-        body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' },
-        disposition: 'succeeded' as const,
+        body:
+          disposition === 'succeeded'
+            ? { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' }
+            : {
+                reasonCode: 'dependency_failed',
+                startupFailure: {
+                  stage: 'workspace_materialization',
+                  reason: 'retained_baseline_unavailable',
+                },
+              },
+        disposition,
         harnessInstanceId: 'harness-1',
         operationId: command!.operationId,
         schemaVersion: 2 as const,
         sequence: 0,
       };
+      for (const startupFailure of [
+        { stage: 'workspace_materialization', reason: 'secret-canary' },
+        { stage: 'unknown_stage', reason: 'failed' },
+        { stage: 'workspace_materialization', reason: 'failed', message: 'secret-canary' },
+      ]) {
+        expect(() =>
+          settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result: {
+              ...result,
+              disposition: 'refused',
+              body: { reasonCode: 'dependency_failed', startupFailure },
+            },
+            timestamp: now,
+          })
+        ).toThrow('startup failure is invalid');
+      }
       settleNanoHostHarnessOperation(coreDb, {
         sandboxIntegrationBindingRef: 'integration-binding-1',
         result,

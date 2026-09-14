@@ -8,6 +8,8 @@ The runtime provenance contract keeps `WorkerLineageSchema` unchanged and adds o
 
 `workerSessionInputPaths` derives canonical AgentSession-private AEP, worker-supply, and Context input paths for NanoCore, config-schema, and the Harness without adding a transport field or runtime dependency.
 
+`WorkerStartupFailureSchema` defines the closed, value-free pre-native stage/reason pair shared by Harness refusals and NanoCore validation; it admits no arbitrary diagnostic text.
+
 ## Commands
 
 - `pnpm --filter @openkit/worker-protocol test`
