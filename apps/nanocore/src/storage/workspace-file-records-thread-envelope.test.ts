@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { parseRecordEnvelope } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 import { startGoalModeObjective } from '../goal-routes.js';
@@ -37,6 +38,9 @@ describe('Thread canonical record envelope', () => {
       schemaVersion: 1,
       workspaceId: workspace.id,
     });
+    expect(() =>
+      parseRecordEnvelope(persisted.value, { supportedFeatures: ['openkit.thread-entry.v1'] })
+    ).toThrow('Unsupported required feature: openkit.thread-visibility.v1');
     expect(persisted.value.lineage).toEqual({
       threadId: thread.id,
       workspaceId: workspace.id,

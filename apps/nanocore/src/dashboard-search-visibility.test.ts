@@ -38,6 +38,25 @@ describe('dashboard and search Thread audiences', () => {
     }
   });
 
+  it('keeps visibility and private ownership immutable under metadata updates', () => {
+    const store = new FsStore();
+    const workspace = store.createWorkspace('Immutable audience');
+    const thread = store.createThread(workspace.id, 'Private', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: 'user_local',
+    });
+    const changed = store.updateThread(workspace.id, thread.id, {
+      name: 'Renamed',
+      visibility: 'workspace',
+      privateOwnerUserId: 'user_other',
+    } as never);
+    expect(changed).toMatchObject({
+      name: 'Renamed',
+      visibility: 'private',
+      privateOwnerUserId: 'user_local',
+    });
+  });
+
   it('requires shared inception for formal Task and Goal work without converting private history', async () => {
     const store = new FsStore();
     const workspace = store.createWorkspace('Formal admission');

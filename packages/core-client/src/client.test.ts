@@ -220,6 +220,8 @@ function thread() {
     workspaceId: 'ws_demo',
     name: 'Demo thread',
     preview: 'Demo thread',
+    entryPath: 'conversation',
+    visibility: 'workspace',
     status: 'active',
     createdAt: timestamp,
     updatedAt: timestamp,

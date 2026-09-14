@@ -3505,6 +3505,7 @@ describe('app api schemas', () => {
         id: 'th_demo',
         workspaceId: 'ws_demo',
         entryPath: 'conversation',
+        visibility: 'workspace',
         name: 'Demo',
         preview: 'Demo',
         status: 'active',
