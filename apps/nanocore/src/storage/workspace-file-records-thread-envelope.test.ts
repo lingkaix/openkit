@@ -184,3 +184,34 @@ it('classifies a Goal Main Thread from its durable objective lineage', () => {
     coreDb.sqlite.close();
   }
 });
+
+it('does not infer shared inception when formal and conversation Turns have tied timestamps', () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-ambiguous-order-'));
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Ambiguous order');
+  const thread = store.createThread(workspace.id, 'Mixed history');
+  const formal = store.createTurn(workspace.id, thread.id, 'Formal', {
+    kind: 'user',
+    id: 'user_local',
+  });
+  store.updateTurn(formal.id, { agentId: 'agent_codex_host' });
+  const conversation = store.createTurn(workspace.id, thread.id, 'Conversation', {
+    kind: 'user',
+    id: 'user_local',
+  });
+  const conversationPath = join(
+    dataRoot,
+    'workspaces',
+    workspace.id,
+    'threads',
+    thread.id,
+    'turns',
+    conversation.id,
+    'turn.json'
+  );
+  const rawTurn = JSON.parse(readFileSync(conversationPath, 'utf8'));
+  writeFileSync(conversationPath, JSON.stringify({ ...rawTurn, startedAt: formal.startedAt }));
+  const persisted = threadRecord(dataRoot, workspace.id, thread.id);
+  writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
+  expect(() => new FsStore({ dataRoot })).toThrow(/ambiguous project history/);
+});
