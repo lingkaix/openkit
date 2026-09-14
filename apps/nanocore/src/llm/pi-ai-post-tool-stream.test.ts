@@ -158,6 +158,20 @@ it('preserves native commentary and final-answer identity across a successful to
     type: 'response.completed',
     response: { id: 'resp_before' },
   });
+  expect(
+    before.find(
+      (event) => event.type === 'response.output_item.added' && event.item.type === 'message'
+    )
+  ).toMatchObject({ item: { id: commentary.id, phase: 'commentary' } });
+  expect(
+    before
+      .filter(
+        (event) =>
+          event.type.startsWith('response.output_text.') ||
+          event.type.startsWith('response.content_part.')
+      )
+      .map((event) => event.item_id)
+  ).toEqual([commentary.id, commentary.id, commentary.id, commentary.id]);
   // Replay the worker-visible output, not a hand-authored copy of provider history.
   const result = {
     type: 'function_call_output',
@@ -186,4 +200,12 @@ it('preserves native commentary and final-answer identity across a successful to
     type: 'response.completed',
     response: { id: 'resp_after', output: [reply] },
   });
+  const nonStreaming = await client.createResponses(
+    provider,
+    { model: 'gpt-6', input: [...prefix, ...output, result], tools: [] },
+    undefined,
+    {},
+    models
+  );
+  expect(nonStreaming.output).toEqual([reply]);
 });
