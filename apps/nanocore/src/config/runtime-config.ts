@@ -15,6 +15,7 @@ import {
   GatewayConfigSchema,
   type InternalRoleProfilesConfig,
   InternalRoleProfilesConfigSchema,
+  type ModelCatalog,
   parseWorkspaceDataSourceCatalog,
   type UserConfig,
   UserConfigSchema,
@@ -56,6 +57,8 @@ interface RuntimeConfigSnapshotConstructionInput {
   sources: RuntimeConfigSource[];
   openKitConfig: OpenKitConfig;
   providerRegistry: ProviderRegistry;
+  /** Deployment model extension metadata captured with the Provider registry. */
+  modelCatalog: ModelCatalog;
   providerDiagnostics: ProviderDiagnosticsSnapshot;
   agentManifests: AgentManifest[];
   gatewayConfig: GatewayConfig;
@@ -76,6 +79,7 @@ interface RuntimeConfigSource {
     | 'server-config'
     | 'gateway-config'
     | 'internal-role-profiles'
+    | 'model-catalog'
     | 'provider-profiles'
     | 'agent-configs'
     | 'user-configs'
@@ -160,6 +164,8 @@ export interface RuntimeConfigSnapshot {
   openKitConfig: OpenKitConfig;
   /** Runtime provider registry. */
   providerRegistry: ProviderRegistry;
+  /** Deployment model extension metadata captured with the Provider registry. */
+  modelCatalog: ModelCatalog;
   /** Redacted provider diagnostics. */
   providerDiagnostics: ProviderDiagnosticsSnapshot;
   /** Authored agent manifests. */
@@ -210,6 +216,8 @@ interface RuntimeConfigSnapshotInput {
   openKitConfig?: OpenKitConfig;
   /** Runtime provider registry. */
   providerRegistry?: ProviderRegistry;
+  /** Deployment model extensions for an explicitly supplied registry. */
+  modelCatalog?: ModelCatalog;
   /** Provider diagnostics. */
   providerDiagnostics?: ProviderDiagnosticsSnapshot;
   /** Authored agent manifests. */
@@ -312,6 +320,7 @@ export function loadRuntimeConfig(
     dataRoot,
     openKitConfig: configLoadResult.config,
     providerRegistry: providerLoadResult.providerRegistry,
+    modelCatalog: providerLoadResult.modelCatalog,
     providerDiagnostics: providerLoadResult.providerDiagnostics,
     agentManifests: agentLoadResult.manifests,
     gatewayConfig,
@@ -327,6 +336,7 @@ export function loadRuntimeConfig(
         kind: 'server-config',
         path: configLoadResult.path ?? 'DATA_ROOT/config/server.jsonc',
       },
+      { kind: 'model-catalog', path: 'DATA_ROOT/config/model-catalog.jsonc' },
       { kind: 'provider-profiles', path: 'DATA_ROOT/config/providers/*.provider.jsonc' },
       { kind: 'agent-configs', path: 'DATA_ROOT/config/agents/*.agent.jsonc' },
       { kind: 'gateway-config', path: 'DATA_ROOT/config/gateway.jsonc' },
@@ -524,12 +534,15 @@ function applySafeRuntimeConfigReload(
       loadedAt: next.loadedAt,
       dataRoot: null,
       openKitConfig,
-      providerRegistry: restartPaths.has('providers')
-        ? previous.providerRegistry
-        : next.providerRegistry,
-      providerDiagnostics: restartPaths.has('providers')
-        ? previous.providerDiagnostics
-        : next.providerDiagnostics,
+      modelCatalog: restartPaths.has('modelCatalog') ? previous.modelCatalog : next.modelCatalog,
+      providerRegistry:
+        restartPaths.has('providers') || restartPaths.has('modelCatalog')
+          ? previous.providerRegistry
+          : next.providerRegistry,
+      providerDiagnostics:
+        restartPaths.has('providers') || restartPaths.has('modelCatalog')
+          ? previous.providerDiagnostics
+          : next.providerDiagnostics,
       agentManifests: restartPaths.has('agents') ? previous.agentManifests : next.agentManifests,
       gatewayConfig: next.gatewayConfig,
       internalRoleProfiles: next.internalRoleProfiles,
@@ -668,6 +681,8 @@ export function createInMemoryRuntimeConfigSnapshot(
   return createRuntimeConfigSnapshot({
     dataRoot: input.dataRoot,
     openKitConfig: input.openKitConfig ?? {},
+    modelCatalog: input.modelCatalog ??
+      providerState?.modelCatalog ?? { schemaVersion: 1, providers: {} },
     providerRegistry:
       input.providerRegistry ?? providerState?.providerRegistry ?? new ProviderRegistry([]),
     providerDiagnostics:
@@ -712,6 +727,16 @@ export function diffRuntimeConfig(
   const requiresRestart: RuntimeConfigChange[] = [];
   const rejected: RuntimeConfigChange[] = [];
 
+  if (!equalSemantic(previous.modelCatalog, next.modelCatalog)) {
+    requiresRestart.push(
+      change(
+        'modelCatalog',
+        'restart-required',
+        'requires-restart',
+        'Model extension catalog changes require restart.'
+      )
+    );
+  }
   if (!equalSemantic(providerSummary(previous), providerSummary(next))) {
     requiresRestart.push(
       change(
@@ -1063,6 +1088,7 @@ function snapshotSemanticSummary(snapshot: Omit<RuntimeConfigSnapshot, 'contentH
   return {
     openKitConfig: redactSemanticSecrets(snapshot.openKitConfig),
     providers: providerSummary(snapshot as RuntimeConfigSnapshot),
+    modelCatalog: snapshot.modelCatalog,
     agentManifests: snapshot.agentManifests,
     gatewayConfig: snapshot.gatewayConfig,
     internalRoleProfiles: snapshot.internalRoleProfiles,

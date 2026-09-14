@@ -1,0 +1,7 @@
+// Deployment-owned metadata for models missing from or extending the vendored snapshot.
+// Keys are exact Provider vendor (or profile ID without vendor), then native model ID.
+// Precedence: snapshot -> this catalog -> profile modelMetadata. Apply requires restart.
+{
+  "schemaVersion": 1,
+  "providers": {}
+}

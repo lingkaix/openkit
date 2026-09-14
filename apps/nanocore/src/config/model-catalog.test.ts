@@ -1,13 +1,28 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  type Model,
+} from '@earendil-works/pi-ai';
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { Hono } from 'hono';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { Actor } from '../auth/identity.js';
+import type { AuthVariables } from '../auth/middleware.js';
 import {
   resolveEffectiveModelMetadata,
   resolveLogicalModelCatalog,
 } from '../llm/logical-models.js';
+import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
+import { resolveProviderProfileToLLMConfig } from '../providers/llm-config.js';
+import { ensureLayout } from '../storage/fs-layout.js';
+import { loadProviderProfiles } from './providers-loader.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
+import { registerRuntimeConfigRoutes } from './runtime-config-routes.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -140,7 +155,7 @@ describe('deployment model extension catalog', () => {
         expectedRevision: revision,
       })
     ).toThrow();
-    expect(manager.reload({ mode: 'safe' }).plan.requiresRestart).toContainEqual(
+    expect(manager.reload({ mode: 'safe', dryRun: false }).plan.requiresRestart).toContainEqual(
       expect.objectContaining({ path: 'modelCatalog' })
     );
     expect(
@@ -160,7 +175,226 @@ describe('deployment model extension catalog', () => {
       path,
       '{"schemaVersion":1,"providers":{"openai":{"models":{"bad":{"limit":{"context":0}}}}}}'
     );
-    expect(manager.reload({ mode: 'safe' }).status).toBe('rejected');
+    expect(manager.reload({ mode: 'safe', dryRun: false }).status).toBe('failed');
     expect(manager.current()).toBe(active);
+  });
+  it('creates catalog files through the generic service and rejects malformed writes without changing bytes', () => {
+    const { root, path } = fixture();
+    const manager = createRuntimeConfigManager({ dataRoot: root });
+    const service = new RuntimeConfigFileService({
+      dataRoot: root,
+      workspaceIds: [],
+      userId: 'admin',
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    rmSync(path);
+    service.createFile({ id: 'model-catalog.jsonc', kind: 'model-catalog' });
+    const before = readFileSync(path, 'utf8');
+    expect(JSON.parse(before)).toEqual({ schemaVersion: 1, providers: {} });
+    const content =
+      '{"schemaVersion":1,"providers":{"openai":{"models":{"bad":{"cost":{"input":-1}}}}}}';
+    expect(
+      service.validate({ files: [{ id: 'model-catalog.jsonc', content }], mode: 'safe' }).valid
+    ).toBe(false);
+    expect(() =>
+      service.updateFile({
+        id: 'model-catalog.jsonc',
+        kind: 'model-catalog',
+        content,
+        expectedRevision: service.readFile('model-catalog.jsonc').file.revision,
+      })
+    ).toThrow();
+    expect(() =>
+      service.createFile({ id: '../model-catalog.jsonc', kind: 'model-catalog' })
+    ).toThrow();
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+
+  it('keeps unused catalog edits restart-required and rejects strict reload without changing the active snapshot', () => {
+    const { root, path, catalog } = fixture();
+    const manager = createRuntimeConfigManager({ dataRoot: root });
+    const active = manager.current();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...catalog,
+        providers: { ...catalog.providers, other: { models: { unused: { reasoning: true } } } },
+      })
+    );
+    const result = manager.reload({ mode: 'strict', dryRun: false });
+    expect(result.status).toBe('rejected');
+    expect(result.plan.requiresRestart.map((change) => change.path)).toEqual(['modelCatalog']);
+    expect(manager.current()).toBe(active);
+    manager.reload({ mode: 'safe', dryRun: false });
+    expect(manager.current().modelCatalog).toEqual(active.modelCatalog);
+    expect(manager.current().providerRegistry).toBe(active.providerRegistry);
+  });
+
+  it('does not match another vendor or a shortened native ID and rejects removal of required context', () => {
+    const { root, path, profilePath, profile } = fixture();
+    const manager = createRuntimeConfigManager({ dataRoot: root });
+    const active = manager.current();
+    rmSync(path);
+    expect(manager.reload({ mode: 'safe', dryRun: false }).status).toBe('failed');
+    expect(manager.current()).toBe(active);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        providers: {
+          different: { models: { 'future-model': { limit: { context: 300000 } } } },
+          openai: { models: { model: { limit: { context: 300000 } } } },
+        },
+      })
+    );
+    expect(
+      resolveEffectiveModelMetadata(loadProviderProfiles(root).profiles[0]!, 'future-model').limit
+    ).toBeUndefined();
+    writeFileSync(profilePath, JSON.stringify({ ...profile, vendor: undefined }));
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        providers: { primary: { models: { 'future-model': { limit: { context: 320000 } } } } },
+      })
+    );
+    expect(
+      resolveEffectiveModelMetadata(loadProviderProfiles(root).profiles[0]!, 'future-model').limit
+        ?.context
+    ).toBe(320000);
+  });
+
+  it.each([
+    'openai-codex',
+    'openai_codex',
+  ])('passes catalog-only %s metadata through the real adapter and caps context after overlays', async (vendor) => {
+    const { root, path, profilePath } = fixture();
+    const nativeId = 'openai-codex/future-subscription-model';
+    writeFileSync(
+      profilePath,
+      JSON.stringify({
+        id: 'primary',
+        vendor,
+        displayName: 'Subscription',
+        kind: 'oauth',
+        models: [nativeId],
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
+        modelMetadata: { [nativeId]: { limit: { context: 900000 } } },
+      })
+    );
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        providers: {
+          [vendor]: {
+            models: {
+              [nativeId]: {
+                limit: { context: 1000000, output: 10000 },
+                reasoning: true,
+                cost: { input: 2, output: 3, cache_read: 0, cache_write: 0 },
+              },
+            },
+          },
+        },
+      })
+    );
+    const profile = loadProviderProfiles(root).profiles[0]!;
+    expect(resolveEffectiveModelMetadata(profile, nativeId).limit?.context).toBe(256000);
+    let seen: Model<string> | undefined;
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'stock-fixture' }],
+    });
+    const models = createModels();
+    models.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
+    const stock = models.getModels('openai-codex');
+    faux.setResponses([
+      (_context, _options, _state, model) => {
+        seen = model;
+        return fauxAssistantMessage('Catalog response');
+      },
+    ]);
+    const observed: unknown[] = [];
+    await new PiAiGatewayClient().createChatCompletion(
+      resolveProviderProfileToLLMConfig(profile),
+      { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
+      (usage) => observed.push(usage),
+      {},
+      models
+    );
+    expect(seen).toMatchObject({
+      id: 'future-subscription-model',
+      contextWindow: 256000,
+      maxTokens: 10000,
+      reasoning: true,
+      cost: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0 },
+    });
+    expect(observed).toHaveLength(1);
+    const usage = observed[0] as { input: number; output: number; cost: { total: number } };
+    expect(usage.input).toBeGreaterThan(0);
+    expect(usage.cost.total).toBeCloseTo((2 * usage.input + 3 * usage.output) / 1_000_000, 12);
+    expect(models.getModels('openai-codex')).toEqual(stock);
+    expect(models.getModel('openai-codex', 'future-subscription-model')).toBeUndefined();
+  });
+
+  it('seeds an editable empty catalog without replacing an admin edit', () => {
+    const { root, path } = fixture();
+    rmSync(path);
+    ensureLayout(root);
+    expect(JSON.parse(readFileSync(path, 'utf8').replace(/^\s*\/\/.*$/gm, ''))).toEqual({
+      schemaVersion: 1,
+      providers: {},
+    });
+    const content = '{"schemaVersion":1,"providers":{"custom":{"models":{}}}}';
+    writeFileSync(path, content);
+    ensureLayout(root);
+    expect(readFileSync(path, 'utf8')).toBe(content);
+  });
+
+  it.each([
+    { kind: 'session', userId: 'member' },
+    { kind: 'token', userId: 'member', tokenScope: 'workspace', tokenWorkspaceIds: ['workspace'] },
+    { kind: 'token', userId: 'admin', tokenScope: 'server-admin' },
+    { kind: 'session', userId: 'admin', adminTokenId: 'admin-token' },
+  ] as Actor[])('enforces deployment authority before generic catalog access for %j', async (actor) => {
+    const { root, path } = fixture();
+    const manager = createRuntimeConfigManager({ dataRoot: root });
+    const service = new RuntimeConfigFileService({
+      dataRoot: root,
+      workspaceIds: [],
+      userId: actor.userId,
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (context, next) => {
+      context.set('actor', actor);
+      await next();
+    });
+    registerRuntimeConfigRoutes({
+      app,
+      runtimeConfigFileService: () => service,
+      runtimeConfigManager: manager,
+    });
+    const authorized = actor.tokenScope === 'server-admin' || actor.adminTokenId !== undefined;
+    const read = await app.request('/api/admin/config/file?id=model-catalog.jsonc');
+    expect(read.status).toBe(authorized ? 200 : 403);
+    const before = readFileSync(path, 'utf8');
+    const content = '{"schemaVersion":1,"providers":{}}';
+    const response = await app.request('/api/admin/config/file', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'model-catalog.jsonc',
+        kind: 'model-catalog',
+        content,
+        expectedRevision: service.readFile('model-catalog.jsonc').file.revision,
+      }),
+    });
+    expect(response.status).toBe(authorized ? 200 : 403);
+    expect(readFileSync(path, 'utf8')).toBe(authorized ? content : before);
   });
 });

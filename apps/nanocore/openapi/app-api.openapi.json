@@ -44104,6 +44104,7 @@
                   "enum": [
                     "server",
                     "gateway",
+                    "model-catalog",
                     "internal-role",
                     "provider",
                     "agent",
@@ -44175,6 +44176,7 @@
                 "enum": [
                   "server",
                   "gateway",
+                  "model-catalog",
                   "internal-role",
                   "provider",
                   "agent",
@@ -44246,6 +44248,7 @@
             "enum": [
               "server",
               "gateway",
+              "model-catalog",
               "internal-role",
               "provider",
               "agent",
@@ -44291,6 +44294,7 @@
                 "enum": [
                   "server",
                   "gateway",
+                  "model-catalog",
                   "internal-role",
                   "provider",
                   "agent",
@@ -44905,6 +44909,7 @@
                   "enum": [
                     "server",
                     "gateway",
+                    "model-catalog",
                     "internal-role",
                     "provider",
                     "agent",
@@ -114907,5 +114912,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:ad19508b64bb32bae1efbc227b82b909f1256df417f0847e7c5576cc67d3c0c9"
+  "x-openkit-source-digest": "sha256:95edd3c24d54a5d200be32a4b7991938f1311f4d36437e5c2ad0e1af9951f6b9"
 }

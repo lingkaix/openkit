@@ -28,7 +28,7 @@ export interface ResolvedLLMProviderConfig {
   readonly id: string;
   /** Models explicitly authorized by the provider profile. */
   readonly models: readonly string[];
-  /** Optional authored models.dev-shaped metadata keyed by native model id. */
+  /** Optional projected extension and profile metadata keyed by native model id. */
   readonly modelMetadata?: ProviderProfile['modelMetadata'];
   /** Configured vendor identity used for catalog lookup. */
   readonly vendor?: string;
