@@ -340,7 +340,11 @@ Persistent bearer credentials are resolved from the supported local credential s
 
 Except for the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` automation override, secret input must use stdin or a platform credential mechanism. Secret values must never be accepted through command arguments.
 
-Generic access-token create and rotate operations are excluded from V1 because the endpoint-keyed credential store has no safe named destination and must not overwrite the current administration credential. Bootstrap consumption may store the returned current credential directly and return only redacted storage metadata, or fail closed with a typed setup error when secure storage is unavailable; one-time secret material must never be printed into normal agent-visible output.
+`token.create` and `token.rotate` project `createOpenKitAccessToken` and `rotateOpenKitAccessToken` only with an explicit non-reserved local `destination` name under the named credential storage contract in `docs/specs/20260704-remote_auth_credential_bootstrap.md`. Their strict flat stdin inputs combine the shared App API request with `destination` and, for rotation, `tokenId`; the CLI removes those local/scope fields before invoking the public client. Both require deployment-admin authority in server mode, which the CLI supplies through a server-admin bearer token. NanoCore remains the authorization owner; local-mode and insufficient-authority rejections propagate unchanged. Existing `token.list` and `token.revoke` remain available.
+
+Create and rotate MUST preflight named storage before requesting issuance and MUST write the one-time secret only with `credentialStore.writeNamedToken({ baseUrl, destination, token })`. Success returns `{ record, credentialStorageBackend, destination }`, plus `rotatedRecord` for rotation, and never the raw token field. The endpoint administration credential MUST NOT be changed or selected implicitly. Missing storage or preflight failure returns `credential_storage_unavailable` before issuance. Storage failure after issuance returns `credential_storage_failed` with a redacted statement that NanoCore already issued the token and inventory must be inspected before a new request; it does not claim rollback or recoverable secret material. Transport aborts or unknown outcomes require inspection, not automatic replay.
+
+Bootstrap consumption retains `credentialStore.writeToken({ baseUrl, token })` for the current endpoint credential and returns only redacted storage metadata, or fails closed with a typed setup error when secure storage is unavailable. Generic create/rotate MUST NOT reuse that destination. One-time secret material must never be printed into normal agent-visible output.
 
 Redaction applies to stdout, stderr, errors, operation traces, test evidence, Skill examples, artifacts, knowledge, and audit summaries.
 
@@ -479,6 +483,7 @@ Coverage is proportional: complete capability mapping is static and contract-tes
 - CLI argument parsing, strict flat stdin JSON parsing, search, description, schema validation, envelopes, exit statuses, request-id generation, redaction, local abort behavior, and credential resolution have focused tests.
 - Operation catalog handlers map to Core Client methods without importing NanoCore internals.
 - Secret-bearing operations never emit submitted or returned material through stdout or stderr.
+- Generic token create/rotate require a safe named destination, preflight before issuance, preserve the endpoint administration credential, forward the shared request through the public client, and report redacted storage success/failure and typed authorization denials.
 
 ### L2
 
