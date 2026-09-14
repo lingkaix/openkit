@@ -4,7 +4,9 @@
 
 ## Host Prerequisites
 
-The helper retains the A2 layout under the invoking user's `$HOME/openkit`: the clean `source` checkout, `app.Caddyfile`, `web.Dockerfile`, `nanocore.Dockerfile`, `nanohost.env`, `seed-nanohost-image.py`, and `workspaces-repos`. Those existing host configuration files and the image-seeding helper are not distributed here. It also requires the existing `$HOME/.openkit` Data Root, enrolled NanoHost credentials, private Image Store with the pinned Supervisor content, and host service configuration. Preserve the host's secrets and credentials.
+The helper retains the A2 layout under the invoking user's `$HOME/openkit`: the clean `source` checkout, `app.Caddyfile`, `web.Dockerfile`, `nanohost.env`, `seed-nanohost-image.py`, and `workspaces-repos`. Those existing host configuration files and the image-seeding helper are not distributed here.
+
+`deploy.sh nanocore` and `deploy.sh all` both build the App image from the repository `containers/app/Dockerfile` (which installs `openkit-operator` for `openkit-app-smoke`). Do not point NanoCore builds at a divergent host-side `nanocore.Dockerfile`; a past A2 drift dropped the operator chmod/symlink and failed smoke until the host file was patched live. It also requires the existing `$HOME/.openkit` Data Root, enrolled NanoHost credentials, private Image Store with the pinned Supervisor content, and host service configuration. Preserve the host's secrets and credentials.
 
 Use the existing A2 Linux account with Docker/buildx, passwordless sudo for the helper's operations, systemd, Python 3, jq, curl, flock, Git, OpenSSL, tar, standard GNU utilities, and `$HOME/.local/bin/mise` with the existing Rust build toolchain. Worker builds retain the A2 `linux/arm64` target. Supervisor lookup selects the host platform from `apps/nanohost/openshell/release.json` and rejects missing or malformed digests before installing NanoHost.
 
