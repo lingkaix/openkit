@@ -1471,6 +1471,34 @@ test('named credentials isolate endpoint admin storage, names, endpoints, and de
   assert.equal(restarted.readNamedToken({ ...slot, destination: 'other' }), 'okt_fake_other');
 });
 
+test('named fallback delivery refuses links to the endpoint admin credential', async (t) => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  const configDir = mkdtempSync(join(tmpdir(), 'openkit-named-link-'));
+  t.after(() => rmSync(configDir, { force: true, recursive: true }));
+  const store = createDefaultOpenKitCredentialStore({
+    configDir,
+    platform: 'darwin',
+    machineId: 'fake-machine',
+    warn() {},
+    execFile() {
+      throw new Error('no keychain');
+    },
+  });
+  const baseUrl = 'https://nanocore.example';
+  const slot = { baseUrl, destination: 'automation' };
+  store.writeToken({ baseUrl, token: 'okt_fake_admin' });
+  const adminFile = join(configDir, listFiles(configDir)[0]);
+  store.writeNamedToken({ ...slot, token: 'okt_fake_named' });
+  const namedFile = listFiles(configDir)
+    .map((file) => join(configDir, file))
+    .find((file) => file !== adminFile);
+  rmSync(namedFile);
+  symlinkSync(adminFile, namedFile);
+  assert.throws(() => store.preflightNamedWrite(slot));
+  assert.throws(() => store.writeNamedToken({ ...slot, token: 'okt_fake_replacement' }));
+  assert.equal(store.readToken({ baseUrl }), 'okt_fake_admin');
+});
+
 test('named credential methods reject unsafe and reserved destinations before storage access', async () => {
   const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
   let calls = 0;
@@ -1765,6 +1793,63 @@ test('bundled token create and rotate preserve transport, redaction, and auth de
     assert.equal(invalid.code, 2);
     assert.equal(JSON.parse(invalid.stdout).error.code, 'invalid_input');
   }
+});
+
+test('bundled token delivery reports preflight and post-issuance storage failures without secrets', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-token-failure-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const env = {
+    XDG_CONFIG_HOME: root,
+    PATH: root,
+    OPENKIT_NANOCORE_URL: 'https://nanocore.example',
+    OPENKIT_NANOCORE_TOKEN: 'okt_fake_admin',
+  };
+  const args = ['ops', 'call', 'token.create', '--input', '-'];
+  const input = JSON.stringify({
+    scope: 'server-admin',
+    expiresAt: '2027-01-01T00:00:00.000Z',
+    destination: 'automation',
+  });
+  const blocked = join(root, 'blocked');
+  writeFileSync(blocked, 'not a directory');
+  const preflight = await runCli(args, { ...env, XDG_CONFIG_HOME: blocked }, input, [
+    dataModule(`globalThis.fetch = async () => { throw new Error('must not request'); };`),
+  ]);
+  assert.equal(preflight.code, 2);
+  assert.equal(JSON.parse(preflight.stdout).error.code, 'credential_storage_unavailable');
+  const record = {
+    tokenId: 'tok_new',
+    ownerUserId: 'user_demo',
+    scope: 'server-admin',
+    workspaceIds: [],
+    status: 'active',
+    issuedAt: '2026-09-14T00:00:00.000Z',
+    expiresAt: '2027-01-01T00:00:00.000Z',
+    revokedAt: null,
+    predecessorTokenId: null,
+    rotatedGraceExpiresAt: null,
+    lastUsedAt: null,
+    lastUsedChannel: null,
+    lastUsedSource: null,
+  };
+  const response = { token: 'okt_fake_one_time', record };
+  const result = await runCli(args, env, input, [
+    dataModule(`
+    import { rmSync, writeFileSync } from 'node:fs';
+    globalThis.fetch = async () => {
+      rmSync(${JSON.stringify(join(root, 'openkit'))}, { recursive: true });
+      writeFileSync(${JSON.stringify(join(root, 'openkit'))}, 'blocked after issuance');
+      return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+  `),
+  ]);
+  assert.equal(result.code, 2);
+  assert.equal(JSON.parse(result.stdout).error.code, 'credential_storage_failed');
+  assert.match(JSON.parse(result.stdout).error.message, /issued/);
+  assert.doesNotMatch(
+    result.stdout + result.stderr + preflight.stdout + preflight.stderr,
+    /okt_fake_/
+  );
 });
 
 test('credential resolution is endpoint-scoped, fail-closed, and redacted', async (t) => {
