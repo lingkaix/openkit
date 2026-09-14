@@ -70,6 +70,43 @@ test('Worker environment discovery preserves admin scope and exact target routin
   );
 });
 
+test('catalog configuration application requires exact human confirmation and forwards the shared payload', async () => {
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find(
+    (entry) => entry.id === 'administration.configuration-apply'
+  );
+  assert.ok(operation);
+  assert.match(operation.requiredAccess, /deployment admin.*exact human confirmation/);
+  const contentDigest = `sha256:${'a'.repeat(64)}`;
+  const input = {
+    requestId: '11111111-1111-4111-8111-111111111111',
+    candidate: { artifactId: 'candidate', artifactVersion: 1, contentDigest },
+    confirmation: { action: 'administration.configuration.apply', contentDigest },
+  };
+  assert.equal(
+    operation.inputSchema.safeParse({
+      ...input,
+      confirmation: { ...input.confirmation, contentDigest: `sha256:${'b'.repeat(64)}` },
+    }).success,
+    false
+  );
+  let observed;
+  await operation.handler(
+    {
+      client: {
+        app: {
+          applyAdministrationConfiguration: async (value) => {
+            observed = value;
+            return { persisted: true };
+          },
+        },
+      },
+    },
+    operation.inputSchema.parse(input)
+  );
+  assert.deepEqual(observed, input);
+});
+
 test('Worker environment preparation and activation use the global Agent contract', async () => {
   const { operationCatalog } = await operations();
   const prepare = operationCatalog.find((entry) => entry.id === 'worker-environment.prepare');
