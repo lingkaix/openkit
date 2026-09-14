@@ -9,6 +9,7 @@ export { AppUpdateScreen } from './AppUpdateScreen';
 export { ConfigurationScreen } from './ConfigurationScreen';
 export { DataRootBackupScreen } from './DataRootBackupScreen';
 export { DebugScreen } from './DebugScreen';
+export { DisableUserScreen } from './DisableUserScreen';
 export {
   projectAepSnapshotDetail,
   projectAepSnapshots,
@@ -47,3 +48,4 @@ export {
 } from './secret-safe';
 export { UsageScreen } from './UsageScreen';
 export { VaultScreen } from './VaultScreen';
+export { WorkspaceAccessRecoveryScreen } from './WorkspaceAccessRecoveryScreen';

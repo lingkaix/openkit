@@ -388,6 +388,27 @@ export const SURFACES: Surface[] = [
     wp: 'WP-7',
   },
 
+  {
+    id: 'workspace-access-recovery',
+    title: 'Workspace access recovery',
+    path: '/settings/workspace-access-recovery',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'key',
+    board: '10',
+    wp: 'WP-7',
+  },
+  {
+    id: 'disable-user',
+    title: 'Disable user',
+    path: '/settings/disable-user',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'key',
+    board: '10',
+    wp: 'WP-7',
+  },
+
   // Settings (Tier B, unpublished)
   {
     id: 'channels',

@@ -18,11 +18,13 @@ import {
   ConfigurationScreen,
   DataRootBackupScreen,
   DebugScreen,
+  DisableUserScreen,
   GeneralSettingsScreen,
   MyAdminAccessScreen,
   ServerAuditScreen,
   UsageScreen,
   VaultScreen,
+  WorkspaceAccessRecoveryScreen,
 } from '../screens/settings';
 import {
   AgentsScreen,
@@ -72,6 +74,8 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   'access-tokens': <AccessTokensScreen />,
   'server-audit': <ServerAuditScreen />,
   'data-root-backup': <DataRootBackupScreen />,
+  'workspace-access-recovery': <WorkspaceAccessRecoveryScreen />,
+  'disable-user': <DisableUserScreen />,
   chat: <ChatStarter />,
   'chat-thread': <ThreadScreen mode="chat" />,
   'task-thread': <ThreadScreen mode="task" />,
