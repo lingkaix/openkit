@@ -3005,6 +3005,7 @@ describe('app api openapi projection', () => {
         '/api/app/workspaces/{workspaceId}/worker-environments/{storageRef}/purge',
         'purgeWorkerEnvironment',
       ],
+      ['post', '/api/app/administration/configuration/apply', 'applyAdministrationConfiguration'],
       ['post', '/api/app/administration/conversation-turns', 'submitAdministrationConversation'],
     ] as const;
 
@@ -3542,6 +3543,7 @@ describe('app api openapi projection', () => {
       'updateRuntimeConfigFile',
       'getRuntimeConfigSchemas',
       'validateRuntimeConfig',
+      'applyAdministrationConfiguration',
       'submitAdministrationConversation',
       'getConversationTargets',
       'quickChat',

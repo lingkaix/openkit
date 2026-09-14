@@ -19,3 +19,5 @@ This directory owns NanoCore-specific configuration discovery, loading, preceden
 ## Verification
 
 Run the focused loader, precedence, runtime snapshot, reload, file, and route tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).
+
+`administration-configuration.ts` projects existing Provider catalog metadata and Gateway logical-model bindings into immutable private candidate Artifacts. It preserves credential/endpoint/extension fields, validates source revisions and dependencies, and reuses the file service for application. Human application records a start Item before effects and an immutable outcome plus command receipt afterward; interrupted effects require inspection rather than automatic retry. Provider changes may remain restart-required.

@@ -7,6 +7,8 @@ import {
   ActivateWorkerEnvironmentResponseSchema,
   AgentHealthRefreshResponseSchema,
   AppDiagnosticsResponseSchema,
+  ApplyAdministrationConfigurationRequestSchema,
+  ApplyAdministrationConfigurationResponseSchema,
   ApproveThreadGoalPlanRequestSchema,
   ApproveThreadGoalPlanResponseSchema,
   AppSearchResponseSchema,
@@ -1993,6 +1995,38 @@ export function createAppOpenApiDocument() {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/ApiError' },
                 },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/administration/configuration/apply': {
+        post: {
+          operationId: 'applyAdministrationConfiguration',
+          tags: ['administration'],
+          summary: 'Apply one exact human-confirmed private configuration candidate.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/ApplyAdministrationConfigurationRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Actual persistence and reload outcome.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApplyAdministrationConfigurationResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
               },
             },
           },
@@ -6344,6 +6378,12 @@ export function createAppOpenApiDocument() {
         ),
         SubmitAdministrationConversationResponse: toJsonSchema(
           SubmitAdministrationConversationResponseSchema
+        ),
+        ApplyAdministrationConfigurationRequest: toJsonSchema(
+          ApplyAdministrationConfigurationRequestSchema
+        ),
+        ApplyAdministrationConfigurationResponse: toJsonSchema(
+          ApplyAdministrationConfigurationResponseSchema
         ),
         ActivateWorkerEnvironmentRequest: toJsonSchema(ActivateWorkerEnvironmentRequestSchema),
         ActivateWorkerEnvironmentResponse: toJsonSchema(ActivateWorkerEnvironmentResponseSchema),

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  ApplyAdministrationConfigurationRequestSchema,
   SubmitAdministrationConversationRequestSchema,
   type SubmitAdministrationConversationResponse,
   SubmitAdministrationConversationResponseSchema,
@@ -21,8 +22,11 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { createAdministrationConfiguration } from '../config/administration-configuration.js';
+import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
+import { RuntimeConfigFileServiceError } from '../config/runtime-config-files.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
 import { type AgentMessage, runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
@@ -51,7 +55,7 @@ const ADMINISTRATION_TARGET_REF = 'internal-role:administration';
 const ADMINISTRATION_SYSTEM_PROMPT_BASE = [
   'You are the private OpenKit administration entry of the Personal Assistant.',
   'Use only the six supplied Tools. Treat Tool results as current owner observations and state uncertainty explicitly.',
-  'Configuration operations may be unavailable. Worker environment preparation proposes an exact candidate only; it never activates, purges, interrupts, mounts, or restarts work.',
+  'Configuration Tools inspect and propose existing Provider/Gateway catalog changes; a proposal does not apply them. Worker environment preparation never activates, purges, interrupts, mounts, or restarts work.',
   'Never request or reveal credentials, host paths, shell commands, Docker socket access, raw policy, or authorization tokens. A human applies confirmed effects through the owning public command.',
 ].join(' ');
 const DEFAULT_LIMITS = { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 } as const;
@@ -87,13 +91,55 @@ export interface RegisterAdministrationRoutesInput {
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly runtimeConfigFiles: (
     context: Context<{ Variables: AuthVariables }>
-  ) => Pick<RuntimeConfigFileService, 'listFiles' | 'readFile'>;
+  ) => RuntimeConfigFileService;
+  readonly reloadRuntimeConfig: () => ReturnType<RuntimeConfigManager['reload']>;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }
 
 /** Registers the current-user private administration conversation entry. */
 export function registerAdministrationRoutes(input: RegisterAdministrationRoutesInput): void {
+  /** Resolves request-owned configuration services without exposing authority to the model. */
+  function configuration(context: Context<{ Variables: AuthVariables }>) {
+    if (!input.coreDb) throw new DeploymentAdminRequiredError();
+    return createAdministrationConfiguration({
+      actor: context.get('actor'),
+      coreDb: input.coreDb,
+      store: input.requestStore(context),
+      files: input.runtimeConfigFiles(context),
+      reload: input.reloadRuntimeConfig,
+      inflightCommands: input.inflightCommands,
+    });
+  }
+  registerAppApiRoute(input.app, 'applyAdministrationConfiguration', async (context) => {
+    try {
+      if (!input.coreDb) throw new DeploymentAdminRequiredError();
+      requireCurrentDeploymentAdmin(input.coreDb, context.get('actor'));
+      const parsed = ApplyAdministrationConfigurationRequestSchema.safeParse(
+        await context.req.json().catch(() => ({}))
+      );
+      if (!parsed.success) return asInvalidRequestError(parsed.error);
+      return context.json(await configuration(context).apply(parsed.data));
+    } catch (error) {
+      if (error instanceof DeploymentAdminRequiredError)
+        return asApiError(
+          'Current deployment administrator authority is required.',
+          'deployment_admin_required',
+          403
+        );
+      if (
+        error instanceof RuntimeConfigFileServiceError ||
+        error instanceof IdempotencyKeyConflictError
+      )
+        return asApiError(error.message, error.code, error.status);
+      return asApiError(
+        'Configuration candidate is unavailable or invalid.',
+        'configuration_candidate_invalid',
+        409
+      );
+    }
+  });
+
   registerAppApiRoute(input.app, 'submitAdministrationConversation', async (context) => {
     const parsed = SubmitAdministrationConversationRequestSchema.safeParse(
       await context.req.json().catch(() => ({}))
@@ -212,10 +258,20 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
               );
             }
 
+            const catalog = configuration(context);
             const tools = createAdministrationTools({
               configurationTools: createAdministrationConfigurationTools(
                 snapshot,
-                input.runtimeConfigFiles(context)
+                input.runtimeConfigFiles(context),
+                {
+                  ...catalog,
+                  propose: (value) =>
+                    catalog.propose(value, {
+                      threadId: thread.id,
+                      turnId: turn.id,
+                      requestId: request.requestId,
+                    }),
+                }
               ),
               requireCurrentAdministrator: () => {
                 requireCurrentDeploymentAdmin(input.coreDb!, actor);
