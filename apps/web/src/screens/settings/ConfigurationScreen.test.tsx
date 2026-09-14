@@ -196,6 +196,36 @@ describe('Configuration settings', () => {
     expect(client.runtimeConfig.getFile).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps identically named nested folders independent', async () => {
+    const user = userEvent.setup();
+    const nestedFiles = [
+      { ...FILES.files[1], id: 'agents/shared/config.jsonc', path: 'agents/shared/config.jsonc' },
+      {
+        ...FILES.files[1],
+        id: 'providers/shared/config.jsonc',
+        path: 'providers/shared/config.jsonc',
+      },
+    ];
+    const client = makeClient(
+      vi.fn().mockResolvedValue({ files: [FILES.files[0], ...nestedFiles] })
+    );
+    vi.mocked(client.runtimeConfig.getFile).mockImplementation(async (id) => ({
+      file: [FILES.files[0], ...nestedFiles].find((file) => file.id === id)!,
+      content: '{}',
+    }));
+    renderScreen(client);
+    await screen.findByRole('textbox', { name: 'server.jsonc source' });
+    await user.click(screen.getAllByRole('button', { name: 'Collapse shared' })[0]);
+    expect(screen.getAllByRole('row', { name: 'config.jsonc' })).toHaveLength(1);
+    await user.click(screen.getByRole('row', { name: 'config.jsonc' }));
+    expect(
+      await screen.findByRole('textbox', { name: 'providers/shared/config.jsonc source' })
+    ).toBeInTheDocument();
+    expect(client.runtimeConfig.getFile).toHaveBeenLastCalledWith('providers/shared/config.jsonc');
+    await user.click(screen.getByRole('button', { name: 'Expand shared' }));
+    expect(screen.getAllByRole('row', { name: 'config.jsonc' })).toHaveLength(2);
+  });
+
   it('keeps selection when discarding is cancelled and opens the exact nested file after confirmation', async () => {
     const user = userEvent.setup();
     const client = makeClient(vi.fn().mockResolvedValue(FILES));
