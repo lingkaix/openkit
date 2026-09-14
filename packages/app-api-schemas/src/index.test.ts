@@ -2663,7 +2663,7 @@ describe('app api schemas', () => {
     ).toBe(false);
   });
 
-  it('accepts workspace synchronization records without raw backend paths', () => {
+  it('accepts workspace synchronization records and generated CLI hunks with scoped secret guards', () => {
     const inputSnapshot = WorkspaceInputSnapshotSchema.parse({
       id: 'wis_1',
       workspaceId: 'ws_demo',
@@ -2832,39 +2832,156 @@ describe('app api schemas', () => {
       }).actionCenterRowId
     ).toBe('workspace-review:swr_1');
 
-    expect(
-      ListWorkspaceSyncReviewsResponseSchema.parse({
-        items: [
-          {
-            artifactId: 'ar_workspace_changes_1',
-            changeSet,
-            patchPayload: {
-              mediaType: 'text/x-diff',
-              text: 'diff --git a/docs/spec.md b/docs/spec.md\n',
-              digest: 'sha256:patch',
-              bytes: 41,
-            },
-            review: {
-              id: 'swr_1',
-              changeSetId: changeSet.id,
-              workspaceId: 'ws_demo',
-              status: 'pending',
-              staging: {
-                strategy: 'git_worktree',
-                ref: 'staging://workspace/swr_1',
-                branch: 'openkit/review/swr_1',
-              },
-              diffSummary: { filesChanged: 2, additions: 7, deletions: 1 },
-              riskSummary: 'Docs-only review candidate.',
-              validation: [{ command: 'pnpm test', status: 'passed', ref: 'ev_test' }],
-              actionCenterRowId: 'workspace-review:swr_1',
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            },
+    const workspaceReviews = ListWorkspaceSyncReviewsResponseSchema.parse({
+      items: [
+        {
+          artifactId: 'ar_workspace_changes_1',
+          changeSet,
+          patchPayload: {
+            mediaType: 'text/x-diff',
+            text: 'diff --git a/docs/spec.md b/docs/spec.md\n',
+            digest: 'sha256:patch',
+            bytes: 41,
           },
-        ],
-      }).items[0]?.artifactId
-    ).toBe('ar_workspace_changes_1');
+          review: {
+            id: 'swr_1',
+            changeSetId: changeSet.id,
+            workspaceId: 'ws_demo',
+            status: 'pending',
+            staging: {
+              strategy: 'git_worktree',
+              ref: 'staging://workspace/swr_1',
+              branch: 'openkit/review/swr_1',
+            },
+            diffSummary: { filesChanged: 2, additions: 7, deletions: 1 },
+            riskSummary: 'Docs-only review candidate.',
+            validation: [{ command: 'pnpm test', status: 'passed', ref: 'ev_test' }],
+            actionCenterRowId: 'workspace-review:swr_1',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        },
+      ],
+    });
+    expect(workspaceReviews.items[0]?.artifactId).toBe('ar_workspace_changes_1');
+
+    const generatedPath = 'skills/openkit/scripts/openkit';
+    const blob = `(()=>{const locale="sk-Latn";const table="${'abcd'.repeat(4096)}";return table+locale})();`;
+    const generatedPatch = [
+      `diff --git a/${generatedPath} b/${generatedPath}`,
+      `--- a/${generatedPath}`,
+      `+++ b/${generatedPath}`,
+      '@@ -1 +1 @@',
+      '-(()=>{})();',
+      `+${blob}`,
+      '',
+    ].join('\n');
+    const normalPatch = [
+      'diff --git a/src/config.ts b/src/config.ts',
+      '--- a/src/config.ts',
+      '+++ b/src/config.ts',
+      '@@ -0,0 +1 @@',
+      '+const token = "ghp_testCredential1234567890";',
+      '',
+    ].join('\n');
+    for (const text of [
+      generatedPatch
+        .replace(`--- a/${generatedPath}`, '--- /dev/null')
+        .replace('@@ -1 +1 @@\n-(()=>{})();\n', '@@ -0,0 +1 @@\n'),
+      generatedPatch
+        .replace(`+++ b/${generatedPath}`, '+++ /dev/null')
+        .replace('@@ -1 +1 @@\n-(()=>{})();\n+', '@@ -1 +0,0 @@\n-'),
+      generatedPatch
+        .replace('@@ -1 +1 @@', '@@ -1,2 +1,2 @@')
+        .replace('-(()=>{})();', ' context\n-(()=>{})();'),
+      `${generatedPatch}@@ -3 +3 @@\n-old\n+const locale="hf_Test";\n`,
+      generatedPatch.replace(
+        '-(()=>{})();',
+        '-const locale="okt_Test";\n\\ No newline at end of file'
+      ),
+    ]) {
+      expect(
+        appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse({
+          ...workspaceReviews.items[0]!.patchPayload!,
+          text,
+        }).success
+      ).toBe(true);
+    }
+    const item = workspaceReviews.items[0]!;
+    const patchPayload = { ...item.patchPayload!, text: generatedPatch };
+    const generatedItem = { ...item, patchPayload };
+    expect(
+      appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse(patchPayload).success
+    ).toBe(true);
+    expect(appApiSchemas.WorkspaceSyncReviewItemSchema.safeParse(generatedItem).success).toBe(true);
+    expect(
+      ListWorkspaceSyncReviewsResponseSchema.safeParse({ items: [generatedItem] }).success
+    ).toBe(true);
+
+    for (const text of [
+      normalPatch,
+      generatedPatch + normalPatch,
+      normalPatch + generatedPatch,
+      ...['sk-testCredential', 'hf_testCredential', 'okt_testCredential'].map((secret) =>
+        normalPatch.replace('ghp_testCredential1234567890', secret)
+      ),
+      generatedPatch.replaceAll(generatedPath, 'src/bundle.min.js'),
+      generatedPatch.replace(
+        `a/${generatedPath} b/${generatedPath}`,
+        `a/src/config.ts b/${generatedPath}`
+      ),
+      generatedPatch
+        .replace(`--- a/${generatedPath}`, '--- /dev/null')
+        .replace(`+++ b/${generatedPath}`, '+++ /dev/null'),
+      generatedPatch.replace('@@ -1 +1 @@', '@@ -1 +1,9007199254740992 @@'),
+      generatedPatch.replace('@@ -1 +1 @@', '@@ malformed @@'),
+      generatedPatch.replace(
+        `--- a/${generatedPath}`,
+        `rename from src/config.ts\nrename to ${generatedPath}\n--- a/${generatedPath}`
+      ),
+      generatedPatch.replace(`--- a/${generatedPath}`, '--- /dev/null'),
+      generatedPatch.replace(
+        '@@ -1 +1 @@',
+        '--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1 +1 @@'
+      ),
+      generatedPatch.replace(`diff --git a/${generatedPath} b/${generatedPath}\n`, ''),
+      generatedPatch.replaceAll(generatedPath, `${generatedPath}.js`),
+      generatedPatch.replaceAll(generatedPath, `../${generatedPath}`),
+      generatedPatch.replace(`+++ b/${generatedPath}`, '+++ b/src/config.ts'),
+      generatedPatch.replace('@@ -1 +1 @@', '@@ -2 +1,2 @@'),
+      `${generatedPatch}+const token = "okt_testCredential";\n`,
+      `ghp_testCredential\n${generatedPatch}`,
+      generatedPatch.replace('@@ -1 +1 @@', '@@ -1 +1 @@ hf_testCredential'),
+    ]) {
+      const candidate = { ...patchPayload, text };
+      expect(appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse(candidate).success).toBe(
+        false
+      );
+      const result = ListWorkspaceSyncReviewsResponseSchema.safeParse({
+        items: [{ ...item, patchPayload: candidate }],
+      });
+      expect(result.success).toBe(false);
+      if (!result.success)
+        expect(
+          result.error.issues.some((issue) => issue.path.join('.') === 'items.0.patchPayload.text')
+        ).toBe(true);
+    }
+    for (const candidate of [
+      { ...generatedItem, artifactId: 'ghp_testCredential' },
+      { ...generatedItem, patchPayload: { ...patchPayload, digest: 'hf_testCredential' } },
+      { ...generatedItem, review: { ...item.review, riskSummary: 'okt_testCredential' } },
+      {
+        ...generatedItem,
+        changeSet: {
+          ...item.changeSet,
+          redaction: { status: 'redacted', notes: ['sk-testCredential'] },
+        },
+      },
+    ]) {
+      expect(ListWorkspaceSyncReviewsResponseSchema.safeParse({ items: [candidate] }).success).toBe(
+        false
+      );
+    }
 
     const applyResult = {
       id: 'war_swr_1',
@@ -3387,6 +3504,7 @@ describe('app api schemas', () => {
       thread: {
         id: 'th_demo',
         workspaceId: 'ws_demo',
+        entryPath: 'conversation',
         name: 'Demo',
         preview: 'Demo',
         status: 'active',

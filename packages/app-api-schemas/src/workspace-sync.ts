@@ -1,6 +1,6 @@
 import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { addRawSecretIssues } from './raw-secrets.js';
+import { addRawSecretIssues, addRawSecretIssuesForPatchText } from './raw-secrets.js';
 
 const unsafeRelativePathPattern = /(^|\/)\.\.(\/|$)/;
 const absolutePathPattern = /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\|\/\/)/;
@@ -347,7 +347,9 @@ export const WorkspaceSyncReviewPatchPayloadSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
+    const { text, ...metadata } = value;
+    addRawSecretIssues(metadata, ctx, []);
+    addRawSecretIssuesForPatchText(text, ctx, ['text']);
   });
 
 /** Planned workspace writes and checks captured before applying an accepted review. */
@@ -465,7 +467,8 @@ export const WorkspaceSyncReviewItemSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
+    // Nested schemas own their guards, including path-aware patch scanning.
+    addRawSecretIssues(value.artifactId, ctx, ['artifactId']);
   });
 
 /** App API response listing workspace synchronization reviews for one workspace. */
@@ -473,10 +476,7 @@ export const ListWorkspaceSyncReviewsResponseSchema = z
   .object({
     items: z.array(WorkspaceSyncReviewItemSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response reading one workspace synchronization review by id. */
 export const GetWorkspaceSyncReviewResponseSchema = WorkspaceSyncReviewItemSchema;

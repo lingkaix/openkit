@@ -34,6 +34,8 @@ App-update schemas define the closed release/exact-commit prepare request, maint
 
 Worker environment schemas project bounded retained-storage summaries, explicit ordinary Task and Goal storage choices, exact host observations, immutable authored/resolved candidate references, canonical human activation and purge confirmations, and truthful unknown outcomes. They expose no administrator Token, host path, native runtime handle, credential, or retained file content. The administration conversation request names only private conversation input and optional continuity; NanoCore derives and authorizes its private Workspace.
 
+Workspace Sync Review patch schemas scan metadata and ordinary file contents for raw-secret-shaped strings. Only complete Git unified-diff hunks for the exact generated `skills/openkit/scripts/openkit` path are exempt; unsupported or malformed patches retain full scanning. Nested review and list schemas preserve this boundary without rescanning patch text.
+
 ## Commands
 
 - `pnpm --filter @openkit/app-api-schemas test`
