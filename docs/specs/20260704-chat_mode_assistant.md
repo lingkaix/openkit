@@ -231,7 +231,7 @@ The management entry remains exactly the six Core-backed Tools above, with no th
 
 Management acceptance requires an ordinary member to be denied system and technical configuration changes, including Workspace-local Worker/runtime changes; a currently authorized technical administrator may configure admitted targets without exposing a Token to the model. A technical administrator who did not develop OpenKit must complete Workspace/Provider/Worker-profile setup through conversation and the existing secret/setup forms, observe actual validation and readiness evidence, and never edit server files manually. Model and form paths must produce the same admitted configuration and audit result. Stale revisions, revoked credentials, changed candidates and unsupported fields cause no new write; retry must not repeat an uncertain effect. Private management and shared-resource effect audit retain their separate audiences.
 
-The concrete conversational management integration is Not Started. The existing role runtime and configuration owner are dependencies, not evidence that R035 already works.
+The concrete conversational management integration is Partial. The private entry supports Agent inspection and Worker-image preparation plus updates to existing Provider catalog metadata and Gateway logical-model bindings. Catalog proposals publish immutable private Artifact previews; the separate human-confirmed application command rechecks current administrator authority, exact candidate/source identities and dependencies, and reports persistence separately from reload and restart requirements. Target creation, credential or endpoint changes, broader Workspace configuration and the remaining R035 setup scope are not implemented by this slice.
 
 ### Routing outcomes
 

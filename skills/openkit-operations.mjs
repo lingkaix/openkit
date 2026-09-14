@@ -2070,6 +2070,21 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    requiredAccess:
+      'deployment admin plus current user private Quick Chat Workspace access and exact human confirmation',
+    id: 'administration.configuration-apply',
+    source: 'app-api',
+    appOperationId: 'applyAdministrationConfiguration',
+    clientMethod: 'app.applyAdministrationConfiguration',
+    group: 'administration',
+    summary:
+      'Apply the exact catalog candidate after the human reviews its preview and confirms its digest. Never synthesize confirmation from a broad setup request.',
+    mutating: true,
+    inputSchema: strictShared(appSchemas.ApplyAdministrationConfigurationRequestSchema),
+    handler: ({ client }, input) => client.app.applyAdministrationConfiguration(input),
+  },
+  {
+    ...STANDARD,
     requiredAccess: 'deployment admin plus current user private Quick Chat Workspace access',
     id: 'administration.conversation-submit',
     source: 'app-api',

@@ -374,3 +374,5 @@ The chat-native Responses bridge reuses pi-ai context and event projection for s
 Pre-native Harness startup errors expose a validated, value-free stage and reason in the existing Task error message, distinguishing workspace materialization from package, adapter, Integration, control-readiness and native-spawn failures.
 
 Worker Responses relay preserves native assistant message IDs and phases across tool-result continuation and emits typed terminal stream failures. Failed Task/Turn errors include a fixed stream-failure detail when the latest inference call for their exact worker package records that failure.
+
+Private administration supports proposals for existing Provider catalog metadata and Gateway logical-model bindings. The human-confirmed `administration.configuration-apply` public operation rechecks current administrator authority and the exact candidate/source identities, then reports persistence and reload/restart separately. Credential setup remains with the existing forms.

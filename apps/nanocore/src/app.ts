@@ -1536,6 +1536,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
     resolveGatewayProvider,
     runtimeConfig,
+    reloadRuntimeConfig: () => runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }),
     runtimeConfigFiles: runtimeConfigFileService,
   });
 

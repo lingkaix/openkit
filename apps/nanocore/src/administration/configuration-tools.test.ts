@@ -1,5 +1,5 @@
 import { PrepareWorkerEnvironmentRequestSchema } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -31,12 +31,17 @@ describe('administration configuration Tools', () => {
       version: 7,
       agentManifests: [manifest],
     });
-    const tools = createAdministrationConfigurationTools(snapshot, configFiles(manifest));
+    const tools = createAdministrationConfigurationTools(snapshot, configFiles(manifest), {
+      read: vi.fn(),
+      schema: vi.fn(),
+      propose: vi.fn(),
+    });
     expect(tools[0].inputSchema).toEqual({
       additionalProperties: false,
       properties: {
         agentId: { minLength: 1, type: 'string' },
-        targetFamily: { const: 'agent' },
+        targetFamily: { enum: ['agent', 'provider', 'gateway'] },
+        targetId: { minLength: 1, type: 'string' },
       },
       required: ['targetFamily'],
       type: 'object',
@@ -95,22 +100,38 @@ describe('administration configuration Tools', () => {
     });
   });
 
-  it('returns the exact registered Agent schema and keeps proposal typed unavailable', async () => {
+  it('routes an authorized provider catalog proposal to its candidate owner', async () => {
     const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
-    const tools = createAdministrationConfigurationTools(snapshot, configFiles({}));
+    const proposal = {
+      targetFamily: 'provider',
+      targetId: 'codex',
+      expectedRevision: CONFIG_REVISION,
+      changes: { models: ['gpt-6'] },
+    };
+    const tools = createAdministrationConfigurationTools(snapshot, configFiles({}), {
+      propose: async (value: unknown) => ({ candidate: 'immutable-candidate', input: value }),
+    } as never);
+    const result = await tools[2].execute(proposal, {
+      callId: 'catalog',
+      signal: new AbortController().signal,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.stringify(result.content)).toContain('immutable-candidate');
+  });
+
+  it('returns the exact registered Agent schema', async () => {
+    const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
+    const tools = createAdministrationConfigurationTools(snapshot, configFiles({}), {
+      read: vi.fn(),
+      schema: vi.fn(),
+      propose: vi.fn(),
+    });
 
     const schema = await tools[1].execute(
       { targetFamily: 'agent' },
       { callId: 'call_schema', signal: new AbortController().signal }
     );
-    const proposal = await tools[2].execute(
-      {},
-      { callId: 'call_proposal', signal: new AbortController().signal }
-    );
-
     expect(JSON.stringify(schema.content)).toContain('OpenKit agent config');
     expect(JSON.stringify(schema.content)).toContain('pullPolicy');
-    expect(proposal).toMatchObject({ isError: true });
-    expect(JSON.stringify(proposal.content)).toContain('configuration_proposal_unavailable');
   });
 });

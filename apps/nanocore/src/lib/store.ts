@@ -230,6 +230,7 @@ export type CommandRequestName =
   | 'worker.recovery.retry'
   | 'worker_environment.purge'
   | 'worker_environment.prepare'
+  | 'administration.configuration.apply'
   | 'worker_environment.activate'
   | 'artifact.import'
   | 'artifact.introduce'

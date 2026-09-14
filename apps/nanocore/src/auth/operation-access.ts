@@ -264,13 +264,17 @@ registerOperations(catalog, ['quickChat'], {
   resolver: 'actor-quick-chat-workspace',
   scope: 'workspace',
 });
-registerOperations(catalog, ['submitAdministrationConversation'], {
-  authentication: 'deployment-admin',
-  mutating: true,
-  policyOperation: 'turn.run',
-  resolver: 'actor-quick-chat-workspace',
-  scope: 'workspace',
-});
+registerOperations(
+  catalog,
+  ['submitAdministrationConversation', 'applyAdministrationConfiguration'],
+  {
+    authentication: 'deployment-admin',
+    mutating: true,
+    policyOperation: 'turn.run',
+    resolver: 'actor-quick-chat-workspace',
+    scope: 'workspace',
+  }
+);
 registerOperations(
   catalog,
   [

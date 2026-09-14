@@ -40,3 +40,5 @@ Worker environment schemas project bounded retained-storage summaries, explicit 
 - `pnpm --filter @openkit/app-api-schemas typecheck`
 - `pnpm --filter @openkit/app-api-schemas build`
 - `pnpm --filter @openkit/app-api-schemas lint`
+
+Administration configuration payloads bind human confirmation to an immutable Artifact digest and report persistence separately from reload and restart requirements. Catalog changes are validated by the registered configuration owner; the request cannot supply actor authority or filesystem paths.

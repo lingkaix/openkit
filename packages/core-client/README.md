@@ -35,3 +35,5 @@ Deprecated flat aliases are not exported.
 - `pnpm --filter @openkit/core-client typecheck`
 - `pnpm --filter @openkit/core-client lint`
 - `pnpm --filter @openkit/core-client build`
+
+`client.app.applyAdministrationConfiguration` submits a human-confirmed immutable catalog candidate; its response distinguishes persisted configuration from successful reload and restart requirements.

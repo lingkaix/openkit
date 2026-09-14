@@ -3072,6 +3072,55 @@
         }
       }
     },
+    "/api/app/administration/configuration/apply": {
+      "post": {
+        "operationId": "applyAdministrationConfiguration",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Apply one exact human-confirmed private configuration candidate.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyAdministrationConfigurationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Actual persistence and reload outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyAdministrationConfigurationResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/administration/conversation-turns": {
       "post": {
         "operationId": "submitAdministrationConversation",
@@ -80439,6 +80488,126 @@
         ],
         "additionalProperties": false
       },
+      "ApplyAdministrationConfigurationRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "candidate": {
+            "type": "object",
+            "properties": {
+              "artifactId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifactVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "artifactId",
+              "artifactVersion",
+              "contentDigest"
+            ],
+            "additionalProperties": false
+          },
+          "confirmation": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "administration.configuration.apply"
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "action",
+              "contentDigest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "requestId",
+          "candidate",
+          "confirmation"
+        ],
+        "additionalProperties": false
+      },
+      "ApplyAdministrationConfigurationResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "candidate": {
+            "type": "object",
+            "properties": {
+              "artifactId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifactVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "artifactId",
+              "artifactVersion",
+              "contentDigest"
+            ],
+            "additionalProperties": false
+          },
+          "persisted": {
+            "type": "boolean"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reload": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "rejected",
+              "failed",
+              "not-attempted"
+            ]
+          },
+          "restartRequired": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "candidate",
+          "persisted",
+          "revision",
+          "reload",
+          "restartRequired"
+        ],
+        "additionalProperties": false
+      },
       "ActivateWorkerEnvironmentRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -114738,5 +114907,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:119d6c350c839d386b8b49e6329b3a578155a64491fdeb466c1d7bd587912d16"
+  "x-openkit-source-digest": "sha256:ad19508b64bb32bae1efbc227b82b909f1256df417f0847e7c5576cc67d3c0c9"
 }
