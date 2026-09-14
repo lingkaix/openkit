@@ -7,6 +7,7 @@ export { AdministrationScreen } from './AdministrationScreen';
 export { AiInterfaceScreen } from './AiInterfaceScreen';
 export { AppUpdateScreen } from './AppUpdateScreen';
 export { ConfigurationScreen } from './ConfigurationScreen';
+export { DataRootBackupScreen } from './DataRootBackupScreen';
 export { DebugScreen } from './DebugScreen';
 export {
   projectAepSnapshotDetail,

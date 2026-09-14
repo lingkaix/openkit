@@ -377,6 +377,17 @@ export const SURFACES: Surface[] = [
     wp: 'WP-7',
   },
 
+  {
+    id: 'data-root-backup',
+    title: 'Deployment backup',
+    path: '/settings/data-root-backup',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'retry',
+    board: '10',
+    wp: 'WP-7',
+  },
+
   // Settings (Tier B, unpublished)
   {
     id: 'channels',

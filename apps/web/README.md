@@ -33,6 +33,8 @@ The Settings **Debug** surface contains the component catalog and is the single 
 
 Shared Modal surfaces stay within the padded viewport and scroll long content so confirmation controls remain reachable. React Aria continues to own focus containment, Escape dismissal and focus restoration.
 
+Settings **Deployment backup** at `/settings/data-root-backup` creates and verifies deployment data-root backups through `client.app.createDataRootBackup()` and `client.app.verifyDataRootBackup(backupId)`, independently of Workspace selection. It uses session-derived deployment-admin authority with access-denied retry and no Token plaintext. Creation is explicit; verification accepts the returned ID or a known ID. Summaries whitelist the backup ID, mode, consistency, start/completion timestamps, file count, total bytes, and checked-file count; inventory paths and raw errors are omitted. Retry never automatically repeats creation.
+
 Settings **App update** projects deployment-admin prepare, start and status operations through `client.app`. It is scoped to the deployment, independent of the selected Workspace. The administrator reviews an immutable prepared source and explicitly consents to maintenance; the host receipt owns the result across App restarts. The deployed host helper must be configured before this surface can perform an update.
 
 ## Stack
@@ -108,7 +110,7 @@ src/
     portability/      Tier-A User Settings import plus project-Workspace export and Vault rebind
     workspace-sync/   Tier-A Workspace change review, apply evidence, and recovery decisions
     workspace/        Tier-A Overview, Agents, Knowledge, First-run, Repositories, ArchivedThreadsScreen, New workspace
-    settings/         Tier-A General, Administration, Configuration, AI interface, My admin access, Access tokens, Server audit, Debug, Vault, Usage & audit
+    settings/         Tier-A General, Administration, Configuration, AI interface, My admin access, Access tokens, Server audit, Deployment backup, Debug, Vault, Usage & audit
     demos/            Unpublished Tier-B review screens — Automations and Channels
     generative/       Unpublished Tier-C A2UI render shell + three-state fallback
   primitives/         React Aria + Spectrum-tokened primitive tier
