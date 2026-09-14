@@ -28,6 +28,8 @@ Pass secret input through stdin or a platform credential mechanism, and keep it 
 
 For a locked-out or stopped server, use the separately installed `openkit-ops` Skill and its deployment/recovery reference. This public Skill cannot stop NanoCore or run host recovery. After an authorized operator produces a protected recovery envelope, pass the complete envelope directly through stdin to `credential.store`; the operation stores only its token field. Never copy the envelope into conversation or inspect its token.
 
+For the current canonical user’s admin tokens, call local-mode `token.my-admin-list` with `{}` through stdin. Select an owned usable token with `token.my-admin-default` and exactly `{ "tokenId": "tok_admin" }`; re-list to confirm the effective `defaultTokenId`. Responses contain only redacted `items` and `defaultTokenId`. Server-mode bearer tokens remain unsupported; use Web **My admin access** for the session path. The CLI does not acquire or persist Better Auth cookies or provide a bearer bypass.
+
 Use access-token listing or revocation only when required. Do not work around the intentional absence of generic token creation or rotation, and do not overwrite the endpoint administration credential with an unnamed token.
 
 Ask for explicit deployment-administrator direction before enrolling, issuing, rotating, aborting rotation, revoking, or decommissioning NanoHost transport credentials. Those operations write secrets only to the named execution-host slot and return redacted inventory; they do not return raw tokens through the CLI. Re-read the token list after each mutation and do not invent a second delivery path.

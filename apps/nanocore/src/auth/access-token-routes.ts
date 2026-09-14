@@ -319,14 +319,6 @@ export function registerAccessTokenRoutes({
   });
 
   registerAppApiRoute(app, 'listMyAdminAccessTokens', (c) => {
-    if (mode !== 'server') {
-      return asApiError(
-        'Access-token administration is only available in server mode.',
-        'access_token_admin_server_mode_required',
-        404
-      );
-    }
-
     if (!coreDb) {
       return asApiError(
         'Access-token storage is unavailable.',
@@ -336,8 +328,8 @@ export function registerAccessTokenRoutes({
     }
 
     const actor = c.get('actor');
-    if (actor?.kind !== 'session') {
-      return asApiError('Canonical session required.', 'access_token_session_required', 403);
+    if (actor?.kind !== 'session' && actor?.kind !== 'local') {
+      return asApiError('Canonical user required.', 'access_token_session_required', 403);
     }
 
     return c.json(
@@ -348,14 +340,6 @@ export function registerAccessTokenRoutes({
   });
 
   registerAppApiRoute(app, 'setMyAdminAccessTokenDefault', async (c) => {
-    if (mode !== 'server') {
-      return asApiError(
-        'Access-token administration is only available in server mode.',
-        'access_token_admin_server_mode_required',
-        404
-      );
-    }
-
     if (!coreDb) {
       return asApiError(
         'Access-token storage is unavailable.',
@@ -365,8 +349,8 @@ export function registerAccessTokenRoutes({
     }
 
     const actor = c.get('actor');
-    if (actor?.kind !== 'session') {
-      return asApiError('Canonical session required.', 'access_token_session_required', 403);
+    if (actor?.kind !== 'session' && actor?.kind !== 'local') {
+      return asApiError('Canonical user required.', 'access_token_session_required', 403);
     }
 
     const parsed = SetMyAdminAccessTokenDefaultRequestSchema.safeParse(

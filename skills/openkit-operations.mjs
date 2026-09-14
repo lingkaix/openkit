@@ -257,6 +257,32 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    ...LOCAL_CANONICAL_USER_ACCESS,
+    id: 'token.my-admin-list',
+    source: 'app-api',
+    appOperationId: 'listMyAdminAccessTokens',
+    clientMethod: 'app.listMyAdminAccessTokens',
+    group: 'token',
+    summary: 'List the local canonical user’s redacted admin tokens and effective default.',
+    mutating: false,
+    inputSchema: EMPTY_INPUT,
+    handler: ({ client }) => client.app.listMyAdminAccessTokens(),
+  },
+  {
+    ...STANDARD,
+    ...LOCAL_CANONICAL_USER_ACCESS,
+    id: 'token.my-admin-default',
+    source: 'app-api',
+    appOperationId: 'setMyAdminAccessTokenDefault',
+    clientMethod: 'app.setMyAdminAccessTokenDefault',
+    group: 'token',
+    summary: 'Select an owned usable admin token as the local canonical user’s default.',
+    mutating: true,
+    inputSchema: appSchemas.SetMyAdminAccessTokenDefaultRequestSchema,
+    handler: ({ client }, input) => client.app.setMyAdminAccessTokenDefault(input),
+  },
+  {
+    ...STANDARD,
     ...SERVER_ADMIN_TOKEN_ACCESS,
     id: 'token.list',
     source: 'app-api',
@@ -3644,20 +3670,6 @@ export const operationCatalog = [
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
 export const operationExclusions = [
-  {
-    source: 'app-api',
-    name: 'listMyAdminAccessTokens',
-    reason:
-      'The server-mode CLI has no Better Auth session-cookie credential, and this user-scoped collection rejects OpenKit bearer tokens.',
-    owner: 'docs/specs/20260704-remote_auth_credential_bootstrap.md',
-  },
-  {
-    source: 'app-api',
-    name: 'setMyAdminAccessTokenDefault',
-    reason:
-      'The server-mode CLI has no Better Auth session-cookie credential, and default selection rejects OpenKit bearer tokens.',
-    owner: 'docs/specs/20260704-remote_auth_credential_bootstrap.md',
-  },
   {
     source: 'app-api',
     name: 'createOpenKitAccessToken',
