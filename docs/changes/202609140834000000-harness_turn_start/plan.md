@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: completed
+status: implemented
 started: 2026-09-14
 branch: fix/harness-turn-start-dependency-failed
 ---
