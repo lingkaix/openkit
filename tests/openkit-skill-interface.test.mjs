@@ -334,14 +334,11 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
-    'app-api:acceptWorkspaceInvitation',
     'app-api:createOpenKitAccessToken',
-    'app-api:declineWorkspaceInvitation',
     'app-api:getThreadDashboard',
     'app-api:getWorkspaceDashboard',
     'app-api:leaveWorkspace',
     'app-api:listMyAdminAccessTokens',
-    'app-api:listMyWorkspaceInvitations',
     'app-api:rotateOpenKitAccessToken',
     'app-api:searchApp',
     'app-api:setMyAdminAccessTokenDefault',
@@ -627,7 +624,12 @@ test('one catalog covers the checked App API and public Core projection', async 
   );
   assert.deepEqual(
     idsWithAccess('implicit local actor; bundled CLI operation is local-mode only'),
-    ['workspace.deleted-recover']
+    [
+      'workspace.deleted-recover',
+      'workspace.my-invitation-accept',
+      'workspace.my-invitation-decline',
+      'workspace.my-invitation-list',
+    ]
   );
   assert.deepEqual(idsWithAccess('public metadata read; no authenticated actor'), [
     'connection.meta',
@@ -691,14 +693,129 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
       .filter((entry) => entry.owner === 'docs/specs/20260715-multi_user_workspace_system.md')
       .map(({ source, name }) => `${source}:${name}`)
       .sort(),
-    [
-      'app-api:acceptWorkspaceInvitation',
-      'app-api:declineWorkspaceInvitation',
-      'app-api:leaveWorkspace',
-      'app-api:listMyWorkspaceInvitations',
-      'core-projection:listWorkspaces',
-    ]
+    ['app-api:leaveWorkspace', 'core-projection:listWorkspaces']
   );
+});
+
+test('own invitation operations use canonical-user schemas and client methods', async () => {
+  const { operationCatalog } = await operations();
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  for (const [action, method] of [
+    ['list', 'listMyWorkspaceInvitations'],
+    ['accept', 'acceptWorkspaceInvitation'],
+    ['decline', 'declineWorkspaceInvitation'],
+  ]) {
+    const operation = operationCatalog.find(
+      (entry) => entry.id === `workspace.my-invitation-${action}`
+    );
+    assert.ok(operation);
+    assert.equal(operation.appOperationId, method);
+    assert.equal(operation.clientMethod, `app.${method}`);
+    assert.match(operation.requiredAccess, /implicit local actor.*local-mode only/);
+    assert.equal(operation.mutating, action !== 'list');
+    const input =
+      action === 'list' ? {} : { invitationId: 'inv_demo', requestId, expectedRevision: 1 };
+    for (const extra of [{ workspaceId: 'ws_other' }, { userId: 'other' }, { cookie: 'session' }]) {
+      assert.equal(operation.inputSchema.safeParse({ ...input, ...extra }).success, false);
+    }
+    if (action !== 'list') {
+      assert.equal(
+        operation.inputSchema.safeParse({ invitationId: 'inv_demo', requestId }).success,
+        false
+      );
+      assert.equal(
+        operation.inputSchema.safeParse({ ...input, expectedRevision: 0 }).success,
+        false
+      );
+    }
+    let observed;
+    const response = { items: [] };
+    assert.equal(
+      await operation.handler(
+        {
+          client: {
+            app: {
+              [method]: async (...args) => {
+                observed = args;
+                return response;
+              },
+            },
+          },
+        },
+        operation.inputSchema.parse(input)
+      ),
+      response
+    );
+    assert.deepEqual(
+      observed,
+      action === 'list' ? [] : ['inv_demo', { requestId, expectedRevision: 1 }]
+    );
+  }
+});
+
+test('bundled own invitation calls preserve typed transport and canonical auth denials', async () => {
+  for (const action of ['list', 'accept', 'decline']) {
+    const invitation = {
+      invitationId: 'inv_demo',
+      workspaceId: 'ws_demo',
+      inviteeUserId: 'user_demo',
+      proposedAccessLevel: 'editor',
+      inviterUserId: 'owner_demo',
+      revision: 2,
+      createdAt: '2026-09-14T00:00:00.000Z',
+      updatedAt: '2026-09-14T00:00:00.000Z',
+      expiresAt: '2026-09-21T00:00:00.000Z',
+      effectiveStatus: action === 'accept' ? 'accepted' : 'declined',
+      acceptedAt: action === 'accept' ? '2026-09-14T00:00:00.000Z' : null,
+      declinedAt: action === 'decline' ? '2026-09-14T00:00:00.000Z' : null,
+      revokedAt: null,
+    };
+    const response = action === 'list' ? { items: [] } : { invitation };
+    const input = action === 'list' ? {} : { invitationId: 'inv_demo', expectedRevision: 1 };
+    const args = ['ops', 'call', `workspace.my-invitation-${action}`, '--input', '-'];
+    const env = { OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456', OPENKIT_NANOCORE_TOKEN: '' };
+    const result = await runCli(args, env, JSON.stringify(input), [
+      dataModule(`
+      globalThis.fetch = async (url, options) => {
+        const headers = new Headers(options.headers);
+        if (headers.has('authorization') || headers.has('cookie')) throw new Error('unexpected credential');
+        if (url !== 'http://127.0.0.1:3456/api/app/workspace-invitations${action === 'list' ? '' : `/inv_demo/${action}`}') throw new Error('unexpected URL');
+        if (options.method !== '${action === 'list' ? 'GET' : 'POST'}') throw new Error('unexpected method');
+        if ('${action}' !== 'list') {
+          const body = JSON.parse(options.body);
+          if (JSON.stringify(Object.keys(body).sort()) !== '["expectedRevision","requestId"]') throw new Error('unexpected body');
+          if (body.expectedRevision !== 1 || !/^[0-9a-f-]{36}$/.test(body.requestId)) throw new Error('invalid mutation');
+        }
+        return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+    `),
+    ]);
+    assert.equal(result.code, 0, result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout).data, response);
+    for (const [status, code, token] of [
+      [401, 'unauthorized', ''],
+      [403, 'workspace_access_denied', 'okt_not_a_session'],
+    ]) {
+      const denied = await runCli(
+        args,
+        { ...env, OPENKIT_NANOCORE_TOKEN: token },
+        JSON.stringify(input),
+        [
+          dataModule(`
+        globalThis.fetch = async (url, options) => {
+          const headers = new Headers(options.headers);
+          if (headers.has('cookie')) throw new Error('unexpected session');
+          if (headers.get('authorization') !== ${JSON.stringify(token ? `Bearer ${token}` : null)}) throw new Error('credential changed');
+          return new Response(JSON.stringify({ code: '${code}', message: 'Canonical user required.', protocolVersion: '0.4.0' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
+        };
+      `),
+        ]
+      );
+      assert.equal(denied.code, 3, denied.stdout);
+      assert.equal(JSON.parse(denied.stdout).error.code, code);
+      assert.doesNotMatch(denied.stdout + denied.stderr, /okt_not_a_session/);
+    }
+  }
 });
 
 test('the catalog projects the approved Artifact, Material, and Goal steering operations', async () => {
