@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
+import { WorkerStartupFailureSchema } from '@openkit/worker-protocol';
 
 import { bindSchedulerLeaseRouteTokenHashes } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
@@ -1254,7 +1255,19 @@ function requireHarnessResult(
     return;
   }
   if (result.disposition === 'refused') {
-    requireExactFields(result.body, ['reasonCode'], 'refused result body');
+    requireExactFields(
+      result.body,
+      result.body.startupFailure === undefined ? ['reasonCode'] : ['reasonCode', 'startupFailure'],
+      'refused result body'
+    );
+    if (
+      result.body.startupFailure !== undefined &&
+      (operation !== 'turn.start' ||
+        result.body.reasonCode !== 'dependency_failed' ||
+        !WorkerStartupFailureSchema.safeParse(result.body.startupFailure).success)
+    ) {
+      throw new Error('NanoHost Harness startup failure is invalid.');
+    }
     if (
       ![
         'missing',

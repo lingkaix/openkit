@@ -370,3 +370,5 @@ The intended pair is:
 - `apps/nanocore` for the real prototype HTTP + SSE backend
 
 The chat-native Responses bridge reuses pi-ai context and event projection for standard function tools, including the default `functions` namespace. It preserves complete function-call/result history and developer instructions; arbitrary namespaces, custom tools, deferred declarations and tool search remain unsupported on that bridge.
+
+Pre-native Harness startup errors expose a validated, value-free stage and reason in the existing Task error message, distinguishing workspace materialization from package, adapter, Integration, control-readiness and native-spawn failures.

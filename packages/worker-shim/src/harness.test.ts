@@ -279,6 +279,59 @@ describe('shared Worker Harness', () => {
     }
   });
 
+  it.each([
+    'missing_file',
+    'invalid_json',
+  ] as const)('reports safe package startup failure: %s', async (reason) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-harness-startup-'));
+    const sandboxRoot = join(root, 'openkit');
+    const aepRef = join(sandboxRoot, 'sessions', 'as-a', 'config', 'package.json');
+    const runner = { run: vi.fn() };
+    const harness = new WorkerHarness({
+      integration: { ready: Promise.resolve() } as SandboxIntegrationClient,
+      nativeDataRootDirectory: join(root, 'native'),
+      rootDirectory: join(root, 'private'),
+      sandboxRoot,
+      turnOutputDirectory: join(root, 'output'),
+      runner,
+    });
+    expect(
+      (await harness.handle(command('session.open', 0, openBody('binding-a', 'as-a')))).disposition
+    ).toBe('succeeded');
+    if (reason === 'invalid_json') writeFileSync(aepRef, '{ secret-canary-that-must-not-escape');
+    const result = await harness.handle(
+      command('turn.start', 1, {
+        aepRef,
+        agentSessionId: 'as-a',
+        agentSessionRuntimeBindingId: 'binding-a',
+        contextPackageId: 'ctxpkg_turn-1',
+        contextRef: join(sandboxRoot, 'sessions', 'as-a', 'context'),
+        deadline: '2099-01-01T00:00:00.000Z',
+        capabilityToken: 'c'.repeat(43),
+        inferenceToken: 'i'.repeat(43),
+        workerControlToken: 'w'.repeat(43),
+        leaseId: 'lease-1',
+        packageSnapshotId: 'package-1',
+        threadId: 'thread-as-a',
+        turnId: 'turn-1',
+        turnSequence: 0,
+        workspaceId: 'workspace-one',
+      })
+    );
+    expect(result).toMatchObject({
+      disposition: 'refused',
+      body: {
+        reasonCode: 'dependency_failed',
+        startupFailure: { stage: 'package_validation', reason },
+      },
+    });
+    expect(Object.keys(result.body).sort()).toEqual(['reasonCode', 'startupFailure']);
+    expect(JSON.stringify(result)).not.toContain('secret-canary');
+    expect(JSON.stringify(result)).not.toContain(root);
+    expect(runner.run).not.toHaveBeenCalled();
+    expect(existsSync(aepRef)).toBe(false);
+  });
+
   it('runs sequential Turns by resuming the exact first Codex UUID', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-turns-'));
     const sandboxRoot = join(root, 'openkit');

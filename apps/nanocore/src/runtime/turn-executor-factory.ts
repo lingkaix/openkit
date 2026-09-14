@@ -13,6 +13,7 @@ import {
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import {
   WorkerRuntimeRawStreamManifestSchema,
+  WorkerStartupFailureSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -550,9 +551,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return;
     }
     const reason = result.body.reasonCode;
+    const startup = WorkerStartupFailureSchema.safeParse(result.body.startupFailure);
+    const detail = startup.success ? ` (${startup.data.stage}: ${startup.data.reason})` : '';
     pending.reject(
       new Error(
-        `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}.`
+        `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.`
       )
     );
   }

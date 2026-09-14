@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { WorkerLineage } from './transcript.js';
@@ -53,7 +53,7 @@ export interface WorkspaceGitInput {
 }
 
 /**
- * Materializes exact remote Git commits into their declared worktree targets.
+ * Materializes exact remote Git commits into absent or empty plain work slots, preserving populated targets.
  *
  * @param inputs Validated remote Git inputs selected for this Turn.
  * @param workspaceRoot Worker-visible root that contains every target.
@@ -92,11 +92,13 @@ export async function materializeWorkspaceGitInputs(
     const existing = await lstatIfExists(target);
     if (existing) {
       await assertPlainDirectory(target);
-      await assertRetainedWorkspaceSource(input, sessionDir);
-      return await captureWorkspaceGitSnapshots(inputs, sessionDir, false);
+      if ((await readdir(target)).length > 0) {
+        await assertRetainedWorkspaceSource(input, sessionDir);
+        return await captureWorkspaceGitSnapshots(inputs, sessionDir, false);
+      }
+    } else {
+      await mkdir(target);
     }
-
-    await mkdir(target);
     await requireGitText(
       target,
       sessionDir,

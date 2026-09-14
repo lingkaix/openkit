@@ -8,6 +8,38 @@ export const WorkerProtocolSchemaVersionSchema = z.literal(1);
 /** Direct worker-control envelope version, independent from canonical worker records. */
 export const WorkerControlSchemaVersionSchema = z.literal(2);
 
+/** Value-free pre-native startup diagnostics carried by a private Harness refusal. */
+export const WorkerStartupFailureSchema = z
+  .object({
+    stage: z.enum([
+      'package_validation',
+      'runtime_supply',
+      'workspace_materialization',
+      'adapter_prepare',
+      'integration_ready',
+      'worker_control_ready',
+      'native_spawn',
+    ]),
+    reason: z.enum([
+      'failed',
+      'missing_file',
+      'permission_denied',
+      'invalid_json',
+      'retained_baseline_unavailable',
+      'retained_baseline_conflict',
+      'retained_source_unavailable',
+      'retained_source_conflict',
+      'git_init_failed',
+      'git_fetch_failed',
+      'git_checkout_failed',
+      'control_timeout',
+    ]),
+  })
+  .strict();
+
+/** Closed startup failure metadata; arbitrary exception text is never transport data. */
+export type WorkerStartupFailure = z.infer<typeof WorkerStartupFailureSchema>;
+
 /**
  * Opaque worker-facing id.
  */

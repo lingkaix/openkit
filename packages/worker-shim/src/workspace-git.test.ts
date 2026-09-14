@@ -127,6 +127,45 @@ describe('workspace Git materialization', () => {
     expect(gitText(target, ['config', '--get', 'remote.origin.url'])).toBe(remote.path);
   });
 
+  it('initializes an empty work slot precreated by the sandbox filesystem policy', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-empty-slot-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const remote = createBareGitRemote({ 'README.md': '# Exact remote source\n' });
+    mkdirSync(sessionDir);
+    mkdirSync(target, { recursive: true });
+    const input = createWorkspaceGitInput(target, remote.commit, remote.path);
+
+    await expect(
+      materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)
+    ).resolves.toEqual(new Map([[input.id, remote.commit]]));
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Exact remote source\n');
+  });
+
+  it.each([
+    'unknown.txt',
+    '.hidden',
+    '.git',
+  ])('preserves a populated uninitialized slot containing %s', async (entry) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-populated-slot-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const remote = createBareGitRemote({ 'README.md': '# Exact remote source\n' });
+    mkdirSync(sessionDir);
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, entry), 'preserve these bytes');
+    const input = createWorkspaceGitInput(target, remote.commit, remote.path);
+
+    await expect(materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)).rejects.toThrow(
+      'Retained Git workspace baseline is unavailable.'
+    );
+    expect(readdirSync(target)).toEqual([entry]);
+    expect(readFileSync(join(target, entry), 'utf8')).toBe('preserve these bytes');
+  });
+
   it.skipIf(process.platform === 'win32')(
     'preserves only the OpenShell Git transport environment for Git subprocesses',
     async () => {

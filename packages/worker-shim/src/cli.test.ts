@@ -952,7 +952,8 @@ describe('worker shim CLI parsing', () => {
   it('preserves a process failure while the sibling control stops from supervisor abort', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-process-abort-first-'));
     const packagePath = join(sessionDir, 'package.json');
-    const processError = new Error('process-failed-before-control-abort');
+    const processError = new Error('process-failed-before-control-abort secret-canary');
+    const onStartupFailure = vi.fn();
     writeFileSync(
       packagePath,
       JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
@@ -963,6 +964,7 @@ describe('worker shim CLI parsing', () => {
       runWorkerShim({
         args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
         environment: workerShimEnvironment(),
+        onStartupFailure,
         runner: {
           async run() {
             throw processError;
@@ -970,6 +972,7 @@ describe('worker shim CLI parsing', () => {
         },
       })
     ).rejects.toBe(processError);
+    expect(onStartupFailure).toHaveBeenCalledWith({ stage: 'native_spawn', reason: 'failed' });
     expect(readJsonl(join(sessionDir, 'events.jsonl'))).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ event: expect.objectContaining({ type: 'worker.ready' }) }),
@@ -3054,6 +3057,34 @@ describe('worker shim CLI parsing', () => {
     expect(readFileSync(join(skillTargetPath, 'SKILL.md'), 'utf8')).toContain('Repo guidelines');
     expect(existsSync(join(skillTargetPath, 'openkit-supply.json'))).toBe(false);
     expect(existsSync(mcpTargetPath)).toBe(false);
+  });
+
+  it('reports the retained workspace failure before native launch without losing its cause', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-startup-workspace-'));
+    const workspaceRoot = join(sessionDir, 'workspace');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, 'unknown.txt'), 'must remain');
+    const packagePath = join(sessionDir, 'package.json');
+    writeGitWorkspacePackage(packagePath, workspaceRoot, [
+      { id: 'repo', source: remoteGitTestSource('repo'), target },
+    ]);
+    const runner = { run: vi.fn() };
+    const onStartupFailure = vi.fn();
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: workerShimEnvironment(),
+        runner,
+        onStartupFailure,
+      })
+    ).rejects.toThrow('Retained Git workspace baseline is unavailable.');
+    expect(onStartupFailure).toHaveBeenCalledWith({
+      stage: 'workspace_materialization',
+      reason: 'retained_baseline_unavailable',
+    });
+    expect(runner.run).not.toHaveBeenCalled();
+    expect(readFileSync(join(target, 'unknown.txt'), 'utf8')).toBe('must remain');
   });
 
   it('orders Git materialization, native execution, and publication with one lineage', async () => {

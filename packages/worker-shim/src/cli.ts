@@ -4,7 +4,10 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
-import { WorkerCanonicalTerminalEventDataSchema } from '@openkit/worker-protocol';
+import {
+  WorkerCanonicalTerminalEventDataSchema,
+  type WorkerStartupFailure,
+} from '@openkit/worker-protocol';
 import {
   WORKER_ADAPTERS,
   type WorkerAdapterLaunchPlan,
@@ -190,6 +193,8 @@ export interface WorkerShimRunOptions {
   nativeTurnDirectory?: string | undefined;
   /** Notification after the native child is supervised and Turn routes are bound. */
   onNativeStart?: (() => void) | undefined;
+  /** Receives closed pre-native failure metadata without changing the original rejection. */
+  onStartupFailure?: ((failure: WorkerStartupFailure) => void) | undefined;
   /** Notification after child absence, collection, publication, and route revocation. */
   onTurnBarrier?: (() => void) | undefined;
 }
@@ -456,6 +461,55 @@ export async function runWorkerShimCli(
  * @returns Supervised process outcome.
  */
 export async function runWorkerShim(options: WorkerShimRunOptions): Promise<WorkerShimRunResult> {
+  const progress: { stage: WorkerStartupFailure['stage'] | null } = { stage: 'package_validation' };
+  try {
+    return await runWorkerShimImplementation(options, progress);
+  } catch (error) {
+    if (progress.stage) {
+      options.onStartupFailure?.(describeWorkerStartupFailure(progress.stage, error));
+    }
+    throw error;
+  }
+}
+
+/** Classifies startup failure without publishing paths, credentials, or child output. */
+function describeWorkerStartupFailure(
+  stage: WorkerStartupFailure['stage'],
+  cause: unknown
+): WorkerStartupFailure {
+  const reasons: Readonly<Record<string, WorkerStartupFailure['reason']>> = {
+    'Retained Git workspace baseline is unavailable.': 'retained_baseline_unavailable',
+    'Retained Git workspace baseline conflicts with the requested commit.':
+      'retained_baseline_conflict',
+    'Retained Git workspace source is unavailable.': 'retained_source_unavailable',
+    'Retained Git workspace source conflicts with the requested origin.':
+      'retained_source_conflict',
+    'Remote Git workspace initialization failed.': 'git_init_failed',
+    'Remote Git commit fetch failed.': 'git_fetch_failed',
+    'Remote Git commit checkout failed.': 'git_checkout_failed',
+    'Worker control readiness timed out.': 'control_timeout',
+  };
+  const code = cause instanceof Error && 'code' in cause ? cause.code : null;
+  const reason =
+    code === 'ENOENT'
+      ? 'missing_file'
+      : code === 'EACCES' || code === 'EPERM'
+        ? 'permission_denied'
+        : cause instanceof SyntaxError
+          ? 'invalid_json'
+          : cause instanceof Error
+            ? Object.hasOwn(reasons, cause.message)
+              ? reasons[cause.message]!
+              : 'failed'
+            : 'failed';
+  return { stage, reason };
+}
+
+/** Runs one Turn while identifying the last pre-native dependency entered. */
+async function runWorkerShimImplementation(
+  options: WorkerShimRunOptions,
+  progress: { stage: WorkerStartupFailure['stage'] | null }
+): Promise<WorkerShimRunResult> {
   const environment = options.environment ?? process.env;
   const packageManifest = await readWorkerShimPackage(options.args.packagePath);
 
@@ -516,6 +570,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   await writeFile(join(options.args.sessionDir, 'events.jsonl'), '', 'utf8');
   await writeFile(join(options.args.sessionDir, 'items.jsonl'), '', 'utf8');
   await writeFile(join(options.args.sessionDir, 'artifacts.jsonl'), '', 'utf8');
+  progress.stage = 'runtime_supply';
   await materializeRuntimeSupply(packageManifest);
   const workspaceRoot = packageManifest.workspace?.root;
   if (
@@ -524,11 +579,13 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   ) {
     throw new Error('Git workspace materialization requires workspace.root.');
   }
+  progress.stage = 'workspace_materialization';
   const workspaceBases = await materializeWorkspaceGitInputs(
     workspaceInputs,
     typeof workspaceRoot === 'string' ? workspaceRoot : cwd,
     options.args.sessionDir
   );
+  progress.stage = 'adapter_prepare';
   const lineage = workerLineageFromEnvironment(environment, packageManifest.scope?.requestId);
   const provenanceDeclaration = parseRuntimeProvenanceDeclaration(
     packageManifest.control?.transcript?.runtimeProvenance
@@ -611,6 +668,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   }
 
   try {
+    progress.stage = 'integration_ready';
     const controlToken = requireWorkerControlToken(options.controlToken);
     let workerControlFetch = options.fetch;
     const inferenceToken = environment.OPENKIT_WORKER_INFERENCE_TOKEN?.trim();
@@ -648,6 +706,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       workerAbortController.abort();
     };
 
+    progress.stage = 'worker_control_ready';
     let initialCommandPoll: WorkerControlCommandPoll | null = null;
     try {
       initialCommandPoll = await waitForWorkerControlReadiness(async () => {
@@ -722,6 +781,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
           }
         };
       });
+      progress.stage = 'native_spawn';
       processPromise = (options.runner ?? new ChildProcessWorkerProcessRunner()).run({
         argv: launchPlan.argv,
         cwd,
@@ -737,6 +797,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
           (error: unknown) => Promise.reject(error)
         ),
       ]);
+      progress.stage = null;
       options.onNativeStart?.();
       session.enablePostLaunchRecovery();
       await writer.writeAndAppendEvent({

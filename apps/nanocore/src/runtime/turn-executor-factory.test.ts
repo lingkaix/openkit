@@ -4078,7 +4078,10 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('reattaches selected storage after its proved idle Sandbox is replaced', async () => {
+  it.each([
+    false,
+    true,
+  ])('reattaches selected storage or surfaces startup failure: %s', async (startupRefused) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -4184,7 +4187,8 @@ describe('createConfiguredTurnExecutor', () => {
         );
       const settleNext = async (
         operation: 'session.open' | 'turn.start' | 'session.inspect' | 'session.close',
-        body: Readonly<Record<string, unknown>>
+        body: Readonly<Record<string, unknown>>,
+        disposition: 'succeeded' | 'refused' = 'succeeded'
       ) => {
         let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
         for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
@@ -4238,7 +4242,7 @@ describe('createConfiguredTurnExecutor', () => {
         ).integrationRef;
         const result = {
           body,
-          disposition: 'succeeded' as const,
+          disposition,
           harnessInstanceId: command.harnessInstanceId,
           operationId: command.operationId,
           schemaVersion: 2 as const,
@@ -4261,6 +4265,24 @@ describe('createConfiguredTurnExecutor', () => {
         nativeHandleState: 'pending',
         state: 'open',
       });
+      if (startupRefused) {
+        const rejected = expect(launch).rejects.toThrow(
+          'NanoHost Harness turn.start refused: dependency_failed (workspace_materialization: retained_baseline_unavailable).'
+        );
+        await settleNext(
+          'turn.start',
+          {
+            reasonCode: 'dependency_failed',
+            startupFailure: {
+              stage: 'workspace_materialization',
+              reason: 'retained_baseline_unavailable',
+            },
+          },
+          'refused'
+        );
+        await rejected;
+        return;
+      }
       await settleNext('turn.start', {
         nativeHandleDigest: null,
         nativeHandleState: 'pending',

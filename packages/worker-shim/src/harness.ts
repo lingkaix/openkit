@@ -3,7 +3,11 @@ import { mkdir, rm } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import {
+  type WorkerStartupFailure,
+  WorkerStartupFailureSchema,
+  workerSessionInputPaths,
+} from '@openkit/worker-protocol';
 import { WORKER_ADAPTERS, type WorkerAdapter } from './adapter-registry.js';
 import {
   runWorkerShim,
@@ -172,7 +176,13 @@ export class WorkerHarness {
       }
       return succeeded(command, resultBody);
     } catch (error) {
-      return refused(command, reasonCode(error));
+      return refused(
+        command,
+        reasonCode(error),
+        error && typeof error === 'object' && 'startupFailure' in error
+          ? WorkerStartupFailureSchema.safeParse(error.startupFailure).data
+          : undefined
+      );
     }
   }
 
@@ -389,6 +399,7 @@ export class WorkerHarness {
     const started = new Promise<void>((resolveStarted) => {
       markStarted = resolveStarted;
     });
+    let startupFailure: WorkerStartupFailure | undefined;
     const runPromise = runWorkerShim({
       args: { dryRun: false, packagePath, sessionDir: this.turnOutputDirectory },
       controlToken,
@@ -406,6 +417,9 @@ export class WorkerHarness {
       expectedAdapterId: this.adapterId,
       nativeTurnDirectory,
       onNativeStart: markStarted,
+      onStartupFailure: (failure) => {
+        startupFailure = failure;
+      },
       onTurnBarrier: () => {
         if (session.activeTurn?.turnId === turnId) {
           session.activeTurn.barrierReached = true;
@@ -441,9 +455,14 @@ export class WorkerHarness {
     void promise.catch(() => undefined);
     await Promise.race([
       started,
-      promise.then(() => {
-        throw harnessError('dependency_failed');
-      }),
+      promise.then(
+        () => {
+          throw harnessError('dependency_failed');
+        },
+        (error: unknown) => {
+          throw Object.assign(harnessError('dependency_failed'), { cause: error, startupFailure });
+        }
+      ),
     ]);
     return {
       nativeHandleDigest: prior.nativeHandleDigest,
@@ -816,10 +835,14 @@ function succeeded(
   };
 }
 
-/** Builds one typed refusal without exposing adapter diagnostics. */
-function refused(command: HarnessCommand, code: string): HarnessResult {
+/** Builds one typed refusal with optional value-free startup metadata. */
+function refused(
+  command: HarnessCommand,
+  code: string,
+  startupFailure?: WorkerStartupFailure
+): HarnessResult {
   return {
-    body: { reasonCode: code },
+    body: { reasonCode: code, ...(startupFailure ? { startupFailure } : {}) },
     disposition: 'refused',
     operationId: command.operationId,
     schemaVersion: 2,
