@@ -32,6 +32,7 @@ import { createApp } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import {
   claimPendingUserTurnRecord,
@@ -1818,7 +1819,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
-  it('collects durable outputs and preserves a failed worker status', async () => {
+  it.each([
+    'none',
+    'stream-failed',
+    'later-success',
+    'other-package',
+    'unknown-code',
+  ] as const)('collects durable outputs and preserves a failed worker status with %s inference', async (inference) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-failed-status-')));
     applyMigrations(coreDb);
     const store = createDemoStore();
@@ -1837,6 +1844,48 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const executor = new WorkerGovernanceTurnExecutor({
       awaitWorkerCompletion: async () => {
         backend.calls.push('awaitWorkerCompletion');
+        if (inference !== 'none') {
+          const workspaceDb = openWorkspaceDb(coreDb.dataRoot, turn.workspaceId);
+          try {
+            const call = startCapabilityCall({
+              callId: 'cap_stream_failed',
+              workspaceDb,
+              workspaceId: turn.workspaceId,
+              threadId: turn.threadId,
+              turnId: turn.id,
+              agentSessionId,
+              packageSnapshotId:
+                inference === 'other-package' ? 'aepsnap_other' : packageSnapshotId,
+              authorityActor: null,
+              capabilityId: 'llm.responses',
+              family: 'llm',
+              operation: 'responses',
+              serviceRef: 'worker-inference-gateway',
+              redactionClass: 'metadata-only',
+              now: new Date('2026-07-15T00:00:01Z'),
+            });
+            finishCapabilityCall({
+              workspaceDb,
+              callId: call.id,
+              status: 'failed',
+              errorCode:
+                inference === 'unknown-code'
+                  ? 'unknown-internal-detail'
+                  : 'worker_inference_stream_failed',
+            });
+            if (inference === 'later-success') {
+              const retry = startCapabilityCall({
+                ...call.context,
+                callId: 'cap_retry',
+                workspaceDb,
+                now: new Date('2026-07-15T00:00:02Z'),
+              });
+              finishCapabilityCall({ workspaceDb, callId: retry.id, status: 'succeeded' });
+            }
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        }
         return {
           acceptedAt: '2026-07-15T00:00:03.000Z',
           status: 'failed' as const,
@@ -1872,6 +1921,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'cleanupSession',
     ]);
     expect(store.getTurnById(turn.id).status).toBe('failed');
+    expect(store.getTurnById(turn.id).error).toEqual({
+      code: 'worker_governance_turn_failed',
+      message:
+        'Worker reported terminal status: failed.' +
+        (inference === 'stream-failed'
+          ? ' Last worker inference stream failed before completion.'
+          : ''),
+    });
     expect(store.getTurnEvents(turn.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

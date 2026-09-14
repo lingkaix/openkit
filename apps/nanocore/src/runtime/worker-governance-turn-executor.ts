@@ -14,6 +14,7 @@ import type {
 import { responsibleUserIdForActor, type StopReason } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
   createWorkerContextPackageFiles,
@@ -1641,7 +1642,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               turn,
               agentSessionId,
               requestId,
-              workerFinalStatus
+              workerFinalStatus,
+              environmentPackage?.snapshotId ?? null
             );
           } else {
             this.completeTurn(store, turn, agentSessionId, requestId);
@@ -1852,7 +1854,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         turn,
         environmentPackage.scope.agentSessionId,
         environmentPackage.scope.requestId ?? null,
-        accepted
+        accepted,
+        environmentPackage.snapshotId
       );
       if (stopReason === 'ask_user') {
         const recoveredTurn = store.getTurnById(environmentPackage.scope.turnId);
@@ -2624,6 +2627,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param agentSessionId Exact worker AgentSession.
    * @param requestId Worker command request id.
    * @param accepted Durable worker-control final status.
+   * @param packageSnapshotId Exact package whose last inference call may explain failure.
    * @throws Error when the accepted status has no supported canonical StopReason.
    */
   private recordAcceptedWorkerOutcome(
@@ -2631,7 +2635,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     turnScope: ReturnType<FsStore['getTurnById']>,
     agentSessionId: string,
     requestId: string | null,
-    accepted: AcceptedWorkerFinalStatus
+    accepted: AcceptedWorkerFinalStatus,
+    packageSnapshotId: string | null
   ): void {
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
     if (stopReason === 'ask_user') {
@@ -2687,12 +2692,36 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       });
       return;
     }
+    let inferenceDetail = '';
+    const workspaceDb = packageSnapshotId ? this.openWorkspaceDb(turnScope.workspaceId) : null;
+    try {
+      const lastInference =
+        workspaceDb && packageSnapshotId
+          ? listWorkspaceCapabilityCalls(workspaceDb, turnScope.workspaceId).findLast(
+              (call) =>
+                call.serviceRef === 'worker-inference-gateway' &&
+                call.threadId === turnScope.threadId &&
+                call.turnId === turnScope.id &&
+                call.agentSessionId === agentSessionId &&
+                call.packageSnapshotId === packageSnapshotId
+            )
+          : undefined;
+      if (
+        lastInference?.status === 'failed' &&
+        (lastInference.errorCode === 'worker_inference_stream_failed' ||
+          lastInference.errorCode === 'gateway_stream_failed')
+      ) {
+        inferenceDetail = ' Last worker inference stream failed before completion.';
+      }
+    } finally {
+      workspaceDb?.sqlite.close();
+    }
     this.failTurn(
       store,
       turnScope,
       agentSessionId,
       requestId,
-      new Error(`Worker reported terminal status: ${accepted.status}.`)
+      new Error(`Worker reported terminal status: ${accepted.status}.${inferenceDetail}`)
     );
   }
 
