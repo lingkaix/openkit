@@ -751,6 +751,8 @@ describe('protocol schemas', () => {
       ThreadSchema.parse({
         ...parsed,
         entryPath: 'administration',
+        visibility: 'private',
+        privateOwnerUserId: 'user_admin',
       }).entryPath
     ).toBe('administration');
   });

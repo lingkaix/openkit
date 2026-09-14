@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +35,34 @@ describe('dashboard and search Thread audiences', () => {
       const thread = await response.json();
       expect(thread.visibility).toBe(visibility);
       expect(thread.privateOwnerUserId).toBe(visibility === 'private' ? 'user_local' : undefined);
+    }
+  });
+
+  it('requires shared inception for formal Task and Goal work without converting private history', async () => {
+    const store = new FsStore();
+    const workspace = store.createWorkspace('Formal admission');
+    const thread = store.createThread(workspace.id, 'Private source', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: 'user_local',
+    });
+    const app = createApp({ store });
+    for (const mode of ['task', 'goal']) {
+      const response = await app.request(
+        `/api/app/workspaces/${workspace.id}/threads/${thread.id}/${mode}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '44444444-4444-4444-8444-444444444444',
+            input: 'Start formal work',
+            objective: 'Start formal work',
+          }),
+        }
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'shared_thread_required' });
+      expect(store.getThread(workspace.id, thread.id).visibility).toBe('private');
+      expect(store.listThreadTurns(workspace.id, thread.id)).toEqual([]);
     }
   });
 
@@ -100,6 +129,29 @@ describe('dashboard and search Thread audiences', () => {
         createdAt: stamp,
         completedAt: stamp,
       });
+      if (label !== 'missing' && label !== 'contradictory')
+        store.createArtifact({
+          id: `ar_${label}`,
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: turn.id,
+          kind: 'summary',
+          title: `${label} needle artifact`,
+          status: 'ready',
+          summary: `${label} needle summary`,
+          version: 1,
+          content: { format: 'text', body: `${label} output` },
+          contentDigest: `sha256:${createHash('sha256').update(`${label} output`).digest('hex')}`,
+          lastMutationRequestId: `artifact-${label}`,
+          origin: {
+            kind: 'turn-output',
+            threadId: thread.id,
+            turnId: turn.id,
+            requestId: `artifact-${label}`,
+          },
+          createdAt: stamp,
+          updatedAt: stamp,
+        });
       return thread;
     });
     const app = createApp({
@@ -137,6 +189,12 @@ describe('dashboard and search Thread audiences', () => {
           [own.id, threads[2]!.id, threads[3]!.id].sort()
         );
         expect(body.counts.threadCount).toBe(3);
+        expect(body.counts.artifactCount).toBe(3);
+        expect(body.workspace.counts).toEqual({
+          threadCount: 3,
+          artifactCount: 3,
+          knowledgeEntryCount: 0,
+        });
         const search = await app.request('/api/app/search?q=needle', { headers });
         expect(search.status).toBe(200);
         const hits = await search.json();
@@ -147,6 +205,9 @@ describe('dashboard and search Thread audiences', () => {
             .sort()
         ).toEqual([own.id, threads[2]!.id, threads[3]!.id].sort());
         expect(JSON.stringify(hits)).not.toContain(denied.name);
+        expect(
+          hits.items.filter((item: { kind: string }) => item.kind === 'artifact')
+        ).toHaveLength(3);
         for (const hidden of [denied, threads[4]!, threads[5]!]) {
           expect(readItems.mock.calls.some((args) => args[1] === hidden.id)).toBe(false);
           const direct = await app.request(

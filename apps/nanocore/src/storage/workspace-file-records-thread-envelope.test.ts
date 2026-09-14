@@ -6,7 +6,10 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { startGoalModeObjective } from '../goal-routes.js';
 import { FsStore } from '../lib/store.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
 
 /** Reads one persisted Thread record from an isolated store. */
 function threadRecord(dataRoot: string, workspaceId: string, threadId: string) {
@@ -141,5 +144,39 @@ it('rejects damaged current visibility instead of reclassifying it at restart', 
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     writeFileSync(persisted.path, JSON.stringify({ ...persisted.value, ...damage }));
     expect(() => new FsStore({ dataRoot })).toThrow();
+  }
+});
+
+it('classifies a Goal Main Thread from its durable objective lineage', () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-cutover-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Goal cutover');
+  const thread = store.createThread(workspace.id, 'Formal Goal');
+  try {
+    startGoalModeObjective({
+      triggerActor: { kind: 'user', id: 'user_local' },
+      coreDb,
+      assertProjectWorkspace: () => {},
+      repositoryWorkspaceDb: (workspaceId) => {
+        const db = openWorkspaceDb(dataRoot, workspaceId);
+        applyScopedMigrations(db);
+        return db;
+      },
+      store,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      owningCommand: 'goal.start',
+      requestId: '33333333-3333-4333-8333-333333333333',
+      objective: 'Complete the formal Goal',
+    });
+    const persisted = threadRecord(dataRoot, workspace.id, thread.id);
+    writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
+    expect(new FsStore({ dataRoot }).getThread(workspace.id, thread.id)).toMatchObject({
+      visibility: 'workspace',
+    });
+  } finally {
+    coreDb.sqlite.close();
   }
 });

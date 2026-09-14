@@ -2567,7 +2567,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
         globalThis.fetch = async (url, options) => {
           if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== 'GET') throw new Error('unexpected transport');
           if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
-          return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
+          return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.5.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
         };
       `),
         ]
