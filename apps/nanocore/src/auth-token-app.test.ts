@@ -948,3 +948,95 @@ describe('server-mode access-token auth', () => {
     }
   });
 });
+
+describe('my-admin-tokens canonical-user access', () => {
+  it('lists only local-owned admin tokens and persists a valid local default', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-local-admin-tokens-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      insertCanonicalUser(coreDb, 'user_local', 'Local', 'local@example.com');
+      insertTokenOwnerUser(coreDb);
+      for (const [tokenId, ownerUserId] of [
+        ['tok_local_first', 'user_local'],
+        ['tok_local_second', 'user_local'],
+        ['tok_other', 'user_owner'],
+      ]) {
+        createOpenKitAccessTokenRecord(coreDb, {
+          tokenId,
+          ownerUserId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        });
+      }
+      const app = createApp({ coreDb, dataRoot, mode: 'local' });
+      const listed = await app.request('/api/app/auth/my-admin-tokens');
+      expect(listed.status).toBe(200);
+      const body = await listed.json();
+      expect(body.items.map((item: { tokenId: string }) => item.tokenId).sort()).toEqual([
+        'tok_local_first',
+        'tok_local_second',
+      ]);
+      expect(JSON.stringify(body)).not.toMatch(/okt_|tokenHash|secret/);
+      const selected = await app.request('/api/app/auth/my-admin-tokens/default', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tokenId: 'tok_local_second' }),
+      });
+      expect(selected.status).toBe(200);
+      expect((await selected.json()).defaultTokenId).toBe('tok_local_second');
+      for (const tokenId of ['tok_other', 'tok_missing']) {
+        const invalid = await app.request('/api/app/auth/my-admin-tokens/default', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tokenId }),
+        });
+        expect(invalid.status).toBe(400);
+        expect((await invalid.json()).code).toBe('access_token_default_invalid');
+      }
+      const after = await app.request('/api/app/auth/my-admin-tokens');
+      expect((await after.json()).defaultTokenId).toBe('tok_local_second');
+      for (const [path, method] of [
+        ['/api/app/auth/tokens', 'GET'],
+        ['/api/app/auth/tokens', 'POST'],
+        ['/api/app/auth/tokens/tok_local_first/rotate', 'POST'],
+      ]) {
+        expect((await app.request(path, { method })).status).toBe(404);
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects server-mode bearer actors for both my-admin-tokens operations', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-tokens-bearer-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        tokenId: 'tok_admin',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const app = createApp({ auth: ownerSessionAuth(), coreDb, dataRoot, mode: 'server' });
+      for (const [path, method] of [
+        ['/api/app/auth/my-admin-tokens', 'GET'],
+        ['/api/app/auth/my-admin-tokens/default', 'PUT'],
+      ]) {
+        const denied = await app.request(path, {
+          method,
+          headers: { authorization: `Bearer ${admin.secret}`, 'content-type': 'application/json' },
+          ...(method === 'PUT' ? { body: JSON.stringify({ tokenId: 'tok_admin' }) } : {}),
+        });
+        expect(denied.status).toBe(403);
+        expect((await denied.json()).code).toBe('access_token_session_required');
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+});

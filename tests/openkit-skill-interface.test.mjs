@@ -337,10 +337,8 @@ test('one catalog covers the checked App API and public Core projection', async 
     'app-api:createOpenKitAccessToken',
     'app-api:getThreadDashboard',
     'app-api:getWorkspaceDashboard',
-    'app-api:listMyAdminAccessTokens',
     'app-api:rotateOpenKitAccessToken',
     'app-api:searchApp',
-    'app-api:setMyAdminAccessTokenDefault',
     'core-projection:listWorkspaces',
     'core-projection:subscribeTurnEvents',
   ]);
@@ -624,6 +622,8 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(
     idsWithAccess('implicit local actor; bundled CLI operation is local-mode only'),
     [
+      'token.my-admin-default',
+      'token.my-admin-list',
       'workspace.deleted-recover',
       'workspace.leave',
       'workspace.my-invitation-accept',
@@ -695,6 +695,129 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
       .sort(),
     ['core-projection:listWorkspaces']
   );
+});
+
+test('my admin-token operations use strict canonical-user schemas and client methods', async () => {
+  const { operationCatalog } = await operations();
+  for (const [action, method] of [
+    ['list', 'listMyAdminAccessTokens'],
+    ['default', 'setMyAdminAccessTokenDefault'],
+  ]) {
+    const operation = operationCatalog.find((entry) => entry.id === `token.my-admin-${action}`);
+    assert.ok(operation);
+    assert.equal(operation.appOperationId, method);
+    assert.equal(operation.clientMethod, `app.${method}`);
+    assert.equal(operation.source, 'app-api');
+    assert.equal(operation.group, 'token');
+    assert.equal(operation.mutating, action === 'default');
+    assert.equal(
+      operation.requiredAccess,
+      'implicit local actor; bundled CLI operation is local-mode only'
+    );
+    const input = action === 'list' ? {} : { tokenId: 'tok_admin' };
+    for (const extra of [{ cookie: 'session' }, { authorization: 'bearer' }, { unknown: true }]) {
+      assert.equal(operation.inputSchema.safeParse({ ...input, ...extra }).success, false);
+    }
+    if (action === 'list') {
+      assert.equal(operation.inputSchema.safeParse({ tokenId: 'tok_admin' }).success, false);
+    } else {
+      assert.strictEqual(
+        operation.inputSchema,
+        appSchemas.SetMyAdminAccessTokenDefaultRequestSchema
+      );
+      assert.equal(operation.inputSchema.safeParse({}).success, false);
+      assert.equal(operation.inputSchema.safeParse({ tokenId: '' }).success, false);
+    }
+    let observed;
+    const response = { items: [], defaultTokenId: null };
+    assert.equal(
+      await operation.handler(
+        {
+          client: {
+            app: {
+              [method]: async (...args) => {
+                observed = args;
+                return response;
+              },
+            },
+          },
+        },
+        operation.inputSchema.parse(input)
+      ),
+      response
+    );
+    assert.deepEqual(observed, action === 'list' ? [] : [input]);
+  }
+});
+
+test('bundled my admin-token calls preserve typed transport and canonical auth denials', async () => {
+  const response = {
+    items: [
+      {
+        tokenId: 'tok_admin',
+        ownerUserId: 'user_local',
+        scope: 'server-admin',
+        workspaceIds: [],
+        status: 'active',
+        issuedAt: '2026-09-14T00:00:00.000Z',
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        revokedAt: null,
+        predecessorTokenId: null,
+        rotatedGraceExpiresAt: null,
+        lastUsedAt: null,
+        lastUsedChannel: null,
+        lastUsedSource: null,
+      },
+    ],
+    defaultTokenId: 'tok_admin',
+  };
+  for (const action of ['list', 'default']) {
+    const args = ['ops', 'call', `token.my-admin-${action}`, '--input', '-'];
+    const input = action === 'list' ? {} : { tokenId: 'tok_admin' };
+    const url = `http://127.0.0.1:3456/api/app/auth/my-admin-tokens${action === 'default' ? '/default' : ''}`;
+    const method = action === 'list' ? 'GET' : 'PUT';
+    const env = { OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456', OPENKIT_NANOCORE_TOKEN: '' };
+    const result = await runCli(args, env, JSON.stringify(input), [
+      dataModule(`
+      globalThis.fetch = async (url, options) => {
+        const headers = new Headers(options.headers);
+        if (headers.has('authorization') || headers.has('cookie')) throw new Error('unexpected credential');
+        if (url !== ${JSON.stringify(url)} || options.method !== '${method}') throw new Error('unexpected transport');
+        if (${JSON.stringify(action)} === 'list') {
+          if (options.body !== undefined) throw new Error('unexpected GET body');
+        } else if (options.body !== ${JSON.stringify(JSON.stringify(input))}) throw new Error('unexpected PUT body');
+        return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+    `),
+    ]);
+    assert.equal(result.code, 0, result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout).data, response);
+    for (const [status, code, token] of [
+      [401, 'unauthorized', ''],
+      [401, 'unauthorized', 'okt_not_a_session'],
+      [403, 'access_token_session_required', 'okt_not_a_session'],
+    ]) {
+      const denied = await runCli(
+        args,
+        { ...env, OPENKIT_NANOCORE_TOKEN: token },
+        JSON.stringify(input),
+        [
+          dataModule(`
+        globalThis.fetch = async (url, options) => {
+          const headers = new Headers(options.headers);
+          if (url !== ${JSON.stringify(url)} || options.method !== '${method}') throw new Error('unexpected transport');
+          if (headers.has('cookie')) throw new Error('unexpected session');
+          if (headers.get('authorization') !== ${JSON.stringify(token ? `Bearer ${token}` : null)}) throw new Error('credential changed');
+          return new Response(JSON.stringify({ code: '${code}', message: 'Canonical user required.', protocolVersion: '0.4.0' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
+        };
+      `),
+        ]
+      );
+      assert.equal(denied.code, 3, denied.stdout);
+      assert.equal(JSON.parse(denied.stdout).error.code, code);
+      assert.doesNotMatch(denied.stdout + denied.stderr, /okt_not_a_session/);
+    }
+  }
 });
 
 test('workspace leave uses the canonical-user schema and client method', async () => {
