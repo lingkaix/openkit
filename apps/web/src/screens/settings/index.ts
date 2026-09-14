@@ -47,5 +47,6 @@ export {
   stripSecretFields,
 } from './secret-safe';
 export { UsageScreen } from './UsageScreen';
+export { VaultAdminScreen } from './VaultAdminScreen';
 export { VaultScreen } from './VaultScreen';
 export { WorkspaceAccessRecoveryScreen } from './WorkspaceAccessRecoveryScreen';

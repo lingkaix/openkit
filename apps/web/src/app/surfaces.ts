@@ -378,6 +378,17 @@ export const SURFACES: Surface[] = [
   },
 
   {
+    id: 'vault-admin',
+    title: 'Vault backend',
+    path: '/settings/vault-admin',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'key',
+    board: '10',
+    wp: 'WP-7',
+  },
+
+  {
     id: 'data-root-backup',
     title: 'Deployment backup',
     path: '/settings/data-root-backup',

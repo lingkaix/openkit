@@ -23,6 +23,7 @@ import {
   MyAdminAccessScreen,
   ServerAuditScreen,
   UsageScreen,
+  VaultAdminScreen,
   VaultScreen,
   WorkspaceAccessRecoveryScreen,
 } from '../screens/settings';
@@ -74,6 +75,7 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   'access-tokens': <AccessTokensScreen />,
   'server-audit': <ServerAuditScreen />,
   'data-root-backup': <DataRootBackupScreen />,
+  'vault-admin': <VaultAdminScreen />,
   'workspace-access-recovery': <WorkspaceAccessRecoveryScreen />,
   'disable-user': <DisableUserScreen />,
   chat: <ChatStarter />,
