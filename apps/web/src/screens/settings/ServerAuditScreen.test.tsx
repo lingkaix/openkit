@@ -122,6 +122,20 @@ describe('Server audit administration', () => {
     expect(client.app[method]).toHaveBeenCalledTimes(2);
   });
 
+  it('hides previously loaded records when a refetch loses session authority', async () => {
+    const client = makeClient();
+    const { queryClient, container } = renderScreen(client);
+    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    vi.mocked(client.app.listServerPermissionDecisions).mockRejectedValue(
+      new ApiCallError(401, PRIVATE, { code: 'core.auth.unauthenticated' })
+    );
+    await queryClient.invalidateQueries({ queryKey: ['settings', 'server-audit'] });
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
+    expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
+    expect(container.querySelector('input')).toBeNull();
+  });
+
   it('shows a safe load error and recovers on retry', async () => {
     const client = makeClient();
     vi.mocked(client.app.listServerAuditEvents).mockRejectedValueOnce(new Error(PRIVATE));
@@ -130,7 +144,7 @@ describe('Server audit administration', () => {
       "Couldn't load server audit records."
     );
     expect(screen.queryByText(PRIVATE)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(screen.getByText('server.inspect')).toBeInTheDocument());
   });
 });

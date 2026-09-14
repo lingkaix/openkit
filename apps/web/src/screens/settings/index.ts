@@ -35,6 +35,7 @@ export {
 } from './data';
 export { GeneralSettingsScreen } from './GeneralSettingsScreen';
 export { MyAdminAccessScreen } from './MyAdminAccessScreen';
+export { ServerAuditScreen } from './ServerAuditScreen';
 export {
   isSecretFieldName,
   projectSafeValue,
