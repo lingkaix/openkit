@@ -6,6 +6,7 @@ This directory owns NanoCore authentication middleware, Better Auth browser sess
 
 - Browser and product requests use Better Auth session cookies; remote requests from the unified Skill's bundled CLI, other non-browser clients, and administration clients use explicit `okt_` bearer credentials.
 - Authentication establishes the actor; workspace membership and token scope still require authorization before any workspace database, store, or mutation is opened.
+- Personal admin-token list/default routes accept the implicit local canonical user or a Better Auth session and return only owned redacted records and the effective default token ID. OpenKit bearer actors remain rejected; token create/rotate/list-all administration retains its server-mode boundary.
 - Global administration routes require the documented deployment-admin capability and must not be reachable merely because a browser session is valid.
 - Server startup must supply a deployment-specific `BETTER_AUTH_SECRET` with at least 32 characters; the local development fallback is never valid for server mode.
 - Better Auth public URL, trusted browser origins, and sign-up policy come from the startup `server.jsonc` snapshot, with explicit Better Auth environment variables taking precedence.
