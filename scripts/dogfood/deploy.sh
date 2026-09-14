@@ -58,7 +58,7 @@ if [[ ! -d "${DATA_ROOT}" ]]; then
   echo "Existing staging data root is missing: ${DATA_ROOT}" >&2
   exit 1
 fi
-if [[ ! -s "${APP_CADDYFILE}" || ! -s "${WEB_DOCKERFILE}" || ! -s "${NANOCORE_DOCKERFILE}" || ! -s "${NANOHOST_ENV_SOURCE}" || ! -s "${SEED_IMAGE_HELPER}" ]]; then
+if [[ ! -s "${APP_CADDYFILE}" || ! -s "${WEB_DOCKERFILE}" || ! -s "${NANOHOST_ENV_SOURCE}" || ! -s "${SEED_IMAGE_HELPER}" ]]; then
   echo "Required deployment config is missing from ${BASE_DIR}." >&2
   exit 1
 fi
@@ -149,11 +149,13 @@ build_web() {
   publish_web_image "${web_image}"
 }
 
-# Build and smoke-check the NanoCore App image.
+# Build and smoke-check the NanoCore App image from the repository Dockerfile.
+# Host $HOME/openkit/nanocore.Dockerfile is no longer used for builds; keep the file
+# only if older helpers still reference it. Smoke requires openkit-operator on PATH.
 build_app() {
   image="openkit/app:staging-${commit}"
-  echo "Building NanoCore App from public origin/main."
-  sudo -n docker build --file "${NANOCORE_DOCKERFILE}" --tag "${image}" "${REPO_DIR}"
+  echo "Building NanoCore App from public origin/main (containers/app/Dockerfile)."
+  sudo -n docker build --file "${REPO_DIR}/containers/app/Dockerfile" --tag "${image}" "${REPO_DIR}"
   sudo -n docker run --rm "${image}" openkit-app-smoke
 }
 

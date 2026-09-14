@@ -163,3 +163,25 @@ replace_app openkit/app:fixture fixture
     assert.equal(args[index - 1], option);
   }
 });
+
+test('build_app uses repository containers/app/Dockerfile for NanoCore', (t) => {
+  const root = fixture(t);
+  const dockerfile = join(root, 'containers/app/Dockerfile');
+  mkdirSync(join(root, 'containers/app'), { recursive: true });
+  writeFileSync(dockerfile, 'FROM scratch\n');
+  const setup = `
+BASE_DIR="$FIXTURE"
+REPO_DIR="$FIXTURE"
+commit=fixture
+sudo() {
+  [[ "$1" == -n ]]; shift
+  printf '%s\\n' "$*" >> "$FIXTURE/effects"
+}
+build_app
+`;
+  const result = runFunction('build_app', setup, { FIXTURE: root });
+  assert.equal(result.status, 0, result.stderr);
+  const effects = readFileSync(join(root, 'effects'), 'utf8');
+  assert.match(effects, /docker build --file .*\/containers\/app\/Dockerfile/);
+  assert.doesNotMatch(effects, /nanocore\.Dockerfile/);
+});
