@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: active
+status: implemented
 ---
 # Thread Visibility Cutover Migration
 
