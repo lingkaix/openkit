@@ -95,6 +95,25 @@ describe('administration configuration Tools', () => {
     });
   });
 
+  it('routes an authorized provider catalog proposal to its candidate owner', async () => {
+    const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
+    const proposal = {
+      targetFamily: 'provider',
+      targetId: 'codex',
+      expectedRevision: CONFIG_REVISION,
+      changes: { models: ['gpt-6'] },
+    };
+    const tools = createAdministrationConfigurationTools(snapshot, configFiles({}), {
+      propose: async (value: unknown) => ({ candidate: 'immutable-candidate', input: value }),
+    } as never);
+    const result = await tools[2].execute(proposal, {
+      callId: 'catalog',
+      signal: new AbortController().signal,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.stringify(result.content)).toContain('immutable-candidate');
+  });
+
   it('returns the exact registered Agent schema and keeps proposal typed unavailable', async () => {
     const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
     const tools = createAdministrationConfigurationTools(snapshot, configFiles({}));
