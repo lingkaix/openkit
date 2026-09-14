@@ -32,4 +32,6 @@ Independent reviewer inspection reproduced stale named reads after keychain outa
 
 Named raw evidence is retained uncommitted under `temp/changes/202609141400000000-cli_named_token_delivery/`. Evidence is bounded to command doubles, real temporary encrypted storage, bundled subprocesses and existing server-owned auth tests; no live OS-keychain or deployed-server proof is claimed. Local slot deletion may leave an unreachable keychain orphan when cleanup is unavailable, and failed backend-selection publication has an unknown local outcome. Both limits are explicit in the owner and do not authorize automatic repair.
 
-Implementation and independent review are complete. Next action is the authorized branch push, one PR fixing #52 and the issue comment; publication will be recorded after observing the GitHub result. Merge and A2 deployment remain excluded.
+## Closeout Summary
+
+Named credential isolation, validated catalog operations, redacted delivery and failure handling, backend selection, owning documentation, and the regenerated CLI are implemented. Implementation `7bfae15` and independent review are complete. The branch was pushed and [PR #53](https://github.com/lingkaix/openkit/pull/53) opened against `main` with `Fixes #52`; [the issue comment](https://github.com/lingkaix/openkit/issues/52#issuecomment-5665185011) records the handoff. GitHub reported the PR open and non-draft, with CI running. Human PR review and CI completion remain; no merge, A2 deployment, #17 reopening, or personal admin-token changes were performed.
