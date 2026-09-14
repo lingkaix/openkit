@@ -71,6 +71,7 @@ describe('dashboard and search Thread audiences', () => {
     ].map((label) => {
       const thread = store.createThread(workspace.id, `${label} needle`);
       const raw = thread as unknown as Record<string, unknown>;
+      delete raw.privateOwnerUserId;
       if (label.endsWith('private'))
         Object.assign(raw, {
           visibility: 'private',

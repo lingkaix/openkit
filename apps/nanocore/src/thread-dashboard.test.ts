@@ -154,7 +154,13 @@ describe('thread dashboard app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Actor-scoped dashboard');
+    const thread = store.createThread(
+      'ws_demo',
+      'Actor-scoped dashboard',
+      undefined,
+      'conversation',
+      { visibility: 'workspace' }
+    );
     const approvalTurn = store.createTurn('ws_demo', thread.id, 'Request approval', {
       kind: 'user',
       id: 'user_local',

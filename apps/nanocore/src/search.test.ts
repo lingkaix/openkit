@@ -59,6 +59,10 @@ describe('search app API', () => {
       throw new Error('Search must not scan items across Workspaces.');
     });
     const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (c, next) => {
+      c.set('actor', { kind: 'local', userId: 'user_local' } as AuthVariables['actor']);
+      await next();
+    });
     registerSearchRoutes({
       app,
       authorizedWorkspaceIds: () => ['ws_demo'],

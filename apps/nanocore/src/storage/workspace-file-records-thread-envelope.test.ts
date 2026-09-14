@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,4 +88,58 @@ describe('Thread canonical record envelope', () => {
       recordType: 'thread',
     });
   });
+});
+
+/** Removes only visibility-era metadata and recomputes the predecessor envelope digest. */
+function predecessorRecord(value: Record<string, unknown>) {
+  const predecessor = { ...value };
+  delete predecessor.visibility;
+  delete predecessor.privateOwnerUserId;
+  predecessor.requiredFeatures = ['openkit.thread-entry.v1'];
+  const { id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
+  predecessor.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify({ id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt })).digest('hex')}`;
+  return predecessor;
+}
+
+it('cuts over exclusively formal worker history but never publishes ambiguous project history', () => {
+  for (const formal of [true, false]) {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-project-cutover-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Cutover');
+    const thread = store.createThread(workspace.id, 'Historical conversation');
+    const turn = store.createTurn(workspace.id, thread.id, 'Work', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    if (formal) store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    const persisted = threadRecord(dataRoot, workspace.id, thread.id);
+    writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
+    if (formal) {
+      expect(new FsStore({ dataRoot }).getThread(workspace.id, thread.id)).toMatchObject({
+        visibility: 'workspace',
+      });
+      expect(threadRecord(dataRoot, workspace.id, thread.id).value.requiredFeatures).toContain(
+        'openkit.thread-visibility.v1'
+      );
+    } else {
+      expect(() => new FsStore({ dataRoot })).toThrow(/ambiguous project history/);
+      expect(threadRecord(dataRoot, workspace.id, thread.id).value.visibility).toBeUndefined();
+    }
+  }
+});
+
+it('rejects damaged current visibility instead of reclassifying it at restart', () => {
+  for (const damage of [
+    { visibility: undefined },
+    { privateOwnerUserId: undefined },
+    { visibility: 'workspace', privateOwnerUserId: 'user_other' },
+  ]) {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-damaged-visibility-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.ensureQuickChatWorkspace('user_local');
+    const thread = store.createThread(workspace.id, 'Private conversation');
+    const persisted = threadRecord(dataRoot, workspace.id, thread.id);
+    writeFileSync(persisted.path, JSON.stringify({ ...persisted.value, ...damage }));
+    expect(() => new FsStore({ dataRoot })).toThrow();
+  }
 });
