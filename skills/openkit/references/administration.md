@@ -14,7 +14,9 @@ Invoke one bounded administration operation at a time. Re-read the owning status
 
 For owner-directed sharing, list the current members or invitations before creating or revoking an invitation, changing member access, removing a member, or transferring ownership. Pass an invitee email only through stdin, confirm the exact target and expected revision before each mutation, and re-read the owning collection afterward.
 
-The bearer-only CLI intentionally does not expose the current user's own invitation list, invitation acceptance or decline, or Workspace leave. These operations require a canonical session-capable client or implicit local identity; report the known partial and do not bypass it through raw HTTP, cookie persistence, invitation secrets, or another token mechanism.
+For the current canonical user's invitations, use `workspace.my-invitation-list`, `workspace.my-invitation-accept`, and `workspace.my-invitation-decline` through implicit local identity. The list takes `{}`; accept and decline take `invitationId`, `expectedRevision`, and an optional `requestId` through stdin. List first, confirm the exact pending invitation and revision, submit the chosen response, and re-list afterward. Preserve the same request ID and payload for an exact retry; do not silently retry a revision conflict with a newer revision.
+
+These three bundled CLI operations are local-mode only: server-mode OpenKit bearer tokens cannot become canonical-user sessions and NanoCore rejects them. The CLI neither acquires nor persists Better Auth cookies. Use the Web Account Invitations panel for server-mode invitation responses; report the CLI limitation rather than bypassing it through raw HTTP, cookie persistence, invitation secrets, or another token mechanism. Workspace leave remains intentionally excluded from the CLI.
 
 Use Workspace access recovery or user disable only with explicit deployment-administrator direction. Recovery exposes no Workspace content and supports only the actions described by the selected operation; user disable preserves durable identity and history.
 

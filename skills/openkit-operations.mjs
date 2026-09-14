@@ -1771,6 +1771,51 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    ...LOCAL_CANONICAL_USER_ACCESS,
+    id: 'workspace.my-invitation-list',
+    source: 'app-api',
+    appOperationId: 'listMyWorkspaceInvitations',
+    clientMethod: 'app.listMyWorkspaceInvitations',
+    group: 'workspace',
+    summary: "List the current canonical user's Workspace invitations.",
+    mutating: false,
+    inputSchema: EMPTY_INPUT,
+    handler: ({ client }) => client.app.listMyWorkspaceInvitations(),
+  },
+  {
+    ...STANDARD,
+    ...LOCAL_CANONICAL_USER_ACCESS,
+    id: 'workspace.my-invitation-accept',
+    source: 'app-api',
+    appOperationId: 'acceptWorkspaceInvitation',
+    clientMethod: 'app.acceptWorkspaceInvitation',
+    group: 'workspace',
+    summary: "Accept one of the current canonical user's pending Workspace invitations.",
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.AcceptWorkspaceInvitationRequestSchema, {
+      invitationId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.acceptWorkspaceInvitation(input.invitationId, bodyWithout(input, 'invitationId')),
+  },
+  {
+    ...STANDARD,
+    ...LOCAL_CANONICAL_USER_ACCESS,
+    id: 'workspace.my-invitation-decline',
+    source: 'app-api',
+    appOperationId: 'declineWorkspaceInvitation',
+    clientMethod: 'app.declineWorkspaceInvitation',
+    group: 'workspace',
+    summary: "Decline one of the current canonical user's pending Workspace invitations.",
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.DeclineWorkspaceInvitationRequestSchema, {
+      invitationId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.declineWorkspaceInvitation(input.invitationId, bodyWithout(input, 'invitationId')),
+  },
+  {
+    ...STANDARD,
     requiredAccess:
       'current Workspace owner through implicit local access or a Workspace-bound bearer token',
     id: 'workspace.invitation-list',
@@ -3585,27 +3630,6 @@ export const operationCatalog = [
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
 export const operationExclusions = [
-  {
-    source: 'app-api',
-    name: 'listMyWorkspaceInvitations',
-    reason:
-      'The server-mode CLI has no Better Auth session-cookie credential, and this user-scoped collection rejects OpenKit bearer tokens.',
-    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
-  },
-  {
-    source: 'app-api',
-    name: 'acceptWorkspaceInvitation',
-    reason:
-      'The server-mode CLI has no Better Auth session-cookie credential, and invitation acceptance rejects OpenKit bearer tokens.',
-    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
-  },
-  {
-    source: 'app-api',
-    name: 'declineWorkspaceInvitation',
-    reason:
-      'The server-mode CLI has no Better Auth session-cookie credential, and invitation decline rejects OpenKit bearer tokens.',
-    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
-  },
   {
     source: 'app-api',
     name: 'leaveWorkspace',
