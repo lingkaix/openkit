@@ -9,6 +9,10 @@ import {
   ActivateWorkerEnvironmentResponseSchema,
   type AppDiagnosticsResponse,
   AppDiagnosticsResponseSchema,
+  type ApplyAdministrationConfigurationRequest,
+  ApplyAdministrationConfigurationRequestSchema,
+  type ApplyAdministrationConfigurationResponse,
+  ApplyAdministrationConfigurationResponseSchema,
   type ApproveThreadGoalPlanRequest,
   ApproveThreadGoalPlanRequestSchema,
   type ApproveThreadGoalPlanResponse,
@@ -664,6 +668,10 @@ export interface AppApiClient {
     storageRef: string,
     input: PurgeWorkerEnvironmentRequest
   ): Promise<PurgeWorkerEnvironmentResponse>;
+  /** Applies an exact human-confirmed catalog candidate after current server authorization. */
+  applyAdministrationConfiguration(
+    input: ApplyAdministrationConfigurationRequest
+  ): Promise<ApplyAdministrationConfigurationResponse>;
   /** Submits one private system-administration conversation turn. */
   submitAdministrationConversation(
     input: SubmitAdministrationConversationRequest
@@ -1373,6 +1381,12 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         PurgeWorkerEnvironmentResponseSchema
       );
     },
+    applyAdministrationConfiguration: (input) =>
+      transport.postJson(
+        '/api/app/administration/configuration/apply',
+        ApplyAdministrationConfigurationRequestSchema.parse(input),
+        ApplyAdministrationConfigurationResponseSchema
+      ),
     submitAdministrationConversation: (input) =>
       transport.postJson(
         '/api/app/administration/conversation-turns',
