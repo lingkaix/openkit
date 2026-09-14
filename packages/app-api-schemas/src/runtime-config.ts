@@ -9,6 +9,7 @@ export const RuntimeConfigReloadModeSchema = z.enum(['safe', 'strict']);
 export const RuntimeConfigFileKindSchema = z.enum([
   'server',
   'gateway',
+  'model-catalog',
   'internal-role',
   'provider',
   'agent',

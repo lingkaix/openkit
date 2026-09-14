@@ -196,7 +196,7 @@ function modelContract(
 }
 
 /**
- * Merges pinned catalog metadata with authored Provider leaves for one native model id.
+ * Merges pinned metadata with loaded extension/profile leaves and applies subscription context limits.
  *
  * @param profile Provider profile that lists the model.
  * @param nativeId Exact provider-native model id.
@@ -268,6 +268,13 @@ export function resolveEffectiveModelMetadata(
     effective.cost = cost;
   }
 
+  // The product cap applies to every Codex subscription model after all metadata overlays.
+  if (
+    resolveSubscriptionFamily(profile) === 'openai-codex' &&
+    effective.limit?.context !== undefined
+  ) {
+    effective.limit.context = Math.min(effective.limit.context, 256_000);
+  }
   return effective;
 }
 

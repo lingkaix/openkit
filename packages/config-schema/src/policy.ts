@@ -5,6 +5,7 @@ export type ConfigCatalogKind =
   | 'server'
   | 'gateway'
   | 'internal-role'
+  | 'model-catalog'
   | 'provider'
   | 'agent'
   | 'workspace'
@@ -40,6 +41,19 @@ export interface ConfigPolicyCatalogEntry {
 }
 
 const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
+  {
+    kind: 'model-catalog',
+    path: '$',
+    owner: 'server',
+    merge: 'deep-merge',
+    workspaceOverride: 'forbidden',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'restart-required',
+    secretPolicy: 'no-secret',
+    summary:
+      'Deployment model extensions inherit snapshot leaves and precede profile overlays after restart.',
+  },
   {
     kind: 'server',
     path: '$.server',

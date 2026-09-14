@@ -39,6 +39,7 @@ import {
   GatewayConfigSchema,
   getConfigSchemaCatalog,
   InternalRoleProfilesConfigSchema,
+  ModelCatalogSchema,
   OpenKitConfigSchema,
   ProviderProfileSchema,
   UserConfigSchema,
@@ -169,6 +170,7 @@ export class RuntimeConfigFileService {
     const files = [
       this.summaryForSpec(this.resolveFileSpec('server.jsonc')),
       this.summaryForSpec(this.resolveFileSpec('gateway.jsonc')),
+      this.summaryForSpec(this.resolveFileSpec('model-catalog.jsonc')),
       this.summaryForSpec(this.resolveFileSpec('internal-role-profiles.jsonc')),
       ...this.listDirectoryFiles('providers', '.provider.jsonc', 'provider'),
       ...this.listDirectoryFiles('agents', '.agent.jsonc', 'agent'),
@@ -375,6 +377,7 @@ export class RuntimeConfigFileService {
           [
             'server',
             'gateway',
+            'model-catalog',
             'internal-role',
             'provider',
             'agent',
@@ -711,6 +714,10 @@ export class RuntimeConfigFileService {
   "extensions": {}
 }
 `;
+    }
+
+    if (spec.kind === 'model-catalog') {
+      return `${JSON.stringify({ schemaVersion: 1, providers: {} }, null, 2)}\n`;
     }
 
     if (spec.kind === 'gateway') {
@@ -1060,6 +1067,9 @@ function parseFileId(id: string): Omit<RuntimeConfigFileSpec, 'absolutePath'> {
   if (id === 'server.jsonc') {
     return { kind: 'server', relativePath: id };
   }
+  if (id === 'model-catalog.jsonc') {
+    return { kind: 'model-catalog', relativePath: id };
+  }
   if (id === 'gateway.jsonc') {
     return { kind: 'gateway', relativePath: id };
   }
@@ -1154,6 +1164,8 @@ function schemaForKind(kind: RuntimeConfigFileKind): z.ZodType {
   if (kind === 'provider') {
     return ProviderProfileSchema;
   }
+
+  if (kind === 'model-catalog') return ModelCatalogSchema;
 
   if (kind === 'gateway') {
     return GatewayConfigSchema;

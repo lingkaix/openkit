@@ -1,8 +1,13 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { type ProviderProfile, ProviderProfileSchema } from '@openkit/config-schema';
+import {
+  type ModelCatalog,
+  type ProviderProfile,
+  ProviderProfileSchema,
+} from '@openkit/config-schema';
 import { z } from 'zod';
 import { parseJsoncObject } from './jsonc.js';
+import { extendProviderModelMetadata, loadModelCatalog } from './model-catalog.js';
 
 export type { ProviderProfile };
 export { ProviderProfileSchema };
@@ -40,9 +45,13 @@ export interface ProviderProfileLoadResult {
  * Loads every provider profile under data/config/providers.
  *
  * @param dataRoot Data root to read.
+ * @param modelCatalog Validated deployment metadata; loaded from disk when omitted.
  * @returns Loaded profiles and diagnostics.
  */
-export function loadProviderProfiles(dataRoot: string): ProviderProfileLoadResult {
+export function loadProviderProfiles(
+  dataRoot: string,
+  modelCatalog: ModelCatalog = loadModelCatalog(dataRoot)
+): ProviderProfileLoadResult {
   const providersRoot = join(dataRoot, 'config', 'providers');
   const result: ProviderProfileLoadResult = { profiles: [], diagnostics: [] };
   const duplicateIds = new Set<string>();
@@ -90,7 +99,7 @@ export function loadProviderProfiles(dataRoot: string): ProviderProfileLoadResul
       continue;
     }
 
-    result.profiles.push(profile);
+    result.profiles.push(extendProviderModelMetadata(profile, modelCatalog));
   }
 
   return result;

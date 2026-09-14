@@ -12,7 +12,7 @@ OpenKit configuration has three composition scopes.
 
 | Scope | Role | Canonical files |
 | --- | --- | --- |
-| Server | Supplies deployment resources, catalogs, and defaults available to Workspaces | `config/server.jsonc`, `config/gateway.jsonc`, `config/internal-role-profiles.jsonc`, `config/providers/*.provider.jsonc`, `config/agents/*.agent.jsonc` |
+| Server | Supplies deployment resources, catalogs, and defaults available to Workspaces | `config/server.jsonc`, `config/model-catalog.jsonc`, `config/gateway.jsonc`, `config/internal-role-profiles.jsonc`, `config/providers/*.provider.jsonc`, `config/agents/*.agent.jsonc` |
 | Workspace | Composes shared resources and defaults for one collaborative Workspace | `workspaces/<workspaceId>/config/workspace.jsonc`, `workspaces/<workspaceId>/config/data-sources.jsonc` |
 | User | Stores lightweight personal preferences inside Workspaces | `users/<userId>/config/user.jsonc` |
 
@@ -25,6 +25,7 @@ DATA_ROOT/
   config/
     server.jsonc
     gateway.jsonc
+    model-catalog.jsonc
     internal-role-profiles.jsonc
     providers/
       *.provider.jsonc
@@ -313,3 +314,40 @@ Runtime config reload validates a complete next snapshot and publishes it only w
 The Settings configuration surface can list, read, validate, create, and revision-protect supported files. `server.jsonc` may be updated but is not created through the file endpoint. Validation checks both the individual schema and the composed runtime snapshot, including missing references, duplicate IDs, and invalid logical-model bindings. The last-known-good runtime snapshot remains active when a reload candidate is invalid.
 
 The owning design is [NanoCore Configuration and Identity Contract](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260628-nanocore_config_identity_contract.md), and the implementation plan is [Composable Agent Runtime Configuration](https://github.com/lingkaix/openkit/blob/main/docs/changes/202608302326560001-composable_agent_runtime_configuration/plan.md).
+
+## Model Not In models.dev
+
+A deployment admin can register metadata in `DATA_ROOT/config/model-catalog.jsonc` without changing the vendored snapshot or NanoCore code. Open Settings → Configuration, select `model-catalog.jsonc`, and use its generic JSONC editor and schema reference. Startup seeds an empty file when absent. An authorized host operator may also create the file directly; the generic runtime-config API accepts `POST /api/admin/config/file` with `id: "model-catalog.jsonc"`, `kind: "model-catalog"` and source `content` when the file does not yet exist. Reads and writes require deployment-admin authority, such as a server-admin Token or a session with an active admin Token.
+
+For example, with a Provider whose `vendor` is `openai`, add the exact native model ID under that vendor:
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "providers": {
+    "openai": {
+      "models": {
+        "operator-confirmed-model": {
+          // Illustrative values: replace with limits verified for your actual model.
+          // Reasoning effort notes belong in comments; there is no effort-enum field.
+          "limit": { "context": 256000, "output": 8192 },
+          "reasoning": true,
+          "tool_call": true,
+          "modalities": { "input": ["text"], "output": ["text"] },
+          "cost": { "input": 1, "output": 2, "cache_read": 0.1, "cache_write": 1 }
+        }
+      }
+    }
+  }
+}
+```
+
+The outer key is exactly the profile's `vendor`, or its `id` when `vendor` is absent. Model keys must exactly match the profile's native IDs; no alias or namespace stripping occurs during extension lookup. For the shipped Codex subscription template using `vendor: "openai_codex"` and `models: ["openai-codex/operator-confirmed-model"]`, use `openai_codex` as the outer key and the prefixed model ID as the inner key. A profile authored with vendor `openai-codex` instead needs that exact outer key; extension lookup does not normalize the two spellings. Preserve the profile's existing account-slot binding. Codex subscription effective context is capped at 256,000 tokens even if an extension or profile declares more; smaller declared limits stay smaller.
+
+1. Save the catalog metadata, then add the same native ID to the intended Provider's `models` array. No profile `modelMetadata` patch is needed unless that profile needs a more specific override. Existing entries may remain alongside the new model.
+2. In `gateway.jsonc`, add or select a logical model whose route names that Provider's `id` and exact `providerModel`. Set its required compaction threshold so threshold plus output reserve fits the effective context; for the illustrative limits above, 200,000 plus 8,192 fits 256,000.
+3. Validate the composed configuration, save with the editor's current revision, and use the existing runtime reload workflow. Catalog and Provider edits are restart-required: safe reload reports pending restart and preserves active Provider metadata; strict reload refuses changes requiring restart. Restart NanoCore through the normal authorized operations procedure, then select the logical model.
+
+Precedence is vendored snapshot → extension catalog → profile `modelMetadata`, leaf by leaf. Explicit `false`, zero costs and empty modality arrays override inherited values; omitted leaves inherit, and arrays replace. Costs are optional USD-per-million-token hints, not invoices. `family` is optional; a logical model without a known family can have only one route. The schema rejects unknown fields, invalid limits and negative costs. An unused catalog entry does not expose a model, grant credentials, or add a route.
+
+Invalid composed configuration leaves the last-known-good runtime snapshot active. Correct it and validate again; stale revisions require rereading before writing. Removing a profile overlay restores extension inheritance; removing an extension restores snapshot inheritance after validation and restart. If removal leaves a listed model without known context, fix its declaration or remove its Provider/Gateway references before applying. No models.dev snapshot bytes are edited by these steps.

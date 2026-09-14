@@ -54,3 +54,5 @@ Run focused layout, migration, database, canonical reload, index rebuild, export
 - [Storage](../../../../docs/core/storage.md)
 - [Storage Layout And Record Ownership](../../../../docs/specs/20260703-storage_layout_record_ownership.md)
 - [Schema Evolution Record Envelope](../../../../docs/specs/20260703-schema_evolution_record_envelope.md)
+
+Data-root initialization seeds an empty editable `config/model-catalog.jsonc` alongside the other root config templates when absent and preserves administrator-authored contents.

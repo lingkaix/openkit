@@ -877,7 +877,12 @@ export function resolveDataRootPath(root: string, ...segments: string[]): string
  * @param configRoot Config directory under the data root.
  */
 function copyRootConfigTemplates(configRoot: string): void {
-  for (const fileName of ['server.jsonc', 'gateway.jsonc', 'internal-role-profiles.jsonc']) {
+  for (const fileName of [
+    'server.jsonc',
+    'gateway.jsonc',
+    'internal-role-profiles.jsonc',
+    'model-catalog.jsonc',
+  ]) {
     const sourcePath = findConfigTemplateFile(fileName);
     const targetPath = join(configRoot, fileName);
     if (sourcePath && !existsSync(targetPath)) copyFileSync(sourcePath, targetPath);

@@ -97,6 +97,7 @@ The clean target uses these canonical authored files:
 
 ```text
 DATA_ROOT/config/server.jsonc
+DATA_ROOT/config/model-catalog.jsonc
 DATA_ROOT/config/gateway.jsonc
 DATA_ROOT/config/internal-role-profiles.jsonc
 DATA_ROOT/config/providers/<providerId>.provider.jsonc
@@ -122,6 +123,13 @@ Workspace MCP server catalogs are not authored runtime-config files. Effective G
 `knowledgeMaintenance` is an owner-local field of `user.jsonc` for User Memory, `workspace.jsonc` for Workspace Knowledge, and `server.jsonc` for Server Knowledge. Its strict shape is `{enabled:boolean,reviewRequiredPageIds:string[]}`, defaulting to disabled/empty; IDs are safe, unique and scope-local under the Knowledge owner. Existing current-user, Workspace configuration and administrator authorization respectively govern edits; no cross-scope inheritance applies. The notebook publisher rechecks the current validated snapshot immediately before publication and records the exact value/digest as admission evidence. Reload can revoke an in-flight publication without changing that run's Tool set. Import of notebook content never enables this setting. This design is Not Started until config schemas, revision-aware commands and the notebook consumer land together; it adds no new settings store.
 
 All authored files use strict schemas, explicit `schemaVersion`, the shared required-feature registry when behavior needs a feature gate, and namespaced descriptive extensions. Unknown authority-bearing behavior remains invalid. This change adds no compatibility alias, generic unknown-field activation, routing plugin registry, or parallel configuration transaction protocol.
+
+## Deployment Model Extension File
+
+`DATA_ROOT/config/model-catalog.jsonc` is a Server-owned authored file exposed as `model-catalog` through the existing deployment-admin runtime-config file list, read, create, revision-checked write, validation and schema catalog APIs. The Gateway specification owns its strict metadata shape and precedence. A missing file is an empty catalog; a new Data Root receives an empty editable template. Non-admin users cannot edit it or inject entries through Workspace, User or request configuration.
+
+Every semantic catalog change is restart-required because Provider dispatchers capture effective metadata at construction. Safe reload retains the prior catalog and Provider registry and reports pending restart; strict reload rejects a restart-required candidate under the existing contract. Restart loads the validated current file. Invalid syntax, fields or composed model context reject the candidate without replacing the active snapshot; stale writes and path escapes fail through the existing file service. Removing entries or the file restores lower-precedence metadata only after successful validation and restart. Recovery is an explicit corrected revision and ordinary apply/restart, with no automatic repair or cross-system transaction. Generic editing and deployment-admin enforcement are the v1 acceptance surface; no specialized Web form is required.
+
 
 ## Selection, Composition, And Resolution
 
