@@ -12,6 +12,8 @@ Workspace leave is exposed as `workspace.leave` through implicit local identity 
 
 Personal admin-token list and default selection are exposed as `token.my-admin-list` and `token.my-admin-default` through implicit local identity only. Both return redacted records and the effective default token ID. Server-mode bearer credentials remain unsupported; use Web **My admin access** for the session path.
 
+Generic access-token creation and rotation are exposed as `token.create` and `token.rotate` with server-admin bearer authority in server mode and an explicit safe local `destination`. Named slots have separate keychain and encrypted fallback identities from the endpoint administration credential, with persisted backend selection to prevent stale reads after replacement, deletion or restart. Responses contain only redacted records, destination and storage metadata; normal authentication keeps using the endpoint credential. `skills/openkit-secrets.mjs` owns named preflight/write/read/delete and backend isolation. Run `node --test tests/openkit-skill-interface.test.mjs` after `pnpm build:openkit` to verify the source and regenerated executable together.
+
 ## Operations Interface
 
 The operations package contains its entrypoint, directly linked canonical operator references and any bounded support scripts required by an accepted operation owner. It works from outside the source checkout and can guide recovery while NanoCore is unavailable. Procedures name required host tools and explicitly acquire source when needed. Credentials and host authority come from the user's Agent environment, not the Skill. NanoCore/Web updates and separately authorized NanoHost work remain distinct.

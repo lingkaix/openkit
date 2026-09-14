@@ -14,9 +14,18 @@ import * as appSchemas from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import * as protocol from '@openkit/protocol';
 import { z } from 'zod';
+import { isValidCredentialDestination } from './openkit-secrets.mjs';
 
 const EMPTY_INPUT = z.object({}).strict();
 const IDENTIFIER = z.string().min(1);
+const CREDENTIAL_DESTINATION = z
+  .string()
+  .refine(isValidCredentialDestination, {
+    message: 'A non-reserved named credential destination is required.',
+  })
+  .describe(
+    'Required local slot: 1-64 lowercase letters, digits, underscores or hyphens, starting with a letter; admin, endpoint, default, current and the token prefix are reserved.'
+  );
 const OPENKIT_ACCESS_TOKEN = z.string().regex(/^okt_[A-Za-z0-9_-]+$/);
 const ADMIN_RECOVERY_CREDENTIAL = strictScope({
   kind: z.literal('openkit-admin-recovery'),
@@ -120,6 +129,59 @@ function bodyWithout(input, ...keys) {
  */
 function localError(code, message, cause) {
   return Object.assign(new Error(message), { code, ...(cause === undefined ? {} : { cause }) });
+}
+
+/**
+ * Preflights a named local sink, invokes issuance once, and returns only delivery metadata.
+ *
+ * @param {{credentialStore?: import('./openkit-secrets.mjs').OpenKitCredentialStore, endpoint: string}} context Local credential context.
+ * @param {string} destination Explicit named destination.
+ * @param {() => Promise<{token: string, record: unknown, rotatedRecord?: unknown}>} issue Public client issuance call.
+ * @returns {Promise<object>} Redacted record and storage metadata.
+ */
+async function deliverNamedAccessToken({ credentialStore, endpoint }, destination, issue) {
+  if (!isValidCredentialDestination(destination)) {
+    throw localError(
+      'invalid_credential_destination',
+      'A non-reserved named credential destination is required.'
+    );
+  }
+  if (
+    !endpoint ||
+    typeof credentialStore?.preflightNamedWrite !== 'function' ||
+    typeof credentialStore.writeNamedToken !== 'function'
+  ) {
+    throw localError(
+      'credential_storage_unavailable',
+      'Named credential storage must be available before token issuance.'
+    );
+  }
+  const slot = { baseUrl: endpoint, destination };
+  try {
+    credentialStore.preflightNamedWrite(slot);
+  } catch (cause) {
+    throw localError(
+      'credential_storage_unavailable',
+      'Named credential storage must be writable before token issuance.',
+      cause
+    );
+  }
+  const { token, record, rotatedRecord } = await issue();
+  try {
+    const credentialStorageBackend = credentialStore.writeNamedToken({ ...slot, token });
+    return {
+      record,
+      ...(rotatedRecord === undefined ? {} : { rotatedRecord }),
+      credentialStorageBackend,
+      destination,
+    };
+  } catch (cause) {
+    throw localError(
+      'credential_storage_failed',
+      'NanoCore issued the token, but named credential storage failed. Inspect token inventory before a new request; the secret cannot be recovered from NanoCore.',
+      cause
+    );
+  }
 }
 
 /**
@@ -293,6 +355,48 @@ export const operationCatalog = [
     mutating: false,
     inputSchema: EMPTY_INPUT,
     handler: ({ client }) => client.app.listOpenKitAccessTokens(),
+  },
+  {
+    ...STANDARD,
+    requiredAccess: 'deployment admin: server-admin bearer token in server mode',
+    outputSensitivity: 'redacted token records and named credential storage metadata only',
+    id: 'token.create',
+    source: 'app-api',
+    appOperationId: 'createOpenKitAccessToken',
+    clientMethod: 'app.createOpenKitAccessToken',
+    group: 'token',
+    summary: 'Create an OpenKit access token into an explicit named local credential destination.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.CreateOpenKitAccessTokenRequestSchema, {
+      destination: CREDENTIAL_DESTINATION,
+    }),
+    handler: (context, input) =>
+      deliverNamedAccessToken(context, input.destination, () =>
+        context.client.app.createOpenKitAccessToken(bodyWithout(input, 'destination'))
+      ),
+  },
+  {
+    ...STANDARD,
+    requiredAccess: 'deployment admin: server-admin bearer token in server mode',
+    outputSensitivity: 'redacted token records and named credential storage metadata only',
+    id: 'token.rotate',
+    source: 'app-api',
+    appOperationId: 'rotateOpenKitAccessToken',
+    clientMethod: 'app.rotateOpenKitAccessToken',
+    group: 'token',
+    summary: 'Rotate an OpenKit access token into an explicit named local credential destination.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RotateOpenKitAccessTokenRequestSchema, {
+      destination: CREDENTIAL_DESTINATION,
+      tokenId: IDENTIFIER,
+    }),
+    handler: (context, input) =>
+      deliverNamedAccessToken(context, input.destination, () =>
+        context.client.app.rotateOpenKitAccessToken(
+          input.tokenId,
+          bodyWithout(input, 'tokenId', 'destination')
+        )
+      ),
   },
   {
     ...SECRET_INPUT,
@@ -3670,20 +3774,6 @@ export const operationCatalog = [
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
 export const operationExclusions = [
-  {
-    source: 'app-api',
-    name: 'createOpenKitAccessToken',
-    reason:
-      'No safe named credential destination exists; issuing would risk replacing the endpoint administration credential.',
-    owner: 'docs/specs/20260713-openkit_agent_skill_interface.md',
-  },
-  {
-    source: 'app-api',
-    name: 'rotateOpenKitAccessToken',
-    reason:
-      'No safe named credential destination exists; rotation would risk replacing the endpoint administration credential.',
-    owner: 'docs/specs/20260713-openkit_agent_skill_interface.md',
-  },
   {
     source: 'app-api',
     name: 'getWorkspaceDashboard',

@@ -1521,11 +1521,42 @@ test('named backend selection prevents stale replacement and deletion across out
     restarted.writeNamedToken({ ...slot, token: 'okt_fake_next_keychain' }),
     'os-keychain'
   );
+  const selectionFile = join(configDir, listFiles(configDir)[0]);
+  for (const invalidSelection of ['{', '{}', '{"version":2,"backend":"os-keychain"}']) {
+    writeFileSync(selectionFile, invalidSelection);
+    assert.equal(createDefaultOpenKitCredentialStore(options).readNamedToken(slot), null);
+  }
+  restarted.writeNamedToken({ ...slot, token: 'okt_fake_next_keychain' });
   available = false;
   restarted.writeNamedToken({ ...slot, token: 'okt_fake_next_fallback' });
   assert.equal(restarted.deleteNamedToken(slot), true);
   available = true;
   assert.equal(createDefaultOpenKitCredentialStore(options).readNamedToken(slot), null);
+});
+
+test('named keychain selection publication failure never reports successful delivery', async (t) => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  const configDir = mkdtempSync(join(tmpdir(), 'openkit-named-publication-'));
+  t.after(() => rmSync(configDir, { force: true, recursive: true }));
+  let backendWritten = false;
+  const store = createDefaultOpenKitCredentialStore({
+    configDir,
+    platform: 'linux',
+    machineId: 'fake-machine',
+    warn() {},
+    execFile(_command, args) {
+      if (args[0] === 'store') {
+        backendWritten = true;
+        rmSync(configDir, { recursive: true });
+        writeFileSync(configDir, 'publication blocked');
+      }
+      return '';
+    },
+  });
+  const slot = { baseUrl: 'https://nanocore.example', destination: 'automation' };
+  store.preflightNamedWrite(slot);
+  assert.throws(() => store.writeNamedToken({ ...slot, token: 'okt_fake_one_time' }));
+  assert.equal(backendWritten, true);
 });
 
 test('named fallback delivery refuses links to the endpoint admin credential', async (t) => {
@@ -1609,15 +1640,20 @@ test('named keychain entries have distinct identities and stdin-only writes on s
   t.after(() => rmSync(configDir, { force: true, recursive: true }));
   for (const platform of ['linux', 'win32', 'darwin']) {
     const calls = [];
-    const store = createDefaultOpenKitCredentialStore({
-      platform,
-      configDir,
-      execFile(command, args, options) {
-        calls.push({ command, args, options });
-        return 'okt_fake_keychain';
-      },
-    });
+    const execFile = (command, args, options) => {
+      calls.push({ command, args, options });
+      return 'okt_fake_keychain';
+    };
+    const store = createDefaultOpenKitCredentialStore({ platform, configDir, execFile });
+    const seed = createDefaultOpenKitCredentialStore({ platform: 'linux', configDir, execFile });
     const slot = { baseUrl: 'https://nanocore.example', destination: 'automation' };
+    for (const namedSlot of [
+      slot,
+      { ...slot, destination: 'other' },
+      { ...slot, baseUrl: 'https://other.example' },
+    ]) {
+      seed.writeNamedToken({ ...namedSlot, token: 'okt_fake_keychain' });
+    }
     store.readToken(slot);
     const adminRead = calls.at(-1);
     assert.equal(store.readNamedToken(slot), 'okt_fake_keychain');

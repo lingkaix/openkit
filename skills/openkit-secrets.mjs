@@ -3,17 +3,22 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync }
 import {
   accessSync,
   chmodSync,
+  closeSync,
   existsSync,
   constants as fsConstants,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const KEYCHAIN_SERVICE = 'openkit.nanocore.token';
+const NAMED_KEYCHAIN_SERVICE = 'openkit.nanocore.named-token';
 const OPENKIT_TOKEN_PATTERN = /okt_[A-Za-z0-9._~-]+/g;
 const ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'`(])(?:\/|~\/|[A-Za-z]:[\\/]|\\\\|\/\/)\S*/g;
 
@@ -30,29 +35,95 @@ const ENCRYPTED_FALLBACK_CREDENTIAL_STORAGE_WARNING =
  * @property {(input: {baseUrl: string}) => string | null} readToken Reads one endpoint-scoped token.
  * @property {(input: {baseUrl: string}) => void} preflightWrite Verifies that encrypted fallback storage can be prepared without storing a probe credential.
  * @property {(input: {baseUrl: string, token: string}) => OpenKitCredentialStorageBackend} writeToken Stores one endpoint-scoped token.
- * @property {(input: {baseUrl: string}) => boolean} deleteToken Deletes every local credential for one endpoint.
+ * @property {(input: {baseUrl: string}) => boolean} deleteToken Deletes the endpoint administration credential from both backends.
+ * @property {(input: {baseUrl: string, destination: string}) => string | null} readNamedToken Reads an isolated named credential.
+ * @property {(input: {baseUrl: string, destination: string}) => void} preflightNamedWrite Checks named storage before issuance.
+ * @property {(input: {baseUrl: string, destination: string, token: string}) => OpenKitCredentialStorageBackend} writeNamedToken Stores or replaces only the named credential.
+ * @property {(input: {baseUrl: string, destination: string}) => boolean} deleteNamedToken Removes named selection and attempts keychain cleanup; true means a local slot was removed.
  */
 
 /**
- * Creates the default endpoint-scoped OpenKit credential store.
+ * Creates the endpoint administration store and its isolated named credential slots.
  *
  * @param {{platform?: NodeJS.Platform, execFile?: typeof execFileSync, configDir?: string, machineId?: string, warn?: (message: string) => void}} [options] Platform and test overrides.
  * @returns {OpenKitCredentialStore} Credential store.
  */
 export function createDefaultOpenKitCredentialStore(options = {}) {
+  let warned = false;
+  /** Emits one degraded-storage warning across both credential namespaces. */
+  const warn = (message) => {
+    if (!warned) {
+      warned = true;
+      (options.warn ?? ((value) => process.stderr.write(`${value}\n`)))(message);
+    }
+  };
+  const endpointStore = createScopedCredentialStore({ ...options, warn });
+  const namedStore = createScopedCredentialStore({ ...options, warn }, true);
+  return {
+    ...endpointStore,
+    readNamedToken: (input) => namedStore.readToken({ baseUrl: namedCredentialKey(input) }),
+    preflightNamedWrite: (input) =>
+      namedStore.preflightWrite({ baseUrl: namedCredentialKey(input) }),
+    writeNamedToken: (input) =>
+      namedStore.writeToken({ baseUrl: namedCredentialKey(input), token: input.token }),
+    deleteNamedToken: (input) => namedStore.deleteToken({ baseUrl: namedCredentialKey(input) }),
+  };
+}
+
+/**
+ * Checks a public slot name without normalizing it or echoing untrusted input.
+ *
+ * @param {unknown} destination Caller-selected non-secret slot name.
+ * @returns {boolean} Whether the name is safe and non-reserved.
+ */
+export function isValidCredentialDestination(destination) {
+  return (
+    typeof destination === 'string' &&
+    /^[a-z][a-z0-9_-]{0,63}$/.test(destination) &&
+    !['admin', 'endpoint', 'default', 'current'].includes(destination) &&
+    !destination.startsWith('okt_')
+  );
+}
+
+/**
+ * Builds an unambiguous endpoint/name identity inside the separate named namespace.
+ *
+ * @param {{baseUrl: string, destination: string}} input Named lookup key.
+ * @returns {string} Tuple digest in a separate namespace, safe for keychain command arguments.
+ * @throws {Error} When the destination is invalid or reserved.
+ */
+function namedCredentialKey(input) {
+  if (!isValidCredentialDestination(input.destination)) {
+    throw Object.assign(new Error('A non-reserved named credential destination is required.'), {
+      code: 'invalid_credential_destination',
+    });
+  }
+  return createHash('sha256')
+    .update(JSON.stringify([input.baseUrl, input.destination]))
+    .digest('hex');
+}
+
+/**
+ * Shares credential backend mechanics while separating endpoint and named namespaces.
+ *
+ * @param {Parameters<typeof createDefaultOpenKitCredentialStore>[0]} options Platform overrides.
+ * @param {boolean} [named] Selects the isolated named keychain service and fallback directory.
+ * @returns {Pick<OpenKitCredentialStore, 'readToken' | 'writeToken' | 'deleteToken' | 'preflightWrite'>} Scoped backend operations.
+ */
+function createScopedCredentialStore(options, named = false) {
   const platform = options.platform ?? process.platform;
   const execFile = options.execFile ?? execFileSync;
-  const configDir = options.configDir ?? defaultOpenKitConfigDir(platform);
+  const configDir = join(
+    options.configDir ?? defaultOpenKitConfigDir(platform),
+    'credentials',
+    named ? 'nanocore-named' : 'nanocore'
+  );
+  const service = named ? NAMED_KEYCHAIN_SERVICE : KEYCHAIN_SERVICE;
   let machineId = options.machineId;
-  let encryptedFallbackStorageWarned = false;
-  const warn = options.warn ?? ((message) => process.stderr.write(`${message}\n`));
+  const warn = options.warn;
 
   /** Emits the degraded-storage warning at most once for this store. */
   function warnEncryptedFallbackStorage() {
-    if (encryptedFallbackStorageWarned) {
-      return;
-    }
-    encryptedFallbackStorageWarned = true;
     warn(ENCRYPTED_FALLBACK_CREDENTIAL_STORAGE_WARNING);
   }
 
@@ -64,15 +135,22 @@ export function createDefaultOpenKitCredentialStore(options = {}) {
 
   return {
     /**
-     * Reads a token from the platform keychain, then the encrypted fallback.
+     * Reads the selected named backend, or keychain-first for endpoint administration.
      *
      * @param {{baseUrl: string}} input NanoCore endpoint lookup key.
      * @returns {string | null} Stored token or null.
      */
     readToken(input) {
-      const keychainToken = readPlatformKeychainToken(platform, execFile, input.baseUrl);
-      if (keychainToken) {
-        return keychainToken;
+      if (named) {
+        assertNamedFallbackPath(configDir, input.baseUrl);
+        const backend = readNamedStorageBackend(configDir, input.baseUrl);
+        if (!backend) return null;
+        if (backend === 'os-keychain') {
+          return readPlatformKeychainToken(platform, execFile, input.baseUrl, service);
+        }
+      } else {
+        const keychainToken = readPlatformKeychainToken(platform, execFile, input.baseUrl, service);
+        if (keychainToken) return keychainToken;
       }
       const fallbackToken = readEncryptedFallbackToken(
         configDir,
@@ -93,6 +171,9 @@ export function createDefaultOpenKitCredentialStore(options = {}) {
      * @throws {Error} When the credential directory or machine-scoped key cannot be prepared.
      */
     preflightWrite(input) {
+      if (named) {
+        assertNamedFallbackPath(configDir, input.baseUrl);
+      }
       preflightEncryptedFallback(configDir, resolveMachineId(), input.baseUrl);
     },
 
@@ -104,10 +185,16 @@ export function createDefaultOpenKitCredentialStore(options = {}) {
      * @throws {Error} When the token is not an OpenKit access token or fallback storage fails.
      */
     writeToken(input) {
-      if (writePlatformKeychainToken(platform, execFile, input.baseUrl, input.token)) {
+      if (named) {
+        assertNamedFallbackPath(configDir, input.baseUrl);
+      }
+      if (writePlatformKeychainToken(platform, execFile, input.baseUrl, input.token, service)) {
+        if (named) {
+          writeNamedStorageRecord(configDir, input.baseUrl, { version: 1, backend: 'os-keychain' });
+        }
         return 'os-keychain';
       }
-      writeEncryptedFallbackToken(configDir, resolveMachineId(), input.baseUrl, input.token);
+      writeEncryptedFallbackToken(configDir, resolveMachineId(), input.baseUrl, input.token, named);
       warnEncryptedFallbackStorage();
       return 'encrypted-file';
     },
@@ -116,12 +203,20 @@ export function createDefaultOpenKitCredentialStore(options = {}) {
      * Deletes platform and fallback credentials for one exact endpoint.
      *
      * @param {{baseUrl: string}} input NanoCore endpoint lookup key.
-     * @returns {boolean} True when at least one credential was deleted.
+     * @returns {boolean} True when the named selection or an endpoint credential was deleted.
      */
     deleteToken(input) {
-      const keychainDeleted = deletePlatformKeychainToken(platform, execFile, input.baseUrl);
+      if (named) {
+        assertNamedFallbackPath(configDir, input.baseUrl);
+      }
+      const keychainDeleted = deletePlatformKeychainToken(
+        platform,
+        execFile,
+        input.baseUrl,
+        service
+      );
       const fallbackDeleted = deleteEncryptedFallbackToken(configDir, input.baseUrl);
-      return keychainDeleted || fallbackDeleted;
+      return named ? fallbackDeleted : keychainDeleted || fallbackDeleted;
     },
   };
 }
@@ -219,14 +314,15 @@ function redactText(value, extraSecrets) {
  * @param {NodeJS.Platform} platform Current platform.
  * @param {typeof execFileSync} execFile Command runner.
  * @param {string} baseUrl NanoCore endpoint account key.
+ * @param {string} service Isolated keychain service identity.
  * @returns {string | null} Stored token or null.
  */
-function readPlatformKeychainToken(platform, execFile, baseUrl) {
+function readPlatformKeychainToken(platform, execFile, baseUrl, service) {
   if (platform === 'darwin') {
     return readKeychainCommand(execFile, 'security', [
       'find-generic-password',
       '-s',
-      KEYCHAIN_SERVICE,
+      service,
       '-a',
       baseUrl,
       '-w',
@@ -236,7 +332,7 @@ function readPlatformKeychainToken(platform, execFile, baseUrl) {
     return readKeychainCommand(execFile, 'secret-tool', [
       'lookup',
       'application',
-      'openkit',
+      service === KEYCHAIN_SERVICE ? 'openkit' : service,
       'nanocore-url',
       baseUrl,
     ]);
@@ -249,7 +345,7 @@ function readPlatformKeychainToken(platform, execFile, baseUrl) {
       'Bypass',
       '-Command',
       WINDOWS_CREDENTIAL_READ,
-      KEYCHAIN_SERVICE,
+      service,
       baseUrl,
     ]);
   }
@@ -263,9 +359,10 @@ function readPlatformKeychainToken(platform, execFile, baseUrl) {
  * @param {typeof execFileSync} execFile Command runner.
  * @param {string} baseUrl NanoCore endpoint account key.
  * @param {string} token OpenKit access token.
+ * @param {string} service Isolated keychain service identity.
  * @returns {boolean} True when the platform keychain accepted the token.
  */
-function writePlatformKeychainToken(platform, execFile, baseUrl, token) {
+function writePlatformKeychainToken(platform, execFile, baseUrl, token, service) {
   const normalized = normalizeStoredOpenKitToken(token);
   if (!normalized) {
     throw new Error('Only OpenKit access tokens can be stored.');
@@ -279,7 +376,7 @@ function writePlatformKeychainToken(platform, execFile, baseUrl, token) {
         '--label',
         'OpenKit NanoCore token',
         'application',
-        'openkit',
+        service === KEYCHAIN_SERVICE ? 'openkit' : service,
         'nanocore-url',
         baseUrl,
       ],
@@ -297,7 +394,7 @@ function writePlatformKeychainToken(platform, execFile, baseUrl, token) {
         'Bypass',
         '-Command',
         WINDOWS_CREDENTIAL_WRITE,
-        KEYCHAIN_SERVICE,
+        service,
         baseUrl,
       ],
       normalized
@@ -312,14 +409,15 @@ function writePlatformKeychainToken(platform, execFile, baseUrl, token) {
  * @param {NodeJS.Platform} platform Current platform.
  * @param {typeof execFileSync} execFile Command runner.
  * @param {string} baseUrl NanoCore endpoint account key.
+ * @param {string} service Isolated keychain service identity.
  * @returns {boolean} True when the platform command deleted an entry.
  */
-function deletePlatformKeychainToken(platform, execFile, baseUrl) {
+function deletePlatformKeychainToken(platform, execFile, baseUrl, service) {
   if (platform === 'darwin') {
     return deleteKeychainCommand(execFile, 'security', [
       'delete-generic-password',
       '-s',
-      KEYCHAIN_SERVICE,
+      service,
       '-a',
       baseUrl,
     ]);
@@ -328,15 +426,13 @@ function deletePlatformKeychainToken(platform, execFile, baseUrl) {
     return deleteKeychainCommand(execFile, 'secret-tool', [
       'clear',
       'application',
-      'openkit',
+      service === KEYCHAIN_SERVICE ? 'openkit' : service,
       'nanocore-url',
       baseUrl,
     ]);
   }
   if (platform === 'win32') {
-    return deleteKeychainCommand(execFile, 'cmdkey.exe', [
-      `/delete:${KEYCHAIN_SERVICE}:${baseUrl}`,
-    ]);
+    return deleteKeychainCommand(execFile, 'cmdkey.exe', [`/delete:${service}:${baseUrl}`]);
   }
   return false;
 }
@@ -421,15 +517,88 @@ function keychainDeleteOptions() {
 }
 
 /**
+ * Rejects links and non-files that could redirect named storage into another credential slot.
+ *
+ * @param {string} directory Named credential directory.
+ * @param {string} key Encoded endpoint/name identity.
+ * @returns {void}
+ */
+function assertNamedFallbackPath(directory, key) {
+  const credentialPath = fallbackCredentialPath(directory, key);
+  for (const path of [dirname(directory), directory, credentialPath]) {
+    let stat;
+    try {
+      stat = lstatSync(path);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    const isCredential = path === credentialPath;
+    if (
+      stat.isSymbolicLink() ||
+      (isCredential ? !stat.isFile() || stat.nlink !== 1 : !stat.isDirectory())
+    ) {
+      throw new Error(
+        'Named credential storage requires an unlinked regular file in real directories.'
+      );
+    }
+  }
+}
+
+/**
+ * Reads the last published backend choice, never discovering orphaned keychain credentials.
+ *
+ * @param {string} directory Named credential directory.
+ * @param {string} key Encoded endpoint/name identity.
+ * @returns {OpenKitCredentialStorageBackend | null} Selected backend or null on absent/invalid storage.
+ */
+function readNamedStorageBackend(directory, key) {
+  try {
+    const record = JSON.parse(readFileSync(fallbackCredentialPath(directory, key), 'utf8'));
+    return record.version === 1 && ['os-keychain', 'encrypted-file'].includes(record.backend)
+      ? record.backend
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Atomically publishes a named backend marker or encrypted token in the same slot file.
+ *
+ * @param {string} directory Named credential directory.
+ * @param {string} key Encoded endpoint/name identity.
+ * @param {object} record Non-secret keychain selection or encrypted fallback envelope.
+ * @returns {void}
+ */
+function writeNamedStorageRecord(directory, key, record) {
+  ensureEncryptedFallbackDirectory(directory);
+  const path = fallbackCredentialPath(directory, key);
+  const temporaryPath = `${path}.${randomBytes(16).toString('hex')}.tmp`;
+  const descriptor = openSync(temporaryPath, 'wx', 0o600);
+  try {
+    try {
+      writeFileSync(descriptor, `${JSON.stringify(record)}\n`);
+    } finally {
+      closeSync(descriptor);
+    }
+    renameSync(temporaryPath, path);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
+
+/**
  * Writes one encrypted fallback token file.
  *
- * @param {string} configDir OpenKit user config directory.
+ * @param {string} configDir Scoped credential directory.
  * @param {string} machineId Machine-scoped key seed.
  * @param {string} baseUrl NanoCore endpoint key.
  * @param {string} token OpenKit access token.
+ * @param {boolean} [named] Replaces a named file atomically without following a destination link.
  * @returns {void}
  */
-function writeEncryptedFallbackToken(configDir, machineId, baseUrl, token) {
+function writeEncryptedFallbackToken(configDir, machineId, baseUrl, token, named = false) {
   const normalized = normalizeStoredOpenKitToken(token);
   if (!normalized) {
     throw new Error('Only OpenKit access tokens can be stored.');
@@ -448,6 +617,10 @@ function writeEncryptedFallbackToken(configDir, machineId, baseUrl, token) {
   };
   const path = fallbackCredentialPath(configDir, baseUrl);
   ensureEncryptedFallbackDirectory(configDir);
+  if (named) {
+    writeNamedStorageRecord(configDir, baseUrl, { ...record, backend: 'encrypted-file' });
+    return;
+  }
   writeFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
 }
@@ -455,7 +628,7 @@ function writeEncryptedFallbackToken(configDir, machineId, baseUrl, token) {
 /**
  * Verifies fallback directory and machine-key prerequisites without writing credential material.
  *
- * @param {string} configDir OpenKit user config directory.
+ * @param {string} configDir Scoped credential directory.
  * @param {string} machineId Machine-scoped key seed.
  * @param {string} baseUrl NanoCore endpoint key.
  * @returns {void}
@@ -469,11 +642,11 @@ function preflightEncryptedFallback(configDir, machineId, baseUrl) {
 /**
  * Creates and verifies the owner-only encrypted credential directory.
  *
- * @param {string} configDir OpenKit user config directory.
+ * @param {string} configDir Scoped credential directory.
  * @returns {void}
  */
 function ensureEncryptedFallbackDirectory(configDir) {
-  const directory = join(configDir, 'credentials', 'nanocore');
+  const directory = configDir;
   mkdirSync(directory, { mode: 0o700, recursive: true });
   chmodSync(directory, 0o700);
   accessSync(directory, fsConstants.W_OK);
@@ -482,7 +655,7 @@ function ensureEncryptedFallbackDirectory(configDir) {
 /**
  * Reads one encrypted fallback token file.
  *
- * @param {string} configDir OpenKit user config directory.
+ * @param {string} configDir Scoped credential directory.
  * @param {string} machineId Machine-scoped key seed.
  * @param {string} baseUrl NanoCore endpoint key.
  * @returns {string | null} Stored token or null.
@@ -518,7 +691,7 @@ function readEncryptedFallbackToken(configDir, machineId, baseUrl) {
 /**
  * Deletes one encrypted fallback token file.
  *
- * @param {string} configDir OpenKit user config directory.
+ * @param {string} configDir Scoped credential directory.
  * @param {string} baseUrl NanoCore endpoint key.
  * @returns {boolean} True when the file existed and was removed.
  */
@@ -534,13 +707,13 @@ function deleteEncryptedFallbackToken(configDir, baseUrl) {
 /**
  * Resolves the encrypted fallback file path for one NanoCore URL.
  *
- * @param {string} configDir OpenKit user config directory.
+ * @param {string} configDir Scoped credential directory.
  * @param {string} baseUrl NanoCore endpoint key.
  * @returns {string} Fallback credential file path.
  */
 function fallbackCredentialPath(configDir, baseUrl) {
   const urlHash = createHash('sha256').update(baseUrl).digest('hex');
-  return join(configDir, 'credentials', 'nanocore', `${urlHash}.json`);
+  return join(configDir, `${urlHash}.json`);
 }
 
 /**
