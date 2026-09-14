@@ -4271,6 +4271,179 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it.each([
+    [true, false],
+    [false, false],
+    [true, true],
+  ])('retires a failed pre-witness resident with missing storage (Harness: %s, storage: %s) before fresh materialization', async (withHarness, withStorage) => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+               target_id, identity_id, deployment_id, connection_generation,
+               predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+             ) VALUES ('target_capacity_guard', 'identity_capacity_guard',
+                       'deployment_capacity_guard', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
+        )
+        .run('2026-09-06T00:00:00.000Z');
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-capacity-guard',
+        harnessCompatibilityKey: 'c'.repeat(64),
+        harnessInstanceId: 'harness-capacity-guard',
+        imageDigest: `sha256:${'1'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
+        sandboxBindingRef: 'sandbox-binding-capacity-guard',
+        sandboxCompatibilityKey: 'b'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-capacity-guard',
+        sandboxRuntimeId: 'sandbox-runtime-capacity-guard',
+        runtimeTargetId: 'target_capacity_guard',
+        timestamp: '2026-09-06T00:00:00.000Z',
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'd'.repeat(64),
+        agentSessionId: 'as_capacity_guard_resident',
+        agentSessionRuntimeBindingId: 'binding-capacity-guard',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-capacity-guard',
+        threadId: 'thread_capacity_guard_resident',
+        timestamp: '2026-09-06T00:00:00.000Z',
+        workspaceId: 'workspace_capacity_guard_resident',
+      });
+      coreDb.sqlite.exec(`
+        UPDATE sandbox_runtime_records
+        SET origin_physical_epoch = 'pre-witness', lifecycle_state = 'failed',
+            health_state = 'unknown', drain_state = 'draining', cleanup_state = 'unknown';
+        UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining';
+      `);
+      if (!withHarness) coreDb.sqlite.exec('DELETE FROM harness_instance_records');
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+      ).toEqual({ count: 0 });
+      const sessionDispatch: NanoHostSessionDispatch = {
+        async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+          const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+          effects.push(request);
+          if (request.kind === 'image.acquire') return { digest: request.input.imageReference };
+          if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+          if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
+          throw new Error(`Unexpected stale Sandbox effect: ${request.kind}`);
+        },
+        async poll() {
+          return null;
+        },
+        async result() {},
+        async route() {
+          throw new Error('Unexpected semantic route.');
+        },
+      };
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
+      ).backend;
+      const desiredPackage = completeNanoHostPackage({
+        runtime: {
+          image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
+        },
+        scope: {
+          agentSessionId: 'as_capacity_guard_desired',
+          threadId: 'thread_capacity_guard_desired',
+          turnId: 'turn_capacity_guard_desired',
+          workspaceId: 'workspace_capacity_guard_desired',
+        },
+        snapshotId: 'snapshot_capacity_guard_desired',
+      });
+
+      const retainedStorage = withStorage
+        ? attachNanoHostStorageFixture(coreDb, {
+            agentSessionId: 'as_capacity_guard_resident',
+            deploymentId: 'deployment_capacity_guard',
+            runtimeTargetId: 'target_capacity_guard',
+            sandboxBindingRef: 'sandbox-binding-capacity-guard',
+            threadId: 'thread_capacity_guard_resident',
+            workspaceId: 'workspace_capacity_guard_resident',
+          })
+        : null;
+      for (const readinessField of ['ready', 'fresh_empty', 'predecessor_fenced']) {
+        coreDb.sqlite.exec(`UPDATE nanohost_runtime_targets SET ${readinessField} = 0`);
+        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        coreDb.sqlite.exec(`UPDATE nanohost_runtime_targets SET ${readinessField} = 1`);
+      }
+      coreDb.sqlite
+        .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
+        .run('a'.repeat(64));
+      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+      coreDb.sqlite.exec(
+        "UPDATE sandbox_runtime_records SET origin_physical_epoch = 'pre-witness', pinned_goal_id = 'goal_guard'"
+      );
+      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+      coreDb.sqlite.exec('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL');
+      if (withHarness) {
+        coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 1');
+        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
+        coreDb.sqlite.exec(
+          "UPDATE agent_session_runtime_bindings SET current_lease_id = 'lease_busy'"
+        );
+        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        coreDb.sqlite.exec('UPDATE agent_session_runtime_bindings SET current_lease_id = NULL');
+      }
+      authorizeNanoHostPackage(coreDb, desiredPackage);
+      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
+      expect(effects).toEqual([]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      anchorNanoHostMaterialization(coreDb, backend, desiredPackage);
+      await backend.materialize(desiredPackage, { workspaceRoots: [] });
+      expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+        'sandbox.create',
+      ]);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT 1 FROM sandbox_runtime_records WHERE sandbox_runtime_id = 'sandbox-runtime-capacity-guard'"
+          )
+          .get()
+      ).toBeUndefined();
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT origin_physical_epoch AS origin FROM sandbox_runtime_records')
+          .all()
+      ).toEqual([{ origin: 'a'.repeat(64) }]);
+      expect(
+        coreDb.sqlite
+          .prepare("SELECT state FROM worker_storage_bindings WHERE state = 'attached'")
+          .all()
+      ).toEqual([{ state: 'attached' }]);
+      if (retainedStorage) {
+        expect(
+          getWorkerStorageBinding(coreDb, { storageRef: retainedStorage.storageRef })
+        ).toMatchObject({
+          state: 'idle',
+          revision: retainedStorage.revision + 1,
+          attachmentGeneration: retainedStorage.attachmentGeneration,
+        });
+      } else {
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+        ).toEqual({ count: 1 });
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
     'busy',
     'pinned',
     'uncertain',
