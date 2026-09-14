@@ -186,7 +186,8 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
               workspaceId,
               administrationThreadTitle(request.input),
               threadId,
-              'administration'
+              'administration',
+              { visibility: 'private', privateOwnerUserId: actor.userId }
             );
           const turnId = administrationTurnId(actor.userId, thread.id, request.requestId);
           if (

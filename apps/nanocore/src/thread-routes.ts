@@ -65,7 +65,18 @@ export function registerThreadRoutes({
         scope: { workspaceId: input.workspaceId },
         input,
         responseKind: 'thread',
-        execute: () => ThreadSchema.parse(store.createThread(input.workspaceId, input.name)),
+        execute: () =>
+          ThreadSchema.parse(
+            store.createThread(
+              input.workspaceId,
+              input.name,
+              undefined,
+              'conversation',
+              input.visibility === 'workspace'
+                ? { visibility: 'workspace' }
+                : { visibility: 'private', privateOwnerUserId: c.get('actor').userId }
+            )
+          ),
         replay: (record) =>
           ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
         responseId: (result) => result.id,

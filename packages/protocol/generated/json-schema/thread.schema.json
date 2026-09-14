@@ -39,6 +39,17 @@
         "administration"
       ]
     },
+    "visibility": {
+      "type": "string",
+      "enum": [
+        "private",
+        "workspace"
+      ]
+    },
+    "privateOwnerUserId": {
+      "type": "string",
+      "minLength": 1
+    },
     "createdAt": {
       "type": "string",
       "minLength": 1
@@ -55,6 +66,7 @@
     "preview",
     "status",
     "entryPath",
+    "visibility",
     "createdAt",
     "updatedAt"
   ],

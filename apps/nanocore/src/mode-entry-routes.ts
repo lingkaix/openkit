@@ -2697,7 +2697,13 @@ export function registerQuickAndChatModeRoutes({
             );
           }
           const title = chatInput.input.trim().split(/\r?\n/, 1)[0] || 'Artifact task';
-          receivingThreadId = store.createThread(workspaceId, title, createdThreadId).id;
+          receivingThreadId = store.createThread(
+            workspaceId,
+            title,
+            createdThreadId,
+            'conversation',
+            { visibility: 'workspace' }
+          ).id;
         }
         if (!agentId) {
           throw new TurnStartValidationError(
@@ -3521,6 +3527,13 @@ export function registerTaskModeRoute({
       const workspace = store.getWorkspace(workspaceId);
 
       assertProjectWorkspace(workspace, 'start Task Mode');
+      if (store.getThread(workspaceId, threadId).visibility !== 'workspace') {
+        throw new TurnStartValidationError(
+          'shared_thread_required',
+          'Formal work requires a new Workspace-shared Thread and admitted inputs.',
+          409
+        );
+      }
       if (!coreDb) {
         throw new TurnStartValidationError(
           'scheduler_unavailable',

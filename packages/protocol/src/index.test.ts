@@ -734,6 +734,7 @@ describe('protocol schemas', () => {
       preview: 'Update the protocol package to thin workspace payloads.',
       status: 'active',
       entryPath: 'conversation',
+      visibility: 'workspace',
       createdAt: '2026-04-15T00:00:00Z',
       updatedAt: '2026-04-15T00:00:00Z',
     });
@@ -750,6 +751,8 @@ describe('protocol schemas', () => {
       ThreadSchema.parse({
         ...parsed,
         entryPath: 'administration',
+        visibility: 'private',
+        privateOwnerUserId: 'user_admin',
       }).entryPath
     ).toBe('administration');
   });
@@ -1613,6 +1616,7 @@ describe('protocol schemas', () => {
           preview: 'Some preview',
           status: 'active',
           entryPath: 'conversation',
+          visibility: 'workspace',
           createdAt: '2026-04-15T00:00:00Z',
           updatedAt: '2026-04-15T00:00:01Z',
         },
@@ -1706,6 +1710,7 @@ describe('protocol schemas', () => {
           preview: 'First thread',
           status: 'active',
           entryPath: 'conversation',
+          visibility: 'workspace',
           createdAt: '2026-04-15T00:00:00Z',
           updatedAt: '2026-04-15T00:00:00Z',
         },
@@ -1725,6 +1730,7 @@ describe('protocol schemas', () => {
       preview: 'Preview text',
       status: 'active',
       entryPath: 'conversation',
+      visibility: 'workspace',
       createdAt: '2026-04-15T00:00:00Z',
       updatedAt: '2026-04-15T00:00:00Z',
     });

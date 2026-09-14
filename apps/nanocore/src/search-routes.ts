@@ -1,7 +1,7 @@
 import { AppSearchResponseSchema } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
-
 import type { AuthVariables } from './auth/middleware.js';
+import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 
@@ -29,6 +29,7 @@ export function registerSearchRoutes({
     }
 
     const store = requestStore(c);
+    const userId = c.get('actor')?.userId;
     const workspaces = authorizedWorkspaceIds(c).map((workspaceId) =>
       store.getWorkspace(workspaceId)
     );
@@ -58,6 +59,7 @@ export function registerSearchRoutes({
       }
 
       for (const artifact of store.listArtifacts(workspace.id)) {
+        if (!isArtifactVisible(store, artifact, userId)) continue;
         if (matches(artifact.title) || matches(artifact.summary)) {
           const result = {
             kind: 'artifact',
@@ -73,6 +75,7 @@ export function registerSearchRoutes({
 
     for (const workspace of workspaces) {
       for (const thread of store.listThreads(workspace.id)) {
+        if (!isThreadVisible(store, thread, userId)) continue;
         if (matches(thread.name) || matches(thread.preview)) {
           items.push({
             kind: 'thread',

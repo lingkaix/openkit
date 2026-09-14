@@ -3033,6 +3033,49 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    id: 'workspace.dashboard',
+    source: 'app-api',
+    appOperationId: 'getWorkspaceDashboard',
+    clientMethod: 'app.getWorkspaceDashboard',
+    group: 'workspace',
+    summary: 'Read Workspace work and counts within the current Thread audience.',
+    mutating: false,
+    requiredAccess:
+      'current Workspace access; private Threads require exact user ownership, including for admins',
+    inputSchema: strictScope(workspaceScope),
+    handler: ({ client }, input) => client.app.getWorkspaceDashboard(input.workspaceId),
+  },
+  {
+    ...STANDARD,
+    id: 'thread.dashboard',
+    source: 'app-api',
+    appOperationId: 'getThreadDashboard',
+    clientMethod: 'app.getThreadDashboard',
+    group: 'thread',
+    summary: 'Read one visible Thread dashboard.',
+    mutating: false,
+    requiredAccess:
+      'current Workspace access; private Threads require exact user ownership, including for admins',
+    inputSchema: strictScope(threadScope),
+    handler: ({ client }, input) =>
+      client.app.getThreadDashboard(input.workspaceId, input.threadId),
+  },
+  {
+    ...STANDARD,
+    id: 'app.search',
+    source: 'app-api',
+    appOperationId: 'searchApp',
+    clientMethod: 'app.search',
+    group: 'app',
+    summary: 'Search authorized Workspaces and visible Threads, Items, Knowledge and Artifacts.',
+    mutating: false,
+    requiredAccess:
+      'current Workspace access; private Threads require exact user ownership, including for admins',
+    inputSchema: strictScope({ query: z.string() }),
+    handler: ({ client }, input) => client.app.search(input.query),
+  },
+  {
+    ...STANDARD,
     id: 'thread.list',
     source: 'core-projection',
     clientMethod: 'core.listThreads',
@@ -3774,27 +3817,6 @@ export const operationCatalog = [
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
 export const operationExclusions = [
-  {
-    source: 'app-api',
-    name: 'getWorkspaceDashboard',
-    reason:
-      'Existing handlers check Workspace access but do not yet implement the accepted private-thread visibility contract. Workspace authorization alone does not establish private-conversation visibility.',
-    owner: 'docs/specs/20260909-thread_visibility_and_sharing.md',
-  },
-  {
-    source: 'app-api',
-    name: 'getThreadDashboard',
-    reason:
-      'Existing handlers check Workspace access but do not yet implement the accepted private-thread visibility contract. Workspace authorization alone does not establish private-conversation visibility.',
-    owner: 'docs/specs/20260909-thread_visibility_and_sharing.md',
-  },
-  {
-    source: 'app-api',
-    name: 'searchApp',
-    reason:
-      'Existing handlers check Workspace access but do not yet implement the accepted private-thread visibility contract. Workspace authorization alone does not establish private-conversation visibility.',
-    owner: 'docs/specs/20260909-thread_visibility_and_sharing.md',
-  },
   {
     source: 'core-projection',
     name: 'listWorkspaces',

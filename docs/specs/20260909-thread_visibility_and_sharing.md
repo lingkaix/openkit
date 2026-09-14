@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 ---
 # Thread Visibility And Explicit Sharing
 
@@ -81,7 +81,9 @@ Ordinary Workspace export includes shared Threads and admitted shared outputs. A
 
 ## Current Implementation Projection
 
-Quick Chat is already owner-only and Core already specifies request read scope and output audience. This specification adds project-Thread private visibility and exact sharing contracts; those additions are Not Started. File-backed Thread records remain canonical under the storage owner; App API, Core Client, CLI, Web and streaming project the same guards.
+Durable Thread visibility and authenticated private ownership are implemented for creation, with `openkit.thread-visibility.v1` gating canonical envelopes. Public Thread creation defaults to private; callers creating formal work explicitly request `visibility: workspace`. Quick Chat and administration remain private, and direct Task/Goal admission rejects private history rather than converting it. Cutover classifies owner-bound Quick Chat and formal Task/Goal inception from durable lineage; ambiguous project history blocks loading pending explicit classification. Missing or contradictory current visibility is never repaired into shared visibility.
+
+Workspace dashboard, Thread dashboard and App search enforce current Workspace eligibility plus Thread audience before dependent discovery. Their Artifact metadata follows immutable origin, and dashboard counts describe eligible records. The bundled CLI exposes these reads through the existing Core Client. Full sharing/handoff, other read and publication surfaces, subscriptions, standalone Artifact delivery, export/import audience enforcement and dependent export feature gates remain unimplemented under this owner. File-backed Thread records remain canonical; the three read projections do not establish completion of the broader contract.
 
 ## Testing Strategy / Acceptance Criteria
 

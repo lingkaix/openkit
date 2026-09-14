@@ -334,9 +334,6 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
-    'app-api:getThreadDashboard',
-    'app-api:getWorkspaceDashboard',
-    'app-api:searchApp',
     'core-projection:listWorkspaces',
     'core-projection:subscribeTurnEvents',
   ]);
@@ -486,14 +483,12 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.equal(runtimeTarget?.mutating, false);
   assert.equal(runtimeTarget?.group, 'nanohost');
 
-  const deferredVisibility = operationExclusions.filter((entry) =>
-    ['getWorkspaceDashboard', 'getThreadDashboard', 'searchApp'].includes(entry.name)
+  assert.equal(
+    operationExclusions.filter((entry) =>
+      ['getWorkspaceDashboard', 'getThreadDashboard', 'searchApp'].includes(entry.name)
+    ).length,
+    0
   );
-  assert.equal(deferredVisibility.length, 3);
-  for (const exclusion of deferredVisibility) {
-    assert.match(exclusion.reason, /private-thread visibility|private-conversation/);
-    assert.equal(exclusion.owner, 'docs/specs/20260909-thread_visibility_and_sharing.md');
-  }
 
   const proposalOperationIds = operationCatalog
     .filter((entry) => entry.id.startsWith('knowledge.proposal-'))
@@ -2498,3 +2493,88 @@ function runCli(args, env = {}, input = '{}', imports = [], interruptOn, executa
     child.stdin.end(input);
   });
 }
+
+test('dashboard and search catalog mappings replace exactly their exclusions', async () => {
+  const { operationCatalog, operationExclusions } = await operations();
+  for (const [id, operationId, method, input, args] of [
+    [
+      'workspace.dashboard',
+      'getWorkspaceDashboard',
+      'getWorkspaceDashboard',
+      { workspaceId: 'ws_team' },
+      ['ws_team'],
+    ],
+    [
+      'thread.dashboard',
+      'getThreadDashboard',
+      'getThreadDashboard',
+      { workspaceId: 'ws_team', threadId: 'th_shared' },
+      ['ws_team', 'th_shared'],
+    ],
+    ['app.search', 'searchApp', 'search', { query: 'needle' }, ['needle']],
+  ]) {
+    const entry = operationCatalog.find((candidate) => candidate.id === id);
+    assert.ok(entry);
+    assert.equal(entry.appOperationId, operationId);
+    assert.equal(entry.mutating, false);
+    assert.equal(
+      operationExclusions.some((candidate) => candidate.name === operationId),
+      false
+    );
+    let observed;
+    const result = await entry.handler(
+      {
+        client: {
+          app: {
+            [method]: async (...values) => {
+              observed = values;
+              return { items: [] };
+            },
+          },
+        },
+      },
+      entry.inputSchema.parse(input)
+    );
+    assert.deepEqual(observed, args);
+    assert.deepEqual(result, { items: [] });
+    assert.equal(
+      entry.inputSchema.safeParse({ ...input, privateOwnerUserId: 'user_other' }).success,
+      false
+    );
+  }
+});
+
+test('bundled dashboard and search reads retain authorization errors without leaking credentials', async () => {
+  for (const [operation, input, path] of [
+    ['workspace.dashboard', { workspaceId: 'ws_team' }, '/api/app/workspaces/ws_team/dashboard'],
+    [
+      'thread.dashboard',
+      { workspaceId: 'ws_team', threadId: 'th_private' },
+      '/api/app/workspaces/ws_team/threads/th_private/dashboard',
+    ],
+    ['app.search', { query: 'private needle' }, '/api/app/search?q=private%20needle'],
+  ]) {
+    for (const status of [401, 403, 404]) {
+      const result = await runCli(
+        ['ops', 'call', operation, '--input', '-'],
+        {
+          OPENKIT_NANOCORE_URL: 'https://openkit.example.invalid',
+          OPENKIT_NANOCORE_TOKEN: 'okt_fake_visibility',
+        },
+        JSON.stringify(input),
+        [
+          dataModule(`
+        globalThis.fetch = async (url, options) => {
+          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== 'GET') throw new Error('unexpected transport');
+          if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
+          return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.5.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
+        };
+      `),
+        ]
+      );
+      assert.notEqual(result.code, 0);
+      assert.equal(JSON.parse(result.stdout).error.code, 'access_denied');
+      assert.doesNotMatch(result.stdout + result.stderr, /okt_fake_visibility/);
+    }
+  }
+});

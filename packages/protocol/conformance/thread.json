@@ -9,6 +9,7 @@
     "status": "active",
     "entryPath": "conversation",
     "createdAt": "2026-05-15T10:00:00Z",
-    "updatedAt": "2026-05-15T10:01:00Z"
+    "updatedAt": "2026-05-15T10:01:00Z",
+    "visibility": "workspace"
   }
 }
