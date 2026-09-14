@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -280,6 +281,66 @@ describe('worker turn loop', () => {
           }
         ).count
       ).toBe(0);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('admits usable presented server-admin bearer for runtime.launch without membership', async () => {
+    const coreDb = createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const now = Date.now();
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+          id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
+        ) VALUES ('user_admin_worker', 'Admin Worker', 'admin-worker@example.com', false, ?, ?, 'human', 'active', NULL)`
+      )
+      .run(now, now);
+    createOpenKitAccessTokenRecord(coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_admin_worker',
+      scope: 'server-admin',
+      tokenId: 'token_admin_worker',
+      workspaceIds: [],
+    });
+    let reserveCalls = 0;
+    let workerCalls = 0;
+
+    try {
+      const result = await runWorkerTurnLoop({
+        coreDb,
+        triggerActor: { kind: 'user', id: 'user_admin_worker' },
+        requestActor: {
+          kind: 'token',
+          tokenId: 'token_admin_worker',
+          tokenScope: 'server-admin',
+          tokenWorkspaceIds: [],
+          userId: 'user_admin_worker',
+        },
+        workspaceDb,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        requestId: 'req_worker_admin_authority',
+        requestInputHash: 'sha256:worker_admin_authority',
+        reviewRequired: false,
+        remainingWorkerIterations: 0,
+        prepare: () => preparedWorkerTurn(false),
+        reserveTurn: () => {
+          reserveCalls += 1;
+          return { turnId: 'turn_worker_admin_authority' };
+        },
+        startWorker: () => {
+          workerCalls += 1;
+          return { workerSessionId: 'session_worker_admin_authority' };
+        },
+        awaitWorker: () => ({ stopReason: 'completed' }),
+      });
+
+      expect(result.turnId).toBe('turn_worker_admin_authority');
+      expect(reserveCalls).toBe(1);
+      expect(workerCalls).toBe(1);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

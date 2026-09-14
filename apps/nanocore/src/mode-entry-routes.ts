@@ -26,6 +26,7 @@ import {
   asCommandError,
   asInvalidRequestError,
 } from './api-errors.js';
+import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import {
@@ -1862,6 +1863,7 @@ export function registerQuickAndChatModeRoutes({
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly startModeWorkerTurn: (input: {
     readonly triggerActor: ActorRef;
+    readonly requestActor?: Actor;
     readonly store: FsStore;
     readonly workspaceId: string;
     readonly threadId: string;
@@ -2767,6 +2769,7 @@ export function registerQuickAndChatModeRoutes({
           await runWorkerTurnLoop({
             coreDb: coreDb!,
             triggerActor,
+            requestActor: c.get('actor'),
             workspaceDb,
             workspaceId,
             threadId: receivingThreadId,
@@ -2823,6 +2826,7 @@ export function registerQuickAndChatModeRoutes({
             startWorker: async ({ turnId, prepared }) => {
               const turn = await startModeWorkerTurn({
                 triggerActor,
+                requestActor: c.get('actor'),
                 store,
                 workspaceId,
                 threadId: receivingThreadId,
@@ -3057,6 +3061,7 @@ export function registerQuickAndChatModeRoutes({
           await runWorkerTurnLoop({
             coreDb,
             triggerActor,
+            requestActor: c.get('actor'),
             workspaceDb,
             workspaceId,
             threadId,
@@ -3073,6 +3078,7 @@ export function registerQuickAndChatModeRoutes({
             startWorker: async ({ turnId, prepared }) => {
               const turn = await startModeWorkerTurn({
                 triggerActor,
+                requestActor: c.get('actor'),
                 store,
                 workspaceId,
                 threadId,
@@ -3478,6 +3484,7 @@ export function registerTaskModeRoute({
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly startModeWorkerTurn: (input: {
     readonly triggerActor: ActorRef;
+    readonly requestActor?: Actor;
     readonly store: FsStore;
     readonly workspaceId: string;
     readonly threadId: string;
@@ -3636,6 +3643,7 @@ export function registerTaskModeRoute({
         await runWorkerTurnLoop({
           coreDb,
           triggerActor,
+          requestActor: c.get('actor'),
           workspaceDb,
           workspaceId,
           threadId,
@@ -3689,6 +3697,7 @@ export function registerTaskModeRoute({
           startWorker: async ({ turnId, prepared }) => {
             const turn = await startModeWorkerTurn({
               triggerActor,
+              requestActor: c.get('actor'),
               store,
               workspaceId,
               threadId,
