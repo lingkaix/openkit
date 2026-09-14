@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
@@ -261,7 +262,12 @@ function anchorNanoHostMaterialization(
       JSON.stringify(
         environmentPackage.runtime.image.kind === 'reference'
           ? { imageRef: environmentPackage.runtime.image.ref }
-          : { resultingImageDigest: environmentPackage.runtime.image.input.digest }
+          : {
+              buildArgumentsDigest: environmentPackage.runtime.image.argumentsDigest,
+              buildContextDigest: environmentPackage.runtime.image.contextDigest,
+              buildInputDigest: environmentPackage.runtime.image.input.digest,
+              resultingImageDigest: `sha256:${'c'.repeat(64)}`,
+            }
       ),
       lease?.sandboxBindingRef ?? `lease-binding:${leaseId}`,
       identity.stagingDirectoryRef,
@@ -3646,7 +3652,11 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('keeps the ready connection usable after rejected image acquisition and live cleanup', async () => {
+  it.each([
+    'image.acquire',
+    'image.build',
+    'image.inspect',
+  ] as const)('keeps the ready connection usable after rejected %s and live cleanup', async (operation) => {
     const coreDb = createFactoryCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
@@ -3696,13 +3706,32 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
         .backend;
+      const dockerfile = 'FROM scratch\n';
       const environmentPackage = completeNanoHostPackage({
         runtime: {
-          image: {
-            kind: 'reference',
-            pullPolicy: 'if-not-present',
-            ref: 'openkit/worker-codex:dev',
-          },
+          image:
+            operation === 'image.build'
+              ? {
+                  kind: 'build',
+                  arguments: {},
+                  argumentsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+                  contextRef: 'build-context://empty/v1',
+                  contextDigest: `sha256:${createHash('sha256').update('').digest('hex')}`,
+                  input: {
+                    kind: 'dockerfile',
+                    content: dockerfile,
+                    digest: `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`,
+                  },
+                  egress: [{ host: 'example.com', port: 443 }],
+                  layerLimit: 128,
+                  outputLimitBytes: 1024 * 1024,
+                  timeLimitSeconds: 60,
+                }
+              : {
+                  kind: 'reference',
+                  pullPolicy: 'if-not-present',
+                  ref: 'openkit/worker-codex:dev',
+                },
         },
         scope: {
           agentSessionId: 'as_image_failure',
@@ -3718,11 +3747,26 @@ describe('createConfiguredTurnExecutor', () => {
       const rejected = expect(materialization).rejects.toThrow('effect_failed');
       let command: Record<string, unknown> | null = null;
       await vi.waitFor(async () => {
-        command = await dispatch.poll(physical, 'image.acquire');
+        command = await dispatch.poll(
+          physical,
+          operation === 'image.build' ? operation : 'image.acquire'
+        );
         expect(command).not.toBeNull();
       });
-      expect(command).toMatchObject({ imageReference: 'openkit/worker-codex:dev' });
-      await dispatch.result(physical, 'image.acquire', {
+      if (operation !== 'image.build') {
+        expect(command).toMatchObject({ imageReference: 'openkit/worker-codex:dev' });
+      }
+      if (operation === 'image.inspect') {
+        await dispatch.result(physical, 'image.acquire', {
+          requestId: command!.requestId,
+          digest: `sha256:${'c'.repeat(64)}`,
+        });
+        await vi.waitFor(async () => {
+          command = await dispatch.poll(physical, 'image.inspect');
+          expect(command).not.toBeNull();
+        });
+      }
+      await dispatch.result(physical, operation, {
         requestId: command!.requestId,
         failureCode: 'effect_failed',
       });
@@ -3913,6 +3957,11 @@ describe('createConfiguredTurnExecutor', () => {
         input: { imageDigest: localDigest, leaseId: 'lease_b_current' },
         kind: 'sandbox.create',
       });
+      // A new materialization that reaches Sandbox creation cannot reuse prior image-failure proof.
+      await expect(
+        runtime.cleanupBackendSession(backend.planSession(environmentPackage))
+      ).rejects.toThrow('Sandbox creation reached');
+      expect(effects.slice(3).map((effect) => effect.kind)).toEqual(['bridge.close']);
     } finally {
       coreDb.sqlite.close();
     }

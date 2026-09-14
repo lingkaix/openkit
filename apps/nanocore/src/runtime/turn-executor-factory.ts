@@ -413,6 +413,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     string,
     ReturnType<NonNullable<NanoHostSessionDispatch['expectResultOnly']>>
   >();
+  /** Live attempts that failed image preparation before any Sandbox or storage effect. */
+  private readonly failedImagePreparations = new Set<string>();
   private readonly sessions = new Map<string, NanoHostBackendTurnSession>();
   private readonly sharedSandboxes = new Map<string, NanoHostSharedSandbox>();
   private readonly sharedHarnesses = new Map<string, NanoHostSharedHarness>();
@@ -1072,6 +1074,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const durableCleanupFailure =
       session || durableSandbox ? null : this.findDurableBackendCleanupFailure(identity);
     try {
+      if (this.failedImagePreparations.has(identity.packageSnapshotId)) {
+        return;
+      }
       if (durableSandbox?.cleanupState === 'unknown') {
         if (
           durableSandbox.lifecycleState !== 'failed' ||
@@ -1202,6 +1207,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       this.workerControlGateway?.unregisterSession(identity.packageSnapshotId);
       this.sessions.delete(identity.packageSnapshotId);
+      this.failedImagePreparations.delete(identity.packageSnapshotId);
     }
   }
 
@@ -1645,6 +1651,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     context: WorkerGovernanceMaterializationContext = { workspaceRoots: [] }
   ): Promise<WorkerGovernanceMaterializationRecord> {
     const identity = this.planSession(environmentPackage);
+    this.failedImagePreparations.delete(identity.packageSnapshotId);
     const leaseId = this.requireLeaseId(environmentPackage.snapshotId);
     const image = environmentPackage.runtime.image;
     const sandboxCompatibilityKey = nanoHostSandboxCompatibilityKey(environmentPackage);
@@ -1737,32 +1744,40 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         /^sha256:[0-9a-f]{64}$/.test(image.ref)
           ? image.ref
           : null;
-      const imageResult =
-        image.kind === 'reference'
-          ? await this.effect(identity, leaseId, 'image.acquire', {
-              imageReference: image.ref,
-            })
-          : await this.effect(identity, leaseId, 'image.build', {
-              arguments: image.arguments,
-              argumentsDigest: image.argumentsDigest,
-              contextDigest: image.contextDigest,
-              contextRef: image.contextRef,
-              dockerfile: image.input.content,
-              dockerfileDigest: image.input.digest,
-              egress: image.egress,
-              layerLimit: image.layerLimit,
-              outputLimitBytes: image.outputLimitBytes,
-              timeLimitSeconds: image.timeLimitSeconds,
-            });
-      const imageDigest = requireNanoHostResultString(imageResult, 'digest');
-      if (localImageDigest !== null && imageDigest !== localImageDigest) {
-        throw new Error('NanoHost local image acquisition returned a different digest.');
-      }
-      const imageInspection = parseNanoHostImageInspection(
-        await this.effect(identity, leaseId, 'image.inspect', { imageDigest })
-      );
-      if (imageInspection.imageDigest !== imageDigest) {
-        throw new Error('NanoHost image inspection returned a different digest.');
+      let imageResult: Record<string, unknown>;
+      let imageDigest: string;
+      let imageInspection: ReturnType<typeof parseNanoHostImageInspection>;
+      try {
+        imageResult =
+          image.kind === 'reference'
+            ? await this.effect(identity, leaseId, 'image.acquire', {
+                imageReference: image.ref,
+              })
+            : await this.effect(identity, leaseId, 'image.build', {
+                arguments: image.arguments,
+                argumentsDigest: image.argumentsDigest,
+                contextDigest: image.contextDigest,
+                contextRef: image.contextRef,
+                dockerfile: image.input.content,
+                dockerfileDigest: image.input.digest,
+                egress: image.egress,
+                layerLimit: image.layerLimit,
+                outputLimitBytes: image.outputLimitBytes,
+                timeLimitSeconds: image.timeLimitSeconds,
+              });
+        imageDigest = requireNanoHostResultString(imageResult, 'digest');
+        if (localImageDigest !== null && imageDigest !== localImageDigest) {
+          throw new Error('NanoHost local image acquisition returned a different digest.');
+        }
+        imageInspection = parseNanoHostImageInspection(
+          await this.effect(identity, leaseId, 'image.inspect', { imageDigest })
+        );
+        if (imageInspection.imageDigest !== imageDigest) {
+          throw new Error('NanoHost image inspection returned a different digest.');
+        }
+      } catch (error) {
+        this.failedImagePreparations.add(identity.packageSnapshotId);
+        throw error;
       }
       const storageBinding = this.coreDb.sqlite.transaction(() =>
         choice?.kind === 'selected'
