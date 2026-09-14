@@ -1840,7 +1840,13 @@ function classifyThreadVisibilityCutover(
     (left, right) =>
       (left.startedAt ?? '').localeCompare(right.startedAt ?? '') || left.id.localeCompare(right.id)
   )[0];
-  if (firstTurn?.agentId) return { visibility: 'workspace' };
+  if (turns.length > 0 && turns.every((turn) => turn.agentId)) return { visibility: 'workspace' };
+  if (!firstTurn?.startedAt || turns[1]?.startedAt === firstTurn.startedAt) {
+    throw new Error(
+      'Thread visibility cutover requires explicit classification of ambiguous project history.'
+    );
+  }
+  if (firstTurn.agentId) return { visibility: 'workspace' };
   const databasePath = join(workspaceRoot, 'db', 'workspace.sqlite');
   if (firstTurn && existsSync(databasePath)) {
     const database = new Database(databasePath, { readonly: true, fileMustExist: true });
