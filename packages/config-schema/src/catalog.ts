@@ -4,6 +4,7 @@ import { AuthoredAgentConfigSchema } from './agent.js';
 import { GatewayConfigSchema } from './gateway.js';
 import { InternalRoleProfilesConfigSchema } from './internal-role.js';
 import { WorkspaceMcpServerCatalogSchema } from './mcp-catalog.js';
+import { ModelCatalogSchema } from './model-catalog.js';
 import type { ConfigCatalogKind } from './policy.js';
 import { ProviderProfileSchema } from './provider.js';
 import { OpenKitConfigSchema } from './server.js';
@@ -30,6 +31,11 @@ export interface ConfigSchemaCatalogEntry {
  */
 export function getConfigSchemaCatalog(): ConfigSchemaCatalogEntry[] {
   return [
+    {
+      kind: 'model-catalog',
+      title: 'OpenKit model extension catalog',
+      schema: z.toJSONSchema(ModelCatalogSchema) as Record<string, unknown>,
+    },
     {
       kind: 'server',
       title: 'OpenKit server config',

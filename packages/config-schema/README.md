@@ -41,3 +41,5 @@ Optional `server.jsonc.appUpdate` fixes one SSH host, user, port, identity file 
 - `pnpm --filter @openkit/config-schema test`
 - `pnpm --filter @openkit/config-schema typecheck`
 - `pnpm --filter @openkit/config-schema build`
+
+`model-catalog.jsonc` uses `ModelCatalogSchema` for deployment-admin model metadata extensions keyed by exact vendor (or profile ID without vendor) and native model ID. The generated editor and policy catalogs include its `model-catalog` kind; effective precedence is snapshot, extension, then profile, with restart-required activation.
