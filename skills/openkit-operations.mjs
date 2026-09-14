@@ -1911,6 +1911,20 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    ...LOCAL_CANONICAL_USER_ACCESS,
+    id: 'workspace.leave',
+    source: 'app-api',
+    appOperationId: 'leaveWorkspace',
+    clientMethod: 'app.leaveWorkspace',
+    group: 'workspace',
+    summary: "Leave the current canonical user's non-owner Workspace membership.",
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.LeaveWorkspaceRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.leaveWorkspace(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
     requiredAccess:
       'current Workspace owner through implicit local access or a mutable Workspace bearer token',
     id: 'workspace.ownership-transfer',
@@ -3630,13 +3644,6 @@ export const operationCatalog = [
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
 export const operationExclusions = [
-  {
-    source: 'app-api',
-    name: 'leaveWorkspace',
-    reason:
-      'The server-mode CLI has no Better Auth session-cookie credential; leave and exact own-receipt replay require a canonical session or implicit local user.',
-    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
-  },
   {
     source: 'app-api',
     name: 'listMyAdminAccessTokens',

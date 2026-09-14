@@ -8,6 +8,8 @@ The public package contains its concise entrypoint, generated Agent-host metadat
 
 Current-user Workspace invitation list, accept, and decline are exposed as `workspace.my-invitation-*` through implicit local identity only. Owner-scoped `workspace.invitation-*` operations remain distinct. Server-mode bearer credentials do not authorize current-user invitation operations; use the Web Account Invitations panel instead.
 
+Workspace leave is exposed as `workspace.leave` through implicit local identity only. Server-mode bearer credentials remain unsupported; use Web Account for the session-based leave path.
+
 ## Operations Interface
 
 The operations package contains its entrypoint, directly linked canonical operator references and any bounded support scripts required by an accepted operation owner. It works from outside the source checkout and can guide recovery while NanoCore is unavailable. Procedures name required host tools and explicitly acquire source when needed. Credentials and host authority come from the user's Agent environment, not the Skill. NanoCore/Web updates and separately authorized NanoHost work remain distinct.
