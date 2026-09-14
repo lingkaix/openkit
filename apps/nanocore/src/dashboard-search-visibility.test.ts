@@ -173,6 +173,23 @@ describe('dashboard and search Thread audiences', () => {
         });
       return thread;
     });
+    const sharedTurn = store.listThreadTurns(workspace.id, threads[2]!.id)[0]!;
+    for (const label of ['local-private', 'other-private'])
+      store.createItem({
+        id: `it_link_${label}`,
+        workspaceId: workspace.id,
+        threadId: threads[2]!.id,
+        turnId: sharedTurn.id,
+        type: 'artifact-reference',
+        status: 'completed',
+        artifactId: `ar_${label}`,
+        artifactVersion: 1,
+        lastMutationRequestId: `link-${label}`,
+        title: `${label} needle artifact`,
+        summary: `${label} needle summary`,
+        createdAt: stamp,
+        completedAt: stamp,
+      });
     const app = createApp({
       auth: {
         api: { getSession: async () => null },
@@ -236,15 +253,14 @@ describe('dashboard and search Thread audiences', () => {
           expect(direct.status).toBe(404);
           expect(await direct.text()).not.toContain(hidden.name);
         }
-        for (const visible of [own, threads[2]!, threads[3]!])
-          expect(
-            (
-              await app.request(
-                `/api/app/workspaces/${workspace.id}/threads/${visible.id}/dashboard`,
-                { headers }
-              )
-            ).status
-          ).toBe(200);
+        for (const visible of [own, threads[2]!, threads[3]!]) {
+          const response = await app.request(
+            `/api/app/workspaces/${workspace.id}/threads/${visible.id}/dashboard`,
+            { headers }
+          );
+          expect(response.status).toBe(200);
+          expect(await response.text()).not.toContain(denied.name);
+        }
         readItems.mockRestore();
       }
     } finally {
