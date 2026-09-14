@@ -26,7 +26,6 @@ import {
 import type {
   ActorRef,
   KnowledgeEntrySchema,
-  ThreadSchema,
   WorkspaceRecordSchema,
   WorkspaceResourcesSchema,
 } from '@openkit/protocol';
@@ -38,6 +37,7 @@ import {
   PROTOCOL_VERSION,
   responsibleUserIdForActor,
   SseEventEnvelopeSchema,
+  ThreadSchema,
   TurnSchema,
 } from '@openkit/protocol';
 import { resolveDataRoot } from '../config/data-root.js';
@@ -825,6 +825,7 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
     preview: 'Review the UI-first workspace protocol slice and tighten payload boundaries.',
     status: 'active',
     entryPath: 'conversation',
+    visibility: 'workspace',
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -2171,27 +2172,40 @@ export class FsStore {
     return [...this.threads.values()].filter((thread) => thread.workspaceId === workspaceId);
   }
 
-  /** Creates one Thread with a server-authored continuation entry path. */
+  /** Creates formal shared work by default; conversation entrypoints supply the authenticated private audience explicitly. */
   public createThread(
     workspaceId: string,
     title: string,
     threadId?: string,
-    entryPath: Thread['entryPath'] = 'conversation'
+    entryPath: Thread['entryPath'] = 'conversation',
+    audience?: { visibility: Thread['visibility']; privateOwnerUserId?: string }
   ): Thread {
     const id = threadId ?? threadIdForUser(LOCAL_USER_ID, String(this.threads.size + 1));
     if (this.threads.has(id)) {
       throw new Error(`Thread already exists: ${id}`);
     }
-    const thread: Thread = {
+    audience ??=
+      this.getWorkspace(workspaceId).kind === 'quick-chat' || entryPath === 'administration'
+        ? { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+        : { visibility: 'workspace' };
+    if (
+      this.getWorkspace(workspaceId).kind === 'quick-chat' &&
+      (audience.visibility !== 'private' ||
+        workspaceId !== quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? ''))
+    ) {
+      throw new Error('Quick Chat requires its owner-only private audience.');
+    }
+    const thread = ThreadSchema.parse({
       id,
       workspaceId,
       name: title,
       preview: title,
       status: 'active',
       entryPath,
+      ...audience,
       createdAt: now(),
       updatedAt: now(),
-    };
+    });
     this.threads.set(thread.id, thread);
     this.refreshWorkspaceCounts(workspaceId);
     this.persist(workspaceId);
@@ -2214,7 +2228,8 @@ export class FsStore {
     const thread = this.getThread(workspaceId, threadId);
     const updated: Thread = {
       ...thread,
-      ...input,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.status !== undefined ? { status: input.status } : {}),
       updatedAt: now(),
     };
     this.threads.set(threadId, updated);

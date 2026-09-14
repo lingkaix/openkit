@@ -9,13 +9,13 @@ import {
 import type { ArtifactSchema, ItemSchema, ThreadSchema, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-
 import { asApiError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   assertAuthorizedWorkspaceLineage,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
+import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
 import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runtime-config.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
@@ -480,11 +480,19 @@ export function registerDashboardRoutes({
       const resources = store.getWorkspaceResources(workspaceId);
       const threads = store
         .listThreads(workspaceId)
+        .filter((thread) => isThreadVisible(store, thread, actor?.userId))
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
       const snapshot = runtimeConfigManager.current();
       const providerCount = snapshot.providerRegistry.list().length;
       const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId);
-      const workspaceArtifacts = store.listArtifacts(workspaceId);
+      const workspaceArtifacts = store
+        .listArtifacts(workspaceId)
+        .filter((artifact) => isArtifactVisible(store, artifact, actor?.userId));
+      const counts = {
+        ...workspace.counts,
+        threadCount: threads.length,
+        artifactCount: workspaceArtifacts.length,
+      };
       const workSections = buildWorkspaceWorkSections(
         store,
         workspaceId,
@@ -497,9 +505,9 @@ export function registerDashboardRoutes({
 
       return c.json(
         WorkspaceDashboardResponseSchema.parse({
-          workspace,
+          workspace: { ...workspace, counts },
           counts: {
-            ...workspace.counts,
+            ...counts,
             providerCount,
           },
           defaultContext: {
@@ -555,14 +563,24 @@ export function registerDashboardRoutes({
       if (workspaceAccess) {
         assertAuthorizedWorkspaceLineage(workspaceAccess, thread.workspaceId);
       }
-      const turns = store.listThreadTurns(workspaceId, threadId);
+      if (!isThreadVisible(store, thread, actor?.userId)) {
+        throw new HTTPException(404, { message: 'Thread not found.' });
+      }
+      const visibleArtifacts = store
+        .listArtifacts(workspaceId)
+        .filter((artifact) => isArtifactVisible(store, artifact, actor?.userId));
+      const visibleArtifactIds = new Set(visibleArtifacts.map((artifact) => artifact.id));
+      const turns = store.listThreadTurns(workspaceId, threadId).map((turn) => ({
+        ...turn,
+        items: turn.items.filter(
+          (item) => item.type !== 'artifact-reference' || visibleArtifactIds.has(item.artifactId)
+        ),
+      }));
       const threadItems = store.listThreadItems(workspaceId, threadId);
       const latestTurn = turns.at(-1) ?? null;
       const defaultAgentId = resolveDefaultAgentId(runtimeConfigManager.current(), workspaceId);
       const selectedAgentId = latestTurn ? (latestTurn.agentId ?? null) : defaultAgentId;
-      const threadArtifacts = store
-        .listArtifacts(workspaceId)
-        .filter((artifact) => artifact.threadId === threadId);
+      const threadArtifacts = visibleArtifacts.filter((artifact) => artifact.threadId === threadId);
       const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
 
       return c.json(

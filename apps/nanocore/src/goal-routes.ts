@@ -2358,6 +2358,13 @@ export function startGoalModeObjective(input: {
   /** Explicit retained-storage choice inherited by Goal child work. */
   readonly workerStorageChoice?: WorkerEnvironmentStorageChoice;
 }): GoalStartResult {
+  if (input.store.getThread(input.workspaceId, input.threadId).visibility !== 'workspace') {
+    throw new TurnStartValidationError(
+      'shared_thread_required',
+      'Formal work requires a new Workspace-shared Thread and admitted inputs.',
+      409
+    );
+  }
   if (!input.coreDb) {
     throw new TurnStartValidationError(
       'goal_storage_unavailable',
