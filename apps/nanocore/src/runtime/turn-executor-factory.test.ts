@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
@@ -261,7 +262,12 @@ function anchorNanoHostMaterialization(
       JSON.stringify(
         environmentPackage.runtime.image.kind === 'reference'
           ? { imageRef: environmentPackage.runtime.image.ref }
-          : { resultingImageDigest: environmentPackage.runtime.image.input.digest }
+          : {
+              buildArgumentsDigest: environmentPackage.runtime.image.argumentsDigest,
+              buildContextDigest: environmentPackage.runtime.image.contextDigest,
+              buildInputDigest: environmentPackage.runtime.image.input.digest,
+              resultingImageDigest: `sha256:${'c'.repeat(64)}`,
+            }
       ),
       lease?.sandboxBindingRef ?? `lease-binding:${leaseId}`,
       identity.stagingDirectoryRef,
@@ -3646,6 +3652,158 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it.each([
+    'image.acquire',
+    'image.build',
+    'image.inspect',
+  ] as const)('keeps the ready connection usable after rejected %s and live cleanup', async (operation) => {
+    const coreDb = createFactoryCoreDb();
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = {
+      coreDb,
+      deploymentId: 'deployment_image_failure',
+      identityId: 'identity_image_failure',
+      targetId: 'target_image_failure',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: '2026-09-14T00:00:00.000Z',
+    });
+    let accept!: (physical: object) => void;
+    const physicalReady = new Promise<object>((resolve) => {
+      accept = resolve;
+    });
+    const server = createHttp2Server((request, response) => {
+      const physical = readNanoHostPhysicalConnectionContext(request);
+      if (physical) accept(physical);
+      response.writeHead(204).end();
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      client.request({ ':method': 'POST', ':path': '/' }).end();
+      const physical = await physicalReady;
+      authority.admit({
+        connectionGeneration: 1,
+        identityId: target.identityId,
+        physicalConnection: physical,
+      });
+      await dispatch.readiness!(
+        physical,
+        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: dispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
+        .backend;
+      const dockerfile = 'FROM scratch\n';
+      const environmentPackage = completeNanoHostPackage({
+        runtime: {
+          image:
+            operation === 'image.build'
+              ? {
+                  kind: 'build',
+                  arguments: {},
+                  argumentsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+                  contextRef: 'build-context://empty/v1',
+                  contextDigest: `sha256:${createHash('sha256').update('').digest('hex')}`,
+                  input: {
+                    kind: 'dockerfile',
+                    content: dockerfile,
+                    digest: `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`,
+                  },
+                  egress: [{ host: 'example.com', port: 443 }],
+                  layerLimit: 128,
+                  outputLimitBytes: 1024 * 1024,
+                  timeLimitSeconds: 60,
+                }
+              : {
+                  kind: 'reference',
+                  pullPolicy: 'if-not-present',
+                  ref: 'openkit/worker-codex:dev',
+                },
+        },
+        scope: {
+          agentSessionId: 'as_image_failure',
+          threadId: 'thread_image_failure',
+          turnId: 'turn_image_failure',
+          workspaceId: 'ws_image_failure',
+        },
+        snapshotId: 'aepsnap_image_failure',
+      });
+      authorizeNanoHostPackage(coreDb, environmentPackage);
+      anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+      const materialization = backend.materialize(environmentPackage, { workspaceRoots: [] });
+      const rejected = expect(materialization).rejects.toThrow('effect_failed');
+      let command: Record<string, unknown> | null = null;
+      await vi.waitFor(async () => {
+        command = await dispatch.poll(
+          physical,
+          operation === 'image.build' ? operation : 'image.acquire'
+        );
+        expect(command).not.toBeNull();
+      });
+      if (operation !== 'image.build') {
+        expect(command).toMatchObject({ imageReference: 'openkit/worker-codex:dev' });
+      }
+      if (operation === 'image.inspect') {
+        await dispatch.result(physical, 'image.acquire', {
+          requestId: command!.requestId,
+          digest: `sha256:${'c'.repeat(64)}`,
+        });
+        await vi.waitFor(async () => {
+          command = await dispatch.poll(physical, 'image.inspect');
+          expect(command).not.toBeNull();
+        });
+      }
+      await dispatch.result(physical, operation, {
+        requestId: command!.requestId,
+        failureCode: 'effect_failed',
+      });
+      await rejected;
+      const cleanup = runtime.cleanupBackendSession(backend.planSession(environmentPackage));
+      void cleanup.catch(() => undefined);
+      // The next fair poll must stay idle instead of fencing the healthy session with HTTP 409.
+      await expect(dispatch.poll(physical, 'image.build')).resolves.toBeNull();
+      await expect(cleanup).resolves.toBeUndefined();
+      expect(authority.mayCarryWork(physical)).toBe(true);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
+      // A new authorized image request still runs on this same ready connection.
+      const next = dispatch.effect({
+        kind: 'image.acquire',
+        requestId: 'b'.repeat(64),
+        input: { imageReference: `sha256:${'c'.repeat(64)}` },
+      });
+      await expect(dispatch.poll(physical, 'image.acquire')).resolves.toMatchObject({
+        requestId: 'b'.repeat(64),
+      });
+      await dispatch.result(physical, 'image.acquire', {
+        requestId: 'b'.repeat(64),
+        digest: `sha256:${'c'.repeat(64)}`,
+      });
+      await expect(next).resolves.toEqual({ digest: `sha256:${'c'.repeat(64)}` });
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+    }
+  });
+
   it('acquires an exact local digest before inspection and stops when acquisition fails', async () => {
     const coreDb = createFactoryCoreDb();
     const packageSnapshotId = 'aepsnap_factory_newest_lease';
@@ -3799,6 +3957,11 @@ describe('createConfiguredTurnExecutor', () => {
         input: { imageDigest: localDigest, leaseId: 'lease_b_current' },
         kind: 'sandbox.create',
       });
+      // A new materialization that reaches Sandbox creation cannot reuse prior image-failure proof.
+      await expect(
+        runtime.cleanupBackendSession(backend.planSession(environmentPackage))
+      ).rejects.toThrow('Sandbox creation reached');
+      expect(effects.slice(3).map((effect) => effect.kind)).toEqual(['bridge.close']);
     } finally {
       coreDb.sqlite.close();
     }
