@@ -22,6 +22,12 @@ install -m 0755 "$HOME/openkit/source/scripts/dogfood/deploy.sh" "$HOME/openkit/
 
 Run during an authorized maintenance window with active work coordinated. Targets are `web`, `nanocore`, `nanohost`, or `all` (default). The helper fetches main and records the deployed commit; it does not deploy the caller's arbitrary working tree. NanoHost updates remove `OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS` from the host source environment before installing `/etc/openkit/nanohost.env`; unrelated settings remain intact. Image verification and seeding remain separate from the session environment. App replacement keeps all bind mounts and environment arguments in one Docker invocation.
 
+## Worker PR Handoff
+
+For dogfood repository Tasks and Goals, prefer a plan+patch handoff when worker push or PR creation is unavailable because of missing GitHub credentials or TLS failures. The worker retains the plan and patch locally and closes out with their exact locations, repository/base revision, check results, and the publication failure without secrets. A human or local agent retrieves and reviews the handoff, applies the patch in a local checkout, runs the relevant checks, pushes a branch, and opens the PR. Report the handoff as complete only when it meets the agreed stop condition; keep PR publication explicitly pending until confirmed.
+
+Do not provision broad worker GitHub write credentials without an explicit house decision. Worker publication failure is a reason to hand off, not authorization to expand credential access. Linked-repository sync is separate work tracked in [#60](https://github.com/lingkaix/openkit/issues/60).
+
 ## Focused Verification
 
 ```bash
