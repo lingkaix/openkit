@@ -184,22 +184,34 @@ export function registerApprovalRoutes({
                 responseKind: 'approval',
                 execute: () => {
                   if (workerLeases.length === 1) {
-                    if (!closedWorkerGate) {
+                    if (closedWorkerGate) {
+                      claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor);
+                      throw taskGateRecoveryError(
+                        'The closed worker approval has no command receipt.'
+                      );
+                    }
+                    // Policy-local repo.push Gates may sit on a leased Turn without a
+                    // worker checkpoint. Resolve the Gate locally; tool.use still needs
+                    // the exact worker stop path.
+                    if (policyApproval.action !== 'repo.push' || workerCheckpoint) {
                       throw taskGateRecoveryError(
                         'The worker approval Gate has no supported exact checkpoint.'
                       );
                     }
-                    claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor);
-                    throw taskGateRecoveryError(
-                      'The closed worker approval has no command receipt.'
-                    );
                   }
-                  return finishPolicyApprovalProjection(
+                  const approval = finishPolicyApprovalProjection(
                     store,
                     claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor),
                     input,
                     decisionItemId
                   );
+                  if (workerLeases.length === 1 && !workerCheckpoint && !closedWorkerGate) {
+                    releasePolicyLocalSchedulerLease(
+                      coreDb,
+                      store.getTurn(input.workspaceId, input.threadId, input.turnId)
+                    );
+                  }
+                  return approval;
                 },
                 replay: (record) => {
                   if (
@@ -211,16 +223,25 @@ export function registerApprovalRoutes({
                     );
                   }
                   if (workerLeases.length === 1 && !closedWorkerGate) {
-                    throw taskGateRecoveryError(
-                      'The closed worker approval projection is incomplete.'
-                    );
+                    if (policyApproval.action !== 'repo.push' || workerCheckpoint) {
+                      throw taskGateRecoveryError(
+                        'The closed worker approval projection is incomplete.'
+                      );
+                    }
                   }
-                  return finishPolicyApprovalProjection(
+                  const approval = finishPolicyApprovalProjection(
                     store,
                     claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor),
                     input,
                     decisionItemId
                   );
+                  if (workerLeases.length === 1 && !workerCheckpoint && !closedWorkerGate) {
+                    releasePolicyLocalSchedulerLease(
+                      coreDb,
+                      store.getTurn(input.workspaceId, input.threadId, input.turnId)
+                    );
+                  }
+                  return approval;
                 },
                 responseId: (result) => result.id,
               });
@@ -1014,6 +1035,91 @@ async function clearWorkerApprovalGateCheckpoint(
     }))
   ) {
     throw taskGateRecoveryError('The worker approval checkpoint could not be cleared.');
+  }
+}
+
+/**
+ * Releases the exact Turn scheduler lease after a policy-local repo.push Gate closeout.
+ * Used when the Turn held a lease but never established a worker Gate checkpoint.
+ *
+ * @param coreDb Core database containing scheduler leases.
+ * @param turn Terminal Turn after finishPolicyApprovalProjection.
+ * @throws TurnStartValidationError when lease ownership cannot be released cleanly.
+ */
+function releasePolicyLocalSchedulerLease(
+  coreDb: CoreDb,
+  turn: {
+    readonly id: string;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly status: 'completed' | 'cancelled' | 'interrupted' | 'failed' | string;
+  }
+): void {
+  const leases = listSchedulerSessionLeasesForTurn(coreDb, {
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+  });
+  if (leases.length === 0) {
+    return;
+  }
+  if (leases.length !== 1) {
+    throw taskGateRecoveryError('The policy approval Turn has multiple scheduler leases.');
+  }
+  const lease = leases[0];
+  if (!lease) {
+    throw taskGateRecoveryError('The policy approval Turn has no exact scheduler lease.');
+  }
+  if (lease.status === 'released' || lease.status === 'lost' || lease.status === 'failed') {
+    return;
+  }
+
+  try {
+    completeSchedulerLeaseForTerminalTurn(coreDb, TurnSchema.parse(turn));
+  } catch {
+    // Formal completion needs placement/backend closeout. Policy-local Gates never
+    // established that worker checkpoint, so fall through to a Turn-bound fence.
+  }
+
+  const remaining = listSchedulerSessionLeasesForTurn(coreDb, {
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+  });
+  const after = remaining[0];
+  if (
+    remaining.length === 1 &&
+    after &&
+    (after.status === 'released' || after.status === 'failed' || after.status === 'lost')
+  ) {
+    return;
+  }
+  if (remaining.length !== 1 || !after || after.leaseId !== lease.leaseId) {
+    throw taskGateRecoveryError('The policy approval Turn lost its exact scheduler lease.');
+  }
+
+  const releaseReason =
+    turn.status === 'cancelled' || turn.status === 'interrupted'
+      ? 'policy-approval-turn-interrupted'
+      : 'policy-approval-turn-closed';
+  const fenced = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_session_leases
+       SET status = 'released',
+           release_reason = ?,
+           recovery_state = NULL,
+           recovery_deadline = NULL
+       WHERE lease_id = ?
+         AND workspace_id = ?
+         AND thread_id = ?
+         AND turn_id = ?
+         AND status = ?`
+    )
+    .run(releaseReason, lease.leaseId, turn.workspaceId, turn.threadId, turn.id, lease.status);
+  if (fenced.changes !== 1) {
+    throw taskGateRecoveryError(
+      'The policy approval could not release scheduler ownership for the leased Turn.'
+    );
   }
 }
 
