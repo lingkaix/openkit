@@ -935,6 +935,7 @@ export async function executeRepositoryPush(
           approvalRowId: approvalItem.id,
           commitIds: intent.commitIds,
           git: repository.git,
+          hostSessionLinkageExemption: policyDecision.contextSummary.worker === undefined,
           policyDecisionId: policyDecision.decisionId,
           recordId: `gpr_${randomUUID()}`,
           remoteSummary: intent.remoteSummary,

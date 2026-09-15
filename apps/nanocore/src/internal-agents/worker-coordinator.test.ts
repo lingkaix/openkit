@@ -416,6 +416,25 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     });
   });
 
+  it.each([
+    'Review and merge pull request #85',
+    'Please review PR https://github.com/lingkaix/openkit/pull/85 and merge it',
+    'Approve and merge the pull request #71',
+  ])('delegates concrete PR review/merge prompts: %s', (prompt) => {
+    const routing = createWorkerCoordinatorDecision({
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(routing).toMatchObject({
+      decision: 'worker_turn',
+      selectedWorkerCandidate: { agentId: 'agent_codex' },
+    });
+    expect(routing.workerRequest?.objective).toBe(prompt);
+  });
+
   it('creates evidence-backed Goal Mode stop decisions', () => {
     const decision = createWorkerCoordinatorGoalStopDecision({
       workspaceId: 'ws_demo',

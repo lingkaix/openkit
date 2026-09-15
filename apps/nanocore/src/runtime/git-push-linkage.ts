@@ -11,6 +11,11 @@ export interface EvaluateGitPushLinkageInput {
   readonly commitIds: readonly string[];
   /** Whether all pushed commits must link back to workspace review applies. */
   readonly requireReviewLinkage: boolean;
+  /**
+   * When true, host App API / ops pushes may publish commits that are not linked to
+   * workspace reviews while keep requireReviewLinkage enabled for worker-produced changes.
+   */
+  readonly hostSessionLinkageExemption?: boolean;
 }
 
 /** Successful Git push linkage evaluation. */
@@ -47,7 +52,7 @@ export function evaluateGitPushLinkage(
   workspaceDb: WorkspaceDb,
   input: EvaluateGitPushLinkageInput
 ): GitPushLinkageDecision {
-  if (!input.requireReviewLinkage) {
+  if (!input.requireReviewLinkage || input.hostSessionLinkageExemption) {
     return { allowed: true, reviewIds: [] };
   }
 
