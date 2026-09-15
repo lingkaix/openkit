@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, chownSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { inspectGitPushRepository } from './git-push-repository.js';
@@ -46,45 +46,34 @@ function createRepository(
 }
 
 describe('Git push repository inspection', () => {
-  it('inspects a differently owned linked checkout with scrubbed HOME without exposing credentials or changing ownership', () => {
+  it('inspects a checkout Git treats as differently owned with scrubbed HOME without exposing credentials or changing ownership', () => {
     const repository = createRepository('https://github.com/openkit/openkit.git');
-    const otherUid = process.getuid?.() === 0 ? 1001 : 0;
-    const originalUid = statSync(repository.path).uid;
-    const originalGid = statSync(repository.path).gid;
+    const gitBinary = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const wrapperDirectory = mkdtempSync(join(tmpdir(), 'openkit-git-owner-wrapper-'));
+    const shellGitBinary = `'${gitBinary.replaceAll("'", "'\\''")}'`;
     const credential = 'ghp_inspection_credential_canary';
     const hostileConfig = join(mkdtempSync(join(tmpdir(), 'openkit-git-global-config-')), 'config');
     const savedHome = process.env.HOME;
     const savedToken = process.env.GITHUB_TOKEN;
     const savedGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
-
-    /** Changes only the disposable fixture's owner. */
-    const setOwner = (uid: number, gid?: number): void => {
-      if (process.getuid?.() === 0) {
-        chownSync(repository.path, uid, gid ?? originalGid);
-        chownSync(join(repository.path, '.git'), uid, gid ?? originalGid);
-      } else {
-        execFileSync('sudo', [
-          '-n',
-          'chown',
-          '-R',
-          gid === undefined ? String(uid) : `${uid}:${gid}`,
-          repository.path,
-        ]);
-      }
-    };
+    const savedPath = process.env.PATH;
 
     try {
-      chmodSync(repository.path, 0o755);
-      setOwner(otherUid);
+      // Git's own test knob exercises its ownership check without privileged fixture setup.
+      writeFileSync(
+        join(wrapperDirectory, 'git'),
+        `#!/bin/sh\nGIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec ${shellGitBinary} "$@"\n`,
+        { mode: 0o755 }
+      );
+      process.env.PATH = `${wrapperDirectory}${delimiter}${savedPath ?? ''}`;
       const ownerBefore = statSync(repository.path).uid;
-      expect(ownerBefore).toBe(otherUid);
       expect(() =>
         execFileSync('git', ['rev-parse', 'HEAD'], {
           cwd: repository.path,
-          env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: '/dev/null' },
+          env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: '/dev/null', HOME: '' },
           stdio: 'pipe',
         })
-      ).toThrow();
+      ).toThrow(/dubious ownership/);
 
       delete process.env.HOME;
       process.env.GITHUB_TOKEN = credential;
@@ -106,9 +95,11 @@ describe('Git push repository inspection', () => {
       else process.env.GITHUB_TOKEN = savedToken;
       if (savedGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
       else process.env.GIT_CONFIG_GLOBAL = savedGlobalConfig;
-      setOwner(originalUid, originalGid);
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
       rmSync(repository.path, { recursive: true, force: true });
       rmSync(join(hostileConfig, '..'), { recursive: true, force: true });
+      rmSync(wrapperDirectory, { recursive: true, force: true });
     }
   });
 
