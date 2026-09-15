@@ -33,6 +33,11 @@ export interface PrepareGitPushAttemptInput {
   readonly commitIds: readonly string[];
   /** Linked repository Git config. */
   readonly git: WorkspaceRepositoryGitConfig;
+  /**
+   * Host App API exemption from review linkage while requireReviewLinkage stays enabled
+   * for worker-produced publication.
+   */
+  readonly hostSessionLinkageExemption?: boolean;
   /** Clock used for deterministic records. */
   readonly now?: () => string;
   /** Policy decision that authorized this push attempt, when available. */
@@ -202,6 +207,7 @@ export function prepareGitPushAttempt(
 
   const linkage = evaluateGitPushLinkage(workspaceDb, {
     commitIds: input.commitIds,
+    hostSessionLinkageExemption: input.hostSessionLinkageExemption === true,
     requireReviewLinkage: input.git.requireReviewLinkage,
     workspaceId: input.workspaceId,
   });

@@ -551,12 +551,28 @@ function isGoalPrompt(prompt: string): boolean {
 }
 
 /**
+ * Checks for Task Mode prompts that ask a worker to review/approve/merge a concrete PR.
+ *
+ * @param prompt Lowercase prompt.
+ * @returns True when the prompt names a PR and a review/merge action.
+ */
+function isConcretePrWorkerPrompt(prompt: string): boolean {
+  const hasPr = /\b(pr|pull[\s-]?request)\b|#\d+|github\.com\/[^\s]+\/pull\/\d+/i.test(prompt);
+  const hasAction = /\b(review|approve|merge)\b/.test(prompt);
+  return hasPr && hasAction;
+}
+
+/**
  * Checks for review-mode prompts.
  *
  * @param prompt Lowercase prompt.
  * @returns True when review is likely.
  */
 function isReviewPrompt(prompt: string): boolean {
+  // Concrete PR review/approve/merge Tasks are worker execution, not human review-mode.
+  if (isConcretePrWorkerPrompt(prompt)) {
+    return false;
+  }
   return /\breview\b|\baudit\b|\bcheck\s+the\s+work\b/.test(prompt);
 }
 
@@ -613,9 +629,11 @@ function isQuickChatPrompt(prompt: string): boolean {
  */
 function requiresWorker(prompt: string): boolean {
   return (
-    /\b(implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug)\b/.test(
+    /\b(implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug|merge|approve)\b/.test(
       prompt
-    ) || /^use\s+the\s+(?!.*\?[.!]*$)\S/.test(prompt)
+    ) ||
+    isConcretePrWorkerPrompt(prompt) ||
+    /^use\s+the\s+(?!.*\?[.!]*$)\S/.test(prompt)
   );
 }
 

@@ -170,4 +170,21 @@ describe('Git push linkage', () => {
       workspaceDb.sqlite.close();
     }
   });
+
+  it('allows host-session exemption while requireReviewLinkage stays enabled', () => {
+    const workspaceDb = createWorkspaceDb();
+
+    try {
+      expect(
+        evaluateGitPushLinkage(workspaceDb, {
+          commitIds: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+          hostSessionLinkageExemption: true,
+          requireReviewLinkage: true,
+          workspaceId: 'ws_demo',
+        })
+      ).toEqual({ allowed: true, reviewIds: [] });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
 });
