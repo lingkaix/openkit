@@ -2107,6 +2107,40 @@ describe('scheduler restart recovery', () => {
     }
   });
 
+  it('finishes retirement of an orphan already physically cleaned before restart', async () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      dispatchLease(coreDb, 'orphan_physical_cleaned');
+      recordBackendSession(coreDb, 'orphan_physical_cleaned', 'physical-cleaned');
+      coreDb.sqlite
+        .prepare('DELETE FROM scheduler_session_leases WHERE lease_id = ?')
+        .run('lease_orphan_physical_cleaned');
+      const recovery = await runSchedulerRestartRecovery(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      let cleanupCalls = 0;
+      await runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
+        cleanupBackendSession: async () => {
+          cleanupCalls += 1;
+        },
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      expect(cleanupCalls).toBe(0);
+      expect(getWorkerBackendSession(coreDb, 'lease_orphan_physical_cleaned')).toMatchObject({
+        state: 'cleaned',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT in_use_count AS inUseCount FROM scheduler_capacity_records')
+          .get()
+      ).toEqual({ inUseCount: 0 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('retires a terminal lease backend anchor without changing that lease', async () => {
     const coreDb = createMigratedCoreDb();
     let cleanupCalls = 0;

@@ -144,7 +144,9 @@ export async function runSchedulerRestartRecovery(
 
   for (const orphan of listOrphanBackendSessions(coreDb)) {
     try {
-      moveSessionToCleanupPending(coreDb, orphan, now());
+      if (orphan.state !== 'physical-cleaned') {
+        moveSessionToCleanupPending(coreDb, orphan, now());
+      }
     } catch (error) {
       failures.push({ error, leaseId: orphan.leaseId });
     }
