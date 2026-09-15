@@ -973,9 +973,32 @@ describe('FsStore canonical reload', () => {
       decision: 'denied',
       actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
     });
+    const itemsPath = join(
+      dataRoot,
+      'workspaces',
+      workspace.id,
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'items.jsonl'
+    );
+    const canonicalDenials = () =>
+      readFileSync(itemsPath, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .filter(
+          (item) =>
+            item.type === 'approval-decision' &&
+            item.approvalRequestId === approvalId &&
+            item.actor?.id === 'nanocore-boot-reconciliation'
+        );
+    expect(canonicalDenials()).toEqual([decision]);
     expect(new FsStore({ dataRoot }).getTurn(workspace.id, thread.id, turn.id).items).toEqual(
       recovered.items
     );
+    expect(canonicalDenials()).toEqual([decision]);
   });
 
   it('repairs only an incomplete final item-log fragment', () => {

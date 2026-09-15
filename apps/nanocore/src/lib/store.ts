@@ -928,6 +928,9 @@ export class FsStore {
       [...this.items.values()],
       [...this.turns.values()]
     );
+    for (const item of approvalState.repairItems) {
+      appendWorkspaceItemRevision(this.workspaceRootPath(item.workspaceId), item);
+    }
     this.turns = new Map(approvalState.turns.map((turn) => [turn.id, turn]));
     this.approvals = new Map(approvalState.approvals.map((approval) => [approval.id, approval]));
     for (const item of approvalState.repairItems) {
