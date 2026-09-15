@@ -760,6 +760,23 @@ registerOperations(catalog, ['getAgentEnvironmentPackageSnapshot', 'getGitPushRe
   resolver: 'workspace-child-lineage',
   scope: 'workspace',
 });
+registerOperations(
+  catalog,
+  [
+    'createWorkspaceVaultSecret',
+    'rotateWorkspaceVaultSecret',
+    'revokeWorkspaceVaultSecret',
+    'createWorkspaceVaultGrant',
+    'revokeWorkspaceVaultGrant',
+  ],
+  {
+    authentication: 'deployment-admin',
+    mutating: true,
+    policyOperation: 'vault.admin',
+    resolver: 'workspace-child-lineage',
+    scope: 'workspace',
+  }
+);
 registerOperations(catalog, ['rebindWorkspaceVaultReference'], {
   mutating: true,
   policyOperation: 'vault.admin',

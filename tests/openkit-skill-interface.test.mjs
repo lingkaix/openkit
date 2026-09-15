@@ -589,8 +589,13 @@ test('one catalog covers the checked App API and public Core projection', async 
       'storage.layout-report',
       'user.disable',
       'vault.bootstrap-codex-auth',
+      'vault.grant-create',
+      'vault.grant-revoke',
       'vault.lock',
       'vault.provider-api-key-set',
+      'vault.secret-create',
+      'vault.secret-revoke',
+      'vault.secret-rotate',
       'vault.server-use-list',
       'vault.status',
       'vault.unlock',
@@ -676,6 +681,12 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
     operationCatalog.find((entry) => entry.id === 'vault.provider-api-key-set')?.inputSensitivity,
     'secret stdin'
   );
+  for (const id of ['vault.secret-create', 'vault.secret-rotate']) {
+    assert.equal(
+      operationCatalog.find((entry) => entry.id === id)?.inputSensitivity,
+      'secret stdin'
+    );
+  }
   assert.strictEqual(
     operationCatalog.find((entry) => entry.id === 'vault.provider-api-key-set')?.inputSchema.shape
       .providerId,
@@ -2051,6 +2062,75 @@ test('the bundled CLI rejects obsolete os-keychain Vault responses', async () =>
 
   assert.equal(result.code, 3);
   assert.equal(JSON.parse(result.stdout).error.code, 'incompatible_contract');
+});
+
+for (const [operation, required] of [
+  ['vault.secret-create', { workspaceId: 'ws_demo', secretKind: 'github-token' }],
+  ['vault.secret-rotate', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
+]) {
+  test(`bundled ${operation} rejects malformed secret input without disclosure or transport`, async () => {
+    const material = 'review-fake-canary';
+    const result = await runCli(
+      ['ops', 'call', operation, '--input', '-'],
+      { OPENKIT_NANOCORE_URL: 'http://nanocore.example', OPENKIT_NANOCORE_TOKEN: 'okt_test_admin' },
+      JSON.stringify({ ...required, material, [material]: true }),
+      [
+        dataModule(`
+        globalThis.fetch = async () => {
+          process.stderr.write('UNEXPECTED_TRANSPORT');
+          throw new Error('Validation must reject before transport.');
+        };
+      `),
+      ]
+    );
+    assert.equal(result.code, 2);
+    assert.ok(!result.stdout.includes(material), 'stdout must not contain secret material');
+    assert.ok(!result.stderr.includes(material), 'stderr must not contain secret material');
+    assert.equal(result.stderr, '', 'invalid input must not invoke transport');
+    assert.deepEqual(JSON.parse(result.stdout).error, {
+      code: 'invalid_input',
+      message: 'Operation input failed schema validation.',
+    });
+  });
+}
+
+test('bundled Vault secret writes keep material in stdin bodies and redact upstream failures', async () => {
+  const material = 'generic-vault-canary-do-not-print';
+  for (const [operation, input, suffix] of [
+    [
+      'vault.secret-create',
+      { workspaceId: 'ws_demo', secretKind: 'github-token', material },
+      '/secrets',
+    ],
+    [
+      'vault.secret-rotate',
+      { workspaceId: 'ws_demo', referenceId: 'vault_test', material },
+      '/secrets/vault_test/rotate',
+    ],
+  ]) {
+    const result = await runCli(
+      ['ops', 'call', operation, '--input', '-'],
+      {
+        OPENKIT_NANOCORE_URL: 'http://nanocore.example',
+        OPENKIT_NANOCORE_TOKEN: 'okt_test_admin',
+      },
+      JSON.stringify(input),
+      [
+        dataModule(`
+      globalThis.fetch = async (url, options) => {
+        if (url !== 'http://nanocore.example/api/app/workspaces/ws_demo/vault${suffix}' || options.method !== 'POST') throw new Error('Wrong transport');
+        const body = JSON.parse(options.body);
+        if (body.material !== ${JSON.stringify(material)} || body.workspaceId !== undefined || body.referenceId !== undefined) throw new Error('Wrong body');
+        return Response.json({ protocolVersion: '0.5.0', code: 'vault_mutation_failed', message: body.material }, { status: 409 });
+      };
+    `),
+      ]
+    );
+    assert.notEqual(result.code, 0);
+    assert.equal(JSON.parse(result.stdout).error.code, 'vault_mutation_failed');
+    assert.ok(!result.stdout.includes(material));
+    assert.ok(!result.stderr.includes(material));
+  }
 });
 
 test('the bundled CLI performs one typed call with fixed audit headers', async () => {

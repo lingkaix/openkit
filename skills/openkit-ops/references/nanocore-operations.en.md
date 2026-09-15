@@ -154,3 +154,28 @@ Non-interactive ops that only have a usable `server-admin` bearer can:
 3. `openkit ops call task.start` (or `POST .../threads/{threadId}/task`) with an actionable prompt and `workerStorageChoice: { "kind": "fresh" }`.
 
 Do not print token secrets. Prefer rotating into a named local destination via `token.create` / `token.rotate` when issuing dedicated automation credentials.
+
+## Store a GitHub token for dogfood push
+
+Prerequisites: a running NanoCore with an unlocked encrypted-file Vault, the public `openkit` Skill executable, deployment-admin authority, an authorized Workspace and host repository, and a GitHub token supplied privately by its owner. No production token is needed for local tests. The examples use `openkit` as the installed Skill's `scripts/openkit` executable.
+
+1. Run `openkit doctor`, then describe `vault.secret-create`, `vault.grant-create`, and `repository.set-default`. Inspect the selected Workspace's existing repository and Git settings.
+2. Enroll material through hidden input and a pipe. The secret is never an argument, shell-history entry, temporary file, or command output visible to the Agent. Replace only the non-secret Workspace ID in this example:
+
+```bash
+python3 -c 'import getpass,json; print(json.dumps({"workspaceId":"WORKSPACE_ID","secretKind":"github-token","material":getpass.getpass("GitHub token: ")}))' | openkit ops call vault.secret-create --input -
+```
+
+3. Use the returned redacted `referenceId` to create a grant:
+
+```bash
+printf '%s' '{"workspaceId":"WORKSPACE_ID","referenceId":"vault_RETURNED_ID"}' | openkit ops call vault.grant-create --input -
+```
+
+4. Bind the returned `grantId` using `repository.set-default`. Supply the existing `resourceId`, `displayName`, authorized host `localPath`, and complete existing `git` object with only `vaultGrantRef` changed to the returned grant ID. Read `repository.list` afterwards to verify the binding. Keep the repository's review linkage, allowed push targets, protected branches, and author settings intact.
+5. Use `repository.push-request-approval`, obtain the required human approval, and then use `repository.push-execute`. Inspect `repository.push-list` and `vault.use-list` for redacted evidence. The `git-push:github-token` adapter resolves host-only `GITHUB_TOKEN`; no worker AEP or sandbox receives the token.
+6. Rotate with `vault.secret-rotate` using the same hidden-input pipe and `{ workspaceId, referenceId, material }`. Re-read `vault.reference-list` and verify the new version. Revoke a grant with `vault.grant-revoke` and `{ workspaceId, grantId }`, or destroy all material versions and dependent grants with `vault.secret-revoke` and `{ workspaceId, referenceId }`.
+
+A grant created by this recipe is restricted to `gateway-only` and `workspace.git.push`. Agent Manifest `requirementId: github-token` / `targetEnvVarName: GITHUB_TOKEN` declarations and Workspace `credentialBindings` belong to the separate worker credential-injection path; this host-push grant cannot satisfy a `runtime-env` declaration. Generic secrets may use another lowercase `secretKind`, but the public grant-creation operation in this slice remains host-push-only.
+
+Web uses **Settings → Vault backend → Workspace secrets** for the same lifecycle, with a password field cleared on submission and redacted inventory. Existing Workspace Vault remains an evidence view. Revocation retains reference and grant history and does not make an ID reusable. A failed or interrupted mutation requires inventory inspection before a fresh request; the system does not automatically repair Core/backend disagreement.

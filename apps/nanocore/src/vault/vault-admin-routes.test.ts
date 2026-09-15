@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   globSync,
@@ -14,6 +16,8 @@ import { createDefaultVaultUnlockState } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
+import { FsStore } from '../lib/store.js';
+import * as gitPushExecutor from '../runtime/git-push-executor.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -85,6 +89,364 @@ function createSignedInAuthStub(): BetterAuthServer {
 }
 
 describe('vault admin app API', () => {
+  it('creates, rotates and revokes workspace secrets and host-push grants without exposing material', async () => {
+    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    vaultUnlockState.unlock({ masterKey });
+    const workspaceResponse = await app.request('/api/workspaces', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Vault CRUD test',
+        requestId: '00000000-0000-4000-8000-000000000066',
+      }),
+    });
+    expect(workspaceResponse.status).toBe(201);
+    const workspace = await workspaceResponse.json();
+    const workspaceId = workspace.id;
+    const root = `/api/app/workspaces/${workspaceId}/vault`;
+    const secret = 'ghp_synthetic_canary_no_real_credential';
+    const request = (path: string, body: unknown = {}) =>
+      app.request(`${root}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    try {
+      const created = await request('/secrets', { secretKind: 'github-token', material: secret });
+      expect(created.status).toBe(200);
+      expect(created.headers.get('cache-control')).toBe('no-store');
+      const reference = await created.json();
+      expect(reference).toMatchObject({
+        workspaceId,
+        currentVersion: 1,
+        status: 'active',
+      });
+      expect(JSON.stringify(reference)).not.toContain(secret);
+      expect(
+        vaultUnlockState.backend().resolve({ referenceId: reference.referenceId }).toString()
+      ).toBe(secret);
+      const grantResponse = await request('/grants', { referenceId: reference.referenceId });
+      expect(grantResponse.status).toBe(200);
+      const grant = await grantResponse.json();
+      expect(grant).toMatchObject({
+        allowedInjectionPaths: ['gateway-only'],
+        targetCapabilityId: 'workspace.git.push',
+        lifetime: 'workspace',
+      });
+      const rotated = await request(`/secrets/${reference.referenceId}/rotate`, {
+        material: 'replacement-canary',
+      });
+      expect(rotated.status).toBe(200);
+      expect(await rotated.json()).toMatchObject({ currentVersion: 2 });
+      for (const path of ['/references', '/grants']) {
+        const listed = await app.request(`${root}${path}`);
+        expect(listed.status).toBe(200);
+        const bytes = await listed.text();
+        expect(bytes).not.toContain(secret);
+        expect(bytes).not.toContain('replacement-canary');
+      }
+      const revokedGrant = await request(`/grants/${grant.grantId}/revoke`);
+      expect(revokedGrant.status).toBe(200);
+      expect(getVaultGrant(coreDb, grant.grantId)?.status).toBe('revoked');
+      const secondGrant = await (
+        await request('/grants', { referenceId: reference.referenceId })
+      ).json();
+      const revoked = await request(`/secrets/${reference.referenceId}/revoke`);
+      expect(revoked.status).toBe(200);
+      expect(getVaultReference(coreDb, reference.referenceId)?.status).toBe('revoked');
+      expect(getVaultGrant(coreDb, secondGrant.grantId)?.status).toBe('revoked');
+      expect(() =>
+        vaultUnlockState.backend().resolve({ referenceId: reference.referenceId })
+      ).toThrow();
+      expect((await request('/grants', { referenceId: reference.referenceId })).status).toBe(409);
+      const audit = JSON.stringify(
+        coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all()
+      );
+      expect(audit).not.toContain(secret);
+      expect(audit).not.toContain('replacement-canary');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects locked, malformed, cross-workspace and inconsistent secret mutations with redacted errors', async () => {
+    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const root = '/api/app/workspaces/ws_demo/vault';
+    const request = (path: string, body: unknown = {}) =>
+      app.request(`${root}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    try {
+      expect(
+        (await request('/secrets', { secretKind: 'github-token', material: 'fake' })).status
+      ).toBe(423);
+      vaultUnlockState.unlock({ masterKey });
+      const malformed = await request('/secrets', {
+        secretKind: 'github-token',
+        material: '',
+        ghp_fake_error_canary: true,
+      });
+      expect(malformed.status).toBe(400);
+      expect(await malformed.text()).not.toContain('ghp_fake_error_canary');
+      const created = await (
+        await request('/secrets', { secretKind: 'github-token', material: 'fake' })
+      ).json();
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_local',
+        workspaceId: 'ws_other',
+      });
+      const foreign = await app.request(
+        `/api/app/workspaces/ws_other/vault/secrets/${created.referenceId}/revoke`,
+        { method: 'POST' }
+      );
+      expect(foreign.status).toBe(404);
+      const grant = await (await request('/grants', { referenceId: created.referenceId })).json();
+      expect(
+        (
+          await app.request(`/api/app/workspaces/ws_other/vault/grants/${grant.grantId}/revoke`, {
+            method: 'POST',
+          })
+        ).status
+      ).toBe(404);
+      expect(getVaultGrant(coreDb, grant.grantId)?.status).toBe('active');
+      vaultUnlockState
+        .backend()
+        .rotate({ referenceId: created.referenceId, material: 'unprojected-version' });
+      expect(
+        (await request(`/secrets/${created.referenceId}/rotate`, { material: 'new' })).status
+      ).toBe(409);
+      expect((await request('/grants', { referenceId: created.referenceId })).status).toBe(409);
+      const backend = vaultUnlockState.backend();
+      const spy = vi.spyOn(backend, 'store').mockImplementation(() => {
+        throw new Error('ghp_fake_error_canary');
+      });
+      const failed = await request('/secrets', { secretKind: 'github-token', material: 'fake' });
+      expect(failed.status).toBe(409);
+      expect(await failed.text()).not.toContain('ghp_fake_error_canary');
+      spy.mockRestore();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('denies workspace-scoped bearer tokens every secret and grant mutation', async () => {
+    const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    vaultUnlockState.unlock({ masterKey });
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'workspace',
+      workspaceIds: ['ws_demo'],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      vaultUnlockState,
+      mode: 'server',
+      auth: createSignedOutAuthStub(),
+    });
+    try {
+      for (const path of [
+        'secrets',
+        'secrets/vault_test/rotate',
+        'secrets/vault_test/revoke',
+        'grants',
+        'grants/grant_test/revoke',
+      ]) {
+        const response = await app.request(`/api/app/workspaces/ws_demo/vault/${path}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ secretKind: 'github-token', material: 'fake' }),
+        });
+        expect(response.status).toBe(403);
+      }
+      expect(vaultUnlockState.backend().listReferences()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('binds public grants to approved host push and scrubs credential canaries from push results', async () => {
+    const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const store = new FsStore();
+    const workspace = store.createWorkspace('Public Vault push');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+    const thread = store.createThread(workspace.id, 'Publish');
+    const turn = store.createTurn(workspace.id, thread.id, 'Publish', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const app = createApp({ coreDb, dataRoot, store, vaultUnlockState });
+    vaultUnlockState.unlock({ masterKey });
+    const secret = 'ghp_public_vault_push_canary';
+    const basic = Buffer.from(`x-access-token:${secret}`).toString('base64');
+    const runner = vi.spyOn(gitPushExecutor, 'runGitPushCommand').mockResolvedValue({
+      exitCode: 1,
+      stdout: '',
+      stderr: `fatal: Authentication failed ${secret} ${basic}`,
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-public-vault-push-'));
+    const git = (args: string[]) =>
+      execFileSync('git', args, {
+        cwd: repositoryPath,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    git(['init']);
+    git(['config', 'user.name', 'Test']);
+    git(['config', 'user.email', 'test@example.invalid']);
+    git(['commit', '--allow-empty', '-m', 'test']);
+    git(['remote', 'add', 'origin', 'https://github.com/example/test.git']);
+    const commitId = git(['rev-parse', 'HEAD']);
+    const request = (path: string, body: unknown, method = 'POST') =>
+      app.request(path, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const root = `/api/app/workspaces/${workspace.id}`;
+    try {
+      const created = await request(`${root}/vault/secrets`, {
+        secretKind: 'github-token',
+        material: secret,
+      });
+      expect(created.status).toBe(200);
+      const reference = await created.json();
+      const granted = await request(`${root}/vault/grants`, { referenceId: reference.referenceId });
+      expect(granted.status).toBe(200);
+      const grant = await granted.json();
+      const linked = await request(
+        `${root}/repositories/default`,
+        {
+          displayName: 'Test repository',
+          localPath: repositoryPath,
+          git: {
+            authorName: null,
+            authorEmail: null,
+            commitOnApply: true,
+            allowedPushTargets: ['feature/test'],
+            requireReviewLinkage: false,
+            vaultGrantRef: grant.grantId,
+          },
+        },
+        'PUT'
+      );
+      expect(linked.status).toBe(200);
+      const approval = await request(`${root}/repositories/repo_default/git-push/approval`, {
+        requestId: randomUUID(),
+        threadId: thread.id,
+        turnId: turn.id,
+        sourceRef: commitId,
+        targetBranch: 'feature/test',
+        commitIds: [commitId],
+      });
+      expect(approval.status).toBe(200);
+      const payload = await approval.json();
+      const approved = await request(`/api/approvals/${payload.approval.id}/respond`, {
+        requestId: randomUUID(),
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        decision: 'granted',
+      });
+      expect(approved.status).toBe(200);
+      const pushed = await request(`${root}/repositories/repo_default/git-push`, {
+        requestId: randomUUID(),
+        approvalRequestId: payload.approval.id,
+      });
+      expect(pushed.status).toBe(200);
+      const bytes = await pushed.text();
+      expect(JSON.parse(bytes)).toMatchObject({ outcome: 'auth-failed' });
+      expect(runner).toHaveBeenCalled();
+      expect(runner.mock.calls[0]?.[0].env.GIT_CONFIG_VALUE_1).toBe(
+        `AUTHORIZATION: basic ${basic}`
+      );
+      expect(bytes).not.toContain(secret);
+      expect(bytes).not.toContain(basic);
+      const list = await app.request(`${root}/repositories/git-push-records`);
+      expect(list.status).toBe(200);
+      const listBytes = await list.text();
+      expect(listBytes).not.toContain(secret);
+      expect(listBytes).not.toContain(basic);
+    } finally {
+      runner.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'token',
+    'session',
+  ] as const)('accepts workspace secret enrollment from a deployment-admin %s', async (kind) => {
+    const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    vaultUnlockState.unlock({ masterKey });
+    const admin = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const auth: BetterAuthServer = {
+      api: {
+        getSession: async () =>
+          kind === 'session'
+            ? { session: { id: 'session_admin' }, user: { id: 'user_local' } }
+            : null,
+      },
+      handler: async () => Response.json({}),
+    };
+    const app = createApp({ coreDb, dataRoot, vaultUnlockState, mode: 'server', auth });
+    try {
+      const response = await app.request('/api/app/workspaces/ws_demo/vault/secrets', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(kind === 'token' ? { authorization: `Bearer ${admin.secret}` } : {}),
+        },
+        body: JSON.stringify({ secretKind: 'github-token', material: 'fake-admin-secret' }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ workspaceId: 'ws_demo', status: 'active' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('destroys newly stored material when Core reference persistence fails', async () => {
+    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    vaultUnlockState.unlock({ masterKey });
+    coreDb.sqlite.exec(
+      "CREATE TRIGGER reject_secret_insert BEFORE INSERT ON vault_references BEGIN SELECT RAISE(ABORT, 'persistence-error-canary'); END"
+    );
+    try {
+      const response = await app.request('/api/app/workspaces/ws_demo/vault/secrets', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ secretKind: 'api-token', material: 'fake-partial-effect-secret' }),
+      });
+      expect(response.status).toBe(409);
+      const bytes = await response.text();
+      expect(bytes).not.toContain('persistence-error-canary');
+      expect(bytes).not.toContain('fake-partial-effect-secret');
+      const inventory = vaultUnlockState.backend().listReferences();
+      expect(inventory).toHaveLength(1);
+      expect(inventory[0]?.revoked).toBe(true);
+      expect(() =>
+        vaultUnlockState.backend().resolve({ referenceId: inventory[0]!.referenceId })
+      ).toThrow();
+      expect(coreDb.sqlite.prepare('SELECT * FROM vault_references').all()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('stores and rotates an authored provider API key without echoing secret material', async () => {
     const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
     const providersRoot = join(dataRoot, 'config', 'providers');

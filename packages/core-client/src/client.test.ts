@@ -5824,3 +5824,40 @@ describe('createCoreClient', () => {
     expect(source.closed).toBe(true);
   });
 });
+
+describe('workspace secret client', () => {
+  it('posts secret input only in request bodies and validates redacted lifecycle results', async () => {
+    const reference = {
+      backendKind: 'encrypted-file',
+      currentVersion: 1,
+      ownerScope: 'workspace',
+      referenceId: 'vault_test',
+      secretKind: 'github-token',
+      status: 'active',
+      workspaceId: 'ws_demo',
+    };
+    const grant = workspaceVaultGrantsResponse().items[0]!;
+    const root = '/api/app/workspaces/ws_demo/vault';
+    const { client, requests } = createFakeClient({
+      [`POST ${root}/secrets`]: { body: reference },
+      [`POST ${root}/secrets/vault_test/rotate`]: { body: { ...reference, currentVersion: 2 } },
+      [`POST ${root}/secrets/vault_test/revoke`]: { body: { ...reference, status: 'revoked' } },
+      [`POST ${root}/grants`]: { body: grant },
+      [`POST ${root}/grants/grant_github/revoke`]: { body: { ...grant, status: 'revoked' } },
+    });
+    await expect(
+      client.app.createWorkspaceVaultSecret('ws_demo', {
+        secretKind: 'github-token',
+        material: 'test-canary',
+      })
+    ).resolves.toEqual(reference);
+    await expect(
+      client.app.rotateWorkspaceVaultSecret('ws_demo', 'vault_test', { material: 'next-canary' })
+    ).resolves.toMatchObject({ currentVersion: 2 });
+    await client.app.createWorkspaceVaultGrant('ws_demo', { referenceId: 'vault_test' });
+    await client.app.revokeWorkspaceVaultGrant('ws_demo', 'grant_github');
+    await client.app.revokeWorkspaceVaultSecret('ws_demo', 'vault_test');
+    expect(requests[0]?.body).toEqual({ secretKind: 'github-token', material: 'test-canary' });
+    expect(requests.map(({ path }) => path).join(' ')).not.toContain('canary');
+  });
+});

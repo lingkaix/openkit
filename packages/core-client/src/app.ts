@@ -69,6 +69,10 @@ import {
   CreateWorkspaceMaterialRequestSchema,
   type CreateWorkspaceMaterialResponse,
   CreateWorkspaceMaterialResponseSchema,
+  type CreateWorkspaceVaultGrantRequest,
+  CreateWorkspaceVaultGrantRequestSchema,
+  type CreateWorkspaceVaultSecretRequest,
+  CreateWorkspaceVaultSecretRequestSchema,
   type DataRootBackupCreateResponse,
   DataRootBackupCreateResponseSchema,
   type DataRootBackupVerifyResponse,
@@ -343,6 +347,8 @@ import {
   RotateOpenKitAccessTokenRequestSchema,
   type RotateOpenKitAccessTokenResponse,
   RotateOpenKitAccessTokenResponseSchema,
+  type RotateWorkspaceVaultSecretRequest,
+  RotateWorkspaceVaultSecretRequestSchema,
   type RunThreadGoalStepRequest,
   RunThreadGoalStepRequestSchema,
   type RunThreadGoalStepResponse,
@@ -453,6 +459,8 @@ import {
   VaultAdminUnlockRequestSchema,
   type VaultAdminUnlockResponse,
   VaultAdminUnlockResponseSchema,
+  type VaultAdminWorkspaceReference,
+  VaultAdminWorkspaceReferenceSchema,
   type WorkspaceAccessRecoveryResponse,
   WorkspaceAccessRecoveryResponseSchema,
   type WorkspaceDashboardResponse,
@@ -477,6 +485,8 @@ import {
   WorkspaceOwnershipMutationResponseSchema,
   type WorkspaceSharingError,
   WorkspaceSharingErrorSchema,
+  type WorkspaceVaultGrant,
+  WorkspaceVaultGrantSchema,
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { ApiCallError } from './errors.js';
@@ -1224,6 +1234,29 @@ export interface AppApiClient {
   ): Promise<AbortNanoHostTransportRotationResponse>;
   /** Decommissions the configured NanoHost identity and clears both credential slots. */
   decommissionNanoHost(): Promise<DecommissionNanoHostResponse>;
+  /** Creates a workspace secret using request-only material. */
+  createWorkspaceVaultSecret(
+    workspaceId: string,
+    input: CreateWorkspaceVaultSecretRequest
+  ): Promise<VaultAdminWorkspaceReference>;
+  /** Rotates material without changing reference or grant identity. */
+  rotateWorkspaceVaultSecret(
+    workspaceId: string,
+    referenceId: string,
+    input: RotateWorkspaceVaultSecretRequest
+  ): Promise<VaultAdminWorkspaceReference>;
+  /** Destroys material and revokes dependent grants. */
+  revokeWorkspaceVaultSecret(
+    workspaceId: string,
+    referenceId: string
+  ): Promise<VaultAdminWorkspaceReference>;
+  /** Creates a workspace grant for approved host-side Git push. */
+  createWorkspaceVaultGrant(
+    workspaceId: string,
+    input: CreateWorkspaceVaultGrantRequest
+  ): Promise<WorkspaceVaultGrant>;
+  /** Revokes a workspace grant and dependent injection state. */
+  revokeWorkspaceVaultGrant(workspaceId: string, grantId: string): Promise<WorkspaceVaultGrant>;
   /** Reads redacted vault admin status. */
   getVaultAdminStatus(): Promise<VaultAdminStatusResponse>;
   /** Unlocks the configured vault backend. */
@@ -2163,6 +2196,36 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       ),
     decommissionNanoHost: () =>
       transport.postJson('/api/app/nanohost/decommission', {}, DecommissionNanoHostResponseSchema),
+    createWorkspaceVaultSecret: (workspaceId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/secrets`,
+        CreateWorkspaceVaultSecretRequestSchema.parse(input),
+        VaultAdminWorkspaceReferenceSchema
+      ),
+    rotateWorkspaceVaultSecret: (workspaceId, referenceId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/secrets/${encodeURIComponent(referenceId)}/rotate`,
+        RotateWorkspaceVaultSecretRequestSchema.parse(input),
+        VaultAdminWorkspaceReferenceSchema
+      ),
+    revokeWorkspaceVaultSecret: (workspaceId, referenceId) =>
+      transport.postJson(
+        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/secrets/${encodeURIComponent(referenceId)}/revoke`,
+        {},
+        VaultAdminWorkspaceReferenceSchema
+      ),
+    createWorkspaceVaultGrant: (workspaceId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/grants`,
+        CreateWorkspaceVaultGrantRequestSchema.parse(input),
+        WorkspaceVaultGrantSchema
+      ),
+    revokeWorkspaceVaultGrant: (workspaceId, grantId) =>
+      transport.postJson(
+        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/grants/${encodeURIComponent(grantId)}/revoke`,
+        {},
+        WorkspaceVaultGrantSchema
+      ),
     getVaultAdminStatus: () =>
       transport.getJson('/api/app/vault/status', VaultAdminStatusResponseSchema),
     unlockVaultAdminBackend: (input) =>

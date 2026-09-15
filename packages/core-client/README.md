@@ -37,3 +37,5 @@ Deprecated flat aliases are not exported.
 - `pnpm --filter @openkit/core-client build`
 
 `client.app.applyAdministrationConfiguration` submits a human-confirmed immutable catalog candidate; its response distinguishes persisted configuration from successful reload and restart requirements.
+
+`client.app.createWorkspaceVaultSecret`, `rotateWorkspaceVaultSecret`, `revokeWorkspaceVaultSecret`, `createWorkspaceVaultGrant`, and `revokeWorkspaceVaultGrant` project deployment-admin workspace secret management. Secret material appears only in POST request bodies; result schemas contain metadata only.

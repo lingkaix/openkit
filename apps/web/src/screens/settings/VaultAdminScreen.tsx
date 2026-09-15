@@ -1,5 +1,5 @@
 import { ApiCallError } from '@openkit/core-client';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import {
@@ -12,7 +12,9 @@ import {
   Skeleton,
   TextField,
 } from '../../primitives';
+import { useCurrentWorkspaceId } from './data';
 import { redactSecretShapedText } from './secret-safe';
+import { VaultSecretsPanel } from './VaultSecretsPanel';
 
 /** Preserve only HTTP status for denial handling; raw errors never enter either cache. */
 function vaultRequestError(error: unknown) {
@@ -26,6 +28,7 @@ function vaultRequestError(error: unknown) {
 export function VaultAdminScreen() {
   const client = useCoreClient();
   const [masterKey, setMasterKey] = useState('');
+  const secretWrites = useIsMutating({ mutationKey: ['vault-admin-secret'] });
   const keyHold = useRef<string | null>(null);
   const status = useQuery({
     queryKey: ['settings', 'vault-admin'],
@@ -66,7 +69,7 @@ export function VaultAdminScreen() {
   const denied = [status.error, operation.error].some(
     (error) => error instanceof ApiCallError && (error.status === 401 || error.status === 403)
   );
-  const busy = status.isFetching || operation.isPending;
+  const busy = status.isFetching || operation.isPending || secretWrites > 0;
   const canUnlock =
     !busy && !status.isError && !operation.isError && status.data?.state === 'locked';
   const canLock =
@@ -163,6 +166,9 @@ export function VaultAdminScreen() {
               Refresh status
             </Button>
           </Card>
+          {status.data?.state === 'available' && !operation.isPending ? (
+            <SelectedWorkspaceSecrets />
+          ) : null}
           {operation.isPending ? (
             <p role="status" className="text-sm text-fg-muted">
               Updating Vault backend…
@@ -171,5 +177,15 @@ export function VaultAdminScreen() {
         </>
       )}
     </Page>
+  );
+}
+
+/** Keep backend administration available even when no Workspace is selected. */
+function SelectedWorkspaceSecrets() {
+  const workspaceId = useCurrentWorkspaceId();
+  return workspaceId ? (
+    <VaultSecretsPanel key={workspaceId} workspaceId={workspaceId} />
+  ) : (
+    <p className="text-sm text-fg-muted">Select a Workspace to manage its secrets.</p>
   );
 }

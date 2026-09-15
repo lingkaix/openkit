@@ -2489,6 +2489,87 @@ export const operationCatalog = [
   },
   {
     ...SECRET_INPUT,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'vault.secret-create',
+    source: 'app-api',
+    appOperationId: 'createWorkspaceVaultSecret',
+    clientMethod: 'app.createWorkspaceVaultSecret',
+    group: 'vault',
+    summary: 'Secret create for a workspace; grants authorize approved host Git push.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.CreateWorkspaceVaultSecretRequestSchema, {
+      ...workspaceScope,
+    }),
+    handler: ({ client }, input) =>
+      client.app.createWorkspaceVaultSecret(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...SECRET_INPUT,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'vault.secret-rotate',
+    source: 'app-api',
+    appOperationId: 'rotateWorkspaceVaultSecret',
+    clientMethod: 'app.rotateWorkspaceVaultSecret',
+    group: 'vault',
+    summary: 'Secret rotate for a workspace; grants authorize approved host Git push.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RotateWorkspaceVaultSecretRequestSchema, {
+      ...workspaceScope,
+      referenceId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.rotateWorkspaceVaultSecret(
+        input.workspaceId,
+        input.referenceId,
+        bodyWithout(input, 'workspaceId', 'referenceId')
+      ),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'vault.secret-revoke',
+    source: 'app-api',
+    appOperationId: 'revokeWorkspaceVaultSecret',
+    clientMethod: 'app.revokeWorkspaceVaultSecret',
+    group: 'vault',
+    summary: 'Secret revoke for a workspace; grants authorize approved host Git push.',
+    mutating: true,
+    inputSchema: strictScope({ ...workspaceScope, referenceId: IDENTIFIER }),
+    handler: ({ client }, input) =>
+      client.app.revokeWorkspaceVaultSecret(input.workspaceId, input.referenceId),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'vault.grant-create',
+    source: 'app-api',
+    appOperationId: 'createWorkspaceVaultGrant',
+    clientMethod: 'app.createWorkspaceVaultGrant',
+    group: 'vault',
+    summary: 'Grant create for a workspace; grants authorize approved host Git push.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.CreateWorkspaceVaultGrantRequestSchema, {
+      ...workspaceScope,
+    }),
+    handler: ({ client }, input) =>
+      client.app.createWorkspaceVaultGrant(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'vault.grant-revoke',
+    source: 'app-api',
+    appOperationId: 'revokeWorkspaceVaultGrant',
+    clientMethod: 'app.revokeWorkspaceVaultGrant',
+    group: 'vault',
+    summary: 'Grant revoke for a workspace; grants authorize approved host Git push.',
+    mutating: true,
+    inputSchema: strictScope({ ...workspaceScope, grantId: IDENTIFIER }),
+    handler: ({ client }, input) =>
+      client.app.revokeWorkspaceVaultGrant(input.workspaceId, input.grantId),
+  },
+  {
+    ...SECRET_INPUT,
     id: 'vault.reference-rebind',
     source: 'app-api',
     appOperationId: 'rebindWorkspaceVaultReference',
