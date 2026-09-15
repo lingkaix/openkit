@@ -28,6 +28,7 @@ After proved whole-Sandbox writer cleanup, `turn-executor-factory.ts` retires st
 ## File Groups
 
 - `worker-*-executor.ts`, `worker-*-backend.ts`, and `worker-*-gateway.ts` own governed worker execution and transport.
+- `git-push-repository.ts` inspects only the authorized linked checkout with a scrubbed Git environment and command-scoped `safe.directory` for its canonical path; push execution uses an isolated temporary bare view and does not change linked checkout ownership or host Git configuration.
 - `nanohost-session-dispatch.ts` owns fixed-effect correlation, sensitive bridge-command disposal after acceptance, present raw file transfer validation, exact optional-absence JSON validation for the Workspace change manifest, and the two private semantic route projections on the authoritative NanoHost connection.
 - `worker-runtime-provenance.ts` owns bounded capture verification, product-safe normalization, package-scoped gateway reconciliation, and portable index ref reminting.
 - `nanohost-epoch-audit.ts` rejects private or secret-shaped references before projecting redacted epoch invalidation and readiness boundaries directly into the existing server-owned audit event store.

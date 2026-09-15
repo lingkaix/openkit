@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { inspectGitPushRepository } from './git-push-repository.js';
@@ -46,6 +46,63 @@ function createRepository(
 }
 
 describe('Git push repository inspection', () => {
+  it('inspects a checkout Git treats as differently owned with scrubbed HOME without exposing credentials or changing ownership', () => {
+    const repository = createRepository('https://github.com/openkit/openkit.git');
+    const gitBinary = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const wrapperDirectory = mkdtempSync(join(tmpdir(), 'openkit-git-owner-wrapper-'));
+    const shellGitBinary = `'${gitBinary.replaceAll("'", "'\\''")}'`;
+    const credential = 'ghp_inspection_credential_canary';
+    const hostileConfig = join(mkdtempSync(join(tmpdir(), 'openkit-git-global-config-')), 'config');
+    const savedHome = process.env.HOME;
+    const savedToken = process.env.GITHUB_TOKEN;
+    const savedGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
+    const savedPath = process.env.PATH;
+
+    try {
+      // Git's own test knob exercises its ownership check without privileged fixture setup.
+      writeFileSync(
+        join(wrapperDirectory, 'git'),
+        `#!/bin/sh\nGIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec ${shellGitBinary} "$@"\n`,
+        { mode: 0o755 }
+      );
+      process.env.PATH = `${wrapperDirectory}${delimiter}${savedPath ?? ''}`;
+      const ownerBefore = statSync(repository.path).uid;
+      expect(() =>
+        execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: repository.path,
+          env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: '/dev/null', HOME: '' },
+          stdio: 'pipe',
+        })
+      ).toThrow(/dubious ownership/);
+
+      delete process.env.HOME;
+      process.env.GITHUB_TOKEN = credential;
+      writeFileSync(
+        hostileConfig,
+        `[url "https://github.com/${credential}/"]\n\tinsteadOf = https://github.com/\n`
+      );
+      process.env.GIT_CONFIG_GLOBAL = hostileConfig;
+      const inspection = inspectGitPushRepository(repository.path, 'HEAD');
+      expect(inspection.sourceCommit).toBe(repository.commitId);
+      expect(inspection.provider).toBe('github');
+      expect(JSON.stringify(inspection)).not.toContain(credential);
+      expect(statSync(repository.path).uid).toBe(ownerBefore);
+      expect(statSync(join(repository.path, '.git')).uid).toBe(ownerBefore);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = savedToken;
+      if (savedGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = savedGlobalConfig;
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+      rmSync(repository.path, { recursive: true, force: true });
+      rmSync(join(hostileConfig, '..'), { recursive: true, force: true });
+      rmSync(wrapperDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('derives GitHub authority and the source commit from the repository', () => {
     const repository = createRepository('https://github.com/openkit/openkit.git');
 
