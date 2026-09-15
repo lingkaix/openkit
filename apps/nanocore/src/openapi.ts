@@ -42,6 +42,8 @@ import {
   CreateWorkspaceInvitationRequestSchema,
   CreateWorkspaceMaterialRequestSchema,
   CreateWorkspaceMaterialResponseSchema,
+  CreateWorkspaceVaultGrantRequestSchema,
+  CreateWorkspaceVaultSecretRequestSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyRequestSchema,
   DataRootBackupVerifyResponseSchema,
@@ -203,6 +205,7 @@ import {
   RotateNanoHostTransportTokenResponseSchema,
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
+  RotateWorkspaceVaultSecretRequestSchema,
   RunThreadGoalStepRequestSchema,
   RunThreadGoalStepResponseSchema,
   RuntimeConfigFileListResponseSchema,
@@ -277,6 +280,7 @@ import {
   VaultAdminStatusResponseSchema,
   VaultAdminUnlockRequestSchema,
   VaultAdminUnlockResponseSchema,
+  VaultAdminWorkspaceReferenceSchema,
   WorkspaceAccessRecoveryResponseSchema,
   WorkspaceDashboardResponseSchema,
   WorkspaceDeletionResponseSchema,
@@ -289,6 +293,7 @@ import {
   WorkspaceMemberMutationResponseSchema,
   WorkspaceOwnershipMutationResponseSchema,
   WorkspaceRepositoryDiagnosticsResponseSchema,
+  WorkspaceVaultGrantSchema,
 } from '@openkit/app-api-schemas';
 import {
   AgentIdSchema,
@@ -5365,6 +5370,146 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/workspaces/{workspaceId}/vault/secrets': {
+        post: {
+          operationId: 'createWorkspaceVaultSecret',
+          tags: ['vault'],
+          summary: 'Administer workspace Vault metadata and secret lifecycle.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/CreateWorkspaceVaultSecretRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Redacted Vault metadata.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/VaultAdminWorkspaceReference' },
+                },
+              },
+            },
+            default: {
+              description: 'Redacted error.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspaces/{workspaceId}/vault/secrets/{referenceId}/rotate': {
+        post: {
+          operationId: 'rotateWorkspaceVaultSecret',
+          tags: ['vault'],
+          summary: 'Administer workspace Vault metadata and secret lifecycle.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [
+            WORKSPACE_ID_PARAMETER,
+            {
+              name: 'referenceId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/RotateWorkspaceVaultSecretRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Redacted Vault metadata.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/VaultAdminWorkspaceReference' },
+                },
+              },
+            },
+            default: {
+              description: 'Redacted error.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspaces/{workspaceId}/vault/secrets/{referenceId}/revoke': {
+        post: {
+          operationId: 'revokeWorkspaceVaultSecret',
+          tags: ['vault'],
+          summary: 'Administer workspace Vault metadata and secret lifecycle.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [
+            WORKSPACE_ID_PARAMETER,
+            {
+              name: 'referenceId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Redacted Vault metadata.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/VaultAdminWorkspaceReference' },
+                },
+              },
+            },
+            default: {
+              description: 'Redacted error.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspaces/{workspaceId}/vault/grants/{grantId}/revoke': {
+        post: {
+          operationId: 'revokeWorkspaceVaultGrant',
+          tags: ['vault'],
+          summary: 'Administer workspace Vault metadata and secret lifecycle.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [
+            WORKSPACE_ID_PARAMETER,
+            {
+              name: 'grantId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Redacted Vault metadata.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceVaultGrant' },
+                },
+              },
+            },
+            default: {
+              description: 'Redacted error.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+      },
       '/api/app/providers/{providerId}/api-key': {
         put: {
           operationId: 'setProviderApiKey',
@@ -5489,6 +5634,37 @@ export function createAppOpenApiDocument() {
         },
       },
       '/api/app/workspaces/{workspaceId}/vault/grants': {
+        post: {
+          operationId: 'createWorkspaceVaultGrant',
+          tags: ['vault'],
+          summary: 'Administer workspace Vault metadata and secret lifecycle.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/CreateWorkspaceVaultGrantRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Redacted Vault metadata.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceVaultGrant' },
+                },
+              },
+            },
+            default: {
+              description: 'Redacted error.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
         get: {
           operationId: 'listWorkspaceVaultGrants',
           tags: ['vault'],
@@ -6368,6 +6544,11 @@ export function createAppOpenApiDocument() {
         SetMyAdminAccessTokenDefaultResponse: toJsonSchema(
           SetMyAdminAccessTokenDefaultResponseSchema
         ),
+        CreateWorkspaceVaultSecretRequest: toJsonSchema(CreateWorkspaceVaultSecretRequestSchema),
+        RotateWorkspaceVaultSecretRequest: toJsonSchema(RotateWorkspaceVaultSecretRequestSchema),
+        CreateWorkspaceVaultGrantRequest: toJsonSchema(CreateWorkspaceVaultGrantRequestSchema),
+        VaultAdminWorkspaceReference: toJsonSchema(VaultAdminWorkspaceReferenceSchema),
+        WorkspaceVaultGrant: toJsonSchema(WorkspaceVaultGrantSchema),
         SetProviderApiKeyRequest: toJsonSchema(SetProviderApiKeyRequestSchema),
         SetProviderApiKeyResponse: toJsonSchema(SetProviderApiKeyResponseSchema),
         SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),

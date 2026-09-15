@@ -14,6 +14,7 @@ export interface RecordVaultAdminAuditEventInput {
   readonly actor?: Actor;
   /** Stable admin action name. */
   readonly action:
+    | `vault.workspace_${'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant'}`
     | 'vault.unlock'
     | 'vault.lock'
     | 'vault.bootstrap_codex_auth_json'

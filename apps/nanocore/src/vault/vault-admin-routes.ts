@@ -36,6 +36,7 @@ import {
   listWorkspaceVaultReferences,
   rebindWorkspaceVaultReference,
 } from './vault-references.js';
+import { registerVaultSecretRoutes } from './vault-secret-routes.js';
 import type { VaultUnlockState } from './vault-unlock-state.js';
 import {
   listExportableWorkspaceVaultUseRecords,
@@ -67,6 +68,7 @@ export function registerVaultAdminRoutes({
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly vaultUnlockState: VaultUnlockState | null;
 }): void {
+  registerVaultSecretRoutes({ app, coreDb, vaultUnlockState });
   const vaultUnlockFailuresByActor = new Map<string, number[]>();
   const providerApiKeyWrites = new Set<string>();
 
