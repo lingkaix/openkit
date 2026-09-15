@@ -3229,6 +3229,9 @@ describe('createConfiguredTurnExecutor', () => {
       ).backend;
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       const materialization = await backend.materialize(environmentPackage, {
+        runtimeEnvCredentials: [
+          { targetEnvVarName: 'GITHUB_TOKEN', credentialValue: 'private-dispatch-env-canary' },
+        ],
         workspaceRoots: [],
       });
       expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
@@ -3272,7 +3275,17 @@ describe('createConfiguredTurnExecutor', () => {
             contextRef: '/openkit/sessions/as_human_gate/context',
           });
         }
-        runtime.acceptNanoHostHarnessCommand(command);
+        const wireCommand = runtime.acceptNanoHostHarnessCommand(command);
+        if (operation === 'turn.start') {
+          expect(wireCommand.body.runtimeEnvironment).toEqual({
+            GITHUB_TOKEN: 'private-dispatch-env-canary',
+          });
+          expect(command.body).not.toHaveProperty('runtimeEnvironment');
+          expect(JSON.stringify(effects)).not.toContain('private-dispatch-env-canary');
+          expect(
+            JSON.stringify(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').all())
+          ).not.toContain('private-dispatch-env-canary');
+        }
         const result = {
           body,
           disposition: 'succeeded' as const,

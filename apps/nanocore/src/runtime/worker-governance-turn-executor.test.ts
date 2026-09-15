@@ -5589,6 +5589,125 @@ describe('WorkerGovernanceTurnExecutor', () => {
       coreDb.sqlite.close();
     }
   });
+  it.each([
+    false,
+    true,
+  ])('records runtime-env receipts only after native startup (launch failure: %s)', async (launchFails) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-runtime-env-'));
+    const coreDb = openCoreDb(dataRoot);
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    const timestamp = '2026-07-05T00:00:00.000Z';
+
+    applyMigrations(coreDb);
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 10) });
+    vaultUnlockState.backend().store({
+      material: 'runtime-env-receipt-canary',
+      metadata: { ownerScope: 'server' },
+      referenceId: 'vault_runtime_env',
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://server/vault/vault_runtime_env',
+      displayName: 'Codex auth JSON',
+      ownerScope: 'server',
+      referenceId: 'vault_runtime_env',
+      secretKind: 'codex-auth-json',
+      now: () => timestamp,
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['runtime-env'],
+      grantId: 'grant_runtime_env',
+      lifetime: 'agent-session',
+      ownerScope: 'server',
+      targetAgentSessionId: 'as_governance_runtime_env_1',
+      vaultReferenceId: 'vault_runtime_env',
+      now: () => timestamp,
+    });
+
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run Codex auth runtime file');
+    const backend = new FakeWorkerGovernanceBackend();
+    const nativeLaunch = backend.launch.bind(backend);
+    vi.spyOn(backend, 'launch').mockImplementation(async () => {
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+      if (launchFails) throw new Error('credential_materialization_failed');
+      const credentials = backend.lastContext?.runtimeEnvCredentials ?? [];
+      const environment = Object.fromEntries(
+        credentials.map((entry) => [entry.targetEnvVarName, entry.credentialValue])
+      );
+      const observed = execFileSync(
+        process.execPath,
+        [
+          '-e',
+          "process.stdout.write(String(process.env.GITHUB_TOKEN === 'runtime-env-receipt-canary'))",
+        ],
+        { env: environment, encoding: 'utf8' }
+      );
+      expect(observed).toBe('true');
+      return nativeLaunch();
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => 'as_governance_runtime_env_1',
+      environmentBackend: {
+        kind: 'openshell',
+      },
+      now: () => timestamp,
+      vaultBackend: () => vaultUnlockState.backend(),
+    });
+
+    try {
+      const run = executor.startTurn(store, turn.id, 'Run Codex auth runtime file', {
+        agentSetup: createTestAgentSetup({
+          credentialDeclarations: [
+            {
+              id: 'codex_auth_json',
+              targetEnvVarName: 'GITHUB_TOKEN',
+              vaultGrantId: 'grant_runtime_env',
+              visibility: 'runtime-env',
+            },
+          ],
+        }),
+        requestId: '00000000-0000-4000-8000-000000000216',
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+
+      if (launchFails) {
+        await expect(run).rejects.toThrow('credential_materialization_failed');
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        return;
+      }
+      await run;
+
+      expect(backend.lastContext?.runtimeEnvCredentials).toEqual([
+        {
+          credentialValue: 'runtime-env-receipt-canary',
+          targetEnvVarName: 'GITHUB_TOKEN',
+        },
+      ]);
+      expect(listVaultUseRecords(coreDb)).toEqual([
+        expect.objectContaining({
+          grantId: 'grant_runtime_env',
+          outcome: 'succeeded',
+          resolvingPath: 'grant',
+        }),
+      ]);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([
+        expect.objectContaining({
+          agentSessionId: 'as_governance_runtime_env_1',
+          grantId: 'grant_runtime_env',
+        }),
+      ]);
+      expect(JSON.stringify(backend.lastPackage)).not.toContain('runtime-env-receipt-canary');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });
 
 /** One native JSON frame and its restricted origin claims. */
