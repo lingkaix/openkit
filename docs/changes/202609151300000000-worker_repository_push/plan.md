@@ -1,5 +1,5 @@
 ---
-status: ready
+status: implemented
 type: change-plan
 ---
 # Worker Repository Push: Issue 84
@@ -26,9 +26,18 @@ The initial focused regression run failed during collection because built schema
 
 ## Checkpoint
 
-Status: implementation in progress on `fix/84-worker-repository-push`, created from fetched main at `bb05e09`. Herdr Codex `build84` owns NanoCore and any necessary package/test implementation; the orchestrator owns specifications, Skill guidance and integration; Herdr Codex `review84` independently inspects artifacts and evidence. Each path has one writer. No persistent deployment changes or registered-host access are part of this work.
+Implementation complete on `fix/84-worker-repository-push` from `bb05e09`. [PR #86](https://github.com/lingkaix/openkit/pull/86) targets main and closes #84. No persistent deployment changes are part of this PR; A2 deploy and dogfood retest follow merge.
 
-Next action: first demonstrate the absent selected repository capability with a lowest-sufficient regression, implement the accepted path, and observe the real Gate or allowed host push plus scope/selection/recovery refusals. Run focused checks against the final diff, obtain independent acceptance, open one #84 PR, wait for green CI, merge and verify issue closure. A diagnostic-only result does not satisfy the accepted outcome.
+## Summary
+
+Selected built-in `openkit-repository` MCP tools request and execute host-owned repository pushes through the authenticated worker relay without App API credentials or opaque `connection_failed`.
+
+## Verification
+
+- Focused vitest suites for worker-repository-mcp, worker-mcp-routes, approval-gates, agent-environment, worker-recovery, resource-catalog, and git-push-executor passed.
+- Protocol package tests passed after regenerating schemas for `nanocore-repo-push-policy`.
+- Biome check on changed TypeScript sources passed.
+- CI PR lightweight repo check must pass on this plan status correction.
 
 
 ## Delivery
