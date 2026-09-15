@@ -2195,6 +2195,109 @@ describe('scheduler restart recovery', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('rejects contradictory terminal lease and executing plan placement before cleanup', async () => {
+    const coreDb = createMigratedCoreDb();
+    let cleanupCalls = 0;
+    try {
+      dispatchLease(coreDb, 'terminal_placement_conflict');
+      recordBackendSession(coreDb, 'terminal_placement_conflict', 'launching');
+      seedTarget(coreDb, 'other_placement');
+      coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_session_leases SET status = 'failed', release_reason = 'corrupt-terminal' WHERE lease_id = ?"
+        )
+        .run('lease_terminal_placement_conflict');
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_placement_plans SET selected_target_id = ?, selected_pool_id = ? WHERE plan_id = ?'
+        )
+        .run('target_other_placement', 'pool_other_placement', 'plan_terminal_placement_conflict');
+      const recovery = await runSchedulerRestartRecovery(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      await expect(
+        runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
+          cleanupBackendSession: async () => {
+            cleanupCalls += 1;
+          },
+          now: () => '2026-07-05T00:01:00.000Z',
+          projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        })
+      ).rejects.toThrow('contradictory scheduler capacity placement');
+      expect(cleanupCalls).toBe(0);
+      expect(getWorkerBackendSession(coreDb, 'lease_terminal_placement_conflict')).toMatchObject({
+        state: 'cleanup-pending',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE target_id = ?'
+          )
+          .get('target_terminal_placement_conflict')
+      ).toEqual({ inUseCount: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('releases only the orphan boundary and preserves an unrelated capacity fence', async () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      dispatchLease(coreDb, 'scoped_orphan');
+      recordBackendSession(coreDb, 'scoped_orphan', 'launching');
+      coreDb.sqlite
+        .prepare('DELETE FROM scheduler_session_leases WHERE lease_id = ?')
+        .run('lease_scoped_orphan');
+      seedTarget(coreDb, 'separate_fence');
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_capacity_records SET in_use_count = 1 WHERE target_id = ?')
+        .run('target_separate_fence');
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_worker_pools SET current_admitted_session_count = 1 WHERE pool_id = ?'
+        )
+        .run('pool_separate_fence');
+      const unrelatedBefore = coreDb.sqlite
+        .prepare(
+          'SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ?'
+        )
+        .get('target_separate_fence');
+      const recovery = await runSchedulerRestartRecovery(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      await runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
+        cleanupBackendSession: async () => {},
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE target_id = ?'
+          )
+          .get('target_scoped_orphan')
+      ).toEqual({ inUseCount: 0 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ?'
+          )
+          .get('target_separate_fence')
+      ).toEqual(unrelatedBefore);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT current_admitted_session_count AS count FROM scheduler_worker_pools WHERE pool_id = ?'
+          )
+          .get('pool_separate_fence')
+      ).toEqual({ count: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });
 
 describe('minimal scheduler reconnect contract', () => {
