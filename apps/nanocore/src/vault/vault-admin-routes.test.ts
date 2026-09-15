@@ -85,6 +85,75 @@ function createSignedInAuthStub(): BetterAuthServer {
 }
 
 describe('vault admin app API', () => {
+  it('creates, rotates and revokes workspace secrets and host-push grants without exposing material', async () => {
+    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    vaultUnlockState.unlock({ masterKey });
+    const root = '/api/app/workspaces/ws_demo/vault';
+    const secret = 'ghp_synthetic_canary_no_real_credential';
+    const request = (path: string, body: unknown = {}) =>
+      app.request(`${root}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    try {
+      const created = await request('/secrets', { secretKind: 'github-token', material: secret });
+      expect(created.status).toBe(200);
+      expect(created.headers.get('cache-control')).toBe('no-store');
+      const reference = await created.json();
+      expect(reference).toMatchObject({
+        workspaceId: 'ws_demo',
+        currentVersion: 1,
+        status: 'active',
+      });
+      expect(JSON.stringify(reference)).not.toContain(secret);
+      expect(
+        vaultUnlockState.backend().resolve({ referenceId: reference.referenceId }).toString()
+      ).toBe(secret);
+      const grantResponse = await request('/grants', { referenceId: reference.referenceId });
+      expect(grantResponse.status).toBe(200);
+      const grant = await grantResponse.json();
+      expect(grant).toMatchObject({
+        allowedInjectionPaths: ['gateway-only'],
+        targetCapabilityId: 'workspace.git.push',
+        lifetime: 'workspace',
+      });
+      const rotated = await request(`/secrets/${reference.referenceId}/rotate`, {
+        material: 'replacement-canary',
+      });
+      expect(rotated.status).toBe(200);
+      expect(await rotated.json()).toMatchObject({ currentVersion: 2 });
+      for (const path of ['/references', '/grants']) {
+        const listed = await app.request(`${root}${path}`);
+        expect(listed.status).toBe(200);
+        const bytes = await listed.text();
+        expect(bytes).not.toContain(secret);
+        expect(bytes).not.toContain('replacement-canary');
+      }
+      const revokedGrant = await request(`/grants/${grant.grantId}/revoke`);
+      expect(revokedGrant.status).toBe(200);
+      expect(getVaultGrant(coreDb, grant.grantId)?.status).toBe('revoked');
+      const secondGrant = await (
+        await request('/grants', { referenceId: reference.referenceId })
+      ).json();
+      const revoked = await request(`/secrets/${reference.referenceId}/revoke`);
+      expect(revoked.status).toBe(200);
+      expect(getVaultReference(coreDb, reference.referenceId)?.status).toBe('revoked');
+      expect(getVaultGrant(coreDb, secondGrant.grantId)?.status).toBe('revoked');
+      expect(() =>
+        vaultUnlockState.backend().resolve({ referenceId: reference.referenceId })
+      ).toThrow();
+      expect((await request('/grants', { referenceId: reference.referenceId })).status).toBe(409);
+      const audit = JSON.stringify(
+        coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all()
+      );
+      expect(audit).not.toContain(secret);
+      expect(audit).not.toContain('replacement-canary');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('stores and rotates an authored provider API key without echoing secret material', async () => {
     const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
     const providersRoot = join(dataRoot, 'config', 'providers');
