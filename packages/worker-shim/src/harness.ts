@@ -336,6 +336,7 @@ export class WorkerHarness {
       'workerControlToken',
       'inferenceToken',
       'capabilityToken',
+      ...(body.runtimeEnvironment === undefined ? [] : ['runtimeEnvironment']),
     ]);
     const session = this.requireSession(body);
     if (this.adapter.mode === 'bounded-turn' && session.turnStarted) {
@@ -369,6 +370,7 @@ export class WorkerHarness {
       throw harnessError('stale');
     }
     const packagePath = expectedPackagePath;
+    const runtimeEnvironment = requireRuntimeEnvironment(body.runtimeEnvironment);
     const capabilityToken = requireToken(body.capabilityToken);
     const controlToken = requireToken(body.workerControlToken);
     const inferenceToken = requireToken(body.inferenceToken);
@@ -403,6 +405,7 @@ export class WorkerHarness {
     const runPromise = runWorkerShim({
       args: { dryRun: false, packagePath, sessionDir: this.turnOutputDirectory },
       controlToken,
+      runtimeEnvironment,
       environment: {
         ...this.environment,
         OPENKIT_AGENT_SESSION_ID: session.agentSessionId,
@@ -878,4 +881,26 @@ function isNonnegativeSafeInteger(value: unknown): value is number {
 /** Checks a positive safe integer. */
 function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+/** Validates bounded private Turn credential carriage without retaining or echoing raw values. */
+function requireRuntimeEnvironment(value: unknown): Readonly<Record<string, string>> {
+  if (value === undefined) return {};
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).length > 128 ||
+    Object.entries(value).some(
+      ([name, entry]) =>
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+        typeof entry !== 'string' ||
+        entry.length === 0 ||
+        entry.includes('\0') ||
+        Buffer.byteLength(entry) > 64 * 1024
+    )
+  ) {
+    throw harnessError('stale');
+  }
+  return value as Readonly<Record<string, string>>;
 }

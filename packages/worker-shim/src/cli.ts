@@ -175,6 +175,8 @@ export interface WorkerShimRunOptions {
   controlToken?: string | undefined;
   /** Sandbox environment variables visible to the shim. */
   environment?: WorkerShimEnvironment | undefined;
+  /** Exact private per-Turn Vault values; the Harness never inherits these from its environment. */
+  runtimeEnvironment?: Readonly<Record<string, string>> | undefined;
   /** Optional process runner for tests or alternate supervisors. */
   runner?: WorkerProcessRunner | undefined;
   /** Optional fetch implementation for the supervised control. */
@@ -542,7 +544,12 @@ async function runWorkerShimImplementation(
     await mkdir(controlRoot, { mode: 0o700, recursive: true });
     try {
       await (adapter.mode === 'bounded-turn' ? adapter.prepare : adapter.prepareTurn)({
-        childEnvironment: workerChildEnvironment(packageManifest, environment, llmRoute),
+        childEnvironment: workerChildEnvironment(
+          packageManifest,
+          environment,
+          llmRoute,
+          options.runtimeEnvironment
+        ),
         controlRoot,
         llmRoute,
         mcpServerIds,
@@ -590,7 +597,12 @@ async function runWorkerShimImplementation(
   const provenanceDeclaration = parseRuntimeProvenanceDeclaration(
     packageManifest.control?.transcript?.runtimeProvenance
   );
-  const childEnvironment = workerChildEnvironment(packageManifest, environment, llmRoute);
+  const childEnvironment = workerChildEnvironment(
+    packageManifest,
+    environment,
+    llmRoute,
+    options.runtimeEnvironment
+  );
   const credentialValues = workerCredentialValues(packageManifest, childEnvironment, llmRoute);
   const stateRoot = options.sessionStateRoot ?? join(options.args.sessionDir, 'native-state');
   const controlRoot = options.sessionControlRoot ?? join(options.args.sessionDir, 'native-control');
@@ -782,6 +794,11 @@ async function runWorkerShimImplementation(
         };
       });
       progress.stage = 'native_spawn';
+      for (const name of resolveRuntimeCredentialNames(packageManifest)) {
+        if (launchPlan.environment[name] !== childEnvironment[name]) {
+          throw new Error('Runtime environment credential materialization is invalid.');
+        }
+      }
       processPromise = (options.runner ?? new ChildProcessWorkerProcessRunner()).run({
         argv: launchPlan.argv,
         cwd,
@@ -1930,19 +1947,57 @@ function readRemoteGitWorkspaceSource(value: unknown): WorkspaceGitInput['source
  * @param packageManifest Worker-visible AEP.
  * @param environment Supervisor environment candidate.
  * @param route The Shim-selected LLM route.
- * @returns Safe base environment plus only route-authorized credential bindings.
+ * @param runtimeEnvironment Exact private Turn credentials when supervised by the Harness.
+ * @returns Safe base environment plus AEP-declared credentials and route tokens.
  */
 function workerChildEnvironment(
   packageManifest: WorkerShimPackageManifest,
   environment: WorkerShimEnvironment,
-  route: WorkerAdapterLlmRoute
+  route: WorkerAdapterLlmRoute,
+  runtimeEnvironment?: Readonly<Record<string, string>>
 ): Record<string, string> {
   const source = environment as Record<string, unknown>;
   const selected: Record<string, string> = {};
   const credentialNames = workerCredentialNames(packageManifest, route);
+  const runtimeNames = resolveRuntimeCredentialNames(packageManifest);
+  const runtimeSource = runtimeEnvironment ?? source;
+  if (
+    runtimeEnvironment &&
+    (Object.keys(runtimeEnvironment).length !== runtimeNames.size ||
+      Object.keys(runtimeEnvironment).some((name) => !runtimeNames.has(name)))
+  ) {
+    throw new Error('Runtime environment credential materialization is invalid.');
+  }
+  if (runtimeNames.size > 128)
+    throw new Error('Runtime environment credential materialization is invalid.');
+  for (const name of runtimeNames) {
+    const value = runtimeSource[name];
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      name.startsWith('OPENKIT_') ||
+      SAFE_WORKER_CHILD_ENVIRONMENT_KEYS.includes(
+        name as (typeof SAFE_WORKER_CHILD_ENVIRONMENT_KEYS)[number]
+      ) ||
+      [
+        'TEMP',
+        'TMP',
+        'TMPDIR',
+        'CODEX_HOME',
+        'NODE_OPTIONS',
+        'LD_PRELOAD',
+        'LD_LIBRARY_PATH',
+      ].includes(name) ||
+      typeof value !== 'string' ||
+      value.length === 0 ||
+      value.includes('\0') ||
+      Buffer.byteLength(value) > 64 * 1024
+    ) {
+      throw new Error('Runtime environment credential materialization is invalid.');
+    }
+  }
 
   for (const key of [...SAFE_WORKER_CHILD_ENVIRONMENT_KEYS, ...credentialNames]) {
-    const value = source[key];
+    const value = runtimeNames.has(key) ? runtimeSource[key] : source[key];
 
     if (typeof value === 'string' && value.length > 0) {
       selected[key] = value;
@@ -1968,7 +2023,7 @@ function workerChildEnvironment(
 }
 
 /**
- * Resolves only the credential environment names authorized by the selected route.
+ * Resolves AEP runtime-env names plus tokens authorized by the selected route.
  *
  * @param packageManifest Worker-visible AEP.
  * @param route The Shim-selected LLM route.
@@ -1978,14 +2033,8 @@ function workerCredentialNames(
   packageManifest: WorkerShimPackageManifest,
   route: WorkerAdapterLlmRoute
 ): Set<string> {
-  const names = new Set<string>();
-  if (route.credentialVisibility === 'environment') {
-    const runtimeNames = resolveRuntimeCredentialNames(packageManifest);
-    if (runtimeNames.size !== 1) {
-      throw new Error('Worker environment route requires exactly one runtime-env credential.');
-    }
-    for (const name of runtimeNames) names.add(name);
-  } else if (route.credentialVisibility === 'placeholder') {
+  const names = resolveRuntimeCredentialNames(packageManifest);
+  if (route.credentialVisibility === 'placeholder') {
     names.add('OPENKIT_WORKER_INFERENCE_TOKEN');
   }
   if (resolveWorkerMcpServerIds(packageManifest).length > 0) {
@@ -2031,6 +2080,8 @@ function resolveRuntimeCredentialNames(packageManifest: WorkerShimPackageManifes
       declaration.visibility === 'runtime-env' &&
       typeof declaration.targetEnvVarName === 'string'
     ) {
+      if (names.has(declaration.targetEnvVarName))
+        throw new Error('Runtime environment credential materialization is invalid.');
       names.add(declaration.targetEnvVarName);
     }
   }
