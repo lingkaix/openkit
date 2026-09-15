@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 
 const REMOTE_NAME = 'origin' as const;
 const GIT_READ_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
   GIT_NO_REPLACE_OBJECTS: '1',
   GIT_TERMINAL_PROMPT: '0',
   LANG: 'C',
@@ -40,7 +42,16 @@ export function inspectGitPushRepository(
   let sourceCommit: string;
 
   try {
-    const pushUrls = runGitRead(cwd, ['remote', 'get-url', '--push', '--all', REMOTE_NAME])
+    // The linked path was admitted by the repository route. Trust only its exact
+    // canonical directory for these read commands; never change host Git config.
+    const safeDirectory = realpathSync(cwd);
+    const readEnv = {
+      ...GIT_READ_ENV,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'safe.directory',
+      GIT_CONFIG_VALUE_0: safeDirectory,
+    };
+    const pushUrls = runGitRead(cwd, ['remote', 'get-url', '--push', '--all', REMOTE_NAME], readEnv)
       .split(/\r?\n/)
       .filter(Boolean);
 
@@ -49,23 +60,25 @@ export function inspectGitPushRepository(
     }
 
     remoteUrl = pushUrls[0] ?? '';
-    objectDirectory = runGitRead(cwd, [
-      'rev-parse',
-      '--path-format=absolute',
-      '--git-path',
-      'objects',
-    ]);
-    const inspectedObjectFormat = runGitRead(cwd, ['rev-parse', '--show-object-format=storage']);
+    objectDirectory = runGitRead(
+      cwd,
+      ['rev-parse', '--path-format=absolute', '--git-path', 'objects'],
+      readEnv
+    );
+    const inspectedObjectFormat = runGitRead(
+      cwd,
+      ['rev-parse', '--show-object-format=storage'],
+      readEnv
+    );
     if (inspectedObjectFormat !== 'sha1' && inspectedObjectFormat !== 'sha256') {
       throw new Error('Git repository object format is not supported.');
     }
     objectFormat = inspectedObjectFormat;
-    sourceCommit = runGitRead(cwd, [
-      'rev-parse',
-      '--verify',
-      '--end-of-options',
-      `${sourceRef}^{commit}`,
-    ]);
+    sourceCommit = runGitRead(
+      cwd,
+      ['rev-parse', '--verify', '--end-of-options', `${sourceRef}^{commit}`],
+      readEnv
+    );
     if (
       !/^[a-f0-9]+$/.test(sourceCommit) ||
       sourceCommit.length !== (objectFormat === 'sha1' ? 40 : 64)
@@ -108,13 +121,14 @@ export function inspectGitPushRepository(
  *
  * @param cwd Linked repository working directory.
  * @param args Fixed Git arguments.
+ * @param env Command-scoped environment trusting only the linked repository.
  * @returns Trimmed command output.
  */
-function runGitRead(cwd: string, args: readonly string[]): string {
+function runGitRead(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv): string {
   return execFileSync('git', [...args], {
     cwd,
     encoding: 'utf8',
-    env: GIT_READ_ENV,
+    env,
     maxBuffer: 64 * 1024,
     timeout: 5_000,
   }).trim();
