@@ -103,6 +103,8 @@ When cleanup uncertainty widens beyond one Turn or AgentSession, every capacity 
 
 NanoCore restart or a short NanoCore outage does not itself transfer cleanup ownership, recreate the sandbox, or invalidate a healthy NanoHost. The NanoHost and already-authorized worker continue locally. Scheduler adoption resumes the same lease only through a successor authoritative NanoHost connection whose predecessor has been fenced and whose process key, product lineage, backend session, package snapshot, and exact next sequence all match.
 
+A durable backend session with no nonterminal scheduler lease owner is an orphan, not an adoptable worker. The pre-listen scan compare-and-sets its existing session row to `cleanup-pending`, preserves the current capacity fence, and permits listener bind. The ordinary post-listen maintenance owner physically cleans that exact session; definite cleanup retires its session row as `cleaned`, records a server audit event, and reconciles capacity and pool occupancy from nonterminal lease rows only when no dirty orphan remains. A failed or unknown cleanup leaves the session and capacity fenced for retry by the same owner. A live lease never enters this orphan path, and missing or contradictory placement or cleanup ownership fails closed before physical effect. No lease, receipt, or product outcome is synthesized from the orphan session.
+
 Wrong reconnect credentials or lineage are rejected without inventing another worker. A reconnect request does not shorten an already armed deadline; only exact adoption or the deadline owner wins the race.
 
 ## Terminal Handoff

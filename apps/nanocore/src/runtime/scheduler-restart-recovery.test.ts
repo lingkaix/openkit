@@ -2018,7 +2018,7 @@ describe('scheduler restart recovery', () => {
     }
   });
 
-  it('fails critical restart when a backend anchor has no scheduler lease owner', async () => {
+  it('boots with an unowned backend anchor and retires it after definite cleanup', async () => {
     const coreDb = createMigratedCoreDb();
     let cleanupCalls = 0;
 
@@ -2029,18 +2029,73 @@ describe('scheduler restart recovery', () => {
         .prepare('DELETE FROM scheduler_session_leases WHERE lease_id = ?')
         .run('lease_orphan_anchor');
 
+      const recovery = await runSchedulerRestartRecovery(coreDb, {
+        cleanupBackendSession: async () => {
+          cleanupCalls += 1;
+        },
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      expect(cleanupCalls).toBe(0);
+      expect(getWorkerBackendSession(coreDb, 'lease_orphan_anchor')).toMatchObject({
+        state: 'cleanup-pending',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT in_use_count AS inUseCount FROM scheduler_capacity_records')
+          .get()
+      ).toEqual({ inUseCount: 1 });
+      await runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
+        cleanupBackendSession: async () => {
+          cleanupCalls += 1;
+        },
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      expect(cleanupCalls).toBe(1);
+      expect(getWorkerBackendSession(coreDb, 'lease_orphan_anchor')).toMatchObject({
+        state: 'cleaned',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT in_use_count AS inUseCount FROM scheduler_capacity_records')
+          .get()
+      ).toEqual({ inUseCount: 0 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT action FROM audit_events WHERE action = 'scheduler.orphan-backend-retired'"
+          )
+          .get()
+      ).toEqual({ action: 'scheduler.orphan-backend-retired' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps an orphan and its capacity fenced when physical cleanup fails', async () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      dispatchLease(coreDb, 'orphan_cleanup_failure');
+      recordBackendSession(coreDb, 'orphan_cleanup_failure', 'launching');
+      coreDb.sqlite
+        .prepare('DELETE FROM scheduler_session_leases WHERE lease_id = ?')
+        .run('lease_orphan_cleanup_failure');
+      const recovery = await runSchedulerRestartRecovery(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
       await expect(
-        runSchedulerRestartRecovery(coreDb, {
+        runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
           cleanupBackendSession: async () => {
-            cleanupCalls += 1;
+            throw new Error('backend unavailable');
           },
           now: () => '2026-07-05T00:01:00.000Z',
           projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         })
-      ).rejects.toThrow('has no non-terminal scheduler lease owner');
-      expect(cleanupCalls).toBe(0);
-      expect(getWorkerBackendSession(coreDb, 'lease_orphan_anchor')).toMatchObject({
-        state: 'cleanup-pending',
+      ).rejects.toThrow('backend unavailable');
+      expect(getWorkerBackendSession(coreDb, 'lease_orphan_cleanup_failure')).toMatchObject({
+        state: 'cleanup-failed',
       });
       expect(
         coreDb.sqlite
@@ -2052,7 +2107,7 @@ describe('scheduler restart recovery', () => {
     }
   });
 
-  it('fails critical restart when a terminal lease still owns a non-clean backend anchor', async () => {
+  it('retires a terminal lease backend anchor without changing that lease', async () => {
     const coreDb = createMigratedCoreDb();
     let cleanupCalls = 0;
 
@@ -2065,15 +2120,13 @@ describe('scheduler restart recovery', () => {
         )
         .run('lease_terminal_dirty_anchor');
 
-      await expect(
-        runSchedulerRestartRecovery(coreDb, {
-          cleanupBackendSession: async () => {
-            cleanupCalls += 1;
-          },
-          now: () => '2026-07-05T00:01:00.000Z',
-          projectRecoveredTurn: async () => ({ status: 'failed' as const }),
-        })
-      ).rejects.toThrow('has no non-terminal scheduler lease owner');
+      const recovery = await runSchedulerRestartRecovery(coreDb, {
+        cleanupBackendSession: async () => {
+          cleanupCalls += 1;
+        },
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
       expect(cleanupCalls).toBe(0);
       expect(getWorkerBackendSession(coreDb, 'lease_terminal_dirty_anchor')).toMatchObject({
         state: 'cleanup-pending',
@@ -2083,6 +2136,27 @@ describe('scheduler restart recovery', () => {
           .prepare('SELECT in_use_count AS inUseCount FROM scheduler_capacity_records')
           .get()
       ).toEqual({ inUseCount: 1 });
+      await runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
+        cleanupBackendSession: async () => {
+          cleanupCalls += 1;
+        },
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      expect(cleanupCalls).toBe(1);
+      expect(getWorkerBackendSession(coreDb, 'lease_terminal_dirty_anchor')).toMatchObject({
+        state: 'cleaned',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT in_use_count AS inUseCount FROM scheduler_capacity_records')
+          .get()
+      ).toEqual({ inUseCount: 0 });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
+          .get('lease_terminal_dirty_anchor')
+      ).toEqual({ status: 'failed' });
     } finally {
       coreDb.sqlite.close();
     }
