@@ -124,6 +124,110 @@ describe('approval response routes', () => {
     }
   });
 
+  it('resolves repo.push on a leased Turn without deleting the scheduler lease', async () => {
+    const fixture = createPolicyApprovalFixture('repo.push');
+    const now = '2026-09-15T00:00:00.000Z';
+
+    try {
+      fixture.coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref, backend_anchor_state
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?, 'unanchored')`
+        )
+        .run(
+          `lease_${fixture.turn.id}`,
+          `plan_${fixture.turn.id}`,
+          fixture.turn.workspaceId,
+          fixture.turn.threadId,
+          fixture.turn.id,
+          `as_${fixture.turn.id}`,
+          `pkg_${fixture.turn.id}`,
+          `pool_${fixture.turn.id}`,
+          `target_${fixture.turn.id}`,
+          now,
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          `binding_${fixture.turn.id}`
+        );
+
+      const response = await respondToPolicyApproval(
+        fixture,
+        '00000000-0000-4000-8000-000000000171'
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        id: fixture.gate.approvalId,
+        status: 'granted',
+      });
+      expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
+      expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('completed');
+      expect(
+        fixture.coreDb.sqlite
+          .prepare(
+            `SELECT status, release_reason AS releaseReason
+             FROM scheduler_session_leases
+             WHERE turn_id = ?`
+          )
+          .get(fixture.turn.id)
+      ).toEqual({ status: 'released', releaseReason: 'policy-approval-turn-closed' });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps tool.use fail-closed when a lease exists without a worker checkpoint', async () => {
+    const fixture = createPolicyApprovalFixture('tool.use');
+    const now = '2026-09-15T00:00:00.000Z';
+
+    try {
+      fixture.coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref, backend_anchor_state
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?, 'unanchored')`
+        )
+        .run(
+          `lease_${fixture.turn.id}`,
+          `plan_${fixture.turn.id}`,
+          fixture.turn.workspaceId,
+          fixture.turn.threadId,
+          fixture.turn.id,
+          `as_${fixture.turn.id}`,
+          `pkg_${fixture.turn.id}`,
+          `pool_${fixture.turn.id}`,
+          `target_${fixture.turn.id}`,
+          now,
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          `binding_${fixture.turn.id}`
+        );
+
+      const response = await respondToPolicyApproval(
+        fixture,
+        '00000000-0000-4000-8000-000000000172'
+      );
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
+      expect(
+        fixture.coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_session_leases WHERE turn_id = ?')
+          .get(fixture.turn.id)
+      ).toEqual({ status: 'acquired' });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it('finishes deterministic policy approval projections when the winning receipt is missing', async () => {
     const fixture = createPolicyApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000101';
