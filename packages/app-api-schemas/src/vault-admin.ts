@@ -172,3 +172,44 @@ export type VaultAdminListWorkspaceReferencesResponse = z.infer<
 export type VaultAdminLockResponse = z.infer<typeof VaultAdminLockResponseSchema>;
 /** Vault admin unlock response. */
 export type VaultAdminUnlockResponse = z.infer<typeof VaultAdminUnlockResponseSchema>;
+
+/** Request-only secret material for a new workspace reference. */
+export const CreateWorkspaceVaultSecretRequestSchema = z
+  .object({
+    secretKind: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z][a-z0-9-]*$/)
+      .superRefine((value, ctx) => addRawSecretIssues(value, ctx, [])),
+    material: z.string().min(1).max(65_536),
+  })
+  .strict();
+
+/** Request-only replacement material; reference identity and ownership are immutable. */
+export const RotateWorkspaceVaultSecretRequestSchema = z
+  .object({
+    material: z.string().min(1).max(65_536),
+  })
+  .strict();
+
+/** Create a workspace grant restricted to approved host-side Git push. */
+export const CreateWorkspaceVaultGrantRequestSchema = z
+  .object({
+    referenceId: z.string().regex(/^vault_[A-Za-z0-9_-]+$/),
+    expiresAt: z.string().datetime().optional(),
+  })
+  .strict();
+
+/** Workspace secret creation input. */
+export type CreateWorkspaceVaultSecretRequest = z.infer<
+  typeof CreateWorkspaceVaultSecretRequestSchema
+>;
+/** Workspace secret rotation input. */
+export type RotateWorkspaceVaultSecretRequest = z.infer<
+  typeof RotateWorkspaceVaultSecretRequestSchema
+>;
+/** Workspace host-push grant input. */
+export type CreateWorkspaceVaultGrantRequest = z.infer<
+  typeof CreateWorkspaceVaultGrantRequestSchema
+>;

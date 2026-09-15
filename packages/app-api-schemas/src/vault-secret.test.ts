@@ -11,6 +11,7 @@ describe('workspace Vault secret input', () => {
     ).toEqual({ secretKind: 'github-token', material: 'synthetic-only' });
     for (const value of [
       { secretKind: '../unsafe', material: 'test' },
+      { secretKind: 'sk-secret', material: 'test' },
       { secretKind: 'github-token', material: '' },
       { secretKind: 'github-token', material: 'test', referenceId: 'chosen' },
     ])
