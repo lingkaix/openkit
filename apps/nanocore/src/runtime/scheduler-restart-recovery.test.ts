@@ -2298,6 +2298,192 @@ describe('scheduler restart recovery', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('retires two no-lease sessions on one target after both physical cleanups', async () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      for (const suffix of ['shared_first', 'shared_second']) {
+        dispatchLease(coreDb, suffix);
+        recordBackendSession(coreDb, suffix, 'launching');
+        coreDb.sqlite
+          .prepare('DELETE FROM scheduler_session_leases WHERE lease_id = ?')
+          .run(`lease_${suffix}`);
+      }
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_placement_plans SET selected_target_id = ?, selected_pool_id = ? WHERE plan_id = ?'
+        )
+        .run('target_shared_first', 'pool_shared_first', 'plan_shared_second');
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_capacity_records SET in_use_count = 2 WHERE target_id = ?')
+        .run('target_shared_first');
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_capacity_records SET in_use_count = 0 WHERE target_id = ?')
+        .run('target_shared_second');
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_worker_pools SET current_admitted_session_count = 2 WHERE pool_id = ?'
+        )
+        .run('pool_shared_first');
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_worker_pools SET current_admitted_session_count = 0 WHERE pool_id = ?'
+        )
+        .run('pool_shared_second');
+      seedTarget(coreDb, 'shared_unrelated');
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_capacity_records SET in_use_count = 1 WHERE target_id = ?')
+        .run('target_shared_unrelated');
+      const unrelatedBefore = coreDb.sqlite
+        .prepare(
+          'SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ?'
+        )
+        .get('target_shared_unrelated');
+      const recovery = await runSchedulerRestartRecovery(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      let cleanupCalls = 0;
+      await runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
+        cleanupBackendSession: async () => {
+          cleanupCalls += 1;
+        },
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      expect(cleanupCalls).toBe(2);
+      for (const suffix of ['shared_first', 'shared_second']) {
+        expect(getWorkerBackendSession(coreDb, `lease_${suffix}`)).toMatchObject({
+          state: 'cleaned',
+        });
+      }
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE target_id = ?'
+          )
+          .get('target_shared_first')
+      ).toEqual({ inUseCount: 0 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT current_admitted_session_count AS count FROM scheduler_worker_pools WHERE pool_id = ?'
+          )
+          .get('pool_shared_first')
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE action = 'scheduler.orphan-backend-retired'"
+          )
+          .get()
+      ).toEqual({ count: 2 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ?'
+          )
+          .get('target_shared_unrelated')
+      ).toEqual(unrelatedBefore);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps shared orphan capacity fenced until a failed physical cleanup later succeeds', async () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      for (const suffix of ['failed_shared_first', 'failed_shared_second']) {
+        dispatchLease(coreDb, suffix);
+        recordBackendSession(coreDb, suffix, 'launching');
+        coreDb.sqlite
+          .prepare('DELETE FROM scheduler_session_leases WHERE lease_id = ?')
+          .run(`lease_${suffix}`);
+      }
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_placement_plans SET selected_target_id = ?, selected_pool_id = ? WHERE plan_id = ?'
+        )
+        .run('target_failed_shared_first', 'pool_failed_shared_first', 'plan_failed_shared_second');
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_capacity_records SET in_use_count = 2 WHERE target_id = ?')
+        .run('target_failed_shared_first');
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_capacity_records SET in_use_count = 0 WHERE target_id = ?')
+        .run('target_failed_shared_second');
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_worker_pools SET current_admitted_session_count = 2 WHERE pool_id = ?'
+        )
+        .run('pool_failed_shared_first');
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_worker_pools SET current_admitted_session_count = 0 WHERE pool_id = ?'
+        )
+        .run('pool_failed_shared_second');
+      const recovery = await runSchedulerRestartRecovery(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      await expect(
+        runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
+          cleanupBackendSession: async (session) => {
+            if (session.agentSessionId === 'as_failed_shared_second')
+              throw new Error('second cleanup unavailable');
+          },
+          now: () => '2026-07-05T00:01:00.000Z',
+          projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        })
+      ).rejects.toThrow('second cleanup unavailable');
+      expect(getWorkerBackendSession(coreDb, 'lease_failed_shared_first')).toMatchObject({
+        state: 'physical-cleaned',
+      });
+      expect(getWorkerBackendSession(coreDb, 'lease_failed_shared_second')).toMatchObject({
+        state: 'cleanup-failed',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE action = 'scheduler.orphan-backend-retired'"
+          )
+          .get()
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE target_id = ?'
+          )
+          .get('target_failed_shared_first')
+      ).toEqual({ inUseCount: 2 });
+      await runSchedulerRecoveryMaintenance(coreDb, recovery.schedulerEpoch, {
+        cleanupBackendSession: async () => {},
+        now: () => '2026-07-05T00:02:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      });
+      expect(getWorkerBackendSession(coreDb, 'lease_failed_shared_first')).toMatchObject({
+        state: 'cleaned',
+      });
+      expect(getWorkerBackendSession(coreDb, 'lease_failed_shared_second')).toMatchObject({
+        state: 'cleaned',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE action = 'scheduler.orphan-backend-retired'"
+          )
+          .get()
+      ).toEqual({ count: 2 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE target_id = ?'
+          )
+          .get('target_failed_shared_first')
+      ).toEqual({ inUseCount: 0 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });
 
 describe('minimal scheduler reconnect contract', () => {

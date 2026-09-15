@@ -244,9 +244,17 @@ export async function runSchedulerRecoveryMaintenance(
 
   for (const orphan of listOrphanBackendSessions(coreDb)) {
     try {
-      await retireOrphanBackendSession(coreDb, orphan, now, input.cleanupBackendSession);
+      await cleanupOrphanBackendSession(coreDb, orphan, now, input.cleanupBackendSession);
     } catch (error) {
       failures.push({ error, leaseId: orphan.leaseId });
+    }
+  }
+
+  for (const group of listOrphanCapacityGroups(coreDb, failures)) {
+    try {
+      retireCleanedOrphanGroup(coreDb, group, now);
+    } catch (error) {
+      failures.push({ error, leaseId: group.sessions[0]!.leaseId });
     }
   }
 
@@ -329,8 +337,8 @@ function listOrphanBackendSessions(coreDb: CoreDb): WorkerBackendSessionRecord[]
   });
 }
 
-/** Retires an unowned physical session and restores its target's lease-derived capacity after definite cleanup. */
-async function retireOrphanBackendSession(
+/** Physically cleans one orphan only after proving its unowned lease-plan-capacity lineage. */
+async function cleanupOrphanBackendSession(
   coreDb: CoreDb,
   originalSession: WorkerBackendSessionRecord,
   now: () => string,
@@ -349,54 +357,93 @@ async function retireOrphanBackendSession(
       `Worker backend session ${originalSession.leaseId} acquired a live scheduler lease owner.`
     );
   }
-  const expectedPlacement = requireOrphanCapacityPlacement(coreDb, originalSession);
-  let session = await cleanupPhysicalSession(coreDb, originalSession, now, cleanupBackendSession);
+  requireOrphanCapacityPlacement(coreDb, originalSession);
+  await cleanupPhysicalSession(coreDb, originalSession, now, cleanupBackendSession);
+}
+
+/** One pool-wide orphan boundary whose target counts must settle together. */
+interface OrphanCapacityGroup {
+  readonly poolId: string;
+  readonly sessions: readonly WorkerBackendSessionRecord[];
+}
+
+/** Groups durable orphans by pool after physical cleanup, excluding owners whose placement is unproved. */
+function listOrphanCapacityGroups(
+  coreDb: CoreDb,
+  failures: RecoveryFailure[]
+): OrphanCapacityGroup[] {
+  const byPool = new Map<string, WorkerBackendSessionRecord[]>();
+  for (const session of listOrphanBackendSessions(coreDb)) {
+    try {
+      const placement = requireOrphanCapacityPlacement(coreDb, session);
+      const group = byPool.get(placement.poolId) ?? [];
+      group.push(session);
+      byPool.set(placement.poolId, group);
+    } catch (error) {
+      failures.push({ error, leaseId: session.leaseId });
+    }
+  }
+  return [...byPool.entries()].map(([poolId, sessions]) => ({ poolId, sessions }));
+}
+
+/** Atomically retires a fully cleaned orphan pool and releases only its proved target and pool surplus. */
+function retireCleanedOrphanGroup(
+  coreDb: CoreDb,
+  group: OrphanCapacityGroup,
+  now: () => string
+): void {
+  if (group.sessions.some((session) => session.state !== 'physical-cleaned')) {
+    return;
+  }
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
-    const currentOwner = coreDb.sqlite
-      .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
-      .get(session.leaseId) as { status: string } | undefined;
-    if (
-      currentOwner &&
-      ['planned', 'acquired', 'starting', 'active', 'idle', 'stale', 'releasing'].includes(
-        currentOwner.status
-      )
-    ) {
-      throw new Error(
-        `Worker backend session ${session.leaseId} acquired a live scheduler lease owner.`
-      );
-    }
-    if (session.state === 'physical-cleaned') {
-      session = transitionWorkerBackendSessionState(coreDb, {
+    const placements = new Map<string, { targetId: string; poolId: string }>();
+    const currentSessions = group.sessions.map(({ leaseId }) => {
+      const session = getWorkerBackendSession(coreDb, leaseId);
+      const currentOwner = coreDb.sqlite
+        .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
+        .get(leaseId) as { status: string } | undefined;
+      if (
+        !session ||
+        session.state !== 'physical-cleaned' ||
+        (currentOwner &&
+          ['planned', 'acquired', 'starting', 'active', 'idle', 'stale', 'releasing'].includes(
+            currentOwner.status
+          ))
+      ) {
+        throw new Error(
+          `Worker backend session ${leaseId} changed cleanup or live lease ownership.`
+        );
+      }
+      const placement = requireOrphanCapacityPlacement(coreDb, session);
+      if (placement.poolId !== group.poolId) {
+        throw new Error(`Orphan backend session ${leaseId} changed scheduler capacity placement.`);
+      }
+      placements.set(leaseId, placement);
+      return session;
+    });
+    releaseOrphanCapacityIfProven(coreDb, currentSessions, placements, group.poolId);
+    for (const session of currentSessions) {
+      transitionWorkerBackendSessionState(coreDb, {
         fromState: 'physical-cleaned',
         leaseId: session.leaseId,
         now,
         toState: 'cleaned',
       });
+      recordServerAuditEvent({
+        action: 'scheduler.orphan-backend-retired',
+        category: 'system',
+        coreDb,
+        outcome: 'succeeded',
+        resource: `server:worker-backend-session:${session.leaseId}`,
+        severity: 'warning',
+        summary: 'Unowned worker backend session physically cleaned and retired.',
+        workspaceId: session.workspaceId,
+        threadId: session.threadId,
+        turnId: session.turnId,
+        agentSessionId: session.agentSessionId,
+      });
     }
-    const placement = requireOrphanCapacityPlacement(coreDb, session);
-    if (
-      placement.targetId !== expectedPlacement.targetId ||
-      placement.poolId !== expectedPlacement.poolId
-    ) {
-      throw new Error(
-        `Orphan backend session ${session.leaseId} changed scheduler capacity placement.`
-      );
-    }
-    releaseOrphanCapacityIfProven(coreDb, session, placement);
-    recordServerAuditEvent({
-      action: 'scheduler.orphan-backend-retired',
-      category: 'system',
-      coreDb,
-      outcome: 'succeeded',
-      resource: `server:worker-backend-session:${session.leaseId}`,
-      severity: 'warning',
-      summary: 'Unowned worker backend session physically cleaned and retired.',
-      workspaceId: session.workspaceId,
-      threadId: session.threadId,
-      turnId: session.turnId,
-      agentSessionId: session.agentSessionId,
-    });
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
@@ -499,86 +546,96 @@ function requireOrphanCapacityPlacement(
   return placement;
 }
 
-/** Releases only one proved orphan surplus unit while other target and pool fences remain untouched. */
+/** Releases exactly the proved orphan surplus for a fully cleaned pool while other fences remain untouched. */
 function releaseOrphanCapacityIfProven(
   coreDb: CoreDb,
-  session: WorkerBackendSessionRecord,
-  placement: { targetId: string; poolId: string }
+  sessions: readonly WorkerBackendSessionRecord[],
+  placements: ReadonlyMap<string, { targetId: string; poolId: string }>,
+  poolId: string
 ): void {
+  const leaseIds = new Set(sessions.map(({ leaseId }) => leaseId));
+  const targetCounts = new Map<string, number>();
+  for (const session of sessions) {
+    const placement = placements.get(session.leaseId);
+    if (!placement || placement.poolId !== poolId) {
+      throw new Error(`Orphan backend session ${session.leaseId} has unproved capacity placement.`);
+    }
+    targetCounts.set(placement.targetId, (targetCounts.get(placement.targetId) ?? 0) + 1);
+  }
   for (const other of listOrphanBackendSessions(coreDb)) {
-    if (other.leaseId === session.leaseId) continue;
+    if (leaseIds.has(other.leaseId)) continue;
     const otherPlacement = requireOrphanCapacityPlacement(coreDb, other);
-    if (
-      otherPlacement.targetId === placement.targetId ||
-      otherPlacement.poolId === placement.poolId
-    ) {
-      throw new Error(
-        `Orphan backend session ${session.leaseId} shares a capacity boundary with another dirty orphan.`
-      );
+    if (otherPlacement.poolId === poolId) {
+      throw new Error(`Orphan pool ${poolId} gained another dirty backend session before release.`);
     }
   }
-  const otherFence = coreDb.sqlite
-    .prepare(`SELECT lease_id FROM scheduler_session_leases
-    WHERE lease_id <> ? AND (target_id = ? OR pool_id = ?) AND status IN ('released', 'lost', 'failed')
-      AND recovery_state IS NOT NULL LIMIT 1`)
-    .get(session.leaseId, placement.targetId, placement.poolId);
+  const otherFence = (
+    coreDb.sqlite
+      .prepare(`SELECT lease_id AS leaseId FROM scheduler_session_leases
+    WHERE pool_id = ? AND status IN ('released', 'lost', 'failed')
+      AND recovery_state IS NOT NULL`)
+      .all(poolId) as Array<{ leaseId: string }>
+  ).find(({ leaseId }) => !leaseIds.has(leaseId));
   if (otherFence) {
     throw new Error(
-      `Orphan backend session ${session.leaseId} shares a capacity boundary with another recovery fence.`
+      `Orphan pool ${poolId} shares a capacity boundary with another recovery fence.`
     );
   }
-  const sandboxFence = coreDb.sqlite
-    .prepare(`SELECT sandbox_runtime_id FROM sandbox_runtime_records
-    WHERE runtime_target_id = ? AND cleanup_state <> 'clean' LIMIT 1`)
-    .get(session.runtimeTargetId);
-  if (sandboxFence) {
-    throw new Error(
-      `Orphan backend session ${session.leaseId} shares an unproved Sandbox cleanup fence.`
-    );
+  for (const runtimeTargetId of new Set(sessions.map(({ runtimeTargetId }) => runtimeTargetId))) {
+    const sandboxFence = coreDb.sqlite
+      .prepare(`SELECT sandbox_runtime_id FROM sandbox_runtime_records
+      WHERE runtime_target_id = ? AND cleanup_state <> 'clean' LIMIT 1`)
+      .get(runtimeTargetId);
+    if (sandboxFence) {
+      throw new Error(`Orphan pool ${poolId} shares an unproved Sandbox cleanup fence.`);
+    }
   }
   const liveStatuses = "'planned', 'acquired', 'starting', 'active', 'idle', 'stale', 'releasing'";
-  const target = coreDb.sqlite
-    .prepare(
-      `SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ? AND pool_id = ?`
-    )
-    .get(placement.targetId, placement.poolId) as
-    | { inUseCount: number; version: number }
-    | undefined;
   const pool = coreDb.sqlite
     .prepare(
       'SELECT current_admitted_session_count AS count FROM scheduler_worker_pools WHERE pool_id = ?'
     )
-    .get(placement.poolId) as { count: number } | undefined;
-  const liveTarget = coreDb.sqlite
-    .prepare(
-      `SELECT COUNT(*) AS count FROM scheduler_session_leases WHERE target_id = ? AND status IN (${liveStatuses})`
-    )
-    .get(placement.targetId) as { count: number };
+    .get(poolId) as { count: number } | undefined;
   const livePool = coreDb.sqlite
     .prepare(
       `SELECT COUNT(*) AS count FROM scheduler_session_leases WHERE pool_id = ? AND status IN (${liveStatuses})`
     )
-    .get(placement.poolId) as { count: number };
-  if (
-    !target ||
-    !pool ||
-    target.inUseCount !== liveTarget.count + 1 ||
-    pool.count !== livePool.count + 1
-  ) {
+    .get(poolId) as { count: number };
+  if (!pool || pool.count !== livePool.count + sessions.length) {
     throw new Error(
-      `Orphan backend session ${session.leaseId} has an unproved capacity surplus or another fence owner.`
+      `Orphan pool ${poolId} has an unproved capacity surplus or another fence owner.`
     );
   }
-  const capacityUpdate = coreDb.sqlite
-    .prepare(`UPDATE scheduler_capacity_records SET in_use_count = ?, version = version + 1
-    WHERE target_id = ? AND pool_id = ? AND in_use_count = ? AND version = ?`)
-    .run(liveTarget.count, placement.targetId, placement.poolId, target.inUseCount, target.version);
+  for (const [targetId, orphanCount] of targetCounts) {
+    const target = coreDb.sqlite
+      .prepare(
+        `SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ? AND pool_id = ?`
+      )
+      .get(targetId, poolId) as { inUseCount: number; version: number } | undefined;
+    const liveTarget = coreDb.sqlite
+      .prepare(
+        `SELECT COUNT(*) AS count FROM scheduler_session_leases WHERE target_id = ? AND status IN (${liveStatuses})`
+      )
+      .get(targetId) as { count: number };
+    if (!target || target.inUseCount !== liveTarget.count + orphanCount) {
+      throw new Error(
+        `Orphan target ${targetId} has an unproved capacity surplus or another fence owner.`
+      );
+    }
+    const capacityUpdate = coreDb.sqlite
+      .prepare(`UPDATE scheduler_capacity_records SET in_use_count = ?, version = version + 1
+      WHERE target_id = ? AND pool_id = ? AND in_use_count = ? AND version = ?`)
+      .run(liveTarget.count, targetId, poolId, target.inUseCount, target.version);
+    if (capacityUpdate.changes !== 1) {
+      throw new Error(`Orphan target ${targetId} changed capacity before release.`);
+    }
+  }
   const poolUpdate = coreDb.sqlite
     .prepare(`UPDATE scheduler_worker_pools SET current_admitted_session_count = ?
     WHERE pool_id = ? AND current_admitted_session_count = ?`)
-    .run(livePool.count, placement.poolId, pool.count);
-  if (capacityUpdate.changes !== 1 || poolUpdate.changes !== 1) {
-    throw new Error(`Orphan backend session ${session.leaseId} changed capacity before release.`);
+    .run(livePool.count, poolId, pool.count);
+  if (poolUpdate.changes !== 1) {
+    throw new Error(`Orphan pool ${poolId} changed capacity before release.`);
   }
 }
 
