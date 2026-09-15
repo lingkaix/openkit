@@ -34,4 +34,4 @@ The L0-L2 assertions observe actual schemas, route responses, backend material r
 
 ## Delivery
 
-Next action: commit the remaining implementation and documentation, push `fix/66-vault-secret-crud`, and open a PR to `main` with `Closes #66`. This publishes the reviewable code under the engineer's explicit authorization; it does not merge or satisfy the independent approval gate.
+Published `fix/66-vault-secret-crud` and opened [PR #67](https://github.com/lingkaix/openkit/pull/67) against `main` with `Closes #66`. All 286 focused tests passed locally; remote CI was queued or running when the PR was opened. This completes the requested implementation and PR delivery under the engineer's explicit authorization; it does not merge or satisfy the independent approval gate.
