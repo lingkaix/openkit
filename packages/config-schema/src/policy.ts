@@ -92,6 +92,19 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
     summary:
       'App-update SSH host identity is server-owned, restart-required, and not selectable from request data.',
   },
+  {
+    kind: 'server',
+    path: '$.policy',
+    owner: 'server',
+    merge: 'replace',
+    workspaceOverride: 'forbidden',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'restart-required',
+    secretPolicy: 'no-secret',
+    summary:
+      'Workspace action approval modes are deployment-owned, restart-required, and never request-overridable.',
+  },
 
   {
     kind: 'provider',

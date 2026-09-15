@@ -46,7 +46,10 @@ export function evaluateGitPushPolicy(input: EvaluateGitPushPolicyInput): GitPus
     branchPatternMatches(pattern, input.targetBranch)
   );
 
-  if (!targetAllowed) {
+  if (
+    !targetAllowed ||
+    (protectedTarget && !input.git.allowedPushTargets.includes(input.targetBranch))
+  ) {
     return {
       allowed: false,
       outcome: protectedTarget ? 'rejected-protected' : 'refused-policy',

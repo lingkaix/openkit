@@ -248,7 +248,14 @@ export interface RuntimeConfigManager {
 }
 
 /** OpenKitConfig sibling fields whose process-bound identity takes effect only after restart. */
-const RESTART_REQUIRED_CONFIG_PATHS = ['mode', 'auth', 'server', 'vault', 'appUpdate'] as const;
+const RESTART_REQUIRED_CONFIG_PATHS = [
+  'mode',
+  'auth',
+  'server',
+  'vault',
+  'appUpdate',
+  'policy',
+] as const;
 
 /**
  * Loads one runtime config snapshot from a data root.

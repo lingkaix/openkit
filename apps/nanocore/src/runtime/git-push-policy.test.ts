@@ -63,6 +63,16 @@ describe('Git push policy', () => {
     ).toEqual({ allowed: true, protected: true });
   });
 
+  it('rejects wildcard-only authorization for an explicitly approved protected branch', () => {
+    expect(
+      evaluateGitPushPolicy({
+        approvalNamesProtectedTarget: true,
+        git: { ...baseGitConfig, allowedPushTargets: ['*'] },
+        targetBranch: 'main',
+      })
+    ).toEqual({ allowed: false, outcome: 'rejected-protected', reason: 'target_not_allowed' });
+  });
+
   it('allows configured non-protected targets without protected approval wording', () => {
     expect(
       evaluateGitPushPolicy({

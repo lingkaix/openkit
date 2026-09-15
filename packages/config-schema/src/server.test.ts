@@ -3,6 +3,31 @@ import { describe, expect, it } from 'vitest';
 import { getConfigPolicyCatalog, getConfigSchemaCatalog, OpenKitConfigSchema } from './index.js';
 
 describe('server config schema', () => {
+  it('accepts deployment-owned approval modes for exact Workspaces', () => {
+    const policy = {
+      workspaceApprovalModes: {
+        ws_trusted: { 'repo.push': 'auto_allow' },
+        ws_review: { 'repo.push': 'require_human_approval' },
+      },
+    };
+    expect(OpenKitConfigSchema.parse({ policy }).policy).toEqual(policy);
+    expect(OpenKitConfigSchema.parse({}).policy).toBeUndefined();
+    for (const modes of [{ 'repo.push': 'allow' }, { 'tool.use': 'auto_allow' }]) {
+      expect(
+        OpenKitConfigSchema.safeParse({ policy: { workspaceApprovalModes: { ws_trusted: modes } } })
+          .success
+      ).toBe(false);
+    }
+    expect(getConfigPolicyCatalog()).toContainEqual(
+      expect.objectContaining({
+        kind: 'server',
+        path: '$.policy',
+        reloadClass: 'restart-required',
+        workspaceOverride: 'forbidden',
+      })
+    );
+  });
+
   it('accepts the final Server Agent fallback', () => {
     expect(
       OpenKitConfigSchema.parse({ defaults: { defaultAgentId: 'agent_codex_host' } }).defaults

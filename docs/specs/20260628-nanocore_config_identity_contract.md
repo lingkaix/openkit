@@ -106,7 +106,7 @@ DATA_ROOT/users/<userId>/config/user.jsonc
 DATA_ROOT/workspaces/<workspaceId>/config/workspace.jsonc
 ```
 
-`server.jsonc` owns deployment, auth, listener, NanoHost, and final `defaults.defaultAgentId` values. It contains no `coreProviderId`, `coreModel`, `gatewayProviderId`, or `gatewayModel`, and it does not duplicate the Gateway logical-model catalog.
+`server.jsonc` owns deployment, auth, listener, NanoHost, per-Workspace host-push approval modes, and final `defaults.defaultAgentId` values. The optional deployment-owned `policy.workspaceApprovalModes` field is restart-required and follows `20260704-git_write_workflow.md`; Workspace and request configuration cannot override it. It contains no `coreProviderId`, `coreModel`, `gatewayProviderId`, or `gatewayModel`, and it does not duplicate the Gateway logical-model catalog.
 
 `gateway.jsonc` owns `schemaVersion`, enablement, one optional `defaultLogicalModelId`, and the logical-model catalog. The Gateway owner defines logical-model and route fields and behavior; this contract owns only that the file is Server-scoped, strictly validated, revision-editable, and reloadable.
 

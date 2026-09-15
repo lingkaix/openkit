@@ -14,3 +14,5 @@ This directory owns NanoCore's product-level permission-decision projection and 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/policy` and the affected route or workflow tests, then the NanoCore package gates.
 
 See [Policy Enforcement Mapping](../../../../docs/specs/20260703-policy_enforcement_mapping.md).
+
+For `repo.push`, `approval-gates.ts` also records deployment-selected automatic grants using the same Approval and Item ownership. Automatic grants record an audited `allow`, complete the Turn without a human Gate, and never impersonate a human response. Other gated actions remain human-required.

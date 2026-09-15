@@ -45,3 +45,5 @@ Optional `server.jsonc.appUpdate` fixes one SSH host, user, port, identity file 
 `model-catalog.jsonc` uses `ModelCatalogSchema` for deployment-admin model metadata extensions keyed by exact vendor (or profile ID without vendor) and native model ID. The generated editor and policy catalogs include its `model-catalog` kind; effective precedence is snapshot, extension, then profile, with restart-required activation.
 
 `openkit.thread-visibility.v1` gates explicit Thread audience and private-owner semantics in canonical record envelopes.
+
+`server.jsonc.policy.workspaceApprovalModes` maps exact Workspace IDs to strict per-action modes for `repo.push`: `require_human_approval` or `auto_allow`. Missing entries require human approval. The policy catalog marks this deployment-owned setting restart-required and forbids request or Workspace overrides.

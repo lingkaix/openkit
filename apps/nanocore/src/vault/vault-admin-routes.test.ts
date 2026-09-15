@@ -269,7 +269,12 @@ describe('vault admin app API', () => {
     }
   });
 
-  it('binds public grants to approved host push and scrubs credential canaries from push results', async () => {
+  it.each([
+    ['require_human_approval', 'allowed'],
+    ['auto_allow', 'allowed'],
+    ['auto_allow', 'no-targets'],
+    ['auto_allow', 'protected-wildcard'],
+  ] as const)('enforces host push policy with %s and %s', async (mode, targetPolicy) => {
     const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
     const store = new FsStore();
     const workspace = store.createWorkspace('Public Vault push');
@@ -283,7 +288,15 @@ describe('vault admin app API', () => {
       kind: 'user',
       id: 'user_local',
     });
-    const app = createApp({ coreDb, dataRoot, store, vaultUnlockState });
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      vaultUnlockState,
+      openKitConfig: {
+        policy: { workspaceApprovalModes: { [workspace.id]: { 'repo.push': mode } } },
+      },
+    });
     vaultUnlockState.unlock({ masterKey });
     const secret = 'ghp_public_vault_push_canary';
     const basic = Buffer.from(`x-access-token:${secret}`).toString('base64');
@@ -331,7 +344,12 @@ describe('vault admin app API', () => {
             authorName: null,
             authorEmail: null,
             commitOnApply: true,
-            allowedPushTargets: ['feature/test'],
+            allowedPushTargets:
+              targetPolicy === 'no-targets'
+                ? []
+                : targetPolicy === 'protected-wildcard'
+                  ? ['*']
+                  : ['feature/test'],
             requireReviewLinkage: false,
             vaultGrantRef: grant.grantId,
           },
@@ -344,25 +362,34 @@ describe('vault admin app API', () => {
         threadId: thread.id,
         turnId: turn.id,
         sourceRef: commitId,
-        targetBranch: 'feature/test',
+        targetBranch: targetPolicy === 'protected-wildcard' ? 'main' : 'feature/test',
         commitIds: [commitId],
       });
       expect(approval.status).toBe(200);
       const payload = await approval.json();
-      const approved = await request(`/api/approvals/${payload.approval.id}/respond`, {
-        requestId: randomUUID(),
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        turnId: turn.id,
-        decision: 'granted',
-      });
-      expect(approved.status).toBe(200);
+      if (mode === 'require_human_approval') {
+        const approved = await request(`/api/approvals/${payload.approval.id}/respond`, {
+          requestId: randomUUID(),
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: turn.id,
+          decision: 'granted',
+        });
+        expect(approved.status).toBe(200);
+      } else expect(payload.approval.status).toBe('granted');
       const pushed = await request(`${root}/repositories/repo_default/git-push`, {
         requestId: randomUUID(),
         approvalRequestId: payload.approval.id,
       });
       expect(pushed.status).toBe(200);
       const bytes = await pushed.text();
+      if (targetPolicy !== 'allowed') {
+        expect(JSON.parse(bytes)).toMatchObject({
+          outcome: targetPolicy === 'protected-wildcard' ? 'rejected-protected' : 'refused-policy',
+        });
+        expect(runner).not.toHaveBeenCalled();
+        return;
+      }
       expect(JSON.parse(bytes)).toMatchObject({ outcome: 'auth-failed' });
       expect(runner).toHaveBeenCalled();
       expect(runner.mock.calls[0]?.[0].env.GIT_CONFIG_VALUE_1).toBe(
