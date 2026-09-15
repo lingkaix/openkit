@@ -930,6 +930,10 @@ export class FsStore {
     );
     this.turns = new Map(approvalState.turns.map((turn) => [turn.id, turn]));
     this.approvals = new Map(approvalState.approvals.map((approval) => [approval.id, approval]));
+    for (const item of approvalState.repairItems) {
+      this.items.set(item.id, item);
+      this.itemRevisions.push(item);
+    }
     return approvalState.repaired;
   }
 
@@ -4051,12 +4055,13 @@ export class FsStore {
  *
  * @param items Latest canonical item revisions.
  * @param turns Canonical turns that project pending approval gates.
- * @returns Derived approvals, reconciled turns, and whether a projection changed.
+ * @returns Derived approvals, reconciled turns, durable denial items, and whether a projection changed.
  * @throws Error when approval items conflict or cross lineage.
  */
 function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Turn[]) {
   const requests = new Map<string, Extract<Item, { type: 'approval-request' }>>();
   const decisions = new Map<string, Extract<Item, { type: 'approval-decision' }>>();
+  const repairItems: Extract<Item, { type: 'approval-decision' }>[] = [];
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
 
   for (const item of items) {
@@ -4081,7 +4086,7 @@ function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Tu
 
   const pendingByTurnId = new Map<string, Extract<Item, { type: 'approval-request' }>>();
   const approvals = [...requests.values()].map((request) => {
-    const decision = decisions.get(request.approvalRequestId);
+    let decision = decisions.get(request.approvalRequestId);
     const turn = turnsById.get(request.turnId);
 
     if (
@@ -4094,6 +4099,29 @@ function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Tu
     }
     if (!turn || turn.workspaceId !== request.workspaceId || turn.threadId !== request.threadId) {
       throw new Error(`Approval request has invalid turn lineage: ${request.approvalRequestId}.`);
+    }
+    if (!decision && ['completed', 'interrupted', 'cancelled', 'failed'].includes(turn.status)) {
+      decision = ItemSchema.parse({
+        id: `it_approval_terminal_denial_${request.approvalRequestId}`,
+        workspaceId: request.workspaceId,
+        threadId: request.threadId,
+        turnId: request.turnId,
+        type: 'approval-decision',
+        actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
+        causationId: request.id,
+        status: 'completed',
+        approvalRequestId: request.approvalRequestId,
+        decision: 'denied',
+        createdAt: turn.completedAt ?? turn.startedAt ?? request.createdAt,
+        completedAt: turn.completedAt ?? turn.startedAt ?? request.createdAt,
+      }) as Extract<Item, { type: 'approval-decision' }>;
+      if (
+        items.some((item) => item.id === decision?.id) ||
+        repairItems.some((item) => item.id === decision?.id)
+      ) {
+        throw new Error(`Terminal approval denial item id conflicts: ${decision.id}.`);
+      }
+      repairItems.push(decision);
     }
     if (!decision) {
       if (pendingByTurnId.has(request.turnId)) {
@@ -4132,16 +4160,11 @@ function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Tu
     }
   }
 
-  let repaired = false;
+  let repaired = repairItems.length > 0;
   const reconciledTurns = turns.map((turn) => {
     const pending = pendingByTurnId.get(turn.id);
 
     if (pending) {
-      if (['completed', 'interrupted', 'cancelled', 'failed'].includes(turn.status)) {
-        throw new Error(
-          `Pending approval belongs to a terminal turn: ${pending.approvalRequestId}.`
-        );
-      }
       if (
         turn.status === 'awaiting_human' &&
         turn.humanGate?.kind === 'approval' &&
@@ -4164,11 +4187,21 @@ function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Tu
 
     if (turn.humanGate?.kind === 'approval') {
       repaired = true;
-      return TurnSchema.parse({ ...turn, status: 'running', humanGate: null });
+      return TurnSchema.parse({
+        ...turn,
+        status: ['completed', 'interrupted', 'cancelled', 'failed'].includes(turn.status)
+          ? turn.status
+          : 'running',
+        humanGate: null,
+        items: [...turn.items, ...repairItems.filter((item) => item.turnId === turn.id)],
+      });
     }
 
-    return turn;
+    const denials = repairItems.filter((item) => item.turnId === turn.id);
+    return denials.length > 0
+      ? TurnSchema.parse({ ...turn, items: [...turn.items, ...denials] })
+      : turn;
   });
 
-  return { approvals, repaired, turns: reconciledTurns };
+  return { approvals, repairItems, repaired, turns: reconciledTurns };
 }

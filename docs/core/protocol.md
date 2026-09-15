@@ -400,6 +400,8 @@ When a turn waits on approval, `Turn.humanGate` MUST be `{ kind: "approval", app
 
 Approval decisions should be explicit and auditable.
 
+On canonical reload, an undecided approval request whose owning Turn is already terminal is durably denied by one system-authored approval-decision Item. Its actor is `nanocore-boot-reconciliation`, its causation is the canonical request Item, and its timestamp is the Turn completion time when available. Reload preserves the terminal Turn status and clears a stale approval Gate. This denial is a boot reconciliation audit trail, never a human approval or permission to retry the terminated work. Live Turn Gate contradictions still fail closed.
+
 Approval decisions transition the Turn only through the owning accepted contract; protocol does not infer resume, cancellation, or failure from the status alone.
 
 Approval status values should include:

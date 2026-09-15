@@ -922,7 +922,11 @@ describe('FsStore canonical reload', () => {
     expect(() => new FsStore({ dataRoot })).toThrow(/approval gate.*request item/i);
   });
 
-  it('does not reopen a terminal turn for an unresolved approval request', () => {
+  it.each([
+    'failed',
+    'interrupted',
+    'completed',
+  ] as const)('durably denies a pending approval on a %s turn at boot', (terminalStatus) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-terminal-approval-request-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Terminal approval request workspace');
@@ -930,7 +934,7 @@ describe('FsStore canonical reload', () => {
     const turn = store.createTurn(
       workspace.id,
       thread.id,
-      'Reject terminal approval recovery',
+      'Close terminal approval recovery',
       localActor
     );
     const approvalId = `ap_${turn.id}`;
@@ -950,12 +954,28 @@ describe('FsStore canonical reload', () => {
       completedAt: null,
     });
     store.updateTurn(turn.id, {
-      status: 'failed',
+      status: terminalStatus,
       completedAt: turn.startedAt ?? timestamp,
-      error: { code: 'interrupted', message: 'The turn failed before recovery.' },
+      error:
+        terminalStatus === 'failed'
+          ? { code: 'interrupted', message: 'The turn failed before recovery.' }
+          : null,
     });
 
-    expect(() => new FsStore({ dataRoot })).toThrow(/pending approval.*terminal turn/i);
+    const restarted = new FsStore({ dataRoot });
+    const recovered = restarted.getTurn(workspace.id, thread.id, turn.id);
+    const decision = recovered.items.find((item) => item.type === 'approval-decision');
+    expect(recovered.status).toBe(terminalStatus);
+    expect(recovered.humanGate).toBeNull();
+    expect(restarted.getApproval(approvalId)).toMatchObject({ status: 'denied' });
+    expect(decision).toMatchObject({
+      approvalRequestId: approvalId,
+      decision: 'denied',
+      actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
+    });
+    expect(new FsStore({ dataRoot }).getTurn(workspace.id, thread.id, turn.id).items).toEqual(
+      recovered.items
+    );
   });
 
   it('repairs only an incomplete final item-log fragment', () => {
