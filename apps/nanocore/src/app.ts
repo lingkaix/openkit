@@ -1607,6 +1607,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerRepositoryRoutes({
     app,
+    approvalPolicy: startupOpenKitConfig.policy,
     assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,

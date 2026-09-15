@@ -14,6 +14,7 @@ import {
   WorkspaceRepositoryDiagnosticsResponseSchema,
   WorkspaceRepositoryResourceSchema,
 } from '@openkit/app-api-schemas';
+import type { OpenKitConfig } from '@openkit/config-schema';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
@@ -68,6 +69,7 @@ import { validateRepositoryPath } from './workspace/repository-validation.js';
 const RepoPushApprovalDecisionSchema = z
   .object({
     action: z.literal('repo.push'),
+    reasonCode: z.string().min(1),
     contextSummary: z
       .object({
         requestId: z.string().min(1),
@@ -110,6 +112,7 @@ export function registerRepositoryRoutes({
   assertProjectWorkspace,
   coreDb,
   inflightCommands,
+  approvalPolicy,
   repositoryWorkspaceDb,
   requestStore,
   vaultBackend,
@@ -120,6 +123,7 @@ export function registerRepositoryRoutes({
     action: string
   ) => void;
   readonly coreDb: CoreDb | undefined;
+  readonly approvalPolicy: OpenKitConfig['policy'];
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
@@ -266,9 +270,7 @@ export function registerRepositoryRoutes({
             input,
             responseKind: 'approval',
             execute: () => {
-              if (
-                readPolicyApprovalDecision(workspaceDb, workspaceId, owner.approvalId, 'repo.push')
-              ) {
+              if (readGitPushRequestDecision(workspaceDb, workspaceId, owner.approvalId)) {
                 throw new TurnStartValidationError(
                   'recovery_required',
                   'The Git push approval exists without its command receipt.',
@@ -283,6 +285,9 @@ export function registerRepositoryRoutes({
 
               const gate = createPolicyApprovalGate({
                 action: 'repo.push',
+                mode:
+                  approvalPolicy?.workspaceApprovalModes?.[workspaceId]?.['repo.push'] ??
+                  'require_human_approval',
                 workspaceDb,
                 store,
                 workspaceId,
@@ -322,11 +327,10 @@ export function registerRepositoryRoutes({
             replay: (record) => {
               const approval = store.getApproval(record.response.id);
               assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), approval.workspaceId);
-              const decision = readPolicyApprovalDecision(
+              const decision = readGitPushRequestDecision(
                 workspaceDb,
                 workspaceId,
-                owner.approvalId,
-                'repo.push'
+                owner.approvalId
               );
               const approvalItem = store
                 .listThreadItems(workspaceId, input.threadId)
@@ -359,11 +363,10 @@ export function registerRepositoryRoutes({
             input.requestId,
             commandScope
           );
-          const durableOwner = readPolicyApprovalDecision(
+          const durableOwner = readGitPushRequestDecision(
             workspaceDb,
             workspaceId,
-            owner.approvalId,
-            'repo.push'
+            owner.approvalId
           );
 
           if (!receipt && durableOwner) {
@@ -483,6 +486,25 @@ export function registerRepositoryRoutes({
               )
             );
             const intent = policyDecision.resourceSummary;
+            if (policyDecision.reasonCode === 'repo_push_auto_allowed') {
+              const receipt = store.getCommandRequest(
+                'git_push.approval.request',
+                policyDecision.contextSummary.requestId,
+                {
+                  workspaceId,
+                  repositoryResourceId: resourceId,
+                  threadId: approval.threadId,
+                  turnId: approval.turnId,
+                }
+              );
+              if (receipt?.response.kind !== 'approval' || receipt.response.id !== approval.id) {
+                throw new TurnStartValidationError(
+                  'recovery_required',
+                  'The automatic Git push grant has no exact command receipt.',
+                  409
+                );
+              }
+            }
             const inspection = inspectGitPushRepository(repository.localPath, intent.sourceRef);
 
             if (
@@ -811,4 +833,16 @@ function asRepositoryApiError(error: unknown): Response {
   }
 
   return asApiError(message, 'repository_resource_failed', 400);
+}
+
+/** Reads the immutable decision issued by a push request in either approval mode. */
+function readGitPushRequestDecision(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  approvalId: string
+) {
+  return (
+    readPolicyApprovalDecision(workspaceDb, workspaceId, approvalId, 'repo.push') ??
+    readPolicyApprovalDecision(workspaceDb, workspaceId, approvalId, 'repo.push', 'allow')
+  );
 }

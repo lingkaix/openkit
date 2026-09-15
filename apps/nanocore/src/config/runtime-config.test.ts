@@ -445,6 +445,31 @@ describe('runtime config loading and reload planning', () => {
     ]);
   });
 
+  it('loads durable Workspace approval modes and requires restart for changes', () => {
+    const baseRoot = createDataRoot();
+    const nextRoot = createDataRoot();
+    writeConfiguredServer(baseRoot, 'openai/gpt-5.1');
+    writeConfiguredServer(
+      nextRoot,
+      'openai/gpt-5.1',
+      ', "policy": { "workspaceApprovalModes": { "ws_trusted": { "repo.push": "auto_allow" } } }'
+    );
+    const previous = loadRuntimeConfig(baseRoot, { version: 1 });
+    const next = loadRuntimeConfig(nextRoot, { version: 2 });
+    expect(next.openKitConfig.policy?.workspaceApprovalModes?.ws_trusted).toEqual({
+      'repo.push': 'auto_allow',
+    });
+    const plan = diffRuntimeConfig(previous, next);
+    expect(plan.applied).toEqual([]);
+    expect(plan.requiresRestart).toEqual([
+      expect.objectContaining({
+        path: 'policy',
+        category: 'restart-required',
+        action: 'requires-restart',
+      }),
+    ]);
+  });
+
   it('classifies appUpdate host-identity changes as restart-required', () => {
     const baseRoot = createDataRoot();
     const nextRoot = createDataRoot();

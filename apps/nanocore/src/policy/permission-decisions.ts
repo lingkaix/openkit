@@ -196,6 +196,8 @@ interface PermissionDecisionRow {
 interface PolicyApprovalDecisionRow {
   /** Product action that required approval. */
   readonly action: string;
+  /** Machine-readable reason that distinguishes policy grants from human decisions. */
+  readonly reasonCode: string;
   /** Stored permission decision id. */
   readonly decisionId: string;
   /** Redacted context summary. */
@@ -263,6 +265,7 @@ export function readPolicyApprovalDecision(
     .prepare(
       `SELECT
         action,
+        reason_code,
         decision_id,
         subject_summary_json,
         resource_summary_json,
@@ -279,6 +282,7 @@ export function readPolicyApprovalDecision(
     .get(workspaceId, result, approvalId, action ?? null, action ?? null) as
     | {
         action: string;
+        reason_code: string;
         context_summary_json: string;
         decision_id: string;
         resource_summary_json: string;
@@ -289,6 +293,7 @@ export function readPolicyApprovalDecision(
   return row
     ? {
         action: row.action,
+        reasonCode: row.reason_code,
         contextSummary: JSON.parse(row.context_summary_json),
         decisionId: row.decision_id,
         resourceSummary: JSON.parse(row.resource_summary_json),

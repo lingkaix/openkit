@@ -10,7 +10,10 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { createPolicyApprovalGate } from './approval-gates.js';
 
 describe('policy approval gates', () => {
-  it('creates a durable approval gate and exposes it through Action Center', async () => {
+  it.each([
+    'require_human_approval',
+    'auto_allow',
+  ] as const)('records %s through the existing approval ledger', async (mode) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-approval-'));
     const coreDb = openCoreDb(dataRoot);
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
@@ -27,6 +30,7 @@ describe('policy approval gates', () => {
 
       const gate = createPolicyApprovalGate({
         action: 'repo.push',
+        mode,
         approvalId: 'ap_policy_gate',
         approvalItemId: 'it_policy_gate',
         decisionId: 'pd_policy_gate',
@@ -47,12 +51,15 @@ describe('policy approval gates', () => {
         decisionId: 'pd_policy_gate',
       });
       expect(store.getTurnById(turn.id)).toMatchObject({
-        humanGate: {
-          approvalRequestId: 'ap_policy_gate',
-          itemId: 'it_policy_gate',
-          kind: 'approval',
-        },
-        status: 'awaiting_human',
+        humanGate:
+          mode === 'auto_allow'
+            ? null
+            : {
+                approvalRequestId: 'ap_policy_gate',
+                itemId: 'it_policy_gate',
+                kind: 'approval',
+              },
+        status: mode === 'auto_allow' ? 'completed' : 'awaiting_human',
       });
       expect(
         store.listThreadItems('ws_demo', thread.id).find((item) => item.id === 'it_policy_gate')
@@ -62,25 +69,40 @@ describe('policy approval gates', () => {
         approval_id: 'ap_policy_gate',
         policy_engine_version: 'nanocore-approval-policy:v1',
         required_approval_kind: 'permission',
-        result: 'require_approval',
+        result: mode === 'auto_allow' ? 'allow' : 'require_approval',
       });
 
       const app = createApp({ store });
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const rows = ListHumanAttentionResponseSchema.parse(await res.json()).items;
 
-      expect(rows).toContainEqual(
-        expect.objectContaining({
-          id: 'approval:ap_policy_gate',
-          itemId: 'it_policy_gate',
-          kind: 'approval',
-          title: 'Approve protected resource use',
-        })
-      );
+      if (mode === 'auto_allow') {
+        expect(rows).toEqual([]);
+        expect(store.getApproval(gate.approvalId)).toMatchObject({
+          status: 'granted',
+          resolvedAt: expect.any(String),
+        });
+        expect(
+          workspaceDb.sqlite
+            .prepare(
+              'SELECT outcome, actor_json FROM audit_events WHERE permission_decision_id = ?'
+            )
+            .get(gate.decisionId)
+        ).toEqual({ outcome: 'succeeded', actor_json: null });
+      } else
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            id: 'approval:ap_policy_gate',
+            itemId: 'it_policy_gate',
+            kind: 'approval',
+            title: 'Approve protected resource use',
+          })
+        );
 
       expect(() =>
         createPolicyApprovalGate({
           action: 'repo.push',
+          mode,
           approvalId: 'ap_duplicate_policy_gate',
           approvalItemId: 'it_duplicate_policy_gate',
           decisionId: 'pd_duplicate_policy_gate',
@@ -106,6 +128,7 @@ describe('policy approval gates', () => {
       expect(() =>
         createPolicyApprovalGate({
           action: 'repo.push',
+          mode,
           approvalId: 'apr_imported_ws_demo_1',
           approvalItemId: 'it_reserved_policy_gate',
           decisionId: 'pd_reserved_policy_gate',

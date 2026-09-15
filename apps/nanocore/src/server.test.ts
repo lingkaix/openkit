@@ -12331,11 +12331,27 @@ describe('nanocore server', () => {
     }
   });
 
-  it('requests and resolves Git push approvals through the App API', async () => {
+  it.each([
+    undefined,
+    'require_human_approval',
+    'auto_allow',
+  ] as const)('requests Git push authority with %s through the App API', async (mode) => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const workspace = store.createWorkspace('Git push approval');
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = createApp({
+      coreDb,
+      store,
+      turnExecutor: new FakeTurnExecutor(),
+      openKitConfig: {
+        policy: {
+          workspaceApprovalModes:
+            mode === undefined
+              ? { ws_other: { 'repo.push': 'auto_allow' } }
+              : { [workspace.id]: { 'repo.push': mode } },
+        },
+      },
+    });
     const thread = store.createThread(workspace.id, 'Publish accepted work');
     const turn = store.createTurn(workspace.id, thread.id, 'Publish accepted work', {
       kind: 'user',
@@ -12411,12 +12427,14 @@ describe('nanocore server', () => {
       expect(approvalPayload).toMatchObject({
         approval: {
           kind: 'permission',
-          status: 'pending',
+          status: mode === 'auto_allow' ? 'granted' : 'pending',
           threadId: thread.id,
           turnId: turn.id,
         },
       });
-      expect(store.getTurn(workspace.id, thread.id, turn.id).status).toBe('awaiting_human');
+      expect(store.getTurn(workspace.id, thread.id, turn.id).status).toBe(
+        mode === 'auto_allow' ? 'completed' : 'awaiting_human'
+      );
 
       execFileSync('git', ['remote', 'remove', 'origin'], {
         cwd: repositoryPath,
@@ -12436,17 +12454,55 @@ describe('nanocore server', () => {
         approval: { id: approvalPayload.approval.id },
       });
 
+      const changedInput = await app.request(
+        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...approvalRequest, targetBranch: 'other' }),
+        }
+      );
+      expect(changedInput.status).toBe(409);
+
+      const restartedApp = createApp({
+        coreDb,
+        store,
+        turnExecutor: new FakeTurnExecutor(),
+        openKitConfig: {
+          policy: {
+            workspaceApprovalModes: {
+              [workspace.id]: {
+                'repo.push': mode === 'auto_allow' ? 'require_human_approval' : 'auto_allow',
+              },
+            },
+          },
+        },
+      });
+      const replayAfterModeChange = await restartedApp.request(
+        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(approvalRequest),
+        }
+      );
+      expect(replayAfterModeChange.status).toBe(200);
+      await expect(replayAfterModeChange.json()).resolves.toEqual(approvalPayload);
+
       const actionCenterRes = await app.request(
         `/api/app/workspaces/${workspace.id}/action-center`
       );
       expect(actionCenterRes.status).toBe(200);
       await expect(actionCenterRes.json()).resolves.toMatchObject({
-        items: [
-          expect.objectContaining({
-            kind: 'approval',
-            title: 'Approve Git push to main',
-          }),
-        ],
+        items:
+          mode === 'auto_allow'
+            ? []
+            : [
+                expect.objectContaining({
+                  kind: 'approval',
+                  title: 'Approve Git push to main',
+                }),
+              ],
       });
 
       execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/openkit.git'], {
@@ -12478,6 +12534,26 @@ describe('nanocore server', () => {
       );
       expect(receiptGap.status).toBe(409);
       await expect(receiptGap.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      if (mode === 'auto_allow') {
+        const incompleteApproval = store
+          .listThreadItems(workspace.id, thread.id)
+          .find((item) => item.turnId === receiptGapTurn.id && item.type === 'approval-request');
+        if (incompleteApproval?.type !== 'approval-request')
+          throw new Error('Missing automatic grant Item.');
+        const unsafeExecute = await app.request(
+          `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000036',
+              approvalRequestId: incompleteApproval.approvalRequestId,
+            }),
+          }
+        );
+        expect(unsafeExecute.status).toBe(409);
+        await expect(unsafeExecute.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      }
 
       const receiptGapRetry = await app.request(
         `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
@@ -12500,23 +12576,25 @@ describe('nanocore server', () => {
           .find((item) => item.turnId === receiptGapTurn.id && item.type === 'approval-request')
       ).toMatchObject({ title: 'Approve Git push to main' });
 
-      const decisionRes = await app.request(
-        `/api/approvals/${approvalPayload.approval.id}/respond`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000025',
-            workspaceId: workspace.id,
-            threadId: thread.id,
-            turnId: turn.id,
-            decision: 'granted',
-          }),
-        }
-      );
+      if (mode !== 'auto_allow') {
+        const decisionRes = await app.request(
+          `/api/approvals/${approvalPayload.approval.id}/respond`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000025',
+              workspaceId: workspace.id,
+              threadId: thread.id,
+              turnId: turn.id,
+              decision: 'granted',
+            }),
+          }
+        );
 
-      expect(decisionRes.status).toBe(200);
-      await expect(decisionRes.json()).resolves.toMatchObject({ status: 'granted' });
+        expect(decisionRes.status).toBe(200);
+        await expect(decisionRes.json()).resolves.toMatchObject({ status: 'granted' });
+      }
       expect(store.getTurn(workspace.id, thread.id, turn.id)).toMatchObject({
         status: 'completed',
         humanGate: null,
@@ -12541,11 +12619,15 @@ describe('nanocore server', () => {
         }>;
 
         expect(decisions).toEqual([
-          expect.objectContaining({
-            action: 'repo.push',
-            approvalId: approvalPayload.approval.id,
-            result: 'require_approval',
-          }),
+          ...(mode === 'auto_allow'
+            ? []
+            : [
+                expect.objectContaining({
+                  action: 'repo.push',
+                  approvalId: approvalPayload.approval.id,
+                  result: 'require_approval',
+                }),
+              ]),
           expect.objectContaining({
             action: 'repo.push',
             approvalId: approvalPayload.approval.id,
@@ -12686,7 +12768,10 @@ describe('nanocore server', () => {
     }
   });
 
-  it('records an unsupported push, rejects invalid Vault grants, and fails closed without a receipt', async () => {
+  it.each([
+    'require_human_approval',
+    'auto_allow',
+  ] as const)('enforces provider, Vault and interrupted push barriers with %s', async (mode) => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const workspace = store.createWorkspace('Git push execution');
@@ -12727,6 +12812,9 @@ describe('nanocore server', () => {
       store,
       turnExecutor: new FakeTurnExecutor(),
       vaultUnlockState,
+      openKitConfig: {
+        policy: { workspaceApprovalModes: { [workspace.id]: { 'repo.push': mode } } },
+      },
     });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-execution-repo-'));
     const remotePath = mkdtempSync(join(tmpdir(), 'openkit-git-push-execution-remote-'));
@@ -12817,21 +12905,23 @@ describe('nanocore server', () => {
       expect(approvalRes.status).toBe(200);
       const approvalPayload = await approvalRes.json();
 
-      const decisionRes = await app.request(
-        `/api/approvals/${approvalPayload.approval.id}/respond`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000028',
-            workspaceId: workspace.id,
-            threadId: thread.id,
-            turnId: turn.id,
-            decision: 'granted',
-          }),
-        }
-      );
-      expect(decisionRes.status).toBe(200);
+      if (mode === 'require_human_approval') {
+        const decisionRes = await app.request(
+          `/api/approvals/${approvalPayload.approval.id}/respond`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000028',
+              workspaceId: workspace.id,
+              threadId: thread.id,
+              turnId: turn.id,
+              decision: 'granted',
+            }),
+          }
+        );
+        expect(decisionRes.status).toBe(200);
+      }
 
       const interruptedPushDb = openTestWorkspaceDb(coreDb, workspace.id);
       try {
@@ -13085,21 +13175,23 @@ describe('nanocore server', () => {
         );
         expect(scenarioApproval.status).toBe(200);
         const scenarioApprovalPayload = await scenarioApproval.json();
-        const scenarioDecision = await app.request(
-          `/api/approvals/${scenarioApprovalPayload.approval.id}/respond`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: `00000000-0000-4000-8000-0000000000${scenario + 1}`,
-              workspaceId: workspace.id,
-              threadId: thread.id,
-              turnId: scenarioTurn.id,
-              decision: 'granted',
-            }),
-          }
-        );
-        expect(scenarioDecision.status).toBe(200);
+        if (mode === 'require_human_approval') {
+          const scenarioDecision = await app.request(
+            `/api/approvals/${scenarioApprovalPayload.approval.id}/respond`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: `00000000-0000-4000-8000-0000000000${scenario + 1}`,
+                workspaceId: workspace.id,
+                threadId: thread.id,
+                turnId: scenarioTurn.id,
+                decision: 'granted',
+              }),
+            }
+          );
+          expect(scenarioDecision.status).toBe(200);
+        }
 
         const scenarioPush = await app.request(
           `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,

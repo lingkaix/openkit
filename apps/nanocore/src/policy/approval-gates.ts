@@ -29,6 +29,8 @@ export interface CreatePolicyApprovalGateInput {
   approvalItemId: string;
   /** Product action requiring approval. */
   action: 'repo.push' | 'tool.use';
+  /** Deployment-selected mode; automatic grants are supported only for repo.push. */
+  mode?: 'require_human_approval' | 'auto_allow';
   /** Machine-readable policy reason. */
   reasonCode: string;
   /** Approval title shown to the operator. */
@@ -56,7 +58,7 @@ export interface CreatePolicyApprovalGateResult {
 }
 
 /**
- * Creates a policy approval gate using existing approval and Action Center records.
+ * Records a policy grant or human approval gate using existing approval and Action Center records.
  *
  * @param input Approval gate input.
  * @returns Created record ids.
@@ -69,6 +71,10 @@ export function createPolicyApprovalGate(
     throw new Error('Approval id uses the reserved portable-import authority namespace.');
   }
 
+  const autoAllow = input.mode === 'auto_allow';
+  if (autoAllow && input.action !== 'repo.push') {
+    throw new Error('Automatic policy approval is supported only for repo.push.');
+  }
   const turn = input.store.getTurnById(input.turnId);
   if (
     turn.workspaceId !== input.workspaceId ||
@@ -88,7 +94,7 @@ export function createPolicyApprovalGate(
     ownerScope: 'workspace',
     workspaceId: input.workspaceId,
     policyEngineVersion: 'nanocore-approval-policy:v1',
-    policySnapshotId: 'policy_snapshot_runtime',
+    policySnapshotId: autoAllow ? 'repo_push:auto_allow:v1' : 'policy_snapshot_runtime',
     subjectSummary: input.subjectSummary,
     action: input.action,
     resourceSummary: input.resourceSummary,
@@ -97,8 +103,8 @@ export function createPolicyApprovalGate(
       turnId: turn.id,
       workspaceId: input.workspaceId,
     },
-    result: 'require_approval',
-    reasonCode: input.reasonCode,
+    result: autoAllow ? 'allow' : 'require_approval',
+    reasonCode: autoAllow ? 'repo_push_auto_allowed' : input.reasonCode,
     enforcementPoint: 'policy.approval_gate',
     requiredApprovalKind: 'permission',
     approvalId,
@@ -111,11 +117,11 @@ export function createPolicyApprovalGate(
     threadId: turn.threadId,
     turnId: turn.id,
     kind: 'permission',
-    status: 'pending',
+    status: autoAllow ? 'granted' : 'pending',
     title: input.title,
     description: input.description,
     createdAt,
-    resolvedAt: null,
+    resolvedAt: autoAllow ? createdAt : null,
   });
   input.store.createItem({
     id: approvalItemId,
@@ -131,14 +137,23 @@ export function createPolicyApprovalGate(
     createdAt,
     completedAt: createdAt,
   });
-  input.store.updateTurn(turn.id, {
-    status: 'awaiting_human',
-    humanGate: {
-      kind: 'approval',
-      approvalRequestId: approvalId,
-      itemId: approvalItemId,
-    },
-  });
+  input.store.updateTurn(
+    turn.id,
+    autoAllow
+      ? {
+          status: 'completed',
+          humanGate: null,
+          completedAt: createdAt,
+        }
+      : {
+          status: 'awaiting_human',
+          humanGate: {
+            kind: 'approval',
+            approvalRequestId: approvalId,
+            itemId: approvalItemId,
+          },
+        }
+  );
 
   return { decisionId, approvalId, approvalItemId };
 }
