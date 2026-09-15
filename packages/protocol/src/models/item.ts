@@ -134,10 +134,21 @@ export const ApprovalRequestItemSchema = BaseItemSchema.extend({
  */
 export const ApprovalDecisionItemSchema = BaseItemSchema.extend({
   type: z.literal('approval-decision'),
-  actor: UserActorRefSchema,
+  actor: z.union([
+    UserActorRefSchema,
+    z
+      .object({
+        kind: z.literal('system'),
+        id: z.literal('nanocore-boot-reconciliation'),
+        responsibleUserId: z.null(),
+      })
+      .strict(),
+  ]),
   causationId: z.string().min(1),
   approvalRequestId: z.string().min(1),
   decision: z.enum(['granted', 'denied']),
+}).refine((item) => item.actor.kind === 'user' || item.decision === 'denied', {
+  message: 'A system approval decision can only deny.',
 });
 
 /**

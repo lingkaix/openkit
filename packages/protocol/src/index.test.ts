@@ -1394,6 +1394,19 @@ describe('protocol schemas', () => {
 
     expect(approvalRequest.type).toBe('approval-request');
     expect(approvalDecision.type).toBe('approval-decision');
+    const bootDenial = {
+      ...approvalDecision,
+      actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
+      decision: 'denied',
+    };
+    expect(ItemSchema.safeParse(bootDenial).success).toBe(true);
+    expect(ItemSchema.safeParse({ ...bootDenial, decision: 'granted' }).success).toBe(false);
+    expect(
+      ItemSchema.safeParse({
+        ...bootDenial,
+        actor: { kind: 'system', id: 'another-system', responsibleUserId: null },
+      }).success
+    ).toBe(false);
   });
 
   it('parses user input request and response items', () => {
