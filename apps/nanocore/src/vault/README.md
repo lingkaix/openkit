@@ -42,4 +42,4 @@ pnpm run build
 - [Vault Backend Implementation](../../../../docs/specs/20260704-vault_backend_implementation.md)
 - [Worker Credential Access Declarations](../../../../docs/specs/20260709-worker_credential_access_declarations.md)
 
-`vault-secret-routes.ts` projects deployment-admin workspace secret create/rotate/revoke and host-push grant create/revoke. It uses the existing backend and Core lifecycle, rejects scope/version disagreement, and returns fixed redacted failures for partial effects. It creates no worker-visible credential grants.
+`vault-secret-routes.ts` projects deployment-admin workspace secret create/rotate/revoke and explicit host-push or GitHub Worker runtime-env grant create/revoke. It uses the existing backend and Core lifecycle, rejects scope/version disagreement, and returns fixed redacted failures for partial effects. Worker grants remain separate from gateway-only host-push grants.

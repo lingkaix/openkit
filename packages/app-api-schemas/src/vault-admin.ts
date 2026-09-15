@@ -193,11 +193,12 @@ export const RotateWorkspaceVaultSecretRequestSchema = z
   })
   .strict();
 
-/** Create a workspace grant restricted to approved host-side Git push. */
+/** Create an explicit host-push or worker runtime-env workspace grant. */
 export const CreateWorkspaceVaultGrantRequestSchema = z
   .object({
     referenceId: z.string().regex(/^vault_[A-Za-z0-9_-]+$/),
     expiresAt: z.string().datetime().optional(),
+    injectionPath: z.enum(['gateway-only', 'runtime-env']).optional(),
   })
   .strict();
 
@@ -209,7 +210,7 @@ export type CreateWorkspaceVaultSecretRequest = z.infer<
 export type RotateWorkspaceVaultSecretRequest = z.infer<
   typeof RotateWorkspaceVaultSecretRequestSchema
 >;
-/** Workspace host-push grant input. */
+/** Workspace host-push or worker runtime-env grant input. */
 export type CreateWorkspaceVaultGrantRequest = z.infer<
   typeof CreateWorkspaceVaultGrantRequestSchema
 >;
