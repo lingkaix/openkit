@@ -133,6 +133,22 @@ describe('vault admin app API', () => {
         targetCapabilityId: 'workspace.git.push',
         lifetime: 'workspace',
       });
+      const workerGrantResponse = await request('/grants', {
+        referenceId: reference.referenceId,
+        injectionPath: 'runtime-env',
+      });
+      expect(workerGrantResponse.status).toBe(200);
+      const workerGrant = await workerGrantResponse.json();
+      expect(workerGrant).toMatchObject({
+        allowedInjectionPaths: ['runtime-env'],
+        targetCapabilityId: null,
+        lifetime: 'workspace',
+      });
+      expect(workerGrant.grantId).not.toBe(grant.grantId);
+      expect(JSON.stringify(workerGrant)).not.toContain(secret);
+      expect(getVaultGrant(coreDb, workerGrant.grantId)?.allowedInjectionPaths).not.toContain(
+        'gateway-only'
+      );
       const rotated = await request(`/secrets/${reference.referenceId}/rotate`, {
         material: 'replacement-canary',
       });

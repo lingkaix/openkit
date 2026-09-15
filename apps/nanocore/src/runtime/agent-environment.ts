@@ -1145,6 +1145,7 @@ function resolveWorkerCredentialDeclarations(
       continue;
     }
     const vaultBackend = requireVaultBackend(input);
+    assertCredentialBackendMatchesReference(vaultBackend, reference);
 
     createVaultInjectionPlan(coreDb, {
       backendCapabilityRequirement: injection.backendCapabilityRequirement,
@@ -1532,6 +1533,30 @@ function requireVaultBackend(input: { readonly vaultBackend?: () => VaultBackend
   }
 
   return input.vaultBackend();
+}
+
+/** Fail before injection records or worker sinks when Core and Vault material disagree. */
+function assertCredentialBackendMatchesReference(
+  backend: VaultBackend,
+  reference: VaultReferenceRecord
+): void {
+  if (backend.health().state !== 'available' || backend.kind !== reference.backendKind) {
+    throw new Error('Vault backend is unavailable for worker credential injection.');
+  }
+  const inventory = backend
+    .listReferences({ ownerScope: reference.ownerScope })
+    .find((entry) => entry.referenceId === reference.referenceId);
+  if (
+    !inventory ||
+    inventory.revoked ||
+    inventory.currentVersion !== reference.currentVersion ||
+    inventory.backendKind !== reference.backendKind ||
+    inventory.ownerScope !== reference.ownerScope ||
+    (inventory.workspaceId ?? null) !== reference.workspaceId ||
+    (inventory.userId ?? null) !== reference.userId
+  ) {
+    throw new Error('Vault reference requires inspection before worker credential injection.');
+  }
 }
 
 /**

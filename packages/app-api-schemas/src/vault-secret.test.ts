@@ -25,5 +25,21 @@ describe('workspace Vault secret input', () => {
         expiresAt: 'invalid',
       }).success
     ).toBe(false);
+    expect(
+      vault.CreateWorkspaceVaultGrantRequestSchema.parse({ referenceId: 'vault_example' })
+    ).toMatchObject({ referenceId: 'vault_example' });
+    expect(
+      vault.CreateWorkspaceVaultGrantRequestSchema.parse({
+        referenceId: 'vault_example',
+        injectionPath: 'runtime-env',
+      })
+    ).toMatchObject({ injectionPath: 'runtime-env' });
+    expect(
+      vault.CreateWorkspaceVaultGrantRequestSchema.safeParse({
+        referenceId: 'vault_example',
+        injectionPath: 'gateway-only',
+        targetCapabilityId: null,
+      }).success
+    ).toBe(false);
   });
 });

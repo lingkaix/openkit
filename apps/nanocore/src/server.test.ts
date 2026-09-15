@@ -13130,7 +13130,35 @@ describe('nanocore server', () => {
         workspaceId: workspace.id,
       });
 
-      for (const [index, grantId] of [importedGrantId, 'grant_git_push_wrong_target'].entries()) {
+      const workerSecretResponse = await app.request(
+        `/api/app/workspaces/${workspace.id}/vault/secrets`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ secretKind: 'github-token', material: 'worker-only-canary' }),
+        }
+      );
+      expect(workerSecretResponse.status).toBe(200);
+      const workerReference = await workerSecretResponse.json();
+      const workerGrantResponse = await app.request(
+        `/api/app/workspaces/${workspace.id}/vault/grants`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            referenceId: workerReference.referenceId,
+            injectionPath: 'runtime-env',
+          }),
+        }
+      );
+      expect(workerGrantResponse.status).toBe(200);
+      const workerGrant = await workerGrantResponse.json();
+
+      for (const [index, grantId] of [
+        importedGrantId,
+        'grant_git_push_wrong_target',
+        workerGrant.grantId,
+      ].entries()) {
         const scenario = index * 3 + 52;
         const scenarioTurn = store.createTurn(
           workspace.id,

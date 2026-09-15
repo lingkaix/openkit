@@ -136,15 +136,21 @@ export function registerVaultSecretRoutes({
       if (action === 'grant' && grantInput?.success) {
         if (grantInput.data.expiresAt && Date.parse(grantInput.data.expiresAt) <= Date.now())
           return asApiError('Grant expiry must be in the future.', 'invalid_request', 400);
+        if (
+          grantInput.data.injectionPath === 'runtime-env' &&
+          reference.secretKind !== 'github-token'
+        )
+          return asApiError('Worker GitHub grant requires a GitHub token.', 'invalid_request', 400);
+        const workerVisible = grantInput.data.injectionPath === 'runtime-env';
         const grant = createVaultGrant(coreDb, {
           grantId: `grant_${randomUUID()}`,
           vaultReferenceId: referenceId,
           ownerScope: 'workspace',
           workspaceId,
-          allowedInjectionPaths: ['gateway-only'],
-          targetCapabilityId: 'workspace.git.push',
+          allowedInjectionPaths: [grantInput.data.injectionPath ?? 'gateway-only'],
+          targetCapabilityId: workerVisible ? null : 'workspace.git.push',
           lifetime: 'workspace',
-          subjectSummary: 'Approved host Git push',
+          subjectSummary: workerVisible ? 'Worker GitHub CLI' : 'Approved host Git push',
           expiresAt: grantInput.data.expiresAt ?? null,
         });
         audit('succeeded');

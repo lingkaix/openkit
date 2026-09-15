@@ -2546,7 +2546,7 @@ export const operationCatalog = [
     appOperationId: 'createWorkspaceVaultGrant',
     clientMethod: 'app.createWorkspaceVaultGrant',
     group: 'vault',
-    summary: 'Grant create for a workspace; grants authorize approved host Git push.',
+    summary: 'Create a separate host-push or worker-visible GitHub token grant for a workspace.',
     mutating: true,
     inputSchema: flatRequest(appSchemas.CreateWorkspaceVaultGrantRequestSchema, {
       ...workspaceScope,
