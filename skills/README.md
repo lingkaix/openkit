@@ -25,3 +25,5 @@ Keep one maintained source per topic. `docs/manual/` points to the operations pa
 Worker-side MCP and Skill supply retain their Agent Capability and catalog owners. Neither package introduces a user-facing MCP server, developer-mode product client, fleet, daemon or self-improvement harness.
 
 `workspace.dashboard`, `thread.dashboard`, and `app.search` use existing public Core Client reads. NanoCore filters Thread and Artifact-origin visibility before discovery, including for administrator credentials. Public `thread.create` defaults to private; use explicit `visibility: workspace` when creating formal Task/Goal work.
+
+Public Vault secret administration exposes `vault.secret-create`, `vault.secret-rotate`, `vault.secret-revoke`, `vault.grant-create`, and `vault.grant-revoke`. Creation and rotation consume secret stdin JSON. Grants in this slice authorize approved host Git push; repository binding stays in `repository.set-default`. See the public administration reference and operator recipe for the complete flow.
