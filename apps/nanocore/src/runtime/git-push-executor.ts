@@ -226,6 +226,7 @@ export async function executeGitPushAttempt(
     let runnerFailed = false;
     let outcome: Pick<GitPushRecord, 'errorSummary' | 'outcome' | 'remoteHeadAfter'> | null = null;
     let remoteHeadBefore: string | null = null;
+    let remoteBase: string | null = null;
     let remoteResult: GitPushCommandRunnerResult;
     try {
       remoteResult = await input.runner({
@@ -265,13 +266,40 @@ export async function executeGitPushAttempt(
           };
         } else {
           remoteHeadBefore = commitId;
+          remoteBase = commitId;
         }
       } else if (remoteLines.length === 0) {
-        outcome = {
-          errorSummary: 'Git push refused because V1 does not create remote branches.',
-          outcome: 'refused-policy',
-          remoteHeadAfter: null,
-        };
+        networkCalls = 2;
+        let baseResult: GitPushCommandRunnerResult;
+        try {
+          baseResult = await input.runner({
+            args: ['ls-remote', '--symref', '--', input.remoteName, 'HEAD'],
+            command: 'git',
+            cwd: view.directory,
+            env: networkEnv,
+          });
+        } catch {
+          runnerFailed = true;
+          baseResult = { exitCode: 1, stderr: '', stdout: '' };
+        }
+        const baseLines = baseResult.stdout.split(/\r?\n/).filter(Boolean);
+        const symref = baseLines[0]?.match(/^ref: (refs\/heads\/[A-Za-z0-9._/-]+)\tHEAD$/);
+        const head = baseLines[1]?.match(/^([a-f0-9]+)\tHEAD$/);
+        if (
+          baseResult.exitCode !== 0 ||
+          baseLines.length !== 2 ||
+          !symref ||
+          !head ||
+          !isGitObjectId(head[1] ?? '', input.objectFormat)
+        ) {
+          outcome = {
+            errorSummary: 'Git push failed because the remote base could not be verified.',
+            outcome: 'remote-unreachable',
+            remoteHeadAfter: null,
+          };
+        } else {
+          remoteBase = head[1] ?? null;
+        }
       } else {
         outcome = {
           errorSummary: 'Git push failed because the remote head response was ambiguous.',
@@ -281,11 +309,11 @@ export async function executeGitPushAttempt(
       }
     }
 
-    if (!outcome && remoteHeadBefore) {
+    if (!outcome && remoteBase) {
       let ancestryResult: GitPushCommandRunnerResult;
       try {
         ancestryResult = await input.runner({
-          args: ['merge-base', '--is-ancestor', remoteHeadBefore, input.sourceCommit],
+          args: ['merge-base', '--is-ancestor', remoteBase, input.sourceCommit],
           command: 'git',
           cwd: view.directory,
           env: localEnv,
@@ -304,16 +332,11 @@ export async function executeGitPushAttempt(
       }
     }
 
-    if (!outcome && remoteHeadBefore) {
+    if (!outcome && remoteBase) {
       let rangeResult: GitPushCommandRunnerResult;
       try {
         rangeResult = await input.runner({
-          args: [
-            'rev-list',
-            '--reverse',
-            '--topo-order',
-            `${remoteHeadBefore}..${input.sourceCommit}`,
-          ],
+          args: ['rev-list', '--reverse', '--topo-order', `${remoteBase}..${input.sourceCommit}`],
           command: 'git',
           cwd: view.directory,
           env: localEnv,
@@ -353,7 +376,7 @@ export async function executeGitPushAttempt(
       }
     }
 
-    if (!outcome && remoteHeadBefore) {
+    if (!outcome && remoteBase) {
       if (!hasCurrentRepoPushAuthority(workspaceDb, input)) {
         outcome = {
           errorSummary: 'Git push refused because current repo.push authority was removed.',
@@ -361,7 +384,7 @@ export async function executeGitPushAttempt(
           remoteHeadAfter: null,
         };
       } else {
-        networkCalls = 2;
+        networkCalls += 1;
         const pushCommand = buildGitPushCommand({
           env,
           expectedRemoteHead: remoteHeadBefore,

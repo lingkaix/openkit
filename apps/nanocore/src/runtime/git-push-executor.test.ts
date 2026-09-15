@@ -618,45 +618,60 @@ describe('Git push executor', () => {
     }
   });
 
-  it('refuses to create a missing remote branch in V1', async () => {
+  it('creates an approved missing remote branch without a host seed', async () => {
     const workspaceDb = createWorkspaceDb();
+    const repository = createGitRepository();
+    const remote = mkdtempSync(join(tmpdir(), 'openkit-git-push-remote-'));
+    execFileSync('git', ['init', '--bare', '--initial-branch=main', remote], { stdio: 'ignore' });
+    const baseCommit = commitReadme(repository.path, 'base\n', 'base');
+    execFileSync('git', ['push', remote, `${baseCommit}:refs/heads/main`], {
+      cwd: repository.path,
+      stdio: 'ignore',
+    });
+    const sourceCommit = commitReadme(repository.path, 'source\n', 'source');
     const calls: Parameters<GitPushCommandRunner>[0][] = [];
     const runner: GitPushCommandRunner = async (command) => {
       calls.push(command);
-      if (calls.length === 1) {
-        return { exitCode: 0, stderr: '', stdout: '' };
-      }
-      throw new Error('missing remote branches must not reach local range checks or push');
+      return runGitPushCommand({
+        ...command,
+        args: command.args.map((arg) =>
+          arg === 'https://github.com/openkit/openkit.git' ? remote : arg
+        ),
+      });
     };
 
     try {
-      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
+      recordLinkedCommit(workspaceDb, [sourceCommit]);
       recordRepoPushAllowDecision(workspaceDb, 'pd_1');
       const record = await executeGitPushAttempt(workspaceDb, {
         attempt: gitPushAttempt({
-          commitIds: [SOURCE_COMMIT],
+          commitIds: [sourceCommit],
           recordId: 'gpr_missing_remote_branch',
           requestId: '00000000-0000-4000-8000-000000000042',
         }),
         coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
-        objectDirectory: '/repo/.git/objects',
+        objectDirectory: repository.objectDirectory,
         objectFormat: 'sha1',
         provider: 'github',
         remoteName: 'https://github.com/openkit/openkit.git',
         runner,
-        sourceCommit: SOURCE_COMMIT,
+        sourceCommit,
       });
 
-      expect(calls).toHaveLength(1);
+      expect(calls).toHaveLength(5);
       expect(record).toMatchObject({
-        errorSummary: 'Git push refused because V1 does not create remote branches.',
-        outcome: 'refused-policy',
-        remoteHeadAfter: null,
+        outcome: 'pushed',
+        remoteHeadAfter: sourceCommit,
         remoteHeadBefore: null,
       });
+      expect(
+        execFileSync('git', ['--git-dir', remote, 'rev-parse', 'refs/heads/feature/demo'], {
+          encoding: 'utf8',
+        }).trim()
+      ).toBe(sourceCommit);
       expect(listWorkspaceUsageRecords(workspaceDb, 'ws_demo')).toMatchObject([
-        { quantity: 1, unit: 'requests' },
+        { quantity: 3, unit: 'requests' },
       ]);
     } finally {
       workspaceDb.sqlite.close();
