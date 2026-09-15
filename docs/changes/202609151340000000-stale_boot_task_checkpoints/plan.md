@@ -13,7 +13,7 @@ Expected: boot classifies those terminal leftovers as complete and clears them w
 
 ## Owners
 
-Boot Task checkpoint classification in `apps/nanocore/src/mode-entry-routes.ts` implements the existing scheduler restart recovery owner. No new governing decision.
+`docs/specs/20260703-durable_scheduler_design.md` owns scheduler admission and restart fencing. Boot Task checkpoint classification in `apps/nanocore/src/mode-entry-routes.ts` implements that existing owner and is recorded in `apps/nanocore/README.md`. No new governing decision.
 
 ## Checkpoint
 
