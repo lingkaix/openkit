@@ -79,6 +79,17 @@ describe('Git push command', () => {
     ).toBe(authorization);
   });
 
+  it('uses an exact absence lease for an approved new branch', () => {
+    const command = buildGitPushCommand({
+      expectedRemoteHead: null,
+      remoteName: 'https://github.com/openkit/openkit.git',
+      sourceRef: 'a'.repeat(40),
+      targetBranch: 'feature/demo',
+    });
+    expect(command.args).toContain('--force-with-lease=refs/heads/feature/demo:');
+    expect(command.args).not.toContain('--force');
+  });
+
   it('accepts one canonical GitHub HTTPS push target', () => {
     expect(
       buildGitPushCommand({

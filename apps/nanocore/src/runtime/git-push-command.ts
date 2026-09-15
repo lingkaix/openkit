@@ -8,7 +8,7 @@ export interface BuildGitPushCommandInput {
   /** Candidate process environment. */
   readonly env?: NodeJS.ProcessEnv;
   /** Remote target head observed immediately before publication checks. */
-  readonly expectedRemoteHead: string;
+  readonly expectedRemoteHead: string | null;
   /** Git remote name or URL summary accepted by the provider adapter. */
   readonly remoteName: string;
   /** Local source ref to publish. */
@@ -36,7 +36,10 @@ export interface GitPushCommand {
  */
 export function buildGitPushCommand(input: BuildGitPushCommandInput): GitPushCommand {
   assertGitPushCommandShape(input.remoteName, input.sourceRef, input.targetBranch);
-  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.expectedRemoteHead)) {
+  if (
+    input.expectedRemoteHead !== null &&
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.expectedRemoteHead)
+  ) {
     throw new Error('Git push expected remote head is not safe.');
   }
 
@@ -45,7 +48,7 @@ export function buildGitPushCommand(input: BuildGitPushCommandInput): GitPushCom
       'push',
       '--porcelain',
       '--no-verify',
-      `--force-with-lease=refs/heads/${input.targetBranch}:${input.expectedRemoteHead}`,
+      `--force-with-lease=refs/heads/${input.targetBranch}:${input.expectedRemoteHead ?? ''}`,
       '--',
       input.remoteName,
       `${input.sourceRef}:refs/heads/${input.targetBranch}`,
