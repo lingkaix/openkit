@@ -737,7 +737,7 @@ file APIs, object-store transfer, and optional ephemeral Git branch workflows.
 - This spec supersedes `docs/specs/superseded/20260627-workspace_materialization_sync.md` as the active workspace synchronization contract.
 - Phase 1 standardizes on patch-first Git review. Git bundles are optional future support for preserving commit metadata.
 - The first implementation does not create Git commits during apply. It applies an accepted patch to the linked repository and records an empty `commitIds` list.
-- Commit creation, push, tag, deploy, and protected-branch mutation are separate human-approved actions.
+- Commit creation, tag, and deploy remain separate human-approved actions. Host push, including protected-branch publication, follows the distinct target-bound authorization and configurable human/automatic grant in `20260704-git_write_workflow.md`; synchronization never pushes as an apply side effect.
 - Workers do not receive GitHub write access in the default path.
 - Filesystem snapshot support is part of the first contract and is already partially implemented for host-dir roots.
 - Partial or ambiguous recovery evidence surfaces as `requires-human`.

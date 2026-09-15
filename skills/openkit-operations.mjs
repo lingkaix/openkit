@@ -2939,7 +2939,7 @@ export const operationCatalog = [
     appOperationId: 'requestGitPushApproval',
     clientMethod: 'repositories.requestGitPushApproval',
     group: 'repository',
-    summary: 'Open one approval gate for a Git push.',
+    summary: 'Request policy or human approval for one exact Git push.',
     mutating: true,
     inputSchema: flatRequest(appSchemas.RequestGitPushApprovalRequestSchema, {
       ...workspaceScope,
