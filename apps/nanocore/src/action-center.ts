@@ -15,7 +15,7 @@ import { readPendingGoalSteeringProjection } from './context/worker-context-proj
 import { GoalSteeringAuthorityError } from './goal-steering-authority.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
-import { isExactMcpApprovalSourceDecision } from './policy/approval-gates.js';
+import { isExactWorkerApprovalSourceDecision } from './policy/approval-gates.js';
 import { listPolicyApprovalSourceDecisions } from './policy/permission-decisions.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import { type GoalRecord, listGoalRecordsForThread, listGoalTasks } from './runtime/goal-store.js';
@@ -392,7 +392,10 @@ function isActionableApprovalRequest(
       (aepBacked &&
         (policySources.length !== 1 ||
           !policySources[0] ||
-          !isExactMcpApprovalSourceDecision({
+          !isExactWorkerApprovalSourceDecision({
+            store: input.store,
+            approvalId: item.approvalRequestId,
+            approvalItemId: item.id,
             approvalCreatedAt: input.store.getApproval(item.approvalRequestId).createdAt,
             source: policySources[0],
             threadId: item.threadId,

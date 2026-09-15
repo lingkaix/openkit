@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { seedDemoWorkspaceAuthority, seedDemoWorkspaceDataRoot } from '../support/demo-data.mjs';
+import { seedDemoWorkspaceAuthority } from '../support/demo-data.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const smokeRequestId = '0190f4c8-0000-7000-8000-000000000601';
@@ -72,7 +72,7 @@ async function main() {
       h2,
       'POST',
       '/api/nanohost/transport/session/readiness',
-      '{}',
+      JSON.stringify({ physicalEpoch: 'a'.repeat(64) }),
       { 'content-type': 'application/json' }
     );
     assert.equal(readiness.status, 204, responseFailure('NanoHost readiness', readiness));
@@ -81,6 +81,16 @@ async function main() {
       body: JSON.stringify({
         displayName: 'Worker MCP smoke repository',
         localPath: repositoryPath,
+        git: {
+          authorEmail: null,
+          authorName: null,
+          commitOnApply: false,
+          allowedPushTargets: ['feature/issue84'],
+          protectedBranchPatterns: ['main'],
+          requireReviewLinkage: false,
+          stagingStrategy: 'staging-root',
+          vaultGrantRef: null,
+        },
       }),
       headers: { 'content-type': 'application/json' },
       method: 'PUT',
@@ -100,7 +110,7 @@ async function main() {
       async (response) => {
         if (response.status !== 202) {
           taskFailure = new Error(
-            `Public Task returned ${response.status}: ${await response.text()}`
+            `Public Task returned ${response.status}: ${await response.clone().text()}`
           );
         }
       },
@@ -115,12 +125,33 @@ async function main() {
       digest: `sha256:${'a'.repeat(64)}`,
       requestId: image.command.requestId,
     });
+    const inspection = await waitForEffect(h2, 'image.inspect', child, output, () => taskFailure);
+    await settleJsonEffect(h2, 'image.inspect', {
+      requestId: inspection.command.requestId,
+      digest: inspection.command.imageDigest,
+      platform: { architecture: 'arm64', os: 'linux' },
+      storageLayout: {
+        family: 'openkit-worker',
+        gid: 1000,
+        uid: 1000,
+        version: '1',
+        targets: [{ target: '/workspace' }],
+        workingDirectory: '/workspace',
+      },
+    });
     const sandbox = await waitForEffect(h2, 'sandbox.create', child, output, () => taskFailure);
     const sandboxId = requireString(sandbox.command.sandboxId, 'Sandbox id');
     await settleJsonEffect(h2, 'sandbox.create', {
       requestId: sandbox.command.requestId,
       sandboxId,
       state: 'created',
+      storage: {
+        ...sandbox.command.storage,
+        targets: sandbox.command.storage.targets.map((target) => ({
+          ...target,
+          initialized: true,
+        })),
+      },
     });
 
     const bridge = await waitForEffect(h2, 'bridge.open', child, output, () => taskFailure);
@@ -308,6 +339,66 @@ async function main() {
     const callLog = (await readFile(callFile, 'utf8')).trim().split('\n');
     assert.deepEqual(callLog, ['l5-packaged']);
 
+    const repositoryClient = new Client({
+      name: 'openkit-built-repository-mcp-smoke',
+      version: '1.0.0',
+    });
+    try {
+      await repositoryClient.connect(
+        new StreamableHTTPClientTransport(
+          new URL('http://nanocore.test/capabilities/mcp/openkit-repository'),
+          {
+            fetch: h2Fetch(h2),
+            requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
+          }
+        )
+      );
+      const tools = await repositoryClient.listTools();
+      const commitId = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repositoryPath,
+        encoding: 'utf8',
+      }).trim();
+      const approval = await repositoryClient.callTool({
+        name: 'repository_push_request_approval',
+        arguments: {
+          requestId: '0190f4c8-0000-7000-8000-000000000602',
+          resourceId: 'repo_default',
+          sourceRef: commitId,
+          targetBranch: 'feature/issue84',
+          commitIds: [commitId],
+        },
+      });
+      assert.equal(approval.isError, undefined, JSON.stringify(approval));
+      const turnUrl = `${baseUrl}/api/workspaces/ws_demo/threads/th_demo/turns/${encodeURIComponent(environmentPackage.scope.turnId)}`;
+      const afterApprovalResponse = await fetch(turnUrl, { signal: AbortSignal.timeout(10_000) });
+      assert.equal(afterApprovalResponse.status, 200);
+      const afterApproval = await afterApprovalResponse.json();
+      assert.equal(afterApproval.humanGate, null);
+      const pushed = await repositoryClient.callTool({
+        name: 'repository_push_execute',
+        arguments: {
+          requestId: '0190f4c8-0000-7000-8000-000000000603',
+          resourceId: 'repo_default',
+          approvalRequestId: approval.structuredContent.approval.id,
+        },
+      });
+      assert.equal(pushed.isError, undefined, JSON.stringify(pushed));
+      const afterExecutionResponse = await fetch(turnUrl, { signal: AbortSignal.timeout(10_000) });
+      assert.equal(afterExecutionResponse.status, 200);
+      const afterExecution = await afterExecutionResponse.json();
+      observation.repository = {
+        toolNames: tools.tools.map((tool) => tool.name),
+        approvalStatus: approval.structuredContent.approval.status,
+        afterApprovalStatus: afterApproval.status,
+        afterExecutionStatus: afterExecution.status,
+        executionOutcome: pushed.structuredContent.outcome,
+        approvalBound:
+          pushed.structuredContent.approvalRowId === approval.structuredContent.approvalItemId,
+      };
+    } finally {
+      await repositoryClient.close();
+    }
+
     const terminalBody = {
       evidenceManifestDigests: {},
       status: 'completed',
@@ -436,6 +527,7 @@ async function main() {
       imageReference: image.command.imageReference,
       importObserved: importCount >= 1,
       readinessStatus: readiness.status,
+      repository: observation.repository,
       targetObservable: existsSync(dataRoot),
       task: {
         humanGate: task.turn?.humanGate,
@@ -488,6 +580,10 @@ async function runHarnessAdmissionSelfCheck() {
     const failed = await settleSmokeAdjudication(async () => failedObservation);
     assert.equal(failed.status, 'fail');
 
+    const invalidRepository = structuredClone(expectedSmokeObservation());
+    invalidRepository.repository.afterApprovalStatus = 'completed';
+    assert.equal((await settleSmokeAdjudication(async () => invalidRepository)).status, 'fail');
+
     const timedOut = await settleSmokeAdjudication(() => new Promise(() => undefined), 25);
     assert.equal(timedOut.status, 'timeout');
     assert.equal(existsSync(marker), true);
@@ -524,6 +620,14 @@ function expectedSmokeObservation() {
     imageReference: 'openkit/worker-codex:dev',
     importObserved: true,
     readinessStatus: 204,
+    repository: {
+      toolNames: ['repository_push_request_approval', 'repository_push_execute'],
+      approvalStatus: 'granted',
+      afterApprovalStatus: 'running',
+      afterExecutionStatus: 'running',
+      executionOutcome: 'auth-failed',
+      approvalBound: true,
+    },
     targetObservable: true,
     task: {
       humanGate: null,
@@ -565,12 +669,28 @@ async function settleSmokeAdjudication(readObservation, timeoutMs = smokeAdjudic
 
 /** Writes the smallest production-valid config and repository inputs for the packaged lifecycle. */
 async function seedFixture(dataRoot, repositoryPath, callFile, nanoHostPort) {
-  seedDemoWorkspaceDataRoot(dataRoot);
+  const { FsStore, createDemoWorkspaceForUser } = await import(
+    '../../apps/nanocore/dist/lib/store.js'
+  );
+  const store = new FsStore({ dataRoot });
+  store.ensureQuickChatWorkspace('user_local');
+  const demo = createDemoWorkspaceForUser('user_local');
+  store.importWorkspaceSnapshot({
+    workspace: demo.workspace,
+    threads: [demo.thread],
+    knowledge: demo.knowledge,
+    turns: [],
+    itemRevisions: [],
+    artifacts: [],
+    agentSessions: [],
+    turnEvents: [],
+  });
   await mkdir(join(dataRoot, 'config', 'agents'), { recursive: true });
   await mkdir(join(dataRoot, 'config', 'providers'), { recursive: true });
   await writeJson(join(dataRoot, 'config', 'server.jsonc'), {
     defaults: { defaultAgentId: 'agent_codex_host' },
     mode: 'local',
+    policy: { workspaceApprovalModes: { ws_demo: { 'repo.push': 'auto_allow' } } },
     nanohost: {
       bind: { host: '127.0.0.1', port: nanoHostPort },
       credentialRef: 'nanohost-transport:worker-mcp-smoke',
@@ -596,6 +716,7 @@ async function seedFixture(dataRoot, repositoryPath, callFile, nanoHostPort) {
     logicalModels: [
       {
         displayName: 'openai/gpt-5.2',
+        contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
         id: 'openai/gpt-5.2',
         routes: [
           {
@@ -620,7 +741,7 @@ async function seedFixture(dataRoot, repositoryPath, callFile, nanoHostPort) {
     defaultProfileId: 'default',
     displayName: 'Codex Agent',
     id: 'agent_codex_host',
-    mcp: [{ id: 'echo' }],
+    mcp: [{ id: 'echo' }, { id: 'openkit-repository' }],
     models: {
       allowedLogicalModelIds: ['openai/gpt-5.2'],
       preferredLogicalModelId: 'openai/gpt-5.2',
@@ -687,6 +808,7 @@ async function seedFixture(dataRoot, repositoryPath, callFile, nanoHostPort) {
     ['init', '-q'],
     ['config', 'user.email', 'smoke@openkit.local'],
     ['config', 'user.name', 'OpenKit Smoke'],
+    ['remote', 'add', 'origin', 'https://github.com/openkit/fixture.git'],
     ['add', 'README.md'],
     ['commit', '-qm', 'seed'],
   ]) {
@@ -753,7 +875,7 @@ async function readDurableOutcome(dataRoot, turnId) {
     const calls = workspaceDb.sqlite
       .prepare(
         `SELECT call_id AS callId, item_id AS itemId, schema_snapshot_id AS schemaSnapshotId, status
-         FROM capability_calls WHERE operation = 'mcp.call_tool'`
+         FROM capability_calls WHERE operation = 'mcp.call_tool' AND provider_ref = 'echo'`
       )
       .all();
     if (calls.length === 1) {

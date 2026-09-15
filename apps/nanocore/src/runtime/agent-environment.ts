@@ -34,6 +34,10 @@ import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receipts.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
+import {
+  createOpenkitRepositoryMcpSupply,
+  OPENKIT_REPOSITORY_MCP_ID,
+} from './openkit-repository-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 
@@ -1015,10 +1019,10 @@ function resolveWorkerMcpServerSupply(
   if (adapter !== 'codex') {
     throw new Error(`Worker MCP supply does not support runtime adapter: ${adapter}`);
   }
-  if (!catalog) {
-    throw new Error('Workspace MCP server catalog is required by the selected Agent.');
-  }
   return mcpServerIds.map((mcpServerId) => {
+    if (mcpServerId === OPENKIT_REPOSITORY_MCP_ID) return createOpenkitRepositoryMcpSupply();
+    if (!catalog)
+      throw new Error('Workspace MCP server catalog is required by the selected Agent.');
     const entry = resolveWorkspaceMcpServer({ catalog, serverId: mcpServerId });
 
     return {

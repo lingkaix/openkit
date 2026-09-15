@@ -24,6 +24,8 @@ Keep one maintained source per topic. `docs/manual/` points to the operations pa
 
 Worker-side MCP and Skill supply retain their Agent Capability and catalog owners. Neither package introduces a user-facing MCP server, developer-mode product client, fleet, daemon or self-improvement harness.
 
+The operations package's dogfood recipe distinguishes external-coordinator `repository.push-*` App API calls from the explicitly selected built-in worker `openkit-repository` tools. Worker publication uses the existing authenticated capability relay and retains the host-linked commit prerequisite, repository approval and Vault checks. The Skill CLI does not acquire a worker App API tunnel or bearer credential.
+
 `workspace.dashboard`, `thread.dashboard`, and `app.search` use existing public Core Client reads. NanoCore filters Thread and Artifact-origin visibility before discovery, including for administrator credentials. Public `thread.create` defaults to private; use explicit `visibility: workspace` when creating formal Task/Goal work.
 
 Public Vault secret administration exposes `vault.secret-create`, `vault.secret-rotate`, `vault.secret-revoke`, `vault.grant-create`, and `vault.grant-revoke`. Creation and rotation consume secret stdin JSON. Validation failures for secret-input operations return a fixed error without request-derived schema issues, which may themselves contain secret keys or values. The default grant authorizes approved host Git push; an explicit `runtime-env` grant separately authorizes Worker GitHub CLI token injection. Repository binding stays in `repository.set-default`. See the public administration reference and operator recipe for the complete flow.

@@ -15,6 +15,15 @@ const GIT_READ_ENV: NodeJS.ProcessEnv = {
   ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
 };
 
+/** Missing source commit, distinct from repository path, origin and object-format failures. */
+export class GitPushSourceUnavailableError extends Error {
+  /** Creates a value-free source prerequisite failure. */
+  public constructor() {
+    super('Git push source commit is unavailable.');
+    this.name = 'GitPushSourceUnavailableError';
+  }
+}
+
 /**
  * Inspects the fixed V1 push remote and resolves the approved source ref to one commit.
  *
@@ -74,18 +83,23 @@ export function inspectGitPushRepository(
       throw new Error('Git repository object format is not supported.');
     }
     objectFormat = inspectedObjectFormat;
-    sourceCommit = runGitRead(
-      cwd,
-      ['rev-parse', '--verify', '--end-of-options', `${sourceRef}^{commit}`],
-      readEnv
-    );
+    try {
+      sourceCommit = runGitRead(
+        cwd,
+        ['rev-parse', '--verify', '--end-of-options', `${sourceRef}^{commit}`],
+        readEnv
+      );
+    } catch {
+      throw new GitPushSourceUnavailableError();
+    }
     if (
       !/^[a-f0-9]+$/.test(sourceCommit) ||
       sourceCommit.length !== (objectFormat === 'sha1' ? 40 : 64)
     ) {
       throw new Error('Git source ref did not resolve to a commit.');
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof GitPushSourceUnavailableError) throw error;
     throw new Error('Git push repository inspection failed.');
   }
 
@@ -128,6 +142,7 @@ function runGitRead(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv
   return execFileSync('git', [...args], {
     cwd,
     encoding: 'utf8',
+    stdio: 'pipe',
     env,
     maxBuffer: 64 * 1024,
     timeout: 5_000,

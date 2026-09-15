@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import type { FsStore } from '../lib/store.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import {
@@ -29,6 +30,8 @@ export interface CreatePolicyApprovalGateInput {
   approvalItemId: string;
   /** Product action requiring approval. */
   action: 'repo.push' | 'tool.use';
+  /** Worker auto-grants preserve the active Turn; App requests complete their holder Turn. */
+  autoAllowTurn?: 'complete' | 'continue';
   /** Deployment-selected mode; automatic grants are supported only for repo.push. */
   mode?: 'require_human_approval' | 'auto_allow';
   /** Machine-readable policy reason. */
@@ -137,6 +140,23 @@ export function createPolicyApprovalGate(
     createdAt,
     completedAt: createdAt,
   });
+  if (autoAllow && input.autoAllowTurn === 'continue') {
+    input.store.createItem({
+      id: `it_policy_auto_grant_${approvalId}`,
+      workspaceId: input.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'approval-decision',
+      actor: { kind: 'system', id: 'nanocore-repo-push-policy', responsibleUserId: null },
+      causationId: approvalItemId,
+      status: 'completed',
+      approvalRequestId: approvalId,
+      decision: 'granted',
+      createdAt,
+      completedAt: createdAt,
+    });
+    return { decisionId, approvalId, approvalItemId };
+  }
   input.store.updateTurn(
     turn.id,
     autoAllow
@@ -236,6 +256,20 @@ export function isExactMcpApprovalSourceDecision(input: {
     return false;
   }
 
+  return hasExactMcpDenial(input, context, resource);
+}
+
+/** Compares the existing denied MCP call and its atomic terminal audit to exact expected lineage. */
+function hasExactMcpDenial(
+  input: {
+    readonly workspaceDb: WorkspaceDb;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+  },
+  context: Record<string, unknown>,
+  resource: Record<string, unknown>
+): boolean {
   const rows = input.workspaceDb.sqlite
     .prepare(
       `SELECT
@@ -279,11 +313,12 @@ export function isExactMcpApprovalSourceDecision(input: {
        AND audit.action = 'capability.finish'
       WHERE call.call_id = ?`
     )
-    .all(context.capabilityCallId) as Array<Record<string, string | null>>;
+    .all(context.capabilityCallId as string) as Array<Record<string, string | null>>;
   const row = rows[0];
   return Boolean(
     rows.length === 1 &&
       row &&
+      typeof context.capabilityCallId === 'string' &&
       context.capabilityCallId.startsWith('cap_mcp_') &&
       row.workspace_id === input.workspaceId &&
       row.thread_id === input.threadId &&
@@ -329,4 +364,140 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Returns true when an object has exactly the expected keys. */
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   return isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
+}
+
+/**
+ * Verifies the exact denied selected-capability call and request receipt before a Worker Gate is actionable.
+ * @param input Stored approval owner, current product scope and receipt store.
+ * @returns Whether existing MCP or repository evidence proves the exact original worker request.
+ */
+export function isExactWorkerApprovalSourceDecision(
+  input: Parameters<typeof isExactMcpApprovalSourceDecision>[0] & {
+    readonly store: FsStore;
+    readonly approvalId: string;
+    readonly approvalItemId: string;
+  }
+): boolean {
+  if (input.source.action === 'tool.use') return isExactMcpApprovalSourceDecision(input);
+  const {
+    contextSummary: context,
+    resourceSummary: resource,
+    subjectSummary: subject,
+  } = input.source;
+  if (
+    input.source.action !== 'repo.push' ||
+    input.source.requiredApprovalKind !== 'permission' ||
+    !isRecord(context) ||
+    !isRecord(resource) ||
+    !isRecord(subject) ||
+    !isRecord(context.worker) ||
+    !hasExactKeys(context, ['requestId', 'workspaceId', 'threadId', 'turnId', 'worker']) ||
+    !hasExactKeys(context.worker, [
+      'agentId',
+      'agentSessionId',
+      'packageSnapshotId',
+      'capabilityCallId',
+    ]) ||
+    !hasExactKeys(subject, ['kind', 'userId']) ||
+    subject.kind !== 'user' ||
+    typeof subject.userId !== 'string' ||
+    !hasExactKeys(resource, [
+      'kind',
+      'workspaceId',
+      'repositoryResourceId',
+      'remoteIdentity',
+      'remoteName',
+      'sourceRef',
+      'sourceCommit',
+      'targetBranch',
+      'commitIds',
+      'remoteSummary',
+    ]) ||
+    context.workspaceId !== input.workspaceId ||
+    context.threadId !== input.threadId ||
+    context.turnId !== input.turnId ||
+    resource.kind !== 'git-push-target' ||
+    resource.workspaceId !== input.workspaceId ||
+    resource.remoteName !== 'origin' ||
+    !Object.values(context.worker).every(
+      (value) => typeof value === 'string' && value.length > 0
+    ) ||
+    typeof context.requestId !== 'string' ||
+    typeof resource.repositoryResourceId !== 'string' ||
+    !Array.isArray(resource.commitIds) ||
+    resource.commitIds.length === 0 ||
+    resource.commitIds.at(-1) !== resource.sourceCommit
+  )
+    return false;
+  const scope = {
+    actorId: subject.userId,
+    workspaceId: input.workspaceId,
+    repositoryResourceId: resource.repositoryResourceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+  };
+  const digest = commandInputHash({
+    command: 'git_push.approval.request',
+    ...scope,
+    requestId: context.requestId,
+  }).slice('sha256:'.length);
+  if (
+    input.approvalId !== `ap_repo_push_${digest}` ||
+    input.approvalItemId !== `it_repo_push_${digest}`
+  )
+    return false;
+  try {
+    const turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
+    const session = input.store.getAgentSession(String(context.worker.agentSessionId));
+    const approval = input.store.getApproval(input.approvalId);
+    const item = input.store
+      .listThreadItems(input.workspaceId, input.threadId)
+      .find((candidate) => candidate.id === input.approvalItemId);
+    if (
+      turn.agentSessionId !== context.worker.agentSessionId ||
+      session.environmentPackageSnapshotId !== context.worker.packageSnapshotId ||
+      session.agentId !== context.worker.agentId ||
+      session.workspaceId !== input.workspaceId ||
+      session.threadId !== input.threadId ||
+      approval.workspaceId !== input.workspaceId ||
+      approval.threadId !== input.threadId ||
+      approval.turnId !== input.turnId ||
+      approval.createdAt !== input.approvalCreatedAt ||
+      item?.type !== 'approval-request' ||
+      item.approvalRequestId !== input.approvalId ||
+      item.turnId !== input.turnId
+    )
+      return false;
+  } catch {
+    return false;
+  }
+  const receipt = input.store.getCommandRequest(
+    'git_push.approval.request',
+    context.requestId,
+    scope
+  );
+  if (
+    receipt?.response.kind !== 'approval' ||
+    receipt.response.id !== `ap_repo_push_${digest}` ||
+    receipt.inputHash !==
+      commandInputHash({
+        requestId: context.requestId,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        sourceRef: resource.sourceRef,
+        targetBranch: resource.targetBranch,
+        commitIds: resource.commitIds,
+      })
+  )
+    return false;
+  return hasExactMcpDenial(
+    input,
+    { ...context, ...context.worker },
+    {
+      agentId: context.worker.agentId,
+      schemaSnapshotId: null,
+      serverId: 'openkit-repository',
+      toolName: 'repository_push_request_approval',
+    }
+  );
 }

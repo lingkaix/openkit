@@ -210,11 +210,52 @@ describe('worker recovery materialization', () => {
   it.each([
     ['granted', 'completed', 'completed'],
     ['denied', 'interrupted', 'aborted'],
-  ] as const)('classifies a %s worker approval only after its terminal owner tuple closes', (decision, turnStatus, stopReason) => {
+  ] as const)('classifies a %s human worker approval after a policy grant and terminal closeout', (decision, turnStatus, stopReason) => {
     const store = createDemoStore();
     const turn = store.createTurn('ws_demo', 'th_demo', 'Close a worker approval', {
       id: 'user_local',
       kind: 'user',
+    });
+    // A prior policy grant is durable evidence, not the later human Gate response.
+    const policyApproval = store.createApproval({
+      createdAt: '2026-09-03T00:00:00.000Z',
+      description: 'Automatically approve publication.',
+      id: 'ap_policy_push',
+      kind: 'permission',
+      resolvedAt: '2026-09-03T00:00:00.000Z',
+      status: 'granted',
+      threadId: turn.threadId,
+      title: 'Approve push',
+      turnId: turn.id,
+      workspaceId: turn.workspaceId,
+    });
+    store.createItem({
+      approvalRequestId: policyApproval.id,
+      completedAt: policyApproval.createdAt,
+      createdAt: policyApproval.createdAt,
+      description: policyApproval.description,
+      id: 'it_policy_request',
+      kind: policyApproval.kind,
+      status: 'completed',
+      threadId: turn.threadId,
+      title: policyApproval.title,
+      turnId: turn.id,
+      type: 'approval-request',
+      workspaceId: turn.workspaceId,
+    });
+    store.createItem({
+      actor: { id: 'nanocore-repo-push-policy', kind: 'system', responsibleUserId: null },
+      approvalRequestId: policyApproval.id,
+      causationId: 'it_policy_request',
+      completedAt: policyApproval.createdAt,
+      createdAt: policyApproval.createdAt,
+      decision: 'granted',
+      id: 'it_policy_decision',
+      status: 'completed',
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'approval-decision',
+      workspaceId: turn.workspaceId,
     });
     const approval = store.createApproval({
       createdAt: '2026-09-04T00:00:00.000Z',

@@ -130,7 +130,8 @@ export const ApprovalRequestItemSchema = BaseItemSchema.extend({
 });
 
 /**
- * Product-visible approval decision item.
+ * Product-visible approval decision item. System actors are restricted to boot
+ * reconciliation denials and deployment policy grants for repository push.
  */
 export const ApprovalDecisionItemSchema = BaseItemSchema.extend({
   type: z.literal('approval-decision'),
@@ -139,7 +140,7 @@ export const ApprovalDecisionItemSchema = BaseItemSchema.extend({
     z
       .object({
         kind: z.literal('system'),
-        id: z.literal('nanocore-boot-reconciliation'),
+        id: z.enum(['nanocore-boot-reconciliation', 'nanocore-repo-push-policy']),
         responsibleUserId: z.null(),
       })
       .strict(),
@@ -147,9 +148,13 @@ export const ApprovalDecisionItemSchema = BaseItemSchema.extend({
   causationId: z.string().min(1),
   approvalRequestId: z.string().min(1),
   decision: z.enum(['granted', 'denied']),
-}).refine((item) => item.actor.kind === 'user' || item.decision === 'denied', {
-  message: 'A system approval decision can only deny.',
-});
+}).refine(
+  (item) =>
+    item.actor.kind === 'user' ||
+    (item.actor.id === 'nanocore-boot-reconciliation' && item.decision === 'denied') ||
+    (item.actor.id === 'nanocore-repo-push-policy' && item.decision === 'granted'),
+  { message: 'A system approval decision must match its specific denial or grant authority.' }
+);
 
 /**
  * Selectable option attached to one agent user-input question.

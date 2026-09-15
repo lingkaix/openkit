@@ -25,6 +25,7 @@ import {
   loadWorkspaceResourceCatalog,
   materializeCatalogTree,
   projectEffectiveWorkspaceMcpCatalog,
+  replaceWorkspaceEffectiveMcpCatalog,
   selectWorkspaceMcpVersion,
   setWorkspaceSkillPin,
   submitWorkspaceSkillCandidate,
@@ -126,7 +127,10 @@ describe('workspace resource catalog', () => {
     }
   });
 
-  it('rejects the reserved built-in openkit-generative catalog id', () => {
+  it.each([
+    'openkit-generative',
+    'openkit-repository',
+  ])('rejects the reserved built-in %s catalog id', (id) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-reserved-'));
     try {
       expect(() =>
@@ -136,10 +140,41 @@ describe('workspace resource catalog', () => {
           declaration: { args: ['fixtures/echo.mjs'], command: 'node', kind: 'stdio' },
           displayName: 'Generative',
           expectedRevision: 0,
-          id: 'openkit-generative',
+          id,
           workspaceId: 'ws_demo',
         })
       ).toThrow(CatalogForbiddenError);
+      expect(() =>
+        replaceWorkspaceEffectiveMcpCatalog({
+          dataRoot,
+          workspaceId: 'ws_demo',
+          catalog: {
+            schemaVersion: 1,
+            servers: [
+              {
+                id,
+                enabled: true,
+                allowedTools: ['echo'],
+                deniedTools: [],
+                approvalRequiredTools: [],
+                credentialBindings: [],
+                pinnedSchemaSnapshotId: null,
+                schemaPolicy: 'tracking',
+                timeoutMs: 1000,
+                transport: {
+                  kind: 'stdio',
+                  command: 'node',
+                  args: [],
+                  cwd: null,
+                  environment: {},
+                  environmentValues: {},
+                },
+              },
+            ],
+          },
+        })
+      ).toThrow(CatalogForbiddenError);
+      expect(loadWorkspaceResourceCatalog(dataRoot, 'ws_demo').mcp.entries).toEqual([]);
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
     }

@@ -19,6 +19,12 @@ NanoCore derives private AEP and Context input paths from the admitted AgentSess
 
 Current OpenAI flagship API and Codex subscription profiles are available as opt-in [provider templates](./data-templates/config/providers/README.md#current-openai-flagships), with official metadata overlays and exact GPT-6 routing instructions.
 
+## Selected Repository Worker Tools
+
+Codex manifests may explicitly select `mcp: [{ id: "openkit-repository" }]` to expose `repository_push_request_approval` and `repository_push_execute` over the existing authenticated MCP relay. The built-in is not automatically supplied and its catalog identity is reserved. Both tools require a UUID `requestId` and a repository `resourceId`; approval requests also supply `sourceRef`, `targetBranch`, and `commitIds`, while execution supplies `approvalRequestId`. Workspace, Thread, Turn, AgentSession, package, and actor authority come from the authenticated package and current server authority.
+
+The source commit must already exist in the linked NanoCore repository through the existing host review/apply workflow. Human approval uses the existing Worker stop, cleanup, and checkpoint decision path; an unproved stop requires inspection. Automatic approval leaves the Worker running. A fresh Worker may execute a prior exact grant under its current actor without changing the grant's original lineage. The host push executor retains repository policy, review linkage, Vault, remote, and lease guards.
+
 ## Runtime
 
 - `nanocore` admits governed worker sessions only through the configured NanoHost RuntimeTarget and its current native HTTP/2 connection generation.

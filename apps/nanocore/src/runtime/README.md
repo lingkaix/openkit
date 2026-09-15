@@ -41,6 +41,8 @@ After proved whole-Sandbox writer cleanup, `turn-executor-factory.ts` retires st
 - `worker-mcp-gateway.ts` rejects entire upstream results containing resolved credential values or the URL-encoded query values it sends, before returning them to a Worker.
 - MCP stdio sessions use Node's detached process groups; a private supervisor IPC channel reaps credential-bearing descendants if NanoCore dies, while explicit cleanup proves process-group absence before releasing session ownership.
 
+`openkit-repository-mcp.ts` owns the two fixed repository MCP descriptors and dispatches to the existing in-process owners in `../repository-routes.ts`. The AEP carries explicit selected supply and its digest; current effective manifest selection and current `repo.push` authority are rechecked at the relay boundary. Domain failures return matching JSON text and structured content with `isError: true`; only unavailable host source commits use `git_push_source_unavailable` and review/apply guidance. Other inspection failures remain bounded repository errors.
+
 ## Verification
 
 Run the nearest focused tests first, followed by NanoCore typecheck, lint, build, and the complete NanoCore test suite for runtime behavior changes. Governed-worker changes should also run worker-control, recovery, scheduler, and Server route coverage relevant to the changed lifecycle.
