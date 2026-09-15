@@ -2064,6 +2064,36 @@ test('the bundled CLI rejects obsolete os-keychain Vault responses', async () =>
   assert.equal(JSON.parse(result.stdout).error.code, 'incompatible_contract');
 });
 
+for (const [operation, required] of [
+  ['vault.secret-create', { workspaceId: 'ws_demo', secretKind: 'github-token' }],
+  ['vault.secret-rotate', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
+]) {
+  test(`bundled ${operation} rejects malformed secret input without disclosure or transport`, async () => {
+    const material = 'review-fake-canary';
+    const result = await runCli(
+      ['ops', 'call', operation, '--input', '-'],
+      { OPENKIT_NANOCORE_URL: 'http://nanocore.example', OPENKIT_NANOCORE_TOKEN: 'okt_test_admin' },
+      JSON.stringify({ ...required, material, [material]: true }),
+      [
+        dataModule(`
+        globalThis.fetch = async () => {
+          process.stderr.write('UNEXPECTED_TRANSPORT');
+          throw new Error('Validation must reject before transport.');
+        };
+      `),
+      ]
+    );
+    assert.equal(result.code, 2);
+    assert.ok(!result.stdout.includes(material), 'stdout must not contain secret material');
+    assert.ok(!result.stderr.includes(material), 'stderr must not contain secret material');
+    assert.equal(result.stderr, '', 'invalid input must not invoke transport');
+    assert.deepEqual(JSON.parse(result.stdout).error, {
+      code: 'invalid_input',
+      message: 'Operation input failed schema validation.',
+    });
+  });
+}
+
 test('bundled Vault secret writes keep material in stdin bodies and redact upstream failures', async () => {
   const material = 'generic-vault-canary-do-not-print';
   for (const [operation, input, suffix] of [
