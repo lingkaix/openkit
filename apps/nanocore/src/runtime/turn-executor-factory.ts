@@ -149,8 +149,10 @@ export interface CreateConfiguredTurnExecutorOptions {
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
 export interface ConfiguredWorkerLifecycleRuntime {
-  /** Binds one dispatch-time private Turn credential pair to the existing semantic gateway. */
-  readonly acceptNanoHostHarnessCommand: (command: NanoHostHarnessCommand) => void;
+  /** Binds private Turn route tokens and returns the command with ephemeral Vault values. */
+  readonly acceptNanoHostHarnessCommand: (
+    command: NanoHostHarnessCommand
+  ) => NanoHostHarnessCommand;
   /** Advances one exact live producer after its durable Harness result settles. */
   readonly acceptNanoHostHarnessResult: (result: NanoHostHarnessResult) => void;
   /** Cleans one exact durable backend identity during restart or online recovery. */
@@ -329,6 +331,8 @@ function createNanoHostWorkerLifecycleRuntime(
 interface NanoHostBackendTurnSession {
   /** Verified Turn input bytes awaiting exact session admission; never restored or replayed. */
   pendingImports: NanoHostContextPackageImport[];
+  /** Live Vault material consumed once at private dispatch; never persisted or restored. */
+  runtimeEnvironment: Record<string, string> | null;
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly evidence: WorkerGovernanceEvidenceRecord[];
   readonly agentSessionCompatibilityKey: string;
@@ -433,8 +437,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly workerControlGateway?: WorkerControlGateway
   ) {}
 
-  /** Registers one dispatched Turn's exact live route tokens with the existing gateway. */
-  public acceptHarnessCommand(command: NanoHostHarnessCommand): void {
+  /** Binds dispatched Turn route tokens and adds Vault values only to private wire bytes. */
+  public acceptHarnessCommand(command: NanoHostHarnessCommand): NanoHostHarnessCommand {
     const bindingId = command.body.agentSessionRuntimeBindingId;
     const session = [...this.sessions.values()].find(
       (candidate) =>
@@ -458,6 +462,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost dispatched Turn has no live producer session.');
       }
       try {
+        if (session.runtimeEnvironment === null)
+          throw new Error('NanoHost Turn credential material is unavailable.');
         const leaseId = command.body.leaseId;
         const workerControlToken = command.body.workerControlToken;
         const workerInferenceToken = command.body.inferenceToken;
@@ -514,6 +520,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost dispatched operation has no exact Harness binding.');
     }
     pending.operationId = command.operationId;
+    if (command.operation === 'turn.start' && session) {
+      const runtimeEnvironment = session.runtimeEnvironment!;
+      session.runtimeEnvironment = null;
+      return { ...command, body: { ...command.body, runtimeEnvironment } };
+    }
+    return command;
   }
 
   /** Resolves only the exact live producer after durable result settlement. */
@@ -813,6 +825,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       leaseId,
       nativeSessionReusable: false,
       pendingImports: [],
+      runtimeEnvironment: null,
       pendingHarnessOperation: null,
       turnStopSettlement: null,
       retainedStagingPaths: [],
@@ -1830,7 +1843,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       let sandboxResult: Record<string, unknown>;
       try {
         sandboxResult = await this.effect(identity, leaseId, 'sandbox.create', {
-          environment: runtimeEnvironment,
+          environment: {},
           imageDigest,
           leaseId,
           policy: projectOpenShellWorkerPolicy({
@@ -1958,6 +1971,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       leaseId,
       nativeSessionReusable: false,
       pendingImports: [],
+      runtimeEnvironment,
       pendingHarnessOperation: null,
       turnStopSettlement: null,
       retainedStagingPaths: [],
@@ -3102,7 +3116,7 @@ function stableNanoHostEffectJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
-/** Validates and projects runtime environment credentials into one private Sandbox effect. */
+/** Validates runtime environment credentials retained only until exact private Turn dispatch. */
 function nanoHostRuntimeEnvironment(
   credentials: readonly WorkerGovernanceRuntimeEnvCredential[]
 ): Record<string, string> {
@@ -3113,6 +3127,7 @@ function nanoHostRuntimeEnvironment(
   for (const credential of credentials) {
     if (
       !NANO_HOST_RUNTIME_ENV_NAME_PATTERN.test(credential.targetEnvVarName) ||
+      credential.credentialValue.length === 0 ||
       credential.credentialValue.includes('\0') ||
       Buffer.byteLength(credential.credentialValue) > NANO_HOST_RUNTIME_ENV_VALUE_MAX_BYTES ||
       credential.targetEnvVarName in environment

@@ -1499,9 +1499,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? [...context.workspaceRoots, preparedWorkerContext.preparedContextPackage.workspaceRoot]
           : context.workspaceRoots,
       });
-      for (const receipt of credentialReceipts) {
-        createVaultInjectionReceipt(this.coreDb!, receipt);
-      }
       if (backendLifecycle.session) {
         backendLifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
           fromState: 'materializing',
@@ -1583,6 +1580,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       await this.backend.launch(materialization);
+      for (const receipt of credentialReceipts) {
+        createVaultInjectionReceipt(this.coreDb!, { ...receipt, injectedAt: this.now() });
+      }
+
       if (this.awaitWorkerCompletion && completionLeaseId) {
         workerFinalStatus = await this.awaitWorkerCompletion(environmentPackage, completionLeaseId);
         closeoutAt = workerFinalStatus.acceptedAt;

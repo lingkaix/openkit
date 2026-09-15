@@ -48,3 +48,7 @@ Missing root evidence is `failed`; missing, contradictory, or changing reachable
 - `src/adapters/`: pinned Codex, OpenCode, and Pi adapters with adapter-local tests.
 - `src/fourth-runtime.fixture.test.ts`: proof that one fixture registry entry crosses the unchanged shared supervisor.
 - `snapshots/codex-0.153.4/`: minimized primary-exec and rollout JSONL fixtures pinned to Codex `rust-v0.153.4`.
+
+## Vault Runtime Environment
+
+Private `turn.start.runtimeEnvironment` supplies only Core-resolved values for the current AEP runtime-env declarations. The shared supervisor requires exact name agreement and bounded, non-empty values, rejects control/configuration targets, and verifies the adapter preserves every injected value before native spawn. Declared credentials such as `GITHUB_TOKEN` reach Codex relay Turns as well as direct-provider Turns. The Harness never falls back to its parent environment for these values; rotation and removal affect the next child without changing a running process or sibling session. All injected values join the existing exact-value diagnostic, assistant-output and Git-publication redaction checks.

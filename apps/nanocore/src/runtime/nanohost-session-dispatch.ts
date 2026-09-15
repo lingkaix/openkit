@@ -305,7 +305,9 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   /** Dispatcher shared with effect producers and native transport routes. */
   readonly dispatch: NanoHostSessionDispatch;
   /** Live runtime owner that binds dispatch-time Turn credentials before carriage. */
-  readonly harnessCommandDispatched?: ((command: NanoHostHarnessCommand) => void) | undefined;
+  readonly harnessCommandDispatched?:
+    | ((command: NanoHostHarnessCommand) => NanoHostHarnessCommand)
+    | undefined;
   /** Live runtime owner that advances the exact settled Harness operation. */
   readonly harnessResultSettled?: ((result: NanoHostHarnessResult) => void) | undefined;
   /** Configured target identity and deployment checked against durable allocation. */
@@ -1033,11 +1035,11 @@ export function registerNanoHostSessionSemanticRoutes(
           if (Object.keys(value).length !== 1 || value.schemaVersion !== 2) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
-          const command = dispatchNanoHostHarnessOperation(input.coreDb, {
+          let command = dispatchNanoHostHarnessOperation(input.coreDb, {
             sandboxIntegrationBindingRef,
           });
           if (command) {
-            input.harnessCommandDispatched?.(command);
+            command = input.harnessCommandDispatched?.(command) ?? command;
           }
           return command ? context.json(command, 200) : context.body(null, 204);
         }

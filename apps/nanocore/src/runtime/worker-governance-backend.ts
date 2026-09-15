@@ -566,7 +566,7 @@ export interface WorkerGovernanceRuntimeFileCredential {
 
 /** Backend-private runtime environment credential material used only during materialization. */
 export interface WorkerGovernanceRuntimeEnvCredential {
-  /** Secret environment variable value passed directly to sandbox creation. */
+  /** Secret environment variable value delivered privately to the current Turn child. */
   credentialValue: string;
   /** Worker-local environment variable name that receives the secret value. */
   targetEnvVarName: string;
