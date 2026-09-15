@@ -9,7 +9,7 @@ import {
   type WorkerSandboxAccess,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -17,6 +17,7 @@ import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
@@ -945,6 +946,107 @@ describe('agent environment package resolver', () => {
       expect(runtimeEnvCredentials).toEqual(['workspace_github_secret']);
       expect(JSON.stringify(resolved)).not.toContain('workspace_github_secret');
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'scope',
+    'version',
+    'health',
+  ] as const)('rejects a publicly minted Worker GitHub grant on Vault %s disagreement before Turn injection', async (failure) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-aep-public-github-${failure}-`));
+    const coreDb = openCoreDb(dataRoot);
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    const runtimeEnvCredentials: string[] = [];
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 27) });
+    const app = createApp({ coreDb, dataRoot, vaultUnlockState });
+    const post = (path: string, body: unknown) =>
+      app.request(`/api/app/workspaces/ws_demo/vault/${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    try {
+      const secretResponse = await post('secrets', {
+        secretKind: 'github-token',
+        material: 'public-worker-canary',
+      });
+      expect(secretResponse.status).toBe(200);
+      const reference = await secretResponse.json();
+      const grantResponse = await post('grants', {
+        referenceId: reference.referenceId,
+        injectionPath: 'runtime-env',
+      });
+      expect(grantResponse.status).toBe(200);
+      const grant = await grantResponse.json();
+      if (failure === 'scope') {
+        const backend = vaultUnlockState.backend();
+        const listReferences = backend.listReferences.bind(backend);
+        vi.spyOn(backend, 'listReferences').mockImplementation((scope) =>
+          listReferences(scope).map((entry) =>
+            entry.referenceId === reference.referenceId
+              ? { ...entry, workspaceId: 'ws_other' }
+              : entry
+          )
+        );
+      } else if (failure === 'version') {
+        vaultUnlockState.backend().rotate({
+          referenceId: reference.referenceId,
+          material: 'unprojected-worker-version',
+        });
+      } else {
+        vaultUnlockState.lock();
+      }
+      const expectedError = {
+        scope: 'Vault reference requires inspection before worker credential injection.',
+        version: 'Vault reference requires inspection before worker credential injection.',
+        health: 'Vault backend is unavailable for worker credential injection.',
+      }[failure];
+      expect(() =>
+        resolveAgentEnvironmentPackage({
+          agentSetup: createTestSetup({
+            credentialDeclarations: [
+              {
+                id: 'github_token',
+                requirementId: 'github-token',
+                targetEnvVarName: 'GITHUB_TOKEN',
+                vaultGrantId: grant.grantId,
+                visibility: 'runtime-env',
+              },
+            ],
+            requiredCapabilities: [],
+          }),
+          agentSessionId: 'session_public_github',
+          backend: { kind: 'openshell' },
+          coreDb,
+          createdAt: '2026-07-18T00:00:00.000Z',
+          requestId: `req_public_github_${failure}`,
+          runtimeEnvCredentialSink: (credential) =>
+            runtimeEnvCredentials.push(credential.credentialValue),
+          turn: createTurnFixture(`Reject ${failure} Worker grant`),
+          triggerActor: USER_TRIGGER_ACTOR,
+          vaultBackend: () => vaultUnlockState.backend(),
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        })
+      ).toThrow(expectedError);
+      expect(runtimeEnvCredentials).toEqual([]);
+      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
       coreDb.sqlite.close();
     }
   });
