@@ -5970,6 +5970,239 @@ describe('nanocore server', () => {
     }
   });
 
+  it('clears a terminal Task checkpoint that has no scheduler lease', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const threadId = 'th_task_stale_boot';
+    const turnId = 'turn_stale_boot_no_lease';
+    const requestId = '0190f4c8-0000-7000-8000-000000000489';
+    const requestInputHash = 'sha256:stale-boot-no-lease';
+    const completedAt = '2026-09-15T13:38:10.000Z';
+    store.createThread('ws_demo', 'Stale boot Task thread', threadId);
+    const turn = store.createTurn(
+      'ws_demo',
+      threadId,
+      'Stale boot Task Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { turnId }
+    );
+    store.updateTurn(turn.id, {
+      completedAt,
+      error: {
+        code: 'scheduler_admission_deferred',
+        message: 'Turn was queued but not dispatched.',
+      },
+      status: 'failed',
+    });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash,
+        stage: 'failed',
+        stopReason: 'error',
+        threadId,
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      });
+      expect(checkpoint.workerSessionId).toBeNull();
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        })
+      ).resolves.toBe('complete');
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('clears a terminal Task checkpoint whose failed lease session does not match a null worker session', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const threadId = 'th_task_stale_failed_lease';
+    const turnId = 'turn_stale_boot_failed_lease';
+    const requestId = '0190f4c8-0000-7000-8000-000000000490';
+    const requestInputHash = 'sha256:stale-boot-failed-lease';
+    const completedAt = '2026-09-15T11:29:35.000Z';
+    store.createThread('ws_demo', 'Stale failed-lease Task thread', threadId);
+    const turn = store.createTurn(
+      'ws_demo',
+      threadId,
+      'Stale failed-lease Task Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { turnId }
+    );
+    store.updateTurn(turn.id, {
+      completedAt,
+      error: { code: 'turn_start_failed', message: 'Worker start failed.' },
+      status: 'failed',
+    });
+    createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+      priorityClass: 'interactive',
+      profileRef: 'agent_codex_host',
+      queueEntryId: `queue_${turn.id}`,
+      requestId,
+      requestedAgentId: 'agent_codex_host',
+      requiredPoolConstraints: ['openshell.local'],
+      threadId,
+      turnId: turn.id,
+      turnInput: 'Stale failed-lease Task Turn',
+      workspaceId: 'ws_demo',
+    });
+    createSchedulerPlacementPlan(coreDb, {
+      degradedOptionalFeatures: [],
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      planId: `plan_${turn.id}`,
+      plannedLeaseDurationMs: 900_000,
+      policyDecisionIds: [],
+      queueEntryId: `queue_${turn.id}`,
+      schedulerEpoch: 1,
+      selectedPoolId: 'pool_local',
+      selectedTargetId: 'target_local',
+    });
+    createSchedulerSessionLease(coreDb, {
+      agentSessionId: 'as_stale_failed_lease',
+      expiresAt: '2099-01-01T01:00:00.000Z',
+      heartbeatDeadline: '2099-01-01T00:10:00.000Z',
+      leaseId: `lease_${turn.id}`,
+      packageSnapshotId: `aepsnap_${turn.id}`,
+      planId: `plan_${turn.id}`,
+      sandboxTokenBindingRef: `lease-binding:lease_${turn.id}`,
+      startupDeadline: '2099-01-01T00:05:00.000Z',
+    });
+    coreDb.sqlite
+      .prepare(
+        `UPDATE scheduler_session_leases
+           SET status = ?, release_reason = ?, recovery_state = ?, recovery_deadline = ?
+           WHERE lease_id = ?`
+      )
+      .run('failed', 'turn-start-failed', 'needs-evidence', null, `lease_${turn.id}`);
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash,
+        stage: 'failed',
+        stopReason: 'error',
+        threadId,
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      });
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        })
+      ).resolves.toBe('complete');
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a preparing Task checkpoint without a scheduler lease fail-closed', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const threadId = 'th_task_live_boot';
+    const turnId = 'turn_live_boot_no_lease';
+    const requestId = '0190f4c8-0000-7000-8000-000000000491';
+    store.createThread('ws_demo', 'Live boot Task thread', threadId);
+    const turn = store.createTurn(
+      'ws_demo',
+      threadId,
+      'Live boot Task Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { turnId }
+    );
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash: 'sha256:live-boot-no-lease',
+        stage: 'preparing',
+        threadId,
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      });
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        })
+      ).rejects.toMatchObject({
+        code: 'recovery_required',
+        message: 'The boot Task checkpoint has no exact scheduler lease.',
+      });
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a failed Task checkpoint fail-closed when its product Turn is interrupted', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const threadId = 'th_task_interrupted_boot';
+    const turnId = 'turn_interrupted_boot_no_lease';
+    const requestId = '0190f4c8-0000-7000-8000-000000000492';
+    store.createThread('ws_demo', 'Interrupted boot Task thread', threadId);
+    const turn = store.createTurn(
+      'ws_demo',
+      threadId,
+      'Interrupted boot Task Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { turnId }
+    );
+    store.updateTurn(turn.id, { status: 'interrupted' });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash: 'sha256:interrupted-boot-no-lease',
+        stage: 'failed',
+        stopReason: 'error',
+        threadId,
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      });
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        })
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('rejects Task Mode in the Quick Chat workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();

@@ -101,7 +101,7 @@ import {
   recoverWorkerCheckpointStopReason,
   resolveInterruptedWorkerRetryDecision,
 } from './runtime/worker-recovery.js';
-import { workerTurnStageForStopReason } from './runtime/worker-stage.js';
+import { isTerminalWorkerTurnStage, workerTurnStageForStopReason } from './runtime/worker-stage.js';
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
@@ -815,7 +815,7 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
   });
   const lease = leases[0];
   if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
-    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+    return clearStaleDirectTaskCheckpointWithoutExactLease(input, leases);
   }
   let admission: ReturnType<typeof requireSchedulerSessionLeaseAdmissionContext>;
   try {
@@ -979,6 +979,106 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
   }
   return 'complete';
+}
+
+/**
+ * Clears one terminal Task checkpoint that no longer has a matching scheduler lease.
+ *
+ * A live or contradictory owner tuple stays fail-closed. Cancelled admissions and
+ * turn-start failures persist a failed checkpoint before a lease exists; boot must
+ * reclaim those rows so they cannot occupy later Task admission.
+ *
+ * @param input Exact Core, product, Workspace, and checkpoint owners.
+ * @param leases Scheduler leases for the checkpoint Turn, which are already not an exact match.
+ * @returns `complete` after terminal checkpoint cleanup.
+ * @throws TurnStartValidationError when the leftover cannot be proved terminal and unleased.
+ */
+async function clearStaleDirectTaskCheckpointWithoutExactLease(
+  input: {
+    readonly coreDb: CoreDb;
+    readonly store: FsStore;
+    readonly workspaceDb: WorkspaceDb;
+    readonly checkpoint: WorkerCheckpointRecord;
+  },
+  leases: ReturnType<typeof listSchedulerSessionLeasesForTurn>
+): Promise<'complete'> {
+  const { checkpoint } = input;
+  if (!isTerminalWorkerTurnStage(checkpoint.stage)) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  }
+  if (leases.some((candidate) => !isTerminalSchedulerLeaseStatus(candidate.status))) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  }
+  if (leases.length > 1) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  }
+  const leftoverLease = leases[0];
+  if (
+    leftoverLease &&
+    checkpoint.workerSessionId !== null &&
+    leftoverLease.agentSessionId !== checkpoint.workerSessionId
+  ) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  }
+  if (checkpoint.goalId !== null || checkpoint.taskId !== null || checkpoint.iteration !== 0) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint contradicts its command identity.');
+  }
+
+  let turn: ReturnType<FsStore['getTurn']> | null = null;
+  try {
+    turn = input.store.getTurn(checkpoint.workspaceId, checkpoint.threadId, checkpoint.turnId);
+  } catch {
+    turn = null;
+  }
+  if (turn) {
+    if (!isTerminalProductTurnStatusForStaleCheckpoint(turn.status)) {
+      throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+    }
+    if (
+      checkpoint.workerSessionId !== null &&
+      turn.agentSessionId &&
+      turn.agentSessionId !== checkpoint.workerSessionId
+    ) {
+      throw directTaskModeRecoveryError(
+        'The boot Task checkpoint has no exact AgentSession owner.'
+      );
+    }
+  } else if (checkpoint.workerSessionId !== null) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  }
+
+  if (
+    !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
+      workspaceId: checkpoint.workspaceId,
+      threadId: checkpoint.threadId,
+      turnId: checkpoint.turnId,
+    }))
+  ) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
+  }
+  return 'complete';
+}
+
+/**
+ * Checks whether a scheduler lease status can no longer occupy live worker recovery.
+ *
+ * @param status Durable scheduler lease status.
+ * @returns True for released, lost, or failed leases.
+ */
+function isTerminalSchedulerLeaseStatus(status: string): boolean {
+  return status === 'released' || status === 'lost' || status === 'failed';
+}
+
+/**
+ * Checks whether a product Turn is already closed enough to discard a leftover checkpoint.
+ *
+ * Interrupted Turns remain fail-closed because restart recovery may still own them.
+ *
+ * @param status Product Turn status.
+ * @returns True for completed, failed, or cancelled Turns.
+ */
+function isTerminalProductTurnStatusForStaleCheckpoint(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
 /**
