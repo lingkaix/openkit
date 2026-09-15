@@ -23,9 +23,9 @@ Source: engineer reply in this session: “Allow the bounded per-Turn delivery c
 
 ## Implementation Summary
 
-The accepted correction delivers process-local values at exact private dispatch after durable command recording, validates declaration/name/value agreement at the Harness/native boundary, verifies that the adapter preserves every value, and delays receipts until native-start acknowledgement. Sandbox creation no longer receives Vault environment values. Rotation and removal apply to fresh per-Turn children on reused Harnesses. Restored producers contain no credential material and cannot replay it. No generic exec, new durable state, dependency or NanoHost binary change was needed.
+The accepted correction delivers process-local values at exact private dispatch after durable command recording, validates declaration/name/value agreement at the Harness/native boundary, verifies that the adapter preserves every value, and delays receipts until native-start acknowledgement, using that acknowledgement time for `injectedAt`. Sandbox creation no longer receives Vault environment values. Rotation and removal apply to fresh per-Turn children on reused Harnesses. Restored producers contain no credential material and cannot replay it. No generic exec, new durable state, dependency or NanoHost binary change was needed.
 
-The primary inspected the actual source and test diffs for scope, confidentiality, lifecycle, receipt timing and simplicity. The checkout contains no registered `.codex/agents/` capabilities; independent PR approval remains pending and is not claimed by this producer review. The engineer accepted the bounded transport-owner change in Intent Epoch 2. All root Completion Gate questions are answered No within this implementation and focused verification scope, with independent merge acceptance reserved to PR review.
+The primary inspected the actual source and test diffs for scope, confidentiality, lifecycle, receipt timing and simplicity. The checkout contains no registered `.codex/agents/` capabilities; independent PR approval remains pending and is not claimed by this producer review. The engineer accepted the bounded transport-owner change in Intent Epoch 2. Producer inspection found no remaining implementation or focused-check finding; independent acceptance remains reserved to PR review.
 
 ## Verification Evidence
 

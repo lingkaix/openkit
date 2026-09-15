@@ -5599,7 +5599,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
     });
-    const timestamp = '2026-07-05T00:00:00.000Z';
+    let timestamp = '2026-07-05T00:00:00.000Z';
 
     applyMigrations(coreDb);
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 10) });
@@ -5647,6 +5647,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         { env: environment, encoding: 'utf8' }
       );
       expect(observed).toBe('true');
+      timestamp = '2026-07-05T00:00:10.000Z';
       return nativeLaunch();
     });
     const executor = new WorkerGovernanceTurnExecutor({
@@ -5701,6 +5702,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         expect.objectContaining({
           agentSessionId: 'as_governance_runtime_env_1',
           grantId: 'grant_runtime_env',
+          injectedAt: '2026-07-05T00:00:10.000Z',
         }),
       ]);
       expect(JSON.stringify(backend.lastPackage)).not.toContain('runtime-env-receipt-canary');

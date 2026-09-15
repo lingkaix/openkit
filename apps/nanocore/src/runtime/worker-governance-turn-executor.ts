@@ -1581,7 +1581,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       await this.backend.launch(materialization);
       for (const receipt of credentialReceipts) {
-        createVaultInjectionReceipt(this.coreDb!, receipt);
+        createVaultInjectionReceipt(this.coreDb!, { ...receipt, injectedAt: this.now() });
       }
 
       if (this.awaitWorkerCompletion && completionLeaseId) {
