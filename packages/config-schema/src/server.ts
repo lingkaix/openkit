@@ -229,6 +229,21 @@ export const OpenKitConfigSchema = z
     auth: OpenKitAuthConfigSchema.optional(),
     defaults: OpenKitConfigDefaultsSchema.optional(),
     mode: CoreModeSchema.optional(),
+    policy: z
+      .object({
+        workspaceApprovalModes: z
+          .record(
+            z.string().min(1),
+            z
+              .object({
+                'repo.push': z.enum(['require_human_approval', 'auto_allow']).optional(),
+              })
+              .strict()
+          )
+          .optional(),
+      })
+      .strict()
+      .optional(),
     nanohost: OpenKitNanoHostConfigSchema.optional(),
     schemaVersion: z.literal(1).optional(),
     server: OpenKitServerRuntimeSchema.optional(),
