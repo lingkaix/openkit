@@ -284,7 +284,7 @@ function recordWorkerRetryLease(
     readonly agentSessionId: string;
     readonly recoveryState: 'awaiting-reconnect' | null;
     readonly releaseReason: string | null;
-    readonly status: 'active' | 'released';
+    readonly status: 'active' | 'released' | 'failed';
     readonly threadId: string;
     readonly turnId: string;
   }
@@ -5970,13 +5970,16 @@ describe('nanocore server', () => {
     }
   });
 
-  it('clears a terminal Task checkpoint that has no scheduler lease', async () => {
+  it.each([
+    'failed',
+    'completed',
+    'cancelled',
+  ] as const)('clears a terminal Task checkpoint with no scheduler lease when the product Turn is %s', async (status) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = 'th_task_stale_boot';
-    const turnId = 'turn_stale_boot_no_lease';
-    const requestId = '0190f4c8-0000-7000-8000-000000000489';
-    const requestInputHash = 'sha256:stale-boot-no-lease';
+    const threadId = `th_task_stale_boot_${status}`;
+    const turnId = `turn_stale_boot_no_lease_${status}`;
+    const requestId = `0190f4c8-0000-7000-8000-00000000048${status === 'failed' ? '9' : status === 'completed' ? 'a' : 'b'}`;
     const completedAt = '2026-09-15T13:38:10.000Z';
     store.createThread('ws_demo', 'Stale boot Task thread', threadId);
     const turn = store.createTurn(
@@ -5989,20 +5992,25 @@ describe('nanocore server', () => {
     );
     store.updateTurn(turn.id, {
       completedAt,
-      error: {
-        code: 'scheduler_admission_deferred',
-        message: 'Turn was queued but not dispatched.',
-      },
-      status: 'failed',
+      ...(status === 'failed'
+        ? {
+            error: {
+              code: 'scheduler_admission_deferred',
+              message: 'Turn was queued but not dispatched.',
+            },
+          }
+        : {}),
+      status,
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
-        requestInputHash,
-        stage: 'failed',
-        stopReason: 'error',
+        requestInputHash: `sha256:stale-boot-no-lease-${status}`,
+        stage: status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'failed',
+        stopReason:
+          status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'error',
         threadId,
         turnId: turn.id,
         workspaceId: 'ws_demo',
@@ -6045,50 +6053,14 @@ describe('nanocore server', () => {
       error: { code: 'turn_start_failed', message: 'Worker start failed.' },
       status: 'failed',
     });
-    createSchedulerAdmissionEntry(coreDb, {
-      triggerActor: { kind: 'user', id: LOCAL_USER_ID },
-      priorityClass: 'interactive',
-      profileRef: 'agent_codex_host',
-      queueEntryId: `queue_${turn.id}`,
-      requestId,
-      requestedAgentId: 'agent_codex_host',
-      requiredPoolConstraints: ['openshell.local'],
+    recordWorkerRetryLease(coreDb, {
+      agentSessionId: 'as_stale_failed_lease',
+      recoveryState: null,
+      releaseReason: 'turn-start-failed',
+      status: 'failed',
       threadId,
       turnId: turn.id,
-      turnInput: 'Stale failed-lease Task Turn',
-      workspaceId: 'ws_demo',
     });
-    createSchedulerPlacementPlan(coreDb, {
-      degradedOptionalFeatures: [],
-      expectedControlMode: 'poll',
-      expectedDataPlaneMode: 'openshell-files',
-      heartbeatIntervalMs: 10_000,
-      heartbeatTimeoutMs: 30_000,
-      planId: `plan_${turn.id}`,
-      plannedLeaseDurationMs: 900_000,
-      policyDecisionIds: [],
-      queueEntryId: `queue_${turn.id}`,
-      schedulerEpoch: 1,
-      selectedPoolId: 'pool_local',
-      selectedTargetId: 'target_local',
-    });
-    createSchedulerSessionLease(coreDb, {
-      agentSessionId: 'as_stale_failed_lease',
-      expiresAt: '2099-01-01T01:00:00.000Z',
-      heartbeatDeadline: '2099-01-01T00:10:00.000Z',
-      leaseId: `lease_${turn.id}`,
-      packageSnapshotId: `aepsnap_${turn.id}`,
-      planId: `plan_${turn.id}`,
-      sandboxTokenBindingRef: `lease-binding:lease_${turn.id}`,
-      startupDeadline: '2099-01-01T00:05:00.000Z',
-    });
-    coreDb.sqlite
-      .prepare(
-        `UPDATE scheduler_session_leases
-           SET status = ?, release_reason = ?, recovery_state = ?, recovery_deadline = ?
-           WHERE lease_id = ?`
-      )
-      .run('failed', 'turn-start-failed', 'needs-evidence', null, `lease_${turn.id}`);
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
@@ -6195,8 +6167,105 @@ describe('nanocore server', () => {
           store,
           workspaceDb,
         })
-      ).rejects.toMatchObject({ code: 'recovery_required' });
+      ).rejects.toMatchObject({
+        code: 'recovery_required',
+        message: 'The boot Task checkpoint still has a live product Turn.',
+      });
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a failed Task checkpoint fail-closed when a live scheduler lease remains', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const threadId = 'th_task_live_lease_boot';
+    const turnId = 'turn_live_lease_boot';
+    const requestId = '0190f4c8-0000-7000-8000-000000000493';
+    store.createThread('ws_demo', 'Live-lease boot Task thread', threadId);
+    const turn = store.createTurn(
+      'ws_demo',
+      threadId,
+      'Live-lease boot Task Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { turnId }
+    );
+    store.updateTurn(turn.id, {
+      completedAt: '2026-09-15T13:38:10.000Z',
+      error: { code: 'worker_failed', message: 'Worker failed.' },
+      status: 'failed',
+    });
+    recordWorkerRetryLease(coreDb, {
+      agentSessionId: 'as_live_lease_boot',
+      recoveryState: null,
+      releaseReason: null,
+      status: 'active',
+      threadId,
+      turnId: turn.id,
+    });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash: 'sha256:live-lease-boot',
+        stage: 'failed',
+        stopReason: 'error',
+        threadId,
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      });
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        })
+      ).rejects.toMatchObject({
+        code: 'recovery_required',
+        message: 'The boot Task checkpoint still has a live scheduler lease.',
+      });
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a failed Task checkpoint fail-closed when its product Turn is missing', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const threadId = 'th_task_missing_turn_boot';
+    const turnId = 'turn_missing_turn_boot';
+    store.createThread('ws_demo', 'Missing-turn boot Task thread', threadId);
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId: '0190f4c8-0000-7000-8000-000000000494',
+        requestInputHash: 'sha256:missing-turn-boot',
+        stage: 'failed',
+        stopReason: 'error',
+        threadId,
+        turnId,
+        workspaceId: 'ws_demo',
+      });
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        })
+      ).rejects.toMatchObject({
+        code: 'recovery_required',
+        message: 'The Task checkpoint is missing its worker Turn.',
+      });
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turnId)).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

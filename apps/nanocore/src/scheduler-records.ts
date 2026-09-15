@@ -3436,7 +3436,7 @@ function throwReconnectRejected(
  * @param status Lease status.
  * @returns True when the lease cannot transition again.
  */
-function isTerminalLeaseStatus(status: SchedulerSessionLeaseStatus): boolean {
+export function isTerminalLeaseStatus(status: SchedulerSessionLeaseStatus): boolean {
   return status === 'released' || status === 'lost' || status === 'failed';
 }
 

@@ -15,7 +15,7 @@ import {
   type TaskModeEvidence,
   type WorkerEnvironmentStorageChoice,
 } from '@openkit/app-api-schemas';
-import { type ActorRef, type StopReason, TurnSchema } from '@openkit/protocol';
+import { type ActorRef, type StopReason, TurnSchema, type TurnStatus } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
@@ -105,6 +105,7 @@ import { isTerminalWorkerTurnStage, workerTurnStageForStopReason } from './runti
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
+  isTerminalLeaseStatus,
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
   type SchedulerWorkerStorageChoice,
@@ -986,7 +987,8 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
  *
  * A live or contradictory owner tuple stays fail-closed. Cancelled admissions and
  * turn-start failures persist a failed checkpoint before a lease exists; boot must
- * reclaim those rows so they cannot occupy later Task admission.
+ * reclaim those rows so scheduler checkpoint recovery is not degraded by leftovers
+ * that have no live worker.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
  * @param leases Scheduler leases for the checkpoint Turn, which are already not an exact match.
@@ -1006,8 +1008,8 @@ async function clearStaleDirectTaskCheckpointWithoutExactLease(
   if (!isTerminalWorkerTurnStage(checkpoint.stage)) {
     throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
   }
-  if (leases.some((candidate) => !isTerminalSchedulerLeaseStatus(candidate.status))) {
-    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  if (leases.some((candidate) => !isTerminalLeaseStatus(candidate.status))) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint still has a live scheduler lease.');
   }
   if (leases.length > 1) {
     throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
@@ -1024,27 +1026,21 @@ async function clearStaleDirectTaskCheckpointWithoutExactLease(
     throw directTaskModeRecoveryError('The boot Task checkpoint contradicts its command identity.');
   }
 
-  let turn: ReturnType<FsStore['getTurn']> | null = null;
+  let turn: ReturnType<FsStore['getTurn']>;
   try {
     turn = input.store.getTurn(checkpoint.workspaceId, checkpoint.threadId, checkpoint.turnId);
   } catch {
-    turn = null;
+    throw directTaskModeRecoveryError('The Task checkpoint is missing its worker Turn.');
   }
-  if (turn) {
-    if (!isTerminalProductTurnStatusForStaleCheckpoint(turn.status)) {
-      throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
-    }
-    if (
-      checkpoint.workerSessionId !== null &&
-      turn.agentSessionId &&
-      turn.agentSessionId !== checkpoint.workerSessionId
-    ) {
-      throw directTaskModeRecoveryError(
-        'The boot Task checkpoint has no exact AgentSession owner.'
-      );
-    }
-  } else if (checkpoint.workerSessionId !== null) {
-    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  if (!isClosedProductTurnStatusForStaleCheckpoint(turn.status)) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint still has a live product Turn.');
+  }
+  if (
+    checkpoint.workerSessionId !== null &&
+    turn.agentSessionId &&
+    turn.agentSessionId !== checkpoint.workerSessionId
+  ) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact AgentSession owner.');
   }
 
   if (
@@ -1060,16 +1056,6 @@ async function clearStaleDirectTaskCheckpointWithoutExactLease(
 }
 
 /**
- * Checks whether a scheduler lease status can no longer occupy live worker recovery.
- *
- * @param status Durable scheduler lease status.
- * @returns True for released, lost, or failed leases.
- */
-function isTerminalSchedulerLeaseStatus(status: string): boolean {
-  return status === 'released' || status === 'lost' || status === 'failed';
-}
-
-/**
  * Checks whether a product Turn is already closed enough to discard a leftover checkpoint.
  *
  * Interrupted Turns remain fail-closed because restart recovery may still own them.
@@ -1077,7 +1063,7 @@ function isTerminalSchedulerLeaseStatus(status: string): boolean {
  * @param status Product Turn status.
  * @returns True for completed, failed, or cancelled Turns.
  */
-function isTerminalProductTurnStatusForStaleCheckpoint(status: string): boolean {
+function isClosedProductTurnStatusForStaleCheckpoint(status: TurnStatus): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 

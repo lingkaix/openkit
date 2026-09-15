@@ -25,6 +25,7 @@ Clear terminal Task checkpoints that lack an exact scheduler lease when the prod
 
 ## Verification
 
-- `vitest` nanocore `server.test.ts` classification cases passed (no-lease failed leftover, failed-lease session mismatch, preparing fail-closed, interrupted fail-closed, plus existing conversation-owned and direct Task receipt recovery).
+- `vitest` nanocore `server.test.ts` classification cases passed, including no-lease leftovers for failed/completed/cancelled Turns, failed-lease session mismatch, preparing fail-closed, interrupted Turn, live lease, and missing Turn.
+- Independent Claude Opus review requested fail-closed missing-Turn handling and a live-lease regression; those corrections are in this branch.
 - Biome check on the touched TypeScript files passed after format.
 - NanoCore `tsc --noEmit` passed.
