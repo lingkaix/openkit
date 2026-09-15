@@ -200,9 +200,10 @@ async function callOperation(operationId, env, state) {
 }
 
 /**
- * Validates one operation input and supplies a request id only when its shared schema permits it.
+ * Validates input, withholding request-derived issue details for secret operations.
+ * Supplies a request id only when the shared schema permits it.
  *
- * @param {{mutating: boolean, source: string, inputSchema: {safeParse(value: unknown): {success: boolean, data?: object, error?: {issues: unknown[]}}}}} operation Catalog operation.
+ * @param {{mutating: boolean, source: string, inputSensitivity: string, inputSchema: {safeParse(value: unknown): {success: boolean, data?: object, error?: {issues: unknown[]}}}}} operation Catalog operation.
  * @param {Record<string, unknown>} rawInput Parsed stdin object.
  * @returns {Record<string, unknown>} Strict validated input.
  */
@@ -219,6 +220,9 @@ function validateInput(operation, rawInput) {
     generated === rawInput ? withGenerated : operation.inputSchema.safeParse(rawInput);
   if (withoutGenerated.success) {
     return withoutGenerated.data;
+  }
+  if (operation.inputSensitivity.startsWith('secret')) {
+    throw new CliFailure('invalid_input', 'Operation input failed schema validation.', 2);
   }
   throw new CliFailure('invalid_input', 'Operation input failed schema validation.', 2, {
     issues: withoutGenerated.error?.issues ?? withGenerated.error?.issues ?? [],

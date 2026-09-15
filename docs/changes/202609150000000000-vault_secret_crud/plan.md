@@ -35,3 +35,12 @@ The L0-L2 assertions observe actual schemas, route responses, backend material r
 ## Delivery
 
 Published `fix/66-vault-secret-crud` and opened [PR #67](https://github.com/lingkaix/openkit/pull/67) against `main` with `Closes #66`. All 286 focused tests passed locally; remote CI was queued or running when the PR was opened. This completes the requested implementation and PR delivery under the engineer's explicit authorization; it does not merge or satisfy the independent approval gate.
+
+
+## Intent Epoch 2
+
+The engineer requested the [PR #67 review finding](https://github.com/lingkaix/openkit/pull/67#pullrequestreview-5204618214) be fixed on the same branch: malformed secret create/rotate input must not disclose material in validation errors, the bundled CLI must be regenerated, both operations need bundled regressions proving no stdout/stderr canary or transport, and the fix must be pushed without opening another PR or merging.
+
+## Review Correction Checkpoint
+
+The new bundled create and rotate regressions both reproduced the disclosure before implementation: 39 existing tests passed and both new tests failed on canary presence in stdout. `validateInput` now returns only the fixed `invalid_input` code/message for every operation marked as secret input, excluding all request-derived Zod issues. This restores the existing confidentiality contract without relying on later exact-value redaction. Regenerated the executable with `mise exec -- pnpm build:openkit`; `mise exec -- node --test tests/openkit-skill-interface.test.mjs` passed all 41 tests with zero skips. Both malformed-input regressions now assert exit 2, a fixed `invalid_input` error without issue details, no canary in stdout or stderr, and no transport call. Focused Biome, documentation-model validation and `git diff --check` passed. The actual source diff was inspected; delivery is to the same PR branch. Independent re-review remains required before merge.
