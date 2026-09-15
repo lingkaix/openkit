@@ -364,6 +364,10 @@ describe('shared Worker Harness', () => {
             workspaceId: 'workspace-one',
           },
           snapshotId: `package-${turn}`,
+          credentials: {
+            declarations:
+              turn <= 2 ? [{ visibility: 'runtime-env', targetEnvVarName: 'GITHUB_TOKEN' }] : [],
+          },
           control: {
             adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
             bindings: {
@@ -439,7 +443,9 @@ describe('shared Worker Harness', () => {
     let holdNextRun = false;
     let nativeAbortCount = 0;
     let runningAgentSessionId = 'as-a';
-    const harnessEnvironment: { OPENKIT_REQUEST_ID?: string } = {
+    const observedGithubTokens: Array<string | undefined> = [];
+    const harnessEnvironment: { OPENKIT_REQUEST_ID?: string; GITHUB_TOKEN: string } = {
+      GITHUB_TOKEN: 'stale-harness-token',
       OPENKIT_REQUEST_ID: 'request-harness',
     };
     const integration = {
@@ -480,6 +486,7 @@ describe('shared Worker Harness', () => {
           const holdUntilInterrupted = holdNextRun;
           holdNextRun = false;
           launches.push(input.argv);
+          observedGithubTokens.push(input.env.GITHUB_TOKEN);
           observedContextFiles.push(
             readdirSync(join(sandboxRoot, 'sessions', runningAgentSessionId, 'context')).sort()
           );
@@ -576,6 +583,7 @@ describe('shared Worker Harness', () => {
       contextPackageId: `ctxpkg_turn-${turn}`,
       contextRef: join(sandboxRoot, 'sessions', agentSessionId, 'context'),
       deadline: '2026-08-21T01:00:00.000Z',
+      runtimeEnvironment: turn <= 2 ? { GITHUB_TOKEN: `turn-${turn}-github-canary` } : {},
       capabilityToken: token(turn + 4),
       inferenceToken: token(turn),
       leaseId: `lease-${turn}`,
@@ -619,6 +627,8 @@ describe('shared Worker Harness', () => {
     await vi.waitFor(() => expect(finalStatuses).toHaveLength(2));
     expect(launches[0]).not.toContain('resume');
     expect(launches[1]).toContain('resume');
+    expect(observedGithubTokens).toEqual(['turn-1-github-canary', 'turn-2-github-canary']);
+    expect(JSON.stringify(finalStatuses)).not.toContain('github-canary');
     expect(launches[1]?.at(-2)).toBe(threadId);
     expect(observedContextFiles[1]).toEqual(['current.txt']);
     expect(boundTokens).toEqual([
@@ -669,6 +679,11 @@ describe('shared Worker Harness', () => {
       disposition: 'succeeded',
     });
     await vi.waitFor(() => expect(finalStatuses).toHaveLength(3));
+    expect(observedGithubTokens).toEqual([
+      'turn-1-github-canary',
+      'turn-2-github-canary',
+      undefined,
+    ]);
     expect(finalStatuses[2]?.lineage).toEqual({
       agentSessionId: 'as-a',
       packageSnapshotId: 'package-3',

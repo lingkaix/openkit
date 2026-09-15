@@ -2707,7 +2707,7 @@ describe('worker shim CLI parsing', () => {
   it.each([
     {
       credentialVisibility: 'placeholder' as const,
-      expectedProviderCredential: false,
+      expectedProviderCredential: true,
       expectedRelayPlaceholder: true,
     },
     {
@@ -2717,10 +2717,10 @@ describe('worker shim CLI parsing', () => {
     },
     {
       credentialVisibility: 'none' as const,
-      expectedProviderCredential: false,
+      expectedProviderCredential: true,
       expectedRelayPlaceholder: false,
     },
-  ])('passes only $credentialVisibility route-authorized credentials to the native process', async ({
+  ])('passes declared runtime-env credentials independently of the $credentialVisibility inference route', async ({
     credentialVisibility,
     expectedProviderCredential,
     expectedRelayPlaceholder,
@@ -2791,6 +2791,136 @@ describe('worker shim CLI parsing', () => {
     }
   });
 
+  it.each([
+    undefined,
+    '',
+    'invalid\0value',
+  ])('refuses a missing or invalid declared runtime-env value before spawning', async (value) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-runtime-env-missing-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const runner = new FakeWorkerProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: { adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-process' } },
+        credentials: {
+          declarations: [{ visibility: 'runtime-env', targetEnvVarName: 'GITHUB_TOKEN' }],
+        },
+        extensions: { openkit: { turnInput: 'void 0' } },
+        llm: { routes: [workerLlmRoute()] },
+        runtime: { command: { workingDirectory: sessionDir } },
+      })
+    );
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: { ...workerShimEnvironment(), GITHUB_TOKEN: value },
+        runner,
+      })
+    ).rejects.toThrow('Runtime environment credential materialization is invalid.');
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      name: 'missing private value cannot inherit from Harness',
+      declared: ['GITHUB_TOKEN'],
+      values: {},
+    },
+    { name: 'undeclared private value', declared: [], values: { GITHUB_TOKEN: 'private-canary' } },
+    {
+      name: 'duplicate target',
+      declared: ['GITHUB_TOKEN', 'GITHUB_TOKEN'],
+      values: { GITHUB_TOKEN: 'private-canary' },
+    },
+    {
+      name: 'reserved control target',
+      declared: ['OPENKIT_WORKER_INFERENCE_TOKEN'],
+      values: { OPENKIT_WORKER_INFERENCE_TOKEN: 'private-canary' },
+    },
+    { name: 'native configuration target', declared: ['PATH'], values: { PATH: 'private-canary' } },
+    {
+      name: 'oversized value',
+      declared: ['GITHUB_TOKEN'],
+      values: { GITHUB_TOKEN: 'x'.repeat(64 * 1024 + 1) },
+    },
+  ])('refuses $name before native launch', async ({ declared, values }) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-runtime-env-rejected-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const runner = new FakeWorkerProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: { adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-process' } },
+        credentials: {
+          declarations: declared.map((targetEnvVarName) => ({
+            targetEnvVarName,
+            visibility: 'runtime-env',
+          })),
+        },
+        extensions: { openkit: { turnInput: 'void 0' } },
+        llm: { routes: [workerLlmRoute()] },
+        runtime: { command: { workingDirectory: sessionDir } },
+      })
+    );
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: { ...workerShimEnvironment(), GITHUB_TOKEN: 'stale-harness-canary' },
+        runtimeEnvironment: values,
+        runner,
+      })
+    ).rejects.toThrow('Runtime environment credential materialization is invalid.');
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('delivers a declared GitHub credential into a real native child without exposing its value', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-runtime-env-process-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const resultPath = join(sessionDir, 'env-result.json');
+    const credential = 'runtime-env-process-canary';
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: { adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-process' } },
+        credentials: {
+          declarations: [{ visibility: 'runtime-env', targetEnvVarName: 'GITHUB_TOKEN' }],
+        },
+        extensions: {
+          openkit: {
+            turnInput: `require('node:fs').writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({ present: require('node:crypto').createHash('sha256').update(process.env.GITHUB_TOKEN ?? '').digest('hex') === ${JSON.stringify(createHash('sha256').update(credential).digest('hex'))}, unrelated: 'GH_TOKEN' in process.env }));`,
+          },
+        },
+        llm: { routes: [workerLlmRoute()] },
+        runtime: { command: { workingDirectory: sessionDir } },
+      })
+    );
+    const result = await runWorkerShim({
+      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: {
+        ...workerShimEnvironment(),
+        GITHUB_TOKEN: credential,
+        GH_TOKEN: 'undeclared-parent-secret',
+      },
+    });
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toEqual({
+      present: true,
+      unrelated: false,
+    });
+    expect(JSON.stringify(result)).not.toContain(credential);
+    expect(readFileSync(join(sessionDir, 'events.jsonl'), 'utf8')).not.toContain(credential);
+  });
+
   it('redacts the exact relay placeholder from ordinary failed-process diagnostics', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-relay-redaction-'));
     const packagePath = join(sessionDir, 'package.json');
@@ -2840,6 +2970,11 @@ describe('worker shim CLI parsing', () => {
       credentialVisibility: 'environment' as const,
       name: 'direct-provider credential',
     },
+    {
+      credentialName: 'GITHUB_TOKEN',
+      credentialVisibility: 'placeholder' as const,
+      name: 'declared GitHub runtime-env credential',
+    },
   ])('fails closed before persisting assistant output that echoes an exact $name', async ({
     credentialName,
     credentialVisibility,
@@ -2875,7 +3010,7 @@ describe('worker shim CLI parsing', () => {
         control: {
           adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-process' },
         },
-        ...(credentialVisibility === 'environment'
+        ...(credentialName !== 'OPENKIT_WORKER_INFERENCE_TOKEN'
           ? {
               credentials: {
                 declarations: [{ targetEnvVarName: credentialName, visibility: 'runtime-env' }],
@@ -2924,7 +3059,7 @@ describe('worker shim CLI parsing', () => {
     expect(terminalRecord.event.data.diagnostics.oversized).toHaveLength(1_000);
   });
 
-  it('rejects multiple runtime-env credentials for the one environment-visible route', async () => {
+  it('passes multiple declared runtime-env credentials with an environment-visible route', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-extra-provider-credential-'));
     const packagePath = join(sessionDir, 'package.json');
     const runner = new FakeWorkerProcessRunner({
@@ -2959,18 +3094,19 @@ describe('worker shim CLI parsing', () => {
       'utf8'
     );
 
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: {
-          ...workerShimEnvironment(),
-          ANTHROPIC_API_KEY: 'provider-credential-value',
-          GITHUB_TOKEN: 'unrelated-credential-value',
-        },
-        runner,
-      })
-    ).rejects.toThrow('exactly one runtime-env credential');
-    expect(runner.calls).toHaveLength(0);
+    await runWorkerShim({
+      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: {
+        ...workerShimEnvironment(),
+        ANTHROPIC_API_KEY: 'provider-credential-value',
+        GITHUB_TOKEN: 'unrelated-credential-value',
+      },
+      runner,
+    });
+    expect(runner.calls[0]?.env).toMatchObject({
+      ANTHROPIC_API_KEY: 'provider-credential-value',
+      GITHUB_TOKEN: 'unrelated-credential-value',
+    });
   });
 
   it('materializes static Skill metadata without materializing executable MCP config', async () => {
