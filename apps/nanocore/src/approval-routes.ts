@@ -11,7 +11,7 @@ import { apiErrorPayload, asCommandError, asInvalidRequestError } from './api-er
 import type { AuthVariables } from './auth/middleware.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import type { FsStore } from './lib/store.js';
-import { isExactMcpApprovalSourceDecision } from './policy/approval-gates.js';
+import { isExactWorkerApprovalSourceDecision } from './policy/approval-gates.js';
 import {
   listPolicyApprovalSourceDecisions,
   type PolicyApprovalSourceDecision,
@@ -370,8 +370,22 @@ function claimPolicyApprovalOutcome(
   if (
     !isSupportedPolicyApprovalAction(source.action) ||
     source.requiredApprovalKind !== approval.kind ||
-    (source.action === 'tool.use' &&
-      !isExactMcpApprovalSourceDecision({
+    ((source.action === 'tool.use' ||
+      (source.action === 'repo.push' &&
+        typeof source.contextSummary === 'object' &&
+        source.contextSummary !== null &&
+        'worker' in source.contextSummary)) &&
+      !isExactWorkerApprovalSourceDecision({
+        store,
+        approvalId: input.approvalRequestId,
+        approvalItemId:
+          store
+            .listThreadItems(input.workspaceId, input.threadId)
+            .find(
+              (item) =>
+                item.type === 'approval-request' &&
+                item.approvalRequestId === input.approvalRequestId
+            )?.id ?? '',
         approvalCreatedAt: approval.createdAt,
         source,
         threadId: input.threadId,

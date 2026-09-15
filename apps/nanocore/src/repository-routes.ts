@@ -36,7 +36,10 @@ import {
   getGitPushRecordByApprovalRowId,
   listGitPushRecords,
 } from './runtime/git-push-records.js';
-import { inspectGitPushRepository } from './runtime/git-push-repository.js';
+import {
+  GitPushSourceUnavailableError,
+  inspectGitPushRepository,
+} from './runtime/git-push-repository.js';
 import {
   commandInputHash,
   type InflightIdempotentCommand,
@@ -73,6 +76,15 @@ const RepoPushApprovalDecisionSchema = z
     contextSummary: z
       .object({
         requestId: z.string().min(1),
+        worker: z
+          .object({
+            agentId: z.string().min(1),
+            agentSessionId: z.string().min(1),
+            packageSnapshotId: z.string().min(1),
+            capabilityCallId: z.string().min(1),
+          })
+          .strict()
+          .optional(),
         threadId: z.string().min(1),
         turnId: z.string().min(1),
         workspaceId: z.string().min(1),
@@ -242,142 +254,20 @@ export function registerRepositoryRoutes({
         if (!repository) {
           throw new Error(`Repository resource not found: ${resourceId}`);
         }
-        const commandScope = {
-          workspaceId,
-          repositoryResourceId: resourceId,
-          threadId: input.threadId,
-          turnId: input.turnId,
-        };
-        const ownerDigest = commandInputHash({
-          command: 'git_push.approval.request',
-          actorId,
-          ...commandScope,
-          requestId: input.requestId,
-        }).slice('sha256:'.length);
-        const owner = {
-          decisionId: `pd_repo_push_${ownerDigest}`,
-          approvalId: `ap_repo_push_${ownerDigest}`,
-          approvalItemId: `it_repo_push_${ownerDigest}`,
-        };
-        let response: z.infer<typeof RequestGitPushApprovalResponseSchema>;
-        try {
-          response = await runIdempotentCommand({
-            store,
+        const response = await requestRepositoryPushApproval(
+          {
+            actorId,
+            approvalPolicy,
+            coreDb,
             inflightCommands,
-            command: 'git_push.approval.request',
-            requestId: input.requestId,
-            scope: commandScope,
-            input,
-            responseKind: 'approval',
-            execute: () => {
-              if (readGitPushRequestDecision(workspaceDb, workspaceId, owner.approvalId)) {
-                throw new TurnStartValidationError(
-                  'recovery_required',
-                  'The Git push approval exists without its command receipt.',
-                  409
-                );
-              }
-              const inspection = inspectGitPushRepository(repository.localPath, input.sourceRef);
-
-              if (inspection.sourceCommit !== input.commitIds.at(-1)) {
-                throw new Error('Git push source ref does not match the requested commit tip.');
-              }
-
-              const gate = createPolicyApprovalGate({
-                action: 'repo.push',
-                mode:
-                  approvalPolicy?.workspaceApprovalModes?.[workspaceId]?.['repo.push'] ??
-                  'require_human_approval',
-                workspaceDb,
-                store,
-                workspaceId,
-                turnId: input.turnId,
-                ...owner,
-                reasonCode: 'repo_push_requires_human_approval',
-                title: `Approve Git push to ${input.targetBranch}`,
-                description: `Publish ${input.commitIds.join(', ')} from ${input.sourceRef} to ${input.targetBranch} on ${inspection.remoteSummary}.`,
-                subjectSummary: { kind: 'user', userId: actorId },
-                resourceSummary: {
-                  kind: 'git-push-target',
-                  workspaceId,
-                  repositoryResourceId: resourceId,
-                  remoteIdentity: inspection.remoteIdentity,
-                  remoteName: inspection.remoteName,
-                  sourceRef: input.sourceRef,
-                  sourceCommit: inspection.sourceCommit,
-                  targetBranch: input.targetBranch,
-                  commitIds: input.commitIds,
-                  remoteSummary: inspection.remoteSummary,
-                },
-                contextSummary: {
-                  requestId: input.requestId,
-                  workspaceId,
-                  threadId: input.threadId,
-                  turnId: input.turnId,
-                },
-              });
-              const approval = store.getApproval(gate.approvalId);
-
-              return RequestGitPushApprovalResponseSchema.parse({
-                approval,
-                approvalItemId: gate.approvalItemId,
-                policyDecisionId: gate.decisionId,
-              });
-            },
-            replay: (record) => {
-              const approval = store.getApproval(record.response.id);
-              assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), approval.workspaceId);
-              const decision = readGitPushRequestDecision(
-                workspaceDb,
-                workspaceId,
-                owner.approvalId
-              );
-              const approvalItem = store
-                .listThreadItems(workspaceId, input.threadId)
-                .find((item) => item.id === owner.approvalItemId);
-
-              if (
-                approval.id !== owner.approvalId ||
-                decision?.decisionId !== owner.decisionId ||
-                approvalItem?.type !== 'approval-request' ||
-                approvalItem.approvalRequestId !== owner.approvalId
-              ) {
-                throw new TurnStartValidationError(
-                  'recovery_required',
-                  'The Git push approval receipt has no exact durable owner.',
-                  409
-                );
-              }
-
-              return RequestGitPushApprovalResponseSchema.parse({
-                approval,
-                approvalItemId: approvalItem.id,
-                policyDecisionId: decision.decisionId,
-              });
-            },
-            responseId: (result) => result.approval.id,
-          });
-        } catch (error) {
-          const receipt = store.getCommandRequest(
-            'git_push.approval.request',
-            input.requestId,
-            commandScope
-          );
-          const durableOwner = readGitPushRequestDecision(
+            repository,
+            store,
+            vaultBackend,
             workspaceDb,
             workspaceId,
-            owner.approvalId
-          );
-
-          if (!receipt && durableOwner) {
-            throw new TurnStartValidationError(
-              'recovery_required',
-              'The Git push approval exists without its command receipt.',
-              409
-            );
-          }
-          throw error;
-        }
+          },
+          input
+        );
 
         return c.json(response);
       } finally {
@@ -417,161 +307,20 @@ export function registerRepositoryRoutes({
         if (!repository) {
           throw new Error(`Repository resource not found: ${resourceId}`);
         }
-        const response = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'git_push.execute',
-          requestId: input.requestId,
-          scope: {
+        const response = await executeRepositoryPush(
+          {
+            actorId,
+            approvalPolicy,
+            coreDb,
+            inflightCommands,
+            repository,
+            store,
+            vaultBackend,
+            workspaceDb,
             workspaceId,
-            repositoryResourceId: resourceId,
           },
-          input: { approvalRequestId: input.approvalRequestId },
-          responseKind: 'git_push_record',
-          execute: () => {
-            if (approval.workspaceId !== workspaceId || approval.status !== 'granted') {
-              throw new Error(`Git push approval is not granted: ${input.approvalRequestId}`);
-            }
-
-            const approvalItem = store
-              .listAllItems()
-              .find(
-                (item) =>
-                  item.workspaceId === workspaceId &&
-                  item.type === 'approval-request' &&
-                  item.approvalRequestId === input.approvalRequestId
-              );
-
-            if (!approvalItem) {
-              throw new Error(`Git push approval row not found: ${input.approvalRequestId}`);
-            }
-
-            const existingRecord = getGitPushRecordByApprovalRowId(
-              workspaceDb,
-              workspaceId,
-              approvalItem.id
-            );
-
-            if (existingRecord) {
-              throw new TurnStartValidationError(
-                'recovery_required',
-                'The Git push attempt exists without its command receipt.',
-                409
-              );
-            }
-
-            const interruptedCall = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).some(
-              (call) =>
-                call.itemId === approvalItem.id &&
-                call.capabilityId === 'workspace.git.push' &&
-                call.family === 'network' &&
-                call.operation === 'git.push'
-            );
-
-            if (interruptedCall) {
-              throw new TurnStartValidationError(
-                'recovery_required',
-                'The Git push outcome cannot be proven from local records.',
-                409
-              );
-            }
-
-            const policyDecision = RepoPushApprovalDecisionSchema.parse(
-              readPolicyApprovalDecision(
-                workspaceDb,
-                workspaceId,
-                input.approvalRequestId,
-                'repo.push',
-                'allow'
-              )
-            );
-            const intent = policyDecision.resourceSummary;
-            if (policyDecision.reasonCode === 'repo_push_auto_allowed') {
-              const receipt = store.getCommandRequest(
-                'git_push.approval.request',
-                policyDecision.contextSummary.requestId,
-                {
-                  workspaceId,
-                  repositoryResourceId: resourceId,
-                  threadId: approval.threadId,
-                  turnId: approval.turnId,
-                }
-              );
-              if (receipt?.response.kind !== 'approval' || receipt.response.id !== approval.id) {
-                throw new TurnStartValidationError(
-                  'recovery_required',
-                  'The automatic Git push grant has no exact command receipt.',
-                  409
-                );
-              }
-            }
-            const inspection = inspectGitPushRepository(repository.localPath, intent.sourceRef);
-
-            if (
-              policyDecision.contextSummary.workspaceId !== workspaceId ||
-              policyDecision.contextSummary.threadId !== approval.threadId ||
-              policyDecision.contextSummary.turnId !== approval.turnId ||
-              intent.workspaceId !== workspaceId ||
-              intent.repositoryResourceId !== resourceId ||
-              intent.remoteIdentity !== inspection.remoteIdentity ||
-              intent.remoteName !== inspection.remoteName ||
-              intent.remoteSummary !== inspection.remoteSummary ||
-              intent.sourceCommit !== inspection.sourceCommit ||
-              intent.commitIds.at(-1) !== intent.sourceCommit
-            ) {
-              throw new Error(`Git push approval scope mismatch: ${input.approvalRequestId}`);
-            }
-
-            return executeGitPushAttempt(workspaceDb, {
-              attempt: {
-                actorId,
-                approvalNamesProtectedTarget: true,
-                approvalRowId: approvalItem.id,
-                commitIds: intent.commitIds,
-                git: repository.git,
-                policyDecisionId: policyDecision.decisionId,
-                recordId: `gpr_${randomUUID()}`,
-                remoteSummary: intent.remoteSummary,
-                repositoryResourceId: resourceId,
-                requestId: input.requestId,
-                sourceRef: intent.sourceRef,
-                targetBranch: intent.targetBranch,
-                workspaceId,
-              },
-              coreDb,
-              objectDirectory: inspection.objectDirectory,
-              objectFormat: inspection.objectFormat,
-              provider: inspection.provider,
-              remoteName: inspection.pushTarget,
-              resolveEnv: (capabilityCallId) =>
-                resolveGitPushCredentialEnv({
-                  actorId,
-                  capabilityCallId,
-                  coreDb,
-                  repository,
-                  vaultBackend,
-                  workspaceDb,
-                  workspaceId,
-                }),
-              runner: runGitPushCommand,
-              sourceCommit: inspection.sourceCommit,
-            });
-          },
-          replay: (record) => {
-            const pushRecord = getGitPushRecord(workspaceDb, workspaceId, record.response.id);
-            assertAuthorizedWorkspaceLineage(
-              c.get('workspaceAccess'),
-              pushRecord?.workspaceId ?? null
-            );
-
-            if (!pushRecord) {
-              throw new Error(`Git push record not found: ${record.response.id}`);
-            }
-
-            return pushRecord;
-          },
-          responseId: (result) => result.id,
-        });
+          input
+        );
 
         return c.json(ExecuteGitPushResponseSchema.parse(response));
       } finally {
@@ -845,4 +594,387 @@ function readGitPushRequestDecision(
     readPolicyApprovalDecision(workspaceDb, workspaceId, approvalId, 'repo.push') ??
     readPolicyApprovalDecision(workspaceDb, workspaceId, approvalId, 'repo.push', 'allow')
   );
+}
+
+/** Exact worker call evidence attached to the original repo.push request, never execution authority. */
+export interface RepositoryPushWorkerRequest {
+  /** Original selected Agent. */
+  readonly agentId: string;
+  /** Original AgentSession. */
+  readonly agentSessionId: string;
+  /** Original immutable environment package. */
+  readonly packageSnapshotId: string;
+  /** Denied MCP call which owns a human Gate stop. */
+  readonly capabilityCallId: string;
+}
+
+/** Concrete dependencies shared by App and selected Worker repository commands. */
+export interface RepositoryPushContext {
+  /** Fresh authenticated responsible user. */
+  readonly actorId: string;
+  /** Deployment-owned push approval mode. */
+  readonly approvalPolicy: OpenKitConfig['policy'];
+  /** Current canonical authority. */
+  readonly coreDb: CoreDb | undefined;
+  /** Existing command duplicate-collapse owner. */
+  readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  /** Already scoped host repository. */
+  readonly repository: WorkspaceRepositoryResourceRecord;
+  /** Canonical product store. */
+  readonly store: FsStore;
+  /** Host-only credential resolver. */
+  readonly vaultBackend: (() => VaultBackend) | undefined;
+  /** Workspace storage. */
+  readonly workspaceDb: WorkspaceDb;
+  /** Authenticated Workspace. */
+  readonly workspaceId: string;
+}
+
+/**
+ * Requests one exact host push grant through the shared command and policy owners.
+ * @param context Authenticated caller and repository dependencies.
+ * @param input Exact requested host commit and original Turn.
+ * @param worker Optional immutable worker request evidence.
+ * @returns Original target-issued Approval, Item and permission identifiers.
+ */
+export async function requestRepositoryPushApproval(
+  context: RepositoryPushContext,
+  input: z.infer<typeof RequestGitPushApprovalRequestSchema>,
+  worker?: RepositoryPushWorkerRequest
+): Promise<z.infer<typeof RequestGitPushApprovalResponseSchema>> {
+  const { actorId, approvalPolicy, inflightCommands, repository, store, workspaceDb, workspaceId } =
+    context;
+  const resourceId = repository.resourceId;
+  const commandScope = {
+    actorId,
+    workspaceId,
+    repositoryResourceId: resourceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+  };
+  const ownerDigest = commandInputHash({
+    command: 'git_push.approval.request',
+    ...commandScope,
+    requestId: input.requestId,
+  }).slice('sha256:'.length);
+  const owner = {
+    decisionId: `pd_repo_push_${ownerDigest}`,
+    approvalId: `ap_repo_push_${ownerDigest}`,
+    approvalItemId: `it_repo_push_${ownerDigest}`,
+  };
+  let response: z.infer<typeof RequestGitPushApprovalResponseSchema>;
+  try {
+    response = await runIdempotentCommand({
+      store,
+      inflightCommands,
+      command: 'git_push.approval.request',
+      requestId: input.requestId,
+      scope: commandScope,
+      input,
+      responseKind: 'approval',
+      execute: () => {
+        if (readGitPushRequestDecision(workspaceDb, workspaceId, owner.approvalId)) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The Git push approval exists without its command receipt.',
+            409
+          );
+        }
+        let inspection: ReturnType<typeof inspectGitPushRepository>;
+        try {
+          inspection = inspectGitPushRepository(repository.localPath, input.sourceRef);
+        } catch (error) {
+          if (!worker || !(error instanceof GitPushSourceUnavailableError)) throw error;
+          throw new TurnStartValidationError(
+            'git_push_source_unavailable',
+            'The source ref must exist in the linked NanoCore repository. Collect worker changes through Workspace review/apply, then request approval for the resulting host commit.',
+            409
+          );
+        }
+
+        if (inspection.sourceCommit !== input.commitIds.at(-1)) {
+          throw new TurnStartValidationError(
+            'git_push_source_unavailable',
+            'The requested tip must match the linked NanoCore repository source ref. Use Workspace review/apply before requesting publication.',
+            409
+          );
+        }
+
+        const gate = createPolicyApprovalGate({
+          action: 'repo.push',
+          autoAllowTurn: worker ? 'continue' : 'complete',
+          mode:
+            approvalPolicy?.workspaceApprovalModes?.[workspaceId]?.['repo.push'] ??
+            'require_human_approval',
+          workspaceDb,
+          store,
+          workspaceId,
+          turnId: input.turnId,
+          ...owner,
+          reasonCode: 'repo_push_requires_human_approval',
+          title: `Approve Git push to ${input.targetBranch}`,
+          description: `Publish ${input.commitIds.join(', ')} from ${input.sourceRef} to ${input.targetBranch} on ${inspection.remoteSummary}.`,
+          subjectSummary: { kind: 'user', userId: actorId },
+          resourceSummary: {
+            kind: 'git-push-target',
+            workspaceId,
+            repositoryResourceId: resourceId,
+            remoteIdentity: inspection.remoteIdentity,
+            remoteName: inspection.remoteName,
+            sourceRef: input.sourceRef,
+            sourceCommit: inspection.sourceCommit,
+            targetBranch: input.targetBranch,
+            commitIds: input.commitIds,
+            remoteSummary: inspection.remoteSummary,
+          },
+          contextSummary: {
+            requestId: input.requestId,
+            ...(worker ? { worker } : {}),
+            workspaceId,
+            threadId: input.threadId,
+            turnId: input.turnId,
+          },
+        });
+        const approval = store.getApproval(gate.approvalId);
+
+        return RequestGitPushApprovalResponseSchema.parse({
+          approval,
+          approvalItemId: gate.approvalItemId,
+          policyDecisionId: gate.decisionId,
+        });
+      },
+      replay: (record) => {
+        const approval = store.getApproval(record.response.id);
+        if (approval.workspaceId !== workspaceId)
+          throw new Error('Git push approval scope mismatch.');
+        const decision = readGitPushRequestDecision(workspaceDb, workspaceId, owner.approvalId);
+        const approvalItem = store
+          .listThreadItems(workspaceId, input.threadId)
+          .find((item) => item.id === owner.approvalItemId);
+
+        if (
+          approval.id !== owner.approvalId ||
+          decision?.decisionId !== owner.decisionId ||
+          approvalItem?.type !== 'approval-request' ||
+          approvalItem.approvalRequestId !== owner.approvalId
+        ) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The Git push approval receipt has no exact durable owner.',
+            409
+          );
+        }
+
+        return RequestGitPushApprovalResponseSchema.parse({
+          approval,
+          approvalItemId: approvalItem.id,
+          policyDecisionId: decision.decisionId,
+        });
+      },
+      responseId: (result) => result.approval.id,
+    });
+  } catch (error) {
+    const receipt = store.getCommandRequest(
+      'git_push.approval.request',
+      input.requestId,
+      commandScope
+    );
+    const durableOwner = readGitPushRequestDecision(workspaceDb, workspaceId, owner.approvalId);
+
+    if (!receipt && durableOwner) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The Git push approval exists without its command receipt.',
+        409
+      );
+    }
+    throw error;
+  }
+  return response;
+}
+
+/**
+ * Executes one original grant under the fresh request actor without rewriting its lineage.
+ * @param context Authenticated caller and repository dependencies.
+ * @param input Existing approval identifier and fresh execution request identifier.
+ * @returns Durable push outcome.
+ */
+export async function executeRepositoryPush(
+  context: RepositoryPushContext,
+  input: z.infer<typeof ExecuteGitPushRequestSchema>
+): Promise<GitPushRecord> {
+  const {
+    actorId,
+    coreDb,
+    inflightCommands,
+    repository,
+    store,
+    vaultBackend,
+    workspaceDb,
+    workspaceId,
+  } = context;
+  const resourceId = repository.resourceId;
+  const approval = store.getApproval(input.approvalRequestId);
+  const response = await runIdempotentCommand({
+    store,
+    inflightCommands,
+    command: 'git_push.execute',
+    requestId: input.requestId,
+    scope: {
+      actorId,
+      workspaceId,
+      repositoryResourceId: resourceId,
+    },
+    input: { approvalRequestId: input.approvalRequestId },
+    responseKind: 'git_push_record',
+    execute: () => {
+      if (approval.workspaceId !== workspaceId || approval.status !== 'granted') {
+        throw new Error(`Git push approval is not granted: ${input.approvalRequestId}`);
+      }
+
+      const approvalItem = store
+        .listAllItems()
+        .find(
+          (item) =>
+            item.workspaceId === workspaceId &&
+            item.type === 'approval-request' &&
+            item.approvalRequestId === input.approvalRequestId
+        );
+
+      if (!approvalItem) {
+        throw new Error(`Git push approval row not found: ${input.approvalRequestId}`);
+      }
+
+      const existingRecord = getGitPushRecordByApprovalRowId(
+        workspaceDb,
+        workspaceId,
+        approvalItem.id
+      );
+
+      if (existingRecord) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The Git push attempt exists without its command receipt.',
+          409
+        );
+      }
+
+      const interruptedCall = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).some(
+        (call) =>
+          call.itemId === approvalItem.id &&
+          call.capabilityId === 'workspace.git.push' &&
+          call.family === 'network' &&
+          call.operation === 'git.push'
+      );
+
+      if (interruptedCall) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The Git push outcome cannot be proven from local records.',
+          409
+        );
+      }
+
+      const policyDecision = RepoPushApprovalDecisionSchema.parse(
+        readPolicyApprovalDecision(
+          workspaceDb,
+          workspaceId,
+          input.approvalRequestId,
+          'repo.push',
+          'allow'
+        )
+      );
+      const intent = policyDecision.resourceSummary;
+      if (
+        policyDecision.reasonCode === 'repo_push_auto_allowed' ||
+        policyDecision.contextSummary.worker
+      ) {
+        const originalRequest = RepoPushApprovalDecisionSchema.parse(
+          readGitPushRequestDecision(workspaceDb, workspaceId, input.approvalRequestId)
+        );
+        const receipt = store.getCommandRequest(
+          'git_push.approval.request',
+          originalRequest.contextSummary.requestId,
+          {
+            actorId: originalRequest.subjectSummary.userId,
+            workspaceId,
+            repositoryResourceId: resourceId,
+            threadId: approval.threadId,
+            turnId: approval.turnId,
+          }
+        );
+        if (receipt?.response.kind !== 'approval' || receipt.response.id !== approval.id) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The Git push grant has no exact command receipt.',
+            409
+          );
+        }
+      }
+      const inspection = inspectGitPushRepository(repository.localPath, intent.sourceRef);
+
+      if (
+        policyDecision.contextSummary.workspaceId !== workspaceId ||
+        policyDecision.contextSummary.threadId !== approval.threadId ||
+        policyDecision.contextSummary.turnId !== approval.turnId ||
+        intent.workspaceId !== workspaceId ||
+        intent.repositoryResourceId !== resourceId ||
+        intent.remoteIdentity !== inspection.remoteIdentity ||
+        intent.remoteName !== inspection.remoteName ||
+        intent.remoteSummary !== inspection.remoteSummary ||
+        intent.sourceCommit !== inspection.sourceCommit ||
+        intent.commitIds.at(-1) !== intent.sourceCommit
+      ) {
+        throw new Error(`Git push approval scope mismatch: ${input.approvalRequestId}`);
+      }
+
+      return executeGitPushAttempt(workspaceDb, {
+        attempt: {
+          actorId,
+          approvalNamesProtectedTarget: true,
+          approvalRowId: approvalItem.id,
+          commitIds: intent.commitIds,
+          git: repository.git,
+          policyDecisionId: policyDecision.decisionId,
+          recordId: `gpr_${randomUUID()}`,
+          remoteSummary: intent.remoteSummary,
+          repositoryResourceId: resourceId,
+          requestId: input.requestId,
+          sourceRef: intent.sourceRef,
+          targetBranch: intent.targetBranch,
+          workspaceId,
+        },
+        coreDb,
+        objectDirectory: inspection.objectDirectory,
+        objectFormat: inspection.objectFormat,
+        provider: inspection.provider,
+        remoteName: inspection.pushTarget,
+        resolveEnv: (capabilityCallId) =>
+          resolveGitPushCredentialEnv({
+            actorId,
+            capabilityCallId,
+            coreDb,
+            repository,
+            vaultBackend,
+            workspaceDb,
+            workspaceId,
+          }),
+        runner: runGitPushCommand,
+        sourceCommit: inspection.sourceCommit,
+      });
+    },
+    replay: (record) => {
+      const pushRecord = getGitPushRecord(workspaceDb, workspaceId, record.response.id);
+      if (pushRecord?.workspaceId !== workspaceId)
+        throw new Error('Git push record scope mismatch.');
+
+      if (!pushRecord) {
+        throw new Error(`Git push record not found: ${record.response.id}`);
+      }
+
+      return pushRecord;
+    },
+    responseId: (result) => result.id,
+  });
+  return response;
 }

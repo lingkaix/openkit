@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ListHumanAttentionResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
+import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -10,6 +11,65 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { createPolicyApprovalGate } from './approval-gates.js';
 
 describe('policy approval gates', () => {
+  it.each([
+    'running',
+    'completed',
+  ] as const)('preserves a worker automatic grant after reloading its %s Turn', (finalStatus) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-push-auto-'));
+    const store = createDemoStore({ dataRoot });
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    applyScopedMigrations(workspaceDb);
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Request push', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    try {
+      const gate = createPolicyApprovalGate({
+        action: 'repo.push',
+        mode: 'auto_allow',
+        autoAllowTurn: 'continue',
+        approvalId: 'ap_worker_push',
+        approvalItemId: 'it_worker_push',
+        decisionId: 'pd_worker_push',
+        description: 'Publish the admitted commit.',
+        reasonCode: 'repo_push_requires_human_approval',
+        resourceSummary: { kind: 'git-push-target' },
+        subjectSummary: { kind: 'user', userId: 'user_local' },
+        store,
+        title: 'Approve push',
+        turnId: turn.id,
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+      expect(store.getApproval(gate.approvalId).status).toBe('granted');
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        status: 'running',
+        humanGate: null,
+        completedAt: null,
+      });
+      expect(permissionDecision(workspaceDb, gate.decisionId)).toMatchObject({
+        action: 'repo.push',
+        result: 'allow',
+      });
+      if (finalStatus === 'completed') {
+        store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      }
+      const restored = new FsStore({ dataRoot });
+      expect(restored.getApproval(gate.approvalId).status).toBe('granted');
+      expect(restored.getTurnById(turn.id)).toMatchObject({ status: finalStatus, humanGate: null });
+      expect(restored.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+        expect.objectContaining({
+          type: 'approval-decision',
+          approvalRequestId: gate.approvalId,
+          decision: 'granted',
+          actor: { kind: 'system', id: 'nanocore-repo-push-policy', responsibleUserId: null },
+        })
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it.each([
     'require_human_approval',
     'auto_allow',

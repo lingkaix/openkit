@@ -394,6 +394,9 @@ export function classifyClosedWorkerApprovalGate(
     if (response.type !== 'approval-decision') {
       continue;
     }
+    if (response.actor.kind === 'system' && response.actor.id === 'nanocore-repo-push-policy') {
+      continue;
+    }
     const requests = turn.items.filter(
       (item) =>
         item.type === 'approval-request' &&

@@ -1200,22 +1200,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -3301,22 +3330,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -5402,22 +5460,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -7550,22 +7637,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -9651,22 +9767,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -11752,22 +11897,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -13853,22 +14027,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -15896,22 +16099,51 @@
                       "const": "approval-decision"
                     },
                     "actor": {
-                      "type": "object",
-                      "properties": {
-                        "kind": {
-                          "type": "string",
-                          "const": "user"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user"
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
                         },
-                        "id": {
-                          "type": "string",
-                          "minLength": 1
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "system"
+                            },
+                            "id": {
+                              "type": "string",
+                              "enum": [
+                                "nanocore-boot-reconciliation",
+                                "nanocore-repo-push-policy"
+                              ]
+                            },
+                            "responsibleUserId": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "kind",
-                        "id"
-                      ],
-                      "additionalProperties": false
+                      ]
                     },
                     "approvalRequestId": {
                       "type": "string",
@@ -18292,22 +18524,51 @@
                       "const": "approval-decision"
                     },
                     "actor": {
-                      "type": "object",
-                      "properties": {
-                        "kind": {
-                          "type": "string",
-                          "const": "user"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user"
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
                         },
-                        "id": {
-                          "type": "string",
-                          "minLength": 1
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "system"
+                            },
+                            "id": {
+                              "type": "string",
+                              "enum": [
+                                "nanocore-boot-reconciliation",
+                                "nanocore-repo-push-policy"
+                              ]
+                            },
+                            "responsibleUserId": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "kind",
-                        "id"
-                      ],
-                      "additionalProperties": false
+                      ]
                     },
                     "approvalRequestId": {
                       "type": "string",
@@ -21095,22 +21356,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -23196,22 +23486,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -25297,22 +25616,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -27445,22 +27793,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -29546,22 +29923,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -31647,22 +32053,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",
@@ -33748,22 +34183,51 @@
                                 "const": "approval-decision"
                               },
                               "actor": {
-                                "type": "object",
-                                "properties": {
-                                  "kind": {
-                                    "type": "string",
-                                    "const": "user"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "user"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "id": {
-                                    "type": "string",
-                                    "minLength": 1
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "system"
+                                      },
+                                      "id": {
+                                        "type": "string",
+                                        "enum": [
+                                          "nanocore-boot-reconciliation",
+                                          "nanocore-repo-push-policy"
+                                        ]
+                                      },
+                                      "responsibleUserId": {
+                                        "type": "null"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id",
+                                      "responsibleUserId"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "kind",
-                                  "id"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "approvalRequestId": {
                                 "type": "string",

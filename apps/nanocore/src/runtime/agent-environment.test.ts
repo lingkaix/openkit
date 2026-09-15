@@ -138,6 +138,33 @@ function createTurnFixture(input: string) {
 }
 
 describe('agent environment package resolver', () => {
+  it('selects the built-in repository MCP only by an explicit manifest id', () => {
+    const resolve = (mcpIds: string[]) =>
+      resolveAgentEnvironmentPackage({
+        agentSetup: createTestSetup({ mcpIds }),
+        agentSessionId: 'session_repository',
+        backend: { kind: 'openshell' },
+        createdAt: '2026-09-15T00:00:00.000Z',
+        requestId: 'request_repository',
+        turn: createTurnFixture('Publish an admitted commit'),
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      });
+    expect(resolve([]).supply.mcpServers.some((server) => server.id === 'openkit-repository')).toBe(
+      false
+    );
+    expect(() => resolve(['openkit-repository'])).not.toThrow();
+    expect(resolve(['openkit-repository']).supply.mcpServers).toContainEqual(
+      expect.objectContaining({
+        id: 'openkit-repository',
+        allowedTools: ['repository_push_request_approval', 'repository_push_execute'],
+        approvalRequiredTools: [],
+        catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      })
+    );
+  });
+
   it('requires one explicit container backend', () => {
     const turn = createTurnFixture('Use the repository');
     const common = {

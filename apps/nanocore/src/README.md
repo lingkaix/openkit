@@ -16,7 +16,7 @@ This directory contains NanoCore's composition root and feature owners. `app.ts`
 - `index.ts` owns process boot and shutdown.
 - `telemetry.ts` owns optional stock-SDK request spans and bounded exporter lifecycle; canonical work, audit and evidence remain with their existing owners.
 - `openapi.ts` owns the explicit App API operation catalog and generated projection.
-- `*-routes.ts` files own cohesive public feature paths.
+- `*-routes.ts` files own cohesive public feature paths. `repository-routes.ts` also exposes its concrete Git push request and execution owners to the selected built-in MCP route, preserving the same host executor and command receipts.
 - `lib/store.ts` exposes the app-local product store while `storage/` owns durable record placement.
 
 ## Supporting Directories

@@ -1401,6 +1401,18 @@ describe('protocol schemas', () => {
     };
     expect(ItemSchema.safeParse(bootDenial).success).toBe(true);
     expect(ItemSchema.safeParse({ ...bootDenial, decision: 'granted' }).success).toBe(false);
+    const policyGrant = {
+      ...approvalDecision,
+      actor: { kind: 'system', id: 'nanocore-repo-push-policy', responsibleUserId: null },
+    };
+    expect(ItemSchema.safeParse(policyGrant).success).toBe(true);
+    expect(ItemSchema.safeParse({ ...policyGrant, decision: 'denied' }).success).toBe(false);
+    expect(
+      ItemSchema.safeParse({
+        ...policyGrant,
+        actor: { ...policyGrant.actor, responsibleUserId: 'user_demo' },
+      }).success
+    ).toBe(false);
     expect(
       ItemSchema.safeParse({
         ...bootDenial,

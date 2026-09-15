@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -686,17 +687,30 @@ describe('worker MCP routes', () => {
   it.each([
     {
       entry: 'direct Task',
+      repository: false,
+      decision: 'granted' as const,
       ownerCommand: 'task.start',
       path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
     },
     {
       entry: 'selected warm Worker conversation',
+      repository: false,
+      decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
       path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
     },
+    ...(['granted', 'denied'] as const).map((decision) => ({
+      entry: `repository ${decision}`,
+      repository: true,
+      decision,
+      ownerCommand: 'task.start',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
+    })),
   ])('runs a public $entry Gate and one approved successor call through the real worker lifecycle', async ({
     ownerCommand,
     path,
+    repository,
+    decision,
   }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-'));
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-repository-'));
@@ -708,7 +722,18 @@ describe('worker MCP routes', () => {
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     seedWritableGitRepository(repositoryPath);
-    const agentSetup = createTestAgentSetup({ mcpIds: ['echo'] });
+    const agentSetup = createTestAgentSetup({
+      mcpIds: [repository ? 'openkit-repository' : 'echo'],
+    });
+    const hostCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repositoryPath,
+      encoding: 'utf8',
+    }).trim();
+    if (repository)
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/fixture.git'], {
+        cwd: repositoryPath,
+      });
+    let repositoryApprovalId: string | null = null;
     const catalog = parseWorkspaceMcpServerCatalog({
       schemaVersion: 1,
       servers: [
@@ -981,7 +1006,9 @@ describe('worker MCP routes', () => {
       const client = new Client({ name: 'public-task-lifecycle-test', version: '1.0.0' });
       await client.connect(
         new StreamableHTTPClientTransport(
-          new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
+          new URL(
+            `http://nanocore.test/api/worker-capabilities/mcp/${repository ? 'openkit-repository' : 'echo'}`
+          ),
           {
             fetch: (request, init) => app.fetch(new Request(request, init)),
             requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
@@ -990,11 +1017,44 @@ describe('worker MCP routes', () => {
       );
       await client.listTools();
       const toolCall = await Promise.allSettled([
-        client.callTool({ arguments: { message: 'public-task' }, name: 'echo' }),
+        client.callTool(
+          repository
+            ? {
+                name: blocked ? 'repository_push_request_approval' : 'repository_push_execute',
+                arguments: blocked
+                  ? {
+                      requestId: '0190f4c8-0000-7000-8000-000000000504',
+                      resourceId: 'repo_default',
+                      sourceRef: hostCommit,
+                      targetBranch: 'feature/issue84',
+                      commitIds: [hostCommit],
+                    }
+                  : {
+                      requestId: '0190f4c8-0000-7000-8000-000000000505',
+                      resourceId: 'repo_default',
+                      approvalRequestId: repositoryApprovalId,
+                    },
+              }
+            : { arguments: { message: 'public-task' }, name: 'echo' }
+        ),
       ]);
       await client.close();
-      expect(toolCall[0]?.status).toBe(blocked ? 'rejected' : 'fulfilled');
-      if (blocked) {
+      expect(toolCall[0]?.status).toBe(blocked && !repository ? 'rejected' : 'fulfilled');
+      if (repository) {
+        expect(toolCall[0]).toMatchObject({
+          status: 'fulfilled',
+          value: {
+            structuredContent: blocked
+              ? { approval: { status: 'pending' } }
+              : { outcome: 'auth-failed' },
+          },
+        });
+        if (blocked && toolCall[0]?.status === 'fulfilled')
+          repositoryApprovalId = (
+            toolCall[0].value.structuredContent as { approval: { id: string } }
+          ).approval.id;
+      }
+      if (blocked && !repository) {
         expect(toolCall[0]).toMatchObject({
           reason: expect.objectContaining({ data: { code: 'mcp-denied' } }),
           status: 'rejected',
@@ -1076,7 +1136,21 @@ describe('worker MCP routes', () => {
       const repositoryResponse = await app.request(
         '/api/app/workspaces/ws_demo/repositories/default',
         {
-          body: JSON.stringify({ displayName: 'MCP Task repository', localPath: repositoryPath }),
+          body: JSON.stringify({
+            displayName: 'MCP Task repository',
+            localPath: repositoryPath,
+            ...(repository
+              ? {
+                  git: {
+                    authorEmail: null,
+                    authorName: null,
+                    commitOnApply: false,
+                    allowedPushTargets: ['feature/issue84'],
+                    requireReviewLinkage: false,
+                  },
+                }
+              : {}),
+          }),
           headers: { 'content-type': 'application/json' },
           method: 'PUT',
         }
@@ -1166,14 +1240,26 @@ describe('worker MCP routes', () => {
               item.approvalRequestId === firstGate.approvalRequestId
           )
       ).toMatchObject({
-        description:
-          'Allow one echo/echo MCP tool call. After approving, send a new task message to continue.',
+        description: repository
+          ? expect.stringContaining('to feature/issue84')
+          : 'Allow one echo/echo MCP tool call. After approving, send a new task message to continue.',
       });
+      const attentionResponse = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const attention = ListHumanAttentionResponseSchema.parse(await attentionResponse.json());
+      expect(attention.items).toContainEqual(
+        expect.objectContaining({
+          id: `approval:${firstGate.approvalRequestId}`,
+          actions: expect.arrayContaining([
+            expect.objectContaining({ kind: 'grant_approval' }),
+            expect.objectContaining({ kind: 'deny_approval' }),
+          ]),
+        })
+      );
       const approvalResponse = await app.request(
         `/api/approvals/${firstGate.approvalRequestId}/respond`,
         {
           body: JSON.stringify({
-            decision: 'granted',
+            decision,
             requestId: '0190f4c8-0000-7000-8000-000000000502',
             threadId: firstTask.turn.threadId,
             turnId: firstTask.turn.id,
@@ -1184,8 +1270,12 @@ describe('worker MCP routes', () => {
         }
       );
       expect(approvalResponse.status, await approvalResponse.clone().text()).toBe(200);
-      expect(store.getTurnById(firstTask.turn.id).status).toBe('completed');
-      expect(store.getAgentSession(firstRun.agentSessionId).status).toBe('closed');
+      expect(store.getTurnById(firstTask.turn.id).status).toBe(
+        decision === 'granted' ? 'completed' : 'interrupted'
+      );
+      expect(store.getAgentSession(firstRun.agentSessionId).status).toBe(
+        decision === 'granted' ? 'closed' : 'interrupted'
+      );
       const approvedWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
       expect(
         getWorkerCheckpoint(approvedWorkspaceDb, 'ws_demo', 'th_demo', firstTask.turn.id)
@@ -1206,6 +1296,18 @@ describe('worker MCP routes', () => {
           .map((receipt) => receipt.command)
       ).toEqual([ownerCommand]);
 
+      if (decision === 'denied') {
+        expect(store.getApproval(firstGate.approvalRequestId).status).toBe('denied');
+        expect(
+          store.getTurnEvents(firstTask.turn.id).filter((event) => event.event === 'turn.completed')
+        ).toContainEqual(
+          expect.objectContaining({ data: expect.objectContaining({ stopReason: 'aborted' }) })
+        );
+        approvedWorkspaceDb.sqlite.close();
+        return;
+      }
+      approvedWorkspaceDb.sqlite.close();
+      const originalApproval = store.getApproval(firstGate.approvalRequestId);
       let secondSettled = false;
       const secondRequest = app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         body: JSON.stringify({
@@ -1233,7 +1335,10 @@ describe('worker MCP routes', () => {
       expect(secondTask.turn.id).not.toBe(firstTask.turn.id);
       expect(secondRun.agentSessionId).not.toBe(firstRun.agentSessionId);
       expect(secondRun.toolCall[0]).toMatchObject({ status: 'fulfilled' });
-      expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
+      if (repository) {
+        expect(store.getApproval(firstGate.approvalRequestId)).toEqual(originalApproval);
+        expect(existsSync(callFile)).toBe(false);
+      } else expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
       expect(
         workspaceDb.sqlite
@@ -1253,14 +1358,14 @@ describe('worker MCP routes', () => {
              WHERE action = 'tool.use' AND reason_code = 'mcp_approval_grant_reauthorized'`
           )
           .get()
-      ).toEqual({ count: 1 });
+      ).toEqual({ count: repository ? 0 : 1 });
       expect(
         workspaceDb.sqlite
           .prepare(
             "SELECT quantity, unit FROM usage_records WHERE unit = 'tool_calls' ORDER BY rowid"
           )
           .all()
-      ).toEqual([{ quantity: 1, unit: 'tool_calls' }]);
+      ).toEqual(repository ? [] : [{ quantity: 1, unit: 'tool_calls' }]);
       workspaceDb.sqlite.close();
     } finally {
       await workerMcpGateway.close();
