@@ -246,12 +246,15 @@ replace_app() {
     sudo -n docker rename "${CONTAINER_NAME}" "${PREVIOUS_CONTAINER_NAME}"
   fi
 
+  mkdir -p "${DATA_ROOT}.backups"
+  chmod 700 "${DATA_ROOT}.backups"
   sudo -n docker run \
     --detach \
     --name "${CONTAINER_NAME}" \
     --restart unless-stopped \
     --network host \
     --volume "${DATA_ROOT}:/data/openkit" \
+    --volume "${DATA_ROOT}.backups:/data/openkit.backups" \
     --volume "${NANOHOST_CREDENTIALS_DIR}:/run/nanohost-credentials" \
     --mount "type=bind,src=${WEB_ROOT},dst=/srv/web,readonly" \
     --mount "type=bind,src=${APP_CADDYFILE},dst=/etc/caddy/Caddyfile,readonly" \
@@ -288,19 +291,20 @@ replace_app() {
   exit 1
 }
 
-# Recreate the current App when a required persistent Web or repository mount is absent.
+# Recreate the current App when a required persistent Web, repository, or backup mount is absent.
 ensure_app_mounts() {
-  local mounted_source repository_source
+  local mounted_source repository_source backup_source
   mounted_source="$(sudo -n docker inspect --format '{{range .Mounts}}{{if eq .Destination "/srv/web"}}{{.Source}}{{end}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
   repository_source="$(sudo -n docker inspect --format '{{range .Mounts}}{{if eq .Destination "/srv/repos"}}{{.Source}}{{end}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
-  if [[ "${mounted_source}" == "${WEB_ROOT}" && "${repository_source}" == "${LINKED_REPOS_DIR}" ]]; then
+  backup_source="$(sudo -n docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data/openkit.backups"}}{{.Source}}{{end}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
+  if [[ "${mounted_source}" == "${WEB_ROOT}" && "${repository_source}" == "${LINKED_REPOS_DIR}" && "${backup_source}" == "${DATA_ROOT}.backups" ]]; then
     return
   fi
   local current_image
   local current_commit
   current_image="$(sudo -n docker inspect --format '{{.Config.Image}}' "${CONTAINER_NAME}")"
   current_commit="$(sudo -n docker inspect --format '{{index .Config.Labels "org.openkit.staging.commit"}}' "${CONTAINER_NAME}")"
-  echo "Restoring persistent Web UI and repository mounts on the current App container."
+  echo "Restoring persistent Web UI, repository, and backup mounts on the current App container."
   replace_app "${current_image}" "${current_commit}"
 }
 

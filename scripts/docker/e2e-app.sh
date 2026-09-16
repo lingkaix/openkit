@@ -30,7 +30,7 @@ cleanup() {
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
   if [[ "${DATA_ROOT_CREATED}" == "1" ]]; then
-    rm -rf "${DATA_ROOT}"
+    rm -rf "${DATA_ROOT}" "${DATA_ROOT}.backups"
   fi
 }
 
@@ -102,11 +102,14 @@ NODE
 
 start_container() {
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  mkdir -p "${DATA_ROOT}.backups"
+  chmod 700 "${DATA_ROOT}.backups"
   docker run \
     --detach \
     --name "${CONTAINER_NAME}" \
     --publish "127.0.0.1:${PORT}:8080" \
     --volume "${DATA_ROOT}:/data/openkit" \
+    --volume "${DATA_ROOT}.backups:/data/openkit.backups" \
     --env OPENKIT_CORE_MODE=local \
     --env OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR=1 \
     --env "OPENKIT_APP_E2E_SECRET=${SECRET}" \

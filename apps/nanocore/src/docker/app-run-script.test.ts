@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -254,5 +254,50 @@ describe('app run script', () => {
     expect(result.status).toBe(1);
     expect(output).toContain('apiKey is not supported in app provider config');
     expect(output).toContain('secretRef');
+  });
+
+  it('bind-mounts the sibling data-root backup directory on docker run', async () => {
+    const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
+    const bin = await mkdtemp(join(tmpdir(), 'openkit-app-bin-'));
+    const argvPath = join(bin, 'docker-argv');
+    writeFileSync(
+      join(bin, 'docker'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == image && "\${2:-}" == inspect ]]; then
+  exit 0
+fi
+if [[ "\${1:-}" == rm ]]; then
+  exit 0
+fi
+if [[ "\${1:-}" == run ]]; then
+  printf '%s\\0' "\$@" > "\${DOCKER_ARGV_FILE}"
+  exit 0
+fi
+exit 99
+`
+    );
+    writeFileSync(join(bin, 'curl'), '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(join(bin, 'docker'), 0o755);
+    chmodSync(join(bin, 'curl'), 0o755);
+
+    const result = spawnSync('bash', [appRunScript], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+        DOCKER_ARGV_FILE: argvPath,
+        OPENKIT_APP_DATA_ROOT: dataRoot,
+        OPENKIT_APP_IMAGE: 'openkit/app:fixture',
+        OPENKIT_APP_CONTAINER: 'openkit-app-fixture',
+        OPENKIT_APP_PORT: '18099',
+      },
+    });
+
+    expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0);
+    const args = readFileSync(argvPath, 'utf8').split('\0').filter(Boolean);
+    expect(args).toContain(`${dataRoot}:/data/openkit`);
+    expect(args).toContain(`${dataRoot}.backups:/data/openkit.backups`);
+    expect(existsSync(`${dataRoot}.backups`)).toBe(true);
   });
 });

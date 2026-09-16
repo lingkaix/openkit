@@ -236,6 +236,12 @@ class RecordingEffects:
             "Mounts": [
                 {"Destination": "/data/openkit", "RW": True, "Source": self.data_root, "Type": "bind"},
                 {
+                    "Destination": "/data/openkit.backups",
+                    "RW": True,
+                    "Source": self.data_root + ".backups",
+                    "Type": "bind",
+                },
+                {
                     "Destination": "/run/nanohost-credentials",
                     "RW": True,
                     "Source": self.nanohost_dir,
@@ -966,6 +972,9 @@ class ApplyJobTests(unittest.TestCase):
             self.assertIn("--network", run)
             self.assertIn("host", run)
             self.assertTrue(any(item.startswith(effects.data_root + ":/data/openkit") for item in run))
+            self.assertTrue(
+                any(item.startswith(effects.data_root + ".backups:/data/openkit.backups") for item in run)
+            )
             self.assertTrue(any("/run/secrets/openkit-vault.key" in item for item in run))
             self.assertTrue(any("/run/nanohost-credentials" in item for item in run))
             self.assertIn(

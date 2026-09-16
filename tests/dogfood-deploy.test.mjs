@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -146,10 +146,12 @@ replace_app openkit/app:fixture fixture
     { FIXTURE: root }
   );
   assert.equal(result.status, 0, result.stderr);
+  assert.ok(existsSync(join(root, 'data.backups')));
   const args = readFileSync(join(root, 'argv'), 'utf8').split('\0').slice(0, -1);
   assert.equal(args.at(-1), 'openkit/app:fixture');
   for (const [option, value] of [
     ['--volume', `${root}/data:/data/openkit`],
+    ['--volume', `${root}/data.backups:/data/openkit.backups`],
     ['--volume', `${root}/credentials:/run/nanohost-credentials`],
     ['--mount', `type=bind,src=${root}/web,dst=/srv/web,readonly`],
     ['--mount', `type=bind,src=${root}/Caddyfile,dst=/etc/caddy/Caddyfile,readonly`],
@@ -298,6 +300,7 @@ for (const [repositorySource, replace] of [
 BASE_DIR="$FIXTURE"
 WEB_ROOT="$FIXTURE/web"
 LINKED_REPOS_DIR="$FIXTURE/workspaces-repos"
+DATA_ROOT="$FIXTURE/data"
 CONTAINER_NAME=app
 sudo() {
   case "$*" in
@@ -307,6 +310,7 @@ sudo() {
         correct) printf '%s' "$LINKED_REPOS_DIR" ;;
         wrong) printf '/wrong' ;;
       esac ;;
+    *'/data/openkit.backups'*) printf '%s' "$DATA_ROOT.backups" ;;
     *'Config.Image'*) printf 'openkit/app:retained' ;;
     *'Config.Labels'*) printf 'retained-commit' ;;
     *) return 99 ;;
@@ -328,3 +332,35 @@ ensure_app_mounts
     }
   });
 }
+
+test('Web update restores a missing persistent data-root backup mount', (t) => {
+  const root = fixture(t);
+  const result = runFunction(
+    'ensure_app_mounts',
+    `
+BASE_DIR="$FIXTURE"
+WEB_ROOT="$FIXTURE/web"
+LINKED_REPOS_DIR="$FIXTURE/workspaces-repos"
+DATA_ROOT="$FIXTURE/data"
+CONTAINER_NAME=app
+sudo() {
+  case "$*" in
+    *'/srv/web'*) printf '%s' "$WEB_ROOT" ;;
+    *'/srv/repos'*) printf '%s' "$LINKED_REPOS_DIR" ;;
+    *'/data/openkit.backups'*) ;;
+    *'Config.Image'*) printf 'openkit/app:retained' ;;
+    *'Config.Labels'*) printf 'retained-commit' ;;
+    *) return 99 ;;
+  esac
+}
+replace_app() { printf '%s\\n' "$*" > "$FIXTURE/replaced"; }
+ensure_app_mounts
+`,
+    { FIXTURE: root }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    readFileSync(join(root, 'replaced'), 'utf8'),
+    'openkit/app:retained retained-commit\n'
+  );
+});

@@ -93,6 +93,7 @@ def fixture_current_container_argv(
         "--restart", "unless-stopped", "--network", "host", "--runtime", "runc",
         "--log-opt", "max-size=10m", "--log-opt", "max-file=3",
         "--volume", "%s:/data/openkit" % data_root,
+        "--volume", "%s.backups:/data/openkit.backups" % data_root,
         "--volume", "%s:/run/nanohost-credentials" % nanohost,
         "--mount", "type=bind,src=%s,dst=/srv/web,readonly" % web_root,
         "--mount", "type=bind,src=%s,dst=/etc/caddy/Caddyfile,readonly" % caddy,
@@ -602,6 +603,8 @@ class FixtureAdmissionTests(unittest.TestCase):
         runtime_at = argv.index("--runtime")
         self.assertEqual(argv[runtime_at : runtime_at + 2], ["--runtime", "runc"])
         self.assertEqual(argv[0:3], ["docker", "run", "--detach"])
+        self.assertIn("/var/tmp/ok-upd-fx-standin/data:/data/openkit", argv)
+        self.assertIn("/var/tmp/ok-upd-fx-standin/data.backups:/data/openkit.backups", argv)
 
     def test_preserve_copies_receipts_and_journals_before_cleanup(self) -> None:
         source = inspect.getsource(AppUpdateHelperLiveTests.tearDown)

@@ -294,6 +294,8 @@ elif ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
 fi
 
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+mkdir -p "${DATA_ROOT}.backups"
+chmod 700 "${DATA_ROOT}.backups"
 docker_env_args=(
   --env OPENKIT_CORE_MODE=local
   --env OPENKIT_DATA_ROOT=/data/openkit
@@ -310,6 +312,7 @@ docker run \
   --name "${CONTAINER_NAME}" \
   --publish "127.0.0.1:${PORT}:8080" \
   --volume "${DATA_ROOT}:/data/openkit" \
+  --volume "${DATA_ROOT}.backups:/data/openkit.backups" \
   "${docker_env_args[@]}" \
   "${IMAGE}" >/dev/null
 

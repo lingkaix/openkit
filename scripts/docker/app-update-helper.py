@@ -76,6 +76,7 @@ CRITICAL_SUBSYSTEM_NAMES = frozenset({"config", "policy", "storage"})
 BOOT_STATES = frozenset({"degraded", "failed", "ready"})
 REQUIRED_MOUNT_DESTS = (
     "/data/openkit",
+    "/data/openkit.backups",
     "/run/nanohost-credentials",
     "/srv/web",
     "/etc/caddy/Caddyfile",
@@ -985,6 +986,7 @@ class AppUpdateHelper:
         mounts = {item.get("Destination"): item for item in inspect.get("Mounts") or [] if isinstance(item, dict)}
         expected = {
             "/data/openkit": (self.config["dataRoot"], True),
+            "/data/openkit.backups": ("%s.backups" % self.config["dataRoot"], True),
             "/run/nanohost-credentials": (self.config["nanohostCredentialsDir"], True),
             "/srv/web": (self.config["webAssetsDir"], False),
             "/etc/caddy/Caddyfile": (self.config["caddyfile"], False),
@@ -995,7 +997,7 @@ class AppUpdateHelper:
         if extra or missing:
             raise HelperError(
                 "app_update_invalid_request",
-                "App mounts are not the fixed A2 Data Root, sink, Web, Caddyfile, Vault key, and App-update SSH set.",
+                "App mounts are not the fixed A2 Data Root, backup, sink, Web, Caddyfile, Vault key, and App-update SSH set.",
             )
         for dest, (source, writable) in expected.items():
             item = mounts[dest]
@@ -1061,6 +1063,8 @@ class AppUpdateHelper:
             "host",
             "--volume",
             "%s:/data/openkit" % self.config["dataRoot"],
+            "--volume",
+            "%s.backups:/data/openkit.backups" % self.config["dataRoot"],
             "--volume",
             "%s:/run/nanohost-credentials" % self.config["nanohostCredentialsDir"],
             "--mount",
