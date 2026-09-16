@@ -288,18 +288,19 @@ replace_app() {
   exit 1
 }
 
-# Recreate the current App when its persistent Web mount is absent.
-ensure_web_mount() {
-  local mounted_source
+# Recreate the current App when a required persistent Web or repository mount is absent.
+ensure_app_mounts() {
+  local mounted_source repository_source
   mounted_source="$(sudo -n docker inspect --format '{{range .Mounts}}{{if eq .Destination "/srv/web"}}{{.Source}}{{end}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
-  if [[ "${mounted_source}" == "${WEB_ROOT}" ]]; then
+  repository_source="$(sudo -n docker inspect --format '{{range .Mounts}}{{if eq .Destination "/srv/repos"}}{{.Source}}{{end}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
+  if [[ "${mounted_source}" == "${WEB_ROOT}" && "${repository_source}" == "${LINKED_REPOS_DIR}" ]]; then
     return
   fi
   local current_image
   local current_commit
   current_image="$(sudo -n docker inspect --format '{{.Config.Image}}' "${CONTAINER_NAME}")"
   current_commit="$(sudo -n docker inspect --format '{{index .Config.Labels "org.openkit.staging.commit"}}' "${CONTAINER_NAME}")"
-  echo "Adding the persistent Web UI mount to the current App container."
+  echo "Restoring persistent Web UI and repository mounts on the current App container."
   replace_app "${current_image}" "${current_commit}"
 }
 
@@ -392,7 +393,7 @@ case "${TARGET}" in
     ;;
   web)
     build_web
-    ensure_web_mount
+    ensure_app_mounts
     printf '%s\n' "${commit}" >"${BASE_DIR}/current-web"
     echo "Web UI is live from ${commit}."
     ;;

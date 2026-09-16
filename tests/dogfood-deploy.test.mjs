@@ -36,7 +36,7 @@ REPO_DIR="$FIXTURE"
 ARTIFACT_DIR="$FIXTURE"
 NANOHOST_ENV_SOURCE="$FIXTURE/nanohost.env"
 SEED_IMAGE_HELPER="$FIXTURE/seed.py"
-MISE_BIN=/bin/true
+MISE_BIN=true
 commit=fixture
 uname() { printf '%s\\n' "$ARCH"; }
 tar() { printf '{"schemaVersion":2,"manifests":[{"digest":"%s"}]}\\n' "$WORKER_DIGEST"; }
@@ -284,3 +284,47 @@ sync_linked_repos
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /local changes/);
 });
+
+for (const [repositorySource, replace] of [
+  ['correct', false],
+  ['missing', true],
+  ['wrong', true],
+]) {
+  test(`Web update repairs ${repositorySource} repository mount without changing the image`, (t) => {
+    const root = fixture(t);
+    const result = runFunction(
+      'ensure_app_mounts',
+      `
+BASE_DIR="$FIXTURE"
+WEB_ROOT="$FIXTURE/web"
+LINKED_REPOS_DIR="$FIXTURE/workspaces-repos"
+CONTAINER_NAME=app
+sudo() {
+  case "$*" in
+    *'/srv/web'*) printf '%s' "$WEB_ROOT" ;;
+    *'/srv/repos'*)
+      case "$REPOSITORY_SOURCE" in
+        correct) printf '%s' "$LINKED_REPOS_DIR" ;;
+        wrong) printf '/wrong' ;;
+      esac ;;
+    *'Config.Image'*) printf 'openkit/app:retained' ;;
+    *'Config.Labels'*) printf 'retained-commit' ;;
+    *) return 99 ;;
+  esac
+}
+replace_app() { printf '%s\\n' "$*" > "$FIXTURE/replaced"; }
+ensure_app_mounts
+`,
+      { FIXTURE: root, REPOSITORY_SOURCE: repositorySource }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    if (replace) {
+      assert.equal(
+        readFileSync(join(root, 'replaced'), 'utf8'),
+        'openkit/app:retained retained-commit\n'
+      );
+    } else {
+      assert.throws(() => readFileSync(join(root, 'replaced')), { code: 'ENOENT' });
+    }
+  });
+}

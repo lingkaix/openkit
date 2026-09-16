@@ -20,7 +20,7 @@ install -m 0755 "$HOME/openkit/source/scripts/dogfood/deploy.sh" "$HOME/openkit/
 "$HOME/openkit/deploy.sh" all
 ```
 
-Run during an authorized maintenance window with active work coordinated. Targets are `web`, `nanocore`, `nanohost`, `linked-repos`, or `all` (default). The helper fetches main and records the deployed commit; it does not deploy the caller's arbitrary working tree. NanoHost updates remove `OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS` from the host source environment before installing `/etc/openkit/nanohost.env`; unrelated settings remain intact. Image verification and seeding remain separate from the session environment. App replacement keeps all bind mounts and environment arguments in one Docker invocation. Every target also fast-forwards clean public OpenKit checkouts under `$HOME/openkit/workspaces-repos` to `origin/main` and writes `$HOME/openkit/current-linked-repos`.
+Run during an authorized maintenance window with active work coordinated. Targets are `web`, `nanocore`, `nanohost`, `linked-repos`, or `all` (default). The helper fetches main and records the deployed commit; it does not deploy the caller's arbitrary working tree. NanoHost updates remove `OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS` from the host source environment before installing `/etc/openkit/nanohost.env`; unrelated settings remain intact. Image verification and seeding remain separate from the session environment. App replacement keeps all bind mounts and environment arguments in one Docker invocation. Web-only updates also check both the Web and repository bind mounts and recreate the current image if either mount is missing or points elsewhere. Keep the installed helper synchronized with the repository copy before every update; fetching application source does not replace an already-running old helper. Every target also fast-forwards clean public OpenKit checkouts under `$HOME/openkit/workspaces-repos` to `origin/main` and writes `$HOME/openkit/current-linked-repos`.
 
 ## Linked Workspace Repositories
 
@@ -50,3 +50,5 @@ node --test tests/dogfood-deploy.test.mjs
 ```
 
 The tests execute the helper's Bash functions with command doubles at external effect boundaries. They check platform digest selection and rejection, environment-file cleanup, and the actual Docker argument vector. They do not prove A2 readiness, build images, access production data, or start services.
+
+Worker Git data sources are separately pinned to exact commits. Refreshing the App or linked host checkout does not advance those pins. Use the deployment-admin Configuration editor or public Skill `runtime.file-read`, revision-bound `runtime.file-update`, and `runtime.reload` to select an obtainable commit for future sessions; existing session snapshots retain their accepted source. A missing Docker bind mount requires the host operator and this deployment helper, not a repository-path API edit or an in-product administrator token.

@@ -50,6 +50,12 @@ Activation sends the exact resolved candidate, Agent target, configuration revis
 
 Use `administration.conversation-submit` for the private built-in administration Assistant. Retain its returned Thread identity for subsequent administration submissions. Ordinary conversation and administration are separate entry paths; the Assistant may inspect and prepare, while activation and purge remain human-confirmed public commands. It never needs an administrator token in its prompt. The separately installed `openkit-ops` Skill explains image changes, whole-volume retention, backups and authorized host recovery without adding host privileges to this client.
 
+## Diagnose a missing repository or stale Worker source
+
+A host-linked repository and a Worker Git data source are separate inputs. Use `repository.list` and `repository.diagnostics` to inspect the former; a ready App does not prove that its container can see the repository. A wrong resource path can be corrected through the existing repository configuration surface with its required authority. An absent container bind mount requires the deployment operator and host tooling; a server-admin token or the built-in administration Assistant does not grant Docker or SSH authority. Use the independent `openkit-ops` Skill for that host boundary.
+
+A Worker Git source intentionally selects an immutable commit. Updating the App or the host checkout does not advance that source. With deployment-admin authority, read the Workspace data-source configuration using `runtime.file-read`, retain its exact revision, and change only the intended locator commit to an obtainable revision through `runtime.file-update`. Inspect the write result and re-read the file. Run `runtime.reload` with `dryRun: true` first, then apply the supported safe reload and inspect its result. Workspace data sources are session-scoped: the updated source applies to future sessions, while accepted existing session snapshots retain their original source. Verify a new Worker's reported checkout revision before claiming the repair complete. The Web Configuration editor uses the same configuration and reload boundary. The administration Assistant may diagnose or prepare supported changes, but never bypasses payload-bound human confirmation.
+
 ## Operate repositories and portable data
 
 Confirm repository identity, branch or target, and the requested Git effect before a write or push. Treat repository diagnostics and approvals as gates, not suggestions.
