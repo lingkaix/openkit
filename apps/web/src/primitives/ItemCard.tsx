@@ -29,7 +29,7 @@ export interface ItemCardProps {
  * Item card (`ok-item-card`, DESIGN.md §9.1).
  *
  * A soft 10px card for in-stream system events — mode transitions, task status,
- * approvals, results. The leading glyph (`ok-item-glyph`) badges its kind.
+ * approvals, results. The leading glyph (`ok-item-glyph`) badges its kind; titles and metadata wrap without losing long names.
  */
 export function ItemCard({ kind, title, meta, actions, children }: ItemCardProps) {
   return (
@@ -42,8 +42,8 @@ export function ItemCard({ kind, title, meta, actions, children }: ItemCardProps
           <Icon name={KIND_ICON[kind]} size="sm" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-bold text-fg-strong">{title}</p>
-          {meta ? <p className="mt-0.5 text-xs text-fg-muted">{meta}</p> : null}
+          <p className="break-words text-sm font-bold text-fg-strong">{title}</p>
+          {meta ? <p className="mt-0.5 break-words text-xs text-fg-muted">{meta}</p> : null}
           {children ? <div className="mt-2 text-sm text-fg">{children}</div> : null}
         </div>
       </div>

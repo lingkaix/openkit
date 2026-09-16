@@ -2975,6 +2975,30 @@ describe('conversation artifact inspection', () => {
     updatedAt: reference.createdAt,
   });
 
+  it('distinguishes saved outputs from file-change records in the side panel and stream', async () => {
+    const path = `src/${'long_file_name_'.repeat(12)}.ts`;
+    const file = ItemSchema.parse({
+      ...ITEMS[0],
+      id: 'file-change',
+      type: 'file-change',
+      path,
+      changeKind: 'modified',
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({
+        listThreadItems: vi.fn().mockResolvedValue({ items: [reference, file], nextCursor: null }),
+      })
+    );
+    const panel = await screen.findByRole('complementary', { name: 'Side panel' });
+    expect(await within(panel).findByText('Saved output · Version 1')).toBeInTheDocument();
+    expect(within(panel).getByText('File change · modified')).toBeInTheDocument();
+    expect(within(panel).getByText(reference.title)).toBeVisible();
+    expect(within(panel).getByText(path)).toBeVisible();
+    expect(screen.getAllByText('Saved output · Version 1')).toHaveLength(2);
+    expect(screen.getAllByText('File change · modified')).toHaveLength(2);
+  });
+
   it('opens the referenced content from both the stream and side panel only on demand', async () => {
     const user = userEvent.setup();
     const getArtifact = vi.fn().mockResolvedValue(artifact);
@@ -3076,6 +3100,7 @@ describe('conversation artifact inspection', () => {
     const dialog = await screen.findByRole('dialog');
     expect(await within(dialog).findByText('example.txt')).toBeInTheDocument();
     expect(within(dialog).getByText('+new line')).toBeInTheDocument();
+    expect(within(dialog).getByText('Type: Workspace change review')).toBeInTheDocument();
     expect(
       within(dialog).getByText(/Current review decisions are available in Workspace changes/)
     ).toBeInTheDocument();

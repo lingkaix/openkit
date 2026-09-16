@@ -12,7 +12,7 @@ export function ArtifactReference({ item }: { item: ArtifactReferenceItem }) {
     <ItemCard
       kind="neutral"
       title={item.title}
-      meta={item.summary ?? undefined}
+      meta={`Saved output · Version ${item.artifactVersion}`}
       actions={
         <Modal
           trigger={
@@ -29,7 +29,9 @@ export function ArtifactReference({ item }: { item: ArtifactReferenceItem }) {
           </Dialog>
         </Modal>
       }
-    />
+    >
+      {item.summary ? <p className="break-words text-xs text-fg-muted">{item.summary}</p> : null}
+    </ItemCard>
   );
 }
 
@@ -71,6 +73,9 @@ function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
   return (
     <div className="flex min-w-0 flex-col gap-3 break-words">
       <p className="text-xs text-fg-muted">Version {artifact.data.version}</p>
+      <p className="text-xs text-fg-muted">
+        Type: {review ? 'Workspace change review' : artifact.data.kind}
+      </p>
       {review ? (
         <>
           <p>

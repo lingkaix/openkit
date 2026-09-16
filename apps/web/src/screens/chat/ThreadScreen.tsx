@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
-  ArtifactRow,
   Button,
   Composer,
   type ComposerDraft,
@@ -16,7 +15,6 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
-import { ArtifactReference } from '../artifacts/ArtifactReference';
 import { createRequestId, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
 import {
   chatKeys,
@@ -34,6 +32,7 @@ import {
   useTurnFeedback,
   useWorkspaces,
 } from './data';
+import { ItemView } from './ItemView';
 import { ThreadStream } from './ThreadStream';
 
 /** Right Side panel — Thread Artifact and file-change index (DESIGN.md §3.3, D-006). */
@@ -45,21 +44,17 @@ function SidePanel({ workspaceId, threadId }: { workspaceId: string | null; thre
   return (
     <aside
       aria-label="Side panel"
-      className="w-60 shrink-0 border-l border-separator bg-layer-1 p-3"
+      className="w-60 shrink-0 overflow-y-auto border-l border-separator bg-layer-1 p-3"
     >
-      <Eyebrow>Side panel</Eyebrow>
-      <p className="mt-1 text-xs text-fg-muted">Artifact and file-change index for this Thread.</p>
+      <Eyebrow>Conversation outputs</Eyebrow>
+      <p className="mt-1 text-xs text-fg-muted">
+        Saved outputs and file-change records from this conversation.
+      </p>
       <div className="mt-2 flex flex-col gap-1">
         {artifacts.length === 0 ? (
-          <p className="text-xs text-fg-muted">No artifacts yet.</p>
+          <p className="text-xs text-fg-muted">No outputs or file changes yet.</p>
         ) : (
-          artifacts.map((item) =>
-            item.type === 'artifact-reference' ? (
-              <ArtifactReference key={`${item.workspaceId}:${item.id}`} item={item} />
-            ) : (
-              <ArtifactRow key={item.id} name={item.path} icon="file" />
-            )
-          )
+          artifacts.map((item) => <ItemView key={`${item.workspaceId}:${item.id}`} item={item} />)
         )}
       </div>
     </aside>

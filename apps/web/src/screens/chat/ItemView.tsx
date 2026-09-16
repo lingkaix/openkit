@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-  ArtifactRow,
   AssistantMessage,
   Button,
   ErrorBanner,
@@ -388,7 +387,9 @@ export function ItemView({
       );
 
     case 'file-change':
-      return <ArtifactRow name={item.path} icon="file" time={item.changeKind} />;
+      return (
+        <ItemCard kind="neutral" title={item.path} meta={`File change · ${item.changeKind}`} />
+      );
 
     case 'tool-call':
       return <ItemCard kind="informative" title={item.tool} meta={item.server ?? undefined} />;
