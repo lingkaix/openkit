@@ -41,6 +41,8 @@ Settings Administration **Workspace access recovery** at `/settings/workspace-ac
 
 Settings **App update** projects deployment-admin prepare, start and status operations through `client.app`. It is scoped to the deployment, independent of the selected Workspace. The administrator reviews an immutable prepared source and explicitly consents to maintenance; the host receipt owns the result across App restarts. The deployed host helper must be configured before this surface can perform an update.
 
+The shared Composer begins directly with the message input on starter, Chat, Task, and Goal surfaces. Conversation titles and mode labels do not consume input-box space; selected attachments remain removable below the input.
+
 ## Stack
 
 Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md):

@@ -5,7 +5,6 @@ import { useConnection } from '../../app/core-client';
 import {
   Button,
   Composer,
-  ContextChip,
   EmptyState,
   ErrorBanner,
   PhaseStepper,
@@ -244,7 +243,6 @@ export function GoalScreen() {
           ) : null}
           <Composer
             placeholder="Steer the goal — a nudge lands in the Thread lens"
-            chips={<ContextChip>Steer</ContextChip>}
             disabledReason={disconnected ? "Couldn't reach the local runtime." : undefined}
             onSubmit={(draft) => steer.mutateAsync(draft.input)}
           />

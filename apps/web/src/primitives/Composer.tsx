@@ -2,7 +2,6 @@ import type { ConversationTargetCatalog } from '@openkit/app-api-schemas';
 import {
   type FormEvent,
   type KeyboardEvent,
-  type ReactNode,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -39,7 +38,6 @@ export interface ComposerDraft {
 
 export interface ComposerProps {
   placeholder?: string;
-  chips?: ReactNode;
   size?: 'dock' | 'starter';
   disabledReason?: string;
   targetCatalog?: ConversationTargetCatalog | null;
@@ -51,7 +49,6 @@ export interface ComposerProps {
 /** Shared target-aware Composer used by starter and active Thread surfaces. */
 export function Composer({
   placeholder = 'Describe what you need — from a quick question to a whole project',
-  chips,
   disabledReason,
   targetCatalog,
   artifacts = [],
@@ -162,7 +159,6 @@ export function Composer({
       aria-disabled={disabled}
       className="relative flex flex-col rounded-ok-xl border border-border bg-card p-3 shadow-ok-card"
     >
-      {chips ? <div className="mb-2 flex flex-wrap items-center gap-1.5">{chips}</div> : null}
       <textarea
         ref={textareaRef}
         value={value}

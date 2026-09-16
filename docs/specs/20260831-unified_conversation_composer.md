@@ -39,7 +39,7 @@ The product label `New Shard + Worker` means "create a linked Task execution Thr
 
 ## Composer Interaction Contract
 
-The shared Composer is one rounded container with an upper text-entry region and a fixed lower action row. The text area initially accommodates approximately two and one-half lines, grows with its measured content until `min(240px, 40vh)`, and then scrolls internally without moving the action row. The lower row contains, from left to right, the Artifact or supported text-file action, the conversation-target selector, flexible space, the logical-model selector, and the circular Send action.
+The shared Composer is one rounded container with an upper text-entry region and a fixed lower action row. It starts directly with text entry; no title, Thread name, or mode-label row appears above the input on starter, active Thread, or Goal surfaces. The text area initially accommodates approximately two and one-half lines, grows with its measured content until `min(240px, 40vh)`, and then scrolls internally without moving the action row. The lower row contains, from left to right, the Artifact or supported text-file action, the conversation-target selector, flexible space, the logical-model selector, and the circular Send action.
 
 The target selector may show the built-in Assistant, a running Goal Orchestrator, the Workspace Knowledge Manager, pinned reusable Worker supply with warm availability, running Workers, and `New Shard + Worker`. The model selector shows only logical models admitted for the selected target; changing the target preserves the model only when it remains admitted. Selected Artifacts appear as removable context chips between the text region and the action row.
 

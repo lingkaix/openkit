@@ -7,7 +7,6 @@ import {
   ChannelTag,
   CodeView,
   Composer,
-  ContextChip,
   CountBadge,
   Dialog,
   DiffView,
@@ -255,15 +254,7 @@ export function Gallery() {
       </Specimen>
 
       <Specimen title="Composer">
-        <Composer
-          chips={
-            <>
-              <ContextChip>Market research</ContextChip>
-              <ContextChip>Goal mode</ContextChip>
-              <ContextChip>Opus 4.8</ContextChip>
-            </>
-          }
-        />
+        <Composer />
       </Specimen>
 
       <Specimen title="System states">

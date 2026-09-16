@@ -6,7 +6,6 @@ import {
   Button,
   Composer,
   type ComposerDraft,
-  ContextChip,
   EmptyState,
   ErrorBanner,
   Eyebrow,
@@ -456,7 +455,6 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               </p>
             ) : null}
             <Composer
-              chips={<ContextChip>{title}</ContextChip>}
               targetCatalog={
                 taskDefaultTarget && targets.data
                   ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }

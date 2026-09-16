@@ -4,7 +4,6 @@ import { useConnection } from '../../app/core-client';
 import {
   Composer,
   type ComposerDraft,
-  ContextChip,
   EmptyState,
   ErrorBanner,
   ListRow,
@@ -96,7 +95,6 @@ export function ChatStarter() {
 
       <Composer
         size="starter"
-        chips={<ContextChip>New chat</ContextChip>}
         targetCatalog={targets.data ?? null}
         artifacts={(artifacts.data ?? []).map((artifact) => ({
           id: artifact.id,
