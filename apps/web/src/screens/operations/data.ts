@@ -135,6 +135,17 @@ export function authorizedWorkspaceId(
 }
 
 /**
+ * Builds an Artifacts inventory deep link that retains Workspace and Artifact identity.
+ *
+ * @param workspaceId Workspace that owns the Artifact.
+ * @param artifactId Artifact to open in the existing inventory preview.
+ * @returns Artifacts route carrying the complete owner tuple.
+ */
+export function artifactInventoryPath(workspaceId: string, artifactId: string): string {
+  return `/artifacts?${new URLSearchParams({ workspaceId, artifact: artifactId }).toString()}`;
+}
+
+/**
  * Resolves one search hit to an in-app route.
  *
  * @param hit Product-safe search hit.
@@ -149,7 +160,9 @@ export function pathForSearchHit(hit: AppSearchHit): string {
     case 'knowledge':
       return '/knowledge';
     case 'artifact':
-      return '/artifacts';
+      return hit.workspaceId && hit.id
+        ? artifactInventoryPath(hit.workspaceId, hit.id)
+        : '/artifacts';
     case 'item':
       return hit.threadId && hit.workspaceId
         ? chatThreadPath(hit.workspaceId, hit.threadId)

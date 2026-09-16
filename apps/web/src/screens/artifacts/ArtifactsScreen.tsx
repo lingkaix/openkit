@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { TextField as AriaTextField, Label, TextArea } from 'react-aria-components';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   ArtifactRow,
@@ -16,6 +16,7 @@ import {
   type StatusTone,
   TextField,
 } from '../../primitives';
+import { artifactInventoryPath } from '../operations/data';
 import {
   type ArtifactImportInput,
   type ArtifactIntroduceInput,
@@ -108,9 +109,18 @@ function ImportContentField(props: {
 /** Live selected-Workspace Artifact inventory, exact read, import, and introduction. */
 export function ArtifactsScreen() {
   const workspaces = useWorkspaces();
-  const workspaceId = useCurrentWorkspaceId();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const requestedWorkspaceId = searchParams.get('workspaceId')?.trim() || null;
+  const requestedArtifactId = searchParams.get('artifact')?.trim() || null;
+  const workspaceId = useCurrentWorkspaceId(requestedWorkspaceId);
   const workspaceIdRef = useRef(workspaceId);
   workspaceIdRef.current = workspaceId;
+  const requestedWorkspaceUnknown = Boolean(
+    requestedWorkspaceId &&
+      workspaces.isSuccess &&
+      !workspaces.data.some((workspace) => workspace.id === requestedWorkspaceId)
+  );
   const artifacts = useArtifacts(workspaceId);
   const threads = useThreads(workspaceId);
   const importArtifact = useImportWorkspaceArtifact();
@@ -121,12 +131,20 @@ export function ArtifactsScreen() {
   const [title, setTitle] = useState('');
   const [mediaType, setMediaType] = useState('');
   const [content, setContent] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [threadId, setThreadId] = useState('');
   const [listDeniedUntilSettled, setListDeniedUntilSettled] = useState(false);
-  const selected = useArtifact(workspaceId, selectedId ?? '');
   const listDenied = isWorkspaceAccessDenied(artifacts.error);
   const hideCachedArtifacts = !artifacts.isSuccess && (listDenied || listDeniedUntilSettled);
+  const visibleItems = hideCachedArtifacts || artifacts.data === undefined ? [] : artifacts.data;
+  const catalogAuthorized = artifacts.isSuccess && !hideCachedArtifacts;
+  const selectedId =
+    catalogAuthorized &&
+    requestedArtifactId &&
+    visibleItems.some((item) => item.id === requestedArtifactId)
+      ? requestedArtifactId
+      : null;
+  const selected = useArtifact(workspaceId, selectedId ?? '');
+  const unavailableArtifact = Boolean(catalogAuthorized && requestedArtifactId && !selectedId);
 
   // Workspace identity is the reset trigger even though its bytes are not rendered here.
   // biome-ignore lint/correctness/useExhaustiveDependencies: clear workspace-bound form and command state on selection change
@@ -135,7 +153,6 @@ export function ArtifactsScreen() {
     setTitle('');
     setMediaType('');
     setContent('');
-    setSelectedId(null);
     setThreadId('');
     setListDeniedUntilSettled(false);
     importArtifact.reset();
@@ -154,11 +171,19 @@ export function ArtifactsScreen() {
     setTitle('');
     setMediaType('');
     setContent('');
-    setSelectedId(null);
     setThreadId('');
     importArtifact.reset();
     introduceArtifact.reset();
+    if (requestedArtifactId || requestedWorkspaceId) {
+      navigate('/artifacts', { replace: true });
+    }
   }, [listDenied, artifacts.isSuccess]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: drop introduction draft when the listed selection identity changes
+  useEffect(() => {
+    introduceArtifact.reset();
+    setThreadId('');
+  }, [selectedId]);
 
   function resetImportForm() {
     setImporting(false);
@@ -249,11 +274,12 @@ export function ArtifactsScreen() {
   }
 
   function openArtifact(id: string) {
+    if (!workspaceId) return;
     if (id !== selectedId) {
       introduceArtifact.reset();
       setThreadId('');
     }
-    setSelectedId(id);
+    navigate(artifactInventoryPath(workspaceId, id));
   }
 
   if (!workspaces.isSuccess) {
@@ -270,6 +296,15 @@ export function ArtifactsScreen() {
         ) : (
           <Skeleton lines={8} />
         )}
+      </Page>
+    );
+  }
+
+  if (requestedWorkspaceUnknown) {
+    return (
+      <Page>
+        <PageHeader title="Artifacts" />
+        <EmptyState icon="file" title="That workspace isn't available" />
       </Page>
     );
   }
@@ -446,12 +481,14 @@ export function ArtifactsScreen() {
         </ul>
       )}
 
-      {selectedId ? (
+      {selectedId || unavailableArtifact ? (
         <Card className="flex flex-col gap-3">
           {listedItem ? (
             <p className="text-xs text-fg-muted">Version {listedItem.version}</p>
           ) : null}
-          {listedItem && selected.isError ? (
+          {unavailableArtifact ? (
+            <EmptyState icon="file" title="That artifact isn't available" />
+          ) : listedItem && selected.isError ? (
             <ErrorBanner
               message="Couldn't load that artifact."
               onRetry={() => void selected.refetch()}

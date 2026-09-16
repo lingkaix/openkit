@@ -18,7 +18,8 @@ import { Sidebar } from './Sidebar';
 
 /** Exposes navigation as rendered state without substituting router behavior. */
 function Location() {
-  return <output aria-label="Location">{useLocation().pathname}</output>;
+  const location = useLocation();
+  return <output aria-label="Location">{`${location.pathname}${location.search}`}</output>;
 }
 
 /** Uses the real submission hook so pending progress is scoped to the originating conversation. */
@@ -189,6 +190,46 @@ describe('conversation navigation sidebar', () => {
     await user.click(await screen.findByRole('menuitem', { name: 'Settings' }));
     expect(screen.getByLabelText('Location')).toHaveTextContent('/settings/account');
     expect(screen.getByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument();
+    queryClient.clear();
+  });
+
+  it('clears Artifacts identity query when switching Workspace and keeps the new selection', async () => {
+    const user = userEvent.setup();
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    const client = {
+      core: {
+        listWorkspaces: async () => ({
+          items: [
+            { id: 'ws1', name: 'Market research', kind: 'general' },
+            { id: 'ws2', name: 'Ops workspace', kind: 'general' },
+          ],
+        }),
+      },
+      app: { listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }) },
+    } as unknown as CoreClient;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>
+          <MemoryRouter initialEntries={['/artifacts?workspaceId=ws1&artifact=artifact_weekly']}>
+            <Sidebar />
+            <Location />
+          </MemoryRouter>
+        </CoreClientProvider>
+      </QueryClientProvider>
+    );
+
+    expect(await screen.findByRole('button', { name: 'Market research' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Location')).toHaveTextContent(
+      '/artifacts?workspaceId=ws1&artifact=artifact_weekly'
+    );
+    await user.click(screen.getByRole('button', { name: 'Market research' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Ops workspace' }));
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws2');
+    expect(screen.getByLabelText('Location')).toHaveTextContent('/artifacts');
+    expect(screen.getByLabelText('Location')).not.toHaveTextContent('workspaceId');
+    expect(screen.getByLabelText('Location')).not.toHaveTextContent('artifact=');
+    expect(screen.getByRole('button', { name: 'Ops workspace' })).toBeInTheDocument();
     queryClient.clear();
   });
 });

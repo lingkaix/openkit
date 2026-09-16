@@ -18,6 +18,7 @@ import { isSurfaceLive } from '../../app/flags';
 import { AppRoutes } from '../../app/routes';
 import { surfaceById } from '../../app/surfaces';
 import { useWorkspaceStore } from '../workspace-store';
+import { pathForSearchHit } from './data';
 
 const TIMESTAMP = '2026-07-21T12:00:00.000Z';
 const HOST_PATH = '/Users/secret/openkit-runtime';
@@ -268,6 +269,42 @@ const SEARCH_WORKSPACE = {
   secret: POISON_SECRET,
   localPath: HOST_PATH,
 };
+const SEARCH_ARTIFACT_BODY = 'Exact artifact-search preview body';
+const SEARCH_ARTIFACT_DISTRACTOR_BODY = 'Unrelated artifact must stay closed';
+const SEARCH_ARTIFACT = {
+  ...AppSearchResponseSchema.parse({
+    items: [
+      {
+        kind: 'artifact',
+        id: 'artifact_search_weekly',
+        title: 'Weekly competitor summary',
+        workspaceId: WORKSPACE_B.id,
+      },
+    ],
+  }).items[0]!,
+  secret: POISON_SECRET,
+  localPath: HOST_PATH,
+};
+const SEARCH_ARTIFACT_DISTRACTOR = {
+  id: 'artifact_search_distractor',
+  kind: 'file' as const,
+  status: 'ready' as const,
+  title: 'Ops distractor file',
+  summary: 'Distractor summary',
+  version: 1,
+};
+const SEARCH_ARTIFACT_RECORD = {
+  id: SEARCH_ARTIFACT.id,
+  workspaceId: WORKSPACE_B.id,
+  kind: 'report' as const,
+  status: 'ready' as const,
+  title: SEARCH_ARTIFACT.title,
+  summary: 'One-page research summary.',
+  version: 1,
+  content: { format: 'markdown' as const, body: SEARCH_ARTIFACT_BODY },
+  origin: { kind: 'turn-output' as const },
+};
+const SEARCH_ARTIFACT_DESTINATION = `/artifacts?workspaceId=${WORKSPACE_B.id}&artifact=${SEARCH_ARTIFACT.id}`;
 const WORKER_RELEASE_ACTION = /release checkpoint|fresh attempt/i;
 const WORKER_RETRY_SUCCESS = RetryInterruptedWorkerCheckpointResponseSchema.parse({
   outcome: 'released_for_retry',
@@ -344,7 +381,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
 
 function LocationProbe({ onChange }: { onChange: (pathname: string) => void }) {
   const location = useLocation();
-  onChange(location.pathname);
+  onChange(`${location.pathname}${location.search}`);
   return null;
 }
 
@@ -1906,6 +1943,75 @@ describe('Recovery and search', () => {
       expect(vi.mocked(client.app.listConversationNavigation)).toHaveBeenCalledWith(WORKSPACE_B.id)
     );
     expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
+    unsubscribe();
+    poisonDom();
+  });
+
+  it('binds Artifact search paths to Workspace and Artifact identity', () => {
+    expect(pathForSearchHit(SEARCH_ARTIFACT)).toBe(SEARCH_ARTIFACT_DESTINATION);
+    expect(pathForSearchHit({ ...SEARCH_ARTIFACT, workspaceId: undefined })).toBe('/artifacts');
+    expect(pathForSearchHit({ ...SEARCH_ARTIFACT, id: '' })).toBe('/artifacts');
+  });
+
+  it('selects an Artifact search-hit Workspace and opens that exact preview from a reloadable URL', async () => {
+    const user = userEvent.setup();
+    const events: string[] = [];
+    const unsubscribe = useWorkspaceStore.subscribe((state) => {
+      if (state.currentWorkspaceId === WORKSPACE_B.id) events.push('workspace');
+    });
+    let pathname = '';
+    const listArtifacts = vi.fn().mockImplementation((workspaceId: string) =>
+      Promise.resolve({
+        items:
+          workspaceId === WORKSPACE_B.id
+            ? [
+                {
+                  id: SEARCH_ARTIFACT.id,
+                  kind: 'report',
+                  status: 'ready',
+                  title: SEARCH_ARTIFACT.title,
+                  summary: 'One-page research summary.',
+                  version: 1,
+                },
+                SEARCH_ARTIFACT_DISTRACTOR,
+              ]
+            : [],
+      })
+    );
+    const getArtifact = vi.fn().mockImplementation((workspaceId: string, artifactId: string) => {
+      if (workspaceId === WORKSPACE_B.id && artifactId === SEARCH_ARTIFACT.id) {
+        return Promise.resolve(SEARCH_ARTIFACT_RECORD);
+      }
+      return Promise.reject(new Error(`Artifact not found: ${artifactId}`));
+    });
+    const client = makeClient(
+      { search: vi.fn().mockResolvedValue({ items: [SEARCH_ARTIFACT] }) },
+      { listArtifacts, getArtifact }
+    );
+    renderApp('/chat', client, (next) => {
+      pathname = next;
+      if (next === SEARCH_ARTIFACT_DESTINATION) events.push('navigate');
+    });
+
+    expect(SEARCH_ARTIFACT.kind).toBe('artifact');
+    expect(SEARCH_ARTIFACT.workspaceId).toBe(WORKSPACE_B.id);
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
+    ).toBeInTheDocument();
+    await submitSearch(user);
+    expect(await screen.findByRole('button', { name: SEARCH_ARTIFACT.title })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: SEARCH_ARTIFACT.title }));
+    await waitFor(() => expect(pathname).toBe(SEARCH_ARTIFACT_DESTINATION));
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE_B.id);
+    expect(events).toEqual(['workspace', 'navigate']);
+    await waitFor(() => expect(listArtifacts).toHaveBeenCalledWith(WORKSPACE_B.id));
+    await waitFor(() =>
+      expect(getArtifact.mock.calls).toEqual([[WORKSPACE_B.id, SEARCH_ARTIFACT.id]])
+    );
+    expect(await screen.findByText(SEARCH_ARTIFACT_BODY)).toBeInTheDocument();
+    expect(screen.queryByText(SEARCH_ARTIFACT_DISTRACTOR_BODY)).not.toBeInTheDocument();
+    expect(screen.queryByText(SEARCH_ARTIFACT_DISTRACTOR.title)).toBeInTheDocument();
     unsubscribe();
     poisonDom();
   });

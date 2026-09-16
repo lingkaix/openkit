@@ -40,6 +40,12 @@ function isLineageDetailPath(pathname: string): boolean {
   return /^\/(chat|tasks|goals|materials)\//.test(pathname);
 }
 
+/** True when Artifacts inventory currently carries Workspace or Artifact identity. */
+function hasArtifactIdentityQuery(search: string): boolean {
+  const params = new URLSearchParams(search);
+  return Boolean(params.get('workspaceId')?.trim() || params.get('artifact')?.trim());
+}
+
 function NavSection({
   group,
   heading,
@@ -119,7 +125,7 @@ function BrandSearch() {
  * Identity lives inside Settings, not a stacked user row (D-002).
  */
 export function Sidebar() {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const navigate = useNavigate();
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId();
@@ -145,6 +151,8 @@ export function Sidebar() {
     setWorkspaceId(nextWorkspaceId);
     if (isLineageDetailPath(pathname)) {
       navigate('/chat');
+    } else if (pathname === '/artifacts' && hasArtifactIdentityQuery(search)) {
+      navigate('/artifacts');
     }
   }
 

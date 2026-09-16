@@ -628,6 +628,57 @@ describe('Artifacts', () => {
     expect(isSurfaceLive(surface!)).toBe(true);
   });
 
+  it('opens the exact Artifact from a reloadable inventory URL and ignores other listed rows', async () => {
+    const { client } = renderApp(
+      `/artifacts?workspaceId=${WORKSPACE.id}&artifact=${ARTIFACT.id}`,
+      makeClient()
+    );
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Artifacts' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(vi.mocked(client.core.getArtifact).mock.calls).toEqual([[WORKSPACE.id, ARTIFACT.id]])
+    );
+    expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
+    expect(screen.queryByText(IMPORTED_ARTIFACT.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(ARTIFACT_B.content.body)).not.toBeInTheDocument();
+    assertNoLeakedInternals();
+  });
+
+  it.each([
+    {
+      name: 'a missing Artifact identity',
+      path: `/artifacts?workspaceId=${WORKSPACE.id}&artifact=artifact_missing`,
+      expectCatalog: true,
+    },
+    {
+      name: 'an Artifact identity from another Workspace',
+      path: `/artifacts?workspaceId=${WORKSPACE.id}&artifact=${ARTIFACT_B.id}`,
+      expectCatalog: true,
+    },
+    {
+      name: 'an unknown Workspace identity',
+      path: `/artifacts?workspaceId=ws_unknown&artifact=${ARTIFACT.id}`,
+      expectCatalog: false,
+    },
+  ])('does not open an unrelated Artifact for $name', async ({ path, expectCatalog }) => {
+    const { client } = renderApp(path, makeClient());
+
+    if (expectCatalog) {
+      expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
+      expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
+      expect(screen.getByText("That artifact isn't available")).toBeInTheDocument();
+    } else {
+      expect(await screen.findByText("That workspace isn't available")).toBeInTheDocument();
+      expect(screen.queryByText(ARTIFACT.title)).not.toBeInTheDocument();
+      expect(screen.queryByText(IMPORTED_ARTIFACT.title)).not.toBeInTheDocument();
+    }
+    expect(client.core.getArtifact).not.toHaveBeenCalled();
+    expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(IMPORTED_ARTIFACT.content.body)).not.toBeInTheDocument();
+    expect(screen.queryByText(ARTIFACT_B.content.body)).not.toBeInTheDocument();
+    assertNoLeakedInternals();
+  });
+
   it.each([
     {
       name: 'shows a loading skeleton while the Artifact list is pending',
