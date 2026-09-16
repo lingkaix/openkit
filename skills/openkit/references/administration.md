@@ -66,7 +66,7 @@ A Worker Git source intentionally selects an immutable commit. Updating the App 
 
 ## Operate repositories and portable data
 
-Confirm repository identity, branch or target, and the requested Git effect before a write or push. Treat repository diagnostics and approvals as gates, not suggestions.
+Confirm repository identity, branch or target, and the requested Git effect before a write or push. Treat repository diagnostics and approvals as gates, not suggestions. Re-read the resulting Git push record to inspect its outcome, commits and known review ids. Host operations can be exempt from missing-review linkage without disabling Worker linkage policy; the exemption does not waive approval, Vault or branch checks, and known review ids remain recorded.
 
 For backup, export, import, or workspace portability, confirm the source, destination, workspace scope, overwrite behavior, and sensitive-data handling described by the operation. Verify the durable result after completion and report partial, rejected, or recovery-required outcomes without local repair.
 

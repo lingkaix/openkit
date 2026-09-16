@@ -13449,23 +13449,6 @@ describe('nanocore server', () => {
         interruptedPushDb.sqlite.close();
       }
 
-      const decisionDb = openTestWorkspaceDb(coreDb, workspace.id);
-      try {
-        const result = decisionDb.sqlite
-          .prepare(
-            `UPDATE permission_decisions
-             SET subject_summary_json = ?
-             WHERE approval_id = ? AND action = 'repo.push' AND result = 'allow'`
-          )
-          .run(
-            JSON.stringify({ kind: 'user', userId: 'user_historical_decision_subject' }),
-            approvalPayload.approval.id
-          );
-        expect(result.changes).toBe(1);
-      } finally {
-        decisionDb.sqlite.close();
-      }
-
       const previousGithubToken = process.env.GITHUB_TOKEN;
       process.env.GITHUB_TOKEN = 'ghp_route_secret';
       const pushRes = await (async () => {

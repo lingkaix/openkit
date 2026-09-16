@@ -23,27 +23,36 @@ function createWorkspaceDb(): WorkspaceDb {
   return workspaceDb;
 }
 
+/**
+ * Records one applied workspace review whose commits are known to linkage evaluation.
+ *
+ * @param workspaceDb Workspace database owned by the test.
+ */
+function recordLinkedApplyResult(workspaceDb: WorkspaceDb): void {
+  recordWorkspaceApplyResult(workspaceDb, {
+    requestId: '00000000-0000-4000-8000-000000000031',
+    result: {
+      appliedAt: '2026-07-05T00:00:00.000Z',
+      appliedPaths: ['README.md'],
+      changeSetId: 'wcs_1',
+      commitIds: ['commit_a', 'commit_b'],
+      conflictRecords: [],
+      id: 'war_1',
+      reviewId: 'swr_1',
+      skippedPaths: [],
+      status: 'applied',
+      verification: [],
+      workspaceId: 'ws_demo',
+    },
+  });
+}
+
 describe('Git push linkage', () => {
   it('allows commits linked to workspace apply results and returns review ids', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
-      recordWorkspaceApplyResult(workspaceDb, {
-        requestId: '00000000-0000-4000-8000-000000000031',
-        result: {
-          appliedAt: '2026-07-05T00:00:00.000Z',
-          appliedPaths: ['README.md'],
-          changeSetId: 'wcs_1',
-          commitIds: ['commit_a', 'commit_b'],
-          conflictRecords: [],
-          id: 'war_1',
-          reviewId: 'swr_1',
-          skippedPaths: [],
-          status: 'applied',
-          verification: [],
-          workspaceId: 'ws_demo',
-        },
-      });
+      recordLinkedApplyResult(workspaceDb);
 
       expect(
         evaluateGitPushLinkage(workspaceDb, {
@@ -183,6 +192,49 @@ describe('Git push linkage', () => {
           workspaceId: 'ws_demo',
         })
       ).toEqual({ allowed: true, reviewIds: [] });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('returns known apply-result review ids when review linkage is disabled', () => {
+    const workspaceDb = createWorkspaceDb();
+
+    try {
+      recordLinkedApplyResult(workspaceDb);
+
+      expect(
+        evaluateGitPushLinkage(workspaceDb, {
+          commitIds: ['commit_b', 'manual_commit'],
+          requireReviewLinkage: false,
+          workspaceId: 'ws_demo',
+        })
+      ).toEqual({
+        allowed: true,
+        reviewIds: ['swr_1'],
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('returns known apply-result review ids under host-session exemption', () => {
+    const workspaceDb = createWorkspaceDb();
+
+    try {
+      recordLinkedApplyResult(workspaceDb);
+
+      expect(
+        evaluateGitPushLinkage(workspaceDb, {
+          commitIds: ['commit_b', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+          hostSessionLinkageExemption: true,
+          requireReviewLinkage: true,
+          workspaceId: 'ws_demo',
+        })
+      ).toEqual({
+        allowed: true,
+        reviewIds: ['swr_1'],
+      });
     } finally {
       workspaceDb.sqlite.close();
     }

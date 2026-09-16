@@ -44,6 +44,9 @@ export type GitPushLinkageDecision = GitPushLinkageAllowed | GitPushLinkageDenie
 /**
  * Evaluates whether requested push commits are linked to accepted workspace reviews.
  *
+ * Disabled linkage and host-session exemption still return known applied or staged review ids.
+ * They do not refuse unlinked commits.
+ *
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Linkage input.
  * @returns Linkage decision used before any remote mutation is attempted.
@@ -52,10 +55,6 @@ export function evaluateGitPushLinkage(
   workspaceDb: WorkspaceDb,
   input: EvaluateGitPushLinkageInput
 ): GitPushLinkageDecision {
-  if (!input.requireReviewLinkage || input.hostSessionLinkageExemption) {
-    return { allowed: true, reviewIds: [] };
-  }
-
   const commitToReviewId = new Map<string, string>();
   for (const result of listWorkspaceApplyResults(workspaceDb, input.workspaceId)) {
     for (const commitId of result.commitIds) {
@@ -72,8 +71,13 @@ export function evaluateGitPushLinkage(
     }
   }
 
-  const missingCommitIds = input.commitIds.filter((commitId) => !commitToReviewId.has(commitId));
+  const reviewIds = unique(input.commitIds.map((commitId) => commitToReviewId.get(commitId) ?? ''));
+  const enforceLinkage = input.requireReviewLinkage && !input.hostSessionLinkageExemption;
+  if (!enforceLinkage) {
+    return { allowed: true, reviewIds };
+  }
 
+  const missingCommitIds = input.commitIds.filter((commitId) => !commitToReviewId.has(commitId));
   if (missingCommitIds.length > 0) {
     return {
       allowed: false,
@@ -83,10 +87,7 @@ export function evaluateGitPushLinkage(
     };
   }
 
-  return {
-    allowed: true,
-    reviewIds: unique(input.commitIds.map((commitId) => commitToReviewId.get(commitId) ?? '')),
-  };
+  return { allowed: true, reviewIds };
 }
 
 /**
