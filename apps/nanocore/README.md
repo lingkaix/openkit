@@ -10,6 +10,8 @@ NanoCore derives private AEP and Context input paths from the admitted AgentSess
 
 Worker closeout refuses a Git review whose exact repository resource has no linked host apply target. Its diagnostic identifies that resource and the supported recovery path; it creates no actionable review or change set. Linking the repository does not replay the failed handoff. An available retained checkout can be inspected and collected by a new authorized Task, which creates its own review under the ordinary human decision gate; see the public Skill [recovery guide](../../skills/openkit/references/recovery.md).
 
+The Agent catalog is a live, product-safe projection of current server manifests through the shared Workspace resources read path. Catalog list/detail, health refresh and dashboard consumers share it; Workspace launch pins do not hide supply. Missing authored roles project as null, and catalog presence does not claim observed runtime health.
+
 ## Scope
 
 - local-mode implicit single-user operation

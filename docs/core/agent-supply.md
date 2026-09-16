@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-09-08
+updated: 2026-09-17
 ---
 # Agent Supply
 
@@ -40,7 +40,7 @@ AgentSessions materialize resolved supply into live or resumable runtime continu
 
 ## Scope
 
-Agent supply is projected into a workspace-visible catalog by default.
+Agent supply is projected into a workspace-visible catalog by default. Workspace launch bindings and default selections do not filter that inventory.
 
 A workspace may include:
 
@@ -83,7 +83,7 @@ The catalog should answer:
 - what agents exist
 - which agents are enabled
 - which agents are ready, degraded, blocked, or disabled
-- which agent kind or role each agent has (planner, coder, researcher, reviewer, internal)
+- which declared role an agent has (planner, coder, researcher, reviewer, internal), or that no role is declared
 - which profiles or modes are available
 - which capability categories are declared
 - which agent is the default for common routing cases
@@ -103,12 +103,14 @@ They must not include adapter command lines, environment variables, absolute wor
 
 Note that "agent kind" on the catalog entry (`AgentCatalogEntry.kind`) is an agent role enum, not a runtime placement or backend kind. Runtime placement and backend kind stay in implementation manifests and are intentionally not projected onto the product-visible catalog entry.
 
+When the authored source declares no role, `kind` is null and product surfaces display the generic Worker label. A runtime name, launch binding or readiness result must not be used to infer a role. Missing role or readiness does not remove supply from the catalog. This nullable summary does not add an authored role field or a durable catalog entity; it is recomputed from current supply and does not survive independently of it. Existing explicitly known role values retain their meaning.
+
 Typical entry areas include:
 
 - stable agent ID
 - display name and description
 - setup reference and version
-- agent kind or role (`AgentCatalogEntry.kind` = planner, coder, researcher, reviewer, internal; this is the agent role, not a runtime kind)
+- agent kind or role (`AgentCatalogEntry.kind` = planner, coder, researcher, reviewer, internal, or null when not declared; this is the agent role, not a runtime kind)
 - default profile or mode
 - supported profiles or modes
 - capability summary

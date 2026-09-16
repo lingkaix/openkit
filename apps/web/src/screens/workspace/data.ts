@@ -723,7 +723,7 @@ export function readinessLabel(agent: AgentEntry): {
   }
 }
 
-/** Short lane copy from the agent kind enum. */
+/** Short lane copy from the agent role kind. Absent kind is generic Worker, never inferred. */
 export function agentLane(kind: AgentEntry['kind']): string {
   switch (kind) {
     case 'researcher':
@@ -734,8 +734,10 @@ export function agentLane(kind: AgentEntry['kind']): string {
       return 'Planning — structures multi-step work';
     case 'reviewer':
       return 'Review — checks work before it lands';
-    default:
+    case 'internal':
       return 'Internal worker';
+    case null:
+      return 'Worker';
   }
 }
 

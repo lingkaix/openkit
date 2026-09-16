@@ -268,6 +268,20 @@ const AGENT_WORKING = {
   health: { status: 'running', message: 'Summarizing interviews', checkedAt: TIMESTAMP_NEW },
 };
 
+const AGENT_CODEX = {
+  id: 'agent_codex',
+  name: 'Codex Agent',
+  kind: null,
+  status: 'enabled',
+  modelId: null,
+  skillIds: [],
+  profiles: [],
+  defaultProfileId: null,
+  capabilities: [],
+  sandboxSummary: null,
+  health: { status: 'unknown', message: null, checkedAt: null },
+};
+
 const AGENT_DETAIL = {
   ...AGENT_READY,
   modelId: 'gpt-authoritative',
@@ -1796,6 +1810,32 @@ describe('Agents (board 08)', () => {
   it('shows the empty state when no agents are configured', async () => {
     renderApp('/agents', makeClient());
     expect(await screen.findByText(/No agents yet/i)).toBeInTheDocument();
+  });
+
+  it('lists a selected Workspace Codex Agent with no role as Worker without claiming ready', async () => {
+    const getWorkspaceResources = vi.fn().mockResolvedValue({
+      knowledge: [],
+      skills: [],
+      agents: [AGENT_CODEX],
+      models: [],
+    });
+    const list = vi.fn().mockResolvedValue({ items: [] });
+    renderApp(
+      '/agents',
+      makeClient({
+        core: { getWorkspaceResources },
+        agents: { list },
+      })
+    );
+
+    expect(await screen.findByText('Codex Agent')).toBeInTheDocument();
+    expect(screen.getByText('Worker')).toBeInTheDocument();
+    expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+    expect(screen.queryByText('Internal worker')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Coding/)).not.toBeInTheDocument();
+    expect(list).not.toHaveBeenCalled();
+    expect(getWorkspaceResources).toHaveBeenCalledWith(WORKSPACE_A.id);
   });
 });
 

@@ -66,6 +66,32 @@ function createAuthorizedCoreApp(
   return createApp({ coreDb, store });
 }
 
+/** Installs one failed-health catalog summary after createApp wires the live projection. */
+function projectFailedAgentHealth(
+  store: ReturnType<typeof createDemoStore>,
+  health: { message: string; checkedAt: string }
+): void {
+  const failedHealth = {
+    status: 'failed' as const,
+    message: health.message,
+    checkedAt: health.checkedAt,
+  };
+  const summary = {
+    id: 'agent_codex_host',
+    name: 'Codex Host Agent',
+    kind: null,
+    status: 'enabled' as const,
+    modelId: null,
+    skillIds: [],
+    profiles: [],
+    defaultProfileId: null,
+    capabilities: [],
+    sandboxSummary: null,
+    health: failedHealth,
+  };
+  store.setWorkspaceAgentCatalogProjection(() => [summary]);
+}
+
 /**
  * Opens a migrated workspace database for action center tests.
  *
@@ -593,24 +619,6 @@ describe('action center app API', () => {
       'actor-scoped',
       'Only current review authority may see this row.'
     );
-    store.upsertAgent('ws_demo', {
-      id: 'agent_codex_host',
-      name: 'Codex Host Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: null,
-      skillIds: [],
-      profiles: [],
-      defaultProfileId: null,
-      capabilities: [],
-      sandboxSummary: null,
-      health: { status: 'unknown', message: null, checkedAt: null },
-    });
-    store.updateAgentHealth('ws_demo', 'agent_codex_host', {
-      status: 'failed',
-      message: 'Shared runtime status remains visible.',
-      checkedAt: timestamp,
-    });
 
     const now = Date.now();
     coreDb.sqlite
@@ -674,6 +682,10 @@ describe('action center app API', () => {
       dataRoot: coreDb.dataRoot,
       mode: 'server',
       store,
+    });
+    projectFailedAgentHealth(store, {
+      message: 'Shared runtime status remains visible.',
+      checkedAt: timestamp,
     });
     const cases = [
       {
@@ -1060,19 +1072,6 @@ describe('action center app API', () => {
       kind: 'user',
       id: 'user_local',
     });
-    store.upsertAgent('ws_demo', {
-      id: 'agent_codex_host',
-      name: 'Codex Host Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: null,
-      skillIds: [],
-      profiles: [],
-      defaultProfileId: null,
-      capabilities: [],
-      sandboxSummary: null,
-      health: { status: 'unknown', message: null, checkedAt: null },
-    });
 
     try {
       upsertWorkerCheckpoint(workspaceDb, {
@@ -1130,11 +1129,6 @@ describe('action center app API', () => {
         terminalStopReason: 'budget_exhausted',
         now: () => timestamp,
       });
-      store.updateAgentHealth('ws_demo', 'agent_codex_host', {
-        status: 'failed',
-        message: 'Runtime binary is not available on PATH: codex.',
-        checkedAt: timestamp,
-      });
       store.createArtifact({
         id: 'artifact_demo',
         workspaceId: 'ws_demo',
@@ -1188,6 +1182,10 @@ describe('action center app API', () => {
         'Persist the Action Center decision.'
       );
       const app = createAuthorizedCoreApp(coreDb, store);
+      projectFailedAgentHealth(store, {
+        message: 'Runtime binary is not available on PATH: codex.',
+        checkedAt: timestamp,
+      });
 
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const payload = ListHumanAttentionResponseSchema.parse(await res.json());

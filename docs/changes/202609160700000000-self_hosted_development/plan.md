@@ -551,3 +551,27 @@ A further live comparison changes the next action: thread.dashboard still return
 ## Missing Repository Diagnostic Verification
 
 The bounded executor correction identifies the exact missing repository resource and links the supported new-Task recovery path without changing rejection or replay semantics. Primary inspected the actual two-file diff and preserved the existing no-effect oracle. The old implementation failed the new diagnostic assertion. The complete executor file passed 127 tests; the independently rerun focused ingress checks passed 17 tests with 110 unrelated cases skipped, recorded in /private/tmp/openkit-handoff-diagnostic-tests.log. Focused Biome passed both files; documentation checks passed 97 tests and validated 277 documents. The NanoCore guide and public Skill recovery reference now distinguish target linking, retained-file recovery, new review and human-gated apply. Deployment remains pending.
+
+
+## Intent Epoch 8: Unspecified Agent Role
+
+The engineer selected the recommended generic Worker proposal: absent authored role is `kind: null`, rendered as Worker, while configured supply remains discoverable. Do not infer roles from runtime names or add an authored role field or a second durable Agent entity. Core Agent Supply owns the clarified summary; the current manifest remains the authored source. This decision releases the dependent roster projection, Web and Skill synchronization. It does not decide the separately pending exact th_6 review/application gate.
+
+
+## Historical Failure Correction
+
+Commit 8049ef9e restores historical failed-Turn errors from the existing dashboard, including no-Item failures, without retry or durable-state changes. Independent reviewer review_conversation_targets found that the initial per-Turn map dropped earlier Item groups when events interleave. The corrected implementation preserves Item-log order and places each recorded error once after its Turn’s final group. A chronological interleaving fixture reproduced the dropped message before correction. Primary observed 103 passing Chat tests, six final focused failed-Turn tests, clean Biome and a passing Web typecheck; the reviewer inspected final bytes and the six-test output without remaining findings. Evidence: /private/tmp/openkit-history-interleaved-red.log, /private/tmp/openkit-history-failure-tests.log, /private/tmp/openkit-history-final-tests.log and /private/tmp/openkit-history-web-typecheck.log. Deployment verification remains pending.
+
+
+## Catalog Health Boundary
+
+Claude independently reviewed the nullable-role authority and current projection. Missing live health evidence remains unknown with no check time, and raw authored readiness messages stay private. The existing catalog status can carry disabled supply, but cannot separately express authored blocked or degraded readiness without conflating it with health. That explanation gap is recorded for a separate concrete use case; this bounded roster restoration adds no readiness field, runtime probe or lifecycle. Core Agent Supply’s discovery requirement and the engineer-approved generic Worker behavior remain the acceptance scope.
+
+
+## Catalog Restoration Verification
+
+The shared FsStore read projection now derives inventory from the current runtime manifest snapshot; list/detail, Workspace resources, refresh, dashboard and Action Center use that seam without persisting manifest summaries. Nullable role, Web Worker labeling, safe fields and same-release public Skill/OpenAPI are synchronized. Missing or removed manifests do not leave stale catalog rows. Independent review inspected final source, private-field exclusions and Workspace authorization without remaining findings.
+
+The first delegated red run failed in missing-executor setup, not the catalog assertion, and is not regression evidence. The prior live empty resource/catalog responses establish the failure; final focused tests exercise manifest-backed reads, unknown health, private-field exclusion, scope and snapshot replacement. The broad NanoCore run recorded 3118 passes, five failures from obsolete upsert-seeded fixtures and one existing skip. Health fixtures now use real manifests, while Action Center fixtures inject explicit product health summaries after App wiring and retain every existing audience and attention assertion. The final five affected files pass all 30 tests; no production fallback or assertion weakening was introduced. Evidence: /private/tmp/openkit-catalog-nanocore-full.log and /private/tmp/openkit-catalog-final-regressions.log.
+
+Protocol tests pass 171, App schema tests 143, public Skill tests 41 and focused Web Agents tests 12; the complete Workspace test file passed 153. NanoCore typecheck/build, Web typecheck/build, focused Biome, OpenAPI generation/validation and 97 documentation checks pass. Evidence is retained in /private/tmp/openkit-catalog-*.log. Installed Skill refresh and A2 deployment/live verification follow the commit; the original th_6 review decision is still pending.

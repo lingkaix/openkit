@@ -839,6 +839,7 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
 export class FsStore {
   private workspaces = new Map<string, WorkspaceRecord>();
   private workspaceResources = new Map<string, WorkspaceResources>();
+  private workspaceAgentCatalogProjection: (() => RuntimeAgent[]) | null = null;
   private threads = new Map<string, Thread>();
   private turns = new Map<string, Turn>();
   private items = new Map<string, Item>();
@@ -1910,7 +1911,24 @@ export class FsStore {
     return workspace;
   }
 
-  public getWorkspaceResources(workspaceId: string): WorkspaceResources {
+  /**
+   * Installs a live Agent catalog read projection for Workspace resources.
+   *
+   * The callback is consulted on each read. It does not persist catalog rows.
+   *
+   * @param projection Current-snapshot catalog projection.
+   */
+  public setWorkspaceAgentCatalogProjection(projection: () => RuntimeAgent[]): void {
+    this.workspaceAgentCatalogProjection = projection;
+  }
+
+  /**
+   * Returns stored Workspace resources without the live Agent catalog overlay.
+   *
+   * @param workspaceId Workspace whose stored resources should be read.
+   * @returns Unprojected Workspace resource rows.
+   */
+  private storedWorkspaceResources(workspaceId: string): WorkspaceResources {
     this.getWorkspace(workspaceId);
     const resources = this.workspaceResources.get(workspaceId);
 
@@ -1919,6 +1937,14 @@ export class FsStore {
     }
 
     return resources;
+  }
+
+  /** Reads Workspace resources with current Agent supply, without persisting the projection. */
+  public getWorkspaceResources(workspaceId: string): WorkspaceResources {
+    const resources = this.storedWorkspaceResources(workspaceId);
+    const project = this.workspaceAgentCatalogProjection;
+
+    return project ? { ...resources, agents: project() } : resources;
   }
 
   public updateWorkspace(
@@ -1988,7 +2014,7 @@ export class FsStore {
    * @returns Stored agent.
    */
   public upsertAgent(workspaceId: string, agent: Agent): Agent {
-    const resources = this.getWorkspaceResources(workspaceId);
+    const resources = this.storedWorkspaceResources(workspaceId);
     let replaced = false;
     const agents = resources.agents.map((candidate) => {
       if (candidate.id !== agent.id) {
@@ -2022,22 +2048,9 @@ export class FsStore {
     message: string | null;
     checkedAt: string;
   }> {
-    const resources = this.getWorkspaceResources(workspaceId);
     const checkedAt = now();
-    const agents = resources.agents.map((agent) => ({
-      ...agent,
-      health: {
-        ...agent.health,
-        checkedAt,
-      },
-    }));
 
-    this.workspaceResources.set(workspaceId, {
-      ...resources,
-      agents,
-    });
-
-    return agents.map((agent) => ({
+    return this.getWorkspaceResources(workspaceId).agents.map((agent) => ({
       agentId: agent.id,
       status: agent.health.status,
       message: agent.health.message,
@@ -2058,7 +2071,7 @@ export class FsStore {
     agentId: string,
     health: Partial<Agent['health']>
   ): Agent {
-    const resources = this.getWorkspaceResources(workspaceId);
+    const resources = this.storedWorkspaceResources(workspaceId);
     let updatedAgent: Agent | null = null;
     const agents = resources.agents.map((agent) => {
       if (agent.id !== agentId) {
@@ -2092,7 +2105,7 @@ export class FsStore {
       sourceReferences?: string[] | undefined;
     }
   ): KnowledgeEntry {
-    const resources = this.getWorkspaceResources(workspaceId);
+    const resources = this.storedWorkspaceResources(workspaceId);
     const entry: KnowledgeEntry = {
       id: `mem_${resources.knowledge.length + 1}`,
       ...input,
@@ -2117,7 +2130,7 @@ export class FsStore {
    * @param knowledgeEntryId Knowledge entry identifier.
    */
   public deleteKnowledgeEntry(workspaceId: string, knowledgeEntryId: string): void {
-    const resources = this.getWorkspaceResources(workspaceId);
+    const resources = this.storedWorkspaceResources(workspaceId);
     const knowledge = resources.knowledge.filter((entry) => entry.id !== knowledgeEntryId);
 
     if (knowledge.length === resources.knowledge.length) {
@@ -2143,7 +2156,7 @@ export class FsStore {
       content?: KnowledgeEntry['content'] | undefined;
     }
   ): KnowledgeEntry {
-    const resources = this.getWorkspaceResources(workspaceId);
+    const resources = this.storedWorkspaceResources(workspaceId);
     const existing = resources.knowledge.find((entry) => entry.id === knowledgeEntryId);
 
     if (!existing) {
@@ -3133,7 +3146,7 @@ export class FsStore {
             proposal,
             input.verifiedExternalReferences
           );
-          const resources = this.getWorkspaceResources(proposal.workspaceId);
+          const resources = this.storedWorkspaceResources(proposal.workspaceId);
           const existingEntry = resources.knowledge.find(
             (candidate) => candidate.id === proposal.knowledgePageId
           );
@@ -3215,7 +3228,7 @@ export class FsStore {
     this.knowledgeProposalReviews.set(proposal.id, [...decisions, review]);
     let application: KnowledgeProposalApplication | null = null;
     if (accepted) {
-      const resources = this.getWorkspaceResources(proposal.workspaceId);
+      const resources = this.storedWorkspaceResources(proposal.workspaceId);
       this.workspaceResources.set(proposal.workspaceId, {
         ...resources,
         knowledge: [...resources.knowledge, entry!],
@@ -3461,7 +3474,7 @@ export class FsStore {
         proposal.knowledgePageId
       );
     }
-    const resources = this.getWorkspaceResources(proposal.workspaceId);
+    const resources = this.storedWorkspaceResources(proposal.workspaceId);
     this.workspaceResources.set(proposal.workspaceId, {
       ...resources,
       knowledge: resources.knowledge.filter((entry) => entry.id !== proposal.knowledgePageId),

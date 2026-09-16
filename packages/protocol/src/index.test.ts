@@ -1595,6 +1595,18 @@ describe('protocol schemas', () => {
       ],
     });
 
+    const unspecifiedRole = WorkspaceResourcesSchema.parse({
+      ...resources,
+      agents: [{ ...resources.agents[0], kind: null }],
+    });
+    expect(unspecifiedRole.agents[0]?.kind).toBeNull();
+    expect(
+      WorkspaceResourcesSchema.safeParse({
+        ...resources,
+        agents: [{ ...resources.agents[0], kind: 'codex' }],
+      }).success
+    ).toBe(false);
+
     expect(
       resources.agents.map((agent) => agent.capabilities.map((capability) => capability.id))
     ).toEqual([

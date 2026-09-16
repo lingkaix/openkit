@@ -190,3 +190,5 @@ Overview combines current Action Center attention with every ongoing Task and Go
 The bottom sidebar uses one Settings gear menu for Workspace settings and the existing User/Server/Administration Settings shell, without a separate Settings row. Workspace destinations still require a validated selection; Settings remains reachable without one.
 
 Failed Turns retain their recorded dashboard errors in conversation history after later Turns finish, including failures with no Items. Interleaved Items keep their log order; each historical error appears once after that Turn’s last Item group. Latest failures remain in the header and do not offer an automatic retry.
+
+Agents reads the selected Workspace inventory. Entries with no authored role display Worker, including unknown or unavailable supply; runtime names never imply Coding or another role. Catalog presence alone does not make an Agent ready or running.

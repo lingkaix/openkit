@@ -25288,13 +25288,20 @@
             "minLength": 1
           },
           "kind": {
-            "type": "string",
-            "enum": [
-              "planner",
-              "coder",
-              "researcher",
-              "reviewer",
-              "internal"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "planner",
+                  "coder",
+                  "researcher",
+                  "reviewer",
+                  "internal"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "status": {
@@ -28584,13 +28591,20 @@
                   "minLength": 1
                 },
                 "kind": {
-                  "type": "string",
-                  "enum": [
-                    "planner",
-                    "coder",
-                    "researcher",
-                    "reviewer",
-                    "internal"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "planner",
+                        "coder",
+                        "researcher",
+                        "reviewer",
+                        "internal"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "status": {
@@ -116648,5 +116662,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:62a2363cd874cace55836c326c5813845b5f4bd9f9ee49f850cc389df45bef55"
+  "x-openkit-source-digest": "sha256:f59944d11be7777953df17a58421f2d875f4b4fed6feb4ca2153debda4c93ea3"
 }

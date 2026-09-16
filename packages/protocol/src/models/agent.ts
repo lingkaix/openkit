@@ -89,7 +89,8 @@ export const AgentProfileSchema = z.object({
 export const AgentCatalogEntrySchema = z.object({
   id: AgentIdSchema,
   name: z.string().min(1),
-  kind: z.enum(['planner', 'coder', 'researcher', 'reviewer', 'internal']),
+  // A missing authored role stays unspecified; runtime identity is not a role.
+  kind: z.enum(['planner', 'coder', 'researcher', 'reviewer', 'internal']).nullable(),
   status: z.enum(['enabled', 'disabled']),
   modelId: z.string().min(1).nullable(),
   skillIds: z.array(z.string().min(1)),

@@ -118,24 +118,6 @@ describe('action center thread audience', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    store.upsertAgent('ws_demo', {
-      id: 'agent_codex_host',
-      name: 'Codex Host Agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: null,
-      skillIds: [],
-      profiles: [],
-      defaultProfileId: null,
-      capabilities: [],
-      sandboxSummary: null,
-      health: { status: 'unknown', message: null, checkedAt: null },
-    });
-    store.updateAgentHealth('ws_demo', 'agent_codex_host', {
-      status: 'failed',
-      message: 'Shared runtime status remains visible.',
-      checkedAt: timestamp,
-    });
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -143,6 +125,25 @@ describe('action center thread audience', () => {
       workspaceId: 'ws_demo',
     });
     const app = createApp({ coreDb, store });
+    const failedHealth = {
+      status: 'failed' as const,
+      message: 'Shared runtime status remains visible.',
+      checkedAt: timestamp,
+    };
+    const summary = {
+      id: 'agent_codex_host',
+      name: 'Codex Host Agent',
+      kind: null,
+      status: 'enabled' as const,
+      modelId: null,
+      skillIds: [],
+      profiles: [],
+      defaultProfileId: null,
+      capabilities: [],
+      sandboxSummary: null,
+      health: failedHealth,
+    };
+    store.setWorkspaceAgentCatalogProjection(() => [summary]);
     const getTurn = vi.spyOn(store, 'getTurn');
     const getApproval = vi.spyOn(store, 'getApproval');
     const listedGoals = vi.spyOn(goalStore, 'listGoalRecordsForThread');

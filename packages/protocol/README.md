@@ -21,3 +21,5 @@ The TypeScript and Zod schemas in this package are the machine-readable source o
 Thread visibility is explicit and immutable. Private Threads require `privateOwnerUserId`; shared Threads omit it. Public creation defaults to private and binds ownership to the requesting user; formal Task/Goal callers request `visibility: workspace` at creation. Quick Chat and administration stay private.
 
 Approval-decision Items permit human decisions, boot-reconciliation system denials, and narrowly identified `nanocore-repo-push-policy` system grants. Policy grants preserve automatic worker repository approval across reload without impersonating a human or closing a human Gate; canonical Zod validation enforces each system actor’s permitted decision.
+
+Agent catalog `kind` is a role, with null for supply that does not declare one. Product surfaces display that absence as Worker without inferring a role from the runtime. Catalog entries remain summaries and carry no private launch configuration.

@@ -1,7 +1,12 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ListAgentCatalogResponseSchema } from '@openkit/app-api-schemas';
+import {
+  AgentHealthRefreshResponseSchema,
+  GetAgentCatalogEntryResponseSchema,
+  ListAgentCatalogResponseSchema,
+} from '@openkit/app-api-schemas';
+import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -9,10 +14,14 @@ import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { projectAgentCatalogEntries } from './catalog-projection.js';
 import { registerAgentCatalogRoutes } from './catalog-routes.js';
 
 describe('agent catalog routes', () => {
@@ -22,26 +31,26 @@ describe('agent catalog routes', () => {
     });
     const allowedWorkspace = store.createWorkspace('Allowed agents');
     const deniedWorkspace = store.createWorkspace('Denied agents');
-    const catalogAgent = {
+    store.setWorkspaceAgentCatalogProjection(() =>
+      projectAgentCatalogEntries([
+        createTestAgentSetup({
+          agentId: 'agent_allowed_only',
+          displayName: 'Allowed Agent',
+        }).manifest,
+      ])
+    );
+    store.upsertAgent(deniedWorkspace.id, {
       capabilities: [],
       defaultProfileId: null,
       health: { checkedAt: null, message: null, status: 'unknown' as const },
-      kind: 'coder' as const,
+      id: 'agent_denied_only',
+      kind: 'coder',
       modelId: null,
+      name: 'Denied Agent',
       profiles: [],
       sandboxSummary: null,
       skillIds: [],
-      status: 'enabled' as const,
-    };
-    store.upsertAgent(allowedWorkspace.id, {
-      ...catalogAgent,
-      id: 'agent_allowed_only',
-      name: 'Allowed Agent',
-    });
-    store.upsertAgent(deniedWorkspace.id, {
-      ...catalogAgent,
-      id: 'agent_denied_only',
-      name: 'Denied Agent',
+      status: 'enabled',
     });
     const listWorkspaces = vi.spyOn(store, 'listWorkspaces').mockImplementation(() => {
       throw new Error('Agent catalog must not discover physical Workspaces.');
@@ -81,26 +90,26 @@ describe('agent catalog routes', () => {
         workspaceId: workspace.id,
       });
     }
-    const catalogAgent = {
+    const allowedManifest = createTestAgentSetup({
+      agentId: 'agent_allowed_only',
+      displayName: 'Allowed Agent',
+    }).manifest;
+    const otherManifest = createTestAgentSetup({
+      agentId: 'agent_other_supply',
+      displayName: 'Other Supply',
+    }).manifest;
+    store.upsertAgent(deniedWorkspace.id, {
       capabilities: [],
       defaultProfileId: null,
-      health: { checkedAt: null, message: null, status: 'unknown' as const },
-      kind: 'coder' as const,
+      health: { checkedAt: null, message: null, status: 'unknown' },
+      id: 'agent_denied_only',
+      kind: 'coder',
       modelId: null,
+      name: 'Denied Agent',
       profiles: [],
       sandboxSummary: null,
       skillIds: [],
-      status: 'enabled' as const,
-    };
-    store.upsertAgent(allowedWorkspace.id, {
-      ...catalogAgent,
-      id: 'agent_allowed_only',
-      name: 'Allowed Agent',
-    });
-    store.upsertAgent(deniedWorkspace.id, {
-      ...catalogAgent,
-      id: 'agent_denied_only',
-      name: 'Denied Agent',
+      status: 'enabled',
     });
     const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -121,6 +130,7 @@ describe('agent catalog routes', () => {
       workspaceIds: [allowedWorkspace.id],
     });
     const app = createApp({
+      agentManifests: [allowedManifest, otherManifest],
       auth: {
         api: { getSession: async () => null },
         handler: async () => new Response(null, { status: 404 }),
@@ -137,27 +147,45 @@ describe('agent catalog routes', () => {
       const adminDetail = await app.request('/api/app/agents/agent_denied_only', {
         headers: adminHeaders,
       });
+      const adminMissing = await app.request('/api/app/agents/agent_missing', {
+        headers: adminHeaders,
+      });
       const adminListBody = ListAgentCatalogResponseSchema.parse(await adminList.json());
 
       expect(adminList.status).toBe(200);
-      expect(adminListBody.items.map((agent) => agent.id)).toEqual(
-        expect.arrayContaining(['agent_allowed_only', 'agent_denied_only'])
-      );
-      expect(adminDetail.status).toBe(200);
+      expect(adminListBody.items.map((agent) => agent.id).sort()).toEqual([
+        'agent_allowed_only',
+        'agent_other_supply',
+      ]);
+      expect(adminDetail.status).toBe(adminMissing.status);
 
       for (const token of [workspace, readonly]) {
         const headers = { authorization: `Bearer ${token.secret}` };
         const list = await app.request('/api/app/agents', { headers });
         const listBody = ListAgentCatalogResponseSchema.parse(await list.json());
         const allowedDetail = await app.request('/api/app/agents/agent_allowed_only', { headers });
+        const otherDetail = await app.request('/api/app/agents/agent_other_supply', { headers });
         const deniedDetail = await app.request('/api/app/agents/agent_denied_only', { headers });
         const missingDetail = await app.request('/api/app/agents/agent_missing', { headers });
+        const allowedResources = await app.request(
+          `/api/workspaces/${allowedWorkspace.id}/resources`,
+          { headers }
+        );
+        const deniedResources = await app.request(
+          `/api/workspaces/${deniedWorkspace.id}/resources`,
+          { headers }
+        );
 
         expect(list.status).toBe(200);
-        expect(listBody.items.map((agent) => agent.id)).toContain('agent_allowed_only');
-        expect(listBody.items.map((agent) => agent.id)).not.toContain('agent_denied_only');
+        expect(listBody.items.map((agent) => agent.id).sort()).toEqual([
+          'agent_allowed_only',
+          'agent_other_supply',
+        ]);
         expect(allowedDetail.status).toBe(200);
+        expect(otherDetail.status).toBe(200);
         expect(deniedDetail.status).toBe(missingDetail.status);
+        expect(allowedResources.status).toBe(200);
+        expect(deniedResources.status).toBe(403);
       }
 
       const transferredAt = new Date().toISOString();
@@ -203,5 +231,128 @@ describe('agent catalog routes', () => {
     } finally {
       coreDb.sqlite.close();
     }
+  });
+
+  it('projects current server manifests into Workspace resources, catalog, and health refresh', async () => {
+    const secretEnv = 'sk-test-catalog-must-not-leak';
+    const configured = createTestAgentSetup({
+      agentId: 'agent_configured',
+      displayName: 'Configured Worker',
+    }).manifest;
+    const unready = {
+      ...createTestAgentSetup({
+        adapter: 'opencode',
+        agentId: 'agent_unready',
+        displayName: 'Unready Worker',
+      }).manifest,
+      readiness: {
+        message: 'export TOKEN=sk-leak; /usr/local/bin/opencode --cwd /secret/path',
+        status: 'unknown' as const,
+      },
+      workspace: { env: { OPENAI_API_KEY: secretEnv } },
+    };
+    const store = createDemoStore();
+    store.upsertAgent('ws_demo', {
+      capabilities: [],
+      defaultProfileId: null,
+      health: { checkedAt: null, message: null, status: 'unknown' },
+      id: 'agent_persisted_only',
+      kind: 'coder',
+      modelId: null,
+      name: 'Persisted Only',
+      profiles: [],
+      sandboxSummary: null,
+      skillIds: [],
+      status: 'enabled',
+    });
+    const app = createApp({
+      agentManifests: [configured, unready],
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+    });
+
+    const resourcesRes = await app.request('/api/workspaces/ws_demo/resources');
+    const listRes = await app.request('/api/app/agents');
+    const configuredDetailRes = await app.request('/api/app/agents/agent_configured');
+    const unreadyDetailRes = await app.request('/api/app/agents/agent_unready');
+    const persistedDetailRes = await app.request('/api/app/agents/agent_persisted_only');
+    const healthRes = await app.request('/api/app/workspaces/ws_demo/agents/health/refresh', {
+      method: 'POST',
+    });
+    const resources = WorkspaceResourcesResponseSchema.parse(await resourcesRes.json());
+    const list = ListAgentCatalogResponseSchema.parse(await listRes.json());
+    const configuredDetail = GetAgentCatalogEntryResponseSchema.parse(
+      await configuredDetailRes.json()
+    );
+    const unreadyDetail = GetAgentCatalogEntryResponseSchema.parse(await unreadyDetailRes.json());
+    const health = AgentHealthRefreshResponseSchema.parse(await healthRes.json());
+    const publicJson = JSON.stringify({
+      configuredDetail,
+      health,
+      list,
+      resources: resources.agents,
+      unreadyDetail,
+    });
+
+    expect(resourcesRes.status).toBe(200);
+    expect(listRes.status).toBe(200);
+    expect(configuredDetailRes.status).toBe(200);
+    expect(unreadyDetailRes.status).toBe(200);
+    expect(persistedDetailRes.status).toBe(404);
+    expect(healthRes.status).toBe(200);
+    expect(resources.agents.map((agent) => agent.id).sort()).toEqual([
+      'agent_configured',
+      'agent_unready',
+    ]);
+    expect(list.items.map((agent) => agent.id).sort()).toEqual([
+      'agent_configured',
+      'agent_unready',
+    ]);
+    expect(configuredDetail).toMatchObject({
+      id: 'agent_configured',
+      kind: null,
+      name: 'Configured Worker',
+      status: 'enabled',
+    });
+    expect(configuredDetail.kind).not.toBe(configured.runtime.kind);
+    expect(unreadyDetail).toMatchObject({
+      health: { checkedAt: null, message: null, status: 'unknown' },
+      id: 'agent_unready',
+      kind: null,
+      name: 'Unready Worker',
+      status: 'enabled',
+    });
+    expect(health.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentId: 'agent_configured',
+          checkedAt: expect.any(String),
+          status: 'unknown',
+        }),
+        expect.objectContaining({
+          agentId: 'agent_unready',
+          checkedAt: expect.any(String),
+          status: 'unknown',
+        }),
+      ])
+    );
+    expect(health.items.map((item) => item.agentId).sort()).toEqual([
+      'agent_configured',
+      'agent_unready',
+    ]);
+    expect(health.items.map((item) => item.message)).toEqual([null, null]);
+    expect(health.items.map((item) => item.status)).toEqual(['unknown', 'unknown']);
+    expect(
+      resources.agents.every(
+        (agent) =>
+          agent.health.status === 'unknown' &&
+          agent.health.checkedAt === null &&
+          agent.health.message === null
+      )
+    ).toBe(true);
+    expect(publicJson).not.toContain(secretEnv);
+    expect(publicJson).not.toContain('/usr/local/bin');
+    expect(publicJson).not.toContain('"config"');
+    expect(publicJson).not.toContain('sk-leak');
   });
 });

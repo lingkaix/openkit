@@ -22,6 +22,7 @@ import {
   createAdministrationEnvironmentPrepareTool,
   createAdministrationEnvironmentTools,
 } from './administration/environment-tools.js';
+import { projectAgentCatalogEntries } from './agents/catalog-projection.js';
 import { registerAgentCatalogRoutes } from './agents/catalog-routes.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
@@ -1108,6 +1109,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   function runtimeConfig(): RuntimeConfigSnapshot {
     return runtimeConfigManager.current();
   }
+
+  sharedStore.setWorkspaceAgentCatalogProjection(() =>
+    projectAgentCatalogEntries(runtimeConfig().agentManifests)
+  );
 
   /**
    * Projects current file-backed manifests into request-scoped worker candidates.
