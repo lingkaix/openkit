@@ -306,7 +306,7 @@ The end-user interface L6 is the agentic [OpenKit Agent Skill Progressive Discov
 
 Server mode uses Better Auth email/password routes under `/api/auth/*`, protects product APIs with HTTP-only session cookies, and accepts server-issued `okt_` bearer Tokens for remote access. A valid session establishes the actor identity and may receive deployment-admin authority only while its active canonical User owns a currently usable `server-admin` Token; it never bypasses active Workspace membership checks.
 
-On an empty server deployment, consume the owner-readable bootstrap token through `POST /api/app/auth/bootstrap/consume` or `bootstrap.consume` with `ownerUserId`, `displayName`, `email`, and `password`. That one transaction creates the first server-admin token and the owner email/password account; sign in afterward through the normal `/api/auth/sign-in/email` route.
+On an empty server deployment, consume the owner-readable bootstrap token through `POST /api/app/auth/bootstrap/consume` or `bootstrap.consume` with `ownerUserId`, `displayName`, `email`, and `password`. After password hashing, that transaction rechecks the current bootstrap expiry and empty-user state before creating the first server-admin token and the owner email/password account; sign in afterward through the normal `/api/auth/sign-in/email` route.
 
 Workspace Material routes authorize the path Workspace before resolving opaque target identifiers. For an authorized caller, an absent Material, revision, or Thread target, including an identifier that exists only in another Workspace, returns scoped `409 stale`; `403 workspace_access_denied` is reserved for pre-target Workspace authorization failure, and NanoCore does not scan another Workspace to classify the target.
 

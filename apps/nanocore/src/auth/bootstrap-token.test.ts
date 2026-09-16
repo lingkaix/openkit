@@ -1,7 +1,7 @@
 import { mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { verifyOpenKitAccessTokenRecord } from './access-token-store.js';
@@ -85,6 +85,57 @@ describe('server bootstrap token', () => {
       expect(credentialAccount).toEqual({ account_id: 'user_owner', provider_id: 'credential' });
       expect(JSON.stringify(emission)).not.toContain(consumed?.secret);
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects consume after hashing when the bootstrap token expired during the wait', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-expiry-'));
+    const coreDb = openCoreDb(dataRoot);
+    vi.useFakeTimers({ toFake: ['Date'] });
+
+    try {
+      applyMigrations(coreDb);
+      const issuedAt = new Date('2026-07-06T00:00:00.000Z');
+      vi.setSystemTime(issuedAt);
+      const issued = ensureServerBootstrapToken(coreDb, {
+        now: issuedAt,
+        ttlMs: 60_000,
+      });
+      const pending = consumeServerBootstrapToken(coreDb, {
+        displayName: 'Owner',
+        email: 'owner@example.com',
+        ownerUserId: 'user_owner',
+        password: 'password123456',
+        token: issued!.token,
+        tokenExpiresAt: '2026-07-07T00:00:00.000Z',
+      });
+      vi.setSystemTime(new Date('2026-07-06T00:02:00.000Z'));
+      const consumed = await pending;
+      const users = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+        count: number;
+      };
+      const accounts = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM account').get() as {
+        count: number;
+      };
+      const tokens = coreDb.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM openkit_access_tokens')
+        .get() as { count: number };
+      const setting = JSON.parse(
+        (
+          coreDb.sqlite
+            .prepare('SELECT value FROM server_settings WHERE key = ?')
+            .get('auth.bootstrap_token') as { value: string }
+        ).value
+      ) as { consumedAt: string | null };
+
+      expect(consumed).toEqual({ status: 'invalid' });
+      expect(users.count).toBe(0);
+      expect(accounts.count).toBe(0);
+      expect(tokens.count).toBe(0);
+      expect(setting.consumedAt).toBeNull();
+    } finally {
+      vi.useRealTimers();
       coreDb.sqlite.close();
     }
   });

@@ -158,10 +158,11 @@ export async function consumeServerBootstrapToken(
     if (countUsers(coreDb) > 0) {
       return { status: 'unavailable' };
     }
+    const consumeNow = input.now ?? new Date();
     if (
       !current ||
       current.consumedAt ||
-      Date.parse(current.expiresAt) <= now.getTime() ||
+      Date.parse(current.expiresAt) <= consumeNow.getTime() ||
       !verifyOpenKitAccessTokenSecret(input.token, current.tokenHash)
     ) {
       return { status: 'invalid' };
@@ -185,8 +186,8 @@ export async function consumeServerBootstrapToken(
         input.ownerUserId,
         input.displayName,
         input.email.toLowerCase(),
-        now.getTime(),
-        now.getTime(),
+        consumeNow.getTime(),
+        consumeNow.getTime(),
         null
       );
     coreDb.sqlite
@@ -207,15 +208,15 @@ export async function consumeServerBootstrapToken(
         input.ownerUserId,
         input.ownerUserId,
         passwordHash,
-        now.getTime(),
-        now.getTime()
+        consumeNow.getTime(),
+        consumeNow.getTime()
       );
-    writeBootstrapSetting(coreDb, { ...current, consumedAt: now.toISOString() });
+    writeBootstrapSetting(coreDb, { ...current, consumedAt: consumeNow.toISOString() });
 
     return {
       ...createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: input.tokenExpiresAt,
-        now,
+        now: consumeNow,
         ownerUserId: input.ownerUserId,
         scope: 'server-admin',
         workspaceIds: [],
