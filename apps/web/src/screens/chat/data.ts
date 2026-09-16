@@ -22,6 +22,7 @@ export type ThreadItem = ListThreadItemsResponse['items'][number];
 export const chatKeys = {
   workspaces: ['workspaces'] as const,
   threads: (workspaceId: string) => ['threads', workspaceId] as const,
+  navigation: (workspaceId: string) => ['threads', workspaceId, 'navigation'] as const,
   thread: (workspaceId: string, threadId: string) => ['thread', workspaceId, threadId] as const,
   items: (workspaceId: string, threadId: string) => ['items', workspaceId, threadId] as const,
   dashboard: (workspaceId: string, threadId: string) =>
@@ -30,6 +31,7 @@ export const chatKeys = {
     ['conversation-targets', workspaceId, threadId ?? 'starter'] as const,
   feedback: (workspaceId: string, threadId: string, turnId: string) =>
     ['turn-feedback', workspaceId, threadId, turnId] as const,
+  submitMutation: ['conversation', 'submit'] as const,
   renameMutation: ['thread-lifecycle', 'rename'] as const,
   archiveMutation: ['thread-lifecycle', 'archive'] as const,
   interruptMutation: ['thread-lifecycle', 'interrupt'] as const,
@@ -122,6 +124,18 @@ export function useThreads(workspaceId: string | null) {
     queryKey: chatKeys.threads(workspaceId ?? ''),
     queryFn: async () => (await client.core.listThreads(workspaceId as string)).items,
     enabled: Boolean(workspaceId),
+  });
+}
+
+/** Refresh visible conversation activity while the Web app is in the foreground. */
+export function useConversationNavigation(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: chatKeys.navigation(workspaceId ?? ''),
+    queryFn: async () => (await client.app.listConversationNavigation(workspaceId as string)).items,
+    enabled: Boolean(workspaceId),
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
   });
 }
 
@@ -342,6 +356,7 @@ export function useSendTurn() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: chatKeys.submitMutation,
     mutationFn: async (input: {
       workspaceId: string;
       threadId: string;
@@ -426,6 +441,7 @@ export function useRenameThread() {
       queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
         threads?.map((candidate) => (candidate.id === thread.id ? thread : candidate))
       );
+      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(thread.workspaceId) });
     },
   });
 }
@@ -447,6 +463,7 @@ export function useArchiveThread() {
       queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
         threads?.map((candidate) => (candidate.id === thread.id ? thread : candidate))
       );
+      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(thread.workspaceId) });
     },
   });
 }
@@ -467,6 +484,7 @@ export function useRestoreThread() {
       queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
         threads?.map((candidate) => (candidate.id === thread.id ? thread : candidate))
       );
+      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(thread.workspaceId) });
     },
   });
 }

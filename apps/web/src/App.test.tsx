@@ -24,6 +24,7 @@ function makeClient(
 ): CoreClient {
   return {
     app: {
+      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listAuthorizedWorkspaces: vi
         .fn()
         .mockResolvedValue({ items: [] } satisfies Awaited<

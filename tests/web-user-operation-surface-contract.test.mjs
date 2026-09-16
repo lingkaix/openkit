@@ -3,10 +3,10 @@ import { describe, it } from 'node:test';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 226;
+const EXPECTED_CATALOG_SIZE = 227;
 const EXPECTED_SERVER_SIZE = 49;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 175;
+const EXPECTED_INCLUDED_SIZE = 176;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -101,6 +101,7 @@ const WEB_OPERATION_GROUPS = {
   },
   Dashboards: {
     getConversationTargets: { disposition: 'live', surface: 'Chat' },
+    listConversationNavigation: { disposition: 'live', surface: 'Chat' },
     getThreadDashboard: { disposition: 'live', surface: 'Chat' },
     getWorkspaceDashboard: { disposition: 'live', surface: 'Overview' },
     listHumanAttention: { disposition: 'live', surface: 'Overview' },

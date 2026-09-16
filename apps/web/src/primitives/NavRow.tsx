@@ -1,10 +1,15 @@
-import type { ReactNode } from 'react';
+import { type ReactNode, useId } from 'react';
+import { Button as AriaButton, Tooltip, TooltipTrigger } from 'react-aria-components';
 import { Icon, type IconName } from './Icon';
 
 export interface NavRowProps {
   /** Leading glyph. */
   icon?: IconName;
   label: string;
+  /** Human-readable detail for the hover/focus hint and assistive technology. */
+  description?: string;
+  /** Small supplementary mark positioned on the leading icon. */
+  iconBadge?: ReactNode;
   /** Active/current state: selected tint + accent text + bold. */
   active?: boolean;
   /** Trailing content, e.g. a CountBadge. */
@@ -26,15 +31,19 @@ const INDENT = ['pl-3', 'pl-7', 'pl-10'] as const;
 export function NavRow({
   icon,
   label,
+  description,
+  iconBadge,
   active = false,
   trailing,
   indent = 0,
   onPress,
 }: NavRowProps) {
-  return (
-    <button
+  const descriptionId = useId();
+  const button = (
+    <AriaButton
       type="button"
-      onClick={onPress}
+      aria-describedby={description ? descriptionId : undefined}
+      onPress={onPress}
       aria-current={active ? 'page' : undefined}
       className={[
         'flex w-full items-center gap-2 rounded-ok py-1.5 pr-2 text-left text-sm outline-none transition-colors',
@@ -45,9 +54,29 @@ export function NavRow({
           : 'font-medium text-fg hover:bg-overlay',
       ].join(' ')}
     >
-      {icon ? <Icon name={icon} /> : null}
+      {icon ? (
+        <span className="relative shrink-0">
+          <Icon name={icon} />
+          {iconBadge}
+        </span>
+      ) : null}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {trailing}
-    </button>
+      {description ? (
+        <span id={descriptionId} hidden>
+          {description}
+        </span>
+      ) : null}
+    </AriaButton>
+  );
+  return description ? (
+    <TooltipTrigger delay={0} closeDelay={0}>
+      {button}
+      <Tooltip className="z-50 max-w-xs rounded-ok border border-border bg-elevated px-2 py-1 text-xs text-fg shadow-ok-menu">
+        {label} — {description}
+      </Tooltip>
+    </TooltipTrigger>
+  ) : (
+    button
   );
 }

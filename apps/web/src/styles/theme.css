@@ -65,6 +65,7 @@
   --color-info-fg: var(--ok-informative-fg);
   --color-notice-bg: var(--ok-notice-bg);
   --color-notice-fg: var(--ok-notice-fg);
+  --color-attention-dot: var(--ok-attention-dot);
   --color-positive-bg: var(--ok-positive-bg);
   --color-positive-fg: var(--ok-positive-fg);
   --color-negative-bg: var(--ok-negative-bg);

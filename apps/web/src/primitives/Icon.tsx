@@ -12,6 +12,7 @@ import RiEditLine from '~icons/ri/edit-line';
 import RiErrorWarningLine from '~icons/ri/error-warning-line';
 import RiEyeLine from '~icons/ri/eye-line';
 import RiFile3Line from '~icons/ri/file-3-line';
+import RiFlag2Line from '~icons/ri/flag-2-line';
 import RiFlowChart from '~icons/ri/flow-chart';
 import RiFolder3Line from '~icons/ri/folder-3-line';
 import RiGitRepositoryLine from '~icons/ri/git-repository-line';
@@ -57,6 +58,7 @@ export type IconName =
   | 'folder'
   | 'generative'
   | 'home'
+  | 'goal'
   | 'info'
   | 'automations'
   | 'key'
@@ -89,6 +91,7 @@ const REGISTRY: Record<IconName, ComponentType<SVGProps<SVGSVGElement>>> = {
   folder: RiFolder3Line,
   generative: RiSparkling2Line,
   home: RiHome5Line,
+  goal: RiFlag2Line,
   info: RiInformationLine,
   automations: RiFlowChart,
   key: RiKey2Line,

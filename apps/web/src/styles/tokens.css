@@ -19,6 +19,9 @@
    ============================================================================ */
 
 :root {
+  /* Yellow attention marker; paired with the theme notice border and a text description. */
+  --ok-attention-dot: #d5ac00;
+
   color-scheme: light;
 
   /* ---- Theme-invariant: worker identity hues (DESIGN.md §4.3) --------------

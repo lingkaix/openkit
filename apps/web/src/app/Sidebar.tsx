@@ -1,10 +1,11 @@
+import { useMutationState } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Button, Icon, Menu, NavRow } from '../primitives';
+import { Button, Icon, type IconName, Menu, NavRow } from '../primitives';
 import {
-  chatThreadPath,
+  chatKeys,
+  useConversationNavigation,
   useCurrentWorkspaceId,
-  useThreads,
   useWorkspaces,
 } from '../screens/chat/data';
 import { AppSearch } from '../screens/operations';
@@ -124,11 +125,20 @@ export function Sidebar() {
   const workspaceId = useCurrentWorkspaceId();
   const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
-  const threads = useThreads(workspaceId);
-  const go = (path: string) => navigate(path);
   const inSettings = pathname.startsWith('/settings');
+  const navigation = useConversationNavigation(inSettings ? null : workspaceId);
+  const go = (path: string) => navigate(path);
   const compactSurfaces = surfacesInGroup('workspace-compact', workspace?.kind);
-  const activeThreads = (threads.data ?? []).filter((thread) => thread.status === 'active');
+  const submissions = useMutationState({
+    filters: { mutationKey: chatKeys.submitMutation, status: 'pending' },
+    select: (mutation) => mutation.state.variables as { workspaceId: string; threadId: string },
+  });
+  const waiting = new Set(
+    submissions.filter((input) => input.workspaceId === workspaceId).map((input) => input.threadId)
+  );
+  const conversations = [...(navigation.data ?? [])].sort(
+    (a, b) => Number(waiting.has(b.thread.id)) - Number(waiting.has(a.thread.id))
+  );
 
   function switchWorkspace(nextWorkspaceId: string) {
     if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
@@ -177,19 +187,81 @@ export function Sidebar() {
                   Conversations
                 </p>
                 <NavRow icon="add" label="New conversation" onPress={() => go('/chat')} />
-                {activeThreads.map((thread) => (
-                  <NavRow
-                    key={thread.id}
-                    icon="chat"
-                    label={thread.name ?? thread.preview}
-                    active={['chat', 'tasks'].some((prefix) =>
-                      pathname.startsWith(
-                        `/${prefix}/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`
-                      )
-                    )}
-                    onPress={() => go(chatThreadPath(workspace.id, thread.id))}
-                  />
-                ))}
+                {navigation.isPending ? (
+                  <p className="px-3 text-xs text-fg-muted">Loading conversations…</p>
+                ) : null}
+                {navigation.isError ? (
+                  <div className="px-3 text-xs text-notice-fg">
+                    <p>
+                      Conversation status unavailable
+                      {conversations.length ? ' — showing the last update.' : '.'}
+                    </p>
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      onPress={() => {
+                        void navigation.refetch();
+                      }}
+                    >
+                      Retry conversations
+                    </Button>
+                  </div>
+                ) : null}
+                {conversations.map(({ thread, activity, state: serverState }) => {
+                  const awaitingReply = waiting.has(thread.id);
+                  const state =
+                    serverState === 'needs-you'
+                      ? serverState
+                      : awaitingReply
+                        ? 'working'
+                        : serverState;
+                  const icons: Record<typeof activity, IconName> = {
+                    chat: 'chat',
+                    task: 'agents',
+                    goal: 'goal',
+                    unknown: 'info',
+                  };
+                  const labels = {
+                    chat: 'Assistant chat',
+                    task: 'Worker task',
+                    goal: 'Goal',
+                    unknown: 'Activity type unknown',
+                  };
+                  const status = navigation.isError
+                    ? 'Status unavailable'
+                    : state === 'working'
+                      ? awaitingReply
+                        ? 'Waiting for response'
+                        : 'Working'
+                      : state === 'needs-you'
+                        ? 'Needs your attention'
+                        : 'Idle';
+                  const prefix =
+                    activity === 'goal' ? 'goals' : activity === 'task' ? 'tasks' : 'chat';
+                  const suffix = `/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`;
+                  return (
+                    <NavRow
+                      key={thread.id}
+                      icon={icons[activity]}
+                      label={thread.name ?? thread.preview}
+                      description={`${labels[activity]} · ${status}`}
+                      iconBadge={
+                        !navigation.isError && state !== 'idle' ? (
+                          <span
+                            aria-hidden
+                            className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ring-1 ring-sunken ${state === 'working' ? 'bg-info-fg' : 'border border-notice-fg bg-attention-dot'}`}
+                          />
+                        ) : undefined
+                      }
+                      active={['chat', 'tasks', 'goals'].some(
+                        (route) =>
+                          pathname === `/${route}${suffix}` ||
+                          pathname.startsWith(`/${route}${suffix}/`)
+                      )}
+                      onPress={() => go(`/${prefix}${suffix}`)}
+                    />
+                  );
+                })}
               </div>
             </>
           ) : null}

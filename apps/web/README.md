@@ -166,3 +166,5 @@ Base typography in styles/theme.css lets unspaced text and IDs wrap anywhere whe
 Artifacts lists only the server-projected deliverable catalog, with a wrapping full title, kind and version. Internal file-change reviews remain in Workspace Changes. `Add to conversation` means the existing exact-version imported-file reference command: it records a reference in an idle conversation and starts no Agent work. Produced outputs remain ineligible, with an explanation directing further work to composer attachments.
 
 The primary sidebar keeps its 264px outer width without horizontal scrolling. Workspace destination controls form a four-column grid, and the Search popover stays within the sidebar content width.
+
+The Conversations sidebar reads actor-authorized navigation from NanoCore, showing current/latest activity icons and blue working or yellow actionable dots with text descriptions. Active rows precede idle rows and use server-derived conversation recency. Foreground polling and lifecycle invalidation refresh the projection; failures hide status dots and expose stale/unavailable state with Retry. Historical unknown activity remains explicit.
