@@ -6,7 +6,7 @@ Load this reference for normal workspace work, mode selection, plans, bounded ex
 
 Run `doctor`, select or create the intended workspace, and inspect its durable resources. Resolve repositories, data sources and effect scope from the user's current instructions; request only missing authorization before linking or changing them.
 
-Use `workspace.resources` for the selected Workspace Agent inventory, or describe `agent.list` and `agent.get` for the authorized catalog. Server-supplied Agent manifests remain visible even when unavailable or not selected as a launch default. A null `kind` means an unspecified role: describe it as Worker, never guess from a runtime name. Health is a summary, not proof of a running session or sandbox; unknown health must remain unknown. Refresh rereads configured supply, and its response timestamp acknowledges that refresh rather than attesting a successful runtime probe.
+Use `workspace.resources` for the selected Workspace Agent inventory, or describe `agent.list` and `agent.read` for the authorized catalog. Server-supplied Agent manifests remain visible even when unavailable or not selected as a launch default. A null `kind` means an unspecified role: describe it as Worker, never guess from a runtime name. Health is a summary, not proof of a running session or sandbox; unknown health must remain unknown. Refresh rereads configured supply, and its response timestamp acknowledges that refresh rather than attesting a successful runtime probe.
 
 Create or resume one thread for the work. Read the current thread, active mode state, Action Center, and relevant artifacts before mutating anything.
 
