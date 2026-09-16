@@ -479,6 +479,10 @@ function createFactoryNanoHostDispatch(
         return nanoHostImageInspection(request);
       }
       if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
+      if (request.kind === 'bridge.open') {
+        return { accepted: true, integrationReady: true, state: 'open' };
+      }
+      if (request.kind === 'reference.import') return { state: 'imported' };
       if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
         return { state: 'deleted' };
       }
@@ -2090,8 +2094,12 @@ describe('createConfiguredTurnExecutor', () => {
         },
         workerStorageChoice: { goalId: null, kind: 'fresh', taskId: null },
       });
-      expect(freshSuccessorPackage.workspace.inputs[0]?.target).toBe(expectedWorktree);
-      expect(freshSuccessorPackage.runtime.command.workingDirectory).toBe(expectedWorktree);
+      const freshWorktree = `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(
+        successorTurn.workspaceId,
+        successorTurn.threadId
+      )}`;
+      expect(freshSuccessorPackage.workspace.inputs[0]?.target).toBe(freshWorktree);
+      expect(freshSuccessorPackage.runtime.command.workingDirectory).toBe(freshWorktree);
       const unrelatedThreadId = 'thread_selected_slot_unrelated';
       const unrelatedPackage = previewPackage('as_selected_slot_unrelated', {
         ...successorPreparation,
@@ -4372,6 +4380,16 @@ describe('createConfiguredTurnExecutor', () => {
           turnId: 'turn_idle_eviction_a',
           workspaceId: 'workspace_idle_eviction_a',
         },
+        extensions: {
+          openkit: {
+            workerStorage: {
+              workSlotRef: workerStorageDefaultWorkSlotRef(
+                'workspace_idle_eviction_a',
+                'thread_idle_eviction_a'
+              ),
+            },
+          },
+        },
         snapshotId: 'snapshot_idle_eviction_a',
       });
       const secondPackage = completeNanoHostPackage({
@@ -4383,6 +4401,16 @@ describe('createConfiguredTurnExecutor', () => {
           threadId: 'thread_idle_eviction_a',
           turnId: 'turn_idle_eviction_b',
           workspaceId: 'workspace_idle_eviction_a',
+        },
+        extensions: {
+          openkit: {
+            workerStorage: {
+              workSlotRef: workerStorageDefaultWorkSlotRef(
+                'workspace_idle_eviction_a',
+                'thread_idle_eviction_a'
+              ),
+            },
+          },
         },
         snapshotId: 'snapshot_idle_eviction_b',
       });
@@ -4601,6 +4629,28 @@ describe('createConfiguredTurnExecutor', () => {
         storageRef: selectedBinding.storageRef,
         taskId: null,
       };
+      anchorNanoHostMaterialization(coreDb, backend, secondPackage);
+      await expect(
+        backend.prepareAgentSessionContinuity?.({
+          agentSessionCompatibilityKey: `sha256:${'e'.repeat(64)}`,
+          agentSessionId: firstPackage.scope.agentSessionId,
+          environmentPackage: secondPackage,
+          reuseAllowed: false,
+          threadId: firstPackage.scope.threadId,
+          workspaceId: firstPackage.scope.workspaceId,
+          workerStorageChoice: {
+            ...selectedChoice,
+            expectedRevision: selectedBinding.revision - 1,
+          },
+        })
+      ).rejects.toThrow('revision changed');
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT lifecycle_state AS state FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
+          )
+          .get(firstPackage.scope.agentSessionId)
+      ).toEqual({ state: 'open' });
       const effectsBeforeReplacement = effects.length;
       anchorNanoHostMaterialization(coreDb, backend, secondPackage);
       await expect(
@@ -4661,6 +4711,380 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         coreDb.sqlite.prepare('SELECT agent_session_id FROM agent_session_runtime_bindings').get()
       ).toBeUndefined();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('honors explicit selected and fresh storage on a shared resident contributor', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const imageRef = `sha256:${'a'.repeat(64)}`;
+    const workspaceId = 'workspace_shared_choice';
+    const threadId = 'thread_shared_choice';
+    const peerThreadId = 'thread_shared_choice_peer';
+    const triggerActor = { id: 'user-factory', kind: 'user' as const };
+    const workSlotRef = workerStorageDefaultWorkSlotRef(workspaceId, threadId);
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_shared_choice', 'identity_shared_choice', 'deployment_shared_choice',
+                     1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
+        )
+        .run('2026-09-17T00:00:00.000Z');
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects),
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            inspectTerminalHarnessSession(session: unknown): Promise<void>;
+            readonly sessions: Map<string, unknown>;
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      const leaseIdFor = (environmentPackage: AgentEnvironmentPackage) =>
+        `lease-${environmentPackage.snapshotId}`;
+      const latestSandboxBindingRef = () =>
+        (
+          coreDb.sqlite
+            .prepare(
+              `SELECT sandbox_binding_ref AS sandboxBindingRef FROM sandbox_runtime_records
+               ORDER BY created_at DESC LIMIT 1`
+            )
+            .get() as { readonly sandboxBindingRef: string }
+        ).sandboxBindingRef;
+      const packageFor = (
+        label: string,
+        input: { readonly threadId?: string; readonly workSlotRef?: string } = {}
+      ) =>
+        completeNanoHostPackage({
+          createdAt: '2026-09-17T00:00:00.000Z',
+          extensions: {
+            openkit: {
+              workerStorage: { workSlotRef: input.workSlotRef ?? workSlotRef },
+            },
+          },
+          runtime: {
+            image: { kind: 'reference', pullPolicy: 'never', ref: imageRef },
+          },
+          scope: {
+            agentSessionId: `as_shared_choice_${label}`,
+            requestId: `request_turn_shared_choice_${label}`,
+            threadId: input.threadId ?? threadId,
+            triggerActor,
+            turnId: `turn_shared_choice_${label}`,
+            workspaceId,
+          },
+          snapshotId: `snapshot_shared_choice_${label}`,
+        });
+      const bindAndAnchor = (environmentPackage: AgentEnvironmentPackage, now: string) => {
+        bindNanoHostWorkerLineage(coreDb, environmentPackage, {
+          leaseId: leaseIdFor(environmentPackage),
+          now,
+          sandboxBindingRef: `lease-binding:${environmentPackage.scope.turnId}`,
+          selectedPoolId: 'pool_shared_choice',
+          selectedTargetId: 'target_shared_choice',
+        });
+        anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+      };
+      const firstPackage = packageFor('a');
+      const omittedPackage = packageFor('omitted');
+      const selectedSamePackage = packageFor('same');
+      const peerPackage = packageFor('peer', { threadId: peerThreadId, workSlotRef });
+      const selectedOtherPackage = packageFor('other');
+      const selectedOtherRetryPackage = packageFor('other_retry');
+      const freshPackage = packageFor('fresh');
+      for (const environmentPackage of [
+        firstPackage,
+        omittedPackage,
+        selectedSamePackage,
+        peerPackage,
+        selectedOtherPackage,
+        selectedOtherRetryPackage,
+        freshPackage,
+      ]) {
+        authorizeNanoHostPackage(coreDb, environmentPackage);
+      }
+      bindAndAnchor(firstPackage, '2026-09-17T00:00:00.000Z');
+      await backend.materialize(firstPackage, { workspaceRoots: [] });
+      const residentBinding = getWorkerStorageBindingForSandbox(coreDb, {
+        sandboxBindingRef: latestSandboxBindingRef(),
+      });
+      if (!residentBinding) throw new Error('Expected attached retained storage.');
+      expect(residentBinding.currentWorkSlotRef).toBe(workSlotRef);
+
+      const effectsAfterFirst = effects.length;
+      bindAndAnchor(omittedPackage, '2026-09-17T00:00:01.000Z');
+      await backend.materialize(omittedPackage, { workspaceRoots: [] });
+      expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
+      expect(effects.filter((effect) => effect.kind === 'sandbox.delete')).toHaveLength(0);
+      expect(
+        getWorkerStorageBindingForSandbox(coreDb, {
+          sandboxBindingRef: residentBinding.currentSandboxBindingRef!,
+        })?.storageRef
+      ).toBe(residentBinding.storageRef);
+
+      const sameRefChoice = {
+        expectedRevision: residentBinding.revision,
+        goalId: null,
+        kind: 'selected' as const,
+        purpose: 'work' as const,
+        reuseWorkSlotRef: workSlotRef,
+        storageRef: residentBinding.storageRef,
+        taskId: null,
+      };
+      bindAndAnchor(selectedSamePackage, '2026-09-17T00:00:02.000Z');
+      const effectsBeforeStale = effects.length;
+      await expect(
+        backend.materialize(selectedSamePackage, {
+          workerStorageChoice: { ...sameRefChoice, expectedRevision: residentBinding.revision - 1 },
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('revision changed');
+      await expect(
+        backend.materialize(selectedSamePackage, {
+          workerStorageChoice: { ...sameRefChoice, reuseWorkSlotRef: 'wsl_missing_selected_slot' },
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('work slot is unavailable');
+      expect(effects).toHaveLength(effectsBeforeStale);
+
+      await backend.materialize(selectedSamePackage, {
+        workerStorageChoice: sameRefChoice,
+        workspaceRoots: [],
+      });
+      expect(
+        getWorkerStorageBinding(coreDb, { storageRef: residentBinding.storageRef })
+      ).toMatchObject({
+        currentWorkSlotRef: workSlotRef,
+        revision: residentBinding.revision,
+        state: 'attached',
+      });
+      expect(effects).toHaveLength(effectsBeforeStale);
+
+      bindAndAnchor(peerPackage, '2026-09-17T00:00:03.000Z');
+      await expect(
+        backend.materialize(peerPackage, {
+          workerStorageChoice: { ...sameRefChoice, expectedRevision: residentBinding.revision - 1 },
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('revision changed');
+      await expect(
+        backend.materialize(peerPackage, {
+          workerStorageChoice: { ...sameRefChoice, reuseWorkSlotRef: 'wsl_missing_peer_slot' },
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('work slot is unavailable');
+      expect(effects).toHaveLength(effectsBeforeStale);
+      expect(effectsAfterFirst).toBeGreaterThan(0);
+
+      const layout = residentBinding.layout;
+      const createdOther = createWorkerStorageBinding(coreDb, {
+        deploymentId: 'deployment_shared_choice',
+        layout,
+        runtimeTargetId: 'target_shared_choice',
+        workspaceId,
+      });
+      const reservedOther = reserveWorkerStorageAttachment(coreDb, {
+        agentSessionId: 'as_shared_choice_other_seed',
+        authorizeContributor: () => true,
+        expectedRevision: createdOther.revision,
+        layout,
+        purpose: 'work',
+        responsibleUserId: 'user-factory',
+        runtimeTargetId: 'target_shared_choice',
+        storageRef: createdOther.storageRef,
+        threadId,
+        workspaceId,
+      });
+      const idleOtherFirst = releaseWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: reservedOther.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: reservedOther.revision,
+        storageRef: reservedOther.storageRef,
+      });
+      const peerSlot = workerStorageDefaultWorkSlotRef(workspaceId, peerThreadId);
+      const reservedPeer = reserveWorkerStorageAttachment(coreDb, {
+        agentSessionId: 'as_shared_choice_peer_seed',
+        authorizeContributor: () => true,
+        expectedRevision: idleOtherFirst.revision,
+        layout,
+        purpose: 'work',
+        responsibleUserId: 'user-factory',
+        runtimeTargetId: 'target_shared_choice',
+        storageRef: idleOtherFirst.storageRef,
+        threadId: peerThreadId,
+        workspaceId,
+      });
+      const idleOther = releaseWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: reservedPeer.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: reservedPeer.revision,
+        storageRef: reservedPeer.storageRef,
+      });
+      const otherChoice = {
+        expectedRevision: idleOther.revision,
+        goalId: null,
+        kind: 'selected' as const,
+        purpose: 'work' as const,
+        reuseWorkSlotRef: workSlotRef,
+        storageRef: idleOther.storageRef,
+        taskId: null,
+      };
+      bindAndAnchor(selectedOtherPackage, '2026-09-17T00:00:04.000Z');
+      await expect(
+        backend.materialize(selectedOtherPackage, {
+          workerStorageChoice: otherChoice,
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('capacity is occupied or unproved');
+      expect(getWorkerStorageBinding(coreDb, { storageRef: idleOther.storageRef })?.state).toBe(
+        'idle'
+      );
+      expect(
+        getWorkerStorageBinding(coreDb, { storageRef: residentBinding.storageRef })?.state
+      ).toBe('attached');
+      expect(getWorkerStorageBinding(coreDb, { storageRef: idleOther.storageRef })?.revision).toBe(
+        idleOther.revision
+      );
+
+      for (const snapshotId of [
+        firstPackage.snapshotId,
+        omittedPackage.snapshotId,
+        selectedSamePackage.snapshotId,
+      ]) {
+        backend.sessions.delete(snapshotId);
+      }
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases SET status = 'released'
+           WHERE lease_id IN (?, ?, ?, ?, ?)`
+        )
+        .run(
+          leaseIdFor(firstPackage),
+          leaseIdFor(omittedPackage),
+          leaseIdFor(selectedSamePackage),
+          leaseIdFor(peerPackage),
+          leaseIdFor(selectedOtherPackage)
+        );
+
+      bindAndAnchor(selectedOtherRetryPackage, '2026-09-17T00:00:05.000Z');
+      const effectsBeforeStaleOther = effects.length;
+      const residentSandboxBeforeStaleOther = coreDb.sqlite
+        .prepare(
+          `SELECT sandbox_binding_ref AS sandboxBindingRef, drain_state AS drainState
+           FROM sandbox_runtime_records`
+        )
+        .get() as { readonly drainState: string; readonly sandboxBindingRef: string } | undefined;
+      expect(residentSandboxBeforeStaleOther).toBeDefined();
+      expect(residentSandboxBeforeStaleOther?.drainState).toBe('accepting');
+      await expect(
+        backend.materialize(selectedOtherRetryPackage, {
+          workerStorageChoice: { ...otherChoice, expectedRevision: idleOther.revision - 1 },
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('revision changed');
+      await expect(
+        backend.materialize(selectedOtherRetryPackage, {
+          workerStorageChoice: { ...otherChoice, reuseWorkSlotRef: 'wsl_missing_other_slot' },
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('work slot is unavailable');
+      expect(effects).toHaveLength(effectsBeforeStaleOther);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT sandbox_binding_ref AS sandboxBindingRef, drain_state AS drainState
+             FROM sandbox_runtime_records`
+          )
+          .get()
+      ).toEqual(residentSandboxBeforeStaleOther);
+      expect(
+        getWorkerStorageBinding(coreDb, { storageRef: residentBinding.storageRef })
+      ).toMatchObject({
+        currentSandboxBindingRef: residentSandboxBeforeStaleOther!.sandboxBindingRef,
+        state: 'attached',
+      });
+      expect(getWorkerStorageBinding(coreDb, { storageRef: idleOther.storageRef })).toMatchObject({
+        revision: idleOther.revision,
+        state: 'idle',
+      });
+      await backend.materialize(selectedOtherRetryPackage, {
+        workerStorageChoice: otherChoice,
+        workspaceRoots: [],
+      });
+      const replaced = getWorkerStorageBindingForSandbox(coreDb, {
+        sandboxBindingRef: latestSandboxBindingRef(),
+      });
+      expect(replaced?.storageRef).toBe(idleOther.storageRef);
+      expect(replaced?.state).toBe('attached');
+      expect(
+        getWorkerStorageBinding(coreDb, { storageRef: residentBinding.storageRef })?.state
+      ).toBe('idle');
+      expect(getWorkerStorageBinding(coreDb, { storageRef: idleOther.storageRef })?.revision).toBe(
+        idleOther.revision + 2
+      );
+
+      backend.sessions.delete(selectedOtherRetryPackage.snapshotId);
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases SET status = 'released'
+           WHERE lease_id = ?`
+        )
+        .run(leaseIdFor(selectedOtherRetryPackage));
+      const alternatePackage = packageFor('alternate', { workSlotRef: peerSlot });
+      authorizeNanoHostPackage(coreDb, alternatePackage);
+      bindAndAnchor(alternatePackage, '2026-09-17T00:00:06.000Z');
+      const beforeHandoff = effects.length;
+      await backend.materialize(alternatePackage, {
+        workerStorageChoice: {
+          ...otherChoice,
+          expectedRevision: replaced!.revision,
+          reuseWorkSlotRef: peerSlot,
+        },
+        workspaceRoots: [],
+      });
+      const handedOff = getWorkerStorageBinding(coreDb, { storageRef: idleOther.storageRef });
+      expect(handedOff).toMatchObject({
+        attachmentGeneration: replaced!.attachmentGeneration + 1,
+        currentWorkSlotRef: peerSlot,
+        state: 'attached',
+      });
+      expect(effects.slice(beforeHandoff).map((effect) => effect.kind)).toEqual([
+        'sandbox.delete',
+        'image.acquire',
+        'image.inspect',
+        'sandbox.create',
+      ]);
+      backend.sessions.delete(alternatePackage.snapshotId);
+      coreDb.sqlite
+        .prepare("UPDATE scheduler_session_leases SET status = 'released' WHERE lease_id = ?")
+        .run(leaseIdFor(alternatePackage));
+      const otherAfterCleanup = getWorkerStorageBinding(coreDb, {
+        storageRef: idleOther.storageRef,
+      });
+      bindAndAnchor(freshPackage, '2026-09-17T00:00:06.000Z');
+      await backend.materialize(freshPackage, {
+        workerStorageChoice: { goalId: null, kind: 'fresh', taskId: null },
+        workspaceRoots: [],
+      });
+      const freshBinding = getWorkerStorageBindingForSandbox(coreDb, {
+        sandboxBindingRef: latestSandboxBindingRef(),
+      });
+      expect(freshBinding?.storageRef).not.toBe(otherAfterCleanup?.storageRef);
+      expect(freshBinding?.storageRef).not.toBe(residentBinding.storageRef);
+      expect(getWorkerStorageBinding(coreDb, { storageRef: idleOther.storageRef })?.state).toBe(
+        'idle'
+      );
     } finally {
       coreDb.sqlite.close();
     }

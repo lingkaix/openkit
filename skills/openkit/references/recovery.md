@@ -41,6 +41,20 @@ The Task remains bound to the credential presented when it was submitted. After 
 
 A denied storage reservation before Sandbox creation completes local cleanup after rolling back the reservation. It does not require a NanoHost restart. Retained storage still requires the same responsible user and current access to every contributing Thread; administrator Workspace authority does not expose another user's private conversation or retained bytes.
 
+## Recover a retained checkout
+
+Use this sequence when the user wants a new Task on an authorized idle association that still holds a predecessor checkout. The Web conversation composer currently cannot send `workerStorageChoice`; use public Skill `task.start` or the same App API for this operation. `conversation.submit` cannot carry the choice.
+
+1. Describe `worker-environment.list`, `worker-environment.status`, `worker-environment.select`, `environment.snapshot-list`, and `task.start` before calling them.
+2. List retained environments for the Workspace and copy the intended `storageRef`, current `revision`, `layoutDigest`, occupancy, and contributor Thread lineage. Do not reuse a `revision` remembered from an earlier call.
+3. Read `worker-environment.status` for that `storageRef`. Continue only when the association is idle, host storage is available, and there is no current attachment.
+4. Call `worker-environment.select` with the current `expectedRevision`, `layoutDigest`, target `threadId`, `purpose`, and `taskId`. Successful select is an eligibility check, not attachment.
+5. List `environment.snapshot-list` for the Workspace. Match the exact predecessor Thread and Turn, then copy `snapshot.extensions.openkit.workerStorage.workSlotRef`. A missing field is not a reason to invent a slot or treat the volume as the checkout.
+6. Start the Task with a new `requestId` and `workerStorageChoice` `{ "kind": "selected", "storageRef": "<storageRef>", "expectedRevision": <current revision>, "purpose": "work", "reuseWorkSlotRef": "<workSlotRef>" }` only when the intent is that predecessor checkout. Selected `storageRef` without `reuseWorkSlotRef` can attach the same volume while placing a distinct Thread slot, so it does not recover the same checkout.
+7. Re-read `worker-environment.status` and the Task Turn. Claim recovery only after the selected association is attached for this work and a read-only Worker inspection of that checkout matches the predecessor files. A clean unrelated worktree, a successful select, or command acceptance alone is not recovery.
+
+Preserve stale, unknown, audience, layout, or competing-writer refusals. Do not weaken the reuse check or fall back to `conversation.submit`.
+
 ## Recover a fenced NanoHost cleanup
 
 If a failed Task reports that backend cleanup requires a different fresh physical Epoch, inspect the exact Turn and `nanohost.runtime-target` before submitting more work. This is physical execution-host recovery, not a reason to rewrite scheduler records or remove storage. The public interface can inspect the failure and readiness; it does not expose a generic host-service restart. An authorized deployment operator can restart the affected NanoHost after checking other active work. Once NanoHost reports a different fenced, ready, fresh-empty physical Epoch, existing NanoCore maintenance retries the exact cleanup. Confirm the original failure is terminal and cleanup has settled before submitting a new request; restarting NanoCore is not required solely to trigger that maintenance.

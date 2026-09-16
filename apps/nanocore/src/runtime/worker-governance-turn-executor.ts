@@ -1203,7 +1203,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       responsibleUserIdForActor(input.turn.triggerActor)
     );
     const planned = resolvePackage(plannedWorkSlotRef);
-    if (input.workerStorageChoice?.kind === 'selected') return planned;
+    if (input.workerStorageChoice) return planned;
     const residentWorkSlotRef = this.resolveResidentWorkerStorageWorkSlotRef?.(planned);
     return residentWorkSlotRef && residentWorkSlotRef !== plannedWorkSlotRef
       ? resolvePackage(residentWorkSlotRef)

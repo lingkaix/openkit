@@ -1485,6 +1485,52 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(store.getAgentSession('as-foreign-predecessor').status).toBe('failed');
   });
 
+  it.each([
+    false,
+    true,
+  ])('uses a fresh work slot only for explicit fresh storage (%s)', async (fresh) => {
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Inspect the repository');
+    const residentSlot = 'wsl_retained_predecessor';
+    const resolveResident = vi.fn(() => residentSlot);
+    const inspectContinuity = vi.fn(async () => 'absent' as const);
+    const backend = new FakeWorkerGovernanceBackend();
+    Object.assign(backend, { prepareAgentSessionContinuity: inspectContinuity });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      resolveResidentWorkerStorageWorkSlotRef: resolveResident,
+    });
+    await executor.prepareAgentSessionForTurn(store, {
+      agentSetup: createTestAgentSetup(),
+      freshAgentSessionId: 'as_storage_choice_preview',
+      requestId: '00000000-0000-4000-8000-00000000b002',
+      turn,
+      turnInput: turn.input,
+      workspaceCwd: null,
+      workspaceRoots: [],
+      ...(fresh
+        ? { workerStorageChoice: { kind: 'fresh' as const, goalId: null, taskId: null } }
+        : {}),
+    });
+    expect(inspectContinuity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environmentPackage: expect.objectContaining({
+          extensions: expect.objectContaining({
+            openkit: expect.objectContaining({
+              workerStorage: {
+                workSlotRef: fresh
+                  ? workerStorageDefaultWorkSlotRef(turn.workspaceId, turn.threadId)
+                  : residentSlot,
+              },
+            }),
+          }),
+        }),
+      })
+    );
+    if (fresh) expect(resolveResident).not.toHaveBeenCalled();
+    else expect(resolveResident).toHaveBeenCalled();
+  });
+
   it('starts an ordinary product Turn from the real pre-lease preview key without a Context Package', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-preview-launch-')));
     applyMigrations(coreDb);

@@ -99,11 +99,14 @@ import {
   admitWorkerStorageContributor,
   authorizeAttachedWorkerStorageReplacement,
   createWorkerStorageBinding,
+  getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
   listWorkerStorageBindings,
   markWorkerStorageAttachmentUnknown,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
+  resolveWorkerStorageWorkSlotRef,
+  selectWorkerStorageBinding,
   type WorkerStorageBinding,
   type WorkerStorageContributor,
   type WorkerStorageSelectionInput,
@@ -935,6 +938,32 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       : undefined;
   }
 
+  /** Validates an explicit selection before effects; attachment admission still performs its own CAS. */
+  private validateWorkerStorageSelection(
+    environmentPackage: AgentEnvironmentPackage,
+    sandboxBindingRef: string,
+    selection: Omit<WorkerStorageSelectionInput, 'layout'> & {
+      readonly reuseWorkSlotRef?: string;
+    }
+  ): WorkerStorageBinding {
+    const selected = getWorkerStorageBinding(this.coreDb, { storageRef: selection.storageRef });
+    if (!selected) throw new Error('Worker storage association was not found.');
+    const binding =
+      selected.currentSandboxBindingRef === sandboxBindingRef
+        ? authorizeAttachedWorkerStorageReplacement(this.coreDb, {
+            ...selection,
+            sandboxBindingRef,
+          })
+        : selectWorkerStorageBinding(this.coreDb, { ...selection, layout: selected.layout });
+    if (
+      resolveWorkerStorageWorkSlotRef(binding, selection) !==
+      packageWorkerStorageWorkSlotRef(environmentPackage)
+    ) {
+      throw new Error('Worker storage work slot changed after package planning.');
+    }
+    return binding;
+  }
+
   /** Reads the sole native AgentSession occupying one Workspace Thread, if any. */
   public readThreadAgentSessionBinding(input: {
     readonly threadId: string;
@@ -1014,6 +1043,28 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     if (input.reuseAllowed) {
       return inspection.reusable ? 'reusable' : 'replacement-required';
+    }
+    if (input.workerStorageChoice?.kind === 'selected') {
+      const environmentPackage = input.environmentPackage;
+      const responsibleUserId = environmentPackage
+        ? responsibleUserIdForActor(environmentPackage.scope.triggerActor)
+        : null;
+      const sharedHarness = [...this.sharedHarnesses.values()].find(
+        (harness) => harness.harnessBindingRef === inspection.harnessBindingRef
+      );
+      if (!environmentPackage || !responsibleUserId || !sharedHarness) {
+        throw new Error('Worker storage selection lacks current AgentSession lineage.');
+      }
+      this.validateWorkerStorageSelection(
+        environmentPackage,
+        sharedHarness.sandbox.sandboxBindingRef,
+        this.workerStorageReplacementSelection(
+          environmentPackage,
+          input.workerStorageChoice,
+          responsibleUserId,
+          currentWorkerStorageAudienceAuthorizer(this.coreDb, environmentPackage)
+        )!
+      );
     }
     await this.closeDurableAgentSession(inspection);
     for (const sharedHarness of this.sharedHarnesses.values()) {
@@ -1537,17 +1588,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       eviction = inspected;
       if (eviction) {
-        const attachedBinding = getWorkerStorageBindingForSandbox(this.coreDb, {
-          sandboxBindingRef: eviction.sandboxBindingRef,
-        });
-        if (
-          replacementSelection &&
-          attachedBinding?.storageRef === replacementSelection.storageRef
-        ) {
-          authorizedReplacementBinding = authorizeAttachedWorkerStorageReplacement(this.coreDb, {
-            ...replacementSelection,
-            sandboxBindingRef: eviction.sandboxBindingRef,
-          });
+        if (replacementSelection) {
+          const selectedBinding = this.validateWorkerStorageSelection(
+            environmentPackage,
+            eviction.sandboxBindingRef,
+            replacementSelection
+          );
+          if (selectedBinding.currentSandboxBindingRef === eviction.sandboxBindingRef) {
+            authorizedReplacementBinding = selectedBinding;
+          }
         }
         const timestamp = new Date().toISOString();
         const sandboxUpdate = this.coreDb.sqlite
@@ -1719,7 +1768,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
       throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
     }
-    const releasedSelectedBinding = await this.evictIncompatibleIdleSandbox(
+    let releasedSelectedBinding = await this.evictIncompatibleIdleSandbox(
       environmentPackage,
       identity,
       leaseId,
@@ -1743,7 +1792,39 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         contributor.responsibleUserId === responsibleUserId
     );
     const plannedWorkSlotRef = packageWorkerStorageWorkSlotRef(environmentPackage);
-    if (sharedSandbox && existingContributor) {
+    let replaceSharedSandbox =
+      choice?.kind === 'fresh' ||
+      (choice?.kind === 'selected'
+        ? choice.storageRef !== sharedSandbox?.workerStorageBinding.storageRef
+        : !existingContributor);
+    if (
+      sharedSandbox &&
+      choice?.kind === 'selected' &&
+      !replaceSharedSandbox &&
+      replacementSelection
+    ) {
+      const selectedBinding = this.validateWorkerStorageSelection(
+        environmentPackage,
+        sharedSandbox.sandboxBindingRef,
+        replacementSelection
+      );
+      const selectedWorkSlotRef = resolveWorkerStorageWorkSlotRef(
+        selectedBinding,
+        replacementSelection
+      );
+      replaceSharedSandbox =
+        selectedWorkSlotRef !==
+        resolveWorkerStorageWorkSlotRef(selectedBinding, {
+          responsibleUserId,
+          threadId: environmentPackage.scope.threadId,
+        });
+      if (!replaceSharedSandbox) {
+        sharedSandbox.workerStorageBinding = admitWorkerStorageContributor(this.coreDb, {
+          ...replacementSelection,
+          layout: sharedSandbox.workerStorageBinding.layout,
+        });
+      }
+    } else if (sharedSandbox && !choice && existingContributor) {
       const residentWorkSlotRef = requireWorkerStorageWorkSlot(
         sharedSandbox.workerStorageBinding,
         environmentPackage.scope.threadId,
@@ -1753,13 +1834,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('Worker storage work slot changed after package planning.');
       }
     }
-    if (
-      sharedSandbox &&
-      !existingContributor &&
-      (choice?.kind !== 'selected' ||
-        choice.storageRef !== sharedSandbox.workerStorageBinding.storageRef)
-    ) {
-      await this.evictIncompatibleIdleSandbox(environmentPackage, identity, leaseId, true);
+    if (sharedSandbox && replaceSharedSandbox) {
+      releasedSelectedBinding = await this.evictIncompatibleIdleSandbox(
+        environmentPackage,
+        identity,
+        leaseId,
+        true,
+        replacementSelection
+      );
       sharedHarness = null;
       sharedSandbox = null;
     }
@@ -1915,37 +1997,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         nanoHostEffectEvidence(environmentPackage.createdAt, imageResult, 'image'),
         nanoHostEffectEvidence(environmentPackage.createdAt, sandboxResult, 'sandbox')
       );
-    }
-    const attachedContributor = sharedSandbox.workerStorageBinding.contributors.some(
-      (contributor) =>
-        contributor.threadId === environmentPackage.scope.threadId &&
-        contributor.responsibleUserId === responsibleUserId
-    );
-    if (!attachedContributor) {
-      if (
-        choice?.kind !== 'selected' ||
-        choice.storageRef !== sharedSandbox.workerStorageBinding.storageRef
-      ) {
-        throw new Error('Fresh Worker storage requires a separate idle Sandbox.');
-      }
-      sharedSandbox.workerStorageBinding = admitWorkerStorageContributor(this.coreDb, {
-        ...(choice.adjudicatedThreadIds
-          ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
-          : {}),
-        authorizeContributor: currentWorkerStorageAudienceAuthorizer(
-          this.coreDb,
-          environmentPackage
-        ),
-        expectedRevision: sharedSandbox.workerStorageBinding.revision,
-        ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
-        layout: sharedSandbox.workerStorageBinding.layout,
-        purpose: choice.purpose,
-        responsibleUserId,
-        storageRef: sharedSandbox.workerStorageBinding.storageRef,
-        ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
-        threadId: environmentPackage.scope.threadId,
-        workspaceId: environmentPackage.scope.workspaceId,
-      });
     }
     if (!sharedHarness) {
       const harnessIdentity = createHash('sha256')
