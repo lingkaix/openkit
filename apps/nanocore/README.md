@@ -23,6 +23,8 @@ Current OpenAI flagship API and Codex subscription profiles are available as opt
 
 Presented server-admin bearers may start Tasks across active Workspaces without membership. The existing scheduler admission retains only the exact non-secret Token reference; dispatch and later Worker effects revalidate current Token and User facts through exact lease/Turn/package lineage. Revocation cannot fall back to membership, and private conversation ownership, approvals and Vault grants remain separate checks. Retained Worker storage rechecks that exact live authority and each contributing Thread audience at reservation or reuse; whole-volume reuse remains restricted to the same responsible user.
 
+Actor-derived Quick Chat operations establish a usable server-admin bearer's own private home through the existing Workspace provisioner before evaluating Workspace access. This supports first-time administration Assistant use without a preceding browser session. It accepts no caller-selected owner or Workspace, preserves membership tombstones, and never provisions for revoked, expired, or disabled credentials.
+
 ## Selected Repository Worker Tools
 
 Codex manifests may explicitly select `mcp: [{ id: "openkit-repository" }]` to expose `repository_push_request_approval` and `repository_push_execute` over the existing authenticated MCP relay. The built-in is not automatically supplied and its catalog identity is reserved. Both tools require a UUID `requestId` and a repository `resourceId`; approval requests also supply `sourceRef`, `targetBranch`, and `commitIds`, while execution supplies `approvalRequestId`. Workspace, Thread, Turn, AgentSession, package, and actor authority come from the authenticated package and current server authority.

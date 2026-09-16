@@ -25,6 +25,7 @@ import {
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
+  ensureUserQuickChatWorkspace,
   listActiveWorkspaceIds,
   listActiveWorkspaceIdsForActor,
   resolveWorkspaceRole,
@@ -624,6 +625,7 @@ function hasWorkspaceDeletionRetryAuthority(
 
 /**
  * Resolves one operation's Workspace through its declared owner shape.
+ * A usable administrator bearer establishes only its own actor-derived Quick Chat home.
  *
  * @param context Authenticated request context.
  * @param actor Authenticated request actor.
@@ -640,6 +642,13 @@ async function resolveWorkspaceId(
   try {
     switch (route.access.resolver) {
       case 'actor-quick-chat-workspace':
+        if (isUsablePresentedServerAdminToken(input.coreDb, actor)) {
+          ensureUserQuickChatWorkspace({
+            coreDb: input.coreDb,
+            store: input.store,
+            userId: actor.userId,
+          });
+        }
         return input.quickChatWorkspaceIdForUser(actor.userId);
       case 'body-workspace':
         return bodyWorkspaceId(context, route.operationKey);

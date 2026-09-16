@@ -553,6 +553,130 @@ describe('administration conversation route', () => {
     await expect(partialReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
     expect(createResponses).toHaveBeenCalledTimes(2);
   });
+
+  it('rejects a foreign private administration Thread in the actor home without a new Turn', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-administration-foreign-thread-'));
+    const coreDb = openCoreDb(dataRoot);
+    openDatabases.push(coreDb);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      expiresAt: '2999-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'tok_administration_foreign_thread',
+      workspaceIds: [],
+    });
+    const actor: Actor = {
+      kind: 'token',
+      tokenId: token.tokenId,
+      tokenScope: 'server-admin',
+      tokenWorkspaceIds: [],
+      userId: 'user_local',
+    };
+    const store = createDemoStore({ dataRoot });
+    const actorWorkspaceId = quickChatWorkspaceIdForUser(actor.userId);
+    store.ensureQuickChatWorkspace('user_other');
+    const foreignPrivateThread = store.createThread(
+      quickChatWorkspaceIdForUser('user_other'),
+      'Foreign private administration',
+      undefined,
+      'administration',
+      { privateOwnerUserId: 'user_other', visibility: 'private' }
+    );
+    const actorThreadIds = store.listThreads(actorWorkspaceId).map((thread) => thread.id);
+    const createTurn = vi.spyOn(store, 'createTurn');
+    const createResponses = vi.fn();
+    const providerProfile = {
+      baseUrl: 'https://provider.invalid/v1',
+      displayName: 'Provider',
+      id: 'provider',
+      kind: 'custom' as const,
+      models: ['model'],
+    };
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'administration',
+        logicalModels: [
+          {
+            id: 'administration',
+            displayName: 'Administration',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+            routes: [
+              { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
+            ],
+          },
+        ],
+      },
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        defaultLogicalModelId: 'administration',
+        profiles: [],
+      },
+      providerRegistry: new ProviderRegistry([
+        {
+          ...providerProfile,
+          modelMetadata: {
+            model: {
+              family: 'test',
+              limit: { context: 20_000, output: 1_000 },
+              modalities: { input: ['text'], output: ['text'] },
+              tool_call: true,
+            },
+          },
+        },
+      ]),
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (context, next) => {
+      context.set('actor', actor);
+      await next();
+    });
+    registerAdministrationRoutes({
+      app,
+      coreDb,
+      environmentToolsForTurn: () => inertEnvironmentTools(),
+      inflightCommands: new WeakMap(),
+      llmGatewayDispatcher: { createResponses },
+      quickChatWorkspaceIdForUser,
+      requestStore: () => store,
+      runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+      resolveGatewayProvider: () =>
+        ({
+          adapterId: 'provider',
+          apiKey: 'unused',
+          baseUrl: providerProfile.baseUrl,
+          displayName: providerProfile.displayName,
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+          id: providerProfile.id,
+          models: providerProfile.models,
+          requiresApiKey: true,
+        }) satisfies ResolvedLLMProviderConfig,
+      runtimeConfig: () => snapshot,
+    });
+
+    const response = await app.request('/api/app/administration/conversation-turns', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        input: 'Continue the other private administration thread.',
+        requestId: '22222222-2222-4222-8222-222222222222',
+        threadId: foreignPrivateThread.id,
+      }),
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'target_missing',
+      message: 'Administration Thread is unavailable.',
+    });
+    expect(createTurn).not.toHaveBeenCalled();
+    expect(createResponses).not.toHaveBeenCalled();
+    expect(store.listThreads(actorWorkspaceId).map((thread) => thread.id)).toEqual(actorThreadIds);
+  });
 });
 
 function inertEnvironmentTools(): AdministrationEnvironmentTools {

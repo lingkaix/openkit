@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { AutomationStore } from '../lib/automation-store.js';
+import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import {
   createSchedulerAdmissionEntry,
   createSchedulerPlacementPlan,
@@ -16,7 +17,10 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { createOpenKitAccessTokenRecord } from './access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './access-token-store.js';
 import { type Actor, ensureLocalUser } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
@@ -109,6 +113,7 @@ function createFixture() {
   };
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const app = new Hono<{ Variables: AuthVariables }>();
+  let administrationHandlerReads = 0;
   let threadDashboardHandlerReads = 0;
 
   app.use('*', async (c, next) => {
@@ -119,13 +124,16 @@ function createFixture() {
     app,
     automationStore,
     coreDb,
-    quickChatWorkspaceIdForUser: (userId) =>
-      userId === 'user_local' ? quickChatWorkspace.id : 'ws_missing_quick_chat',
+    quickChatWorkspaceIdForUser,
     store,
     workspaceMutationAdmission,
   });
 
   app.post('/api/app/quick-chat', (c) => c.json(c.get('workspaceAccess') ?? null));
+  app.post('/api/app/administration/conversation-turns', (c) => {
+    administrationHandlerReads += 1;
+    return c.json(c.get('workspaceAccess') ?? null);
+  });
   app.get('/api/app/automations', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.get('/api/app/workspaces', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.post('/api/app/automations', async (c) =>
@@ -155,11 +163,13 @@ function createFixture() {
   return {
     actorState,
     app,
+    administrationHandlerReads: () => administrationHandlerReads,
     coreDb,
     filesystemOnlyWorkspace,
     foreignThread,
     foreignWorkspace,
     quickChatWorkspace,
+    store,
     threadDashboardHandlerReads: () => threadDashboardHandlerReads,
     turn,
     workspace,
@@ -1053,4 +1063,136 @@ describe('central Workspace operation authorizer', () => {
     await expect(token.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
     expect(admin.status).toBe(200);
   });
+
+  it('provisions only the usable server-admin actor Quick Chat before administration submit', async () => {
+    const actorQuickChatId = quickChatWorkspaceIdForUser('user_missing');
+    presentServerAdmin('user_missing', 'token_admin_absent_qc');
+
+    const response = await submitAdministrationConversation({
+      input: 'Prepare a Worker image.',
+      requestId: '11111111-1111-4111-8111-111111111111',
+    });
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(fixture.administrationHandlerReads()).toBe(1);
+    await expect(response.json()).resolves.toEqual({
+      effectiveRole: 'owner',
+      kind: 'workspace',
+      policyOperation: 'turn.run',
+      workspaceId: actorQuickChatId,
+    });
+    expect(fixture.store.getWorkspace(actorQuickChatId)).toMatchObject({
+      id: actorQuickChatId,
+      kind: 'quick-chat',
+    });
+    expect(registeredWorkspaceOwner(actorQuickChatId)).toBe('user_missing');
+    expect(registeredWorkspaceOwner(fixture.quickChatWorkspace.id)).toBe('user_local');
+  });
+
+  it('does not provision Quick Chat for revoked or disabled administration callers', async () => {
+    fixture.coreDb.sqlite
+      .prepare('DELETE FROM workspace_registry WHERE workspace_id = ?')
+      .run(fixture.quickChatWorkspace.id);
+    presentServerAdmin('user_local', 'token_admin_revoked_qc');
+    revokeOpenKitAccessTokenRecord(fixture.coreDb, 'token_admin_revoked_qc');
+    const workspaceIdsBefore = fixture.store.listWorkspaces().map((workspace) => workspace.id);
+
+    const revoked = await submitAdministrationConversation({
+      input: 'Prepare a Worker image.',
+      requestId: '33333333-3333-4333-8333-333333333333',
+    });
+    presentServerAdmin('user_disabled', 'token_admin_disabled_qc');
+    const disabled = await submitAdministrationConversation({
+      input: 'Prepare a Worker image.',
+      requestId: '44444444-4444-4444-8444-444444444444',
+    });
+
+    expect(revoked.status).toBe(403);
+    expect(disabled.status).toBe(403);
+    expect(fixture.administrationHandlerReads()).toBe(0);
+    await expect(revoked.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    await expect(disabled.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    expect(registeredWorkspaceOwner(fixture.quickChatWorkspace.id)).toBeUndefined();
+    expect(registeredWorkspaceOwner(quickChatWorkspaceIdForUser('user_disabled'))).toBeUndefined();
+    expect(fixture.store.listWorkspaces().map((workspace) => workspace.id)).toEqual(
+      workspaceIdsBefore
+    );
+    expect(workspaceIdsBefore).not.toContain(quickChatWorkspaceIdForUser('user_disabled'));
+  });
+
+  it('denies administration submit when the actor Quick Chat owner membership is removed', async () => {
+    const actorQuickChatId = quickChatWorkspaceIdForUser('user_missing');
+    const now = new Date().toISOString();
+    fixture.store.ensureQuickChatWorkspace('user_missing');
+    fixture.coreDb.sqlite
+      .prepare(
+        `INSERT INTO workspace_registry (
+          workspace_id, owner_user_id, status, revision, created_at, updated_at
+        ) VALUES (?, 'user_missing', 'active', 1, ?, ?)`
+      )
+      .run(actorQuickChatId, now, now);
+    fixture.coreDb.sqlite
+      .prepare(
+        `INSERT INTO workspace_members (
+          workspace_id, user_id, status, access_level, invitation_id,
+          joined_at, removed_at, revision, created_at, updated_at
+        ) VALUES (?, 'user_missing', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
+      )
+      .run(actorQuickChatId, now, now, now, now);
+    presentServerAdmin('user_missing', 'token_admin_removed_qc');
+
+    const response = await submitAdministrationConversation({
+      input: 'Prepare a Worker image.',
+      requestId: '55555555-5555-4555-8555-555555555555',
+    });
+
+    expect(response.status).toBe(403);
+    expect(fixture.administrationHandlerReads()).toBe(0);
+    await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    expect(ownerMembershipStatus(actorQuickChatId, 'user_missing')).toBe('removed');
+    expect(registeredWorkspaceOwner(actorQuickChatId)).toBe('user_missing');
+  });
 });
+
+/** Presents one server-admin bearer on the shared fixture actor. */
+function presentServerAdmin(userId: string, tokenId: string): void {
+  createOpenKitAccessTokenRecord(fixture.coreDb, {
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    ownerUserId: userId,
+    scope: 'server-admin',
+    tokenId,
+    workspaceIds: [],
+  });
+  fixture.actorState.current = {
+    kind: 'token',
+    tokenId,
+    tokenScope: 'server-admin',
+    tokenWorkspaceIds: [],
+    userId,
+  };
+}
+
+/** Submits one private administration conversation through the guarded stub. */
+function submitAdministrationConversation(body: Record<string, unknown>): Promise<Response> {
+  return fixture.app.request('/api/app/administration/conversation-turns', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Reads the current registry owner for one Workspace id. */
+function registeredWorkspaceOwner(workspaceId: string): string | undefined {
+  const row = fixture.coreDb.sqlite
+    .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
+    .get(workspaceId) as { owner_user_id: string } | undefined;
+  return row?.owner_user_id;
+}
+
+/** Reads one Workspace membership status. */
+function ownerMembershipStatus(workspaceId: string, userId: string): string | undefined {
+  const row = fixture.coreDb.sqlite
+    .prepare(`SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?`)
+    .get(workspaceId, userId) as { status: string } | undefined;
+  return row?.status;
+}
