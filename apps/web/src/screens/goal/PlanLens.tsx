@@ -225,9 +225,10 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
   const [reviseOpen, setReviseOpen] = useState(false);
   const [revision, setRevision] = useState('');
 
-  const planTasks = planQuery.data?.plan?.tasks;
+  const plan = planQuery.data?.plan;
+  const planTasks = plan?.tasks;
   const planItemId = planQuery.data?.planItemId;
-  const steps = buildDisplaySteps(goal, planTasks, preApproval);
+  const steps = buildDisplaySteps(goal, preApproval ? planTasks : undefined, preApproval);
 
   return (
     <div className="flex flex-col gap-6">
@@ -263,6 +264,227 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
           <div className="mt-3" aria-busy="true">
             <Skeleton lines={4} />
           </div>
+        ) : preApproval && plan ? (
+          <div className="mt-3 flex flex-col gap-3">
+            <details className="text-sm text-fg">
+              <summary className="cursor-pointer text-sm text-fg-muted">Plan details</summary>
+              <div className="mt-2 flex min-w-0 flex-col gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                    Plan summary
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap">{plan.goalSummary}</p>
+                </div>
+                {plan.assumptions.length > 0 ? (
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                      Assumptions
+                    </p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {plan.assumptions.map((assumption, index) => (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                        <li key={`${index}:${assumption}`} className="whitespace-pre-wrap">
+                          {assumption}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {plan.risks.length > 0 ? (
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                      Risks
+                    </p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {plan.risks.map((risk, index) => (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                        <li key={`${index}:${risk}`} className="whitespace-pre-wrap">
+                          {risk}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                    Questions
+                  </p>
+                  {plan.questions.length > 0 ? (
+                    <ul className="mt-1 list-disc pl-5">
+                      {plan.questions.map((question, index) => (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                        <li key={`${index}:${question}`} className="whitespace-pre-wrap">
+                          {question}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-fg-muted">No open questions</p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                    Verification approach
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap">{plan.verificationApproach}</p>
+                </div>
+              </div>
+            </details>
+            <ol className="flex flex-col">
+              {plan.tasks.map((task, index) => {
+                const step = steps.find((candidate) => candidate.taskId === task.taskId);
+                return (
+                  <li
+                    key={task.taskId}
+                    className="border-t border-separator py-2.5 first:border-t-0"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-sunken text-xs font-bold text-fg-muted">
+                        {index + 1}
+                      </span>
+                      <span className="min-w-0 flex-1 text-sm font-medium text-fg">
+                        {task.title}
+                      </span>
+                      {step ? <StatusChip tone={step.tone}>{step.chip}</StatusChip> : null}
+                    </div>
+                    <details className="mt-2 text-sm text-fg">
+                      <summary className="cursor-pointer text-sm text-fg-muted">
+                        Task details
+                      </summary>
+                      <div className="mt-2 flex min-w-0 flex-col gap-3">
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                            Objective
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap">{task.objective}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                            Acceptance criteria
+                          </p>
+                          <ul className="mt-1 list-disc pl-5">
+                            {task.acceptanceCriteria.map((criterion, index) => (
+                              // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                              <li key={`${index}:${criterion}`} className="whitespace-pre-wrap">
+                                {criterion}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                            Context token budget
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap">
+                            {String(task.contextBudgetTokens)}
+                          </p>
+                        </div>
+                        {task.resources.length > 0 ? (
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                              Declared resources
+                            </p>
+                            <ul className="mt-1 list-disc pl-5">
+                              {task.resources.map((resource, index) => (
+                                <li
+                                  // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                                  key={`${index}:${resource.kind}:${resource.reference}:${resource.reason}`}
+                                  className="whitespace-pre-wrap"
+                                >
+                                  {resource.kind}: {resource.reference} — {resource.reason}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {task.expectedArtifacts.length > 0 ? (
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                              Expected outputs
+                            </p>
+                            <ul className="mt-1 list-disc pl-5">
+                              {task.expectedArtifacts.map((artifact, index) => (
+                                <li
+                                  // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                                  key={`${index}:${artifact.kind}:${artifact.description}`}
+                                  className="whitespace-pre-wrap"
+                                >
+                                  {artifact.kind}: {artifact.description}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                            Checks
+                          </p>
+                          <ul className="mt-1 list-disc pl-5">
+                            {task.verificationChecks.map((check, index) => (
+                              <li
+                                // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                                key={`${index}:${check.kind}:${check.description}:${check.command ?? ''}`}
+                                className="min-w-0"
+                              >
+                                <p className="whitespace-pre-wrap">
+                                  {check.kind}: {check.description}
+                                </p>
+                                {check.command ? (
+                                  <p className="mt-0.5 whitespace-pre-wrap">{check.command}</p>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                            Human review
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap">
+                            {task.reviewPolicy.required ? 'Required' : 'Not required'}.{' '}
+                            {task.reviewPolicy.instructions}
+                          </p>
+                        </div>
+                        {task.dependsOnTaskIds.length > 0 ? (
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                              Dependencies
+                            </p>
+                            <ul className="mt-1 list-disc pl-5">
+                              {task.dependsOnTaskIds.map((dependencyId, index) => (
+                                <li
+                                  // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                                  key={`${index}:${dependencyId}`}
+                                  className="whitespace-pre-wrap"
+                                >
+                                  {dependencyId}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {task.escalationConditions.length > 0 ? (
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                              Escalation conditions
+                            </p>
+                            <ul className="mt-1 list-disc pl-5">
+                              {task.escalationConditions.map((condition, index) => (
+                                // biome-ignore lint/suspicious/noArrayIndexKey: immutable plan order identifies duplicate-allowed entries
+                                <li key={`${index}:${condition}`} className="whitespace-pre-wrap">
+                                  {condition}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    </details>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
         ) : steps.length === 0 ? (
           <p className="mt-3 text-sm text-fg-muted">No plan steps yet.</p>
         ) : (
@@ -275,9 +497,7 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
                 <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-sunken text-xs font-bold text-fg-muted">
                   {index + 1}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
-                  {step.title}
-                </span>
+                <span className="min-w-0 flex-1 text-sm font-medium text-fg">{step.title}</span>
                 <StatusChip tone={step.tone}>{step.chip}</StatusChip>
               </li>
             ))}

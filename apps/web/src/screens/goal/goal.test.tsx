@@ -512,10 +512,262 @@ describe('goal surfaces (WP-5)', () => {
     });
     renderApp('/goals/ws1/th1?lens=plan', client);
     expect(await screen.findByText('Ship release')).toBeInTheDocument();
-    expect(screen.getByText('Make v0.0.6 ready.')).toBeInTheDocument();
+    expect(screen.getAllByText('Make v0.0.6 ready.').length).toBeGreaterThan(0);
     expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /adjust plan/i })).toBeInTheDocument();
     expect(screen.getByText('Planned')).toBeInTheDocument();
+  });
+
+  it('shows the full GET plan as labeled text before approval without mutating on disclose', async () => {
+    const user = userEvent.setup();
+    const reviewablePlan = {
+      schemaVersion: 1 as const,
+      goalSummary: 'Audit exact Plan-lens approval facts before the supervisor grants execution.',
+      assumptions: [
+        'The GET plan payload is the sole reviewable authority at this gate.',
+        'The GET plan payload is the sole reviewable authority at this gate.',
+      ],
+      risks: ['Title-only approval would hide declared resources and review instructions.'],
+      questions: [],
+      verificationApproach: 'Compare Plan-card labels with the GET payload before Approve.',
+      tasks: [
+        {
+          taskId: 'task_audit_docs',
+          title: 'Audit Goal docs',
+          objective: 'Confirm the Goal paragraph names every reviewable Plan field.',
+          acceptanceCriteria: ['README names assumptions, risks, and human review instructions.'],
+          contextBudgetTokens: 18_000,
+          resources: [
+            {
+              kind: 'file' as const,
+              reference: 'apps/web/README.md',
+              reason: 'Owns the Goal projection note for Plan review.',
+            },
+            {
+              kind: 'file' as const,
+              reference: 'apps/web/README.md',
+              reason: 'Owns the Goal projection note for Plan review.',
+            },
+          ],
+          expectedArtifacts: [
+            {
+              kind: 'document' as const,
+              description: 'Updated Goal paragraph citing labeled Plan review fields.',
+            },
+          ],
+          verificationChecks: [
+            {
+              kind: 'command' as const,
+              description: 'Run focused Goal Web tests.',
+              command: 'pnpm --filter @openkit/web exec vitest run src/screens/goal/goal.test.tsx',
+            },
+          ],
+          reviewPolicy: {
+            required: true,
+            reviewers: ['human'] as const,
+            instructions: 'Reject if task details stay unlabeled or dump raw JSON.',
+          },
+          dependsOnTaskIds: [],
+          escalationConditions: ['Escalate if the plan Item digest disagrees with GET.'],
+        },
+        {
+          taskId: 'task_expose_plan',
+          title: 'Expose plan details',
+          objective:
+            'Show every GET plan field as wrapping labeled text so long review instructions stay readable before Approve.',
+          acceptanceCriteria: ['Opening Task details reveals the dependency on Audit Goal docs.'],
+          contextBudgetTokens: 24_000,
+          resources: [
+            {
+              kind: 'repository' as const,
+              reference: 'openkit/apps/web',
+              reason: 'PlanLens is the only approval-time Plan projection.',
+            },
+          ],
+          expectedArtifacts: [
+            {
+              kind: 'code-change' as const,
+              description: 'Plan card disclosures for the exact GET plan.',
+            },
+          ],
+          verificationChecks: [
+            {
+              kind: 'manual' as const,
+              description:
+                'Keyboard-open Plan details and confirm Approve still sends planItemId only.',
+            },
+          ],
+          reviewPolicy: {
+            required: true,
+            reviewers: ['human'] as const,
+            instructions: 'Approve only after both task disclosures were readable.',
+          },
+          dependsOnTaskIds: ['task_audit_docs'],
+          escalationConditions: ['Escalate if Approve sends the plan body or a new request.'],
+        },
+      ],
+    };
+    const approveThreadGoalPlan = vi.fn().mockResolvedValue({
+      goal: goalSummary('running').goal,
+      readyTasks: [{ taskId: 'task_audit_docs', status: 'ready' }],
+      startsWorkerTurn: false,
+    });
+    const reviseThreadGoalPlan = vi.fn();
+    const createThreadGoalPlan = vi.fn();
+    const getThreadGoalPlan = vi.fn().mockResolvedValue({
+      goal: goalSummary('awaiting_plan_approval').goal,
+      planItemId: 'it_goal_plan_review',
+      plan: reviewablePlan,
+    });
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('awaiting_plan_approval')),
+        getThreadGoalPlan,
+        createThreadGoalPlan,
+        approveThreadGoalPlan,
+        reviseThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+
+    expect(await screen.findByText('Audit Goal docs')).toBeInTheDocument();
+    expect(screen.getByText('Expose plan details')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /approve plan/i })).toBeInTheDocument();
+
+    const planDetails = screen.getByText('Plan details').closest('details');
+    expect(planDetails).toBeInstanceOf(HTMLDetailsElement);
+    expect((planDetails as HTMLDetailsElement).open).toBe(false);
+    await user.click(screen.getByText('Plan details'));
+    expect((planDetails as HTMLDetailsElement).open).toBe(true);
+    expect(
+      screen.getByText(
+        'Audit exact Plan-lens approval facts before the supervisor grants execution.'
+      )
+    ).toHaveClass('whitespace-pre-wrap');
+    expect(
+      screen.getAllByText('The GET plan payload is the sole reviewable authority at this gate.')
+    ).toHaveLength(2);
+    expect(
+      screen.getByText('Title-only approval would hide declared resources and review instructions.')
+    ).toBeInTheDocument();
+    expect(screen.getByText('No open questions')).toBeInTheDocument();
+    expect(screen.queryByText(/linked vault grant/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Compare Plan-card labels with the GET payload before Approve.')
+    ).toBeInTheDocument();
+
+    const taskSummaries = screen.getAllByText('Task details');
+    expect(taskSummaries).toHaveLength(2);
+    const firstTaskDetails = taskSummaries[0]?.closest('details');
+    const secondTaskDetails = taskSummaries[1]?.closest('details');
+    expect(firstTaskDetails).toBeInstanceOf(HTMLDetailsElement);
+    expect(secondTaskDetails).toBeInstanceOf(HTMLDetailsElement);
+    await user.click(taskSummaries[0]!);
+    expect((firstTaskDetails as HTMLDetailsElement).open).toBe(true);
+    expect(
+      screen.getByText('Confirm the Goal paragraph names every reviewable Plan field.')
+    ).toHaveClass('whitespace-pre-wrap');
+    expect(
+      screen.getByText('README names assumptions, risks, and human review instructions.')
+    ).toBeInTheDocument();
+    expect(screen.getByText('18000')).toBeInTheDocument();
+    expect(screen.getAllByText(/apps\/web\/README.md/)).toHaveLength(2);
+    expect(screen.getAllByText(/Owns the Goal projection note for Plan review/)).toHaveLength(2);
+    expect(
+      screen.getByText(/Updated Goal paragraph citing labeled Plan review fields/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Run focused Goal Web tests/)).toBeInTheDocument();
+    expect(
+      screen.getByText('pnpm --filter @openkit/web exec vitest run src/screens/goal/goal.test.tsx')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Reject if task details stay unlabeled or dump raw JSON/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Escalate if the plan Item digest disagrees with GET/)
+    ).toBeInTheDocument();
+
+    await user.click(taskSummaries[1]!);
+    expect((secondTaskDetails as HTMLDetailsElement).open).toBe(true);
+    expect(screen.getByText('task_audit_docs')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approve only after both task disclosures were readable/)
+    ).toBeInTheDocument();
+
+    expect(createThreadGoalPlan).not.toHaveBeenCalled();
+    expect(reviseThreadGoalPlan).not.toHaveBeenCalled();
+    expect(approveThreadGoalPlan).not.toHaveBeenCalled();
+    expect(getThreadGoalPlan).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('button', { name: /approve plan/i }));
+    await waitFor(() =>
+      expect(approveThreadGoalPlan).toHaveBeenCalledWith('ws1', 'th1', {
+        planItemId: 'it_goal_plan_review',
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+    expect(approveThreadGoalPlan.mock.calls[0]?.[2]).toEqual({
+      planItemId: 'it_goal_plan_review',
+      requestId: expect.stringMatching(/\S/),
+    });
+  });
+
+  it('does not replace post-approval Goal Task steps with a cached immutable plan', async () => {
+    const cachedPlan = {
+      schemaVersion: 1 as const,
+      goalSummary: 'Cached plan must not outrank live Goal Task rows after approval.',
+      assumptions: ['Stale plan cache is not execution authority.'],
+      risks: ['Showing cached Plan tasks would hide current Task status.'],
+      questions: [],
+      verificationApproach: 'Prefer the Goal summary steps renderer after approval.',
+      tasks: [
+        {
+          taskId: 'task_cached_plan',
+          title: 'Cached plan task',
+          objective: 'This cached Plan task must not replace Run verification.',
+          acceptanceCriteria: ['The live current Task remains the Plan row.'],
+          contextBudgetTokens: 12_000,
+          resources: [
+            {
+              kind: 'file' as const,
+              reference: 'apps/web/src/screens/goal/PlanLens.tsx',
+              reason: 'Would wrongly remain visible if cache outranked Goal Tasks.',
+            },
+          ],
+          expectedArtifacts: [
+            { kind: 'artifact' as const, description: 'Must not appear after approval.' },
+          ],
+          verificationChecks: [
+            {
+              kind: 'manual' as const,
+              description: 'Confirm Plan details stay off after approval.',
+            },
+          ],
+          reviewPolicy: {
+            required: true,
+            reviewers: ['human'] as const,
+            instructions: 'Do not approve from cached Plan rows.',
+          },
+          dependsOnTaskIds: [],
+          escalationConditions: ['Escalate if cached Plan tasks replace live Goal Tasks.'],
+        },
+      ],
+    };
+    const client = makeClient({
+      app: { getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('running')) },
+    });
+    const queryClient = renderApp('/goals/ws1/th1?lens=plan', client);
+    queryClient.setQueryData(goalKeys.plan('ws1', 'th1', 'goal1'), {
+      goal: goalSummary('awaiting_plan_approval').goal,
+      planItemId: 'it_goal_plan_stale',
+      plan: cachedPlan,
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Run verification')).toBeInTheDocument();
+      expect(screen.queryByText('Plan details')).not.toBeInTheDocument();
+      expect(screen.queryByText('Cached plan task')).not.toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: /approve plan/i })).not.toBeInTheDocument();
   });
 
   it('shows a short heading and the full objective once when title equals objective', async () => {
