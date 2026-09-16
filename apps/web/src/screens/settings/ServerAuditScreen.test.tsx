@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -9,6 +9,14 @@ import { surfaceById, surfacesInGroup } from '../../app/surfaces';
 
 const SECRET = 'okt_server_audit_poison';
 const PRIVATE = 'private-payload-must-not-escape';
+const OCCURRED_AT = '2026-09-17T04:00:00.000Z';
+const CREATED_AT = '2026-01-02T00:00:00.000Z';
+const DECISION_AT = '2026-08-01T18:30:00.000Z';
+
+/** Formats a recorded instant the same way the evidence rows do. */
+function formatRecordedTime(value: string) {
+  return new Date(value).toLocaleString(undefined, { timeZoneName: 'short' });
+}
 
 /** Provides only the two authorized server reads; any other client call fails. */
 function makeClient(app: Partial<CoreClient['app']> = {}): CoreClient {
@@ -134,6 +142,90 @@ describe('Server audit administration', () => {
     expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
     expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
     expect(container.querySelector('input')).toBeNull();
+  });
+
+  it('prefers occurredAt, falls back to createdAt, and marks missing time as not recorded', async () => {
+    const client = makeClient({
+      listServerAuditEvents: vi.fn().mockResolvedValue({
+        token: PRIVATE,
+        auditEvents: [
+          {
+            id: 'audit_preferred',
+            category: 'system',
+            action: 'boot.start',
+            outcome: 'succeeded',
+            summary: `Inspection ${SECRET}`,
+            occurredAt: OCCURRED_AT,
+            createdAt: CREATED_AT,
+            payload: PRIVATE,
+          },
+          {
+            id: 'audit_fallback',
+            category: 'system',
+            action: 'boot.outcome',
+            outcome: 'succeeded',
+            summary: 'NanoCore boot finished.',
+            createdAt: CREATED_AT,
+          },
+          {
+            id: 'audit_missing',
+            category: 'system',
+            action: 'server.inspect',
+            outcome: 'succeeded',
+            summary: 'Inspection without a recorded time.',
+          },
+        ],
+      }),
+      listServerPermissionDecisions: vi.fn().mockResolvedValue({
+        secret: PRIVATE,
+        permissionDecisions: [
+          {
+            decisionId: 'decision_timed',
+            action: `server.read ${SECRET}`,
+            result: 'deny',
+            createdAt: DECISION_AT,
+            reasonCode: PRIVATE,
+          },
+        ],
+      }),
+    });
+    const { container, queryClient } = renderScreen(client);
+
+    const preferred = (await screen.findByText('boot.start')).parentElement!;
+    const preferredTime = within(preferred).getByText(formatRecordedTime(OCCURRED_AT));
+    expect(preferredTime.tagName).toBe('TIME');
+    expect(preferredTime).toHaveAttribute('datetime', OCCURRED_AT);
+    expect(preferredTime).toHaveAttribute('title', OCCURRED_AT);
+    expect(within(preferred).queryByText(formatRecordedTime(CREATED_AT))).toBeNull();
+
+    const fallback = screen.getByText('boot.outcome').parentElement!;
+    const fallbackTime = within(fallback).getByText(formatRecordedTime(CREATED_AT));
+    expect(fallbackTime).toHaveAttribute('datetime', CREATED_AT);
+    expect(fallbackTime).toHaveAttribute('title', CREATED_AT);
+
+    const missing = screen.getByText('server.inspect').parentElement!;
+    expect(within(missing).getByText('Not recorded')).toBeInTheDocument();
+    expect(missing.querySelector('time')).toBeNull();
+
+    const decision = screen.getByText('server.read [redacted]').parentElement!;
+    const decisionTime = within(decision).getByText(formatRecordedTime(DECISION_AT));
+    expect(decisionTime.tagName).toBe('TIME');
+    expect(decisionTime).toHaveAttribute('datetime', DECISION_AT);
+    expect(decisionTime).toHaveAttribute('title', DECISION_AT);
+
+    const cached = JSON.stringify(
+      queryClient
+        .getQueryCache()
+        .getAll()
+        .map((query) => query.state.data)
+    );
+    expect(cached).toContain(OCCURRED_AT);
+    expect(cached).toContain(CREATED_AT);
+    expect(cached).toContain(DECISION_AT);
+    for (const poison of [SECRET, PRIVATE]) {
+      expect(container.innerHTML).not.toContain(poison);
+      expect(cached).not.toContain(poison);
+    }
   });
 
   it('shows a safe load error and recovers on retry', async () => {

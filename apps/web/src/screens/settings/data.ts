@@ -176,6 +176,8 @@ export interface AuditEventDisplayRow {
   action: string;
   outcome: string;
   summary: string;
+  /** occurredAt when recorded, otherwise createdAt; omitted when neither was supplied. */
+  recordedAt?: string;
 }
 
 /** Whitelisted permission metadata shared by the separate Workspace and server surfaces. */
@@ -183,6 +185,8 @@ export interface PermissionDecisionDisplayRow {
   decisionId: string;
   action: string;
   result: string;
+  /** createdAt when the decision recorded one; omitted when absent. */
+  createdAt?: string;
 }
 
 /** Bounded selected-Workspace projection for board 17. */
@@ -359,6 +363,13 @@ export function projectUsageAndAudit(
   };
 }
 
+/** Returns a redacted recorded instant, or nothing when the producer omitted one. */
+function recordedInstant(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== ''
+    ? (projectSafeValue(value) as string)
+    : undefined;
+}
+
 /**
  * Whitelists and redacts audit and decision metadata before query caching.
  * @param audit Server or Workspace audit response.
@@ -368,7 +379,12 @@ export function projectUsageAndAudit(
 function projectAuditAndDecisions(
   audit: Awaited<ReturnType<CoreClient['app']['listServerAuditEvents']>>,
   decisions: {
-    permissionDecisions: readonly { decisionId: string; action: string; result: string }[];
+    permissionDecisions: readonly {
+      decisionId: string;
+      action: string;
+      result: string;
+      createdAt?: string;
+    }[];
   }
 ): Pick<UsageAndAuditProjection, 'auditEvents' | 'permissionDecisions'> {
   return {
@@ -378,11 +394,13 @@ function projectAuditAndDecisions(
       action: projectSafeValue(event.action) as string,
       outcome: projectSafeValue(event.outcome) as string,
       summary: projectSafeValue(event.summary) as string,
+      recordedAt: recordedInstant(event.occurredAt) ?? recordedInstant(event.createdAt),
     })),
     permissionDecisions: decisions.permissionDecisions.map((decision) => ({
       decisionId: projectSafeValue(decision.decisionId) as string,
       action: projectSafeValue(decision.action) as string,
       result: projectSafeValue(decision.result) as string,
+      createdAt: recordedInstant(decision.createdAt),
     })),
   };
 }

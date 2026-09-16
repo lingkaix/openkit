@@ -36,6 +36,21 @@ export function evidenceStatus(value: string): { label: string; tone: StatusTone
   return { label: 'Error', tone: 'negative' };
 }
 
+/** Renders one recorded instant, or an explicit unavailable label when the producer omitted it. */
+function RecordedTime({ value }: { value?: string }) {
+  return (
+    <p className="text-xs text-fg-muted">
+      {value ? (
+        <time dateTime={value} title={value}>
+          {new Date(value).toLocaleString(undefined, { timeZoneName: 'short' })}
+        </time>
+      ) : (
+        'Not recorded'
+      )}
+    </p>
+  );
+}
+
 /**
  * Renders one whitelisted audit-event row.
  *
@@ -49,6 +64,7 @@ export function AuditEventRow({ event }: { event: AuditEventDisplayRow }) {
         <p className="text-sm font-bold text-fg-strong">{event.action}</p>
         <p className="text-xs text-fg-muted">{event.summary}</p>
         <p className="text-xs text-fg-muted">{event.category}</p>
+        <RecordedTime value={event.recordedAt} />
       </div>
       <StatusChip tone={status.tone} dot>
         {status.label}
@@ -66,7 +82,10 @@ export function PermissionDecisionRow({ decision }: { decision: PermissionDecisi
   const status = evidenceStatus(decision.result);
   return (
     <ListRow>
-      <p className="min-w-0 flex-1 text-sm font-bold text-fg-strong">{decision.action}</p>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-bold text-fg-strong">{decision.action}</p>
+        <RecordedTime value={decision.createdAt} />
+      </div>
       <StatusChip tone={status.tone} dot>
         {status.label}
       </StatusChip>

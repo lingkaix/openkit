@@ -1387,6 +1387,11 @@ describe('Usage and audit settings (board 17)', () => {
     expect(screen.getByText('llm.gateway.use', { exact: true })).toBeInTheDocument();
     expect(screen.getByText('Approved', { exact: true })).toBeInTheDocument();
     expect(screen.getAllByText('Done', { exact: true }).length).toBeGreaterThan(0);
+    const usageTimes = document.querySelectorAll(`time[datetime="${TIMESTAMP}"]`);
+    expect(usageTimes).toHaveLength(2);
+    expect(usageTimes[0]).toHaveTextContent(
+      new Date(TIMESTAMP).toLocaleString(undefined, { timeZoneName: 'short' })
+    );
 
     expect(screen.queryByText('succeeded', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText('allow', { exact: true })).not.toBeInTheDocument();
