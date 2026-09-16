@@ -169,6 +169,50 @@ type ConversationCommandResult = {
 };
 
 /**
+ * Projects the selected-Worker conversation status Item from the durable Turn outcome.
+ *
+ * The conversation command receipt stays `accepted`; only the status Item and explanation
+ * name a failed or interrupted Worker Turn. Summaries are fixed product-safe text and never
+ * copy Turn.error, which may carry Worker, backend, or cleanup diagnostics.
+ *
+ * @param turn Durable Worker Turn after its unique terminal outcome.
+ * @param agentId Selected Worker identity used by the successful continuation summary.
+ * @returns Status Item fields and explanation for the live write and exact replay.
+ */
+function conversationWorkerTurnPresentation(
+  turn: Pick<z.infer<typeof TurnSchema>, 'status'>,
+  agentId: string
+): {
+  readonly level: 'info' | 'warning';
+  readonly title: string;
+  readonly summary: string;
+  readonly explanation: string;
+} {
+  if (turn.status === 'failed') {
+    return {
+      level: 'warning',
+      title: 'Worker Turn failed',
+      summary: 'Worker turn ended without success.',
+      explanation: 'The selected Worker failed the conversation Turn.',
+    };
+  }
+  if (turn.status === 'interrupted') {
+    return {
+      level: 'warning',
+      title: 'Worker Turn interrupted',
+      summary: 'Worker turn ended without success.',
+      explanation: 'The selected Worker interrupted the conversation Turn.',
+    };
+  }
+  return {
+    level: turn.status === 'completed' ? 'info' : 'warning',
+    title: 'Worker Turn accepted',
+    summary: `Conversation continued with ${agentId}.`,
+    explanation: 'The selected Worker accepted the conversation Turn.',
+  };
+}
+
+/**
  * Rebuilds one accepted Chat Mode response from its command receipt and durable Turn owners.
  *
  * @param store Store that owns the original Chat Turn and Item.
@@ -214,10 +258,21 @@ function replayConversationCommand(
       ) {
         throw new Error('Conversation Worker result is contradictory.');
       }
+      const presentation = conversationWorkerTurnPresentation(
+        currentTurn,
+        currentTurn.agentId ?? 'the selected Worker'
+      );
+      if (
+        resultItem.level !== presentation.level ||
+        resultItem.title !== presentation.title ||
+        resultItem.summary !== presentation.summary
+      ) {
+        throw new Error('Conversation Worker result is contradictory.');
+      }
       return {
         body: ConversationCommandBodySchema.parse({
           outcome: 'accepted',
-          explanation: 'The selected Worker accepted the conversation Turn.',
+          explanation: presentation.explanation,
           turn: currentTurn,
           item: resultItem,
           handoff: null,
@@ -2982,6 +3037,7 @@ export function registerQuickAndChatModeRoutes({
             completedAt,
           });
         }
+        const presentation = conversationWorkerTurnPresentation(started, agentId);
         const item = store.createItem({
           id: `it_worker_result_${started.id}`,
           workspaceId,
@@ -2989,16 +3045,16 @@ export function registerQuickAndChatModeRoutes({
           turnId: started.id,
           type: 'status',
           status: 'completed',
-          level: started.status === 'completed' ? 'info' : 'warning',
-          title: 'Worker Turn accepted',
-          summary: `Conversation continued with ${agentId}.`,
+          level: presentation.level,
+          title: presentation.title,
+          summary: presentation.summary,
           createdAt: completedAt,
           completedAt,
         });
         return {
           body: ConversationCommandBodySchema.parse({
             outcome: 'accepted',
-            explanation: 'The selected Worker accepted the conversation Turn.',
+            explanation: presentation.explanation,
             turn: store.getTurn(workspaceId, receivingThreadId, started.id),
             item,
             handoff: null,

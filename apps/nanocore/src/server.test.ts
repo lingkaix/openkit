@@ -5674,6 +5674,160 @@ describe('nanocore server', () => {
     }
   });
 
+  it.each([
+    {
+      status: 'failed' as const,
+      stopReason: 'error' as const,
+      error: {
+        code: 'worker_failed',
+        message: 'PRIVATE_WORKER_SOCKET=/var/openkit/secret.sock',
+      },
+      title: 'Worker Turn failed',
+      explanation: 'The selected Worker failed the conversation Turn.',
+      requestId: '0190f4c8-0000-7000-8000-000000000327',
+    },
+    {
+      status: 'interrupted' as const,
+      stopReason: 'aborted' as const,
+      error: {
+        code: 'worker_interrupted',
+        message: 'PRIVATE_WORKER_SOCKET=/var/openkit/secret.sock',
+      },
+      title: 'Worker Turn interrupted',
+      explanation: 'The selected Worker interrupted the conversation Turn.',
+      requestId: '0190f4c8-0000-7000-8000-000000000328',
+    },
+  ])('states a $status selected Worker result Item and exact replay truthfully', async ({
+    error,
+    explanation,
+    requestId,
+    status,
+    stopReason,
+    title,
+  }) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    vi.spyOn(executor, 'startTurn').mockImplementation(
+      async (runtimeStore, turnId, input, context) => {
+        executor.startContexts.push(context);
+        const turn = runtimeStore.getTurnById(turnId);
+        const completedAt = new Date().toISOString();
+        if (!turn.agentId) {
+          throw new Error('Fake worker turn requires a selected agent id.');
+        }
+        const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
+        const agentSession = runtimeStore.createAgentSession({
+          id: agentSessionId,
+          agentId: turn.agentId,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          status: 'busy',
+          message: null,
+          ...(context.sessionCompatibilityKey
+            ? { sessionCompatibilityKey: context.sessionCompatibilityKey }
+            : {}),
+          createdAt: completedAt,
+          updatedAt: completedAt,
+        });
+        runtimeStore.createItem({
+          id: `it_user_${turnId}`,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId,
+          type: 'user-message',
+          status: 'completed',
+          actor: turn.triggerActor,
+          text: input,
+          createdAt: turn.startedAt ?? completedAt,
+          completedAt,
+        });
+        const terminalTurn = runtimeStore.updateTurn(turnId, {
+          agentSessionId: agentSession.id,
+          completedAt,
+          error,
+          status,
+        });
+        runtimeStore.updateAgentSession(agentSession.id, {
+          message: error?.message ?? 'The selected Worker was interrupted.',
+          status: 'failed',
+          updatedAt: completedAt,
+        });
+        runtimeStore.emitTurnEvent(turnId, {
+          event: 'turn.completed',
+          requestId: context.requestId ?? null,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId,
+          data: { type: 'turn-completed', stopReason, turn: terminalTurn },
+        });
+      }
+    );
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const requestBody = JSON.stringify({
+      artifactRefs: [],
+      input: 'Implement the focused Task Mode fix.',
+      requestId,
+      targetRef: 'new-task-worker',
+    });
+
+    try {
+      const response = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          body: requestBody,
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(response.status, await response.clone().text()).toBe(202);
+      const result = SubmitConversationResponseSchema.parse(await response.json());
+      expect(result).toMatchObject({
+        explanation,
+        item: {
+          id: `it_worker_result_${result.turn.id}`,
+          level: 'warning',
+          summary: 'Worker turn ended without success.',
+          title,
+          type: 'status',
+        },
+        outcome: 'accepted',
+        targetRef: 'new-task-worker',
+        turn: { error, status },
+      });
+      expect(JSON.stringify(result.item)).not.toContain(error.message);
+      expect(result.explanation).not.toContain(error.message);
+      const replay = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          body: requestBody,
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(result);
+      expect(executor.startContexts).toHaveLength(1);
+      store.updateItem(result.item.id, { title: 'Worker Turn accepted' });
+      const contradictedReplay = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          body: requestBody,
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(contradictedReplay.status).toBe(409);
+      await expect(contradictedReplay.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(executor.startContexts).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('recovers a direct Task receipt from its terminal checkpoint without another worker turn', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
