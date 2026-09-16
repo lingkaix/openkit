@@ -3774,6 +3774,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       reviewArtifactIds: [],
       reviewIds: [],
     });
+    if (name === 'Git change set without its exact repository resource') {
+      expect(ingressError).toMatchObject({
+        message: `Workspace review is not actionable (git_repository_missing): ${fixture.reviewId}. Link repository resource ${fixture.record.changeSet.resourceId} in Repositories. A new authorized Task can recover retained changes if they remain; linking does not replay the old handoff or apply them.`,
+      });
+    }
     fixture.workspaceDb.sqlite.close();
   });
 

@@ -2460,8 +2460,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         !filesystemApplyIsValid ? 'filesystem_apply_invalid' : null,
       ].filter((reason): reason is string => reason !== null);
       if (actionabilityFailures.length > 0) {
+        const reasons = actionabilityFailures.join(', ');
+        const prefix = `Workspace review is not actionable (${reasons}): ${record.review.id}`;
         throw new Error(
-          `Workspace review is not actionable (${actionabilityFailures.join(', ')}): ${record.review.id}`
+          actionabilityFailures.length === 1 &&
+            actionabilityFailures[0] === 'git_repository_missing'
+            ? `${prefix}. Link repository resource ${record.changeSet.resourceId} in Repositories. A new authorized Task can recover retained changes if they remain; linking does not replay the old handoff or apply them.`
+            : prefix
         );
       }
       const item = {
