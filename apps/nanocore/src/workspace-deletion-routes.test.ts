@@ -429,6 +429,389 @@ it.each([
   }
 });
 
+function insertDeletionQuiescenceLease(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: {
+    agentSessionId?: string;
+    packageSnapshotId?: string;
+    recoveryState: string;
+    status: string;
+    suffix: string;
+    threadId?: string;
+    turnId?: string;
+    workspaceId: string;
+  }
+): {
+  agentSessionId: string;
+  packageSnapshotId: string;
+  threadId: string;
+  turnId: string;
+} {
+  const timestamp = new Date().toISOString();
+  const threadId = input.threadId ?? `thread_${input.suffix}`;
+  const turnId = input.turnId ?? `turn_${input.suffix}`;
+  const agentSessionId = input.agentSessionId ?? `session_${input.suffix}`;
+  const packageSnapshotId = input.packageSnapshotId ?? `package_${input.suffix}`;
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO scheduler_session_leases (
+         lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+         package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+         heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+         sandbox_binding_ref, backend_anchor_state, recovery_state
+       ) VALUES (
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, 'unanchored', ?
+       )`
+    )
+    .run(
+      `lease_${input.suffix}`,
+      `plan_${input.suffix}`,
+      input.workspaceId,
+      threadId,
+      turnId,
+      agentSessionId,
+      packageSnapshotId,
+      `pool_${input.suffix}`,
+      `target_${input.suffix}`,
+      input.status,
+      timestamp,
+      timestamp,
+      timestamp,
+      timestamp,
+      `sandbox_${input.suffix}`,
+      input.recoveryState
+    );
+  return { agentSessionId, packageSnapshotId, threadId, turnId };
+}
+
+function insertDeletionQuiescenceBackend(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: {
+    agentSessionId: string;
+    packageSnapshotId: string;
+    physicalCleanedAt: string | null;
+    state: string;
+    suffix: string;
+    threadId: string;
+    turnId: string;
+    workspaceId: string;
+  }
+): void {
+  const timestamp = new Date().toISOString();
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO worker_backend_sessions (
+         lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+         package_snapshot_id, backend_kind, deployment_id, backend_session_id,
+         runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
+         staging_directory_ref, workspace_handoff_state, state,
+         physical_cleaned_at, created_at, updated_at
+       ) VALUES (
+         ?, ?, ?, ?, ?, ?, 'test', ?, ?, ?, ?,
+         '{"imageRef":"openkit/test:deletion"}', ?, ?,
+         'complete', ?, ?, ?, ?
+       )`
+    )
+    .run(
+      `lease_${input.suffix}`,
+      input.workspaceId,
+      input.threadId,
+      input.turnId,
+      input.agentSessionId,
+      input.packageSnapshotId,
+      `deployment_${input.suffix}`,
+      `backend_${input.suffix}`,
+      `target_${input.suffix}`,
+      'a'.repeat(64),
+      `sandbox_${input.suffix}`,
+      `server/runtime/${input.suffix}`,
+      input.state,
+      input.physicalCleanedAt,
+      timestamp,
+      timestamp
+    );
+}
+
+it('lets deletion proceed for five failed needs-evidence leases with matching cleaned backend proof', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-cleaned-failed-'));
+  const coreDb = openCoreDb(dataRoot);
+  const requestId = '00000000-0000-4000-8000-000000000030';
+  const physicalCleanedAt = '2026-09-10T00:00:00.000Z';
+  const suffixes = [
+    'cleaned_failed_1',
+    'cleaned_failed_2',
+    'cleaned_failed_3',
+    'cleaned_failed_4',
+    'cleaned_failed_5',
+  ];
+
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Failed cleaned lease fixture');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+    for (const suffix of suffixes) {
+      const lineage = insertDeletionQuiescenceLease(coreDb, {
+        recoveryState: 'needs-evidence',
+        status: 'failed',
+        suffix,
+        workspaceId: workspace.id,
+      });
+      insertDeletionQuiescenceBackend(coreDb, {
+        ...lineage,
+        physicalCleanedAt,
+        state: 'cleaned',
+        suffix,
+        workspaceId: workspace.id,
+      });
+    }
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'local',
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+    });
+
+    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
+      body: JSON.stringify({
+        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+        expectedRegistryRevision: 1,
+        requestId,
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await response.json()).toMatchObject({
+      deletion: { phase: 'cleaned', status: 'deleted', workspaceId: workspace.id },
+    });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          `SELECT status, recovery_state AS recoveryState
+           FROM scheduler_session_leases
+           WHERE lease_id LIKE 'lease_cleaned_failed_%'
+           ORDER BY lease_id`
+        )
+        .all()
+    ).toEqual(suffixes.map(() => ({ recoveryState: 'needs-evidence', status: 'failed' })));
+    expect(
+      coreDb.sqlite
+        .prepare(
+          `SELECT state, physical_cleaned_at AS physicalCleanedAt
+           FROM worker_backend_sessions
+           WHERE lease_id LIKE 'lease_cleaned_failed_%'
+           ORDER BY lease_id`
+        )
+        .all()
+    ).toEqual(suffixes.map(() => ({ physicalCleanedAt, state: 'cleaned' })));
+  } finally {
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  }
+});
+
+it('keeps deletion fenced when one of five failed needs-evidence leases lacks matching cleaned backend proof', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-sibling-unproved-'));
+  const coreDb = openCoreDb(dataRoot);
+  const requestId = '00000000-0000-4000-8000-000000000037';
+  const physicalCleanedAt = '2026-09-10T00:00:00.000Z';
+  const suffixes = ['sibling_1', 'sibling_2', 'sibling_3', 'sibling_4', 'sibling_unproved'];
+
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Sibling unproved lease fixture');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+    for (const suffix of suffixes) {
+      const lineage = insertDeletionQuiescenceLease(coreDb, {
+        recoveryState: 'needs-evidence',
+        status: 'failed',
+        suffix,
+        workspaceId: workspace.id,
+      });
+      if (suffix !== 'sibling_unproved') {
+        insertDeletionQuiescenceBackend(coreDb, {
+          ...lineage,
+          physicalCleanedAt,
+          state: 'cleaned',
+          suffix,
+          workspaceId: workspace.id,
+        });
+      }
+    }
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'local',
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+    });
+
+    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
+      body: JSON.stringify({
+        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+        expectedRegistryRevision: 1,
+        requestId,
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+
+    expect(response.status, await response.clone().text()).toBe(202);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('fenced');
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspace.id)
+    ).toEqual({ revision: 1, status: 'active' });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          `SELECT status, recovery_state AS recoveryState
+           FROM scheduler_session_leases
+           WHERE lease_id LIKE 'lease_sibling_%'
+           ORDER BY lease_id`
+        )
+        .all()
+    ).toEqual(suffixes.map(() => ({ recoveryState: 'needs-evidence', status: 'failed' })));
+  } finally {
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  }
+});
+
+it.each([
+  {
+    backend: 'missing' as const,
+    leaseStatus: 'failed',
+    name: 'a failed needs-evidence lease has no backend row',
+    requestId: '00000000-0000-4000-8000-000000000031',
+    suffix: 'missing_backend',
+  },
+  {
+    backend: 'mismatched-thread' as const,
+    leaseStatus: 'failed',
+    name: 'a failed needs-evidence lease has mismatched thread lineage',
+    requestId: '00000000-0000-4000-8000-000000000032',
+    suffix: 'mismatch_thread',
+  },
+  {
+    backend: 'physical-cleaned' as const,
+    leaseStatus: 'failed',
+    name: 'a failed needs-evidence lease is only physical-cleaned',
+    requestId: '00000000-0000-4000-8000-000000000033',
+    suffix: 'physical_cleaned',
+  },
+  {
+    backend: 'cleaned-without-timestamp' as const,
+    leaseStatus: 'failed',
+    name: 'a failed needs-evidence lease is cleaned without physical_cleaned_at',
+    requestId: '00000000-0000-4000-8000-000000000034',
+    suffix: 'cleaned_no_ts',
+  },
+  {
+    backend: 'cleaned' as const,
+    leaseStatus: 'lost',
+    name: 'a lost needs-evidence lease has matching cleaned backend proof',
+    requestId: '00000000-0000-4000-8000-000000000035',
+    suffix: 'lost_cleaned',
+  },
+  {
+    backend: 'cleaned' as const,
+    leaseStatus: 'stale',
+    name: 'a stale needs-evidence lease has matching cleaned backend proof',
+    requestId: '00000000-0000-4000-8000-000000000036',
+    suffix: 'stale_cleaned',
+  },
+])('keeps deletion fenced when $name', async (fixture) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-unproved-'));
+  const coreDb = openCoreDb(dataRoot);
+
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace(`${fixture.suffix} fixture`);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+    const lineage = insertDeletionQuiescenceLease(coreDb, {
+      recoveryState: 'needs-evidence',
+      status: fixture.leaseStatus,
+      suffix: fixture.suffix,
+      workspaceId: workspace.id,
+    });
+    if (fixture.backend !== 'missing') {
+      insertDeletionQuiescenceBackend(coreDb, {
+        ...lineage,
+        physicalCleanedAt:
+          fixture.backend === 'cleaned-without-timestamp' ? null : new Date().toISOString(),
+        state: fixture.backend === 'physical-cleaned' ? 'physical-cleaned' : 'cleaned',
+        suffix: fixture.suffix,
+        threadId:
+          fixture.backend === 'mismatched-thread'
+            ? `thread_other_${fixture.suffix}`
+            : lineage.threadId,
+        workspaceId: workspace.id,
+      });
+    }
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'local',
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+    });
+
+    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
+      body: JSON.stringify({
+        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+        expectedRegistryRevision: 1,
+        requestId: fixture.requestId,
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+
+    expect(response.status, await response.clone().text()).toBe(202);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, fixture.requestId).phase).toBe(
+      'fenced'
+    );
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspace.id)
+    ).toEqual({ revision: 1, status: 'active' });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          `SELECT status, recovery_state AS recoveryState
+           FROM scheduler_session_leases
+           WHERE lease_id = ?`
+        )
+        .get(`lease_${fixture.suffix}`)
+    ).toEqual({ recoveryState: 'needs-evidence', status: fixture.leaseStatus });
+  } finally {
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  }
+});
+
 it('terminates a pre-transition deletion request when its original owner is disabled at boot', () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-disabled-boot-'));
   const coreDb = openCoreDb(dataRoot);

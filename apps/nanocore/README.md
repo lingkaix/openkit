@@ -418,3 +418,5 @@ The product Artifact catalog excludes internal Workspace Sync Review backing rec
 The actor-authorized conversation navigation App read model derives current/latest activity, exact eligible Turn and Goal review attention, and actual Item/Turn/Goal recency for visible active Threads. It creates no Thread kind, read receipt, or Goal child relationship.
 
 Synchronous product Turn start reports `scheduler_admission_denied` when the scheduler rejects that exact submitted queue entry. A different queue entry's denial remains a deferred dispatch result for the caller. Existing authority checks and unstarted-admission cleanup are unchanged.
+
+Workspace deletion distinguishes containment from historical result uncertainty: a failed `needs-evidence` lease is quiescent only with an exact matching cleaned backend and recorded physical cleanup. Missing or mismatched proof continues to fence deletion, and the recovery flag remains unchanged in Core.
