@@ -589,6 +589,21 @@ export const ListSchedulerAdmissionsResponseSchema = z.object({
   items: z.array(SchedulerAdmissionReadModelSchema),
 });
 
+/** Viewer-authorized navigation over current or latest conversation activity. */
+export const ConversationNavigationResponseSchema = z.object({
+  items: z.array(
+    z.object({
+      thread: ThreadSchema,
+      activity: z.enum(['chat', 'task', 'goal', 'unknown']),
+      state: z.enum(['working', 'needs-you', 'idle']),
+      lastActivityAt: TimestampSchema,
+    })
+  ),
+});
+
+/** Navigation activity is a projection, never a durable Thread kind or read receipt. */
+export type ConversationNavigationResponse = z.infer<typeof ConversationNavigationResponseSchema>;
+
 /** Workspace dashboard response payload. */
 export const WorkspaceDashboardResponseSchema = z.object({
   workspace: WorkspaceRecordSchema,

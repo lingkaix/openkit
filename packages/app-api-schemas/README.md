@@ -50,3 +50,5 @@ Administration configuration payloads bind human confirmation to an immutable Ar
 The generic runtime config file contract includes `model-catalog` for the deployment-admin model extension file; authorization and restart behavior remain NanoCore-owned.
 
 Workspace Vault CRUD schemas admit bounded request-only material and return the existing redacted reference/grant shapes. Host-push grant creation accepts a reference and optional expiry; callers cannot select arbitrary injection targets.
+
+Conversation navigation projects visible active Threads with current/latest Chat, Task, Goal, or unknown activity; working, viewer-actionable, or idle state; and actual conversation recency. It defines neither a durable Thread kind nor unread state.
