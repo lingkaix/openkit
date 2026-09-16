@@ -1730,6 +1730,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       new Date(turn.startedAt ?? Date.now()).getTime() + 1000
     ).toISOString();
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_governance_1' });
+    const cleanupSession = vi.spyOn(backend, 'cleanupSession');
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -1786,6 +1787,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'collectWorkspaceChanges',
       'cleanupSession',
     ]);
+    expect(cleanupSession).toHaveBeenCalledOnce();
+    expect(cleanupSession.mock.calls[0]).toHaveLength(1);
     expect(backend.lastPackage?.extensions.openkit).toMatchObject({
       turnInput: 'Run in OpenShell',
     });
@@ -2277,6 +2280,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     if ('artifactRecoveryRequired' in testCase || 'artifactCollectionInvalid' in testCase) {
+      const cleanupSession = vi.spyOn(backend, 'cleanupSession');
       const projectionFailure =
         'terminalProjectionFailure' in testCase ? testCase.terminalProjectionFailure : null;
       const projectionSpy =
@@ -2310,6 +2314,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           )
         ).resolves.toBe('interrupted');
         expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
+        expect(cleanupSession).toHaveBeenCalledWith(expect.any(Object), { failedCloseout: true });
         expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
         expect(
           store
@@ -2336,6 +2341,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         'collectTranscript',
         'cleanupSession',
       ]);
+      expect(cleanupSession).toHaveBeenCalledWith(expect.any(Object), { failedCloseout: true });
       expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
         state: 'cleaned',
       });
@@ -3533,6 +3539,62 @@ describe('WorkerGovernanceTurnExecutor', () => {
       reviewIds: [],
     });
     fixture.workspaceDb.sqlite.close();
+  });
+
+  it('passes failedCloseout into backend cleanup after rejected Workspace-change lineage', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-failed-closeout-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Fail missing-target handoff');
+    const agentSessionId = 'as_failed_closeout_1';
+    const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
+    const sandboxBindingRef = 'lease-binding:failed-closeout';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const fixture = createWorkspaceChangeIngressFixture(
+      'failed_closeout_missing_target',
+      'git',
+      'missing'
+    );
+    vi.spyOn(backend, 'collectWorkspaceChanges').mockResolvedValue([fixture.record]);
+    const cleanupSession = vi.spyOn(backend, 'cleanupSession');
+    const executor = new WorkerGovernanceTurnExecutor({
+      awaitWorkerCompletion: async () => ({
+        acceptedAt: '2026-07-15T00:00:03.000Z',
+        status: 'completed' as const,
+        stopReason: 'completed',
+      }),
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: {
+        kind: 'openshell',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, 'Fail missing-target handoff', {
+          agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000257',
+          sandboxBindingRef,
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('Workspace review lineage mismatch');
+      expect(cleanupSession).toHaveBeenCalledWith(expect.any(Object), { failedCloseout: true });
+    } finally {
+      fixture.workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
   });
 
   it('adopts an exact orphan review artifact without rewriting it', async () => {

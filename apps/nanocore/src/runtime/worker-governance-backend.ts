@@ -712,8 +712,12 @@ export interface WorkerGovernanceBackend {
    * Destroys one exact durable physical identity without process-local session state.
    *
    * @param identity Durable physical cleanup manifest.
+   * @param options Failed product closeout must not retain a reusable native session.
    */
-  cleanupSession(identity: WorkerGovernanceBackendSessionIdentity): Promise<void>;
+  cleanupSession(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    options?: { readonly failedCloseout: boolean }
+  ): Promise<void>;
 
   /**
    * Materializes a package into backend-native runtime state.

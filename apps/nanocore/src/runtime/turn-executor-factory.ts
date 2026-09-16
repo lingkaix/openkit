@@ -1082,7 +1082,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Clears one Turn locally, retaining only a proved reusable shared Harness. */
-  public async cleanupSession(identity: WorkerGovernanceBackendSessionIdentity): Promise<void> {
+  public async cleanupSession(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    options?: { readonly failedCloseout: boolean }
+  ): Promise<void> {
     const leaseId = this.requireLeaseId(identity.packageSnapshotId);
     const session = this.sessions.get(identity.packageSnapshotId);
     const durableSandbox = session ? null : this.findDurableSandboxBinding(identity);
@@ -1120,7 +1123,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       if (session?.turnStarted && session.terminalInspectionComplete) {
         if (
-          !session.nativeSessionReusable &&
+          (!session.nativeSessionReusable || options?.failedCloseout) &&
           session.sharedHarness.bindings.has(session.environmentPackage.scope.agentSessionId)
         ) {
           const closed = await this.queueAndWaitForHarnessOperation(session, 'session.close', {

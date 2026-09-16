@@ -3299,7 +3299,14 @@ describe('createConfiguredTurnExecutor', () => {
   it.each([
     'human-gate',
     'interrupt',
+    'failed-closeout',
+    'failed-closeout-refused',
+    'completed',
   ] as const)('settles %s before terminal Harness inspection', async (purpose) => {
+    const completed =
+      purpose === 'failed-closeout' ||
+      purpose === 'failed-closeout-refused' ||
+      purpose === 'completed';
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -3393,7 +3400,8 @@ describe('createConfiguredTurnExecutor', () => {
           | 'turn.interrupt'
           | 'session.inspect'
           | 'session.close',
-        body: Readonly<Record<string, unknown>>
+        body: Readonly<Record<string, unknown>>,
+        disposition: 'succeeded' | 'refused' = 'succeeded'
       ) => {
         let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
         for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
@@ -3432,7 +3440,7 @@ describe('createConfiguredTurnExecutor', () => {
         }
         const result = {
           body,
-          disposition: 'succeeded' as const,
+          disposition,
           harnessInstanceId: command.harnessInstanceId,
           operationId: command.operationId,
           schemaVersion: 2 as const,
@@ -3461,8 +3469,9 @@ describe('createConfiguredTurnExecutor', () => {
       });
       await launch;
 
-      const stop =
-        purpose === 'interrupt'
+      const stop = completed
+        ? Promise.resolve()
+        : purpose === 'interrupt'
           ? backend.interruptTurn(environmentPackage.snapshotId)
           : Promise.resolve(runtime.requestHumanGateStop(environmentPackage.snapshotId));
       recordWorkerControlAcceptedRecord(coreDb, {
@@ -3472,7 +3481,9 @@ describe('createConfiguredTurnExecutor', () => {
           packageSnapshotId: environmentPackage.snapshotId,
         },
         operation: 'final_status',
-        record: { sequence: 1, status: 'interrupted', stopReason: 'aborted' },
+        record: completed
+          ? { sequence: 1, status: 'completed', stopReason: 'completed' }
+          : { sequence: 1, status: 'interrupted', stopReason: 'aborted' },
         recordKey: '1',
         sequence: 1,
       });
@@ -3491,34 +3502,82 @@ describe('createConfiguredTurnExecutor', () => {
       void inspection.catch(() => undefined);
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(inspectionState).toBe('pending');
-      const interrupt = await settleNext('turn.interrupt', {
-        childState: 'absent',
-        state: 'interrupted',
-      });
-      expect(interrupt.body).toMatchObject({
-        agentSessionId: 'as_human_gate',
-        leaseId: 'lease_human_gate',
-        purpose,
-        turnId: 'turn_human_gate',
-      });
+      let interruptSequence: number | undefined;
+      if (!completed) {
+        const interrupt = await settleNext('turn.interrupt', {
+          childState: 'absent',
+          state: 'interrupted',
+        });
+        expect(interrupt.body).toMatchObject({
+          agentSessionId: 'as_human_gate',
+          leaseId: 'lease_human_gate',
+          purpose,
+          turnId: 'turn_human_gate',
+        });
+        interruptSequence = interrupt.sequence;
+      }
       await stop;
       const inspected = await settleNext('session.inspect', {
         childState: 'absent',
         cleanupState: 'clean',
-        nativeHandleDigest: null,
-        nativeHandleState: 'pending',
+        nativeHandleDigest: completed ? 'a'.repeat(64) : null,
+        nativeHandleState: completed ? 'ready' : 'pending',
         state: 'open',
       });
-      expect(inspected.sequence).toBe(interrupt.sequence + 1);
+      if (interruptSequence !== undefined) expect(inspected.sequence).toBe(interruptSequence + 1);
       await inspection;
       expect(inspectionState).toBe('resolved');
-      const cleanup = runtime.cleanupBackendSession(backend.planSession(environmentPackage));
-      await settleNext('session.close', {
-        childState: 'absent',
-        privateState: 'absent',
-        state: 'closed',
+      expect(backend.sessions.get(environmentPackage.snapshotId)).toMatchObject({
+        nativeSessionReusable: completed,
+        terminalInspectionComplete: true,
       });
-      await cleanup;
+      const identity = backend.planSession(environmentPackage);
+      const cleanup =
+        purpose === 'failed-closeout' || purpose === 'failed-closeout-refused'
+          ? backend.cleanupSession(identity, { failedCloseout: true })
+          : backend.cleanupSession(identity);
+      if (purpose === 'failed-closeout-refused') {
+        await settleNext('session.close', { reasonCode: 'conflict' }, 'refused');
+        await expect(cleanup).rejects.toThrow(/session.close refused/);
+      } else if (purpose !== 'completed') {
+        await settleNext('session.close', {
+          childState: 'absent',
+          privateState: 'absent',
+          state: 'closed',
+        });
+        await cleanup;
+      } else {
+        await cleanup;
+      }
+      const retainedBinding = purpose === 'completed' || purpose === 'failed-closeout-refused';
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+      ).toEqual({ count: retainedBinding ? 1 : 0 });
+      if (completed) {
+        const harness = coreDb.sqlite
+          .prepare(
+            'SELECT harness_instance_id AS harnessInstanceId FROM harness_instance_records LIMIT 1'
+          )
+          .get() as { readonly harnessInstanceId: string };
+        const admitNext = () =>
+          openNanoHostAgentSessionBinding(coreDb, {
+            agentSessionCompatibilityKey: 'e'.repeat(64),
+            agentSessionId: 'as_human_gate_next',
+            agentSessionRuntimeBindingId: 'binding_human_gate_next',
+            effectiveSetupGeneration: 1,
+            harnessInstanceId: harness.harnessInstanceId,
+            threadId: environmentPackage.scope.threadId,
+            timestamp: '2026-09-17T00:00:02.000Z',
+            workspaceId: environmentPackage.scope.workspaceId,
+          });
+        if (purpose === 'failed-closeout') {
+          expect(admitNext).not.toThrow();
+        } else {
+          expect(admitNext).toThrow(
+            'NanoHost Harness already has a current AgentSession for this Thread.'
+          );
+        }
+      }
       expect(effects.map((effect) => effect.kind)).toEqual([
         'image.acquire',
         'image.inspect',

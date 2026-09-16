@@ -1614,7 +1614,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             backendLifecycle,
             workspaceDb,
             environmentPackage,
-            backendCapabilities
+            backendCapabilities,
+            true
           );
           backendCleanupRequired = false;
         } catch (error) {
@@ -1791,7 +1792,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             lifecycle,
             workspaceDb,
             environmentPackage,
-            backendCapabilities
+            backendCapabilities,
+            true
           );
         }
         return 'interrupted';
@@ -1824,7 +1826,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               lifecycle,
               workspaceDb,
               environmentPackage,
-              backendCapabilities
+              backendCapabilities,
+              true
             );
           } catch (cleanupError) {
             throw new AggregateError(
@@ -2162,6 +2165,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param workspaceDb Optional product workspace projection target.
    * @param environmentPackage Immutable package that owns the session.
    * @param backendCapabilities Backend identity captured before materialization.
+   * @param failedCloseout Whether product closeout failed and native session reuse is forbidden.
    * @returns Promise settled after physical cleanup and durable projection.
    * @throws Error when physical cleanup, lifecycle transition, or workspace projection fails.
    */
@@ -2169,7 +2173,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     lifecycle: WorkerTurnBackendLifecycle,
     workspaceDb: WorkspaceDb | null,
     environmentPackage: AgentEnvironmentPackage,
-    backendCapabilities: WorkerGovernanceBackendCapabilities
+    backendCapabilities: WorkerGovernanceBackendCapabilities,
+    failedCloseout = false
   ): Promise<void> {
     if (lifecycle.session?.state === 'cleaned') {
       return;
@@ -2189,7 +2194,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
 
       try {
-        await this.backend.cleanupSession(lifecycle.identity);
+        if (failedCloseout) {
+          await this.backend.cleanupSession(lifecycle.identity, { failedCloseout: true });
+        } else {
+          await this.backend.cleanupSession(lifecycle.identity);
+        }
       } catch (error) {
         if (lifecycle.session?.state === 'cleanup-pending') {
           lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
