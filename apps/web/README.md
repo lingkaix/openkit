@@ -43,6 +43,8 @@ Settings **App update** projects deployment-admin prepare, start and status oper
 
 The shared Composer begins directly with the message input on starter, Chat, Task, and Goal surfaces. Conversation titles and mode labels do not consume input-box space; selected attachments remain removable below the input.
 
+Thread header icon commands use 20px glyphs in 32px square buttons without inherited horizontal padding. Shared icons retain their declared width inside flex layouts and inherit the active theme foreground.
+
 ## Stack
 
 Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md):

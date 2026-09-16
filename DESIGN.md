@@ -196,7 +196,7 @@ Spectrum-calm, better for non-technical users (D-003).
   inside the main panel unless a workflow *genuinely* needs comparison.
 - **Compact stacked header** (~52px): breadcrumbs → current context, the goal
   **phase stepper** (§9.5) where relevant, and right-aligned actions.
-- **Thread title bars are scarce space.** Preserve the longest practical Thread name before secondary state. Compact icon-only actions are preferred when the symbol is established and every control supplies an accessible name plus a hover and keyboard-focus hint. Rename and Archive sit immediately beside the Thread name because they act on it; the optional Side panel toggle occupies the far-right edge, leaving the center available for future Worker counts, Goal status, and other Thread state.
+- **Thread title bars are scarce space.** Preserve the longest practical Thread name before secondary state. Compact icon-only actions are preferred when the symbol is established and every control supplies an accessible name plus a hover and keyboard-focus hint. Rename, Archive, and Side panel use 20px non-shrinking glyphs in 32px square controls with zero horizontal padding. Rename and Archive sit immediately beside the Thread name because they act on it; the optional Side panel toggle occupies the far-right edge, leaving the center available for future Worker counts, Goal status, and other Thread state.
 - **Conversation column** caps at ~760px, centered, `20px` gap between items.
 - **Composer docked at the bottom** of every active work surface — the rule is:
   *on every surface, the bottom bar is where you talk to the AI* (D-007).

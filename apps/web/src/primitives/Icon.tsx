@@ -130,7 +130,7 @@ export function Icon({ name, size = 'md', label, className }: IconProps) {
     <Svg
       width={px}
       height={px}
-      className={className}
+      className={`shrink-0 ${className ?? ''}`}
       aria-hidden={label ? undefined : true}
       role={label ? 'img' : undefined}
       aria-label={label}

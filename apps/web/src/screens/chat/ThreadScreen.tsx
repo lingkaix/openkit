@@ -260,7 +260,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               variant="quiet"
               aria-label="Rename thread"
               title="Rename thread"
-              className="h-8 w-8 shrink-0 px-0"
+              className="h-8 w-8 shrink-0 px-0!"
               isDisabled={!workspaceId}
               onPress={() => {
                 rename.reset();
@@ -274,14 +274,14 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 }
               }}
             >
-              <Icon name="edit" />
+              <Icon name="edit" size="lg" />
             </Button>
             <Button
               size="sm"
               variant="quiet"
               aria-label="Archive thread"
               title="Archive thread"
-              className="h-8 w-8 shrink-0 px-0"
+              className="h-8 w-8 shrink-0 px-0!"
               isDisabled={
                 !workspaceId ||
                 archiveState?.status === 'pending' ||
@@ -289,7 +289,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               }
               onPress={() => archive.mutate({ workspaceId: workspaceId ?? '', threadId })}
             >
-              <Icon name="archive" />
+              <Icon name="archive" size="lg" />
             </Button>
             {thread.data?.status === 'archived' ? (
               <StatusChip tone="neutral">Archived</StatusChip>
@@ -325,10 +325,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               aria-expanded={showRail}
               aria-label={showRail ? 'Hide Side panel' : 'Show Side panel'}
               title={showRail ? 'Hide Side panel' : 'Show Side panel'}
-              className="h-8 w-8 px-0"
+              className="h-8 w-8 shrink-0 px-0!"
               onPress={() => setShowRail((v) => !v)}
             >
-              <Icon name="view" />
+              <Icon name="view" size="lg" />
             </Button>
           </div>
         </header>
