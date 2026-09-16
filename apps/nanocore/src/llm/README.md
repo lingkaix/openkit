@@ -13,6 +13,7 @@ This directory owns LLM Gateway behavior, provider dispatch, upstream clients an
 - Consume resolved credentials without serializing secret-bearing configuration or creating a second provider vocabulary.
 - Provider-native payloads remain private while public responses preserve the documented OpenAI-compatible contract and redaction rules.
 - Carry request cancellation through the dispatcher, upstream clients, stream converters, usage observers, route responses, and durable capability-call termination without allowing a late disconnect to rewrite an independent provider failure.
+- Preserve the known `provider_stream_truncated` and `provider_stream_failed` diagnostics on failed capability calls. Public Gateway JSON and SSE retain their fixed redacted error classes; these diagnostics neither prove an upstream root cause nor make an incomplete stream successful.
 - Preserve `x-codex-turn-state` only through the pi-ai native Responses transport and the internal worker response boundary. Ordinary pi-ai providers never receive or publish this Codex-private state.
 - Preserve the optional canonical `at_` UUIDv5 identity on the Codex Responses Lite additional-tools prefix and admit local custom or function tools at the root or inside one namespace level; malformed identities, deeper namespaces, provider-executed tools, unknown fields, and duplicate callable keys fail before provider access.
 - Normalize native default tool namespace identity, reject alias collisions, and wait for completed tool identity when a streamed item omits its namespace.

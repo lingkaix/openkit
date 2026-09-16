@@ -2710,7 +2710,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       if (
         lastInference?.status === 'failed' &&
         (lastInference.errorCode === 'worker_inference_stream_failed' ||
-          lastInference.errorCode === 'gateway_stream_failed')
+          lastInference.errorCode === 'gateway_stream_failed' ||
+          lastInference.errorCode === 'provider_stream_truncated' ||
+          lastInference.errorCode === 'provider_stream_failed')
       ) {
         inferenceDetail = ' Last worker inference stream failed before completion.';
       }

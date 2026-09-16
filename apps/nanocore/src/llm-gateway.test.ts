@@ -2326,6 +2326,91 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(body).not.toContain('tok_secret');
   });
 
+  it('preserves known inner stream diagnostic codes on durable calls without changing the public SSE class', async () => {
+    for (const testCase of [
+      {
+        code: 'provider_stream_truncated',
+        durableErrorCode: 'provider_stream_truncated',
+        workspaceId: 'ws_chat_stream_inner_truncated',
+      },
+      {
+        code: 'provider_stream_failed',
+        durableErrorCode: 'provider_stream_failed',
+        workspaceId: 'ws_chat_stream_inner_failed',
+      },
+      {
+        code: 'provider_transport_failure',
+        durableErrorCode: 'llm_gateway_stream_failed',
+        workspaceId: 'ws_chat_stream_inner_unlisted',
+      },
+    ]) {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-inner-stream-'));
+      const coreDb = openCoreDb(dataRoot);
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(
+            Object.assign(new Error('Provider stream failed. token=tok_secret'), {
+              code: testCase.code,
+            })
+          );
+        },
+      });
+
+      try {
+        applyMigrations(coreDb);
+        recordLocalGatewayAuthority(coreDb, testCase.workspaceId);
+
+        const app = createApp({
+          coreDb,
+          dataRoot,
+          ...createOllamaProviderOptions(),
+          llmPiAiClient: {
+            createChatCompletionStream: async () => stream,
+          } as unknown as PiAiGatewayClient,
+        });
+
+        const res = await app.request('/v1/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'openai/gpt-5.1',
+            stream: true,
+            messages: [{ role: 'user', content: 'Hello' }],
+            metadata: {
+              openkit: {
+                requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                workspaceId: testCase.workspaceId,
+              },
+            },
+          }),
+          headers: { 'content-type': 'application/json' },
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.text();
+        expect(body).toContain('"code":"gateway_stream_failed"');
+        expect(body).toContain('"message":"Provider stream failed."');
+        expect(body).toContain('"stopReason":"error"');
+        expect(body).toContain('data: [DONE]');
+        expect(body).not.toContain(testCase.code);
+        expect(body).not.toContain('tok_secret');
+
+        const workspaceDb = openWorkspaceDb(dataRoot, testCase.workspaceId);
+        try {
+          expect(
+            workspaceDb.sqlite.prepare('SELECT status, error_code FROM capability_calls').get()
+          ).toMatchObject({
+            status: 'failed',
+            error_code: testCase.durableErrorCode,
+          });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  });
+
   it('classifies chat stream provider failures into terminal SSE errors', async () => {
     for (const testCase of [
       {

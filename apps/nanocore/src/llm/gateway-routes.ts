@@ -1034,13 +1034,14 @@ function asOpenAIGatewayError(error: unknown): Response {
       );
     }
     const normalized = classifyGatewayProviderFailure(error, 'provider_error');
+    const publicCode = publicGatewayFailureCode(normalized.code, 'provider_error');
 
     return Response.json(
       {
         error: {
-          message: gatewayProviderFailureMessage(normalized.code),
+          message: gatewayProviderFailureMessage(publicCode),
           type: normalized.type,
-          code: normalized.code,
+          code: publicCode,
         },
       },
       { status: error.status }
@@ -1253,6 +1254,33 @@ function isGatewayTimeout(error: unknown): boolean {
   );
 }
 
+/** OpenKit-owned inner stream diagnostics that the classifier must not collapse. */
+const INNER_STREAM_DIAGNOSTIC_CODES = new Set([
+  'provider_stream_truncated',
+  'provider_stream_failed',
+]);
+
+/**
+ * Returns whether one failure code is an allowlisted inner stream diagnostic.
+ *
+ * @param code Candidate failure code.
+ * @returns True when the code must be preserved on durable capability metadata.
+ */
+function isInnerStreamDiagnosticCode(code: string): boolean {
+  return INNER_STREAM_DIAGNOSTIC_CODES.has(code);
+}
+
+/**
+ * Projects a classified failure onto the fixed public Gateway error vocabulary.
+ *
+ * @param code Classified durable or public failure code.
+ * @param publicFallback Public stream class used when the classified code is inner-only.
+ * @returns Code allowed on public JSON or SSE.
+ */
+function publicGatewayFailureCode(code: string, publicFallback: string): string {
+  return isInnerStreamDiagnosticCode(code) ? publicFallback : code;
+}
+
 /**
  * Creates an OpenAI-compatible terminal SSE error payload with a stable stop reason.
  *
@@ -1271,11 +1299,13 @@ function createGatewayTerminalErrorSse(
   errorCode?: string
 ): string {
   const normalized = classifyGatewayProviderFailure(error, 'gateway_stream_failed');
+  const publicCode =
+    errorCode ?? publicGatewayFailureCode(normalized.code, 'gateway_stream_failed');
   const payload = {
     error: {
-      message: failureMessage ?? gatewayProviderFailureMessage(errorCode ?? normalized.code),
+      message: failureMessage ?? gatewayProviderFailureMessage(publicCode),
       type: normalized.type,
-      code: errorCode ?? normalized.code,
+      code: publicCode,
       endpoint,
     },
     stopReason,
@@ -1294,6 +1324,9 @@ function createGatewayTerminalErrorSse(
 
 /**
  * Normalizes provider failure signal into stable public gateway error identity.
+ *
+ * Allowlisted inner stream diagnostic codes are preserved for durable capability
+ * metadata. Public JSON and SSE still project the fixed Gateway class.
  *
  * @param error Unknown provider or stream failure.
  * @param fallbackCode Stable code used when the failure has no known provider signal.
@@ -1338,6 +1371,9 @@ function classifyGatewayProviderFailure(error: unknown, fallbackCode: string) {
     /\b(unavailable|overloaded|timeout|timed out|server error)\b/.test(signal)
   ) {
     return { type, code: 'gateway_provider_unavailable' };
+  }
+  if (isInnerStreamDiagnosticCode(code)) {
+    return { type, code };
   }
 
   return { type, code: fallbackCode };

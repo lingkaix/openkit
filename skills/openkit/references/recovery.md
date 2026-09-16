@@ -11,6 +11,8 @@ Load this reference for interrupted or unknown work, retries, checkpoints, resta
 
 Treat NanoCore records as authority after a CLI restart, agent-host restart, NanoCore restart, timeout, SIGINT, or transport loss. Never reconstruct workflow truth from local logs or assume that a stopped local wait cancelled remote work.
 
+For a failed Worker inference stream, inspect the Turn and its attributed calls through `usage.read`. A recorded `provider_stream_truncated` identifies a stream that ended without the required completion; `provider_stream_failed` identifies a stream failure. Both remain failures, and neither alone identifies the upstream cause. A generic stream error from an older record cannot be retrospectively classified. Preserve the exact Turn and call evidence before deciding whether to submit a new bounded request.
+
 For an owner-requested permanent Workspace deletion, use `workspace.delete` and preserve its exact `requestId`, confirmation, and returned phase. A fenced response is not deletion success; retry the same request only after the returned runtime blockers become terminal. Use local-mode `workspace.deleted-recover` only when the retained deletion export and closure verify successfully; recovery always remints the Workspace identity.
 
 ## Handle retries conservatively

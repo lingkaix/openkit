@@ -1822,6 +1822,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it.each([
     'none',
     'stream-failed',
+    'truncated',
+    'provider-stream-failed',
     'later-success',
     'other-package',
     'unknown-code',
@@ -1871,7 +1873,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
               errorCode:
                 inference === 'unknown-code'
                   ? 'unknown-internal-detail'
-                  : 'worker_inference_stream_failed',
+                  : inference === 'truncated'
+                    ? 'provider_stream_truncated'
+                    : inference === 'provider-stream-failed'
+                      ? 'provider_stream_failed'
+                      : 'worker_inference_stream_failed',
             });
             if (inference === 'later-success') {
               const retry = startCapabilityCall({
@@ -1925,7 +1931,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       code: 'worker_governance_turn_failed',
       message:
         'Worker reported terminal status: failed.' +
-        (inference === 'stream-failed'
+        (inference === 'stream-failed' ||
+        inference === 'truncated' ||
+        inference === 'provider-stream-failed'
           ? ' Last worker inference stream failed before completion.'
           : ''),
     });

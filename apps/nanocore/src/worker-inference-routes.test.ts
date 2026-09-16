@@ -1648,6 +1648,58 @@ describe('worker inference routes', () => {
     ]);
   });
 
+  it('preserves known inner stream diagnostic codes on worker capability calls', async () => {
+    for (const testCase of [
+      {
+        code: 'provider_stream_truncated',
+        durableErrorCode: 'provider_stream_truncated',
+      },
+      {
+        code: 'provider_stream_failed',
+        durableErrorCode: 'provider_stream_failed',
+      },
+      {
+        code: 'provider_transport_failure',
+        durableErrorCode: 'worker_inference_stream_failed',
+      },
+    ]) {
+      const fixture = createWorkerInferenceRouteFixture();
+      fixture.dispatcher.shouldFailResponsesStream = true;
+      fixture.dispatcher.responsesStreamFailure = Object.assign(
+        new Error('Provider stream failed. token=tok_secret'),
+        { code: testCase.code }
+      );
+      const response = await postWorkerResponses(fixture, {
+        input: 'Hello',
+        model: WORKER_LOGICAL_MODEL_ID,
+        stream: true,
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('gateway_stream_failed');
+      expect(body).not.toContain(testCase.code);
+      expect(body).not.toContain('tok_secret');
+      const terminal = body
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice(6)))
+        .find((event) => event.type === 'response.failed');
+      expect(terminal).toMatchObject({
+        response: {
+          status: 'failed',
+          error: { code: 'gateway_stream_failed', message: 'Worker inference stream failed.' },
+        },
+      });
+      expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
+        expect.objectContaining({
+          errorCode: testCase.durableErrorCode,
+          status: 'failed',
+        }),
+      ]);
+    }
+  });
+
   it('records classified worker stream failures as the public OpenKit code', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldFailResponsesStream = true;
