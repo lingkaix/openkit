@@ -13,6 +13,7 @@ import type { Actor } from '../auth/identity.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import type { ResolvedInternalRoleProfile } from '../internal-agents/profile-resolver.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -22,10 +23,35 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { registerAdministrationRoutes } from './administration-routes.js';
 import type { AdministrationEnvironmentTools } from './administration-tools.js';
 
+const profileResolverFixture = vi.hoisted(() => ({
+  actual: undefined as
+    | undefined
+    | typeof import('../internal-agents/profile-resolver.js').resolveInternalRoleProfile,
+  resolveInternalRoleProfile: vi.fn(),
+}));
+
+vi.mock('../internal-agents/profile-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../internal-agents/profile-resolver.js')>();
+  profileResolverFixture.actual = actual.resolveInternalRoleProfile;
+  profileResolverFixture.resolveInternalRoleProfile.mockImplementation(
+    actual.resolveInternalRoleProfile
+  );
+  return {
+    ...actual,
+    resolveInternalRoleProfile: profileResolverFixture.resolveInternalRoleProfile,
+  };
+});
+
 const openDatabases: CoreDb[] = [];
 
 afterEach(() => {
   for (const database of openDatabases.splice(0)) database.sqlite.close();
+  profileResolverFixture.resolveInternalRoleProfile.mockReset();
+  if (profileResolverFixture.actual) {
+    profileResolverFixture.resolveInternalRoleProfile.mockImplementation(
+      profileResolverFixture.actual
+    );
+  }
 });
 
 describe('administration conversation route', () => {
@@ -677,6 +703,62 @@ describe('administration conversation route', () => {
     expect(createResponses).not.toHaveBeenCalled();
     expect(store.listThreads(actorWorkspaceId).map((thread) => thread.id)).toEqual(actorThreadIds);
   });
+
+  it('refuses missing tool-calling as administration_execution_failed rather than compaction unavailability', async () => {
+    const { body, createResponses, status } = await postAdministrationAdmissionTurn({
+      label: 'missing-tool-calling',
+      toolCall: false,
+    });
+
+    expect(status).toBe(200);
+    expect(body, JSON.stringify(body)).toMatchObject({
+      outcome: 'refused',
+      explanation:
+        'Administration requires an admitted logical model with responses and tool-calling capabilities.',
+      turn: {
+        status: 'failed',
+        error: {
+          code: 'administration_execution_failed',
+          message:
+            'Administration requires an admitted logical model with responses and tool-calling capabilities.',
+        },
+      },
+      item: {
+        summary:
+          'Administration requires an admitted logical model with responses and tool-calling capabilities.',
+      },
+    });
+    expect(body.turn.error?.code).not.toBe('context_compaction_unavailable');
+    expect(createResponses).not.toHaveBeenCalled();
+  });
+
+  it('refuses missing context policy as context_compaction_unavailable after capabilities admit', async () => {
+    const { body, createResponses, status } = await postAdministrationAdmissionTurn({
+      label: 'missing-context-policy',
+      toolCall: true,
+      stripContextManagement: true,
+    });
+
+    expect(status).toBe(200);
+    expect(body, JSON.stringify(body)).toMatchObject({
+      outcome: 'refused',
+      explanation:
+        'Administration requires an admitted Tool-capable logical model with context policy.',
+      turn: {
+        status: 'failed',
+        error: {
+          code: 'context_compaction_unavailable',
+          message:
+            'Administration requires an admitted Tool-capable logical model with context policy.',
+        },
+      },
+      item: {
+        summary:
+          'Administration requires an admitted Tool-capable logical model with context policy.',
+      },
+    });
+    expect(createResponses).not.toHaveBeenCalled();
+  });
 });
 
 function inertEnvironmentTools(): AdministrationEnvironmentTools {
@@ -686,4 +768,148 @@ function inertEnvironmentTools(): AdministrationEnvironmentTools {
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
     execute: async () => ({ content: [] }),
   })) as unknown as AdministrationEnvironmentTools;
+}
+
+/** Exercises model admission through the real administration route without provider effects. */
+async function postAdministrationAdmissionTurn(options: {
+  readonly label: string;
+  readonly toolCall: boolean;
+  readonly stripContextManagement?: boolean;
+}): Promise<{
+  readonly status: number;
+  readonly body: {
+    readonly outcome: string;
+    readonly explanation: string;
+    readonly turn: { readonly status: string; readonly error: { readonly code: string } | null };
+    readonly item: { readonly summary: string };
+  };
+  readonly createResponses: ReturnType<typeof vi.fn>;
+}> {
+  const dataRoot = mkdtempSync(join(tmpdir(), `openkit-administration-${options.label}-`));
+  const coreDb = openCoreDb(dataRoot);
+  openDatabases.push(coreDb);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const token = createOpenKitAccessTokenRecord(coreDb, {
+    expiresAt: '2999-01-01T00:00:00.000Z',
+    ownerUserId: 'user_local',
+    scope: 'server-admin',
+    tokenId: `tok_administration_${options.label}`,
+    workspaceIds: [],
+  });
+  const actor: Actor = {
+    kind: 'token',
+    tokenId: token.tokenId,
+    tokenScope: 'server-admin',
+    tokenWorkspaceIds: [],
+    userId: 'user_local',
+  };
+  const store = createDemoStore({ dataRoot });
+  const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
+  const thread = store.createThread(
+    workspaceId,
+    'Administration',
+    `thread_administration_${options.label}`,
+    'administration'
+  );
+  const providerProfile = {
+    baseUrl: 'https://provider.invalid/v1',
+    displayName: 'Provider',
+    id: 'provider',
+    kind: 'custom' as const,
+    modelMetadata: {
+      model: {
+        family: 'test',
+        limit: { context: 20_000, output: 1_000 },
+        modalities: { input: ['text'], output: ['text'] },
+        ...(options.toolCall ? { tool_call: true } : {}),
+      },
+    },
+    models: ['model'],
+  };
+  const snapshot = createInMemoryRuntimeConfigSnapshot({
+    dataRoot,
+    gatewayConfig: {
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: 'administration',
+      logicalModels: [
+        {
+          id: 'administration',
+          displayName: 'Administration',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [
+            { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
+          ],
+        },
+      ],
+    },
+    internalRoleProfiles: {
+      schemaVersion: 1,
+      defaultLogicalModelId: 'administration',
+      profiles: [],
+    },
+    providerRegistry: new ProviderRegistry([providerProfile]),
+  });
+  if (options.stripContextManagement) {
+    profileResolverFixture.resolveInternalRoleProfile.mockImplementationOnce((input) => {
+      const selection = profileResolverFixture.actual?.(input) ?? null;
+      if (!selection) return null;
+      return {
+        ...selection,
+        logicalModel: {
+          ...selection.logicalModel,
+          contextManagement: undefined,
+        },
+      } as ResolvedInternalRoleProfile;
+    });
+  }
+  const createResponses = vi.fn();
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use('*', async (context, next) => {
+    context.set('actor', actor);
+    await next();
+  });
+  registerAdministrationRoutes({
+    app,
+    coreDb,
+    environmentToolsForTurn: () => inertEnvironmentTools(),
+    inflightCommands: new WeakMap(),
+    llmGatewayDispatcher: { createResponses },
+    quickChatWorkspaceIdForUser,
+    requestStore: () => store,
+    runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+    resolveGatewayProvider: () =>
+      ({
+        adapterId: 'provider',
+        apiKey: 'unused',
+        baseUrl: providerProfile.baseUrl,
+        displayName: providerProfile.displayName,
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+        id: providerProfile.id,
+        models: providerProfile.models,
+        requiresApiKey: true,
+      }) satisfies ResolvedLLMProviderConfig,
+    runtimeConfig: () => snapshot,
+  });
+
+  const response = await app.request('/api/app/administration/conversation-turns', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      input: 'List retained Worker environments in my current Quick Chat Workspace.',
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      threadId: thread.id,
+    }),
+  });
+  return {
+    status: response.status,
+    body: (await response.json()) as {
+      outcome: string;
+      explanation: string;
+      turn: { status: string; error: { code: string } | null };
+      item: { summary: string };
+    },
+    createResponses,
+  };
 }

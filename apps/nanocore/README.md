@@ -393,6 +393,8 @@ Worker Responses relay preserves native assistant message IDs and phases across 
 
 Private administration supports proposals for existing Provider catalog metadata and Gateway logical-model bindings. The human-confirmed `administration.configuration-apply` public operation rechecks current administrator authority and the exact candidate/source identities, then reports persistence and reload/restart separately. Credential setup remains with the existing forms.
 
+Administration model admission reports missing model selection or responses/tool-calling support as `administration_execution_failed`; `context_compaction_unavailable` identifies a missing context policy after those capabilities admit. A refused Turn performs no provider call.
+
 Deployment admins can edit `config/model-catalog.jsonc` in Settings Configuration to register models beyond the vendored inventory. Exact vendor/native-ID extension leaves override snapshot metadata and precede profile `modelMetadata`; catalog changes require restart and Codex subscription effective context remains capped at 256,000 tokens. The operator recipe is in the [DATA_ROOT manual](../../skills/openkit-ops/references/nanocore-data-root-config.en.md#model-not-in-modelsdev).
 
 Workspace dashboard, Thread dashboard and App search resolve the current actor's Thread audience before reading dependent history or matching content. Private ownership is server-bound, and server-admin tokens have no private-audience override. Artifact summaries follow immutable origin; dashboard counts exclude inaccessible records. `thread.create` defaults to private, while formal Task/Goal callers request `visibility: workspace` for a new Thread. Direct Task/Goal admission never converts private history.

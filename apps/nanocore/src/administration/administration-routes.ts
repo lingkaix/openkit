@@ -247,10 +247,19 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
             });
             if (
               !selection ||
-              !selection.logicalModel.contextManagement ||
               !selection.logicalModel.capabilities.includes('responses') ||
               !selection.logicalModel.capabilities.includes('tool-calling')
             ) {
+              return failedAdministrationTurn(
+                store,
+                turn.id,
+                'administration_execution_failed',
+                !selection
+                  ? 'Administration has no admitted logical model for this request.'
+                  : 'Administration requires an admitted logical model with responses and tool-calling capabilities.'
+              );
+            }
+            if (!selection.logicalModel.contextManagement) {
               return failedAdministrationTurn(
                 store,
                 turn.id,
