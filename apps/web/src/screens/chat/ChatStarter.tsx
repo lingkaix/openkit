@@ -13,32 +13,33 @@ import { createRequestId, useArtifacts, useImportWorkspaceArtifact } from '../ar
 import {
   chatThreadPath,
   taskThreadPath,
+  useConversationNavigation,
   useConversationTargets,
   useCreateThread,
   useCurrentWorkspaceId,
-  useThreads,
 } from './data';
 
 /**
  * Chat starter (WP-4, board 01) — the usable workbench first screen.
  *
- * Composer-first: describe what you need and a thread opens. Recent threads sit
- * below for quick re-entry. No landing page (DESIGN.md §1). Honors the §9.13
- * states: skeleton while recent threads load, a calm empty block on first use, an
- * inline banner if creating a chat fails, and a disabled composer with a stated
- * reason when the runtime is unreachable.
+ * Composer-first: describe what you need and a thread opens. Recent conversations
+ * reuse the authorized conversation-navigation projection for the current
+ * Workspace. No landing page (DESIGN.md §1). Honors the §9.13 states: skeleton
+ * while recent conversations load, a calm empty block on first use, an inline
+ * banner if creating a chat fails, and a disabled composer with a stated reason
+ * when the runtime is unreachable.
  */
 export function ChatStarter() {
   const navigate = useNavigate();
   const workspaceId = useCurrentWorkspaceId();
-  const threads = useThreads(workspaceId);
+  const navigation = useConversationNavigation(workspaceId);
   const targets = useConversationTargets(workspaceId);
   const artifacts = useArtifacts(workspaceId);
   const importArtifact = useImportWorkspaceArtifact();
   const create = useCreateThread();
   const { failed: disconnected } = useConnection();
   const createOwner = create.variables?.workspaceId === workspaceId;
-  const activeThreads = (threads.data ?? []).filter((thread) => thread.status === 'active');
+  const conversations = navigation.data ?? [];
 
   useEffect(() => {
     if (!createOwner || !create.data) return;
@@ -114,33 +115,40 @@ export function ChatStarter() {
 
       <section className="flex flex-col gap-2">
         <p className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">Recent</p>
-        {threads.isLoading ? (
+        {navigation.isLoading ? (
           <Skeleton lines={3} />
-        ) : threads.isError ? (
+        ) : navigation.isError ? (
           <ErrorBanner
             message="Couldn't load recent chats."
-            onRetry={() => void threads.refetch()}
+            onRetry={() => void navigation.refetch()}
           />
-        ) : activeThreads.length === 0 ? (
+        ) : conversations.length === 0 ? (
           <EmptyState
             icon="chat"
             title="Start a chat"
             hint="Your recent chats will show up here."
           />
         ) : (
-          activeThreads.map((thread) => (
-            <ListRow key={thread.id}>
-              <button
-                type="button"
-                onClick={() => navigate(chatThreadPath(thread.workspaceId, thread.id))}
-                className="flex min-w-0 flex-1 items-center gap-3 rounded-ok px-2 py-1 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
-              >
-                <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
-                  {thread.name ?? thread.preview}
-                </span>
-              </button>
-            </ListRow>
-          ))
+          conversations.map(({ thread, activity }) => {
+            const prefix = activity === 'goal' ? 'goals' : activity === 'task' ? 'tasks' : 'chat';
+            return (
+              <ListRow key={thread.id}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate(
+                      `/${prefix}/${encodeURIComponent(thread.workspaceId)}/${encodeURIComponent(thread.id)}`
+                    )
+                  }
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-ok px-2 py-1 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+                >
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
+                    {thread.name ?? thread.preview}
+                  </span>
+                </button>
+              </ListRow>
+            );
+          })
         )}
       </section>
     </div>

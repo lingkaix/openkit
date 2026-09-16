@@ -164,7 +164,7 @@ function createDeferred<T>() {
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClient {
-  return {
+  const client = {
     core: {
       meta: vi.fn().mockResolvedValue({}),
       listWorkspaces: vi.fn().mockResolvedValue({
@@ -198,6 +198,26 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
       ...app,
     },
   } as unknown as CoreClient;
+  if (app.listConversationNavigation == null) {
+    client.app.listConversationNavigation = vi.fn(async (workspaceId: string) => {
+      const listed = await client.core.listThreads(workspaceId);
+      return {
+        items: listed.items
+          .filter((thread) => thread.status === 'active')
+          .map((thread) => ({
+            activity: 'chat' as const,
+            lastActivityAt: thread.updatedAt,
+            state: 'idle' as const,
+            thread: {
+              ...thread,
+              entryPath: 'conversation' as const,
+              visibility: 'workspace' as const,
+            },
+          })),
+      };
+    });
+  }
+  return client;
 }
 
 /** Build one protocol-shaped turn-stream envelope for UI subscription tests. */
@@ -385,21 +405,23 @@ beforeEach(() => {
 
 describe('chat starter (board 01)', () => {
   it('uses Quick Chat when no Workspace is selected', async () => {
-    const listThreads = vi.fn().mockResolvedValue({ items: [] });
-    const client = makeClient({
-      listWorkspaces: vi.fn().mockResolvedValue({
-        items: [
-          { id: 'ws_project', name: 'Project Workspace', kind: 'general' },
-          { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'quick-chat' },
-        ],
-      }),
-      listThreads,
-    });
+    const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
+    const client = makeClient(
+      {
+        listWorkspaces: vi.fn().mockResolvedValue({
+          items: [
+            { id: 'ws_project', name: 'Project Workspace', kind: 'general' },
+            { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'quick-chat' },
+          ],
+        }),
+      },
+      { listConversationNavigation }
+    );
 
     renderApp('/chat', client);
 
-    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws_quick_chat'));
-    expect(listThreads).not.toHaveBeenCalledWith('ws_project');
+    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith('ws_quick_chat'));
+    expect(listConversationNavigation).not.toHaveBeenCalledWith('ws_project');
   });
 
   it('falls back from an unavailable selected Workspace before loading threads', async () => {
@@ -407,15 +429,17 @@ describe('chat starter (board 01)', () => {
     const workspaces = createDeferred<{
       items: { id: string; name: string; kind: 'general' | 'quick-chat' }[];
     }>();
-    const listThreads = vi.fn().mockResolvedValue({ items: [] });
-    const client = makeClient({
-      listWorkspaces: vi.fn().mockReturnValue(workspaces.promise),
-      listThreads,
-    });
+    const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
+    const client = makeClient(
+      {
+        listWorkspaces: vi.fn().mockReturnValue(workspaces.promise),
+      },
+      { listConversationNavigation }
+    );
 
     renderApp('/chat', client);
 
-    expect(listThreads).not.toHaveBeenCalled();
+    expect(listConversationNavigation).not.toHaveBeenCalled();
     await act(async () => {
       workspaces.resolve({
         items: [
@@ -425,10 +449,12 @@ describe('chat starter (board 01)', () => {
       });
       await workspaces.promise;
     });
-    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws_quick_chat'));
-    expect(listThreads.mock.calls.every(([id]) => id === 'ws_quick_chat')).toBe(true);
-    expect(listThreads).not.toHaveBeenCalledWith('ws_unavailable');
-    expect(listThreads).not.toHaveBeenCalledWith('ws_authorized');
+    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith('ws_quick_chat'));
+    expect(listConversationNavigation.mock.calls.every(([id]) => id === 'ws_quick_chat')).toBe(
+      true
+    );
+    expect(listConversationNavigation).not.toHaveBeenCalledWith('ws_unavailable');
+    expect(listConversationNavigation).not.toHaveBeenCalledWith('ws_authorized');
   });
 
   it('shows the empty state when there are no recent chats', async () => {
@@ -438,26 +464,123 @@ describe('chat starter (board 01)', () => {
 
   it('switches the active Workspace from Chat', async () => {
     const user = userEvent.setup();
-    const listThreads = vi.fn().mockResolvedValue({ items: [] });
-    renderApp('/chat', makeClient({ listThreads }));
+    const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
+    renderApp('/chat', makeClient({}, { listConversationNavigation }));
 
     await screen.findByRole('heading', { name: 'What can we get done?' });
     await user.click(await workspaceSelectTrigger());
     await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
 
-    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws2'));
+    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith('ws2'));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws2');
   });
 
-  it('lists recent chats when present', async () => {
-    const client = makeClient({
-      listThreads: vi.fn().mockResolvedValue({
-        items: [THREAD, { ...THREAD, id: 'th_archived', name: 'Old chat', status: 'archived' }],
-      }),
+  it('lists recent chats in conversation navigation order, not thread creation order', async () => {
+    const createdFirst = {
+      ...THREAD,
+      id: 'th_created_first',
+      name: 'Created first',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      updatedAt: '2026-07-20T00:00:00.000Z',
+    };
+    const activeLater = {
+      ...THREAD,
+      id: 'th_active_later',
+      name: 'Active later',
+      createdAt: '2026-07-21T00:00:00.000Z',
+      updatedAt: '2026-07-22T00:00:00.000Z',
+    };
+    const listThreads = vi.fn().mockResolvedValue({
+      items: [
+        createdFirst,
+        activeLater,
+        { ...THREAD, id: 'th_private', name: 'Private chat' },
+        { ...THREAD, id: 'th_archived', name: 'Old chat', status: 'archived' },
+      ],
     });
-    renderApp('/chat', client);
-    expect(await screen.findByText('Competitive teardown')).toBeInTheDocument();
-    expect(screen.queryByText('Old chat')).not.toBeInTheDocument();
+    const listConversationNavigation = vi.fn().mockResolvedValue({
+      items: [
+        {
+          activity: 'chat',
+          lastActivityAt: '2026-07-22T00:00:00.000Z',
+          state: 'idle',
+          thread: { ...activeLater, entryPath: 'conversation', visibility: 'workspace' },
+        },
+        {
+          activity: 'chat',
+          lastActivityAt: '2026-07-21T12:00:00.000Z',
+          state: 'idle',
+          thread: { ...createdFirst, entryPath: 'conversation', visibility: 'workspace' },
+        },
+      ],
+    });
+    renderApp('/chat', makeClient({ listThreads }, { listConversationNavigation }));
+
+    const recent = (await screen.findByText('Recent')).closest('section');
+    expect(recent).not.toBeNull();
+    expect(
+      await within(recent!).findByRole('button', { name: 'Active later' })
+    ).toBeInTheDocument();
+    expect(
+      within(recent!)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+    ).toEqual(['Active later', 'Created first']);
+    expect(within(recent!).queryByText('Private chat')).not.toBeInTheDocument();
+    expect(within(recent!).queryByText('Old chat')).not.toBeInTheDocument();
+    expect(listConversationNavigation).toHaveBeenCalledWith('ws1');
+  });
+
+  it('opens a Recent task on the conversation navigation task route', async () => {
+    const user = userEvent.setup();
+    const taskThread = {
+      ...THREAD,
+      id: 'th_task',
+      name: 'Worker task',
+      preview: 'Worker task',
+    };
+    const chatThread = {
+      ...THREAD,
+      id: 'th_chat',
+      name: 'Assistant chat',
+      preview: 'Assistant chat',
+    };
+    const getThread = vi
+      .fn()
+      .mockImplementation((_workspaceId: string, threadId: string) =>
+        Promise.resolve(threadId === 'th_task' ? taskThread : chatThread)
+      );
+    const listConversationNavigation = vi.fn().mockResolvedValue({
+      items: [
+        {
+          activity: 'task',
+          lastActivityAt: '2026-07-22T00:00:00.000Z',
+          state: 'idle',
+          thread: { ...taskThread, entryPath: 'conversation', visibility: 'workspace' },
+        },
+        {
+          activity: 'chat',
+          lastActivityAt: '2026-07-21T12:00:00.000Z',
+          state: 'idle',
+          thread: { ...chatThread, entryPath: 'conversation', visibility: 'workspace' },
+        },
+      ],
+    });
+    renderApp('/chat', makeClient({ getThread }, { listConversationNavigation }));
+
+    const recent = (await screen.findByText('Recent')).closest('section');
+    expect(recent).not.toBeNull();
+    expect(await within(recent!).findByRole('button', { name: 'Worker task' })).toBeInTheDocument();
+    expect(
+      within(recent!)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+    ).toEqual(['Worker task', 'Assistant chat']);
+
+    await user.click(within(recent!).getByRole('button', { name: 'Worker task' }));
+    expect(await screen.findByRole('heading', { name: 'Worker task' })).toBeInTheDocument();
+    expect(screen.getByText('Task')).toBeInTheDocument();
+    expect(getThread).toHaveBeenCalledWith('ws1', 'th_task');
   });
 
   it('creates a thread and opens it from the composer', async () => {
@@ -510,8 +633,8 @@ describe('chat starter (board 01)', () => {
 
   it('opens a fresh Chat when the Workspace changes from a thread', async () => {
     const user = userEvent.setup();
-    const listThreads = vi.fn().mockResolvedValue({ items: [] });
-    renderApp('/chat/ws1/th1', makeClient({ listThreads }));
+    const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
+    renderApp('/chat/ws1/th1', makeClient({}, { listConversationNavigation }));
 
     await screen.findByRole('heading', { name: 'Competitive teardown' });
     await user.click(await workspaceSelectTrigger());
@@ -520,7 +643,7 @@ describe('chat starter (board 01)', () => {
     expect(
       await screen.findByRole('heading', { name: 'What can we get done?' })
     ).toBeInTheDocument();
-    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws2'));
+    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith('ws2'));
   });
 
   it('fails closed when a canonical Thread route names an unavailable Workspace', async () => {
