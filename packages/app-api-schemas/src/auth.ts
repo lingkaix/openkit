@@ -118,6 +118,8 @@ export const ConsumeOpenKitBootstrapTokenRequestSchema = z
     token: z.string().regex(/^okt_[A-Za-z0-9_-]+$/),
     ownerUserId: z.string().min(1),
     displayName: z.string().min(1),
+    email: z.string().email(),
+    password: z.string().min(8),
     tokenExpiresAt: z.string().datetime(),
   })
   .strict();

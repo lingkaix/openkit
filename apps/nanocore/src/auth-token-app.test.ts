@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
 import { listServerAuditEvents } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { createBetterAuth } from './auth/better-auth.js';
 import { ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
@@ -35,6 +36,17 @@ function ownerSessionAuth(): BetterAuthServer {
     },
     handler: async () => new Response(null, { status: 404 }),
   };
+}
+
+/** Extracts the session cookie pair from one Better Auth response. */
+function sessionCookie(response: Response): string {
+  const setCookie = response.headers.get('set-cookie');
+
+  if (!setCookie) {
+    throw new Error('Expected response to set a session cookie.');
+  }
+
+  return setCookie.split(';')[0] ?? '';
 }
 
 /**
@@ -80,7 +92,7 @@ function insertCanonicalUser(
 }
 
 describe('server-mode access-token auth', () => {
-  it('consumes a bootstrap token through the public App API', async () => {
+  it('consumes a bootstrap token into a login-capable server administrator', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-bootstrap-app-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -88,17 +100,16 @@ describe('server-mode access-token auth', () => {
       applyMigrations(coreDb);
       const bootstrap = ensureServerBootstrapToken(coreDb)!;
       const app = createApp({
-        auth: {
-          api: { getSession: async () => null },
-          handler: async () => new Response(null, { status: 404 }),
-        },
+        auth: createBetterAuth(coreDb),
         coreDb,
         dataRoot,
         mode: 'server',
       });
       const consumeBody = JSON.stringify({
         displayName: 'Owner',
+        email: 'owner@example.com',
         ownerUserId: 'user_owner',
+        password: 'password123456',
         token: bootstrap.token,
         tokenExpiresAt: '2999-01-01T00:00:00.000Z',
       });
@@ -129,13 +140,21 @@ describe('server-mode access-token auth', () => {
         record: { ownerUserId: string; scope: string };
         token: string;
       };
+      const bootstrapOwner = coreDb.sqlite
+        .prepare('SELECT id, email FROM users WHERE id = ?')
+        .get('user_owner') as { email: string; id: string } | undefined;
+      const bootstrapCredential = coreDb.sqlite
+        .prepare('SELECT account_id, provider_id, user_id FROM account WHERE user_id = ?')
+        .get('user_owner') as
+        | { account_id: string; provider_id: string; user_id: string }
+        | undefined;
       const listed = await app.request('/api/app/auth/tokens', {
         headers: { authorization: `Bearer ${consumedBody.token}` },
       });
-      const secondConsume = await app.request('/api/app/auth/bootstrap/consume', {
+      const signIn = await app.request('/api/auth/sign-in/email', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: consumeBody,
+        body: JSON.stringify({ email: 'owner@example.com', password: 'password123456' }),
       });
 
       expect(remotePlaintext.status).toBe(400);
@@ -148,7 +167,23 @@ describe('server-mode access-token auth', () => {
         scope: 'server-admin',
       });
       expect(consumedBody.token).toMatch(/^okt_/);
+      expect(bootstrapOwner).toEqual({ email: 'owner@example.com', id: 'user_owner' });
+      expect(bootstrapCredential).toEqual({
+        account_id: 'user_owner',
+        provider_id: 'credential',
+        user_id: 'user_owner',
+      });
       expect(listed.status).toBe(200);
+      expect(signIn.status).toBe(200);
+      const sessionAdminTokens = await app.request('/api/app/auth/my-admin-tokens', {
+        headers: { cookie: sessionCookie(signIn) },
+      });
+      const secondConsume = await app.request('/api/app/auth/bootstrap/consume', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: consumeBody,
+      });
+      expect(sessionAdminTokens.status).toBe(200);
       expect(secondConsume.status).toBe(409);
       expect(JSON.stringify(consumedBody)).not.toContain(bootstrap.token);
       const auditEvents = listServerAuditEvents(coreDb);

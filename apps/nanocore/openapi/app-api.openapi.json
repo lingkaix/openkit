@@ -22868,6 +22868,15 @@
             "type": "string",
             "minLength": 1
           },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8
+          },
           "tokenExpiresAt": {
             "type": "string",
             "format": "date-time",
@@ -22878,6 +22887,8 @@
           "token",
           "ownerUserId",
           "displayName",
+          "email",
+          "password",
           "tokenExpiresAt"
         ],
         "additionalProperties": false
@@ -116615,5 +116626,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:487f5c8e96b87d64a940cf84ffa0b675044dc24ba506edae17cafce2faa0e8fb"
+  "x-openkit-source-digest": "sha256:81ef3843cbcda3cbbd9978fdfef0a7d17309dd9fe81c4fb4e9801b9e78aa9988"
 }

@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { hashPassword } from 'better-auth/crypto';
 import type { CoreDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import {
@@ -39,6 +41,10 @@ export interface ConsumeServerBootstrapTokenInput {
   ownerUserId: string;
   /** Owner display name. */
   displayName: string;
+  /** Owner email used for Browser sign-in. */
+  email: string;
+  /** Owner Browser sign-in password. */
+  password: string;
   /** Expiration timestamp for the returned server-admin token. */
   tokenExpiresAt: string;
   /** Current time. */
@@ -127,10 +133,10 @@ export function writeServerBootstrapTokenEmission(
  * @param input Consume input.
  * @returns Consumption result without echoing the bootstrap token.
  */
-export function consumeServerBootstrapToken(
+export async function consumeServerBootstrapToken(
   coreDb: CoreDb,
   input: ConsumeServerBootstrapTokenInput
-): ConsumeServerBootstrapTokenResult {
+): Promise<ConsumeServerBootstrapTokenResult> {
   const now = input.now ?? new Date();
   const setting = readBootstrapSetting(coreDb);
   if (countUsers(coreDb) > 0) {
@@ -146,7 +152,20 @@ export function consumeServerBootstrapToken(
     return { status: 'invalid' };
   }
 
-  const consume = coreDb.sqlite.transaction(() => {
+  const passwordHash = await hashPassword(input.password);
+  const consume = coreDb.sqlite.transaction((): ConsumeServerBootstrapTokenResult => {
+    const current = readBootstrapSetting(coreDb);
+    if (countUsers(coreDb) > 0) {
+      return { status: 'unavailable' };
+    }
+    if (
+      !current ||
+      current.consumedAt ||
+      Date.parse(current.expiresAt) <= now.getTime() ||
+      !verifyOpenKitAccessTokenSecret(input.token, current.tokenHash)
+    ) {
+      return { status: 'invalid' };
+    }
     coreDb.sqlite
       .prepare(
         `INSERT INTO users (
@@ -165,34 +184,47 @@ export function consumeServerBootstrapToken(
       .run(
         input.ownerUserId,
         input.displayName,
-        bootstrapOwnerEmail(input.ownerUserId),
+        input.email.toLowerCase(),
         now.getTime(),
         now.getTime(),
-        now.toISOString()
+        null
       );
-    writeBootstrapSetting(coreDb, { ...setting, consumedAt: now.toISOString() });
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO account (
+          id,
+          account_id,
+          provider_id,
+          user_id,
+          password,
+          created_at,
+          updated_at
+        )
+         VALUES (?, ?, 'credential', ?, ?, ?, ?)`
+      )
+      .run(
+        randomUUID(),
+        input.ownerUserId,
+        input.ownerUserId,
+        passwordHash,
+        now.getTime(),
+        now.getTime()
+      );
+    writeBootstrapSetting(coreDb, { ...current, consumedAt: now.toISOString() });
 
-    return createOpenKitAccessTokenRecord(coreDb, {
-      expiresAt: input.tokenExpiresAt,
-      now,
-      ownerUserId: input.ownerUserId,
-      scope: 'server-admin',
-      workspaceIds: [],
-    });
+    return {
+      ...createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: input.tokenExpiresAt,
+        now,
+        ownerUserId: input.ownerUserId,
+        scope: 'server-admin',
+        workspaceIds: [],
+      }),
+      status: 'consumed' as const,
+    };
   });
 
-  return { ...consume(), status: 'consumed' };
-}
-
-/**
- * Derives a non-deliverable bootstrap owner email for the canonical users table.
- *
- * @param ownerUserId Owner user id.
- * @returns Synthetic bootstrap owner email.
- */
-function bootstrapOwnerEmail(ownerUserId: string): string {
-  const localPart = ownerUserId.toLowerCase().replace(/[^a-z0-9._+-]/g, '-') || 'owner';
-  return `${localPart}@bootstrap.openkit.invalid`;
+  return consume();
 }
 
 /**

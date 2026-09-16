@@ -407,7 +407,7 @@ export const operationCatalog = [
     appOperationId: 'consumeOpenKitBootstrapToken',
     clientMethod: 'app.consumeBootstrapToken',
     group: 'bootstrap',
-    summary: 'Consume the bootstrap token and store the returned endpoint credential.',
+    summary: 'Create the login-capable owner, then store the returned endpoint credential.',
     mutating: true,
     inputSchema: strictShared(appSchemas.ConsumeOpenKitBootstrapTokenRequestSchema),
     async handler({ client, credentialStore, endpoint }, input) {
