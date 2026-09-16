@@ -11,6 +11,7 @@ import type { ArtifactSchema, ItemSchema, ThreadSchema, TurnSchema } from '@open
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { asApiError } from './api-errors.js';
+import { listOutputArtifacts } from './artifact-catalog.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   assertAuthorizedWorkspaceLineage,
@@ -486,9 +487,7 @@ export function registerDashboardRoutes({
       const snapshot = runtimeConfigManager.current();
       const providerCount = snapshot.providerRegistry.list().length;
       const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId);
-      const workspaceArtifacts = store
-        .listArtifacts(workspaceId)
-        .filter((artifact) => isArtifactVisible(store, artifact, actor?.userId));
+      const workspaceArtifacts = listOutputArtifacts(store, coreDb, workspaceId, actor?.userId);
       const counts = {
         ...workspace.counts,
         threadCount: threads.length,
@@ -607,7 +606,9 @@ export function registerDashboardRoutes({
       const latestTurn = turns.at(-1) ?? null;
       const defaultAgentId = resolveDefaultAgentId(runtimeConfigManager.current(), workspaceId);
       const selectedAgentId = latestTurn ? (latestTurn.agentId ?? null) : defaultAgentId;
-      const threadArtifacts = visibleArtifacts.filter((artifact) => artifact.threadId === threadId);
+      const threadArtifacts = listOutputArtifacts(store, coreDb, workspaceId, actor?.userId).filter(
+        (artifact) => artifact.threadId === threadId && visibleArtifactIds.has(artifact.id)
+      );
       const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
 
       return c.json(

@@ -140,6 +140,8 @@ Implementation MUST use the smallest existing owner or the three Work Resource C
 
 `Artifact` remains the core-defined role for a durable user-visible output. It is not the universal identity for editable material, imported source, external state, or feedback.
 
+The user-facing Artifact catalog contains explicitly submitted work outputs and directly imported files. Workspace Sync Review backing records are internal evidence excluded by their exact durable review relationship under S04; they remain inspectable in historical references and Workspace Changes. The catalog does not promote arbitrary changed files or review summaries into deliverables.
+
 An Artifact record does not own or embed an `itemId`. Item lineage is expressed by the `artifact-reference` Item that communicates the Artifact inside a Thread.
 
 Every Artifact MUST carry current-version `contentDigest`, current-state `lastMutationRequestId`, and one immutable `origin` owned inline by the Artifact record:

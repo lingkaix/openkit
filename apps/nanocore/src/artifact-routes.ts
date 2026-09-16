@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-
 import {
   type ArtifactReviewView,
   ImportWorkspaceArtifactRequestSchema,
@@ -13,8 +12,8 @@ import {
 import { type ActorRef, ListArtifactsResponseSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
+import { listOutputArtifacts } from './artifact-catalog.js';
 import {
   type ArtifactReviewMediaType,
   decideArtifactReview,
@@ -27,6 +26,7 @@ import {
 } from './artifact-reviews.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
+import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from './context/worker-context-package.js';
 import { ArtifactAuthorityError, type CommandRequestRecord, type FsStore } from './lib/store.js';
@@ -84,7 +84,12 @@ export function registerArtifactRoutes({
     try {
       return c.json(
         ListArtifactsResponseSchema.parse({
-          items: requestStore(c).listArtifacts(c.req.param('workspaceId')),
+          items: listOutputArtifacts(
+            requestStore(c),
+            coreDb,
+            c.req.param('workspaceId'),
+            c.get('actor')?.userId
+          ),
         })
       );
     } catch (error) {
@@ -610,7 +615,7 @@ export function registerArtifactRoutes({
 }
 
 /**
- * Requires one scoped Artifact owner to match the centrally authorized Workspace.
+ * Requires Artifact Workspace lineage and the authenticated actor's immutable origin audience.
  *
  * @param context Request context carrying optional central Workspace authorization.
  * @param store Product store containing the Artifact owner.
@@ -624,20 +629,20 @@ function assertArtifactWorkspaceLineage(
   artifactId: string
 ): void {
   const access = context.get('workspaceAccess');
-  if (!access) {
-    return;
-  }
-
+  let artifact: ReturnType<FsStore['getArtifact']>;
   try {
-    const artifact = store.getArtifact(workspaceId, artifactId);
-    assertAuthorizedWorkspaceLineage(access, artifact.workspaceId);
+    artifact = store.getArtifact(workspaceId, artifactId);
   } catch {
-    assertAuthorizedWorkspaceLineage(access, null);
+    throw new HTTPException(404, { message: 'Artifact not found.' });
+  }
+  if (access) assertAuthorizedWorkspaceLineage(access, artifact.workspaceId);
+  if (!isArtifactVisible(store, artifact, context.get('actor')?.userId)) {
+    throw new HTTPException(404, { message: 'Artifact not found.' });
   }
 }
 
 /**
- * Requires both children of one introduction to match the authorized Workspace.
+ * Requires Workspace lineage and audience access for both children of an introduction.
  *
  * @param context Request context carrying optional central Workspace authorization.
  * @param store Product store containing the Thread and Artifact owners.
@@ -654,15 +659,15 @@ function assertArtifactIntroductionWorkspaceLineage(
 ): void {
   assertArtifactWorkspaceLineage(context, store, workspaceId, artifactId);
   const access = context.get('workspaceAccess');
-  if (!access) {
-    return;
-  }
-
+  let thread: ReturnType<FsStore['getThread']>;
   try {
-    const thread = store.getThread(workspaceId, threadId);
-    assertAuthorizedWorkspaceLineage(access, thread.workspaceId);
+    thread = store.getThread(workspaceId, threadId);
   } catch {
-    assertAuthorizedWorkspaceLineage(access, null);
+    throw new HTTPException(404, { message: 'Thread not found.' });
+  }
+  if (access) assertAuthorizedWorkspaceLineage(access, thread.workspaceId);
+  if (!isThreadVisible(store, thread, context.get('actor')?.userId)) {
+    throw new HTTPException(404, { message: 'Thread not found.' });
   }
 }
 

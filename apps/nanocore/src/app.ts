@@ -1587,7 +1587,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerAutomationRoutes({ app, authorizedWorkspaceIds, automationStore, requestStore });
 
-  registerSearchRoutes({ app, authorizedWorkspaceIds, requestStore });
+  registerSearchRoutes({ app, authorizedWorkspaceIds, coreDb: options.coreDb, requestStore });
 
   registerAgentCatalogRoutes({ app, authorizedWorkspaceIds, requestStore });
 

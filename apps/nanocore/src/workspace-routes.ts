@@ -6,8 +6,8 @@ import {
   WorkspaceResourcesResponseSchema,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
-
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
+import { listOutputArtifacts } from './artifact-catalog.js';
 import type { AuthVariables } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
 import {
@@ -37,10 +37,24 @@ export function registerWorkspaceRoutes({
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
+  /** Projects current Workspace counts from submitted outputs without rewriting retained history. */
+  function readWorkspace(store: FsStore, workspaceId: string, userId: string | undefined) {
+    const workspace = store.getWorkspace(workspaceId);
+    return WorkspaceRecordSchema.parse({
+      ...workspace,
+      counts: {
+        ...workspace.counts,
+        artifactCount: listOutputArtifacts(store, coreDb, workspaceId, userId).length,
+      },
+    });
+  }
+
   app.get('/api/workspaces', (c) => {
     try {
       const store = requestStore(c);
-      const items = authorizedWorkspaceIds(c).map((workspaceId) => store.getWorkspace(workspaceId));
+      const items = authorizedWorkspaceIds(c).map((workspaceId) =>
+        readWorkspace(store, workspaceId, c.get('actor')?.userId)
+      );
 
       return c.json(ListWorkspacesResponseSchema.parse({ items }));
     } catch (error) {
@@ -81,7 +95,7 @@ export function registerWorkspaceRoutes({
         responseId: (result) => result.id,
       });
 
-      return c.json(workspace, 201);
+      return c.json(readWorkspace(store, workspace.id, c.get('actor')?.userId), 201);
     } catch (error) {
       return asCommandError(error, 'workspace_create_failed');
     }
@@ -90,7 +104,7 @@ export function registerWorkspaceRoutes({
   app.get('/api/workspaces/:workspaceId', (c) => {
     try {
       return c.json(
-        WorkspaceRecordSchema.parse(requestStore(c).getWorkspace(c.req.param('workspaceId')))
+        readWorkspace(requestStore(c), c.req.param('workspaceId'), c.get('actor')?.userId)
       );
     } catch (error) {
       return asApiError((error as Error).message);
@@ -132,7 +146,7 @@ export function registerWorkspaceRoutes({
         responseId: (result) => result.id,
       });
 
-      return c.json(workspace);
+      return c.json(readWorkspace(store, workspace.id, c.get('actor')?.userId));
     } catch (error) {
       return asCommandError(error, 'workspace_update_failed');
     }

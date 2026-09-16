@@ -231,6 +231,84 @@ describe('dashboard and search Thread audiences', () => {
           artifactCount: 3,
           knowledgeEntryCount: 0,
         });
+        const deniedArtifactId = userId === 'user_local' ? 'ar_other-private' : 'ar_local-private';
+        const ownArtifactId = userId === 'user_local' ? 'ar_local-private' : 'ar_other-private';
+        const catalog = await app.request(`/api/workspaces/${workspace.id}/artifacts`, { headers });
+        expect(catalog.status).toBe(200);
+        expect((await catalog.json()).items.map((item: { id: string }) => item.id).sort()).toEqual(
+          [ownArtifactId, 'ar_Task', 'ar_Goal'].sort()
+        );
+        const record = await app.request(`/api/workspaces/${workspace.id}`, { headers });
+        expect(await record.json()).toMatchObject({ counts: { artifactCount: 3 } });
+        for (const suffix of ['', '/content']) {
+          const hidden = await app.request(
+            `/api/workspaces/${workspace.id}/artifacts/${deniedArtifactId}${suffix}`,
+            { headers }
+          );
+          expect(hidden.status).toBe(404);
+          expect(await hidden.text()).not.toContain(denied.name);
+          const visible = await app.request(
+            `/api/workspaces/${workspace.id}/artifacts/${ownArtifactId}${suffix}`,
+            { headers }
+          );
+          expect(visible.status).toBe(200);
+        }
+        const hiddenReview = await app.request(
+          `/api/app/workspaces/${workspace.id}/artifacts/${deniedArtifactId}/reviews`,
+          { headers }
+        );
+        expect(hiddenReview.status).toBe(404);
+        if (scope === 'server-admin') {
+          const receiving = store.createThread(workspace.id, 'Attachment audience');
+          const attached = await app.request(
+            `/api/app/workspaces/${workspace.id}/threads/${receiving.id}/conversation-turns`,
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: 'private-artifact-attachment',
+                input: 'Use output',
+                targetRef: 'internal-role:assistant',
+                artifactRefs: [{ artifactId: deniedArtifactId, artifactVersion: 1 }],
+              }),
+            }
+          );
+          expect(attached.status, await attached.clone().text()).toBe(409);
+          expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
+          expect(store.listThreadTurns(workspace.id, receiving.id)).toEqual([]);
+          const source = store.getArtifact(workspace.id, ownArtifactId);
+          store.createArtifact({
+            ...source,
+            id: 'ar_imported_safe',
+            kind: 'file',
+            title: 'Imported safe content',
+            summary: null,
+            threadId: null,
+            turnId: null,
+            origin: {
+              kind: 'imported',
+              sourceKind: 'direct-import',
+              sourceId: 'import-safe',
+              sourceDigest: source.contentDigest,
+              actor: { kind: 'user', id: userId },
+              requestId: 'import-safe',
+              recordedAt: stamp,
+            },
+            lastMutationRequestId: 'import-safe',
+          });
+          const introduced = await app.request(
+            `/api/app/workspaces/${workspace.id}/threads/${denied.id}/artifacts/ar_imported_safe/introductions`,
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: 'forbidden-introduction',
+                expectedArtifactVersion: 1,
+              }),
+            }
+          );
+          expect(introduced.status).toBe(404);
+        }
         const search = await app.request('/api/app/search?q=needle', { headers });
         expect(search.status).toBe(200);
         const hits = await search.json();

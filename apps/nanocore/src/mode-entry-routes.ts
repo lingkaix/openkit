@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, relative, resolve, sep } from 'node:path';
-
 import {
   ConversationTargetCatalogSchema,
   QuickChatRequestSchema,
@@ -26,6 +25,7 @@ import {
   asCommandError,
   asInvalidRequestError,
 } from './api-errors.js';
+import { listOutputArtifacts } from './artifact-catalog.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
@@ -2481,12 +2481,16 @@ export function registerQuickAndChatModeRoutes({
         );
       }
       freshLogicalModelId = logicalModelId;
+      const outputs = new Map(
+        (chatInput.artifactRefs.length
+          ? listOutputArtifacts(store, coreDb, workspaceId, actorId)
+          : []
+        ).map((artifact) => [artifact.id, artifact])
+      );
       const artifacts: Array<ReturnType<FsStore['getArtifact']>> = [];
       for (const reference of chatInput.artifactRefs) {
-        let artifact: ReturnType<FsStore['getArtifact']>;
-        try {
-          artifact = store.getArtifact(workspaceId, reference.artifactId);
-        } catch {
+        const artifact = outputs.get(reference.artifactId);
+        if (!artifact) {
           throw new TurnStartValidationError(
             'artifact_not_found',
             'The selected Artifact is unavailable.',

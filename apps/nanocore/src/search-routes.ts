@@ -1,9 +1,11 @@
 import { AppSearchResponseSchema } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
+import { listOutputArtifacts } from './artifact-catalog.js';
 import type { AuthVariables } from './auth/middleware.js';
-import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
+import { isThreadVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
+import type { CoreDb } from './storage/db.js';
 
 /**
  * Registers the product-wide search route.
@@ -13,12 +15,14 @@ import { registerAppApiRoute } from './openapi.js';
 export function registerSearchRoutes({
   app,
   authorizedWorkspaceIds,
+  coreDb,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly authorizedWorkspaceIds: (
     context: Context<{ Variables: AuthVariables }>
   ) => readonly string[];
+  readonly coreDb?: CoreDb | undefined;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'searchApp', (c) => {
@@ -58,8 +62,7 @@ export function registerSearchRoutes({
         }
       }
 
-      for (const artifact of store.listArtifacts(workspace.id)) {
-        if (!isArtifactVisible(store, artifact, userId)) continue;
+      for (const artifact of listOutputArtifacts(store, coreDb, workspace.id, userId)) {
         if (matches(artifact.title) || matches(artifact.summary)) {
           const result = {
             kind: 'artifact',

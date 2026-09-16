@@ -21,7 +21,10 @@ import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
-import { recordWorkspaceSyncReview } from './runtime/workspace-sync-records.js';
+import {
+  recordWorkspaceSyncReview,
+  updateWorkspaceSyncReviewDecision,
+} from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -563,7 +566,83 @@ describe('Core artifact routes', () => {
           } satisfies Parameters<typeof recordWorkspaceSyncReview>[1]['item'];
           recordTestWorkspaceReviewMaterialization(syncDb, item);
           recordWorkspaceSyncReview(syncDb, { item });
+          if (suffix === 'first')
+            updateWorkspaceSyncReviewDecision(syncDb, {
+              workspaceId: 'ws_demo',
+              reviewId: item.review.id,
+              status: 'rejected',
+              requestId: 'reject-workspace-review-evidence',
+              updatedAt: completedAt,
+            });
         }
+
+        // An explicitly submitted output with the same presentation remains a deliverable.
+        const backing = store.getArtifact('ws_demo', 'ar_review_first');
+        store.createArtifact({ ...backing, id: 'ar_deliverable_same_title' });
+        const catalog = await app.request('/api/workspaces/ws_demo/artifacts');
+        expect(catalog.status).toBe(200);
+        expect(
+          ListArtifactsResponseSchema.parse(await catalog.json()).items.map((item) => item.id)
+        ).toEqual(['ar_deliverable_same_title']);
+        const historical = await app.request('/api/workspaces/ws_demo/artifacts/ar_review_first');
+        expect(historical.status).toBe(200);
+        const dashboard = await app.request('/api/app/workspaces/ws_demo/dashboard');
+        expect(dashboard.status).toBe(200);
+        expect(await dashboard.json()).toMatchObject({ counts: { artifactCount: 1 } });
+        const workspace = await app.request('/api/workspaces/ws_demo');
+        expect(await workspace.json()).toMatchObject({ counts: { artifactCount: 1 } });
+        const workspaces = await app.request('/api/workspaces');
+        expect(
+          (await workspaces.json()).items.find((item: { id: string }) => item.id === 'ws_demo')
+        ).toMatchObject({ counts: { artifactCount: 1 } });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const renamed = await app.request('/api/workspaces/ws_demo', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '09e42375-15b2-4fdd-8b7e-1b9e3c7f2401',
+              name: 'Outputs',
+            }),
+          });
+          expect(renamed.status, await renamed.clone().text()).toBe(200);
+          expect(await renamed.json()).toMatchObject({ counts: { artifactCount: 1 } });
+        }
+        const search = await app.request('/api/app/search?q=ar_review');
+        expect(search.status).toBe(200);
+        expect(
+          (await search.json()).items
+            .filter((item: { kind: string }) => item.kind === 'artifact')
+            .map((item: { id: string }) => item.id)
+        ).toEqual(['ar_deliverable_same_title']);
+
+        const receivingThread = store.createThread('ws_demo', 'Reference internal evidence');
+        const attached = await postJson(
+          app,
+          `/api/app/workspaces/ws_demo/threads/${receivingThread.id}/conversation-turns`,
+          {
+            requestId: 'reject-review-evidence-attachment',
+            input: 'Use this output',
+            targetRef: 'internal-role:assistant',
+            artifactRefs: [{ artifactId: 'ar_review_second', artifactVersion: 1 }],
+          }
+        );
+        expect(attached.status).toBe(409);
+        expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
+        expect(store.listThreadTurns('ws_demo', receivingThread.id)).toHaveLength(0);
+        const threads = await app.request(
+          `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
+        );
+        expect(threads.status).toBe(200);
+        const threadDashboard = await threads.json();
+        expect(threadDashboard.artifacts.map((item: { id: string }) => item.id)).toEqual([
+          'ar_deliverable_same_title',
+        ]);
+        expect(
+          threadDashboard.turns
+            .flatMap((item: { items: { type: string; artifactId?: string }[] }) => item.items)
+            .filter((item: { type: string }) => item.type === 'artifact-reference')
+            .map((item: { artifactId: string }) => item.artifactId)
+        ).toContain('ar_review_second');
 
         const excludedReplayRes = await postJson(app, decisionPath, request);
         expect(excludedReplayRes.status).toBe(409);
