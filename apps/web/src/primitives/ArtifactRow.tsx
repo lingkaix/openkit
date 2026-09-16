@@ -18,7 +18,7 @@ export interface ArtifactRowProps {
 /**
  * Artifact row (`ok-artifact-row`, DESIGN.md §9.9).
  *
- * Icon · name · meta (mono diff +/−, time). Artifacts are first-class durable
+ * Icon · name · meta (mono diff +/−, time). Full names wrap within the row. Artifacts are first-class durable
  * outputs; a completed turn leaves visible evidence reachable from the main flow.
  */
 export function ArtifactRow({
@@ -32,7 +32,7 @@ export function ArtifactRow({
   const content = (
     <>
       <Icon name={icon} label={`Artifact ${name}`} />
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{name}</span>
+      <span className="min-w-0 flex-1 text-sm font-medium text-fg">{name}</span>
       {typeof added === 'number' ? (
         <span className="font-mono text-xs text-diff-add">+{added}</span>
       ) : null}

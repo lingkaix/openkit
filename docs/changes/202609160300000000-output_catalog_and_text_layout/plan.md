@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 ---
 # Output Catalog And Text Layout
 
@@ -14,7 +14,7 @@ The engineer's September 16 staging annotations require long words and IDs to re
 
 ## Checkpoint
 
-The shared typography layer lacks emergency wrapping; explicit break-word overrides also preserve oversized min-content widths. The first slice will establish inherited overflow-wrap anywhere, bound compact labels, retain deliberate code/table scrolling, and verify actual boxes at 800 by 600 before its own commit. Then trace catalog, counts, search and attachment acceptance through the exact review relationship. Preserve historical direct inspection and review/apply evidence. A missing review relationship must not be reconstructed from a title.
+The side-panel overlay, shared text containment and actor-scoped deliverable catalog are committed as ff27971e, dcf23d23 (format follow-up ad195084), and 8bc33a23. The final Web slice displays full titles, kinds and versions; explains the reference-only Add to conversation action from an exact successful detail; and links to Workspace Changes. No protocol shape changed. No staging deployment, review decisions, apply or external publication occurred.
 
 ## Acceptance
 
@@ -35,3 +35,13 @@ Independent review also found a pre-existing confidentiality gap in the affected
 Additional server Artifact route checks passed 6 tests (166 unrelated tests excluded by the focused name filter). The final audience fixture passes 4 tests, additionally proving imported safe content cannot be introduced into another user's private Thread. These corrections restore the existing audience owner in [Core protocol](../../core/protocol.md), not a new permission model.
 
 Independent reviewer review_conversation_targets accepted the final catalog and owner diff with no actionable slice findings and independently ran 10 passing Artifact and audience tests. The reviewer separately flagged the pre-existing Workspace export path (`createVerifiedWorkspaceExport`) for an audience audit; this catalog slice preserves export storage and makes no claim of complete export privacy. That distinct export-integrity concern is not corrected here.
+
+## Verification
+
+Web primitives, chat and token checks passed 194 tests for text containment; final Artifact, primitive and chat checks passed 213 tests. After the origin-explanation correction, all 44 Artifact tests passed again, including unknown-origin and version-mismatch states. Independent review separately passed 122 Artifact and primitive tests and accepted the final diff. NanoCore's five focused suites passed 25 tests; the additional server route selection passed 6, and the final two-user audience fixture passed 4 with introduction denial included. Both app builds/typechecks passed; Web retains its existing large-chunk warning. Documentation-model validation passed for 275 documents, and focused formatting/lint and diff checks passed.
+
+Browser checks used actual components and production CSS at 800 by 600. The final Artifact long-title row measured 423 client/scroll pixels, JSON preview 439/439, and document 800/800; imported-file selection enabled Add to conversation, while produced output stayed disabled with its explanation. Earlier checks covered shared messages, menus, selectors, dialogs, PageHeader actions, intentional code/table scrolling, and side-panel docking versus overlay at its actual container breakpoint. Temporary preview servers were stopped, temporary tabs closed, and the browser viewport override reset.
+
+## Closeout Summary
+
+The requested text containment and deliverable-catalog correction is complete locally. Existing workspace-review evidence remains available to its authorized reviewers and historical readers, while explicit same-title deliverables remain in the catalog. Origin-specific UI copy is withheld until exact current content has loaded. The independent reviews found no remaining actionable findings in these changed slices. The separately observed pre-existing export audience issue remains outside this correction, documented above; this work does not claim full export privacy. Binary image/video storage was not added: the current import/content contract still accepts Markdown, text and JSON.

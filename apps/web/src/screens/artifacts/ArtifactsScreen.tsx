@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { TextField as AriaTextField, Label, TextArea } from 'react-aria-components';
+import { Link } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   ArtifactRow,
@@ -39,6 +40,14 @@ import {
   useThreads,
   useWorkspaces,
 } from './data';
+
+/** User-facing output kinds, independent of review lifecycle and content format. */
+const ARTIFACT_KIND_LABEL: Record<ArtifactListItem['kind'], string> = {
+  report: 'Report',
+  diff: 'Diff',
+  file: 'File',
+  summary: 'Summary',
+};
 
 const ARTIFACT_STATUS: Record<ArtifactListItem['status'], { label: string; tone: StatusTone }> = {
   archived: { label: 'Archived', tone: 'neutral' },
@@ -342,7 +351,7 @@ export function ArtifactsScreen() {
     <Page>
       <PageHeader
         title="Artifacts"
-        subtitle="Durable outputs in this Workspace. Open one to read its product content, or import a new Artifact."
+        subtitle="Documents, reports and files explicitly submitted as outputs or imported into this Workspace."
         actions={
           <>
             {disconnected ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
@@ -352,6 +361,14 @@ export function ArtifactsScreen() {
           </>
         }
       />
+
+      <p className="text-sm text-fg-muted">
+        File-change reviews are available in{' '}
+        <Link className="text-accent underline" to="/workspace-changes">
+          Workspace changes
+        </Link>
+        .
+      </p>
 
       {listStale ? (
         <ErrorBanner
@@ -403,7 +420,7 @@ export function ArtifactsScreen() {
         <EmptyState
           icon="file"
           title="No artifacts yet"
-          hint="Import a document or wait for work to leave a durable output."
+          hint="Import a file or ask an agent to submit a document or report as an artifact."
         />
       ) : (
         <ul className="flex flex-col gap-1">
@@ -417,6 +434,9 @@ export function ArtifactsScreen() {
                   </div>
                   <StatusChip tone={status.tone}>{status.label}</StatusChip>
                 </div>
+                <p className="px-2 text-xs text-fg-muted">
+                  {ARTIFACT_KIND_LABEL[item.kind]} · v{item.version}
+                </p>
                 {item.summary ? (
                   <p className="px-2 pb-2 text-xs text-fg-muted">{item.summary}</p>
                 ) : null}
@@ -441,15 +461,25 @@ export function ArtifactsScreen() {
           ) : previewBody ? (
             <pre className="whitespace-pre-wrap text-sm text-fg">{previewBody}</pre>
           ) : null}
+          {previewBody !== undefined && selected.data ? (
+            <p className="text-sm text-fg-muted">
+              {selected.data.origin.kind === 'turn-output'
+                ? 'This output is already linked to its producing conversation. To ask an agent to use it, attach it in the conversation composer.'
+                : 'Add a reference to this imported file in the selected conversation. This does not send a message to an agent or start work.'}
+            </p>
+          ) : null}
           {threads.isError ? (
-            <ErrorBanner message="Couldn't load threads." onRetry={() => void threads.refetch()} />
+            <ErrorBanner
+              message="Couldn't load conversations."
+              onRetry={() => void threads.refetch()}
+            />
           ) : threads.isLoading && threads.data === undefined ? (
             <Skeleton lines={2} />
           ) : !threads.data?.length ? (
-            <p className="text-sm text-fg-muted">No threads in this Workspace.</p>
+            <p className="text-sm text-fg-muted">No conversations in this Workspace.</p>
           ) : (
             <Select
-              label="Thread"
+              label="Conversation"
               placeholder=""
               items={threads.data.map((thread) => ({
                 id: thread.id,
@@ -471,7 +501,7 @@ export function ArtifactsScreen() {
             </fieldset>
           ) : null}
           {introducedThreadName ? (
-            <p className="text-sm text-fg">Introduced into {introducedThreadName}.</p>
+            <p className="text-sm text-fg">Added to {introducedThreadName}.</p>
           ) : null}
           <Button
             size="sm"
@@ -480,7 +510,7 @@ export function ArtifactsScreen() {
               if (listedItem) tryIntroduce(listedItem);
             }}
           >
-            Introduce into thread
+            Add to conversation
           </Button>
         </Card>
       ) : null}

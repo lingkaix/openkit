@@ -107,6 +107,7 @@ const WORKSPACE_B = workspaceRecord('ws2', 'Ops workspace', 'operations', {
 
 const THREAD_NAME = 'Competitive teardown';
 const THREAD = ThreadSchema.parse({
+  visibility: 'workspace',
   entryPath: 'conversation',
   id: 'th_intro',
   workspaceId: WORKSPACE.id,
@@ -150,6 +151,7 @@ const ARTIFACT = ArtifactSchema.parse({
 const IMPORTED_ARTIFACT = ArtifactSchema.parse({
   ...ARTIFACT,
   id: 'artifact_imported',
+  kind: 'file',
   threadId: null,
   turnId: null,
   title: IMPORT_TITLE,
@@ -441,7 +443,7 @@ async function chooseIntroduceThread(
   threadName = THREAD_NAME
 ) {
   await openArtifact(user, IMPORTED_ARTIFACT.title);
-  await selectListedOption(user, 'Thread', threadName);
+  await selectListedOption(user, 'Conversation', threadName);
 }
 
 /** Fills Import Content through the accessible multiline control and submits. */
@@ -484,7 +486,7 @@ async function startImportedIntroduction(user: ReturnType<typeof userEvent.setup
   expect(IMPORTED_ARTIFACT.turnId).toBeNull();
   await chooseIntroduceThread(user);
   expect(await screen.findByText(IMPORTED_ARTIFACT.content.body)).toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+  await user.click(screen.getByRole('button', { name: /add to conversation/i }));
   await waitFor(() => expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1));
   const command = acceptedIntroduce(introduceWorkspaceArtifact);
   await waitFor(() =>
@@ -497,16 +499,14 @@ async function startImportedIntroduction(user: ReturnType<typeof userEvent.setup
 async function assertFailClosedIntroductionRecovery(
   introduceWorkspaceArtifact: ReturnType<typeof vi.fn>
 ) {
-  expect(
-    screen.queryByText(new RegExp(`introduced into ${THREAD_NAME}`, 'i'))
-  ).not.toBeInTheDocument();
+  expect(screen.queryByText(new RegExp(`added to ${THREAD_NAME}`, 'i'))).not.toBeInTheDocument();
   const alert = await screen.findByRole('alert');
   expect(alert).toHaveTextContent(/recovery required/i);
   expect(alert).not.toHaveTextContent('recovery_required');
   expect(alert).not.toHaveTextContent(/private failure/i);
   expect(screen.queryByText(DISTRACTOR_TITLE)).not.toBeInTheDocument();
   expect(screen.queryByText(DISTRACTOR_SUMMARY)).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
+  expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
   expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1);
   assertNoLeakedInternals();
@@ -569,7 +569,7 @@ async function startTypedCommandFailure(
   } else {
     await chooseIntroduceThread(user);
     expect(await screen.findByText(IMPORTED_ARTIFACT.content.body)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+    await user.click(screen.getByRole('button', { name: /add to conversation/i }));
   }
 
   const mutation = command === 'import' ? importWorkspaceArtifact : introduceWorkspaceArtifact;
@@ -608,6 +608,8 @@ describe('Artifacts', () => {
     const nav = screen.getByRole('navigation', { name: 'Primary workspace navigation' });
     expect(within(nav).getByRole('button', { name: 'Artifacts' })).toBeInTheDocument();
     expect(screen.getByText(ARTIFACT.title)).toBeInTheDocument();
+    expect(screen.getByText('Report · v1')).toBeInTheDocument();
+    expect(screen.getByText('File · v1')).toBeInTheDocument();
     expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
     assertNoLeakedInternals();
     expect(vi.mocked(client.core.listArtifacts).mock.calls).toEqual([[WORKSPACE.id]]);
@@ -768,19 +770,22 @@ describe('Artifacts', () => {
 
     expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
     await openArtifact(user, IMPORTED_ARTIFACT.title);
+    expect(
+      screen.getByText(/does not send a message to an agent or start work/i)
+    ).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: /thread id/i })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('textbox', { name: /expected artifact version/i })
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
     expect(introduceWorkspaceArtifact).not.toHaveBeenCalled();
     expect(vi.mocked(client.core.listThreads)).toHaveBeenCalledWith(WORKSPACE.id);
     expect(
       vi.mocked(client.core.listThreads).mock.calls.every((call) => call[0] === WORKSPACE.id)
     ).toBe(true);
 
-    await selectListedOption(user, 'Thread', THREAD_NAME);
-    await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+    await selectListedOption(user, 'Conversation', THREAD_NAME);
+    await user.click(screen.getByRole('button', { name: /add to conversation/i }));
 
     await waitFor(() => expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1));
     const command = acceptedIntroduce(introduceWorkspaceArtifact);
@@ -791,9 +796,7 @@ describe('Artifacts', () => {
     await waitFor(() =>
       expect(getTurn.mock.calls).toEqual([[WORKSPACE.id, THREAD.id, INTRODUCE_MUTATION.turnId]])
     );
-    expect(
-      screen.queryByText(new RegExp(`introduced into ${THREAD_NAME}`, 'i'))
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(`added to ${THREAD_NAME}`, 'i'))).not.toBeInTheDocument();
     expect(listArtifacts.mock.calls).toEqual([[WORKSPACE.id]]);
 
     const matched = introduceItem({
@@ -816,9 +819,7 @@ describe('Artifacts', () => {
       lastMutationRequestId: command.requestId,
     });
     turnRead.resolve(turn);
-    expect(
-      await screen.findByText(new RegExp(`introduced into ${THREAD_NAME}`, 'i'))
-    ).toBeInTheDocument();
+    expect(await screen.findByText(new RegExp(`added to ${THREAD_NAME}`, 'i'))).toBeInTheDocument();
     expect(getTurn).toHaveBeenCalledTimes(1);
     assertNoLeakedInternals();
   });
@@ -870,8 +871,8 @@ describe('Artifacts', () => {
 
     expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
     await openArtifact(user, IMPORTED_ARTIFACT.title);
-    expect(await screen.findByText(/no threads/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
+    expect(await screen.findByText(/no conversations/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
     expect(listThreads).toHaveBeenCalledWith(WORKSPACE.id);
     expect(listThreads.mock.calls.every((call) => call[0] === WORKSPACE.id)).toBe(true);
   });
@@ -901,14 +902,14 @@ describe('Artifacts', () => {
     expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
     await openArtifact(user, IMPORTED_ARTIFACT.title);
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn't load threads/i);
+    expect(alert).toHaveTextContent(/couldn't load conversations/i);
     expect(alert).not.toHaveTextContent('thread-list-private failure');
-    expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
 
     failThreads = false;
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    await selectListedOption(user, 'Thread', THREAD_NAME);
-    expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeEnabled();
+    await selectListedOption(user, 'Conversation', THREAD_NAME);
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeEnabled();
     expect(listThreads).toHaveBeenCalledWith(WORKSPACE.id);
   });
 
@@ -921,7 +922,7 @@ describe('Artifacts', () => {
     {
       command: 'introduce' as const,
       error: privateError(409, 'thread_busy', 'introduce-busy-private failure'),
-      message: /couldn't introduce|busy/i,
+      message: /couldn't add|busy/i,
     },
   ])('replays the exact $command after uncertain transport or thread_busy and blocks retry while disconnected', async ({
     command,
@@ -945,7 +946,7 @@ describe('Artifacts', () => {
       await submitImport(user);
     } else {
       await chooseIntroduceThread(user);
-      await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+      await user.click(screen.getByRole('button', { name: /add to conversation/i }));
     }
 
     const mutation = command === 'import' ? importWorkspaceArtifact : introduceWorkspaceArtifact;
@@ -1019,7 +1020,7 @@ describe('Artifacts', () => {
 
     expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
     await chooseIntroduceThread(user);
-    await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+    await user.click(screen.getByRole('button', { name: /add to conversation/i }));
 
     await waitFor(() => expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1));
     const first = acceptedIntroduce(introduceWorkspaceArtifact);
@@ -1041,11 +1042,11 @@ describe('Artifacts', () => {
     expect(screen.queryByText(IMPORTED_ARTIFACT.title)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORT_TITLE_V2)).not.toBeInTheDocument();
     expect(screen.queryByText(/version 2/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
 
     await openArtifact(user, SECONDARY_IMPORTED_ARTIFACT.title);
-    await selectListedOption(user, 'Thread', THREAD_NAME);
-    expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeEnabled();
+    await selectListedOption(user, 'Conversation', THREAD_NAME);
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeEnabled();
     expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1);
   });
 
@@ -1074,7 +1075,7 @@ describe('Artifacts', () => {
 
     expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
     await chooseIntroduceThread(user);
-    await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+    await user.click(screen.getByRole('button', { name: /add to conversation/i }));
 
     await waitFor(() => expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1));
     const first = acceptedIntroduce(introduceWorkspaceArtifact);
@@ -1096,7 +1097,7 @@ describe('Artifacts', () => {
     expect(await screen.findByText(/revised edition/i)).toBeInTheDocument();
     expect(await screen.findByText(/version 2/i)).toBeInTheDocument();
     expect(screen.queryByText(IMPORT_CONTENT, { exact: true })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+    await user.click(screen.getByRole('button', { name: /add to conversation/i }));
 
     await waitFor(() => expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(2));
     const next = acceptedIntroduce(introduceWorkspaceArtifact, 1);
@@ -1139,7 +1140,7 @@ describe('Artifacts', () => {
       await submitImport(user);
     } else {
       await chooseIntroduceThread(user);
-      await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+      await user.click(screen.getByRole('button', { name: /add to conversation/i }));
     }
 
     const mutation = command === 'import' ? importWorkspaceArtifact : introduceWorkspaceArtifact;
@@ -1153,7 +1154,7 @@ describe('Artifacts', () => {
     expect(alert).not.toHaveTextContent(/private failure/i);
     expect(alert).not.toHaveTextContent('workspace_access_denied');
     const action = screen.getByRole('button', {
-      name: command === 'import' ? /^import$/i : /introduce into thread/i,
+      name: command === 'import' ? /^import$/i : /add to conversation/i,
     });
     expect(action).toBeDisabled();
 
@@ -1215,7 +1216,7 @@ describe('Artifacts', () => {
 
     expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
     await chooseIntroduceThread(user);
-    await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
+    await user.click(screen.getByRole('button', { name: /add to conversation/i }));
     await waitFor(() => expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /conflict|changed|expected version/i
@@ -1243,8 +1244,9 @@ describe('Artifacts', () => {
       expect(vi.mocked(client.core.getArtifact).mock.calls).toEqual([[WORKSPACE.id, ARTIFACT.id]])
     );
 
-    await selectListedOption(user, 'Thread', THREAD_NAME);
-    expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
+    await selectListedOption(user, 'Conversation', THREAD_NAME);
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
+    expect(screen.getByText(/already linked to its producing conversation/i)).toBeInTheDocument();
     expect(introduceWorkspaceArtifact).not.toHaveBeenCalled();
     assertNoLeakedInternals();
   });
@@ -1298,8 +1300,12 @@ describe('Artifacts', () => {
     expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
     await openArtifact(user, IMPORTED_ARTIFACT.title);
     await afterOpen(artifactRead);
-    await selectListedOption(user, 'Thread', THREAD_NAME);
-    expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
+    expect(screen.queryByText(/reference to this imported file/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/already linked to its producing conversation/i)
+    ).not.toBeInTheDocument();
+    await selectListedOption(user, 'Conversation', THREAD_NAME);
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
     expect(introduceWorkspaceArtifact).not.toHaveBeenCalled();
     expect(artifactRead.mock.calls).toEqual([[WORKSPACE.id, IMPORTED_ARTIFACT.id]]);
     assertNoLeakedInternals();
@@ -1491,9 +1497,9 @@ describe('Artifacts', () => {
     if (command === 'import') {
       expect(screen.getByRole('button', { name: /^import$/i })).toBeDisabled();
     } else {
-      expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
       expect(
-        screen.queryByText(new RegExp(`introduced into ${THREAD_NAME}`, 'i'))
+        screen.queryByText(new RegExp(`added to ${THREAD_NAME}`, 'i'))
       ).not.toBeInTheDocument();
     }
     expect(mutation).toHaveBeenCalledTimes(1);
@@ -1534,7 +1540,7 @@ describe('Artifacts', () => {
     expect(mutation).toHaveBeenCalledTimes(1);
 
     const action = screen.getByRole('button', {
-      name: command === 'import' ? /^import$/i : /introduce into thread/i,
+      name: command === 'import' ? /^import$/i : /add to conversation/i,
     });
     await user.click(action);
     await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
@@ -1664,7 +1670,7 @@ describe('Artifacts', () => {
     expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORT_MUTATION.artifactId)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORT_TITLE)).not.toBeInTheDocument();
-    for (const name of [/import artifact/i, /introduce into thread/i, /^import$/i]) {
+    for (const name of [/import artifact/i, /add to conversation/i, /^import$/i]) {
       const action = screen.queryByRole('button', { name });
       if (action) expect(action).toBeDisabled();
     }

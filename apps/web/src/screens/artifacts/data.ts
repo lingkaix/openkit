@@ -192,13 +192,13 @@ export function artifactImportErrorMessage(error: unknown): string {
  */
 export function artifactIntroduceErrorMessage(error: unknown): string {
   if (!(error instanceof ApiCallError)) {
-    return "Couldn't introduce that artifact.";
+    return "Couldn't add that file to the conversation.";
   }
   switch (error.code) {
     case 'workspace_access_denied':
       return 'Access denied.';
     case 'thread_busy':
-      return "Couldn't introduce because that thread is busy.";
+      return "Couldn't add the file because that conversation is busy.";
     case 'stale':
       return 'That artifact is no longer current.';
     case 'conflict':
@@ -210,7 +210,7 @@ export function artifactIntroduceErrorMessage(error: unknown): string {
     case 'idempotency_key_conflict':
       return 'Request conflict.';
     default:
-      return "Couldn't introduce that artifact.";
+      return "Couldn't add that file to the conversation.";
   }
 }
 
