@@ -76,9 +76,7 @@ export function AssistantMessage({
         {time ? <span>{time}</span> : null}
         {via ? <ChannelTag channel={via} /> : null}
       </div>
-      <div className="max-w-full whitespace-pre-wrap leading-relaxed text-fg">
-        {children}
-      </div>
+      <div className="max-w-full whitespace-pre-wrap leading-relaxed text-fg">{children}</div>
     </article>
   );
 }
