@@ -124,6 +124,7 @@ CONFIG_KEYS = {
     "caddyfile",
     "compatibility",
     "adminTokenFile",
+    "repositoryDirectory",
     "jobTimeoutSeconds",
     "prepareTtlSeconds",
     "launchUnknownAfterSeconds",
@@ -306,6 +307,7 @@ def _parse_argv(argv: Sequence[str]) -> Tuple[Optional[str], str]:
 
 
 def load_config(path: str) -> Dict[str, Any]:
+    """Load protected operator configuration and reject invalid paths or fields."""
     try:
         metadata = os.lstat(path)
     except OSError as error:
@@ -351,6 +353,15 @@ def load_config(path: str) -> Dict[str, Any]:
     token = parsed.get("adminTokenFile")
     if token is not None and (not isinstance(token, str) or not os.path.isabs(token)):
         raise HelperError("app_update_unconfigured", "Helper paths must be absolute.")
+    repository = parsed.get("repositoryDirectory")
+    if repository is not None:
+        if not isinstance(repository, str) or not repository or not os.path.isabs(repository):
+            raise HelperError("app_update_unconfigured", "Helper paths must be absolute.")
+        if any(mark in repository for mark in (",", "\n", "\r", "\0")):
+            raise HelperError(
+                "app_update_unconfigured",
+                "Helper repositoryDirectory contains a mount delimiter.",
+            )
     if not isinstance(parsed["helperArgv"], list) or not parsed["helperArgv"]:
         raise HelperError("app_update_unconfigured", "Helper argv must be a non-empty list.")
     if any(not isinstance(item, str) or not item for item in parsed["helperArgv"]):
@@ -953,6 +964,7 @@ class AppUpdateHelper:
         return payload
 
     def _assert_a2_shape(self, inspect: Mapping[str, Any], image: Mapping[str, Any]) -> None:
+        """Require the configured deployment bindings before any App interruption."""
         name = self.config["containerName"]
         if "nanohost" in name.lower():
             raise HelperError("app_update_invalid_request", "App update must not target NanoHost.")
@@ -992,13 +1004,32 @@ class AppUpdateHelper:
             "/etc/caddy/Caddyfile": (self.config["caddyfile"], False),
             "/run/secrets/openkit-vault.key": (self.config["vaultKeyFile"], False),
         }
-        extra = set(mounts) - set(REQUIRED_MOUNT_DESTS)
-        missing = set(REQUIRED_MOUNT_DESTS) - set(mounts)
+        required = set(REQUIRED_MOUNT_DESTS)
+        directory = self.config.get("repositoryDirectory")
+        if directory:
+            required.add("/srv/repos")
+            expected["/srv/repos"] = (directory, True)
+            try:
+                meta = os.lstat(directory)
+            except OSError as error:
+                raise HelperError(
+                    "app_update_invalid_request",
+                    "Configured repositoryDirectory is missing.",
+                ) from error
+            if stat.S_ISLNK(meta.st_mode) or not stat.S_ISDIR(meta.st_mode):
+                raise HelperError(
+                    "app_update_invalid_request",
+                    "Configured repositoryDirectory must be a non-linked directory.",
+                )
+        extra = set(mounts) - required
+        missing = required - set(mounts)
         if extra or missing:
             raise HelperError(
                 "app_update_invalid_request",
                 "App mounts are not the fixed A2 Data Root, backup, sink, Web, Caddyfile, Vault key, and App-update SSH set.",
             )
+        if directory and str((mounts["/srv/repos"] or {}).get("Type") or "") != "bind":
+            raise HelperError("app_update_invalid_request", "App mount /srv/repos must be a bind.")
         for dest, (source, writable) in expected.items():
             item = mounts[dest]
             if str(item.get("Source") or "") != source or bool(item.get("RW")) != writable:
@@ -1046,6 +1077,7 @@ class AppUpdateHelper:
             )
 
     def _replacement_argv(self, inspect: Mapping[str, Any], image_ref: str, source_commit: str) -> List[str]:
+        """Preserve validated bindings when starting the exact replacement image."""
         host = inspect.get("HostConfig") or {}
         config = inspect.get("Config") or {}
         log_cfg = (host.get("LogConfig") or {}).get("Config") or {}
@@ -1074,6 +1106,9 @@ class AppUpdateHelper:
             "--mount",
             "type=bind,src=%s,dst=/run/secrets/openkit-vault.key,readonly" % self.config["vaultKeyFile"],
         ]
+        directory = self.config.get("repositoryDirectory")
+        if directory:
+            argv.extend(["--mount", "type=bind,src=%s,dst=/srv/repos" % directory])
         mounts = {item.get("Destination"): item for item in inspect.get("Mounts") or [] if isinstance(item, dict)}
         for dest in APP_UPDATE_SSH_DESTS:
             argv.extend(

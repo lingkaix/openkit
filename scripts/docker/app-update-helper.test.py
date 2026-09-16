@@ -173,6 +173,7 @@ class RecordingEffects:
         self.ssh_known_hosts = "/tmp/known_hosts"
         self.omit_app_update_ssh = False
         self.ssh_rw = False
+        self.extra_mounts: List[dict] = []
         self.release_tag_digest = DIGEST
         self.release_version_digest = DIGEST
         self.release_sha_digest = DIGEST
@@ -279,6 +280,8 @@ class RecordingEffects:
                     },
                 ]
             )
+        if self.extra_mounts:
+            payload["Mounts"].extend(self.extra_mounts)
         return payload
 
     def _image_payload(self) -> dict:
@@ -985,6 +988,7 @@ class ApplyJobTests(unittest.TestCase):
                 "type=bind,src=%s,dst=%s,readonly" % (effects.ssh_known_hosts, APP_UPDATE_KNOWN_HOSTS_DEST),
                 run,
             )
+            self.assertFalse(any("dst=/srv/repos" in item for item in run))
             self.assertIn("--log-opt", run)
             self.assertIn("--runtime", run)
             self.assertEqual(run[run.index("--runtime") + 1], "runc")
@@ -1055,6 +1059,162 @@ class ApplyJobTests(unittest.TestCase):
             )[1]
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"readonly")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_configured_repository_directory_preserves_exact_srv_repos_bind(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            repos = root / "workspaces-repos"
+            repos.mkdir()
+            effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"}
+            ]
+            _config_path, effects, _prepared, body = _start_apply(
+                module, root, effects=effects, repositoryDirectory=str(repos)
+            )
+            self.assertEqual(body["stage"], "succeeded", body)
+            run = [call for call in effects.calls if call[:2] == ["docker", "run"] and "--detach" in call][0]
+            self.assertIn("type=bind,src=%s,dst=/srv/repos" % repos, run)
+            self.assertFalse(any(item.endswith(",dst=/srv/repos,readonly") for item in run))
+
+    def test_missing_mismatched_or_undeclared_repository_bind_refuses_before_stop(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            repos = root / "workspaces-repos"
+            repos.mkdir()
+            effects = RecordingEffects()
+            _config_path, effects, _prepared, body = _start_apply(
+                module, root, effects=effects, repositoryDirectory=str(repos)
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"mounts are not the fixed")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            repos = root / "workspaces-repos"
+            repos.mkdir()
+            other = root / "other-repos"
+            other.mkdir()
+            effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": True, "Source": str(other), "Type": "bind"}
+            ]
+            _config_path, effects, _prepared, body = _start_apply(
+                module, root, effects=effects, repositoryDirectory=str(repos)
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"does not match helper config")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            repos = root / "workspaces-repos"
+            repos.mkdir()
+            effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"}
+            ]
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"mounts are not the fixed")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            repos = root / "workspaces-repos"
+            repos.mkdir()
+            effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"},
+                {"Destination": "/opt/extra", "RW": True, "Source": str(repos), "Type": "bind"},
+            ]
+            _config_path, effects, _prepared, body = _start_apply(
+                module, root, effects=effects, repositoryDirectory=str(repos)
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"mounts are not the fixed")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            repos = root / "workspaces-repos"
+            repos.mkdir()
+            effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "volume"}
+            ]
+            _config_path, effects, _prepared, body = _start_apply(
+                module, root, effects=effects, repositoryDirectory=str(repos)
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"must be a bind")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            repos = root / "workspaces-repos"
+            repos.mkdir()
+            effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": False, "Source": str(repos), "Type": "bind"}
+            ]
+            _config_path, effects, _prepared, body = _start_apply(
+                module, root, effects=effects, repositoryDirectory=str(repos)
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"does not match helper config")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_repository_directory_config_rejects_delimiters_symlink_and_non_directory(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            _code, body = invoke(
+                module,
+                {
+                    "expectedCurrentImageId": DIGEST,
+                    "op": "prepare",
+                    "source": RELEASE_SOURCE,
+                },
+                write_config(root, repositoryDirectory="/tmp/openkit-repos,dst=/evil"),
+            )
+            self.assertEqual(body["error"]["code"], "app_update_unconfigured")
+            self.assertRegex(body["error"]["message"], r"delimiter")
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            target = root / "real-repos"
+            target.mkdir()
+            link = root / "linked-repos"
+            link.symlink_to(target)
+            effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": True, "Source": str(link), "Type": "bind"}
+            ]
+            _config_path, effects, _prepared, body = _start_apply(
+                module, root, effects=effects, repositoryDirectory=str(link)
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"non-linked directory")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            file_path = root / "not-a-directory"
+            file_path.write_text("nope\n", encoding="utf-8")
+            effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": True, "Source": str(file_path), "Type": "bind"}
+            ]
+            _config_path, effects, _prepared, body = _start_apply(
+                module, root, effects=effects, repositoryDirectory=str(file_path)
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"non-linked directory")
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
     def test_commit_source_uses_configured_branch_or_staged_archive(self) -> None:
