@@ -61,6 +61,7 @@ async function seedSimulatorInferenceConfig(dataRoot: string): Promise<void> {
           {
             id: 'reasoning',
             displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               {
                 id: 'simulator',

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -41,6 +42,8 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
     name: 'Protocol design review',
     preview: 'Review the UI-first workspace protocol slice and tighten payload boundaries.',
     status: 'active',
+    entryPath: 'conversation',
+    visibility: 'workspace',
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -103,7 +106,25 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
     join(quickChatRoot, 'config', 'workspace.jsonc'),
     `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Quick Chat', defaultAgentId: null } }, null, 2)}\n`
   );
-  writeFileSync(join(threadRoot, 'thread.json'), `${JSON.stringify(thread, null, 2)}\n`);
+  writeFileSync(
+    join(threadRoot, 'thread.json'),
+    `${JSON.stringify(
+      {
+        ...thread,
+        schemaVersion: 1,
+        recordType: 'thread',
+        ownerScope: 'workspace',
+        lineage: { workspaceId: thread.workspaceId, threadId: thread.id },
+        contentDigest: `sha256:${createHash('sha256').update(JSON.stringify(thread)).digest('hex')}`,
+        redactionLevel: 'none',
+        sensitivity: 'workspace',
+        requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
+        extensions: {},
+      },
+      null,
+      2
+    )}\n`
+  );
   writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'mem_project.md'), knowledgePage);
 }
 
