@@ -140,6 +140,8 @@ Selected-Workspace owner member administration, owner-issued invitation administ
 
 Theme selection applies to the document root, so account pages, native selects, and React Aria portals share the selected semantic tokens and color scheme. Existing tabs rehydrate theme changes from browser storage. The sign-in form also offers the three themes and fills the viewport. `/login` uses the same account boundary as other routes and redirects admitted users to Overview. Composer attachments use a React Aria popover dialog with Escape, outside-interaction dismissal, and focus restoration.
 
+The Composer Agent selector shows target descriptions and availability reasons through React Aria label and description slots. Existing Worker choices belong only to the current conversation and are labeled accordingly; the server excludes other Threads and terminal history, and does not claim that a retained Worker is a running Sandbox. The starter offers no existing Worker continuation.
+
 ## Related docs
 
 - Canonical design guide — [`DESIGN.md`](../../DESIGN.md)

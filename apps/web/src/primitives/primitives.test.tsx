@@ -662,6 +662,41 @@ describe('primitive tier — behavior', () => {
     expect(input).toHaveValue('');
   });
 
+  it('describes conversation targets without putting their descriptions in the selected label', async () => {
+    const user = userEvent.setup();
+    render(
+      <Composer
+        targetCatalog={{
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          defaultTargetRef: 'worker',
+          targets: [
+            {
+              targetRef: 'worker',
+              kind: 'running-worker',
+              label: 'Codex Agent · This conversation',
+              description: 'Continue work in this conversation.',
+              availability: 'available',
+              unavailableReason: null,
+              threadId: 'th_demo',
+              profileId: 'default',
+              logicalModels: [],
+              defaultLogicalModelId: null,
+            },
+          ],
+        }}
+      />
+    );
+    const trigger = screen.getByRole('button', { name: /Conversation agent/ });
+    await user.click(trigger);
+    expect(
+      screen.getByRole('option', { name: 'Codex Agent · This conversation' })
+    ).toHaveAccessibleDescription('Continue work in this conversation.');
+    await user.keyboard('{Escape}');
+    expect(trigger).toHaveTextContent('Codex Agent · This conversation');
+    expect(trigger).not.toHaveTextContent('Continue work');
+  });
+
   it('Composer disables input + send with a stated reason', () => {
     render(<Composer disabledReason="Couldn't reach the local runtime." />);
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();

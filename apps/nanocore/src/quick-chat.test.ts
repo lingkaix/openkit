@@ -3,7 +3,10 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels } from '@earendil-works/pi-ai';
-import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import {
+  ConversationTargetCatalogSchema,
+  SubmitConversationResponseSchema,
+} from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
@@ -98,6 +101,106 @@ function conversationRequest(input: string, requestId: string) {
 }
 
 describe('quick chat app API', () => {
+  it('scopes existing Worker targets to this conversation and preserves truthful availability', async () => {
+    const store = createDemoStore();
+    const workerSetup = createTestAgentSetup({
+      logicalModelId: 'quick-chat',
+      privateRoute: { providerProfileId: 'ollama', providerModel: 'openai/gpt-5.2' },
+    });
+    const states = [
+      'ready',
+      'idle',
+      'busy',
+      'created',
+      'initializing',
+      'degraded',
+      'suspended',
+      'interrupted',
+      'failed',
+      'closed',
+    ] as const;
+    const threads = states.map((status) => {
+      const thread = store.createThread('ws_demo', `Worker ${status}`);
+      store.createAgentSession({
+        id: `as_${status}`,
+        agentId: workerSetup.manifest.id,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        status,
+        message: null,
+        createdAt: '2026-09-16T00:00:00.000Z',
+        updatedAt: '2026-09-16T00:00:00.000Z',
+      });
+      return thread;
+    });
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      agentManifests: [workerSetup.manifest],
+      store,
+      turnExecutor: new ThrowingTurnExecutor(),
+    });
+
+    for (const [index, status] of states.entries()) {
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/conversation-targets?threadId=${threads[index]!.id}`
+      );
+      expect(response.status).toBe(200);
+      const catalog = ConversationTargetCatalogSchema.parse(await response.json());
+      const workers = catalog.targets.filter((target) => target.kind === 'running-worker');
+      if (['interrupted', 'failed', 'closed'].includes(status)) {
+        expect(workers).toEqual([]);
+      } else {
+        expect(workers).toEqual([
+          expect.objectContaining({
+            threadId: threads[index]!.id,
+            label: 'Codex Agent · This conversation',
+            availability:
+              status === 'busy'
+                ? 'busy'
+                : ['ready', 'idle'].includes(status)
+                  ? 'available'
+                  : 'unavailable',
+          }),
+        ]);
+      }
+      expect(JSON.stringify(catalog)).not.toContain('as_');
+    }
+
+    for (const index of [0, 2]) {
+      store.updateAgentSession(`as_${states[index]}`, { stale: true });
+      const stale = await app.request(
+        `/api/app/workspaces/ws_demo/conversation-targets?threadId=${threads[index]!.id}`
+      );
+      const staleCatalog = ConversationTargetCatalogSchema.parse(await stale.json());
+      expect(staleCatalog.targets.find((target) => target.kind === 'running-worker')).toMatchObject(
+        {
+          availability: 'unavailable',
+          unavailableReason: 'Worker is not ready.',
+        }
+      );
+    }
+
+    const starter = await app.request('/api/app/workspaces/ws_demo/conversation-targets');
+    const catalog = ConversationTargetCatalogSchema.parse(await starter.json());
+    expect(catalog.targets.some((target) => target.kind === 'running-worker')).toBe(false);
+
+    const response = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...conversationRequest('Do not send to another conversation.', 'req_foreign_worker'),
+          targetRef: `running-worker:${threads[0]!.id}:${workerSetup.manifest.id}`,
+        }),
+      }
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: 'target_missing' });
+    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(store.listThreadTurns('ws_demo', threads[0]!.id)).toEqual([]);
+  });
+
   it('rejects an administration Thread at the ordinary conversation entry', async () => {
     const store = createDemoStore();
     const thread = store.createThread(

@@ -112,6 +112,7 @@ import {
 } from './scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import { isCurrentAgentSessionStatus } from './storage/workspace-file-records.js';
 import {
   getDefaultWorkspaceRepositoryResource,
   type WorkspaceRepositoryResourceRecord,
@@ -2113,8 +2114,10 @@ export function registerQuickAndChatModeRoutes({
       });
     }
 
-    for (const session of store.listWorkspaceAgentSessions(workspaceId)) {
-      if (!session.threadId || session.status === 'closed') continue;
+    for (const session of requestedThreadId
+      ? store.listThreadAgentSessions(workspaceId, requestedThreadId)
+      : []) {
+      if (!session.threadId || !isCurrentAgentSessionStatus(session.status)) continue;
       const manifest = snapshot.agentManifests.find((entry) => entry.id === session.agentId);
       if (!manifest) continue;
       const setup = resolveAgentSetup(manifest, {
@@ -2124,14 +2127,15 @@ export function registerQuickAndChatModeRoutes({
         ...(workspaceConfig ? { workspaceConfig } : {}),
         ...(userConfig ? { userConfig } : {}),
       }).setup;
+      const ready = !session.stale && ['ready', 'idle'].includes(session.status) && setup;
+      const busy = !session.stale && session.status === 'busy';
       targets.push({
         targetRef: `running-worker:${encodeURIComponent(session.threadId)}:${encodeURIComponent(session.agentId)}`,
         kind: 'running-worker',
-        label: `${manifest.displayName} · Running`,
-        description: 'Worker continuing on its existing Thread.',
-        availability: session.status === 'busy' ? 'busy' : setup ? 'available' : 'unavailable',
-        unavailableReason:
-          session.status === 'busy' ? 'Worker is busy.' : setup ? null : 'Worker is not ready.',
+        label: `${manifest.displayName} · This conversation`,
+        description: 'Continue work in this conversation.',
+        availability: busy ? 'busy' : ready ? 'available' : 'unavailable',
+        unavailableReason: busy ? 'Worker is busy.' : ready ? null : 'Worker is not ready.',
         threadId: session.threadId,
         profileId: setup?.profileId ?? manifest.defaultProfileId ?? null,
         logicalModels: setup?.logicalModels.allowed.map(conversationModelChoice) ?? [],

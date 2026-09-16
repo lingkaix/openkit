@@ -74,6 +74,8 @@ The real-provider, real-subscription, real-task-mode, and worker Responses relay
 
 ## Local Integration
 
+Conversation-target discovery and submission share one Thread-scoped catalog. Existing Worker targets use only the requested Thread's current AgentSession, exclude terminal history, and distinguish ready or idle availability from busy, stale, or unready state. Starter catalogs include no existing Worker continuation; a foreign Thread target is rejected before execution. This projection does not enumerate running Sandboxes.
+
 Optional boot-bound `appUpdate` configuration enables deployment-admin `prepareAppUpdate`, `startAppUpdate` and `getAppUpdateStatus` operations through a restricted SSH host helper. The helper owns replacement outside the App process; Core records authorization and projects its receipt. Without configuration the capability reports `app_update_unconfigured`. It is not supplied to Workspace Workers, and it never owns NanoHost updates. See [App Update Delivery](../../docs/specs/20260910-app_update_delivery.md) for the accepted boundary and current rollout status.
 
 Run this app first when you want to drive the product through the browser or the bundled OpenKit Skill CLI with the configured worker container runtime:

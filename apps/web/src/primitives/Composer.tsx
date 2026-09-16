@@ -17,6 +17,7 @@ import {
   Popover,
   Select,
   SelectValue,
+  Text,
 } from 'react-aria-components';
 import { Icon } from './Icon';
 
@@ -299,7 +300,8 @@ function InlineSelect({
 }: {
   ariaLabel: string;
   items: Array<
-    Pick<ConversationTarget, 'targetRef' | 'label' | 'availability' | 'unavailableReason'>
+    Pick<ConversationTarget, 'targetRef' | 'label' | 'availability' | 'unavailableReason'> &
+      Partial<Pick<ConversationTarget, 'description'>>
   >;
   onChange: (key: string) => void;
   placeholder: string;
@@ -311,10 +313,12 @@ function InlineSelect({
       selectedKey={selectedKey || null}
       onSelectionChange={(key) => key != null && onChange(String(key))}
       placeholder={placeholder}
-      className="min-w-28"
+      className="min-w-0 max-w-48"
     >
-      <AriaButton className="flex h-8 max-w-48 items-center gap-1 rounded-full border border-border px-3 text-sm text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus">
-        <SelectValue className="truncate data-[placeholder]:text-fg-muted" />
+      <AriaButton className="flex h-8 w-full items-center gap-1 rounded-full border border-border px-3 text-sm text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus">
+        <SelectValue className="truncate data-[placeholder]:text-fg-muted">
+          {({ selectedText }) => selectedText || placeholder}
+        </SelectValue>
         <Icon name="chevron-down" size="sm" />
       </AriaButton>
       <Popover className="max-h-72 min-w-(--trigger-width) overflow-auto rounded-ok border border-border bg-elevated py-1 shadow-ok-menu">
@@ -326,9 +330,11 @@ function InlineSelect({
               isDisabled={item.availability !== 'available'}
               className="cursor-pointer px-3 py-1.5 text-sm text-fg outline-none data-[disabled]:cursor-not-allowed data-[disabled]:text-disabled-fg data-[focused]:bg-overlay data-[selected]:bg-selected"
             >
-              <span>{item.label}</span>
-              {item.unavailableReason ? (
-                <span className="block text-xs text-fg-muted">{item.unavailableReason}</span>
+              <Text slot="label">{item.label}</Text>
+              {item.description || item.unavailableReason ? (
+                <Text slot="description" className="block text-xs text-fg-muted">
+                  {[item.description, item.unavailableReason].filter(Boolean).join(' ')}
+                </Text>
               ) : null}
             </ListBoxItem>
           )}
