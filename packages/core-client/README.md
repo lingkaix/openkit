@@ -41,3 +41,5 @@ Deprecated flat aliases are not exported.
 `client.app.applyAdministrationConfiguration` submits a human-confirmed immutable catalog candidate; its response distinguishes persisted configuration from successful reload and restart requirements.
 
 `client.app.createWorkspaceVaultSecret`, `rotateWorkspaceVaultSecret`, `revokeWorkspaceVaultSecret`, `createWorkspaceVaultGrant`, and `revokeWorkspaceVaultGrant` project deployment-admin workspace secret management. Secret material appears only in POST request bodies; result schemas contain metadata only.
+
+`client.app.listConversationNavigation` validates the selected-Workspace conversation activity projection; NanoCore owns ordering, current activity classification, and viewer-relative attention.

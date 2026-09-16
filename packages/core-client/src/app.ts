@@ -41,6 +41,8 @@ import {
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
   ConsumeOpenKitBootstrapTokenResponseSchema,
+  type ConversationNavigationResponse,
+  ConversationNavigationResponseSchema,
   type ConversationTargetCatalog,
   ConversationTargetCatalogSchema,
   type ConvertGoalSteeringToFollowUpRequest,
@@ -937,6 +939,8 @@ export interface AppApiClient {
     materialId: string,
     input: RestoreThreadMaterialInput
   ): Promise<RestoreThreadMaterialResponse>;
+  /** Reads visible active conversations with authoritative activity and viewer-relative attention. */
+  listConversationNavigation(workspaceId: string): Promise<ConversationNavigationResponse>;
   /** Reads one workspace dashboard read model. */
   getWorkspaceDashboard(workspaceId: string): Promise<WorkspaceDashboardResponse>;
   /** Reads one thread dashboard read model. */
@@ -1764,6 +1768,11 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         RestoreThreadMaterialResponseSchema
       );
     },
+    listConversationNavigation: (workspaceId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/conversations`,
+        ConversationNavigationResponseSchema
+      ),
     getWorkspaceDashboard: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/dashboard`,
