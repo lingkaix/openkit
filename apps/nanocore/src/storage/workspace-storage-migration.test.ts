@@ -237,7 +237,8 @@ function writeLegacyAepSnapshot(
       workspaceInputIds: [],
     });
     const threadRoot = join(workspaceRoot, 'threads', environmentPackage.scope.threadId);
-    mkdirSync(join(threadRoot, 'turns'), { recursive: true });
+    const turnRoot = join(threadRoot, 'turns', environmentPackage.scope.turnId);
+    mkdirSync(turnRoot, { recursive: true });
     writeFileSync(
       join(threadRoot, 'thread.json'),
       `${JSON.stringify(
@@ -254,6 +255,30 @@ function writeLegacyAepSnapshot(
         2
       )}\n`
     );
+    writeFileSync(
+      join(turnRoot, 'turn.json'),
+      `${JSON.stringify(
+        {
+          id: environmentPackage.scope.turnId,
+          workspaceId: fixture.workspaceId,
+          threadId: environmentPackage.scope.threadId,
+          triggerActor,
+          items: [],
+          status: 'completed',
+          humanGate: null,
+          error: null,
+          agentId: environmentPackage.agent.agentId,
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          configVersion: null,
+          startedAt: timestamp,
+          completedAt: timestamp,
+          durationMs: 0,
+        },
+        null,
+        2
+      )}\n`
+    );
+    writeFileSync(join(turnRoot, 'items.jsonl'), '');
     writeFileSync(
       join(
         workspaceRoot,

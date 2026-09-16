@@ -242,6 +242,7 @@ async function readDefaultScope(
     body: JSON.stringify({
       name: 'Server Flow Thread',
       requestId: randomUUID(),
+      visibility: 'workspace',
     }),
   });
   const threadBody = (await threadRes.json()) as { id?: string };

@@ -137,10 +137,13 @@ describe('agent catalog routes', () => {
       const adminDetail = await app.request('/api/app/agents/agent_denied_only', {
         headers: adminHeaders,
       });
+      const adminListBody = ListAgentCatalogResponseSchema.parse(await adminList.json());
 
-      expect(adminList.status).toBe(403);
-      expect(await adminList.text()).not.toContain('agent_denied_only');
-      expect(adminDetail.status).toBe(403);
+      expect(adminList.status).toBe(200);
+      expect(adminListBody.items.map((agent) => agent.id)).toEqual(
+        expect.arrayContaining(['agent_allowed_only', 'agent_denied_only'])
+      );
+      expect(adminDetail.status).toBe(200);
 
       for (const token of [workspace, readonly]) {
         const headers = { authorization: `Bearer ${token.secret}` };

@@ -1,15 +1,20 @@
 // openkit-test-platform: posix
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -200,13 +205,30 @@ function readTarRegularFiles(archive: Buffer): ReadonlyMap<string, Buffer> {
 /** Returns open descriptors still owned by one archive-request staging namespace. */
 function openArchiveStagingDescriptors(dataRoot: string): string[] {
   const stagingRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
-  return readdirSync('/proc/self/fd').flatMap((descriptor) => {
-    try {
-      const target = readlinkSync(join('/proc/self/fd', descriptor));
-      return target.includes(stagingRoot) ? [target] : [];
-    } catch {
-      return [];
-    }
+  if (existsSync('/proc/self/fd')) {
+    return readdirSync('/proc/self/fd').flatMap((descriptor) => {
+      try {
+        const target = readlinkSync(join('/proc/self/fd', descriptor));
+        return target.includes(stagingRoot) ? [target] : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+  const resolvedStaging = join(
+    realpathSync(dataRoot),
+    'server',
+    'files',
+    'workspace-archive-requests'
+  );
+  const output = execFileSync('lsof', ['-p', String(process.pid), '-Fn'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  return output.split('\n').flatMap((line) => {
+    if (!line.startsWith('n')) return [];
+    const target = line.slice(1);
+    return target.includes(stagingRoot) || target.includes(resolvedStaging) ? [target] : [];
   });
 }
 
@@ -929,6 +951,20 @@ describe('workspace archive import boundaries', () => {
         Buffer.alloc(512, 1),
       ])
     );
+    const stagingRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
+    mkdirSync(stagingRoot, { recursive: true });
+    const heldPath = join(stagingRoot, 'held-descriptor.bin');
+    const heldFd = openSync(heldPath, 'w');
+    try {
+      expect(openArchiveStagingDescriptors(dataRoot)).toEqual(
+        expect.arrayContaining([expect.stringContaining(heldPath)])
+      );
+    } finally {
+      closeSync(heldFd);
+      unlinkSync(heldPath);
+    }
+    expect(openArchiveStagingDescriptors(dataRoot)).toEqual([]);
+
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(partial);
@@ -941,8 +977,6 @@ describe('workspace archive import boundaries', () => {
       headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
       method: 'POST',
     } as RequestInit & { duplex: 'half' });
-
-    expect(openArchiveStagingDescriptors(dataRoot)).toEqual([]);
     await expect(stageWorkspaceArchive(request, dataRoot)).rejects.toThrow(
       'injected upstream abort'
     );
