@@ -6,6 +6,8 @@ OpenKit maintains two complementary packages. The [public `openkit` Skill](openk
 
 The public package contains its concise entrypoint, generated Agent-host metadata, bundled `scripts/openkit` executable and progressively loaded references. The CLI exposes supported public end-user and operator capabilities through operation search, description and invocation. Workflow truth, authorization, approvals and durable records remain in NanoCore. It has no arbitrary HTTP, source-editing, SSH or generic shell mode.
 
+Public response redaction removes credentials and host-local paths while preserving standalone slash punctuation in document content. Its focused regression is `node --test tests/openkit-public-redaction.test.mjs`.
+
 Current-user Workspace invitation list, accept, and decline are exposed as `workspace.my-invitation-*` through implicit local identity only. Owner-scoped `workspace.invitation-*` operations remain distinct. Server-mode bearer credentials do not authorize current-user invitation operations; use the Web Account Invitations panel instead.
 
 Workspace leave is exposed as `workspace.leave` through implicit local identity only. Server-mode bearer credentials remain unsupported; use Web Account for the session-based leave path.

@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path';
 const KEYCHAIN_SERVICE = 'openkit.nanocore.token';
 const NAMED_KEYCHAIN_SERVICE = 'openkit.nanocore.named-token';
 const OPENKIT_TOKEN_PATTERN = /okt_[A-Za-z0-9._~-]+/g;
-const ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'`(])(?:\/|~\/|[A-Za-z]:[\\/]|\\\\|\/\/)\S*/g;
+const ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'`(])(?:\/(?=\S)|~\/|[A-Za-z]:[\\/]|\\\\|\/\/)\S*/g;
 
 /** Warning emitted when the CLI stores NanoCore credentials outside the OS keychain. */
 const ENCRYPTED_FALLBACK_CREDENTIAL_STORAGE_WARNING =
@@ -255,6 +255,7 @@ export function resolveCredential(input) {
 
 /**
  * Redacts credentials and host-local paths recursively from a public value.
+ * Standalone slash punctuation is left unchanged.
  *
  * @param {unknown} value Value to redact.
  * @param {readonly string[]} [extraSecrets] Exact additional secrets to replace.
