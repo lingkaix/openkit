@@ -223,16 +223,37 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       plan: {
         schemaVersion: 1,
         goalSummary: 'Make the next release ready.',
+        assumptions: [
+          'This is a single bounded Worker task draft.',
+          'Human review of decomposition and scope is required before worker execution.',
+        ],
         tasks: [
           {
             taskId: 'task_1',
             title: 'Ship release',
             objective: 'Make the next release ready.',
+            dependsOnTaskIds: [],
+            reviewPolicy: {
+              required: true,
+              reviewers: ['human'],
+              instructions:
+                'Review the actual Worker result against the objective and acceptance criteria before continuing Goal Mode.',
+            },
           },
         ],
         questions: [],
+        verificationApproach:
+          'Use manual review of the actual Worker result before treating the task as complete.',
       },
     });
+    expect(
+      [
+        ...draft.plan.assumptions,
+        ...draft.plan.risks,
+        draft.plan.verificationApproach,
+        draft.plan.tasks[0].reviewPolicy.instructions,
+      ].join('\n')
+    ).not.toMatch(/test support|fallback/i);
     const storedPlan = { ...draft.plan, risks: ['Preserve the immutable Plan on replay.'] };
     expect(projectWorkerCoordinatorGoalPlanDraft(input, storedPlan).plan).toBe(storedPlan);
   });

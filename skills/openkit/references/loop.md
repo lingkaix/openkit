@@ -22,6 +22,8 @@ Read `thread.dashboard` for `taskInputs`: each `{ itemId, objective }` summarize
 
 Do not promote work to a heavier mode merely because that mode exists. Let NanoCore report when an accepted handoff or transition is required.
 
+The current deterministic Goal planner drafts one bounded Worker task from the objective; it does not perform model-generated decomposition. Review the actual task scope, assumptions, risks and verification before requesting approval. A generated plan is a proposal, not evidence that a complex objective has been decomposed or can be completed in one step.
+
 Use `goal.plan-read` to inspect the current durable plan after reconnect or reload. Reading never creates, revises or approves a plan; do not call `goal.plan` as a read substitute. Present the exact returned plan and `planItemId` for the required human decision. An unavailable or contradictory plan remains an explicit error, not permission to use an older Thread Item or generate a replacement.
 
 ## Run bounded work

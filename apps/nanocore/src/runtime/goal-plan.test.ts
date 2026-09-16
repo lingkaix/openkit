@@ -174,7 +174,7 @@ describe('goal plan output schema', () => {
     ).toThrow(/cycle/);
   });
 
-  it('creates a deterministic fallback plan that validates against the plan schema', () => {
+  it('creates a deterministic one-task plan that validates against the plan schema', () => {
     const plan = createDeterministicGoalPlanFallback({
       goalTitle: 'Ship v0.0.6',
       objective: 'Make v0.0.6 ready to publish and use by end users.',
@@ -182,21 +182,41 @@ describe('goal plan output schema', () => {
     const parsed = GoalPlanOutputSchema.parse(plan);
 
     expect(parsed.goalSummary).toContain('Make v0.0.6 ready to publish');
-    expect(parsed.assumptions).toContain('Deterministic fallback planner for test support.');
-    expect(parsed.tasks.length).toBeGreaterThanOrEqual(1);
+    expect(parsed.assumptions).toContain('This is a single bounded Worker task draft.');
+    expect(parsed.assumptions).toContain(
+      'Human review of decomposition and scope is required before worker execution.'
+    );
+    expect(parsed.risks).toContain(
+      'This one-task draft may under-specify work that needs a different decomposition or scope.'
+    );
+    expect(parsed.verificationApproach).toBe(
+      'Use manual review of the actual Worker result before treating the task as complete.'
+    );
+    expect(parsed.tasks.length).toBe(1);
     expect(parsed.tasks[0]).toMatchObject({
       taskId: 'task_1',
       title: 'Ship v0.0.6',
       objective: 'Make v0.0.6 ready to publish and use by end users.',
       contextBudgetTokens: 12_000,
+      dependsOnTaskIds: [],
       reviewPolicy: {
         required: true,
         reviewers: ['human'],
+        instructions:
+          'Review the actual Worker result against the objective and acceptance criteria before continuing Goal Mode.',
       },
     });
+    expect(
+      [
+        ...parsed.assumptions,
+        ...parsed.risks,
+        parsed.verificationApproach,
+        parsed.tasks[0].reviewPolicy.instructions,
+      ].join('\n')
+    ).not.toMatch(/test support|fallback/i);
   });
 
-  it('keeps deterministic fallback strings within schema limits for long objectives', () => {
+  it('keeps deterministic plan strings within schema limits for long objectives', () => {
     const longObjective =
       'Verify that the a1 NanoCore server on port 54001 can run one bounded OpenShell local-container worker step for this OpenKit repository without modifying files, and report the evidence or precise blocker. '.repeat(
         20

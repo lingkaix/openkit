@@ -166,7 +166,7 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * Input for deterministic fallback Goal Mode planning.
+ * Input for the shared deterministic one-task Goal Plan.
  */
 export interface DeterministicGoalPlanFallbackInput {
   /** Optional human-readable goal title. */
@@ -176,10 +176,10 @@ export interface DeterministicGoalPlanFallbackInput {
 }
 
 /**
- * Creates deterministic test-support plan output without calling an LLM.
+ * Creates the shared deterministic one-task Goal Plan used by Workflow Coordinator and tests.
  *
  * @param input Goal objective and optional display title.
- * @returns Schema-validated fallback plan output.
+ * @returns Schema-validated one-task plan output.
  */
 export function createDeterministicGoalPlanFallback(
   input: DeterministicGoalPlanFallbackInput
@@ -191,8 +191,8 @@ export function createDeterministicGoalPlanFallback(
     schemaVersion: GOAL_PLAN_OUTPUT_SCHEMA_VERSION,
     goalSummary: objective,
     assumptions: [
-      'Deterministic fallback planner for test support.',
-      'The goal can be attempted as one bounded worker task.',
+      'This is a single bounded Worker task draft.',
+      'Human review of decomposition and scope is required before worker execution.',
     ],
     tasks: [
       {
@@ -223,7 +223,8 @@ export function createDeterministicGoalPlanFallback(
         reviewPolicy: {
           required: true,
           reviewers: ['human'],
-          instructions: 'Review deterministic fallback output before continuing Goal Mode.',
+          instructions:
+            'Review the actual Worker result against the objective and acceptance criteria before continuing Goal Mode.',
         },
         dependsOnTaskIds: [],
         escalationConditions: [
@@ -232,16 +233,16 @@ export function createDeterministicGoalPlanFallback(
       },
     ],
     risks: [
-      'Deterministic fallback output is intentionally generic and may need human refinement.',
+      'This one-task draft may under-specify work that needs a different decomposition or scope.',
     ],
     questions: [],
     verificationApproach:
-      'Use manual review for fallback-generated plans before worker execution begins.',
+      'Use manual review of the actual Worker result before treating the task as complete.',
   });
 }
 
 /**
- * Truncates deterministic fallback text to one schema field limit.
+ * Truncates deterministic plan text to one schema field limit.
  *
  * @param value Text to fit inside a schema field.
  * @param maxLength Inclusive maximum string length.
