@@ -1276,6 +1276,33 @@ describe('Overview / Action Center (board 07)', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
 
+  it.each([
+    'workspace_review',
+    'workspace_recovery',
+  ] as const)('opens workspace changes for a %s row without a Thread', async (type) => {
+    const row = {
+      id: `${type}:review1`,
+      kind: type,
+      workspaceId: 'ws1',
+      title: 'Review workspace changes',
+      createdAt: TIMESTAMP_OLD,
+      source: { type, workspaceId: 'ws1', reviewId: 'review1' },
+      actions: [{ kind: 'open_artifact', label: 'Open review', method: 'GET' }],
+    };
+    renderApp(
+      '/',
+      makeClient({
+        actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [row] }) },
+      })
+    );
+    expect(await screen.findByText(row.title)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open workspace changes' })).toHaveAttribute(
+      'href',
+      '/workspace-changes'
+    );
+    expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument();
+  });
+
   it('shows an error banner with retry when the queue fails', async () => {
     const user = userEvent.setup();
     const listHumanAttention = vi

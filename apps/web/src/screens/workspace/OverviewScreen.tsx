@@ -162,7 +162,9 @@ function AttentionListRow({
         {showOpen && openHref ? (
           <Link
             to={openHref}
-            aria-label="Open thread"
+            aria-label={
+              openHref === '/workspace-changes' ? 'Open workspace changes' : 'Open thread'
+            }
             className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
           >
             Open

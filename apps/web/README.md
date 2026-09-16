@@ -171,4 +171,6 @@ Artifacts lists only the server-projected deliverable catalog, with a wrapping f
 
 The primary sidebar keeps its 264px outer width without horizontal scrolling. Workspace destination controls form a four-column grid, and the Search popover stays within the sidebar content width.
 
+Overview routes Workspace Review and synchronization recovery attention rows to Workspace changes even when they have no Thread. Decisions remain on the existing review surface, where users can inspect the changed paths and evidence first.
+
 The Conversations sidebar reads actor-authorized navigation from NanoCore, showing current/latest activity icons and blue working or yellow actionable dots with text descriptions. Active rows precede idle rows and use server-derived conversation recency. Foreground polling and lifecycle invalidation refresh the projection; failures hide status dots and expose stale/unavailable state with Retry. Historical unknown activity remains explicit.

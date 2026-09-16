@@ -623,8 +623,11 @@ export function canDecideInline(
   return false;
 }
 
-/** Deep-link into the owning thread / goal / artifact for a Needs-you row. */
+/** Open the owning workspace-change, thread, goal, or artifact surface for a Needs-you row. */
 export function openHrefForRow(row: AttentionRow): string | null {
+  if (row.source.type === 'workspace_review' || row.source.type === 'workspace_recovery') {
+    return '/workspace-changes';
+  }
   if (row.source.type === 'artifact_review') {
     return `/goals/${row.workspaceId}/${row.source.threadId}/artifacts/${row.source.artifactId}`;
   }
