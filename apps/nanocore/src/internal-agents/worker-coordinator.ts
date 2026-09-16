@@ -545,8 +545,16 @@ function isClarifyPrompt(prompt: string): boolean {
  * @returns True when explicit Goal Mode planning is needed.
  */
 function isGoalPrompt(prompt: string): boolean {
-  return /\b(goal|multi-step|long-running|roadmap|milestone|strategy|strategic|plan|planning)\b/.test(
-    prompt
+  // ponytail: bounded English request phrases; expand from observed cases, not bare topic words.
+  return (
+    /\b(plan|planning)\s+(a|an|the|this|our|my|for)\b/.test(prompt) ||
+    /\b(create|start|define|draft|set)\s+(a\s+|an\s+|the\s+)?(goal|plan|roadmap|milestone|strategy)\b/.test(
+      prompt
+    ) ||
+    /\b(use|enter|start)\s+(the\s+)?(goal|plan)\s+mode\b/.test(prompt) ||
+    /\b(implement|build|execute|run|start|coordinate|complete)\b[^.!?\n]*\b(multi-step|long-running|multi-agent|strategic)\b/.test(
+      prompt
+    )
   );
 }
 

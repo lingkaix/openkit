@@ -598,7 +598,7 @@ describe('quick chat app API', () => {
       expect(imported.status, await imported.clone().text()).toBe(201);
       const artifact = await imported.json();
       const input =
-        '请只阅读本次附件，回复其中的验收标记和测试通过数量；无法读取时请说明，不要猜测。';
+        '请只阅读本次明确附加的维护报告，回复报告中的验收标记和已通过的 Goal Web 测试数量。如果无法读取正文，请明确说明，不要猜测。不要执行开发任务、修改文件或配置。';
       const response = await app.request(
         '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
         {

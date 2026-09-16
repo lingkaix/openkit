@@ -372,6 +372,41 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
   });
 
   it.each([
+    '请只阅读本次明确附加的维护报告，回复报告中的验收标记和已通过的 Goal Web 测试数量。如果无法读取正文，请明确说明，不要猜测。不要执行开发任务、修改文件或配置。',
+    'Explain the roadmap.',
+    'What is strategy?',
+    'Explain Goal Mode.',
+  ])('does not treat a bare Goal topic as Goal Mode planning: %s', (prompt) => {
+    const decision = createWorkerCoordinatorDecision({
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(decision).toMatchObject({
+      decision: 'quick_chat',
+      selectedWorkerCandidate: null,
+      workerRequest: null,
+    });
+  });
+
+  it('retains Goal planning for actionable multi-step work', () => {
+    const decision = createWorkerCoordinatorDecision({
+      prompt: 'Implement a multi-step release checklist.',
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(decision).toMatchObject({
+      decision: 'goal',
+      selectedWorkerCandidate: null,
+      workerRequest: null,
+    });
+  });
+
+  it.each([
     'Run Goal Mode step: Plan a release checklist.',
     'Run Goal Mode step: Review the current implementation.',
     'Run Goal Mode step: Refine the current implementation.',

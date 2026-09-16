@@ -4,7 +4,7 @@ This directory owns the deterministic Workflow Coordinator, Internal Role Execut
 
 ## Boundaries
 
-- Keep Coordinator decisions request-scoped and deterministic; mode services own persistence and effects.
+- Keep Coordinator decisions request-scoped and deterministic; mode services own persistence and effects. Goal routing requires an explicit planning request or actionable multi-step work; mentioning Goal, roadmap, or strategy as a topic does not request a handoff. The inference remains a bounded English heuristic.
 - Assemble a fixed ordered Tool set before each Internal Agent Loop run. The loop validates Tool arguments, executes only its injected closures, preserves correlated transcript order, and terminates through explicit model-turn, Tool-call, cancellation, or deadline fuses.
 - Bind the loop to logical-model dispatch through `gateway-provider.ts`; role entry owners retain authorization, durable Item production, usage attribution, and product-success interpretation.
 - Resolve internal-role profile preference User first, then Workspace, then Server, and admit only logical models whose derived capabilities satisfy the profile.
