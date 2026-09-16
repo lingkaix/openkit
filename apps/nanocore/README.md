@@ -116,15 +116,20 @@ Knowledge Store observation ledgers are available at `POST /api/app/workspaces/:
 
 The storage App API exposes `GET /api/app/storage/layout-report`, `POST /api/app/data-root/backups`, and `POST /api/app/data-root/backups/:backupId/verify` for layout diagnostics and server-managed hot backup verification. Deployment-wide routes accept the implicit local actor, a presented `server-admin` Token, or a Better Auth session whose active canonical User owns a currently usable `server-admin` Token; Workspace-scoped Tokens receive `403 Forbidden`. Backup responses return only a backup id, manifest, and checked inventory summary; they do not expose filesystem paths.
 
-Restore is intentionally a stopped-server operator command, not a live App API:
+Restore is intentionally a stopped-server operator command, not a live App API. The App image exposes it as `/usr/local/bin/openkit-restore`. Stop NanoCore first; the command refuses when `server/runtime/nanocore.lock` exists, verifies the backup manifest, replaces the target data root through the existing restore helper, and prints a path-free JSON summary.
+
+Live `backup.create` stores `/data/openkit.backups/<backupId>` beside the Data Root, so the host must persist `<data-root>.backups` separately from the `/data/openkit` mount. Restore replaces that target with `rename`, so bind a writable host **parent** at `/restore` and restore its child. Binding the Data Root itself at `/data/openkit` makes a mountpoint and fails with `EBUSY`. The parent must be one writable filesystem so `<data-root>.restore-staging` can be renamed onto the child. Mount the retained backup subtree read-only at `/backup`.
 
 ```bash
-pnpm --filter @openkit/nanocore run data-root:restore -- \
-  --backup-root /absolute/path/to/openkit-backup \
-  --data-root /absolute/path/to/openkit-data
+docker run --rm --entrypoint openkit-restore \
+  --mount type=bind,src=/absolute/path/to/restore-parent,dst=/restore \
+  --mount type=bind,src=/absolute/path/to/openkit.backups/<backupId>,dst=/backup,readonly \
+  openkit/app:<exact-version> \
+  --backup-root /backup \
+  --data-root /restore/data
 ```
 
-The restore command refuses to run when `server/runtime/nanocore.lock` exists, verifies the backup manifest first, replaces the target data root through the storage restore helper, and prints a path-free JSON summary.
+From a source checkout, `pnpm --filter @openkit/nanocore run data-root:restore -- --backup-root /absolute/path/to/backup --data-root /absolute/path/to/restore-parent/data` still runs the same helper. The target must remain a child of a writable same-filesystem parent.
 
 Locked-out server administrators use the separate stopped-server operator. Keep NanoCore stopped, list active canonical Users, then issue one recovery credential with an exact owner-and-expiry confirmation:
 

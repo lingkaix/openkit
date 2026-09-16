@@ -43,6 +43,19 @@ The helper's retained-auth observation compares nonempty persistent token metada
 
 Use the public backup/export operations for their documented scopes and re-read their result. A Workspace export is not a complete deployment backup. A consistent offline deployment copy requires NanoCore stopped and its Data Root lock released; copy all selected authoritative data plus the external key and required protected configuration under separately secured custody. Do not copy a live SQLite file as if it were a consistent snapshot or place secret files into an ordinary artifact.
 
+Live `backup.create` writes `${DATA_ROOT}.backups/<backupId>` (in the App image, `/data/openkit.backups/<backupId>`). That sibling is outside the `/data/openkit` volume; persist it on the host with the running App. After NanoCore is stopped, restore with the App image `openkit-restore` command. Restore `rename`s the target Data Root, so bind a dedicated writable host parent at `/restore` and restore its child. Do not bind the host Data Root at `/data/openkit`; that mountpoint fails with `EBUSY`. Mount the retained backup subtree read-only at `/backup`. The parent must be one writable filesystem because staging defaults to `<data-root>.restore-staging` beside the child.
+
+```bash
+docker run --rm --entrypoint openkit-restore \
+  --mount type=bind,src=/absolute/path/to/restore-parent,dst=/restore \
+  --mount type=bind,src=/absolute/path/to/openkit.backups/<backupId>,dst=/backup,readonly \
+  openkit/app:<exact-version> \
+  --backup-root /backup \
+  --data-root /restore/data
+```
+
+From a source checkout, `pnpm --filter @openkit/nanocore run data-root:restore -- --backup-root /absolute/path/to/backup --data-root /absolute/path/to/restore-parent/data` runs the same helper.
+
 Worker execution volumes live on NanoHost separately from NanoCore's Data Root. A Core-only backup omits them. Declare this omission, or separately preserve the host's complete admitted storage associations and their identity metadata after proving their writers stopped. Preserve unknown files, ignored work, native runtime history, memory and configuration as whole-volume data; these examples are not a file inventory. A live filesystem copy is not a consistent backup. Restoring bytes does not restore a process, native session authority or permission to attach the volume.
 
 Record source version, image identity and backup scope. An old image does not reverse a database migration. If compatibility of the old executable with current data is not established, stop to an explicit recovery procedure rather than automatically starting it or restoring old data over newer writes. Restore into a stopped, correctly identified target and prove lock exclusivity, readable durable records and credential usability before resuming work.

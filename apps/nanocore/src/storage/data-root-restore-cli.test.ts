@@ -75,4 +75,34 @@ describe('data-root restore operator cli', () => {
     expect(JSON.stringify(summary)).not.toContain(dataRoot);
     expect(JSON.stringify(summary)).not.toContain(backupRoot);
   });
+
+  it('restores into an absent child of a writable parent', () => {
+    const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-restore-cli-backup-'));
+    const parent = mkdtempSync(join(tmpdir(), 'openkit-restore-cli-parent-'));
+    const dataRoot = join(parent, 'data');
+    const stdout: string[] = [];
+
+    mkdirSync(join(backupRoot, 'server'), { recursive: true });
+    writeFileSync(join(backupRoot, 'server', 'layout.json'), '{"layoutVersion":1}\n');
+    writeColdDataRootBackupManifest({
+      backupRoot,
+      backupId: 'drbak_cli_child',
+      sourceDeploymentId: 'dep_local',
+      startedAt: timestamp,
+      completedAt: timestamp,
+    });
+
+    expect(existsSync(dataRoot)).toBe(false);
+
+    const summary = runDataRootRestoreCli(
+      ['--backup-root', backupRoot, '--data-root', dataRoot],
+      (line) => stdout.push(line)
+    );
+
+    expect(summary.backupId).toBe('drbak_cli_child');
+    expect(summary.restored).toBe(true);
+    expect(existsSync(join(dataRoot, 'server', 'layout.json'))).toBe(true);
+    expect(existsSync(`${dataRoot}.restore-staging`)).toBe(false);
+    expect(stdout).toEqual([`${JSON.stringify(summary, null, 2)}\n`]);
+  });
 });

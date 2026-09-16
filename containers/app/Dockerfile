@@ -70,9 +70,11 @@ COPY containers/app/entrypoint.sh /usr/local/bin/openkit-app-entrypoint
 COPY containers/app/smoke.sh /usr/local/bin/openkit-app-smoke
 
 RUN chmod +x /app/nanocore/dist/openkit-operator.js \
+    /app/nanocore/dist/openkit-restore.js \
     /usr/local/bin/openkit-app-entrypoint \
     /usr/local/bin/openkit-app-smoke \
   && ln -s /app/nanocore/dist/openkit-operator.js /usr/local/bin/openkit-operator \
+  && ln -s /app/nanocore/dist/openkit-restore.js /usr/local/bin/openkit-restore \
   && mkdir -p /data/openkit /srv/web
 
 EXPOSE 8080

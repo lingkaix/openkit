@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "bin": {
-    "openkit-operator": "dist/openkit-operator.js"
+    "openkit-operator": "dist/openkit-operator.js",
+    "openkit-restore": "dist/openkit-restore.js"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",

@@ -8,7 +8,20 @@ The local `scripts/docker/run-app.sh` seed helper authors an explicit 8,000-toke
 
 The entrypoint probes NanoCore's loopback App HTTP/1.1 health endpoint before starting Caddy. Caddy uses that listener for public app routes and does not publish or connect to the separate private NanoHost HTTP/2 listener.
 
-The runtime image exposes the compiled stopped-server administrator recovery command as `/usr/local/bin/openkit-operator`. It acquires the ordinary NanoCore data-root lock and refuses a live deployment; the image entrypoint does not invoke it.
+The runtime image exposes the compiled stopped-server administrator recovery command as `/usr/local/bin/openkit-operator` and the stopped-server data-root restore command as `/usr/local/bin/openkit-restore`. Recovery acquires the ordinary NanoCore data-root lock and refuses a live deployment. Restore reuses the existing restore helper, refuses when `server/runtime/nanocore.lock` is present, and does not start NanoCore. The image entrypoint does not invoke either command.
+
+Live `backup.create` writes `/data/openkit.backups/<backupId>`, a sibling of the Data Root, not a directory inside the `/data/openkit` mount. Persist that sibling on the host (`<data-root>.backups`) with the running App.
+
+Restore replaces the target Data Root with `rename`, so the target must be a **child** of a writable directory on one filesystem. Do not bind the host Data Root itself at `/data/openkit`: that path is a mountpoint and rename fails with `EBUSY`. Mount a dedicated host parent at `/restore` and restore its child. Mount the retained backup subtree read-only at `/backup`. Staging defaults to `<data-root>.restore-staging` beside that child, so the parent must be writable.
+
+```bash
+docker run --rm --entrypoint openkit-restore \
+  --mount type=bind,src=/absolute/path/to/restore-parent,dst=/restore \
+  --mount type=bind,src=/absolute/path/to/openkit.backups/<backupId>,dst=/backup,readonly \
+  openkit/app:<exact-version> \
+  --backup-root /backup \
+  --data-root /restore/data
+```
 
 The optional App-update transport uses the image's OpenSSH client to invoke a separately installed host helper. `scripts/docker/app-update-helper.py` runs on the selected Linux/systemd/Docker host, outside the App being replaced; its protected configuration defaults to `/etc/openkit/app-update/helper.json`. Its stdin admits only prepare/start/status, while its supervised job preserves the deployment bindings and records observed replacement or recovery. The image carries neither the helper's host privileges nor its private SSH identity. Installation and real-host acceptance are separate from image build and unit checks; see `docs/specs/20260910-app_update_delivery.md` and the `openkit-ops` operations reference.
 
