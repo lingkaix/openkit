@@ -115,7 +115,7 @@ src/
     material/         Tier-A live Plane 1 Material, Thread binding, delivery, and proposal-comparison surfaces
     artifacts/        Tier-A Artifact inventory, exact content, import, and Thread introduction
     operations/       Tier-A recovery, scheduler admission, and global application search
-    portability/      Tier-A User Settings import plus project-Workspace export and Vault rebind
+    portability/      Tier-A User Settings import plus project-Workspace export, portable `.openkit-workspace.tar.zst` download/upload, and Vault rebind
     workspace-sync/   Tier-A Workspace change review, apply evidence, and recovery decisions
     workspace/        Tier-A Overview, Agents, Knowledge, First-run, Repositories, ArchivedThreadsScreen, New workspace
     settings/         Tier-A General, Administration, Configuration, AI interface, My admin access, Access tokens, Server audit, Deployment backup, Vault backend, Debug, Vault, Usage & audit
@@ -131,6 +131,8 @@ src/
 e2e/                  L4 Playwright smoke + isolated stack helpers
 playwright.config.ts
 ```
+
+Portability downloads a created project-Workspace export as `.openkit-workspace.tar.zst` and imports a local archive through dry-run preview, then an explicit apply. Archive bytes travel as `File` / `Blob` / `ReadableStream` through the existing Core Client session; Web never base64-encodes the archive or sends a server filesystem path. A selected archive hides server-export handles until Use server export clears the file input; a different File invalidates the prior dry-run before import. Archive download is bound to the selected Workspace's created export. The signed-in Better Auth session is unchanged.
 
 ## Status
 

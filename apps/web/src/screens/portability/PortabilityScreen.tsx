@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { type ChangeEvent, useRef, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
@@ -17,18 +17,23 @@ import {
 } from '../../primitives';
 import { useVault } from '../settings/data';
 import {
+  downloadWorkspaceExportArchiveError,
   dryRunWorkspaceImportError,
   exportWorkspaceError,
   importWorkspaceError,
   isPortabilityProjectKind,
+  nextArchiveImportCommand,
   nextImportCommand,
   type PortabilityImportReview,
   portabilityVaultStatusLabel,
   rebindWorkspaceVaultError,
   useCurrentWorkspaceId,
+  useDownloadWorkspaceExportArchive,
+  useDryRunWorkspaceArchiveImport,
   useDryRunWorkspaceImport,
   useExportWorkspace,
   useImportWorkspace,
+  useImportWorkspaceArchive,
   useRebindWorkspaceVaultReference,
   useWorkspaces,
 } from './data';
@@ -90,14 +95,25 @@ function ProjectExport({
   disconnected: boolean;
 }) {
   const exportWorkspace = useExportWorkspace();
-  const exportSummary = exportWorkspace.isSuccess ? exportWorkspace.data : null;
+  const downloadArchive = useDownloadWorkspaceExportArchive();
+  const exportBound = exportWorkspace.variables === workspaceId;
+  const exportSummary = exportBound && exportWorkspace.isSuccess ? exportWorkspace.data : null;
   const writeBlocked = disconnected;
-  const exportError = exportWorkspace.isError ? exportWorkspaceError(exportWorkspace.error) : null;
+  const exportError =
+    exportBound && exportWorkspace.isError ? exportWorkspaceError(exportWorkspace.error) : null;
+  const downloadBound =
+    downloadArchive.variables?.workspaceId === workspaceId &&
+    downloadArchive.variables?.exportId === exportSummary?.exportId;
+  const downloadError =
+    downloadBound && downloadArchive.isError
+      ? downloadWorkspaceExportArchiveError(downloadArchive.error)
+      : null;
 
   return (
     <section className="flex flex-col gap-3" aria-label="Export">
       <Eyebrow>Export</Eyebrow>
       {exportError ? <ErrorBanner message={exportError} /> : null}
+      {downloadError ? <ErrorBanner message={downloadError} /> : null}
       <div>
         <Button
           isDisabled={writeBlocked || exportWorkspace.isPending}
@@ -112,6 +128,20 @@ function ProjectExport({
           <p className="text-sm text-fg">
             {exportSummary.fileCount} {exportSummary.fileCount === 1 ? 'file' : 'files'}
           </p>
+          <div className="pt-2">
+            <Button
+              variant="outline"
+              isDisabled={writeBlocked || downloadArchive.isPending}
+              onPress={() =>
+                downloadArchive.mutate({
+                  exportId: exportSummary.exportId,
+                  workspaceId,
+                })
+              }
+            >
+              Download archive
+            </Button>
+          </div>
         </Card>
       ) : null}
     </section>
@@ -224,80 +254,176 @@ function ProjectVault({
 function ImportPanel({ disconnected }: { disconnected: boolean }) {
   const reviewImport = useDryRunWorkspaceImport();
   const importWorkspace = useImportWorkspace();
+  const reviewArchive = useDryRunWorkspaceArchiveImport();
+  const importArchive = useImportWorkspaceArchive();
   const [sourceWorkspaceId, setSourceWorkspaceId] = useState('');
   const [exportId, setExportId] = useState('');
+  const [archiveFile, setArchiveFile] = useState<File | null>(null);
   const writeBlocked = disconnected;
   const handlesReady = Boolean(sourceWorkspaceId && exportId);
+  const archiveInputRef = useRef<HTMLInputElement>(null);
+  const reviewPending = reviewImport.isPending || reviewArchive.isPending;
+  const importPending = importWorkspace.isPending || importArchive.isPending;
+  const sourceLocked = writeBlocked || reviewPending || importPending;
+  const archiveReviewBound = Boolean(archiveFile) && reviewArchive.variables === archiveFile;
+  const archiveReview = archiveReviewBound && reviewArchive.isSuccess ? reviewArchive.data : null;
   const reviewBound =
+    !archiveFile &&
     reviewImport.variables?.sourceWorkspaceId === sourceWorkspaceId &&
     reviewImport.variables?.exportId === exportId;
-  const review = reviewBound && reviewImport.isSuccess ? reviewImport.data : null;
+  const handleReview = reviewBound && reviewImport.isSuccess ? reviewImport.data : null;
+  const review = archiveFile ? archiveReview : handleReview;
+  const archiveImportBound = Boolean(archiveFile) && importArchive.variables?.file === archiveFile;
   const importBound =
+    !archiveFile &&
     importWorkspace.variables?.sourceWorkspaceId === sourceWorkspaceId &&
     importWorkspace.variables?.exportId === exportId;
   const importedName =
-    importBound && importWorkspace.isSuccess ? importWorkspace.data.workspace.name : null;
-  const reviewError =
-    reviewBound && reviewImport.isError ? dryRunWorkspaceImportError(reviewImport.error) : null;
-  const importError =
-    importBound && importWorkspace.isError ? importWorkspaceError(importWorkspace.error) : null;
+    archiveFile && archiveImportBound && importArchive.isSuccess
+      ? importArchive.data.workspace.name
+      : !archiveFile && importBound && importWorkspace.isSuccess
+        ? importWorkspace.data.workspace.name
+        : null;
+  const reviewError = archiveFile
+    ? archiveReviewBound && reviewArchive.isError
+      ? dryRunWorkspaceImportError(reviewArchive.error)
+      : null
+    : reviewBound && reviewImport.isError
+      ? dryRunWorkspaceImportError(reviewImport.error)
+      : null;
+  const importError = archiveFile
+    ? archiveImportBound && importArchive.isError
+      ? importWorkspaceError(importArchive.error)
+      : null
+    : importBound && importWorkspace.isError
+      ? importWorkspaceError(importWorkspace.error)
+      : null;
+
+  /**
+   * Binds the selected archive File as the import source and invalidates prior review and import.
+   *
+   * @param event Native change from the Portable archive file control.
+   */
+  function onArchiveFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    setArchiveFile(file);
+    reviewArchive.reset();
+    importArchive.reset();
+    reviewImport.reset();
+    importWorkspace.reset();
+  }
+
+  /**
+   * Clears the selected archive File and native file input so server-export handles are the source.
+   */
+  function clearArchiveFile() {
+    const input = archiveInputRef.current;
+    if (input) input.value = '';
+    setArchiveFile(null);
+    reviewArchive.reset();
+    importArchive.reset();
+  }
 
   function submitReview() {
+    if (sourceLocked) return;
+    if (archiveFile) {
+      importArchive.reset();
+      importWorkspace.reset();
+      reviewImport.reset();
+      reviewArchive.mutate(archiveFile);
+      return;
+    }
     if (!handlesReady) return;
     importWorkspace.reset();
+    importArchive.reset();
+    reviewArchive.reset();
     reviewImport.mutate({ sourceWorkspaceId, exportId });
   }
 
   function submitImport() {
-    if (!review || !handlesReady) return;
+    if (archiveFile) {
+      if (!archiveReview) return;
+      importArchive.mutate(nextArchiveImportCommand(importArchive.variables, archiveFile));
+      return;
+    }
+    if (!handleReview || !handlesReady) return;
     importWorkspace.mutate(
       nextImportCommand(importWorkspace.variables, sourceWorkspaceId, exportId)
     );
   }
 
+  /**
+   * Retries the bound dry-run for the current import source without changing File or handle identity.
+   */
+  function retryReview() {
+    if (archiveFile) {
+      if (reviewArchive.variables) reviewArchive.mutate(reviewArchive.variables);
+      return;
+    }
+    if (reviewImport.variables) reviewImport.mutate(reviewImport.variables);
+  }
+
+  /**
+   * Retries the exact bound import command for the current File or server-export handles.
+   */
+  function retryImport() {
+    if (archiveFile) {
+      if (importArchive.variables) importArchive.mutate(importArchive.variables);
+      return;
+    }
+    if (importWorkspace.variables) importWorkspace.mutate(importWorkspace.variables);
+  }
+
   return (
     <section className="flex flex-col gap-3" aria-label="Import">
       <Eyebrow>Import</Eyebrow>
-      {reviewError ? (
-        <ErrorBanner
-          message={reviewError}
-          onRetry={() => {
-            if (reviewImport.variables) reviewImport.mutate(reviewImport.variables);
-          }}
+      {reviewError ? <ErrorBanner message={reviewError} onRetry={retryReview} /> : null}
+      {importError ? <ErrorBanner message={importError} onRetry={retryImport} /> : null}
+      <label className="flex flex-col gap-1 text-sm text-fg">
+        Portable archive
+        <input
+          ref={archiveInputRef}
+          accept=".openkit-workspace.tar.zst,application/vnd.openkit.workspace-export+tar.zstd"
+          aria-label="Portable archive"
+          disabled={sourceLocked}
+          onChange={onArchiveFileChange}
+          type="file"
         />
-      ) : null}
-      {importError ? (
-        <ErrorBanner
-          message={importError}
-          onRetry={() => {
-            if (importWorkspace.variables) importWorkspace.mutate(importWorkspace.variables);
-          }}
-        />
-      ) : null}
-      <TextField
-        label="Source workspace ID"
-        value={sourceWorkspaceId}
-        onChange={setSourceWorkspaceId}
-        isDisabled={writeBlocked || reviewImport.isPending}
-      />
-      <TextField
-        label="Export ID"
-        value={exportId}
-        onChange={setExportId}
-        isDisabled={writeBlocked || reviewImport.isPending}
-      />
+      </label>
+      {archiveFile ? (
+        <>
+          <p className="text-sm text-fg">{archiveFile.name}</p>
+          <div>
+            <Button variant="outline" isDisabled={sourceLocked} onPress={clearArchiveFile}>
+              Use server export
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <TextField
+            label="Source workspace ID"
+            value={sourceWorkspaceId}
+            onChange={setSourceWorkspaceId}
+            isDisabled={sourceLocked}
+          />
+          <TextField
+            label="Export ID"
+            value={exportId}
+            onChange={setExportId}
+            isDisabled={sourceLocked}
+          />
+        </>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="outline"
-          isDisabled={writeBlocked || reviewImport.isPending || !handlesReady}
+          isDisabled={sourceLocked || !(archiveFile || handlesReady)}
           onPress={submitReview}
         >
           Review import
         </Button>
-        <Button
-          isDisabled={writeBlocked || !review || importWorkspace.isPending}
-          onPress={submitImport}
-        >
+        <Button isDisabled={writeBlocked || !review || importPending} onPress={submitImport}>
           Import workspace
         </Button>
       </div>
@@ -355,7 +481,7 @@ function PortabilityHeader({ stale = false }: { stale?: boolean }) {
     <PageHeader
       eyebrow="User"
       title="Portability"
-      subtitle="Export this Workspace, review an import before applying it, and rebind imported Vault references."
+      subtitle="Export this Workspace, download a portable archive, review an import before applying it, and rebind imported Vault references."
       actions={stale ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
     />
   );
