@@ -51,6 +51,8 @@ Goal projects one Draft › Plan › Execute › Review strip from the current d
 
 Thread header icon commands use 20px glyphs in 32px square buttons without inherited horizontal padding. Shared icons retain their declared width inside flex layouts and inherit the active theme foreground. Task thread headers show the sidebar Worker-task glyph at 20px in a nonshrinking titled span labeled Task.
 
+The Thread Side panel indexes each referenced Artifact version once, even when multiple Turns attach it. Conversation history retains every reference, and file-change records remain individually visible.
+
 ## Stack
 
 Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md):

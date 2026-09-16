@@ -17,6 +17,7 @@ import {
 import { createRequestId, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
 import {
   chatKeys,
+  type ThreadItem,
   taskThreadPath,
   useArchiveThread,
   useConversationTargets,
@@ -34,6 +35,30 @@ import {
 import { ItemView } from './ItemView';
 import { ThreadStream } from './ThreadStream';
 
+/**
+ * Indexes unique Artifact versions and every file-change row for the Side panel.
+ *
+ * @param items Thread Items in conversation order.
+ * @returns First Artifact-reference per output identity plus every file-change.
+ */
+function conversationOutputIndex(items: readonly ThreadItem[]): ThreadItem[] {
+  const seenArtifactVersions = new Set<string>();
+  return items.filter((item) => {
+    if (item.type === 'file-change') {
+      return true;
+    }
+    if (item.type !== 'artifact-reference') {
+      return false;
+    }
+    const identity = `${item.artifactId}:${item.artifactVersion}`;
+    if (seenArtifactVersions.has(identity)) {
+      return false;
+    }
+    seenArtifactVersions.add(identity);
+    return true;
+  });
+}
+
 /** Right Side panel — Thread Artifact and file-change index (DESIGN.md §3.3, D-006). */
 function SidePanel({
   workspaceId,
@@ -45,9 +70,7 @@ function SidePanel({
   onClose: () => void;
 }) {
   const items = useThreadItems(workspaceId, threadId);
-  const artifacts = (items.data ?? []).filter(
-    (item) => item.type === 'artifact-reference' || item.type === 'file-change'
-  );
+  const artifacts = conversationOutputIndex(items.data ?? []);
   return (
     <aside
       aria-label="Side panel"

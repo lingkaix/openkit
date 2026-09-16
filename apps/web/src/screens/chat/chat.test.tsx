@@ -3237,18 +3237,37 @@ describe('conversation artifact inspection', () => {
       path,
       changeKind: 'modified',
     });
+    const duplicate = ArtifactReferenceItemSchema.parse({
+      ...reference,
+      id: 'artifact-ref-again',
+      lastMutationRequestId: 'req-artifact-again',
+    });
+    const laterVersion = ArtifactReferenceItemSchema.parse({
+      ...reference,
+      id: 'artifact-ref-v2',
+      artifactVersion: 2,
+      title: 'Workspace changes after revision',
+      lastMutationRequestId: 'req-artifact-v2',
+    });
     renderApp(
       '/chat/ws1/th1',
       makeClient({
-        listThreadItems: vi.fn().mockResolvedValue({ items: [reference, file], nextCursor: null }),
+        listThreadItems: vi.fn().mockResolvedValue({
+          items: [reference, duplicate, laterVersion, file],
+          nextCursor: null,
+        }),
       })
     );
     const panel = await screen.findByRole('complementary', { name: 'Side panel' });
     expect(await within(panel).findByText('Saved output · Version 1')).toBeInTheDocument();
+    expect(within(panel).getAllByText('Saved output · Version 1')).toHaveLength(1);
+    expect(within(panel).getAllByText('Saved output · Version 2')).toHaveLength(1);
     expect(within(panel).getByText('File change · modified')).toBeInTheDocument();
     expect(within(panel).getByText(reference.title)).toBeVisible();
+    expect(within(panel).getByText(laterVersion.title)).toBeVisible();
     expect(within(panel).getByText(path)).toBeVisible();
-    expect(screen.getAllByText('Saved output · Version 1')).toHaveLength(2);
+    expect(screen.getAllByText('Saved output · Version 1')).toHaveLength(3);
+    expect(screen.getAllByText('Saved output · Version 2')).toHaveLength(2);
     expect(screen.getAllByText('File change · modified')).toHaveLength(2);
   });
 
