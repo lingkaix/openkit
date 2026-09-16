@@ -22,8 +22,10 @@ export function CompletedView({ goal, onOpenArtifact }: CompletedViewProps) {
             <p className="text-xs font-bold uppercase tracking-eyebrow text-positive-fg">
               Goal completed
             </p>
-            <h1 className="mt-1 text-lg font-extrabold text-fg-strong">{goal.title}</h1>
-            <p className="mt-1 text-sm text-fg-muted">{goal.objective}</p>
+            <h1 className="mt-1 text-lg font-extrabold text-fg-strong">
+              {goal.title === goal.objective ? 'Goal completed' : goal.title}
+            </h1>
+            <p className="mt-1 text-sm text-fg-muted whitespace-pre-wrap">{goal.objective}</p>
           </div>
           <div className="ml-auto">
             <StatusChip tone="positive" dot>

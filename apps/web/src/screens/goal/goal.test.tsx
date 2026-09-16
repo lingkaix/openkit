@@ -518,6 +518,49 @@ describe('goal surfaces (WP-5)', () => {
     expect(screen.getByText('Planned')).toBeInTheDocument();
   });
 
+  it('shows a short heading and the full objective once when title equals objective', async () => {
+    const objective =
+      'Deliver a complete reviewable Goal plan for the live Plan lens heading defect by keeping the entire operator-authored objective available as body text without repeating it as a page title or truncating durable Goal records while the supervisor still approves the actual plan below the fold after the duplicated heading is corrected in projection only.';
+    const planGoal = {
+      ...goalSummary('awaiting_plan_approval').goal,
+      title: objective,
+      objective,
+    };
+    const completedGoal = { ...goalSummary('completed').goal, title: objective, objective };
+
+    const planClient = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue({ goal: planGoal }),
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          goal: planGoal,
+          planItemId: 'it_goal_plan_goal1',
+          plan: PLAN,
+        }),
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', planClient);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Goal plan' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: objective })).not.toBeInTheDocument();
+    const planObjective = screen.getByText(objective);
+    expect(planObjective.tagName).toBe('P');
+    expect(planObjective).toHaveClass('whitespace-pre-wrap');
+    expect(screen.getAllByText(objective)).toHaveLength(1);
+    cleanup();
+
+    const completedClient = makeClient({
+      app: { getThreadGoalSummary: vi.fn().mockResolvedValue({ goal: completedGoal }) },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', completedClient);
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Goal completed' })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: objective })).not.toBeInTheDocument();
+    const completedObjective = screen.getByText(objective);
+    expect(completedObjective.tagName).toBe('P');
+    expect(completedObjective).toHaveClass('whitespace-pre-wrap');
+    expect(screen.getAllByText(objective)).toHaveLength(1);
+  });
+
   it('rehydrates awaiting_plan_approval from getThreadGoalPlan without creating', async () => {
     const getThreadGoalPlan = vi.fn().mockResolvedValue(currentPlanRead());
     const createThreadGoalPlan = vi.fn();

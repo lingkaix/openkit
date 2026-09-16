@@ -232,8 +232,10 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1.5">
-        <h1 className="text-title font-extrabold text-fg-strong">{goal.title}</h1>
-        <p className="text-sm text-fg-muted">{goal.objective}</p>
+        <h1 className="text-title font-extrabold text-fg-strong">
+          {goal.title === goal.objective ? 'Goal plan' : goal.title}
+        </h1>
+        <p className="text-sm text-fg-muted whitespace-pre-wrap">{goal.objective}</p>
         {goal.pendingHumanAttention.required && goal.pendingHumanAttention.reason ? (
           <StatusChip tone="notice" dot>
             {goal.pendingHumanAttention.reason}
