@@ -157,6 +157,8 @@ The Composer Agent selector shows target descriptions and availability reasons t
 
 Conversation approval requests retain their resolved outcome beside the original request. Unavailable controls explain their state; pending decisions disable repeat submission, and failed decisions retry the same request identity.
 
+Chat and Task headers show a failed latest Turn and its recorded error from the existing dashboard projection after a reload. An earlier accepted status Item remains history; displaying the failure never resubmits work.
+
 Chat and Task Artifact references share an on-demand View content dialog in the stream and side panel. It uses the existing exact Artifact read, requires the message version to match, and renders recorded workspace-change paths and patch bytes with a full-content disclosure. Failed reads expose retry; inspection never applies or decides changes.
 
 Approval decision cards show the recorded user display name or system actor, matching request, reason where the system operation establishes it, time and source. Recovery denials explicitly label inherited timestamps and missing recovery time; human client and reason fields remain unrecorded rather than inferred. Record identifiers stay in a disclosure.

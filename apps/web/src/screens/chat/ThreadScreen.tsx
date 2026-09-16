@@ -94,8 +94,9 @@ export interface ThreadScreenProps {
  * approval-card pattern (board 04) handled per-item. Honors the §9.13 states: skeleton stream,
  * inline send-failure banner, and — when the runtime is unreachable — a disabled
  * composer with a stated reason and read-only approvals (the global banner lives
- * in the shell). Rename, archive, and interruption controls project only the
- * authoritative records returned by Core; the active Turn shows its supplied
+ * in the shell). Rename, archive, interruption, and failed-Turn controls project
+ * only the authoritative records returned by Core; a failed latest Turn shows its
+ * recorded error without retrying work. The active Turn shows its supplied
  * trigger actor without deployment or identity inference.
  */
 export function ThreadScreen({ mode }: ThreadScreenProps) {
@@ -176,6 +177,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     (draft) => draft.workspaceId === workspaceId && draft.threadId === threadId
   );
   const latestTurn = dashboard.data?.turns.at(-1);
+  const failedTurn = latestTurn?.status === 'failed' ? latestTurn : undefined;
+  const failedTurnMessage =
+    failedTurn?.error?.message ??
+    (failedTurn ? 'This turn failed. Review the conversation before trying again.' : null);
   const feedbackOwner =
     submitFeedback.variables?.workspaceId === workspaceId &&
     submitFeedback.variables.threadId === threadId &&
@@ -297,6 +302,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             {latestTurn?.status === 'interrupted' ? (
               <StatusChip tone="neutral">Interrupted</StatusChip>
             ) : null}
+            {failedTurn ? <StatusChip tone="negative">Failed</StatusChip> : null}
           </div>
           {activeTurn ? (
             <p className="text-xs text-fg-muted">Triggered by {activeTurn.triggerActor.id}</p>
@@ -401,6 +407,11 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               message="Couldn't stop this turn."
               onRetry={() => interrupt.mutate(interruptState.variables!)}
             />
+          </div>
+        ) : null}
+        {failedTurnMessage ? (
+          <div className="border-b border-separator px-6 py-3">
+            <ErrorBanner message={failedTurnMessage} />
           </div>
         ) : null}
 
