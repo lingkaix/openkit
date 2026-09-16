@@ -961,7 +961,7 @@ function workspaceRecoveryRows(workspaceDb: WorkspaceDb, workspaceId: string): H
  * @param reviewDecisionAuthorized Whether the actor may apply Goal review decisions.
  * @returns Goal status rows plus currently authorized Goal review rows.
  */
-function goalRows(
+export function goalRows(
   store: FsStore,
   workspaceDb: WorkspaceDb,
   workspaceId: string,

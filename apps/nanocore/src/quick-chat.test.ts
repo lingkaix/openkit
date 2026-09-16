@@ -322,6 +322,7 @@ describe('quick chat app API', () => {
       },
     });
     expect(parsed.turn.status).toBe('completed');
+    expect(parsed.turn.agentId).toBe('quick-chat');
     expect(parsed.turn.triggerActor).toEqual({ kind: 'user', id: 'user_local' });
     expect(parsed.turn.items.find((item) => item.type === 'user-message')).toMatchObject({
       actor: parsed.turn.triggerActor,

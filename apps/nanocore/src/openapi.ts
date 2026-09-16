@@ -25,6 +25,7 @@ import {
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
+  ConversationNavigationResponseSchema,
   ConversationTargetCatalogSchema,
   ConvertGoalSteeringToFollowUpRequestSchema,
   ConvertGoalSteeringToFollowUpResponseSchema,
@@ -3523,6 +3524,33 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/workspaces/{workspaceId}/conversations': {
+        get: {
+          operationId: 'listConversationNavigation',
+          tags: ['dashboards'],
+          summary: 'Read one conversation navigation read model.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [WORKSPACE_ID_PARAMETER],
+          responses: {
+            '200': {
+              description: 'Conversation navigation read model.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ConversationNavigationResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/app/workspaces/{workspaceId}/dashboard': {
         get: {
           operationId: 'getWorkspaceDashboard',
@@ -6635,6 +6663,7 @@ export function createAppOpenApiDocument() {
         WorkspaceImportDryRunResponse: toJsonSchema(WorkspaceImportDryRunResponseSchema),
         WorkspaceImportRequest: toJsonSchema(WorkspaceImportRequestSchema),
         WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
+        ConversationNavigationResponse: toJsonSchema(ConversationNavigationResponseSchema),
         WorkspaceDashboardResponse: toJsonSchema(WorkspaceDashboardResponseSchema),
         WorkspaceId: toJsonSchema(WorkspaceIdSchema),
         WorkspaceRepositoryDiagnosticsResponse: toJsonSchema(

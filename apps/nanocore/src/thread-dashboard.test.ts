@@ -387,6 +387,14 @@ describe('thread dashboard app API', () => {
         },
         composer: { disabled: true },
       });
+      const navigation = await app.request('/api/app/workspaces/ws_demo/conversations', {
+        headers: { authorization: `Bearer ${readonlyToken.secret}` },
+      });
+      expect(navigation.status).toBe(200);
+      const rows = (await navigation.json()).items;
+      expect(
+        rows.find((row: { thread: { id: string } }) => row.thread.id === thread.id)
+      ).toMatchObject({ state: 'idle' });
     } finally {
       coreDb.sqlite.close();
     }

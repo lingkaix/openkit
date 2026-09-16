@@ -119,7 +119,7 @@ import {
 } from './workspace/repository-store.js';
 
 /** Stable attribution id for the direct Quick Chat provider call. */
-const QUICK_CHAT_AGENT_ID = 'quick-chat';
+export const QUICK_CHAT_AGENT_ID = 'quick-chat';
 
 /** Fixed role instruction for the bounded Quick Chat provider call. */
 const QUICK_CHAT_SYSTEM_PROMPT =
@@ -2524,6 +2524,10 @@ export function registerQuickAndChatModeRoutes({
        */
       const createChatTurn = (completedAt: string) => {
         const turn = store.createTurn(workspaceId, threadId, chatInput.input, triggerActor);
+        store.updateTurn(turn.id, {
+          agentId:
+            acceptedTarget.kind === 'knowledge-manager' ? 'knowledge-manager' : QUICK_CHAT_AGENT_ID,
+        });
 
         store.createItem({
           id: `it_chat_user_${turn.id}`,
@@ -2556,7 +2560,7 @@ export function registerQuickAndChatModeRoutes({
           });
         }
 
-        return turn;
+        return store.getTurn(workspaceId, threadId, turn.id);
       };
 
       /**

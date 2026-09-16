@@ -3621,6 +3621,7 @@ describe('app api openapi projection', () => {
       'listWorkspaceVaultInjectionPlans',
       'listWorkspaceVaultInjectionReceipts',
       'listServerPermissionDecisions',
+      'listConversationNavigation',
       'getWorkspaceDashboard',
       'getThreadDashboard',
       'startTaskMode',

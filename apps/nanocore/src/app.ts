@@ -1639,6 +1639,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
   registerDashboardRoutes({
     app,
+    repositoryWorkspaceDb,
     coreDb: options.coreDb,
     requestStore,
     runtimeConfigManager,
