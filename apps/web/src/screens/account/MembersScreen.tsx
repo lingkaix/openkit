@@ -188,7 +188,7 @@ export function MembersScreen() {
         <ErrorBanner message={owner.transferOwnership.error.message} />
       ) : null}
 
-      {owner.isOwner && workspaceId && workspace ? (
+      {owner.canManage && workspaceId && workspace ? (
         <>
           <section aria-label="Workspace members">
             <Card className="flex flex-col gap-3">

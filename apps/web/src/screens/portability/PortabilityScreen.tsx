@@ -16,7 +16,6 @@ import {
   TextField,
 } from '../../primitives';
 import { useVault } from '../settings/data';
-import { useWorkspaceStore } from '../workspace-store';
 import {
   dryRunWorkspaceImportError,
   exportWorkspaceError,
@@ -38,15 +37,11 @@ import {
 export function PortabilityScreen() {
   const workspaces = useWorkspaces();
   const currentId = useCurrentWorkspaceId();
-  const storedId = useWorkspaceStore((state) => state.currentWorkspaceId);
   const { checking, failed } = useConnection();
   const disconnected = failed;
-  const workspace =
-    workspaces.data?.find((item) => item.id === currentId) ??
-    workspaces.data?.find((item) => item.id === storedId) ??
-    workspaces.data?.[0] ??
-    null;
-  const project = workspace && isPortabilityProjectKind(workspace.kind) ? workspace : null;
+  const workspace = workspaces.data?.find((item) => item.id === currentId) ?? null;
+  const project =
+    !workspaces.isError && workspace && isPortabilityProjectKind(workspace.kind) ? workspace : null;
   const stale = checking || disconnected || Boolean(workspaces.isError && workspaces.data);
 
   return (
@@ -56,7 +51,7 @@ export function PortabilityScreen() {
       )}
       {workspaces.isLoading && workspaces.data === undefined ? (
         <Skeleton lines={4} />
-      ) : workspaces.isError && workspaces.data === undefined ? (
+      ) : workspaces.isError ? (
         <ErrorBanner
           message="Couldn't load workspaces."
           onRetry={() => void workspaces.refetch()}

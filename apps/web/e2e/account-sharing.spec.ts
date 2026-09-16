@@ -39,14 +39,58 @@ function watchRuntimeErrors(page: Page) {
   return observation;
 }
 
-/** Proves browser storage contains only the existing persisted UI theme and no scoped values. */
-async function expectUiOnlyBrowserStorage(page: Page, forbiddenValues: string[]): Promise<void> {
+/** Allowed UI-only localStorage keys. Theme plus the explicit Workspace switcher envelope. */
+const UI_LOCAL_STORAGE_KEYS = new Set(['openkit-theme', 'openkit-workspace']);
+
+/** True when the persisted switcher record is the exact Zustand envelope. */
+function isWorkspaceSelectionEnvelope(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (key !== 'state' && key !== 'version') return false;
+  }
+  if ('version' in record && typeof record.version !== 'number') return false;
+  if (typeof record.state !== 'object' || record.state === null) return false;
+  const state = record.state as Record<string, unknown>;
+  for (const key of Object.keys(state)) {
+    if (key !== 'currentWorkspaceId' && key !== 'selectionUserKey') return false;
+  }
+  const currentWorkspaceId = state.currentWorkspaceId;
+  const selectionUserKey = state.selectionUserKey;
+  return (
+    (currentWorkspaceId === null || typeof currentWorkspaceId === 'string') &&
+    (selectionUserKey === null || typeof selectionUserKey === 'string')
+  );
+}
+
+/**
+ * Proves browser storage holds only UI presentation keys. `openkit-workspace` may
+ * retain an explicit authorized switcher selection; passwords, names, emails, and
+ * other server or auth secrets stay forbidden. After leave or logout the departed
+ * Workspace id must be absent; a still-authorized selected id after role downgrade
+ * may remain as currentWorkspaceId.
+ */
+async function expectUiOnlyBrowserStorage(
+  page: Page,
+  forbiddenValues: string[],
+  options: { allowSelectedWorkspaceId?: string } = {}
+): Promise<void> {
   const storage = await page.evaluate(() => ({
     local: Object.entries(localStorage),
     session: Object.entries(sessionStorage),
   }));
-  expect(storage.local.every(([key]) => key === 'openkit-theme')).toBe(true);
   expect(storage.session).toEqual([]);
+  expect(storage.local.every(([key]) => UI_LOCAL_STORAGE_KEYS.has(key))).toBe(true);
+  const workspaceEntry = storage.local.find(([key]) => key === 'openkit-workspace');
+  if (workspaceEntry) {
+    const parsed: unknown = JSON.parse(workspaceEntry[1]);
+    expect(isWorkspaceSelectionEnvelope(parsed)).toBe(true);
+    const selectedId = (parsed as { state: { currentWorkspaceId: string | null } }).state
+      .currentWorkspaceId;
+    if (options.allowSelectedWorkspaceId) {
+      expect(selectedId === null || selectedId === options.allowSelectedWorkspaceId).toBe(true);
+    }
+  }
   const retained = JSON.stringify(storage);
   for (const value of forbiddenValues) expect(retained).not.toContain(value);
 }
@@ -247,16 +291,19 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
     await expect(staleOwnerPage.getByRole('alert')).toContainText('Workspace access denied.');
     await expect(staleInvitations.getByRole('textbox', { name: 'Invitee email' })).toHaveValue('');
     await expect(staleOwnerPage.locator('body')).not.toContainText(deniedEmail);
-    await expectUiOnlyBrowserStorage(staleOwnerPage, [
-      password,
-      workspaceId,
-      workspaceName,
-      owner.email,
-      accepting.email,
-      declining.email,
-      leaving.email,
-      deniedEmail,
-    ]);
+    await expectUiOnlyBrowserStorage(
+      staleOwnerPage,
+      [
+        password,
+        workspaceName,
+        owner.email,
+        accepting.email,
+        declining.email,
+        leaving.email,
+        deniedEmail,
+      ],
+      { allowSelectedWorkspaceId: workspaceId }
+    );
     expect(staleRuntimeErrors.pageErrors).toEqual([]);
     expect(
       staleRuntimeErrors.consoleErrors.filter((message) => message === deniedConsoleError)

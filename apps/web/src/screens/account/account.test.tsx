@@ -1307,7 +1307,6 @@ describe('email/password session operations', () => {
       'ws-actor-a-cached-catalog',
       'user-actor-a-dashboard-viewer',
     ];
-    const guards = guardSensitiveSinks(actorAValues);
     const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
     let actorBMountStarted = false;
     let actorBReadStartedAfterMount = false;
@@ -1365,6 +1364,7 @@ describe('email/password session operations', () => {
       participants: [],
     });
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws-actor-a-cached-catalog' });
+    const guards = guardSensitiveSinks(actorAValues);
     const unrelatedQuery = queryClient
       .getQueryCache()
       .find({ exact: true, queryKey: unrelatedKey });
@@ -1846,7 +1846,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { container } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     expect(screen.getByRole('status', { name: /workspace members/i })).toBeInTheDocument();
     expect(screen.getByRole('status', { name: /workspace invitations/i })).toBeInTheDocument();
     expect(listWorkspaceMembers.mock.calls).toEqual([['ws1']]);
@@ -1986,7 +1986,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const stableCollection = screen.getByRole('region', { name: stableRegion });
     const stableRecord = await within(stableCollection).findByRole('row', { name: stableRow });
     const failedCollection = screen.getByRole('region', { name: failedRegion });
@@ -2028,9 +2028,9 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: workspaceIds[0] ?? null });
     renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    const roleEvidence = await screen.findByText(evidence);
     expect(screen.getByRole('button', { name: /sign out/i })).toBeEnabled();
-    expect(screen.getByText(evidence)).toBeInTheDocument();
+    expect(roleEvidence).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Workspace members' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /invite|remove member|transfer ownership|revoke/i })
@@ -2042,6 +2042,31 @@ describe('selected-Workspace owner management', () => {
     expect(methods.removeWorkspaceMember).not.toHaveBeenCalled();
     expect(methods.revokeWorkspaceInvitation).not.toHaveBeenCalled();
     expect(methods.transferWorkspaceOwnership).not.toHaveBeenCalled();
+  });
+
+  it('shows the Quick Chat owner role without sharing controls or owner reads', async () => {
+    const quickChat = {
+      ...OWNER_WORKSPACES.items[0],
+      workspace: {
+        ...OWNER_WORKSPACES.items[0].workspace,
+        id: 'ws_quick_chat_owner',
+        kind: 'quick-chat' as const,
+        name: 'Quick Chat',
+      },
+    };
+    const { client, methods } = makeSharingClient({
+      authorizedWorkspaces: { items: [quickChat] },
+      coreWorkspaces: [{ id: quickChat.workspace.id, kind: 'quick-chat', name: 'Quick Chat' }],
+    });
+    useWorkspaceStore.setState({ currentWorkspaceId: quickChat.workspace.id });
+    renderApp('/settings/account', client);
+
+    expect(await screen.findByText(/Current Workspace role: owner/i)).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Workspace members' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Workspace invitations' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /leave workspace/i })).not.toBeInTheDocument();
+    expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
+    expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2059,7 +2084,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
     const user = userEvent.setup();
     const email = (await within(invitations).findByRole('textbox', {
@@ -2121,7 +2146,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const members = screen.getByRole('region', { name: 'Workspace members' });
     const editor = await within(members).findByRole('row', { name: /user-editor.*editor/i });
     const user = userEvent.setup();
@@ -2283,7 +2308,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const region = screen.getByRole('region', {
       name: method === 'revokeWorkspaceInvitation' ? 'Workspace invitations' : 'Workspace members',
     });
@@ -2350,7 +2375,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const members = screen.getByRole('region', { name: 'Workspace members' });
     const editor = await within(members).findByRole('row', { name: /user-editor.*editor/i });
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
@@ -2386,7 +2411,6 @@ describe('selected-Workspace owner management', () => {
     await waitFor(() => expect(appearanceNavigation).toHaveAttribute('aria-current', 'page'));
     await user.click(screen.getByRole('button', { name: 'Account' }));
 
-    await screen.findByRole('heading', { name: 'Account' });
     expect(
       await screen.findByText(/current.*role.*editor|editor.*current.*role/i)
     ).toBeInTheDocument();
@@ -2419,7 +2443,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
     expect(await within(invitations).findByText(/no invitations/i)).toBeInTheDocument();
     expect(
@@ -2462,7 +2486,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const members = screen.getByRole('region', { name: 'Workspace members' });
     const editor = await within(members).findByRole('row', { name: /user-editor.*editor/i });
     const user = userEvent.setup();
@@ -2585,7 +2609,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const ownerRegion = screen.getByRole('region', { name: region });
     const target = await within(ownerRegion).findByRole('row', { name: row });
     if (precludedState) expect(target).not.toHaveTextContent(precludedState);
@@ -2639,7 +2663,7 @@ describe('selected-Workspace owner management', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
     const email = (await within(invitations).findByRole('textbox', {
       name: /invitee email/i,
@@ -2762,7 +2786,7 @@ describe('account-level My invitations', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     expect(
       await within(screen.getByRole('region', { name: 'Workspace members' })).findByRole('row', {
         name: /user-owner.*owner/i,
@@ -3074,14 +3098,15 @@ describe('selected-membership self-leave', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
-    expect(screen.getByText(/current.*role.*editor|editor.*current.*role/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/current.*role.*editor|editor.*current.*role/i)
+    ).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Workspace members' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /invite|remove member|transfer ownership|revoke/i })
     ).not.toBeInTheDocument();
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: /leave workspace/i }));
+    await user.click(await screen.findByRole('button', { name: /leave workspace/i }));
     expect(leaveWorkspace).not.toHaveBeenCalled();
     const dialog = screen.getByRole('dialog', { name: /confirm.*leave|leave.*confirm/i });
     const confirm = within(dialog).getByRole('button', { name: /confirm|leave/i });
@@ -3120,7 +3145,7 @@ describe('selected-membership self-leave', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: /leave workspace/i }));
     const dialog = screen.getByRole('dialog', { name: /confirm.*leave|leave.*confirm/i });
@@ -3153,7 +3178,7 @@ describe('selected-membership self-leave', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
+    await screen.findByText(/Current Workspace role:/i);
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: /leave workspace/i }));
     const dialog = screen.getByRole('dialog', { name: /confirm.*leave|leave.*confirm/i });

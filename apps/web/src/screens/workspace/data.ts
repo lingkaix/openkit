@@ -546,8 +546,13 @@ export function useCreateWorkspace() {
   return useMutation({
     mutationFn: (name: string): Promise<WorkspaceRecord> =>
       client.core.createWorkspace({ name, requestId: createRequestId() }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+    onSuccess: (workspace) => {
+      queryClient.setQueryData<WorkspaceRecord[]>(chatKeys.workspaces, (current) => {
+        if (!current) return [workspace];
+        if (current.some((item) => item.id === workspace.id)) return current;
+        return [...current, workspace];
+      });
+      void queryClient.invalidateQueries({ queryKey: chatKeys.workspaces });
     },
   });
 }

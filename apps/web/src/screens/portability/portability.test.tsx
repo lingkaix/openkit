@@ -759,6 +759,9 @@ describe('Portability', () => {
     const loadAlert = await screen.findByRole('alert');
     expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
     expect(loadAlert).not.toHaveTextContent('workspace-private failure');
+    expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Export workspace' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/no project workspace selected/i)).not.toBeInTheDocument();
     await user.click(within(loadAlert).getByRole('button', { name: 'Try again' }));
 
     await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
@@ -802,6 +805,38 @@ describe('Portability', () => {
     expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
     expect(client.app.importWorkspace).not.toHaveBeenCalled();
     expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+  });
+
+  it('does not use a stored or first cached Workspace while discovery is stale-errored', async () => {
+    const user = userEvent.setup();
+    useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });
+    const listWorkspaces = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [WORKSPACE, WORKSPACE_B] })
+      .mockRejectedValueOnce(new Error('workspace-private failure'))
+      .mockResolvedValue({ items: [WORKSPACE, WORKSPACE_B] });
+    const client = makeClient({ core: { listWorkspaces } });
+    const { queryClient } = renderApp('/settings/portability', client);
+
+    expect(await screen.findByRole('button', { name: 'Export workspace' })).toBeEnabled();
+    expect(screen.getByText(WORKSPACE.name, { exact: true })).toBeInTheDocument();
+
+    await queryClient.refetchQueries({ exact: true, queryKey: chatKeys.workspaces });
+    const loadAlert = await screen.findByRole('alert');
+    expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
+    expect(loadAlert).not.toHaveTextContent('workspace-private failure');
+    expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('main')).queryByRole('button', { name: 'Export workspace' })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /rebind/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/no project workspace selected/i)).not.toBeInTheDocument();
+
+    await user.click(within(loadAlert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('button', { name: 'Export workspace' })).toBeEnabled();
+    expect(screen.getByText(WORKSPACE.name, { exact: true })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('exports the selected Workspace, reviews an import dry-run before apply, and rebinds from an authoritative refetch', async () => {
@@ -1442,12 +1477,12 @@ describe('Portability', () => {
     await waitFor(() => {
       expect(listWorkspaces).toHaveBeenCalledTimes(2);
       expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
-      expect(screen.getByText('Unbound', { exact: true })).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent(/couldn't load workspaces/i);
+      expect(screen.queryByRole('button', { name: 'Export workspace' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /rebind/i })).not.toBeInTheDocument();
+      expect(screen.queryByText(/no project workspace selected/i)).not.toBeInTheDocument();
       expect(screen.queryByLabelText('Loading')).not.toBeInTheDocument();
-      expect(
-        screen.getByText(/status may be stale|couldn't load workspaces|couldn't refresh/i)
-      ).toBeInTheDocument();
     });
     expect(screen.queryByText('workspace-private failure')).not.toBeInTheDocument();
     assertNoLeakedInternals(queryClient);

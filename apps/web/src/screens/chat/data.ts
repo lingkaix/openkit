@@ -80,37 +80,74 @@ export function useWorkspaces() {
   });
 }
 
+/** Quick Chat Workspace id used to scope persisted switcher selection to one signed-in identity. */
+function workspaceSelectionUserKey(workspaces: Array<{ id: string; kind: string }>): string | null {
+  return workspaces.find((workspace) => workspace.kind === 'quick-chat')?.id ?? null;
+}
+
 /**
  * Returns the exact route Workspace when one is supplied and authorized. Without
  * route lineage, returns the current selection, Quick Chat, the first authorized
- * Workspace, or null when discovery is unresolved or empty.
+ * Workspace, or null when discovery is unresolved or empty. Persisted selection
+ * restores only when it remains authorized for the signed-in identity.
  *
  * @param preferredWorkspaceId Workspace identity carried by the current route, when present.
  * @returns Authorized Workspace identity, or null before discovery resolves or when none exists.
  */
 export function useCurrentWorkspaceId(preferredWorkspaceId?: string | null): string | null {
   const selected = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const selectionUserKey = useWorkspaceStore((s) => s.selectionUserKey);
   const setSelected = useWorkspaceStore((s) => s.setCurrentWorkspaceId);
+  const bindSelectionUserKey = useWorkspaceStore((s) => s.bindSelectionUserKey);
   const workspaces = useWorkspaces();
   const preferred = preferredWorkspaceId
     ? (workspaces.data?.find((workspace) => workspace.id === preferredWorkspaceId)?.id ?? null)
     : null;
+  const actorKey = workspaces.data ? workspaceSelectionUserKey(workspaces.data) : null;
 
-  // Push route Workspace into the switcher when lineage appears. Do not
-  // re-run when `selected` changes, or a switcher change from a Thread page
-  // would snap back to the old route before navigation unmounts that Thread.
+  useEffect(() => {
+    if (!workspaces.isSuccess || !workspaces.data) return;
+    const state = useWorkspaceStore.getState();
+    const nextActorKey = workspaceSelectionUserKey(workspaces.data);
+    if (nextActorKey && state.selectionUserKey && state.selectionUserKey !== nextActorKey) {
+      setSelected(null);
+      bindSelectionUserKey(nextActorKey);
+      return;
+    }
+    if (nextActorKey && state.selectionUserKey !== nextActorKey) {
+      bindSelectionUserKey(nextActorKey);
+    }
+    const selectedId = useWorkspaceStore.getState().currentWorkspaceId;
+    if (selectedId && !workspaces.data.some((workspace) => workspace.id === selectedId)) {
+      setSelected(null);
+      if (nextActorKey) bindSelectionUserKey(nextActorKey);
+    }
+  }, [bindSelectionUserKey, setSelected, workspaces.data, workspaces.isSuccess]);
+
+  // Push route Workspace into the switcher when lineage appears. Re-run when
+  // the signed-in identity changes so a still-authorized route Workspace is
+  // restored after identity cleanup. Do not re-run when `selected` changes, or
+  // a switcher change from a Thread page would snap back to the old route
+  // before navigation unmounts that Thread.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: identity change must re-sync the unchanged route after selection cleanup
   useEffect(() => {
     if (preferred && useWorkspaceStore.getState().currentWorkspaceId !== preferred) {
       setSelected(preferred);
     }
-  }, [preferred, setSelected]);
+  }, [actorKey, preferred, setSelected]);
 
   if (!workspaces.isSuccess) return null;
   if (preferredWorkspaceId) {
     return preferred;
   }
+  const scopedSelected =
+    selected &&
+    (!selectionUserKey || !actorKey || selectionUserKey === actorKey) &&
+    workspaces.data.some((workspace) => workspace.id === selected)
+      ? selected
+      : null;
   return (
-    workspaces.data.find((workspace) => workspace.id === selected)?.id ??
+    scopedSelected ??
     workspaces.data.find((workspace) => workspace.kind === 'quick-chat')?.id ??
     workspaces.data[0]?.id ??
     null

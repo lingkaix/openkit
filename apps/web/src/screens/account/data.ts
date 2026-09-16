@@ -1,7 +1,7 @@
 import { ApiCallError, type CoreClient, parseWorkspaceSharingError } from '@openkit/core-client';
 import { useIsFetching, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
-import { useCurrentWorkspaceId } from '../chat/data';
+import { chatKeys, useCurrentWorkspaceId } from '../chat/data';
 import { useWorkspaceStore } from '../workspace-store';
 import { accountAdmissionKey, myInvitationDecisionMutationKey, myInvitationsKey } from './session';
 
@@ -177,15 +177,11 @@ function replaceInvitation(
 /** Resolves the exact selected authorized Workspace without scanning another collection. */
 function useSelectedAccountWorkspace() {
   const queryClient = useQueryClient();
-  const sharedWorkspaceId = useCurrentWorkspaceId();
-  const persistedWorkspaceId = useWorkspaceStore((state) => state.currentWorkspaceId);
+  const selectedWorkspaceId = useCurrentWorkspaceId();
   const admission =
     queryClient.getQueryData<Awaited<ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>>>(
       accountAdmissionKey
     );
-  const selectedWorkspaceId =
-    admission?.items.find((item) => item.workspace.id === persistedWorkspaceId)?.workspace.id ??
-    sharedWorkspaceId;
 
   return {
     selectedWorkspace:
@@ -421,18 +417,20 @@ export function useWorkspaceOwnerManagement() {
       : undefined);
   const effectiveWorkspace =
     transferCurrent?.workspace.id === selectedWorkspaceId ? transferCurrent : selectedWorkspace;
-  const isOwner = effectiveWorkspace?.effectiveRole === 'owner';
+  const canManage =
+    effectiveWorkspace?.effectiveRole === 'owner' &&
+    effectiveWorkspace.workspace.kind !== 'quick-chat';
   const members = useQuery({
     queryKey: ownerManagementKeys.members(selectedWorkspaceId ?? ''),
     queryFn: () => client.app.listWorkspaceMembers(selectedWorkspaceId as string),
-    enabled: Boolean(selectedWorkspaceId) && isOwner,
+    enabled: Boolean(selectedWorkspaceId) && canManage,
     retry: false,
     structuralSharing: false,
   });
   const invitations = useQuery({
     queryKey: ownerManagementKeys.invitations(selectedWorkspaceId ?? ''),
     queryFn: () => client.app.listWorkspaceInvitations(selectedWorkspaceId as string),
-    enabled: Boolean(selectedWorkspaceId) && isOwner,
+    enabled: Boolean(selectedWorkspaceId) && canManage,
     retry: false,
     structuralSharing: false,
   });
@@ -442,7 +440,7 @@ export function useWorkspaceOwnerManagement() {
     createInvitation,
     effectiveWorkspace,
     invitations,
-    isOwner,
+    canManage,
     members,
     removeMember,
     revokeInvitation,
@@ -520,26 +518,34 @@ export function useSelfLeave() {
 
   /** Settles one exact membership projection into the protected authorized-Workspace cache. */
   function settleMembership(member: AccountWorkspaceMember) {
+    const departed = member.status === 'removed' || member.effectiveRole === null;
     queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>>>(
       accountAdmissionKey,
       (current) =>
         current
           ? {
-              items:
-                member.status === 'removed' || member.effectiveRole === null
-                  ? current.items.filter((item) => item.workspace.id !== member.workspaceId)
-                  : current.items.map((item) =>
-                      item.workspace.id === member.workspaceId
-                        ? {
-                            ...item,
-                            effectiveRole: member.effectiveRole,
-                            membershipRevision: member.revision,
-                          }
-                        : item
-                    ),
+              items: departed
+                ? current.items.filter((item) => item.workspace.id !== member.workspaceId)
+                : current.items.map((item) =>
+                    item.workspace.id === member.workspaceId
+                      ? {
+                          ...item,
+                          effectiveRole: member.effectiveRole,
+                          membershipRevision: member.revision,
+                        }
+                      : item
+                  ),
             }
           : current
     );
+    if (!departed) return;
+    if (useWorkspaceStore.getState().currentWorkspaceId === member.workspaceId) {
+      useWorkspaceStore.getState().setCurrentWorkspaceId(null);
+    }
+    queryClient.setQueryData<Array<{ id: string }>>(chatKeys.workspaces, (current) =>
+      current?.filter((item) => item.id !== member.workspaceId)
+    );
+    void queryClient.refetchQueries({ exact: true, queryKey: chatKeys.workspaces });
   }
 
   const leave = useMutation<
