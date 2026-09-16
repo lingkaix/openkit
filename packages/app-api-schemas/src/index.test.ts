@@ -2434,6 +2434,19 @@ describe('app api schemas', () => {
       runtimeOriginRef: `rto_${'a'.repeat(24)}`,
       runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
     });
+    expect(
+      CapabilityUsageResponseSchema.parse({
+        ...parsed,
+        capabilityCalls: [
+          {
+            ...parsed.capabilityCalls[0],
+            capabilityId: 'workspace.git.push',
+            family: 'network',
+            operation: 'git.push',
+          },
+        ],
+      }).capabilityCalls[0]?.family
+    ).toBe('network');
     expect(() =>
       CapabilityUsageResponseSchema.parse({
         ...parsed,

@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 /** Read-only capability call evidence with ledger routing metadata. */
 export const CapabilityUsageCallSchema = CapabilityCallSchema.extend({
-  family: z.enum(['llm', 'mcp', 'knowledge', 'runtime', 'storage', 'workspace']),
+  family: z.enum(['llm', 'mcp', 'knowledge', 'network', 'runtime', 'storage', 'workspace']),
   operation: z.string().min(1),
   providerRef: z.string().min(1).nullable().default(null),
   serviceRef: z.string().min(1).nullable().default(null),
