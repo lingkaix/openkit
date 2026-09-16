@@ -43,6 +43,8 @@ A successful `conversation.submit` command or `outcome: accepted` confirms comma
 
 Treat artifacts and evidence as review inputs, not automatic proof of correctness. Compare them with the objective, constraints, requested verification, and durable status before recommending acceptance.
 
+For a reusable document or report, discover `artifact.import`, `artifact.read`, and `artifact.introduce`. Import preserves one immutable content version and its origin. Introduction into an idle Thread adds a reference only; it does not ask an agent to read the file or start work. To request a bounded answer from its contents, submit `conversation.submit` with the exact `{ artifactId, artifactVersion }` in `artifactRefs` and the selected logical model. Compare the answer with the read-back content rather than inferring delivery from a title or reference Item. A local report query or a topic such as Web testing does not itself request external browsing; actual external search remains unavailable in Chat Mode.
+
 Use an accepted refine, redo, steering, pause, resume, interrupt, or stop operation only when CLI discovery exposes it and the durable state permits it. Never claim that an active-turn input was delivered merely because a local call completed; report the durable delivery outcome returned by NanoCore.
 
 ## Close or hand off

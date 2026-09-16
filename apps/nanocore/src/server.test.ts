@@ -400,12 +400,109 @@ function testProviderRegistry(): ProviderRegistry {
 function conversationRequest(input: {
   readonly input: string;
   readonly requestId: string;
+  readonly artifactRefs?: readonly {
+    readonly artifactId: string;
+    readonly artifactVersion: number;
+  }[];
 }): string {
   return JSON.stringify({
-    ...input,
+    input: input.input,
+    requestId: input.requestId,
     targetRef: 'internal-role:assistant',
-    artifactRefs: [],
+    artifactRefs: input.artifactRefs ?? [],
   });
+}
+
+/** Live Chat Mode prompt that must not be classified as external search. */
+const LIVE_GOAL_WEB_CHAT_PROMPT =
+  '请只阅读本次明确附加的维护报告，回复报告中的验收标记和已通过的 Goal Web 测试数量。如果无法读取正文，请明确说明，不要猜测。不要执行开发任务、修改文件或配置。';
+
+/** Unique marker in the synthetic maintenance report body. */
+const LIVE_GOAL_WEB_REPORT_MARKER = 'ACCEPTANCE_MARK=GOAL-WEB-PASSED-7';
+
+/**
+ * Creates one imported Markdown Artifact visible to Chat Mode attachment.
+ *
+ * @param store Store that owns Demo Workspace artifacts.
+ * @param input Artifact identity and body.
+ * @returns Created Artifact.
+ */
+function createImportedMarkdownArtifact(
+  store: FsStore,
+  input: {
+    readonly id: string;
+    readonly workspaceId?: string;
+    readonly title: string;
+    readonly body: string;
+    readonly requestId: string;
+  }
+): ReturnType<FsStore['createArtifact']> {
+  const timestamp = new Date().toISOString();
+  const contentDigest = artifactDigest(input.body);
+  return store.createArtifact({
+    id: input.id,
+    workspaceId: input.workspaceId ?? 'ws_demo',
+    threadId: null,
+    turnId: null,
+    kind: 'file',
+    title: input.title,
+    status: 'ready',
+    summary: null,
+    version: 1,
+    content: { format: 'markdown', body: input.body },
+    contentDigest,
+    lastMutationRequestId: input.requestId,
+    origin: {
+      kind: 'imported',
+      sourceKind: 'direct-import',
+      sourceId: input.requestId,
+      sourceDigest: contentDigest,
+      actor: { kind: 'user', id: LOCAL_USER_ID },
+      requestId: input.requestId,
+      recordedAt: timestamp,
+    },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+}
+
+/**
+ * Builds the existing Chat answering provider fixture and records user prompts.
+ *
+ * @param prompts Captured provider user prompts.
+ * @returns App options that admit Assistant Chat completions.
+ */
+function chatAnsweringProvider(
+  prompts: string[]
+): Pick<CreateAppOptions, 'gatewayConfig' | 'internalRoleProfiles' | 'llmPiAiClient'> {
+  const gatewayConfig = createTestGatewayConfig();
+  return {
+    gatewayConfig,
+    internalRoleProfiles: {
+      schemaVersion: 1,
+      defaultLogicalModelId: gatewayConfig.defaultLogicalModelId,
+      profiles: [],
+    },
+    llmPiAiClient: {
+      createChatCompletion: async (_provider, request) => {
+        const user = request.messages.find((message) => message.role === 'user');
+        prompts.push(typeof user?.content === 'string' ? user.content : '');
+        return {
+          id: 'chatcmpl_assistant_chat',
+          object: 'chat.completion',
+          created: 1,
+          model: request.model,
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: 'Assistant answer.' },
+              finish_reason: 'stop',
+            },
+          ],
+        };
+      },
+    } as unknown as PiAiGatewayClient,
+  };
 }
 
 /**
@@ -8056,6 +8153,152 @@ describe('nanocore server', () => {
       expect(res.status).toBe(200);
       const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
+      expect(parsed).toMatchObject({
+        outcome: 'refused',
+        explanation: 'External search is not enabled for Chat Mode.',
+        handoff: null,
+      });
+      expect(executor.startContexts).toHaveLength(0);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('answers the exact live Goal Web report prompt from an attached Artifact in Quick Chat', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const prompts: string[] = [];
+    const thread = store.createThread('ws_quick_chat', 'Live Goal Web report');
+    const artifact = createImportedMarkdownArtifact(store, {
+      id: 'ar_live_goal_web_report',
+      workspaceId: 'ws_quick_chat',
+      title: '维护报告',
+      body: `# Maintenance report\n\n${LIVE_GOAL_WEB_REPORT_MARKER}\n`,
+      requestId: 'artifact-import-live-goal-web-1',
+    });
+    const app = createApp({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      ...chatAnsweringProvider(prompts),
+    });
+
+    try {
+      const res = await app.request(
+        `/api/app/workspaces/ws_quick_chat/threads/${thread.id}/conversation-turns`,
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000401',
+            input: LIVE_GOAL_WEB_CHAT_PROMPT,
+            artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(res.status, await res.clone().text()).toBe(200);
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
+      expect(parsed).toMatchObject({
+        outcome: 'answered',
+        explanation: 'The Assistant answered directly.',
+        handoff: null,
+      });
+      expect(prompts).toEqual([expect.stringContaining(LIVE_GOAL_WEB_CHAT_PROMPT)]);
+      expect(prompts[0]).toContain(LIVE_GOAL_WEB_REPORT_MARKER);
+      expect(prompts[0]).toContain(
+        `Artifact ${artifact.title} (${artifact.id} v${artifact.version}):`
+      );
+      expect(executor.startContexts).toHaveLength(0);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'Count Goal Web tests in this report.',
+    'Explain how the internet works.',
+    'Discuss the Google product family.',
+    'Explain Google services.',
+    'Google is a company.',
+    'Search this attached report for the acceptance marker.',
+  ])('answers Chat Mode topic or local-report reading without external-search refusal: %s', async (input) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const prompts: string[] = [];
+    const thread = store.createThread('ws_quick_chat', 'Topic mention');
+    const app = createApp({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      ...chatAnsweringProvider(prompts),
+    });
+
+    try {
+      const res = await app.request(
+        `/api/app/workspaces/ws_quick_chat/threads/${thread.id}/conversation-turns`,
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: `0190f4c8-0000-7000-8000-0000000004${String(input.length).padStart(2, '0')}`,
+            input,
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(res.status, await res.clone().text()).toBe(200);
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
+      expect(parsed).toMatchObject({
+        outcome: 'answered',
+        explanation: 'The Assistant answered directly.',
+        handoff: null,
+      });
+      expect(prompts).toHaveLength(1);
+      expect(executor.startContexts).toHaveLength(0);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'Search the web for NanoCore release notes.',
+    'Browse an external URL for NanoCore docs.',
+    'Google for NanoCore release notes.',
+    'Google NanoCore release notes.',
+    'Please Google NanoCore release notes.',
+    'Can you Google NanoCore release notes.',
+    'Look up NanoCore online.',
+  ])('refuses explicit external search even with an attached Artifact: %s', async (input) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const artifact = createImportedMarkdownArtifact(store, {
+      id: `ar_explicit_search_${input.length}`,
+      title: 'Attached notes',
+      body: '# Notes\n',
+      requestId: `artifact-import-explicit-search-${input.length}`,
+    });
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+
+    try {
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: `0190f4c8-0000-7000-8000-0000000005${String(input.length).padStart(2, '0')}`,
+            input,
+            artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(res.status).toBe(200);
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
       expect(parsed).toMatchObject({
         outcome: 'refused',
         explanation: 'External search is not enabled for Chat Mode.',

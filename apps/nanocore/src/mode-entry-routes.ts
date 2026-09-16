@@ -1469,13 +1469,21 @@ function isClarificationChatPrompt(prompt: string): boolean {
 }
 
 /**
- * Returns true when Chat Mode is being asked to use external search.
+ * Returns true when Chat Mode is being asked to perform explicit external search or browsing.
  *
  * @param prompt User prompt.
- * @returns Whether the prompt asks for unavailable external search.
+ * @returns Whether the prompt asks for unavailable external search or browsing.
  */
 function isExternalSearchChatPrompt(prompt: string): boolean {
-  return /\b(search|browse|look\s+up|google|web|internet)\b/i.test(prompt);
+  const text = prompt.trim();
+  return (
+    /(?:\bsearch\s+(?:the\s+)?(?:web|internet)\b|\b(?:web|internet)\s+search\b|\bsearch\s+online\b|\bbrowse\s+(?:the\s+)?(?:web|internet)\b|\bbrowse\s+(?:an\s+)?external\s+(?:url|site)\b|\bbrowse\s+https?:\/\/|\blook\s+up(?:\s+\S+)*\s+online\b|\blook\s+up\s+(?:on\s+)?(?:google|(?:the\s+)?(?:web|internet))\b)/i.test(
+      text
+    ) ||
+    /^(?:(?:please|can you)\s+)?google\s+(?:for\s+|search\s+|(?!is\b|are\b|was\b|were\b)\S+)/i.test(
+      text
+    )
+  );
 }
 
 /**
