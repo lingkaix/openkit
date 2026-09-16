@@ -320,6 +320,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
     app: {
       listAuthorizedWorkspaces: vi.fn().mockResolvedValue({ items: [] }),
       getWorkspaceDashboard: vi.fn().mockResolvedValue({ activeWork: [] }),
+      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listInterruptedWorkers: vi.fn().mockResolvedValue({ items: ALL_WORKERS }),
       retryInterruptedWorkerCheckpoint: vi.fn().mockResolvedValue(WORKER_RETRY_SUCCESS),
       listSchedulerAdmissions: vi
@@ -1902,9 +1903,8 @@ describe('Recovery and search', () => {
     expect(useWorkspaceStore.getState().currentWorkspaceId).not.toBe(WORKSPACE.id);
     expect(events).toEqual(['workspace', 'navigate']);
     await waitFor(() =>
-      expect(vi.mocked(client.app.getWorkspaceDashboard)).toHaveBeenCalledWith(WORKSPACE_B.id)
+      expect(vi.mocked(client.app.listConversationNavigation)).toHaveBeenCalledWith(WORKSPACE_B.id)
     );
-    expect(vi.mocked(client.app.getWorkspaceDashboard)).not.toHaveBeenCalledWith(WORKSPACE.id);
     expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
     unsubscribe();
     poisonDom();
@@ -2990,18 +2990,18 @@ describe('Recovery and search', () => {
     const listThreadItems = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
     const getThreadDashboard = vi.fn().mockResolvedValue({ turns: [] });
     const getWorkspaceDashboard = vi.fn().mockResolvedValue({ activeWork: [] });
-    const listThreads = vi.fn().mockResolvedValue({ items: [] });
+    const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     const client = makeClient(
       {
         search: vi.fn().mockResolvedValue({ items: scenario.items }),
         getThreadDashboard,
         getWorkspaceDashboard,
+        listConversationNavigation,
       },
       {
         listWorkspaces: vi.fn().mockReturnValue(discovery.promise),
         getThread,
         listThreadItems,
-        listThreads,
       }
     );
     useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });
@@ -3021,7 +3021,7 @@ describe('Recovery and search', () => {
       getThread.mock.calls.length,
       getThreadDashboard.mock.calls.length,
       listThreadItems.mock.calls.length,
-      listThreads.mock.calls.length,
+      listConversationNavigation.mock.calls.length,
     ];
     await user.click(screen.getByRole('button', { name: scenario.title }));
     expect(pathname).toBe('/chat');
@@ -3031,7 +3031,7 @@ describe('Recovery and search', () => {
       getThread.mock.calls.length,
       getThreadDashboard.mock.calls.length,
       listThreadItems.mock.calls.length,
-      listThreads.mock.calls.length,
+      listConversationNavigation.mock.calls.length,
     ]).toEqual(readsBeforePendingActivation);
     expect(events).toEqual([]);
 
@@ -3039,14 +3039,15 @@ describe('Recovery and search', () => {
       discovery.resolve({ items: [WORKSPACE, WORKSPACE_B] });
       await discovery.promise;
     });
-    await waitFor(() => expect(listThreads).toHaveBeenCalledWith(WORKSPACE.id));
+    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith(WORKSPACE.id));
     const workspaceAReadsBeforeDestination = [
       getWorkspaceDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
         .length,
       getThread.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
       getThreadDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
       listThreadItems.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
-      listThreads.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
+      listConversationNavigation.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
+        .length,
     ];
 
     if (pathname !== scenario.destination) {
@@ -3061,10 +3062,11 @@ describe('Recovery and search', () => {
       getThread.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
       getThreadDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
       listThreadItems.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
-      listThreads.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
+      listConversationNavigation.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
+        .length,
     ]).toEqual(workspaceAReadsBeforeDestination);
     if (scenario.destination === '/') {
-      await waitFor(() => expect(getWorkspaceDashboard).toHaveBeenCalledWith(WORKSPACE_B.id));
+      await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith(WORKSPACE_B.id));
     } else {
       await waitFor(() =>
         expect(getThread).toHaveBeenCalledWith(WORKSPACE_B.id, SEARCH_CROSS_WORKSPACE.id)
