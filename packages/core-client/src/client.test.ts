@@ -617,6 +617,7 @@ function threadDashboard() {
     participants: [],
     thread: thread(),
     turns: [turn()],
+    taskInputs: [{ itemId: 'item_request', objective: 'Inspect the linked repository.' }],
     artifacts: [
       {
         id: 'artifact_demo',
@@ -4331,9 +4332,9 @@ describe('createCoreClient', () => {
     await expect(client.app.getWorkspaceDashboard('ws_demo')).resolves.toEqual(
       workspaceDashboard()
     );
-    await expect(client.app.getThreadDashboard('ws_demo', 'th_demo')).resolves.not.toHaveProperty(
-      'activeSession'
-    );
+    const dashboard = await client.app.getThreadDashboard('ws_demo', 'th_demo');
+    expect(dashboard).not.toHaveProperty('activeSession');
+    expect(dashboard.taskInputs).toEqual(threadDashboard().taskInputs);
     await expect(client.app.getThreadGoalSummary('ws_demo', 'th_demo')).resolves.toEqual(
       threadGoalSummary()
     );

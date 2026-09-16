@@ -114178,6 +114178,27 @@
               "href"
             ],
             "additionalProperties": false
+          },
+          "taskInputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "itemId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "objective": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "itemId",
+                "objective"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -114188,7 +114209,8 @@
           "artifacts",
           "workStatus",
           "composer",
-          "itemLog"
+          "itemLog",
+          "taskInputs"
         ],
         "additionalProperties": false
       },
@@ -116626,5 +116648,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:81ef3843cbcda3cbbd9978fdfef0a7d17309dd9fe81c4fb4e9801b9e78aa9988"
+  "x-openkit-source-digest": "sha256:62a2363cd874cace55836c326c5813845b5f4bd9f9ee49f850cc389df45bef55"
 }

@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import * as database from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -72,6 +73,7 @@ describe('thread dashboard app API', () => {
     coreDb.sqlite
       .prepare('UPDATE users SET display_name = ? WHERE id = ?')
       .run('Simon', 'user_local');
+    const openedWorkspaceDb = vi.spyOn(database, 'openWorkspaceDb');
     try {
       const response = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
@@ -79,6 +81,9 @@ describe('thread dashboard app API', () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.viewerUserId).toBe('user_local');
+      expect(body.taskInputs).toEqual([]);
+      expect(openedWorkspaceDb).toHaveBeenCalled();
+      expect(openedWorkspaceDb.mock.results.at(-1)?.value.sqlite.open).toBe(false);
       expect(body.participants).toEqual(
         expect.arrayContaining([
           { kind: 'user', id: 'user_local', displayName: 'Simon' },
@@ -90,6 +95,7 @@ describe('thread dashboard app API', () => {
       expect(body.participants).toHaveLength(4);
       expect(JSON.stringify(body.participants)).not.toContain('@example.com');
     } finally {
+      openedWorkspaceDb.mockRestore();
       coreDb.sqlite.close();
     }
   });

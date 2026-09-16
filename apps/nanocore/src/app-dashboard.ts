@@ -22,6 +22,7 @@ import {
 } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
 import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runtime-config.js';
+import { projectThreadTaskInputs } from './context/worker-context-projection.js';
 import type { FsStore } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import { registerAppApiRoute } from './openapi.js';
@@ -726,6 +727,23 @@ export function registerDashboardRoutes({
         (artifact) => artifact.threadId === threadId && visibleArtifactIds.has(artifact.id)
       );
       const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
+      let taskInputs: ThreadDashboardResponse['taskInputs'] = [];
+      if (coreDb) {
+        let workspaceDb: WorkspaceDb | undefined;
+        try {
+          workspaceDb = repositoryWorkspaceDb(workspaceId);
+          taskInputs = projectThreadTaskInputs({
+            coreDb,
+            store,
+            threadId,
+            workspaceDb,
+          });
+        } catch {
+          taskInputs = [];
+        } finally {
+          workspaceDb?.sqlite.close();
+        }
+      }
 
       return c.json(
         ThreadDashboardResponseSchema.parse({
@@ -751,6 +769,7 @@ export function registerDashboardRoutes({
           itemLog: {
             href: `/api/app/workspaces/${workspaceId}/threads/${threadId}/items`,
           },
+          taskInputs,
         })
       );
     } catch (error) {

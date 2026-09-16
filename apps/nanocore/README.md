@@ -1,5 +1,7 @@
 # nanocore
 
+The authorized Thread dashboard derives taskInputs objective summaries through the existing full Context Package verifier and exact request Item. Invalid or missing provenance omits only that summary; stored messages and runtime identity remain unchanged.
+
 The authorized Thread dashboard projects the authenticated viewer and only recorded Item actors and assigned Turn Agents with current User or Agent display names. It exposes no email or unrelated user directory; absent names retain stable actor ids.
 
 `nanocore` is the tiny real demo core server for the UI-first protocol slice.

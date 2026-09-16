@@ -87,6 +87,14 @@ export const WorkspaceAttentionSchema = z.object({
   updatedAt: z.string().min(1),
 });
 
+/** Derived initiating-request summary from one fully verified worker Context Package trace. */
+export const ThreadTaskInputSchema = z
+  .object({
+    itemId: z.string().min(1),
+    objective: z.string().min(1),
+  })
+  .strict();
+
 /** Thread-level product work status shown above the protocol item stream. */
 export const ThreadWorkStatusSchema = z.object({
   currentMode: ProductWorkModeSchema,
@@ -653,6 +661,7 @@ export const ThreadDashboardResponseSchema = z.object({
   itemLog: z.object({
     href: z.string().min(1),
   }),
+  taskInputs: z.array(ThreadTaskInputSchema),
 });
 
 /** Agent health refresh response payload. */
@@ -811,6 +820,8 @@ export type ListSchedulerAdmissionsResponse = z.infer<typeof ListSchedulerAdmiss
 export type WorkspaceDashboardResponse = z.infer<typeof WorkspaceDashboardResponseSchema>;
 /** Thread dashboard response payload. */
 export type ThreadDashboardResponse = z.infer<typeof ThreadDashboardResponseSchema>;
+/** Derived initiating-request summary on the authorized Thread dashboard. */
+export type ThreadTaskInput = z.infer<typeof ThreadTaskInputSchema>;
 /** Agent health refresh response payload. */
 export type AgentHealthRefreshResponse = z.infer<typeof AgentHealthRefreshResponseSchema>;
 /** Thread item replay response payload. */

@@ -50,6 +50,8 @@ export interface ItemViewProps {
   answerError?: boolean;
   /** Retry the exact answer command retained by its mutation owner. */
   onRetryAnswers?: () => void;
+  /** Dashboard initiating-request objective for this Item id, when the verified trace supplied one. */
+  requestObjective?: string;
 }
 
 /** Properties for one protocol user-input request's bounded inline form. */
@@ -261,18 +263,33 @@ export function ItemView({
   answerPending,
   answerError,
   onRetryAnswers,
+  requestObjective,
 }: ItemViewProps) {
   switch (item.type) {
-    case 'user-message':
+    case 'user-message': {
+      const body = requestObjective ? (
+        <>
+          <p>{requestObjective}</p>
+          <details className="text-xs text-fg-muted">
+            <summary className="cursor-pointer">View request details</summary>
+            <pre className="mt-2 whitespace-pre-wrap">{item.text}</pre>
+          </details>
+        </>
+      ) : item.actor.kind === 'user' ? (
+        <p>{item.text}</p>
+      ) : (
+        item.text
+      );
       return item.actor.kind === 'user' ? (
         <UserMessage author={authorName ?? item.actor.id} isSelf={item.actor.id === viewerUserId}>
-          <p>{item.text}</p>
+          {body}
         </UserMessage>
       ) : (
         <AssistantMessage hue="scout" initials="AI" author={authorName ?? item.actor.id}>
-          {item.text}
+          {body}
         </AssistantMessage>
       );
+    }
 
     case 'assistant-message':
       return (

@@ -3479,6 +3479,7 @@ describe('app api schemas', () => {
 
   it('keeps AgentSession continuity out of ordinary App API schemas', () => {
     expect(appApiSchemas.ThreadDashboardResponseSchema.shape).not.toHaveProperty('activeSession');
+    expect(appApiSchemas.ThreadDashboardResponseSchema.shape).toHaveProperty('taskInputs');
     expect(RuntimeConfigStatusSchema.shape).not.toHaveProperty('staleSessions');
     expect(appApiSchemas).not.toHaveProperty('RestartRuntimeConfigStaleSessionResponseSchema');
   });
@@ -3549,6 +3550,7 @@ describe('app api schemas', () => {
         defaultAgentId: null,
       },
       itemLog: { href: '/api/app/workspaces/ws_demo/threads/th_demo/items' },
+      taskInputs: [],
     });
     const chat = SubmitConversationResponseSchema.parse({
       outcome: 'answered',

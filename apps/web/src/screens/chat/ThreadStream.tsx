@@ -142,6 +142,11 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                     ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
                     : turnAuthors.get(item.turnId)
                 }
+                requestObjective={
+                  item.type === 'user-message'
+                    ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)?.objective
+                    : undefined
+                }
                 readOnly={controlsReadOnly}
                 resolvedApproval={
                   item.type === 'approval-request'

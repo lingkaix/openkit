@@ -2668,6 +2668,136 @@ describe('task thread (board 04)', () => {
     expect(startTurn).not.toHaveBeenCalled();
     expect(quickChat).not.toHaveBeenCalled();
   });
+
+  const INITIATING_REQUEST_TEXT =
+    '{"schemaVersion":1,"objective":"raw-input","acceptanceCriteria":["done"]}';
+  const INITIATING_OBJECTIVE = 'Ship the bounded Task request.';
+
+  it('projects a matching initiating-request objective and keeps exact bytes in closed details', async () => {
+    const user = userEvent.setup();
+    const item = ItemSchema.parse({
+      ...ITEMS[0],
+      id: 'it_user_t1',
+      text: INITIATING_REQUEST_TEXT,
+    });
+    renderApp(
+      '/tasks/ws1/th1',
+      makeClient(
+        { listThreadItems: vi.fn().mockResolvedValue({ items: [item], nextCursor: null }) },
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            viewerUserId: 'user_editor',
+            turns: [],
+            taskInputs: [{ itemId: item.id, objective: INITIATING_OBJECTIVE }],
+          }),
+        }
+      )
+    );
+
+    const article = await screen.findByRole('article', { name: 'Message from user_editor (You)' });
+    expect(within(article).getByText(INITIATING_OBJECTIVE)).toBeVisible();
+    const details = within(article).getByText('View request details').closest('details');
+    expect(details).toBeInstanceOf(HTMLDetailsElement);
+    expect((details as HTMLDetailsElement).open).toBe(false);
+    expect(details).toHaveTextContent(INITIATING_REQUEST_TEXT);
+    const preview = details!.querySelector('pre');
+    expect(preview).not.toBeVisible();
+    await user.click(within(article).getByText('View request details'));
+    expect((details as HTMLDetailsElement).open).toBe(true);
+    expect(preview).toBeVisible();
+    expect(preview).toHaveTextContent(INITIATING_REQUEST_TEXT);
+    expect(preview?.textContent).toBe(INITIATING_REQUEST_TEXT);
+  });
+
+  it('leaves ordinary human JSON verbatim when the initiating-request summary is absent or mismatched', async () => {
+    const matched = ItemSchema.parse({
+      ...ITEMS[0],
+      id: 'it_user_matched',
+      text: INITIATING_REQUEST_TEXT,
+    });
+    const unmatched = ItemSchema.parse({
+      ...ITEMS[0],
+      id: 'it_user_unmatched',
+      actor: { kind: 'user', id: 'user_other' },
+      text: '{"schemaVersion":1,"objective":"leave-verbatim"}',
+    });
+    renderApp(
+      '/tasks/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi
+            .fn()
+            .mockResolvedValue({ items: [matched, unmatched], nextCursor: null }),
+        },
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            viewerUserId: 'user_editor',
+            turns: [],
+            taskInputs: [{ itemId: 'it_user_other', objective: INITIATING_OBJECTIVE }],
+          }),
+        }
+      )
+    );
+
+    const self = await screen.findByRole('article', { name: 'Message from user_editor (You)' });
+    const other = screen.getByRole('article', { name: 'Message from user_other' });
+    expect(within(self).getByText(INITIATING_REQUEST_TEXT)).toBeVisible();
+    expect(
+      within(other).getByText('{"schemaVersion":1,"objective":"leave-verbatim"}')
+    ).toBeVisible();
+    expect(screen.queryByText(INITIATING_OBJECTIVE)).not.toBeInTheDocument();
+    expect(screen.queryByText('View request details')).not.toBeInTheDocument();
+  });
+
+  it('applies the same initiating-request projection to self and agent user-message wrappers', async () => {
+    const selfItem = ItemSchema.parse({
+      ...ITEMS[0],
+      id: 'it_user_self',
+      text: INITIATING_REQUEST_TEXT,
+    });
+    const agentItem = ItemSchema.parse({
+      ...ITEMS[0],
+      id: 'it_user_agent',
+      actor: { kind: 'agent', id: 'agent_codex_host', responsibleUserId: 'user_editor' },
+      text: `${INITIATING_REQUEST_TEXT}\n`,
+    });
+    renderApp(
+      '/tasks/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi
+            .fn()
+            .mockResolvedValue({ items: [selfItem, agentItem], nextCursor: null }),
+        },
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            viewerUserId: 'user_editor',
+            participants: [{ kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' }],
+            turns: [],
+            taskInputs: [
+              { itemId: selfItem.id, objective: INITIATING_OBJECTIVE },
+              { itemId: agentItem.id, objective: INITIATING_OBJECTIVE },
+            ],
+          }),
+        }
+      )
+    );
+
+    const self = await screen.findByRole('article', { name: 'Message from user_editor (You)' });
+    const agent = screen.getByRole('article', { name: 'Message from Codex Agent' });
+    expect(self).toHaveClass('items-end');
+    expect(agent).toHaveClass('items-start');
+    expect(within(self).getByText(INITIATING_OBJECTIVE)).toBeVisible();
+    expect(within(agent).getByText(INITIATING_OBJECTIVE)).toBeVisible();
+    expect(
+      within(self).getByText('View request details').closest('details')!.querySelector('pre')
+        ?.textContent
+    ).toBe(INITIATING_REQUEST_TEXT);
+    expect(
+      within(agent).getByText('View request details').closest('details')!.querySelector('pre')
+        ?.textContent
+    ).toBe(`${INITIATING_REQUEST_TEXT}\n`);
+  });
 });
 
 describe('mode entry and feedback (S8)', () => {

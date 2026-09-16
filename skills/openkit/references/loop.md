@@ -10,6 +10,8 @@ Create or resume one thread for the work. Read the current thread, active mode s
 
 Workspace access and private conversation ownership are separate. A private Thread requires the exact authenticated owner, including when the credential has administrator authority. A currently usable presented `server-admin` bearer can start and run a Task in a Workspace without membership; a Web session that merely owns an administrator Token is not that bearer and still follows ordinary membership. Use `conversation.navigation` for the current actor's eligible conversation list. A missing or inaccessible Thread returns no private details; do not retry through another endpoint to bypass that result. Web and Skill credentials may belong to different users, so compare their access using their actual identities.
 
+Read `thread.dashboard` for `taskInputs`: each `{ itemId, objective }` summarizes one structured Worker request identified by verified Context Package evidence. Match by exact Item id; the original message remains the source for full constraints and instructions. Missing summaries mean no readable projection is available, not that a Task did not exist or completed successfully. Do not infer a Task from arbitrary user JSON.
+
 ## Select the smallest suitable mode
 
 - Use Chat Mode for a lightweight answer that does not need delegated execution or a negotiated plan.

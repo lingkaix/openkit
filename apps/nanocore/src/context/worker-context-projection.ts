@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ThreadMaterialActiveDelivery } from '@openkit/app-api-schemas';
+import type { ThreadMaterialActiveDelivery, ThreadTaskInput } from '@openkit/app-api-schemas';
 
 import {
   GoalSteeringAuthorityError,
@@ -8,6 +9,7 @@ import {
   type PendingUserTurnRecord,
   requireGoalSteeringSendProof,
 } from '../goal-steering-authority.js';
+import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
 import { getGoalRecord } from '../runtime/goal-store.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
@@ -76,6 +78,61 @@ export function readStrictWorkerContextPackageDigest(
     workspaceId,
     workspaceRoot,
   }).contextPackageDigest;
+}
+
+/**
+ * Derives `{ itemId, objective }` summaries from fully verified Context Package traces.
+ *
+ * Missing, inconsistent, unsupported, or malformed per-Turn proof omits that summary and does
+ * not rewrite the original Item. The projection stores nothing.
+ *
+ * @param input Existing authorities plus the Thread whose Turns are inspected.
+ * @returns Proven initiating-request summaries in Thread Turn order.
+ */
+export function projectThreadTaskInputs(input: WorkerContextProjectionInput): ThreadTaskInput[] {
+  const workspaceId = input.workspaceDb.workspaceId;
+  const workspaceRoot = resolveDataRootPath(input.workspaceDb.dataRoot, 'workspaces', workspaceId);
+  const turns = input.store.listThreadTurns(workspaceId, input.threadId);
+  let authorities: ReturnType<typeof createWorkerContextPackageAuthorityReader>;
+  try {
+    authorities = createWorkerContextPackageAuthorityReader(input);
+  } catch {
+    return [];
+  }
+
+  const itemsById = new Map(
+    input.store.listThreadItems(workspaceId, input.threadId).map((item) => [item.id, item] as const)
+  );
+  const summaries: ThreadTaskInput[] = [];
+  for (const turn of turns) {
+    try {
+      const trace = readWorkerContextPackageTrace({
+        authorities,
+        threadId: input.threadId,
+        turnId: turn.id,
+        workspaceId,
+        workspaceRoot,
+      });
+      const item = itemsById.get(trace.workerRequestItemId);
+      if (
+        !item ||
+        item.workspaceId !== workspaceId ||
+        item.threadId !== input.threadId ||
+        item.turnId !== turn.id ||
+        item.type !== 'user-message' ||
+        `sha256:${createHash('sha256').update(item.text).digest('hex')}` !==
+          trace.workerRequestDigest
+      ) {
+        continue;
+      }
+      const parsed = StructuredWorkerDelegationRequestSchema.safeParse(JSON.parse(item.text));
+      if (!parsed.success) {
+        continue;
+      }
+      summaries.push({ itemId: item.id, objective: parsed.data.objective });
+    } catch {}
+  }
+  return summaries;
 }
 
 /** Verified projection of the single current Goal steering owner. */
