@@ -3499,7 +3499,9 @@ describe('createCoreClient', () => {
     await expect(
       client.app.consumeBootstrapToken({
         displayName: 'Owner',
+        email: 'owner@example.com',
         ownerUserId: 'user_owner',
+        password: 'password123456',
         token: 'okt_bootstrap_secret',
         tokenExpiresAt: timestamp,
       })
@@ -3877,7 +3879,9 @@ describe('createCoreClient', () => {
     ]);
     expect(requests[6]?.body).toEqual({
       displayName: 'Owner',
+      email: 'owner@example.com',
       ownerUserId: 'user_owner',
+      password: 'password123456',
       token: 'okt_bootstrap_secret',
       tokenExpiresAt: timestamp,
     });

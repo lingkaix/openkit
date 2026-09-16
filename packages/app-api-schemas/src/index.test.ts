@@ -4659,7 +4659,9 @@ describe('app api schemas', () => {
     expect(
       ConsumeOpenKitBootstrapTokenRequestSchema.parse({
         displayName: 'Owner',
+        email: 'owner@example.com',
         ownerUserId: 'user_owner',
+        password: 'password123456',
         token: 'okt_bootstrap_secret',
         tokenExpiresAt: timestamp,
       }).ownerUserId

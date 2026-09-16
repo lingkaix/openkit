@@ -163,9 +163,11 @@ export function registerAccessTokenRoutes({
       return asApiError('Invalid bootstrap consume request.', 'invalid_request', 400);
     }
 
-    const consumed = consumeServerBootstrapToken(coreDb, {
+    const consumed = await consumeServerBootstrapToken(coreDb, {
       displayName: parsed.data.displayName,
+      email: parsed.data.email,
       ownerUserId: parsed.data.ownerUserId,
+      password: parsed.data.password,
       token: parsed.data.token,
       tokenExpiresAt: parsed.data.tokenExpiresAt,
     });
