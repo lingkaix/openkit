@@ -21,6 +21,8 @@ Reuse the same request only when the public operation contract and returned stat
 
 When NanoCore returns `recovery_required`, assume that safe exact replay cannot be proven. Do not blindly repeat the mutation. Re-read the owning durable records, explain the uncertainty, and use an explicit retry, new request, interruption, cancellation, or operator decision only when CLI discovery exposes it and the user authorizes it.
 
+`scheduler_admission_denied` reports that the exact submitted queue entry was rejected by scheduler admission; preserve its returned reason instead of interpreting it as waiting for capacity. Inspect current Workspace authority and scheduler state before retry. A synchronous Task may cancel its unstarted queue entry during cleanup, so an empty admission list does not prove it ran. A denial belonging to another queue entry is not evidence that this request was denied.
+
 For an interrupted worker or checkpoint, inspect the exposed durable lineage and status before requesting retry. Let NanoCore validate ownership, sequence, lease, scheduler, and checkpoint eligibility; do not synthesize or repair those records in the Skill or CLI.
 
 ## Preserve fail-closed outcomes

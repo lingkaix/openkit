@@ -185,6 +185,16 @@ export async function startProductTurn(input: StartProductTurnInput) {
     );
 
     if (!started) {
+      if (
+        dispatch.terminalResult.status === 'denied' &&
+        dispatch.terminalResult.entry.queueEntryId === queueEntryId
+      ) {
+        throw new TurnStartValidationError(
+          'scheduler_admission_denied',
+          `Scheduler denied this turn: ${dispatch.terminalResult.entry.denialReason}.`,
+          409
+        );
+      }
       throw new TurnStartValidationError(
         'scheduler_admission_deferred',
         'Turn was queued but not dispatched in this scheduler iteration.',

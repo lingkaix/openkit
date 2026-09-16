@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store';
@@ -321,6 +322,114 @@ function localProviderRegistry(): ProviderRegistry {
 }
 
 describe('scheduler dispatch loop', () => {
+  it.each([
+    {
+      earlierDeniedQueue: false,
+      expectedCode: 'scheduler_admission_denied',
+      expectedMessage: 'Scheduler denied this turn: policy-cap.',
+    },
+    {
+      earlierDeniedQueue: true,
+      expectedCode: 'scheduler_admission_deferred',
+      expectedMessage: 'Turn was queued but not dispatched in this scheduler iteration.',
+    },
+  ])('reports the terminal denial only when it belongs to the new queue: $earlierDeniedQueue', async ({
+    earlierDeniedQueue,
+    expectedCode,
+    expectedMessage,
+  }) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const manifest = agentManifest();
+    const requestId = earlierDeniedQueue
+      ? '00000000-0000-4000-8000-00000000f112'
+      : '00000000-0000-4000-8000-00000000f111';
+    const now = Date.now();
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+          id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
+        ) VALUES ('user_admin_dispatch', 'Admin', 'admin-dispatch@example.com', false, ?, ?, 'human', 'active', NULL)`
+      )
+      .run(now, now);
+    createOpenKitAccessTokenRecord(coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_admin_dispatch',
+      scope: 'server-admin',
+      tokenId: 'token_admin_dispatch',
+      workspaceIds: [],
+    });
+    if (earlierDeniedQueue) {
+      createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_without_membership' },
+        queueEntryId: 'queue_earlier_denied',
+        requestId: 'req_earlier_denied',
+        workspaceId: 'ws_demo',
+        threadId: 'th_other',
+        turnId: 'turn_other',
+        turnInput: 'A prior request',
+        requestedAgentId: manifest.id,
+        profileRef: null,
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+      });
+    }
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [manifest],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+      providerRegistry: localProviderRegistry(),
+    });
+
+    try {
+      await expect(
+        startProductTurn({
+          cancelDeferredAdmission: true,
+          coreDb,
+          input: {
+            agentId: manifest.id,
+            input: 'Attempt admin worker dispatch.',
+            modelId: 'openai/gpt-5.2',
+            profileId: 'default',
+            requestId,
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+          },
+          providerCredentialResolver: () => null,
+          requestActor: {
+            kind: 'token',
+            tokenId: 'token_admin_dispatch',
+            tokenScope: 'server-admin',
+            tokenWorkspaceIds: [],
+            userId: 'user_admin_dispatch',
+          },
+          schedulerEpoch: 1,
+          snapshot,
+          store,
+          triggerActor: { kind: 'user', id: 'user_admin_dispatch' },
+          turnExecutor: new RecordingTurnExecutor(),
+          workerPlacement: 'local',
+        })
+      ).rejects.toMatchObject({ code: expectedCode, message: expectedMessage, status: 409 });
+      const entries = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        statuses: ['cancelled', 'denied'],
+        workspaceId: 'ws_demo',
+      });
+      expect(entries.find((entry) => entry.requestId === requestId)?.status).toBe('cancelled');
+      if (earlierDeniedQueue) {
+        expect(
+          entries.find((entry) => entry.queueEntryId === 'queue_earlier_denied')
+        ).toMatchObject({
+          status: 'denied',
+          denialReason: 'policy-cap',
+        });
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     { cancelDeferredAdmission: true, expectedStatus: 'cancelled' as const },
     { cancelDeferredAdmission: false, expectedStatus: 'queued' as const },
