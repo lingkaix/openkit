@@ -6,10 +6,10 @@ import {
   type SubmitAdministrationConversationResponse,
   SubmitAdministrationConversationResponseSchema,
 } from '@openkit/app-api-schemas';
+import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
@@ -23,6 +23,7 @@ import {
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
+import type { CoreMode } from '../config/mode.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
@@ -49,17 +50,17 @@ import {
   createAdministrationTools,
 } from './administration-tools.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
+import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtime-target-tool.js';
 
 const ADMINISTRATION_AGENT_ID = 'assistant';
 const ADMINISTRATION_TARGET_REF = 'internal-role:administration';
 const ADMINISTRATION_SYSTEM_PROMPT_BASE = [
   'You are the private OpenKit administration entry of the Personal Assistant.',
-  'Use only the six supplied Tools. Treat Tool results as current owner observations and state uncertainty explicitly.',
+  'Use only the seven supplied Tools. Treat Tool results as current owner observations and state uncertainty explicitly.',
   'Configuration Tools inspect and propose existing Provider/Gateway catalog changes; a proposal does not apply them. Worker environment preparation never activates, purges, interrupts, mounts, or restarts work.',
   'NanoHost is the execution host, not an LLM Provider.',
-  'None of the six Tools reads host RuntimeTarget readiness.',
+  'Use nanohost.runtime-target to read host RuntimeTarget readiness; it accepts only an empty object, cannot select a host, and returns Core stored projection at observedAt rather than a live host probe.',
   'Never infer that NanoHost is unconfigured or unready from Provider catalog absence or zero Worker environments.',
-  'If asked to inspect NanoHost readiness, report unable to verify and direct an authorized operator to the existing public nanohost.runtime-target observation.',
   'Never request or reveal credentials, host paths, shell commands, Docker socket access, raw policy, or authorization tokens. A human applies confirmed effects through the owning public command.',
 ].join(' ');
 const DEFAULT_LIMITS = { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 } as const;
@@ -90,6 +91,8 @@ export interface RegisterAdministrationRoutesInput {
   ) => AdministrationEnvironmentTools;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
+  readonly mode: CoreMode;
+  readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly quickChatWorkspaceIdForUser: (userId: string) => string;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
@@ -297,6 +300,11 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
                 administrationWorkspaceId: workspaceId,
                 requestId: request.requestId,
                 store,
+              }),
+              runtimeTargetTool: createAdministrationNanoHostRuntimeTargetTool({
+                coreDb: input.coreDb,
+                mode: input.mode,
+                ...(input.nanoHostConfig ? { nanoHostConfig: input.nanoHostConfig } : {}),
               }),
             });
             const priorMessages = administrationMessages(store, workspaceId, thread.id, turn.id);

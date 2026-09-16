@@ -362,6 +362,7 @@ describe('administration catalog configuration', () => {
       runtimeConfigFiles: () => f.files,
       reloadRuntimeConfig: f.reload,
       inflightCommands: f.inflightCommands,
+      mode: 'server',
       quickChatWorkspaceIdForUser,
       runtimeConfig: () => f.manager.current(),
     } as never);

@@ -9,6 +9,7 @@ import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   fenceNanoHostRuntimeTargetAfterRestart,
   getNanoHostRuntimeTarget,
+  readConfiguredNanoHostRuntimeTargetStatus,
   recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
@@ -233,5 +234,86 @@ describe('durable NanoHost RuntimeTarget authority', () => {
     } finally {
       coreDb.sqlite.close();
     }
+  });
+});
+
+describe('configured NanoHost RuntimeTarget redacted status', () => {
+  it('returns ready, unready, and missing results without leaking physicalEpoch', () => {
+    expect(
+      readConfiguredNanoHostRuntimeTargetStatus({ coreDb: undefined, mode: 'local' })
+    ).toMatchObject({ code: 'nanohost_transport_admin_server_mode_required', ok: false });
+    expect(
+      readConfiguredNanoHostRuntimeTargetStatus({ coreDb: undefined, mode: 'server' })
+    ).toMatchObject({ code: 'nanohost_transport_storage_unavailable', ok: false });
+
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-status-')));
+    applyMigrations(coreDb);
+    const config = { deploymentId: 'deployment-test', identityId: 'nanohost-test' };
+    expect(readConfiguredNanoHostRuntimeTargetStatus({ coreDb, mode: 'server' })).toMatchObject({
+      code: 'nanohost_transport_config_unavailable',
+      ok: false,
+    });
+    expect(
+      readConfiguredNanoHostRuntimeTargetStatus({ coreDb, mode: 'server', nanoHostConfig: config })
+    ).toMatchObject({ code: 'nanohost_runtime_target_not_found', ok: false });
+
+    const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...config,
+      observedAt: '2026-08-10T00:00:00.000Z',
+      targetId: config.identityId,
+    });
+    const unready = readConfiguredNanoHostRuntimeTargetStatus({
+      coreDb,
+      mode: 'server',
+      nanoHostConfig: config,
+    });
+    expect(unready).toEqual({
+      ok: true,
+      status: {
+        connectionGeneration: allocated.connectionGeneration,
+        deploymentId: config.deploymentId,
+        freshEmpty: false,
+        identityId: config.identityId,
+        observedAt: '2026-08-10T00:00:00.000Z',
+        predecessorFenced: false,
+        ready: false,
+      },
+    });
+
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...allocated,
+      freshEmpty: true,
+      observedAt: '2026-08-10T00:00:01.000Z',
+      physicalEpoch: physicalEpochA,
+      predecessorFenced: true,
+      ready: true,
+    });
+    const ready = readConfiguredNanoHostRuntimeTargetStatus({
+      coreDb,
+      mode: 'server',
+      nanoHostConfig: config,
+    });
+    expect(ready).toEqual({
+      ok: true,
+      status: {
+        connectionGeneration: allocated.connectionGeneration,
+        deploymentId: config.deploymentId,
+        freshEmpty: true,
+        identityId: config.identityId,
+        observedAt: '2026-08-10T00:00:01.000Z',
+        predecessorFenced: true,
+        ready: true,
+      },
+    });
+    expect(JSON.stringify(ready)).not.toContain('physicalEpoch');
+    expect(JSON.stringify(ready)).not.toContain(physicalEpochA);
+
+    coreDb.sqlite
+      .prepare('UPDATE nanohost_runtime_targets SET deployment_id = ?')
+      .run('deployment-other');
+    expect(
+      readConfiguredNanoHostRuntimeTargetStatus({ coreDb, mode: 'server', nanoHostConfig: config })
+    ).toMatchObject({ code: 'nanohost_runtime_target_not_found', ok: false });
+    coreDb.sqlite.close();
   });
 });

@@ -6,7 +6,6 @@ import {
   IssueNanoHostTransportTokenRequestSchema,
   IssueNanoHostTransportTokenResponseSchema,
   ListNanoHostTransportTokensResponseSchema,
-  NanoHostRuntimeTargetStatusResponseSchema,
   RevokeNanoHostTransportTokenResponseSchema,
   RotateNanoHostTransportTokenRequestSchema,
   RotateNanoHostTransportTokenResponseSchema,
@@ -18,7 +17,7 @@ import { asApiError } from '../api-errors.js';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import { registerAppApiRoute } from '../openapi.js';
-import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
+import { readConfiguredNanoHostRuntimeTargetStatus } from '../runtime/nanohost-runtime-target.js';
 import { generateUuidV7 } from '../runtime/session-id.js';
 import type { CoreDb } from '../storage/db.js';
 import { isDeploymentAdminActor } from './identity.js';
@@ -331,35 +330,15 @@ export function registerNanoHostTransportRoutes({
       return adminError;
     }
 
-    const config = requireNanoHostConfig();
-    if (isConfigError(config)) {
-      return config;
+    const observation = readConfiguredNanoHostRuntimeTargetStatus({
+      coreDb,
+      mode,
+      ...(nanoHostConfig ? { nanoHostConfig } : {}),
+    });
+    if (!observation.ok) {
+      return asApiError(observation.message, observation.code, observation.httpStatus);
     }
-
-    const target = getNanoHostRuntimeTarget(coreDb!, config.identityId);
-    if (
-      !target ||
-      target.identityId !== config.identityId ||
-      target.deploymentId !== config.deploymentId
-    ) {
-      return asApiError(
-        'Configured NanoHost RuntimeTarget is unavailable.',
-        'nanohost_runtime_target_not_found',
-        404
-      );
-    }
-
-    return c.json(
-      NanoHostRuntimeTargetStatusResponseSchema.parse({
-        identityId: target.identityId,
-        deploymentId: target.deploymentId,
-        connectionGeneration: target.connectionGeneration,
-        predecessorFenced: target.predecessorFenced,
-        ready: target.ready,
-        freshEmpty: target.freshEmpty,
-        observedAt: target.observedAt,
-      })
-    );
+    return c.json(observation.status);
   });
 
   registerAppApiRoute(app, 'listNanoHostTransportTokens', (c) => {

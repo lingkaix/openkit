@@ -1535,6 +1535,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
     inflightCommands,
     llmGatewayDispatcher,
+    mode,
+    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     quickChatWorkspaceIdForUser,
     requestStore,

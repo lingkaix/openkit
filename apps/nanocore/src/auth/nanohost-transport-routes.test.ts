@@ -212,6 +212,19 @@ describe('NanoHost transport App API safe-sink routes', () => {
         deploymentId: config.deploymentId,
         observedAt: '2026-08-15T01:02:02.000Z',
       });
+      const unreadyResponse = await configuredApp.request('/api/app/nanohost/runtime-target', {
+        headers: adminHeaders,
+      });
+      expect(unreadyResponse.status).toBe(200);
+      await expect(unreadyResponse.json()).resolves.toEqual({
+        identityId: config.identityId,
+        deploymentId: config.deploymentId,
+        connectionGeneration: allocated.connectionGeneration,
+        predecessorFenced: false,
+        ready: false,
+        freshEmpty: false,
+        observedAt: '2026-08-15T01:02:02.000Z',
+      });
       upsertNanoHostRuntimeTarget(coreDb, {
         targetId: config.identityId,
         identityId: config.identityId,

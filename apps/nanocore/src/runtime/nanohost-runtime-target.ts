@@ -1,3 +1,10 @@
+import {
+  type NanoHostRuntimeTargetStatusResponse,
+  NanoHostRuntimeTargetStatusResponseSchema,
+} from '@openkit/app-api-schemas';
+import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
+
+import type { CoreMode } from '../config/mode.js';
 import type { CoreDb } from '../storage/db.js';
 
 /** Durable configured NanoHost target projection returned to scheduler consumers. */
@@ -23,6 +30,20 @@ export interface NanoHostRuntimeTargetRecord {
   /** Fixed V1 slot count. */
   readonly slotCount: 1;
 }
+
+/** Fail-closed configured NanoHost RuntimeTarget observation shared by App API and administration. */
+export type NanoHostRuntimeTargetStatusObservation =
+  | { readonly ok: true; readonly status: NanoHostRuntimeTargetStatusResponse }
+  | {
+      readonly ok: false;
+      readonly code:
+        | 'nanohost_transport_admin_server_mode_required'
+        | 'nanohost_transport_storage_unavailable'
+        | 'nanohost_transport_config_unavailable'
+        | 'nanohost_runtime_target_not_found';
+      readonly message: string;
+      readonly httpStatus: 404 | 503;
+    };
 
 /** Input for recording current configured NanoHost readiness. */
 export interface UpsertNanoHostRuntimeTargetInput {
@@ -327,6 +348,70 @@ export function getNanoHostRuntimeTarget(
 ): NanoHostRuntimeTargetRecord | null {
   const row = selectNanoHostRuntimeTarget(coreDb, targetId);
   return row ? mapNanoHostRuntimeTargetRow(row) : null;
+}
+
+/**
+ * Reads the startup-configured NanoHost RuntimeTarget as the public redacted readiness projection.
+ *
+ * @param input Server-mode Core, startup NanoHost config, and storage handle used by the GET route.
+ * @returns Ready or unready status fields, or the same missing/config/storage/server-mode failures as GET.
+ */
+export function readConfiguredNanoHostRuntimeTargetStatus(input: {
+  readonly coreDb: CoreDb | undefined;
+  readonly mode: CoreMode;
+  readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
+}): NanoHostRuntimeTargetStatusObservation {
+  if (input.mode !== 'server') {
+    return {
+      ok: false,
+      code: 'nanohost_transport_admin_server_mode_required',
+      httpStatus: 404,
+      message: 'NanoHost transport administration is only available in server mode.',
+    };
+  }
+  if (!input.coreDb) {
+    return {
+      ok: false,
+      code: 'nanohost_transport_storage_unavailable',
+      httpStatus: 503,
+      message: 'NanoHost transport token storage is unavailable.',
+    };
+  }
+  if (!input.nanoHostConfig) {
+    return {
+      ok: false,
+      code: 'nanohost_transport_config_unavailable',
+      httpStatus: 503,
+      message: 'NanoHost deployment configuration is unavailable.',
+    };
+  }
+
+  const target = getNanoHostRuntimeTarget(input.coreDb, input.nanoHostConfig.identityId);
+  if (
+    !target ||
+    target.identityId !== input.nanoHostConfig.identityId ||
+    target.deploymentId !== input.nanoHostConfig.deploymentId
+  ) {
+    return {
+      ok: false,
+      code: 'nanohost_runtime_target_not_found',
+      httpStatus: 404,
+      message: 'Configured NanoHost RuntimeTarget is unavailable.',
+    };
+  }
+
+  return {
+    ok: true,
+    status: NanoHostRuntimeTargetStatusResponseSchema.parse({
+      connectionGeneration: target.connectionGeneration,
+      deploymentId: target.deploymentId,
+      freshEmpty: target.freshEmpty,
+      identityId: target.identityId,
+      observedAt: target.observedAt,
+      predecessorFenced: target.predecessorFenced,
+      ready: target.ready,
+    }),
+  };
 }
 
 /** Returns whether one observation proves the configured readiness gate. */

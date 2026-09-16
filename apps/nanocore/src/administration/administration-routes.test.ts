@@ -111,7 +111,7 @@ describe('administration conversation route', () => {
           {
             id: 'administration',
             displayName: 'Administration',
-            // 10000 stays inside the 20000 physical context and leaves headroom for six Tool schemas plus instructions.
+            // 10000 stays inside the 20000 physical context and leaves headroom for seven Tool schemas plus instructions.
             contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
             routes: [
               { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
@@ -160,13 +160,13 @@ describe('administration conversation route', () => {
           'NanoHost is the execution host, not an LLM Provider.'
         );
         expect(request.instructions).toContain(
-          'None of the six Tools reads host RuntimeTarget readiness.'
+          'Use nanohost.runtime-target to read host RuntimeTarget readiness'
+        );
+        expect(request.instructions).toContain(
+          'returns Core stored projection at observedAt rather than a live host probe'
         );
         expect(request.instructions).toContain(
           'Never infer that NanoHost is unconfigured or unready from Provider catalog absence or zero Worker environments.'
-        );
-        expect(request.instructions).toContain(
-          'report unable to verify and direct an authorized operator to the existing public nanohost.runtime-target observation.'
         );
         expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual([
           ...ADMINISTRATION_TOOL_NAMES,
@@ -209,6 +209,7 @@ describe('administration conversation route', () => {
       environmentToolsForTurn: () => environmentTools,
       inflightCommands: new WeakMap(),
       llmGatewayDispatcher: { createResponses },
+      mode: 'server',
       quickChatWorkspaceIdForUser,
       requestStore: () => store,
       runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
@@ -295,7 +296,7 @@ describe('administration conversation route', () => {
           {
             id: 'administration',
             displayName: 'Administration',
-            // 10000 stays inside the 20000 physical context and leaves headroom for six Tool schemas plus instructions.
+            // 10000 stays inside the 20000 physical context and leaves headroom for seven Tool schemas plus instructions.
             contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
             routes: [
               { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
@@ -349,6 +350,7 @@ describe('administration conversation route', () => {
       environmentToolsForTurn: () => inertEnvironmentTools(),
       inflightCommands: new WeakMap(),
       llmGatewayDispatcher: { createResponses },
+      mode: 'server',
       quickChatWorkspaceIdForUser,
       requestStore: () => store,
       runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
@@ -448,7 +450,8 @@ describe('administration conversation route', () => {
           {
             id: 'administration',
             displayName: 'Administration',
-            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+            // 10000 stays inside the 20000 physical context and leaves headroom for seven Tool schemas plus instructions.
+            contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
             routes: [
               { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
             ],
@@ -489,6 +492,7 @@ describe('administration conversation route', () => {
       environmentToolsForTurn: () => inertEnvironmentTools(),
       inflightCommands: new WeakMap(),
       llmGatewayDispatcher: { createResponses },
+      mode: 'server',
       quickChatWorkspaceIdForUser,
       requestStore: () => store,
       runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
@@ -687,6 +691,7 @@ describe('administration conversation route', () => {
       environmentToolsForTurn: () => inertEnvironmentTools(),
       inflightCommands: new WeakMap(),
       llmGatewayDispatcher: { createResponses },
+      mode: 'server',
       quickChatWorkspaceIdForUser,
       requestStore: () => store,
       runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
@@ -896,6 +901,7 @@ async function postAdministrationAdmissionTurn(options: {
     environmentToolsForTurn: () => inertEnvironmentTools(),
     inflightCommands: new WeakMap(),
     llmGatewayDispatcher: { createResponses },
+    mode: 'server',
     quickChatWorkspaceIdForUser,
     requestStore: () => store,
     runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,

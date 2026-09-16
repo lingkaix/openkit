@@ -9,6 +9,7 @@ export const ADMINISTRATION_TOOL_NAMES = [
   'worker_environment.list',
   'worker_environment.status',
   'worker_environment.prepare',
+  'nanohost.runtime-target',
 ] as const;
 
 /** Environment Tools supplied by the existing Worker environment operation owner. */
@@ -22,18 +23,20 @@ export interface AdministrationToolAssemblyOptions {
   readonly configurationTools: AdministrationConfigurationTools;
   /** Exact list, status, and prepare closures from the Worker environment owner. */
   readonly environmentTools: AdministrationEnvironmentTools;
+  /** Read-only configured NanoHost RuntimeTarget observation. */
+  readonly runtimeTargetTool: AgentTool;
 }
 
 /**
  * Assembles the complete fixed private administration Tool set.
  *
- * @param options Current authority recheck and existing Worker environment closures.
- * @returns Six Tools in the order owned by the Assistant administration contract.
+ * @param options Current authority recheck and existing owner closures.
+ * @returns Seven Tools in the order owned by the Assistant administration contract.
  */
 export function createAdministrationTools(
   options: AdministrationToolAssemblyOptions
 ): readonly AgentTool[] {
-  const expectedEnvironmentNames = ADMINISTRATION_TOOL_NAMES.slice(3);
+  const expectedEnvironmentNames = ADMINISTRATION_TOOL_NAMES.slice(3, 6);
   if (
     options.environmentTools.some((tool, index) => tool.name !== expectedEnvironmentNames[index])
   ) {
@@ -45,7 +48,14 @@ export function createAdministrationTools(
   ) {
     throw new Error('Administration configuration Tool assembly is invalid.');
   }
-  return [...options.configurationTools, ...options.environmentTools].map((tool) => ({
+  if (options.runtimeTargetTool.name !== ADMINISTRATION_TOOL_NAMES[6]) {
+    throw new Error('Administration NanoHost RuntimeTarget Tool assembly is invalid.');
+  }
+  return [
+    ...options.configurationTools,
+    ...options.environmentTools,
+    options.runtimeTargetTool,
+  ].map((tool) => ({
     ...tool,
     execute: async (input: unknown, context): Promise<AgentToolResult> => {
       options.requireCurrentAdministrator();
