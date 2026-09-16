@@ -112,7 +112,10 @@ import {
 } from './scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
-import { isCurrentAgentSessionStatus } from './storage/workspace-file-records.js';
+import {
+  artifactReferenceItemId,
+  isCurrentAgentSessionStatus,
+} from './storage/workspace-file-records.js';
 import {
   getDefaultWorkspaceRepositoryResource,
   type WorkspaceRepositoryResourceRecord,
@@ -2605,9 +2608,9 @@ export function registerQuickAndChatModeRoutes({
           completedAt,
         });
 
-        for (const [index, artifact] of artifacts.entries()) {
+        for (const artifact of artifacts) {
           store.createItem({
-            id: `it_conversation_artifact_${turn.id}_${index + 1}`,
+            id: artifactReferenceItemId(artifact.id, turn.id),
             workspaceId,
             threadId,
             turnId: turn.id,
@@ -3028,9 +3031,9 @@ export function registerQuickAndChatModeRoutes({
           workspaceDb.sqlite.close();
         }
         const completedAt = new Date().toISOString();
-        for (const [index, artifact] of artifacts.entries()) {
+        for (const artifact of artifacts) {
           store.createItem({
-            id: `it_conversation_artifact_${started.id}_${index + 1}`,
+            id: artifactReferenceItemId(artifact.id, started.id),
             workspaceId,
             threadId: receivingThreadId,
             turnId: started.id,

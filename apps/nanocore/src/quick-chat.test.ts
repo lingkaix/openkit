@@ -10,12 +10,14 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
+import { FsStore } from './lib/store.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { ProviderRegistry } from './providers/registry.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -623,6 +625,19 @@ describe('quick chat app API', () => {
       expect(prompts[0]).toContain(input);
       expect(prompts[0]).not.toContain('unrelated-knowledge-marker');
       expect(answer.item.text).toBe('artifact-roundtrip-c7f46a19; 62 passed.');
+      const referenceId = artifactReferenceItemId(artifact.artifactId, answer.turn.id);
+      expect(
+        answer.turn.items
+          .filter((item) => item.type === 'artifact-reference')
+          .map((item) => item.id)
+      ).toEqual([referenceId]);
+      const reloaded = new FsStore({ dataRoot });
+      expect(
+        reloaded
+          .getTurn('ws_demo', 'th_demo', answer.turn.id)
+          .items.filter((item) => item.type === 'artifact-reference')
+          .map((item) => item.id)
+      ).toEqual([referenceId]);
     } finally {
       coreDb.sqlite.close();
     }

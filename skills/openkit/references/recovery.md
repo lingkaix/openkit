@@ -66,3 +66,7 @@ If a failed Task reports that backend cleanup requires a different fresh physica
 Keep contradictory, incomplete, or stale recovery evidence visible. Do not convert it to success, invent a receipt, close a workflow locally, or create an ad hoc settlement process.
 
 Escalate to administration only when the durable result identifies an operator-owned action. Otherwise prefer a truthful interrupted or unknown outcome and a new explicit request over hidden automatic repair.
+
+## Diagnose canonical Artifact reference boot failures
+
+A boot failure stating that an Artifact reference does not use its deterministic identity indicates invalid persisted reference metadata, not missing Artifact content. Preserve the exact error and affected identity; do not delete the Artifact, mark its reference declined, or bypass canonical validation. When NanoCore cannot start, Web and public API operations cannot repair it. An authorized deployment operator must stop the affected App, preserve the touched files outside its data root, inspect every referrer, and correct only the proven malformed identity using the canonical Artifact/Turn identity function. Historical boot audit failures remain unchanged. Deploy the producer correction before submitting more attachments, then verify readiness and exact Artifact content through the public interface.
