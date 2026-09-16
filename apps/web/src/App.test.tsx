@@ -235,9 +235,9 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByText('Conversations')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument();
-    const destinations = screen.getByRole('group', { name: 'Workspace destinations' });
+    const destinations = screen.getByRole('group', { name: 'Sidebar shortcuts' });
     expect(destinations).toHaveClass('grid', 'min-w-0', 'grid-cols-4');
-    expect(within(destinations).getByRole('button', { name: 'General' })).toBeInTheDocument();
+    expect(within(destinations).getByRole('button', { name: 'Settings' })).toBeInTheDocument();
     expect(within(destinations).getByRole('button', { name: 'Repositories' })).toBeInTheDocument();
     expect(
       within(destinations).getByRole('button', { name: 'Workspace changes' })
@@ -249,6 +249,14 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(within(destinations).getByRole('button', { name: 'Vault' })).toBeInTheDocument();
     expect(within(destinations).getByRole('button', { name: 'Usage & audit' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Repositories' })).toHaveLength(1);
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    expect(settings.textContent).toBe('');
+    expect(screen.getAllByRole('button', { name: 'Settings' })).toHaveLength(1);
+    settings.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('menuitem', { name: 'Workspace settings' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(settings).toHaveFocus());
 
     await user.click(screen.getByRole('button', { name: 'Authoritative Workspace' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Other Workspace' }));
@@ -264,9 +272,17 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(await screen.findByRole('searchbox', { name: /search/i })).toBeInTheDocument();
   });
 
-  it('hides the workspace destination icon row without a selected workspace', async () => {
+  it('keeps only the Settings shortcut without a selected workspace', async () => {
     await renderAt('/', { workspaces: [] });
-    expect(screen.queryByRole('group', { name: 'Workspace destinations' })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    const shortcuts = screen.getByRole('group', { name: 'Sidebar shortcuts' });
+    expect(within(shortcuts).getAllByRole('button')).toHaveLength(1);
+    await user.click(within(shortcuts).getByRole('button', { name: 'Settings' }));
+    expect(screen.queryByRole('menuitem', { name: 'Workspace settings' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('menuitem', { name: 'Settings' }));
+    expect(
+      await screen.findByRole('navigation', { name: 'Settings sections' })
+    ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Repositories' })).not.toBeInTheDocument();
   });
 

@@ -266,30 +266,40 @@ export function Sidebar() {
             </>
           ) : null}
           <div className="mt-auto border-t border-separator pt-2">
-            {workspace ? (
-              <fieldset
-                className="mb-2 grid min-w-0 grid-cols-4 justify-items-center gap-0.5 border-0 p-0"
-                aria-label="Workspace destinations"
-              >
-                {compactSurfaces.map((surface) => (
-                  <Button
-                    key={surface.id}
-                    variant="quiet"
-                    title={surface.title}
-                    aria-label={surface.title}
-                    aria-current={isActive(surface, pathname) ? 'page' : undefined}
-                    className={[
-                      'h-8 w-8 shrink-0 px-0!',
-                      isActive(surface, pathname) ? 'bg-selected text-accent-content' : '',
-                    ].join(' ')}
-                    onPress={() => go(surface.path)}
-                  >
-                    {surface.icon ? <Icon name={surface.icon} /> : null}
-                  </Button>
-                ))}
-              </fieldset>
-            ) : null}
-            <NavRow icon="settings" label="Settings" onPress={() => go('/settings/account')} />
+            <fieldset
+              className="grid min-w-0 grid-cols-4 justify-items-center gap-0.5 border-0 p-0"
+              aria-label="Sidebar shortcuts"
+            >
+              <Menu
+                icon="settings"
+                label="Settings"
+                selectedKey={workspace && pathname === '/workspace' ? '/workspace' : null}
+                items={[
+                  ...(workspace ? [{ id: '/workspace', label: 'Workspace settings' }] : []),
+                  { id: '/settings/account', label: 'Settings' },
+                ]}
+                onAction={(key) => go(String(key))}
+              />
+              {(workspace
+                ? compactSurfaces.filter((surface) => surface.id !== 'settings')
+                : []
+              ).map((surface) => (
+                <Button
+                  key={surface.id}
+                  variant="quiet"
+                  title={surface.title}
+                  aria-label={surface.title}
+                  aria-current={isActive(surface, pathname) ? 'page' : undefined}
+                  className={[
+                    'h-8 w-8 shrink-0 px-0!',
+                    isActive(surface, pathname) ? 'bg-selected text-accent-content' : '',
+                  ].join(' ')}
+                  onPress={() => go(surface.path)}
+                >
+                  {surface.icon ? <Icon name={surface.icon} /> : null}
+                </Button>
+              ))}
+            </fieldset>
           </div>
         </>
       )}

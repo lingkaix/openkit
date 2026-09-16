@@ -643,7 +643,7 @@ describe('Workspace changes', () => {
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/doesn't exist/i)).not.toBeInTheDocument();
 
-    const destinations = await screen.findByRole('group', { name: 'Workspace destinations' });
+    const destinations = await screen.findByRole('group', { name: 'Sidebar shortcuts' });
     const navButton = screen.getByRole('button', { name: 'Workspace changes' });
     expect(destinations).toContainElement(navButton);
 

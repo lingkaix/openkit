@@ -6,7 +6,7 @@ import {
   Popover,
 } from 'react-aria-components';
 import { Button } from './Button';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 
 /** One selectable action in an OpenKit menu. */
 export interface MenuItem {
@@ -28,6 +28,8 @@ export interface MenuProps {
   selectedKey?: string | null;
   /** Stretch the trigger to the available row width. */
   fill?: boolean;
+  /** Render a compact icon-only trigger with the label as its accessible name. */
+  icon?: IconName;
 }
 
 /**
@@ -36,15 +38,24 @@ export interface MenuProps {
  * React Aria owns trigger keys, focus movement, typeahead, selection, and menu
  * semantics; the wrapper bounds selected labels and exposes full wrapping choices.
  */
-export function Menu({ fill = false, items, label, onAction, selectedKey }: MenuProps) {
+export function Menu({ fill = false, icon, items, label, onAction, selectedKey }: MenuProps) {
   return (
     <MenuTrigger>
       <Button
-        className={fill ? 'h-8 min-w-0 w-full justify-between px-3' : 'max-w-full'}
-        variant="outline"
+        aria-label={icon ? label : undefined}
+        title={icon ? label : undefined}
+        aria-current={icon && selectedKey ? 'page' : undefined}
+        className={
+          icon
+            ? `h-8 w-8 shrink-0 px-0! ${selectedKey ? 'bg-selected text-accent-content' : ''}`
+            : fill
+              ? 'h-8 min-w-0 w-full justify-between px-3'
+              : 'max-w-full'
+        }
+        variant={icon ? 'quiet' : 'outline'}
       >
-        <span className="min-w-0 truncate">{label}</span>
-        {fill ? <Icon name="chevron-down" className="shrink-0" /> : null}
+        {icon ? <Icon name={icon} /> : <span className="min-w-0 truncate">{label}</span>}
+        {fill && !icon ? <Icon name="chevron-down" className="shrink-0" /> : null}
       </Button>
       <Popover
         placement="bottom end"
