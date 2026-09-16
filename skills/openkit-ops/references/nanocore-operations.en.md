@@ -62,6 +62,8 @@ Worker execution volumes live on NanoHost separately from NanoCore's Data Root. 
 
 Record source version, image identity and backup scope. An old image does not reverse a database migration. If compatibility of the old executable with current data is not established, stop to an explicit recovery procedure rather than automatically starting it or restoring old data over newer writes. Restore into a stopped, correctly identified target and prove lock exclusivity, readable durable records and credential usability before resuming work.
 
+A full same-deployment Data Root restore retains Core NanoHost identity and transport Token records, so matching, unexpired and unrevoked execution-host named-slot credentials can remain valid. Copying runtime configuration and host named-slot files onto a fresh Core without those records produces NanoHost admission 401; treat that as required fresh trust enrollment, not a slot-format defect. After separately authorized host stop and archival of the old slot pair, prove the target slot empty, call public `nanohost.enroll` with server-admin authority, then start the execution host. Do not bypass exclusive-create, copy stale Token records, or reveal slot material.
+
 ## Convert A Pre-Witness Deployment
 
 This one-time internal protocol conversion is a separately authorized NanoCore and NanoHost maintenance operation. It is not a routine App update and cannot use the migration-free App-update helper. Acquire the exact reviewed source, matching App and NanoHost builds, and the source toolchain described in [getting started](getting-started.en.md). Fresh installations already use the new schema and must not run this conversion.
