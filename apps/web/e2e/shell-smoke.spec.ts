@@ -34,6 +34,23 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   await expect(page.getByRole('button', { name: /^Overview$/ })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
+  const sidebar = page.getByRole('navigation', { name: 'Primary workspace navigation' });
+  const sidebarSize = await sidebar.evaluate((element) => ({
+    width: element.getBoundingClientRect().width,
+    client: element.clientWidth,
+    scroll: element.scrollWidth,
+  }));
+  expect(sidebarSize.width).toBe(264);
+  expect(sidebarSize.scroll).toBeLessThanOrEqual(sidebarSize.client);
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Search', exact: true })).toBeVisible();
+  const searchSize = await sidebar.evaluate((element) => ({
+    client: element.clientWidth,
+    scroll: element.scrollWidth,
+  }));
+  expect(searchSize.scroll).toBeLessThanOrEqual(searchSize.client);
+  await page.keyboard.press('Escape');
+
   const settings = page.getByRole('button', { name: /^Settings$/ });
   await settings.focus();
   await expect(settings).toBeFocused();

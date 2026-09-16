@@ -164,3 +164,5 @@ The Thread layout uses a CSS container query: the conversation retains a 32rem m
 Base typography in styles/theme.css lets unspaced text and IDs wrap anywhere when needed, including narrative and pre-wrapped JSON. Explicit code/editor whitespace and local table scrolling remain intact. Context chips and menu triggers bound compact labels without losing full accessible names; menu choices wrap inside a bounded popover. Browser box measurements at the supported viewport floor are the deciding layout check rather than JSDOM class assertions.
 
 Artifacts lists only the server-projected deliverable catalog, with a wrapping full title, kind and version. Internal file-change reviews remain in Workspace Changes. `Add to conversation` means the existing exact-version imported-file reference command: it records a reference in an idle conversation and starts no Agent work. Produced outputs remain ineligible, with an explanation directing further work to composer attachments.
+
+The primary sidebar keeps its 264px outer width without horizontal scrolling. Workspace destination controls form a four-column grid, and the Search popover stays within the sidebar content width.

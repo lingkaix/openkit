@@ -86,13 +86,13 @@ function BrandSearch() {
   }, [open]);
 
   return (
-    <div className="relative">
+    <div>
       <Button
         variant="quiet"
         aria-expanded={open}
         aria-label="Search"
         title="Search"
-        className="h-8 w-8 px-0"
+        className="h-8 w-8 shrink-0 px-0!"
         onPress={() => setOpen((current) => !current)}
       >
         <Icon name="search" />
@@ -100,7 +100,7 @@ function BrandSearch() {
       {open ? (
         <section
           aria-label="Search"
-          className="absolute right-0 top-full z-20 mt-1 w-60 rounded-ok-lg border border-border bg-elevated p-3 shadow-ok-menu"
+          className="absolute inset-x-0 top-full z-20 mt-1 rounded-ok-lg border border-border bg-elevated p-3 shadow-ok-menu"
         >
           <AppSearch onClose={() => setOpen(false)} />
         </section>
@@ -143,7 +143,7 @@ export function Sidebar() {
       aria-label={inSettings ? 'Settings sections' : 'Primary workspace navigation'}
       className="flex w-[264px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-separator bg-sunken p-3"
     >
-      <div className="mb-1 flex items-center justify-between gap-2">
+      <div className="relative mb-1 flex min-w-0 items-center justify-between gap-2">
         <BrandMark />
         <BrandSearch />
       </div>
@@ -196,7 +196,7 @@ export function Sidebar() {
           <div className="mt-auto border-t border-separator pt-2">
             {workspace ? (
               <fieldset
-                className="mb-2 flex items-center justify-between gap-0 border-0 p-0"
+                className="mb-2 grid min-w-0 grid-cols-4 justify-items-center gap-0.5 border-0 p-0"
                 aria-label="Workspace destinations"
               >
                 {compactSurfaces.map((surface) => (
@@ -207,7 +207,7 @@ export function Sidebar() {
                     aria-label={surface.title}
                     aria-current={isActive(surface, pathname) ? 'page' : undefined}
                     className={[
-                      'h-8 w-8 px-0',
+                      'h-8 w-8 shrink-0 px-0!',
                       isActive(surface, pathname) ? 'bg-selected text-accent-content' : '',
                     ].join(' ')}
                     onPress={() => go(surface.path)}

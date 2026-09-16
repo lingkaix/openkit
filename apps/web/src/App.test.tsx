@@ -235,7 +235,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument();
     const destinations = screen.getByRole('group', { name: 'Workspace destinations' });
-    expect(destinations).toHaveClass('justify-between', 'p-0', 'gap-0');
+    expect(destinations).toHaveClass('grid', 'min-w-0', 'grid-cols-4');
     expect(within(destinations).getByRole('button', { name: 'General' })).toBeInTheDocument();
     expect(within(destinations).getByRole('button', { name: 'Repositories' })).toBeInTheDocument();
     expect(
