@@ -28,6 +28,8 @@ import {
   SubmitThreadGoalSteeringRequestSchema,
   SubmitThreadGoalSteeringResponseSchema,
   type ThreadGoalCurrentTask,
+  ThreadGoalPlanReadResponseSchema,
+  ThreadGoalPlanSchema,
   type ThreadGoalSummary,
   ThreadGoalSummaryResponseSchema,
   type WorkerEnvironmentStorageChoice,
@@ -1093,6 +1095,41 @@ function dedupeStrings(values: readonly string[]): string[] {
 }
 
 /**
+ * Checks whether a goal status still represents active Goal Mode work.
+ *
+ * @param goal Stored goal record.
+ * @returns True when the goal is not terminal.
+ */
+function isActiveGoal(goal: GoalRecord): boolean {
+  switch (goal.status) {
+    case 'completed':
+    case 'blocked':
+    case 'aborted':
+    case 'failed':
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Selects the current Thread Goal, preferring an active Goal over a later-updated terminal.
+ *
+ * @param goals Thread Goal records in store order.
+ * @param goalId Optional exact Goal id for command replay.
+ * @returns Selected Goal, or null when the Thread has none.
+ */
+function selectCurrentThreadGoalRecord(
+  goals: readonly GoalRecord[],
+  goalId?: string
+): GoalRecord | null {
+  if (goalId) {
+    return goals.find((candidate) => candidate.goalId === goalId) ?? null;
+  }
+  return goals.findLast(isActiveGoal) ?? goals.at(-1) ?? null;
+}
+
+/**
  * Builds the latest thread goal summary read model from app-local goal storage.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -1108,9 +1145,7 @@ function buildThreadGoalSummary(
   goalId?: string
 ): ThreadGoalSummary | null {
   const goals = listGoalRecordsForThread(workspaceDb, { workspaceId, threadId });
-  const goal = goalId
-    ? (goals.find((candidate) => candidate.goalId === goalId) ?? null)
-    : (goals.at(-1) ?? null);
+  const goal = selectCurrentThreadGoalRecord(goals, goalId);
 
   if (!goal) {
     return null;
@@ -1795,6 +1830,75 @@ function buildGoalPlanCreationResponse(
 }
 
 /**
+ * Projects the current Thread Goal Plan from the latest Goal pointer and owned Plan record.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace that owns the Goal.
+ * @param threadId Thread that owns the Goal.
+ * @returns Schema-validated current Plan read projection.
+ * @throws GoalPlanApprovalError when the Goal pointer and Plan record contradict.
+ */
+function buildThreadGoalPlanReadResponse(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  threadId: string
+): z.output<typeof ThreadGoalPlanReadResponseSchema> {
+  const summary = buildThreadGoalSummary(workspaceDb, workspaceId, threadId);
+  if (!summary) {
+    return ThreadGoalPlanReadResponseSchema.parse({
+      goal: null,
+      planItemId: null,
+      plan: null,
+    });
+  }
+
+  const goalRecord = getGoalRecord(workspaceDb, workspaceId, threadId, summary.goalId);
+  if (!goalRecord) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Current Goal summary is unavailable for its Plan read.'
+    );
+  }
+  if (goalRecord.planItemId === null) {
+    return ThreadGoalPlanReadResponseSchema.parse({
+      goal: summary,
+      planItemId: null,
+      plan: null,
+    });
+  }
+
+  try {
+    const record = getGoalPlanRecord(workspaceDb, workspaceId, threadId, goalRecord.planItemId);
+    if (
+      !record ||
+      record.goalId !== goalRecord.goalId ||
+      record.planItemId !== goalRecord.planItemId ||
+      record.workspaceId !== workspaceId ||
+      record.threadId !== threadId
+    ) {
+      throw new GoalPlanApprovalError(
+        'recovery_required',
+        'Current Goal Plan pointer does not match its owned record.'
+      );
+    }
+
+    return ThreadGoalPlanReadResponseSchema.parse({
+      goal: summary,
+      planItemId: record.planItemId,
+      plan: ThreadGoalPlanSchema.parse(record),
+    });
+  } catch (error) {
+    if (error instanceof GoalPlanApprovalError) {
+      throw error;
+    }
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Current Goal Plan record is contradictory.'
+    );
+  }
+}
+
+/**
  * Builds the public response only after one Plan revision owner tuple is durable.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -1822,24 +1926,6 @@ function buildGoalPlanRevisionResponse(
     revisionItemId: revised.revisionItem.id,
     startsWorkerTurn: false,
   });
-}
-
-/**
- * Checks whether a goal status still represents active Goal Mode work.
- *
- * @param goal Stored goal record.
- * @returns True when the goal is not terminal.
- */
-function isActiveGoal(goal: GoalRecord): boolean {
-  switch (goal.status) {
-    case 'completed':
-    case 'blocked':
-    case 'aborted':
-    case 'failed':
-      return false;
-    default:
-      return true;
-  }
 }
 
 /**
@@ -2661,6 +2747,40 @@ export function registerGoalRoutes({
         throw error;
       }
       return asApiError((error as Error).message);
+    }
+  });
+
+  registerAppApiRoute(app, 'getThreadGoalPlan', (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const store = requestStore(c);
+
+      store.getWorkspace(workspaceId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
+
+      if (!coreDb) {
+        return asApiError(
+          'Goal storage is unavailable for this NanoCore instance.',
+          'goal_storage_unavailable',
+          503
+        );
+      }
+
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
+      try {
+        return c.json(buildThreadGoalPlanReadResponse(workspaceDb, workspaceId, threadId));
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      if (error instanceof HTTPException) {
+        throw error;
+      }
+      if (error instanceof GoalPlanApprovalError) {
+        return asApiError(error.message, error.code, error.status);
+      }
+      return asApiError('Current Goal Plan cannot be read.', 'goal_plan_read_failed', 400);
     }
   });
 

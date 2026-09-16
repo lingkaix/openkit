@@ -649,6 +649,7 @@ registerOperations(
   catalog,
   [
     'getThreadGoalSummary',
+    'getThreadGoalPlan',
     'getThreadDashboard',
     'listThreadItems',
     'getThreadMaterial',

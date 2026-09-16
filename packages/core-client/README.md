@@ -4,6 +4,8 @@ Thread dashboard reads validate the authenticated viewer id and bounded particip
 
 The same dashboard preserves NanoCore's verified `taskInputs` objective summaries for Web and Skill consumers; the client does not infer summaries from message JSON.
 
+`client.app.getThreadGoalPlan` reads the current durable Goal plan without generating or approving it. Reconnecting clients use this read instead of replaying plan creation or selecting an older plan Item from Thread history.
+
 `@openkit/core-client` is the composed typed HTTP and SSE client used by the SPA and protocol integration tests.
 
 The package owns transport, request-id insertion, response validation, capability helpers, and turn-event iteration.

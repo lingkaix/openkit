@@ -23,6 +23,7 @@ The Agent catalog is a live, product-safe projection of current server manifests
 - agent-facing LLM Gateway endpoints for Chat Completions and Responses, with one-level function namespace identity preserved on the chat-native bridge
 - workspace repository resources for governed worker materialization
 - Goal Mode planning, task supervision, actionable human review, stored verification evidence, and terminal summaries
+- Read-only current Goal plan recovery at `GET /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan`, using the durable Goal's exact plan pointer and the same Workspace and Thread visibility checks as Goal summary reads; this read never creates or approves a plan
 - real HTTP + SSE protocol surface
 
 Current OpenAI flagship API and Codex subscription profiles are available as opt-in [provider templates](./data-templates/config/providers/README.md#current-openai-flagships), with official metadata overlays and exact GPT-6 routing instructions.

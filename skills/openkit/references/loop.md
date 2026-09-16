@@ -22,6 +22,8 @@ Read `thread.dashboard` for `taskInputs`: each `{ itemId, objective }` summarize
 
 Do not promote work to a heavier mode merely because that mode exists. Let NanoCore report when an accepted handoff or transition is required.
 
+Use `goal.plan-read` to inspect the current durable plan after reconnect or reload. Reading never creates, revises or approves a plan; do not call `goal.plan` as a read substitute. Present the exact returned plan and `planItemId` for the required human decision. An unavailable or contradictory plan remains an explicit error, not permission to use an older Thread Item or generate a replacement.
+
 ## Run bounded work
 
 1. Search and describe the required operation when its contract is not already known.

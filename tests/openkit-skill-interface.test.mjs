@@ -27,6 +27,35 @@ const skillRoot = join(repoRoot, 'skills', 'openkit');
 const cliPath = join(skillRoot, 'scripts', 'openkit');
 const protocolExports = new Map(Object.entries(protocol));
 
+test('Goal plan recovery uses the read operation without invoking plan creation', async () => {
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find((entry) => entry.id === 'goal.plan-read');
+  assert.ok(operation);
+  assert.equal(operation.mutating, false);
+  const input = operation.inputSchema.parse({ workspaceId: 'ws_test', threadId: 'th_test' });
+  const calls = [];
+  const result = await operation.handler(
+    {
+      client: {
+        app: {
+          getThreadGoalPlan: async (...args) => {
+            calls.push(args);
+            return { planItemId: 'plan_current' };
+          },
+          createThreadGoalPlan: () => assert.fail('Reading must not generate a plan'),
+        },
+      },
+    },
+    input
+  );
+  assert.deepEqual(calls, [['ws_test', 'th_test']]);
+  assert.equal(result.planItemId, 'plan_current');
+  assert.equal(
+    operation.inputSchema.safeParse({ ...input, planItemId: 'old_plan' }).success,
+    false
+  );
+});
+
 test('Worker environment discovery preserves admin scope and exact target routing', async () => {
   const { operationCatalog } = await operations();
   const status = operationCatalog.find((entry) => entry.id === 'worker-environment.status');

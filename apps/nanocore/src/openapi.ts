@@ -260,6 +260,7 @@ import {
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
   SubscriptionProviderIdSchema,
   ThreadDashboardResponseSchema,
+  ThreadGoalPlanReadResponseSchema,
   ThreadGoalSummaryResponseSchema,
   TransferWorkspaceOwnershipRequestSchema,
   TurnFeedbackResponseSchema,
@@ -2550,6 +2551,14 @@ export function createAppOpenApiDocument() {
         }),
       },
       '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/plan': {
+        get: appJsonOperation({
+          operationId: 'getThreadGoalPlan',
+          tag: 'modes',
+          summary: 'Read the current durable Goal plan without mutation.',
+          responseStatus: '200',
+          responseSchema: 'ThreadGoalPlanReadResponse',
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
+        }),
         post: {
           operationId: 'createThreadGoalPlan',
           tags: ['modes'],
@@ -6372,6 +6381,7 @@ export function createAppOpenApiDocument() {
         ),
         CreateThreadGoalPlanRequest: toJsonSchema(CreateThreadGoalPlanRequestSchema),
         CreateThreadGoalPlanResponse: toJsonSchema(CreateThreadGoalPlanResponseSchema),
+        ThreadGoalPlanReadResponse: toJsonSchema(ThreadGoalPlanReadResponseSchema),
         DataRootBackupCreateResponse: toJsonSchema(DataRootBackupCreateResponseSchema),
         DataRootBackupVerifyRequest: toJsonSchema(DataRootBackupVerifyRequestSchema),
         DataRootBackupVerifyResponse: toJsonSchema(DataRootBackupVerifyResponseSchema),

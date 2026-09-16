@@ -391,6 +391,31 @@ export const CreateThreadGoalPlanResponseSchema = z.object({
   plan: ThreadGoalPlanSchema,
 });
 
+/** Current Thread Goal Plan read projection. Absent current Plan is explicit nulls. */
+export const ThreadGoalPlanReadResponseSchema = z
+  .object({
+    goal: ThreadGoalSummarySchema.nullable(),
+    planItemId: z.string().min(1).nullable(),
+    plan: ThreadGoalPlanSchema.nullable(),
+  })
+  .superRefine((value, ctx) => {
+    const hasPlan = value.plan !== null;
+    if (hasPlan !== (value.planItemId !== null)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Current Goal plan identity and payload must be present together.',
+        path: ['planItemId'],
+      });
+    }
+    if (hasPlan && value.goal === null) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Current Goal plan requires the owning Goal summary.',
+        path: ['goal'],
+      });
+    }
+  });
+
 /** Request body for approving one Goal Mode plan. */
 export const ApproveThreadGoalPlanRequestSchema = z
   .object({
@@ -754,6 +779,8 @@ export type ThreadGoalPlanReviewPolicy = z.infer<typeof ThreadGoalPlanReviewPoli
 export type ThreadGoalPlanTask = z.infer<typeof ThreadGoalPlanTaskSchema>;
 /** Reviewable Goal Mode plan payload exchanged by App API routes. */
 export type ThreadGoalPlan = z.infer<typeof ThreadGoalPlanSchema>;
+/** Current Thread Goal Plan read projection. */
+export type ThreadGoalPlanReadResponse = z.infer<typeof ThreadGoalPlanReadResponseSchema>;
 /** Request body for creating one Goal Mode plan. */
 export type CreateThreadGoalPlanRequest = z.infer<typeof CreateThreadGoalPlanRequestSchema>;
 /** Response payload returned after creating a Goal Mode plan. */

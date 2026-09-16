@@ -1103,6 +1103,18 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    id: 'goal.plan-read',
+    source: 'app-api',
+    appOperationId: 'getThreadGoalPlan',
+    clientMethod: 'app.getThreadGoalPlan',
+    group: 'goal',
+    summary: 'Read the current durable Goal plan without creating or approving it.',
+    mutating: false,
+    inputSchema: strictScope(threadScope),
+    handler: ({ client }, input) => client.app.getThreadGoalPlan(input.workspaceId, input.threadId),
+  },
+  {
+    ...STANDARD,
     id: 'goal.plan',
     source: 'app-api',
     appOperationId: 'createThreadGoalPlan',

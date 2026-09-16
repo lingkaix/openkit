@@ -423,6 +423,8 @@ import {
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
   type ThreadDashboardResponse,
   ThreadDashboardResponseSchema,
+  type ThreadGoalPlanReadResponse,
+  ThreadGoalPlanReadResponseSchema,
   type ThreadGoalSummaryResponse,
   ThreadGoalSummaryResponseSchema,
   type TransferWorkspaceOwnershipRequest,
@@ -947,6 +949,8 @@ export interface AppApiClient {
   getThreadDashboard(workspaceId: string, threadId: string): Promise<ThreadDashboardResponse>;
   /** Reads one thread Goal Mode summary read model. */
   getThreadGoalSummary(workspaceId: string, threadId: string): Promise<ThreadGoalSummaryResponse>;
+  /** Reads the current Goal Plan owned by the Thread's latest Goal. */
+  getThreadGoalPlan(workspaceId: string, threadId: string): Promise<ThreadGoalPlanReadResponse>;
   /** Starts Goal Mode for one thread. */
   startThreadGoal(
     workspaceId: string,
@@ -1787,6 +1791,11 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal`,
         ThreadGoalSummaryResponseSchema
+      ),
+    getThreadGoalPlan: (workspaceId, threadId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/plan`,
+        ThreadGoalPlanReadResponseSchema
       ),
     startThreadGoal: (workspaceId, threadId, input) => {
       const request = withRequestId(input);

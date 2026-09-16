@@ -8,6 +8,8 @@ Thread dashboard schemas include the nullable authenticated viewer id and a narr
 
 These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the App API remains an implementation projection over the stable Core protocol.
 
+The current Goal plan response projects the durable Goal and its exact plan reference for reload and reconnect. It adds no durable plan owner or approval authority.
+
 Provider-subscription payload schemas consume the browser-safe `@openkit/config-schema/provider-subscription` entry point so Web bundles do not traverse the config package's server-only root graph.
 
 Vault administration schemas keep provider API keys in strict request-only payloads and expose only redacted configuration status responses. `ProviderApiKeyProfileIdSchema` is the shared file-, Vault-reference-, and response-safe id boundary used by NanoCore and Web.
