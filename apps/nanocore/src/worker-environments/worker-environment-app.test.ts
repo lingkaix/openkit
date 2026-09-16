@@ -452,7 +452,8 @@ describe('Worker environment App composition', () => {
         privateWorkspace.id,
         'Administration',
         'thread_worker_environment_app',
-        'administration'
+        'administration',
+        { privateOwnerUserId: USER_ID, visibility: 'private' }
       );
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -606,7 +607,8 @@ describe('Worker environment App composition', () => {
         privateWorkspace.id,
         'Administration',
         'thread_worker_environment_replacement',
-        'administration'
+        'administration',
+        { privateOwnerUserId: USER_ID, visibility: 'private' }
       );
       const productWorkspace = store
         .listWorkspaces()

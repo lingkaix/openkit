@@ -99,7 +99,8 @@ function createFixture() {
     workspace.id,
     'Administration',
     'thread_admin',
-    'administration'
+    'administration',
+    { privateOwnerUserId: actor.userId, visibility: 'private' }
   );
   const agentManifest = manifest();
   const content = JSON.stringify(agentManifest);
@@ -272,7 +273,8 @@ describe('Worker environment preparation', () => {
       fixture.workspace.id,
       'Recovery',
       'thread_recovery',
-      'administration'
+      'administration',
+      { privateOwnerUserId: actor.userId, visibility: 'private' }
     );
     const recoveryRequestId = randomUUID();
     const recoveryRequest = {
