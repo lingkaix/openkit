@@ -12,6 +12,31 @@ import {
 } from './data';
 import { ItemView } from './ItemView';
 
+const MISSING_TURN_ERROR = 'This turn failed. Review the conversation before trying again.';
+
+/** Item-log groups plus dashboard failed Turns that recorded no Items. */
+function streamGroupsByTurn(
+  items: ThreadItem[],
+  turns: readonly { id: string; status: string }[] | undefined,
+  latestTurnId: string | undefined
+): { turnId: string; items: ThreadItem[] }[] {
+  const groups = groupItemsByTurn(items);
+  const orderedTurns = turns ?? [];
+  const turnOrder = new Map(orderedTurns.map((turn, index) => [turn.id, index]));
+  for (const [index, turn] of orderedTurns.entries()) {
+    if (
+      turn.status !== 'failed' ||
+      turn.id === latestTurnId ||
+      groups.some((group) => group.turnId === turn.id)
+    )
+      continue;
+    const next = groups.findIndex((group) => (turnOrder.get(group.turnId) ?? -1) > index);
+    groups.splice(next < 0 ? groups.length : next, 0, { turnId: turn.id, items: [] });
+  }
+
+  return groups;
+}
+
 export interface ThreadStreamProps {
   workspaceId: string | null;
   threadId: string;
@@ -26,7 +51,9 @@ export interface ThreadStreamProps {
  *
  * Renders every applicable §9.13 state: a skeleton while the read model is in
  * flight, an inline error with retry, a calm empty block, or the populated stream
- * grouped by Turn (Thread → Turn → Item). Unresolved approvals and non-secret Gate answers are
+ * grouped by Turn (Thread → Turn → Item). Each durable failed Turn that is not the
+ * latest keeps its recorded dashboard error beside that Turn, including Turns with no
+ * Items. Unresolved approvals and non-secret Gate answers are
  * actionable inline unless read-only. Baseline readiness stays sticky only for the current
  * Workspace and Thread so later command refetches cannot tear down its live subscription.
  */
@@ -74,7 +101,8 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
     );
   }
 
-  const groups = groupItemsByTurn(items.data ?? []);
+  const latestTurnId = dashboard?.turns.at(-1)?.id;
+  const groups = streamGroupsByTurn(items.data ?? [], dashboard?.turns, latestTurnId);
   const participantNames = new Map(
     dashboard?.participants?.map((participant) => [
       `${participant.kind}:${participant.id}`,
@@ -122,92 +150,106 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
 
   return (
     <div className="flex flex-col gap-5">
-      {groups.map((group, index) => (
-        <div key={group.turnId} className="flex flex-col gap-4">
-          {index > 0 ? <TurnSeparator label={`Turn ${index + 1}`} /> : null}
-          {group.items.map((item) =>
-            item.type === 'user-input-request' &&
-            (items.data ?? []).some(
-              (candidate) =>
-                candidate.type === 'user-input-response' &&
-                candidate.turnId === item.turnId &&
-                candidate.userInputRequestId === item.userInputRequestId
-            ) ? null : (
-              <ItemView
-                key={item.id}
-                item={item}
-                viewerUserId={dashboard?.viewerUserId}
-                authorName={
-                  'actor' in item
-                    ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
-                    : turnAuthors.get(item.turnId)
-                }
-                requestObjective={
-                  item.type === 'user-message'
-                    ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)?.objective
-                    : undefined
-                }
-                readOnly={controlsReadOnly}
-                resolvedApproval={
-                  item.type === 'approval-request'
-                    ? (items.data ?? []).find(
-                        (
-                          candidate
-                        ): candidate is Extract<typeof candidate, { type: 'approval-decision' }> =>
-                          candidate.type === 'approval-decision' &&
-                          candidate.turnId === item.turnId &&
-                          candidate.approvalRequestId === item.approvalRequestId
-                      )
-                    : undefined
-                }
-                approvalRequestTitle={
-                  item.type === 'approval-decision'
-                    ? group.items.find(
-                        (
-                          candidate
-                        ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
-                          candidate.type === 'approval-request' &&
-                          candidate.approvalRequestId === item.approvalRequestId
-                      )?.title
-                    : undefined
-                }
-                approvalUnavailableReason={approvalUnavailableReason(item)}
-                approvalPending={
-                  respond.isPending &&
-                  item.type === 'approval-request' &&
-                  respond.variables?.approvalRequestId === item.approvalRequestId
-                }
-                approvalError={
-                  respond.isError &&
-                  item.type === 'approval-request' &&
-                  respond.variables?.approvalRequestId === item.approvalRequestId
-                }
-                onRetryApproval={() => {
-                  if (respond.variables) respond.mutate(respond.variables);
-                }}
-                onApprovalDecision={(approvalRequestId, turnId, decision) =>
-                  respond.mutate({
-                    approvalRequestId,
-                    turnId,
-                    decision,
-                    requestId: createRequestId(),
-                  })
-                }
-                onSubmitAnswers={(turnId, answers) => submitAnswers.mutate({ turnId, answers })}
-                answerPending={
-                  submitAnswers.isPending && submitAnswers.variables?.turnId === item.turnId
-                }
-                answerError={
-                  submitAnswers.isError && submitAnswers.variables?.turnId === item.turnId
-                }
-                onRetryAnswers={() => {
-                  if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
-                }}
-              />
-            )
-          )}
-        </div>
-      ))}
+      {groups.map((group, index) => {
+        const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
+        const historicalFailure =
+          groupTurn?.status === 'failed' &&
+          groupTurn.id !== latestTurnId &&
+          groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index
+            ? (groupTurn.error?.message ?? MISSING_TURN_ERROR)
+            : null;
+
+        return (
+          <div key={group.items[0]?.id ?? group.turnId} className="flex flex-col gap-4">
+            {index > 0 ? <TurnSeparator label={`Turn ${index + 1}`} /> : null}
+            {group.items.map((item) =>
+              item.type === 'user-input-request' &&
+              (items.data ?? []).some(
+                (candidate) =>
+                  candidate.type === 'user-input-response' &&
+                  candidate.turnId === item.turnId &&
+                  candidate.userInputRequestId === item.userInputRequestId
+              ) ? null : (
+                <ItemView
+                  key={item.id}
+                  item={item}
+                  viewerUserId={dashboard?.viewerUserId}
+                  authorName={
+                    'actor' in item
+                      ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
+                      : turnAuthors.get(item.turnId)
+                  }
+                  requestObjective={
+                    item.type === 'user-message'
+                      ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)?.objective
+                      : undefined
+                  }
+                  readOnly={controlsReadOnly}
+                  resolvedApproval={
+                    item.type === 'approval-request'
+                      ? (items.data ?? []).find(
+                          (
+                            candidate
+                          ): candidate is Extract<
+                            typeof candidate,
+                            { type: 'approval-decision' }
+                          > =>
+                            candidate.type === 'approval-decision' &&
+                            candidate.turnId === item.turnId &&
+                            candidate.approvalRequestId === item.approvalRequestId
+                        )
+                      : undefined
+                  }
+                  approvalRequestTitle={
+                    item.type === 'approval-decision'
+                      ? group.items.find(
+                          (
+                            candidate
+                          ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
+                            candidate.type === 'approval-request' &&
+                            candidate.approvalRequestId === item.approvalRequestId
+                        )?.title
+                      : undefined
+                  }
+                  approvalUnavailableReason={approvalUnavailableReason(item)}
+                  approvalPending={
+                    respond.isPending &&
+                    item.type === 'approval-request' &&
+                    respond.variables?.approvalRequestId === item.approvalRequestId
+                  }
+                  approvalError={
+                    respond.isError &&
+                    item.type === 'approval-request' &&
+                    respond.variables?.approvalRequestId === item.approvalRequestId
+                  }
+                  onRetryApproval={() => {
+                    if (respond.variables) respond.mutate(respond.variables);
+                  }}
+                  onApprovalDecision={(approvalRequestId, turnId, decision) =>
+                    respond.mutate({
+                      approvalRequestId,
+                      turnId,
+                      decision,
+                      requestId: createRequestId(),
+                    })
+                  }
+                  onSubmitAnswers={(turnId, answers) => submitAnswers.mutate({ turnId, answers })}
+                  answerPending={
+                    submitAnswers.isPending && submitAnswers.variables?.turnId === item.turnId
+                  }
+                  answerError={
+                    submitAnswers.isError && submitAnswers.variables?.turnId === item.turnId
+                  }
+                  onRetryAnswers={() => {
+                    if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
+                  }}
+                />
+              )
+            )}
+            {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
+          </div>
+        );
+      })}
     </div>
   );
 }

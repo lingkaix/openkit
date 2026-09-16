@@ -188,3 +188,5 @@ Account groups the current Workspace name, id, role and non-owner leave action i
 Overview combines current Action Center attention with every ongoing Task and Goal from authorized conversation navigation. It retains waiting times and direct approval Allow/Deny controls, keeps Goal and Workspace reviews in context, refreshes activity after decisions, and replays uncertain requests with the same identity. Decision errors and retry controls remain bound to their originating Workspace.
 
 The bottom sidebar uses one Settings gear menu for Workspace settings and the existing User/Server/Administration Settings shell, without a separate Settings row. Workspace destinations still require a validated selection; Settings remains reachable without one.
+
+Failed Turns retain their recorded dashboard errors in conversation history after later Turns finish, including failures with no Items. Interleaved Items keep their log order; each historical error appears once after that Turn’s last Item group. Latest failures remain in the header and do not offer an automatic retry.

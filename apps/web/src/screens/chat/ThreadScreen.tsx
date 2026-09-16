@@ -96,7 +96,8 @@ export interface ThreadScreenProps {
  * composer with a stated reason and read-only approvals (the global banner lives
  * in the shell). Rename, archive, interruption, and failed-Turn controls project
  * only the authoritative records returned by Core; a failed latest Turn shows its
- * recorded error without retrying work. The active Turn shows its supplied
+ * recorded error in the header without retrying work. Earlier failed Turns keep
+ * that same error beside their own stream messages. The active Turn shows its supplied
  * trigger actor without deployment or identity inference.
  */
 export function ThreadScreen({ mode }: ThreadScreenProps) {
@@ -177,6 +178,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     (draft) => draft.workspaceId === workspaceId && draft.threadId === threadId
   );
   const latestTurn = dashboard.data?.turns.at(-1);
+  /** Header chip and banner stay on the latest Turn, including when it has no Items. */
   const failedTurn = latestTurn?.status === 'failed' ? latestTurn : undefined;
   const failedTurnMessage =
     failedTurn?.error?.message ??
