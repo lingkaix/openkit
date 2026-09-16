@@ -4,19 +4,36 @@ import { ChannelTag } from './ChannelTag';
 import type { WorkerHue } from './status';
 
 export interface UserMessageProps {
+  /** Canonical display name, or the recorded actor id when unavailable. */
+  author: string;
+  /** True only for the authenticated human account. */
+  isSelf: boolean;
   children: ReactNode;
 }
 
-/**
- * User message (`ok-msg-user`, DESIGN.md §9.1).
- *
- * Right-aligned soft sunken bubble, 16px radius.
- */
-export function UserMessage({ children }: UserMessageProps) {
+/** Human message with a circular identity row and a bubble; only the viewer aligns right. */
+export function UserMessage({ author, isSelf, children }: UserMessageProps) {
   return (
-    <div className="flex justify-end">
-      <div className="max-w-[620px] rounded-ok-xl bg-sunken px-4 py-2.5 text-fg">{children}</div>
-    </div>
+    <article
+      aria-label={`Message from ${author}${isSelf ? ' (You)' : ''}`}
+      className={`flex min-w-0 flex-col gap-2 ${isSelf ? 'items-end' : 'items-start'}`}
+    >
+      <div
+        className={`flex max-w-full items-center gap-2 text-xs text-fg-muted ${isSelf ? 'flex-row-reverse' : ''}`}
+      >
+        <Avatar
+          hue="you"
+          initials={Array.from(author).slice(0, 2).join('').toUpperCase()}
+          name={author}
+          size="sm"
+        />
+        <span className="min-w-0 break-words font-bold text-fg">{author}</span>
+        {isSelf ? <span>You</span> : null}
+      </div>
+      <div className="max-w-[min(100%,620px)] whitespace-pre-wrap break-words rounded-ok-xl bg-sunken px-4 py-2.5 text-fg">
+        {children}
+      </div>
+    </article>
   );
 }
 
@@ -49,14 +66,19 @@ export function AssistantMessage({
   children,
 }: AssistantMessageProps) {
   return (
-    <div className="flex max-w-[680px] flex-col gap-2">
-      <div className="flex items-center gap-2 text-xs text-fg-muted">
+    <article
+      aria-label={`Message from ${author}`}
+      className="flex min-w-0 max-w-[680px] flex-col items-start gap-2"
+    >
+      <div className="flex max-w-full items-center gap-2 text-xs text-fg-muted">
         <Avatar hue={hue} initials={initials} name={author} size="sm" />
-        <span className="font-bold text-fg">{author}</span>
+        <span className="min-w-0 break-words font-bold text-fg">{author}</span>
         {time ? <span>{time}</span> : null}
         {via ? <ChannelTag channel={via} /> : null}
       </div>
-      <div className="leading-relaxed text-fg">{children}</div>
-    </div>
+      <div className="max-w-full whitespace-pre-wrap break-words leading-relaxed text-fg">
+        {children}
+      </div>
+    </article>
   );
 }

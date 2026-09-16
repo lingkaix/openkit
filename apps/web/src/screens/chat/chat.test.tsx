@@ -811,7 +811,8 @@ describe('chat thread (boards 02/03)', () => {
     });
     renderApp('/chat/ws1/th1', client);
 
-    expect(await screen.findByText('You answered')).toBeInTheDocument();
+    expect(await screen.findByText('Answered')).toBeInTheDocument();
+    expect(screen.queryByText('You answered')).not.toBeInTheDocument();
     expect(screen.getByText(/user_responder/)).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Audience' })).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: 'Concise' })).not.toBeInTheDocument();
@@ -906,6 +907,75 @@ describe('chat thread (boards 02/03)', () => {
 });
 
 describe('thread lifecycle and attribution (S7)', () => {
+  it.each([
+    'user_editor',
+    'user_other',
+  ])('attributes people and agents for viewer %s', async (viewerUserId) => {
+    const messages = ItemSchema.array().parse([
+      ITEMS[0],
+      {
+        ...ITEMS[0],
+        id: 'other',
+        actor: { kind: 'user', id: 'user_other' },
+        text: 'Other person.',
+      },
+      {
+        ...ITEMS[0],
+        id: 'unknown',
+        actor: { kind: 'user', id: 'user_unknown' },
+        text: 'Unknown person.',
+      },
+      {
+        ...ITEMS[0],
+        id: 'automation',
+        actor: { kind: 'automation', id: 'automation_daily', responsibleUserId: 'user_editor' },
+        text: 'Scheduled input.',
+      },
+      ITEMS[1],
+      { ...ITEMS[1], id: 'internal', turnId: 't2', text: 'Internal reply.' },
+    ]);
+    const client = makeClient(
+      { listThreadItems: vi.fn().mockResolvedValue({ items: messages, nextCursor: null }) },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          viewerUserId,
+          participants: [
+            { kind: 'user', id: 'user_editor', displayName: 'Simon' },
+            { kind: 'user', id: 'user_other', displayName: 'Alex' },
+            { kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' },
+          ],
+          turns: [{ ...COMPLETED_TURN, agentId: 'agent_codex_host' }],
+        }),
+      }
+    );
+    renderApp('/chat/ws1/th1', client);
+    const own = await screen.findByRole('article', {
+      name: `Message from Simon${viewerUserId === 'user_editor' ? ' (You)' : ''}`,
+    });
+    expect(own).toHaveClass(viewerUserId === 'user_editor' ? 'items-end' : 'items-start');
+    expect(within(own).getByRole('img', { name: 'Simon' })).toHaveClass('rounded-full');
+    const other = screen.getByRole('article', {
+      name: `Message from Alex${viewerUserId === 'user_other' ? ' (You)' : ''}`,
+    });
+    expect(other).toHaveClass(viewerUserId === 'user_other' ? 'items-end' : 'items-start');
+    expect(within(other).getByRole('img', { name: 'Alex' })).toHaveClass('rounded-full');
+    expect(screen.getByRole('article', { name: 'Message from user_unknown' })).toHaveClass(
+      'items-start'
+    );
+    const worker = screen.getByRole('article', { name: 'Message from Codex Agent' });
+    expect(within(worker).getByRole('img', { name: 'Codex Agent' })).toHaveClass('rounded-ok');
+    expect(
+      within(screen.getByRole('article', { name: 'Message from Agent' })).getByText(
+        'Internal reply.'
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('article', { name: 'Message from automation_daily' })).getByText(
+        'Scheduled input.'
+      )
+    ).toBeInTheDocument();
+  });
+
   it('keeps the authoritative title through a failed rename and adopts the retry result', async () => {
     const user = userEvent.setup();
     const firstRename = createDeferred<typeof THREAD>();
@@ -1585,6 +1655,40 @@ describe('thread lifecycle and attribution (S7)', () => {
 });
 
 describe('live turn subscription (S6)', () => {
+  it('refreshes a newly arriving author even with a cached dashboard', async () => {
+    const dashboard = { viewerUserId: 'user_editor', participants: [], turns: [ACTIVE_TURN] };
+    const getThreadDashboard = vi
+      .fn()
+      .mockResolvedValueOnce(dashboard)
+      .mockResolvedValue({
+        ...dashboard,
+        participants: [{ kind: 'user', id: 'user_other', displayName: 'Alex' }],
+      });
+    async function* stream() {
+      yield turnStreamEvent(1, 'item.created', {
+        type: 'item-created',
+        item: {
+          ...ITEMS[0],
+          id: 'live-human',
+          actor: { kind: 'user', id: 'user_other' },
+          text: 'New participant.',
+        },
+      });
+    }
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+        subscribeTurnEvents: vi.fn().mockReturnValue(stream()),
+      },
+      { getThreadDashboard }
+    );
+    renderApp('/chat/ws1/th1', client);
+    const message = await screen.findByRole('article', { name: 'Message from Alex' });
+    expect(message).toHaveClass('items-start');
+    expect(within(message).getByText('New participant.')).toBeInTheDocument();
+    expect(getThreadDashboard).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     'send',
     'approval',

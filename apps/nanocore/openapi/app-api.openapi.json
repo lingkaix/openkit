@@ -98155,6 +98155,49 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "viewerUserId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "agent",
+                    "automation",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "displayName"
+              ],
+              "additionalProperties": false
+            }
+          },
           "thread": {
             "type": "object",
             "properties": {
@@ -113178,6 +113221,8 @@
           }
         },
         "required": [
+          "viewerUserId",
+          "participants",
           "thread",
           "turns",
           "artifacts",

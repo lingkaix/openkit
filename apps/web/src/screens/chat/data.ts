@@ -205,7 +205,7 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
 
 /**
  * Subscribes once to the authoritative running Turn, folds item events into the
- * item cache, and projects its matching terminal Turn into the dashboard cache.
+ * item cache, and projects its matching terminal Turn into the dashboard cache. Returns the same dashboard identity projection for message attribution.
  *
  * @param workspaceId Current Workspace identity, or null before selection resolves.
  * @param threadId Current Thread identity.
@@ -217,7 +217,7 @@ export function useLiveThreadItems(
   threadId: string,
   enabled: boolean,
   baselineReady: boolean
-): void {
+) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   const { clear, report } = useConnectionFailure();
@@ -277,6 +277,29 @@ export function useLiveThreadItems(
             );
             continue;
           }
+          if (event.data.type === 'item-created') {
+            const created = ItemSchema.safeParse(event.data.item);
+            const identity = created.success && 'actor' in created.data ? created.data.actor : null;
+            const current =
+              queryClient.getQueryData<
+                Awaited<ReturnType<CoreClient['app']['getThreadDashboard']>>
+              >(dashboardKey);
+            if (
+              identity &&
+              !current?.participants?.some(
+                (participant) =>
+                  participant.kind === identity.kind && participant.id === identity.id
+              )
+            ) {
+              void queryClient
+                .fetchQuery({
+                  queryKey: dashboardKey,
+                  queryFn: () => client.app.getThreadDashboard(workspaceId, threadId),
+                  staleTime: 0,
+                })
+                .catch(() => undefined);
+            }
+          }
           await queryClient.cancelQueries({
             queryKey: itemsKey,
             exact: true,
@@ -307,6 +330,7 @@ export function useLiveThreadItems(
     turnId,
     workspaceId,
   ]);
+  return dashboard.data;
 }
 
 /**

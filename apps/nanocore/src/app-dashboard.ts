@@ -1,5 +1,6 @@
 import {
   type DashboardArtifactSummary,
+  type ThreadDashboardResponse,
   ThreadDashboardResponseSchema,
   type ThreadWorkStatus,
   type WorkRouting,
@@ -577,6 +578,32 @@ export function registerDashboardRoutes({
         ),
       }));
       const threadItems = store.listThreadItems(workspaceId, threadId);
+      const participants = new Map<string, ThreadDashboardResponse['participants'][number]>();
+      const authors = [
+        ...threadItems.flatMap((item) => ('actor' in item ? [item.actor] : [])),
+        ...turns.flatMap((turn) =>
+          turn.agentId ? [{ kind: 'agent' as const, id: turn.agentId }] : []
+        ),
+      ];
+      for (const { kind, id } of authors) {
+        const key = `${kind}:${id}`;
+        if (participants.has(key)) continue;
+        const user =
+          kind === 'user'
+            ? (coreDb?.sqlite.prepare('SELECT display_name FROM users WHERE id = ?').get(id) as
+                | { display_name: string }
+                | undefined)
+            : undefined;
+        const agent =
+          kind === 'agent'
+            ? runtimeConfigManager.current().agentManifests.find((entry) => entry.id === id)
+            : undefined;
+        participants.set(key, {
+          kind,
+          id,
+          displayName: user?.display_name.trim() || agent?.displayName.trim() || id,
+        });
+      }
       const latestTurn = turns.at(-1) ?? null;
       const defaultAgentId = resolveDefaultAgentId(runtimeConfigManager.current(), workspaceId);
       const selectedAgentId = latestTurn ? (latestTurn.agentId ?? null) : defaultAgentId;
@@ -585,6 +612,8 @@ export function registerDashboardRoutes({
 
       return c.json(
         ThreadDashboardResponseSchema.parse({
+          viewerUserId: actor?.userId ?? null,
+          participants: [...participants.values()],
           thread,
           turns,
           artifacts,

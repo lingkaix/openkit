@@ -617,6 +617,16 @@ export const WorkspaceDashboardResponseSchema = z.object({
 
 /** Thread dashboard response payload. */
 export const ThreadDashboardResponseSchema = z.object({
+  viewerUserId: z.string().min(1).nullable(),
+  participants: z.array(
+    z
+      .object({
+        kind: z.enum(['user', 'agent', 'automation', 'integration', 'system']),
+        id: z.string().min(1),
+        displayName: z.string().min(1),
+      })
+      .strict()
+  ),
   thread: ThreadSchema,
   turns: z.array(ProductTurnSchema),
   artifacts: z.array(DashboardArtifactSummarySchema),

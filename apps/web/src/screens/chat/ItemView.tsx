@@ -18,6 +18,10 @@ type UserInputRequestItem = Extract<ThreadItem, { type: 'user-input-request' }>;
 export interface ItemViewProps {
   /** Item projected by the authoritative Thread stream. */
   item: ThreadItem;
+  /** Authenticated viewer from the authorized dashboard; absent while loading. */
+  viewerUserId?: string | null;
+  /** Display-name projection for the recorded Item actor or assigned Turn Agent. */
+  authorName?: string;
   /** Grant/deny an inline approval; omitted (or read-only) disables the actions. */
   onApprovalDecision?: (
     approvalRequestId: string,
@@ -169,10 +173,12 @@ function UserInputRequestView({
  * The Web UI is a visible follower over the item stream, so every product-visible
  * item type (protocol §item model) maps to a calm, legible primitive. Approvals
  * are decidable inline (D-006), and human-authored items display only their
- * supplied authoritative actor IDs. Deep technical detail stays terse here.
+ * recorded actor identity with authorized display-name projections. Deep technical detail stays terse here.
  */
 export function ItemView({
   item,
+  viewerUserId,
+  authorName,
   onApprovalDecision,
   readOnly,
   onSubmitAnswers,
@@ -182,18 +188,19 @@ export function ItemView({
 }: ItemViewProps) {
   switch (item.type) {
     case 'user-message':
-      return (
-        <UserMessage>
+      return item.actor.kind === 'user' ? (
+        <UserMessage author={authorName ?? item.actor.id} isSelf={item.actor.id === viewerUserId}>
           <p>{item.text}</p>
-          <p className="mt-1 text-xs text-fg-muted">by {item.actor.id}</p>
         </UserMessage>
+      ) : (
+        <AssistantMessage hue="scout" initials="AI" author={authorName ?? item.actor.id}>
+          {item.text}
+        </AssistantMessage>
       );
 
     case 'assistant-message':
-      // Chat mode has a single assistant; per-worker attribution arrives with the
-      // multi-worker goal surfaces (WP-5).
       return (
-        <AssistantMessage hue="scout" initials="AI" author="Assistant">
+        <AssistantMessage hue="scout" initials="AI" author={authorName ?? 'Agent'}>
           {item.text || <span className="text-fg-muted">…</span>}
         </AssistantMessage>
       );
@@ -257,7 +264,7 @@ export function ItemView({
         <ItemCard
           kind={item.decision === 'granted' ? 'positive' : 'neutral'}
           title={item.decision === 'granted' ? 'Approved' : 'Denied'}
-          meta={`by ${item.actor.id}`}
+          meta={`by ${authorName ?? item.actor.id}`}
         />
       );
 
@@ -274,7 +281,13 @@ export function ItemView({
       );
 
     case 'user-input-response':
-      return <ItemCard kind="neutral" title="You answered" meta={`by ${item.actor.id}`} />;
+      return (
+        <ItemCard
+          kind="neutral"
+          title={item.actor.id === viewerUserId ? 'You answered' : 'Answered'}
+          meta={`by ${authorName ?? item.actor.id}`}
+        />
+      );
 
     case 'file-change':
       return <ArtifactRow name={item.path} icon="file" time={item.changeKind} />;

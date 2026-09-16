@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+Thread dashboard schemas include the nullable authenticated viewer id and a narrow participant display-name projection. These release-coupled labels do not replace immutable protocol actors or expose private profile fields.
+
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
 
 These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the App API remains an implementation projection over the stable Core protocol.

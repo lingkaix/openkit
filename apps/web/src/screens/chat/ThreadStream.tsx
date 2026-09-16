@@ -51,7 +51,7 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
 
   const baselineReady =
     baseline.workspaceId === workspaceId && baseline.threadId === threadId && baseline.ready;
-  useLiveThreadItems(workspaceId, threadId, items.isSuccess, baselineReady);
+  const dashboard = useLiveThreadItems(workspaceId, threadId, items.isSuccess, baselineReady);
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const controlsReadOnly = Boolean(readOnly || !workspaceId || !connection.connected);
@@ -72,6 +72,18 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
   }
 
   const groups = groupItemsByTurn(items.data ?? []);
+  const participantNames = new Map(
+    dashboard?.participants?.map((participant) => [
+      `${participant.kind}:${participant.id}`,
+      participant.displayName,
+    ])
+  );
+  const turnAuthors = new Map(
+    dashboard?.turns.map((turn) => [
+      turn.id,
+      turn.agentId ? (participantNames.get(`agent:${turn.agentId}`) ?? turn.agentId) : undefined,
+    ])
+  );
 
   if (groups.length === 0) {
     return (
@@ -99,6 +111,12 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
               <ItemView
                 key={item.id}
                 item={item}
+                viewerUserId={dashboard?.viewerUserId}
+                authorName={
+                  'actor' in item
+                    ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
+                    : turnAuthors.get(item.turnId)
+                }
                 readOnly={
                   controlsReadOnly ||
                   (item.type === 'approval-request' &&

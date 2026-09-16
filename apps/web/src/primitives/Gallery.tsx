@@ -189,7 +189,9 @@ export function Gallery() {
       </Specimen>
 
       <Specimen title="Conversation">
-        <UserMessage>Draft a competitive teardown of the top three tools.</UserMessage>
+        <UserMessage author="Sam" isSelf>
+          Draft a competitive teardown of the top three tools.
+        </UserMessage>
         <AssistantMessage
           hue="scout"
           initials="SC"

@@ -380,6 +380,14 @@ Actor attribution is not added indiscriminately to immutable records that alread
 
 The complete target audit contract preserves a redacted actor or subject reference, responsible user when applicable, credential/channel summary, policy decision, target resource, request ID, outcome, and time. The bounded Stage 6 Approval audit requires only actor, request ID, matching decision and target lineage, outcome, and time; credential/channel and broader producer context remain outside this slice. Display names and email addresses are projections and must not become stable actor identifiers.
 
+### Conversation Author Projection
+
+The authorized Thread dashboard includes the authenticated `viewerUserId` and a `participants` display-name projection limited to Item actors and assigned Turn Agents recorded in that Thread. Stable actor kind and id remain authoritative; current canonical User display names are labels, never authorship or authority. The projection includes no email, credential, private profile, or unrelated user-directory entry. Visibility and Workspace authorization run before names are resolved.
+
+This is a read-only projection rebuilt on reads; it creates no roster, durable author record, retry operation, or lifecycle. Missing or blank names fall back to the recorded id. Renames are reflected on a subsequent successful read; read failure preserves truthful id or generic Agent labels rather than inventing a person. Cache entries carrying the viewer identity are removed on account transitions, and newly arriving recorded actors trigger a dashboard refresh. Restart needs no recovery beyond reading the existing records.
+
+Web shows each human message's name and circular initials avatar. Only an Item whose `actor.kind` is `user` and whose id equals the authenticated viewer is marked You and aligned right; other humans align left. Non-human accountability never makes an Item the viewer's own message. Agent messages align left with square avatars and unboxed content, distinct from human bubbles. Worker labels use the owning Turn's recorded `agentId` and current manifest name, identifying the assigned Worker rather than any runtime-internal subagent; unavailable provenance is labeled Agent without inventing a role. Human decision Items use the same display-name projection and never say You for another user. These observations, together with absence of unrelated profile fields, are the acceptance predicates.
+
 No `tenantId` field is added.
 
 ## Human Attention And Decision Authority

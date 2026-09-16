@@ -1,5 +1,7 @@
 # @openkit/core-client
 
+Thread dashboard reads validate the authenticated viewer id and bounded participant display names alongside existing work state; no separate user-directory request is needed for conversation attribution.
+
 `@openkit/core-client` is the composed typed HTTP and SSE client used by the SPA and protocol integration tests.
 
 The package owns transport, request-id insertion, response validation, capability helpers, and turn-event iteration.

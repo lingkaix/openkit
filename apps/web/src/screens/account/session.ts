@@ -84,6 +84,7 @@ export function useAccountMutation() {
       }
       queryClient.removeQueries({ queryKey: myInvitationsKey, exact: true });
       queryClient.removeQueries({ queryKey: ['workspaces'], exact: true });
+      queryClient.removeQueries({ queryKey: ['thread-dashboard'] });
       useWorkspaceStore.getState().setCurrentWorkspaceId(null);
       void queryClient.refetchQueries({ queryKey: accountAdmissionKey, exact: true });
     },

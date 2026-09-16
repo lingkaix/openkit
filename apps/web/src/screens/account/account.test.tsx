@@ -1279,6 +1279,7 @@ describe('email/password session operations', () => {
       actorAInvitation.inviteeUserId,
       actorAInvitation.workspaceId,
       'ws-actor-a-cached-catalog',
+      'user-actor-a-dashboard-viewer',
     ];
     const guards = guardSensitiveSinks(actorAValues);
     const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
@@ -1333,6 +1334,10 @@ describe('email/password session operations', () => {
     });
     queryClient.setQueryData(unrelatedKey, unrelatedValue);
     queryClient.setQueryData(['workspaces'], [{ id: 'ws-actor-a-cached-catalog' }]);
+    queryClient.setQueryData(['thread-dashboard', 'ws1', 'th1'], {
+      viewerUserId: 'user-actor-a-dashboard-viewer',
+      participants: [],
+    });
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws-actor-a-cached-catalog' });
     const unrelatedQuery = queryClient
       .getQueryCache()

@@ -613,6 +613,8 @@ function workspaceDashboard() {
 /** Returns one valid thread dashboard read model. */
 function threadDashboard() {
   return {
+    viewerUserId: 'user_local',
+    participants: [],
     thread: thread(),
     turns: [turn()],
     artifacts: [

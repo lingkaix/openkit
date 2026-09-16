@@ -1,5 +1,7 @@
 # @openkit/web
 
+Conversation messages resolve authorized participant names from the Thread dashboard. Only the authenticated human aligns right with a You marker; other humans use left-aligned circular avatars and bubbles, while agents use square avatars and unboxed content. Missing profiles retain recorded ids, and messages without exact agent provenance show Agent. Account transitions discard viewer-bearing dashboard caches.
+
 The OpenKit Web UI — a React SPA that projects stable NanoCore / App API
 contracts as a supervisor's workbench. This is the rebuilt app; the previous
 SolidJS + daisyUI implementation is retired and is not a current reference tree.

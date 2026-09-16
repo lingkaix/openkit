@@ -401,9 +401,8 @@ generated surface is indistinguishable from built UI except for a "Generated" ta
 All class names are prefixed `ok-`.
 
 ### 9.1 Conversation items
-- **User message** (`ok-msg-user`): right-aligned soft sunken bubble, 16px radius.
-- **Assistant message** (`ok-msg-assistant`): calm *unboxed* flow with a small
-  identity meta row (avatar · author · time · optional `via` channel tag).
+- **User message** (`ok-msg-user`): soft sunken bubble, 16px radius, with a name and circular initials avatar. The authenticated human's messages and identity row align right and carry a You marker; other humans align left.
+- **Assistant message** (`ok-msg-assistant`): left-aligned calm *unboxed* flow with a square avatar and a small identity meta row (avatar · author · time · optional `via` channel tag).
 - **Item card** (`ok-item-card`): soft 10px card for in-stream system events —
   mode transitions, task status, approvals, results. An `ok-item-glyph`
   (informative/notice/positive/neutral) badges its kind. Never louder than needed.

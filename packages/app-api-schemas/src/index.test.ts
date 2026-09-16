@@ -3501,6 +3501,8 @@ describe('app api schemas', () => {
       durationMs: null,
     };
     const dashboard = appApiSchemas.ThreadDashboardResponseSchema.parse({
+      viewerUserId: 'user_local',
+      participants: [{ kind: 'user', id: 'user_local', displayName: 'Simon' }],
       thread: {
         id: 'th_demo',
         workspaceId: 'ws_demo',
@@ -3566,6 +3568,8 @@ describe('app api schemas', () => {
       evidence: { itemIds: [], artifactIds: [] },
     });
 
+    expect(dashboard.viewerUserId).toBe('user_local');
+    expect(dashboard.participants[0]?.displayName).toBe('Simon');
     expect(jsonContainsKey(dashboard, 'agentSessionId')).toBe(false);
     expect(jsonContainsKey(chat, 'agentSessionId')).toBe(false);
     expect(jsonContainsKey(task, 'agentSessionId')).toBe(false);

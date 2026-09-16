@@ -10,10 +10,90 @@ import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('thread dashboard app API', () => {
+  it('projects only this Thread participants and the authenticated viewer without private profile fields', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-authors-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+
+    for (const [id, name] of [
+      ['user_other', 'Alex'],
+      ['user_outsider', 'Private Person'],
+    ]) {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES (?, ?, ?, 0, ?, ?, 'human', 'active')`
+        )
+        .run(id, name, `${id}@example.com`, Date.now(), Date.now());
+    }
+    const thread = store.createThread('ws_demo', 'Group conversation');
+    store.createTurn('ws_demo', thread.id, 'My input', { kind: 'user', id: 'user_local' });
+    const turn = store.createTurn('ws_demo', thread.id, 'Other input', {
+      kind: 'user',
+      id: 'user_other',
+    });
+    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    store.createTurn('ws_demo', thread.id, 'Missing profile', { kind: 'user', id: 'user_missing' });
+    const foreign = store.createThread('ws_demo', 'Unrelated conversation');
+    store.createTurn('ws_demo', foreign.id, 'Unrelated input', {
+      kind: 'user',
+      id: 'user_outsider',
+    });
+    for (const candidate of [
+      ...store.listThreadTurns('ws_demo', thread.id),
+      ...store.listThreadTurns('ws_demo', foreign.id),
+    ]) {
+      store.createItem({
+        id: `message_${candidate.id}`,
+        workspaceId: 'ws_demo',
+        threadId: candidate.threadId,
+        turnId: candidate.id,
+        type: 'user-message',
+        status: 'completed',
+        actor: candidate.triggerActor,
+        text: 'Message',
+        createdAt: candidate.startedAt!,
+        completedAt: candidate.startedAt,
+      });
+    }
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      agentManifests: [createTestAgentSetup().manifest],
+    });
+    coreDb.sqlite
+      .prepare('UPDATE users SET display_name = ? WHERE id = ?')
+      .run('Simon', 'user_local');
+    try {
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.viewerUserId).toBe('user_local');
+      expect(body.participants).toEqual(
+        expect.arrayContaining([
+          { kind: 'user', id: 'user_local', displayName: 'Simon' },
+          { kind: 'user', id: 'user_other', displayName: 'Alex' },
+          { kind: 'user', id: 'user_missing', displayName: 'user_missing' },
+          { kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' },
+        ])
+      );
+      expect(body.participants).toHaveLength(4);
+      expect(JSON.stringify(body.participants)).not.toContain('@example.com');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('denies a Thread whose durable owner is not the authorized path Workspace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-dashboard-lineage-'));
     const coreDb = openCoreDb(dataRoot);

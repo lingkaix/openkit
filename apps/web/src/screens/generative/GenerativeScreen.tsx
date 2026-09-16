@@ -50,11 +50,11 @@ export function GenerativeScreen() {
       />
 
       <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6">
-        <UserMessage>
+        <UserMessage author="Sam" isSelf>
           Set up a weekly refresh of the competitor pricing, and email me what changed.
         </UserMessage>
 
-        <AssistantMessage hue="you" initials="OK" author="Assistant">
+        <AssistantMessage hue="scout" initials="OK" author="Assistant">
           <p className="mb-3">Here&apos;s the setup — adjust anything and confirm.</p>
           <p className="mb-2 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
             Rendered · whitelist
@@ -69,9 +69,11 @@ export function GenerativeScreen() {
           <p className="mt-2 text-xs text-fg-muted">Submitted by SW · 16:02</p>
         </div>
 
-        <UserMessage>How did prices move this quarter?</UserMessage>
+        <UserMessage author="Sam" isSelf>
+          How did prices move this quarter?
+        </UserMessage>
 
-        <AssistantMessage hue="you" initials="OK" author="Assistant">
+        <AssistantMessage hue="scout" initials="OK" author="Assistant">
           <p className="mb-3">Across the three competitors with public pricing:</p>
           <p className="mb-2 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
             Plain-content fallback
@@ -81,9 +83,11 @@ export function GenerativeScreen() {
           </GeneratedSurface>
         </AssistantMessage>
 
-        <UserMessage>Break that down by tier too.</UserMessage>
+        <UserMessage author="Sam" isSelf>
+          Break that down by tier too.
+        </UserMessage>
 
-        <AssistantMessage hue="you" initials="OK" author="Assistant">
+        <AssistantMessage hue="scout" initials="OK" author="Assistant">
           <p className="mb-2 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
             Streaming skeleton
           </p>
