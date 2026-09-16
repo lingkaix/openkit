@@ -1,8 +1,10 @@
+import { createRequestId } from '@openkit/core-client';
 import { useEffect, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import { EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
 import {
   groupItemsByTurn,
+  type ThreadItem,
   useLiveThreadItems,
   useRespondApproval,
   useSubmitTurnAnswers,
@@ -51,7 +53,8 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
 
   const baselineReady =
     baseline.workspaceId === workspaceId && baseline.threadId === threadId && baseline.ready;
-  const dashboard = useLiveThreadItems(workspaceId, threadId, items.isSuccess, baselineReady);
+  const live = useLiveThreadItems(workspaceId, threadId, items.isSuccess, baselineReady);
+  const dashboard = live.data;
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const controlsReadOnly = Boolean(readOnly || !workspaceId || !connection.connected);
@@ -95,6 +98,28 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
     );
   }
 
+  /** Explains why this request cannot currently be answered; the server remains the command authority. */
+  function approvalUnavailableReason(item: ThreadItem): string | undefined {
+    if (item.type !== 'approval-request') return undefined;
+    if (controlsReadOnly) return 'Reconnect to respond to this approval.';
+    if (live.isError)
+      return 'Approval status could not be loaded. Reload this conversation to try again.';
+    if (!dashboard) return 'Checking approval status…';
+    const turn = dashboard.turns.find((candidate) => candidate.id === item.turnId);
+    if (!turn) return 'Task status is unavailable. Reload this conversation to check again.';
+    if (['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status))
+      return 'This task has ended. This approval can no longer be answered.';
+    if (
+      item.status !== 'completed' ||
+      turn.status !== 'awaiting_human' ||
+      turn.humanGate?.kind !== 'approval' ||
+      turn.humanGate.itemId !== item.id ||
+      turn.humanGate.approvalRequestId !== item.approvalRequestId
+    )
+      return 'This request is not the task’s current approval. No decision can be submitted.';
+    return undefined;
+  }
+
   return (
     <div className="flex flex-col gap-5">
       {groups.map((group, index) => (
@@ -117,18 +142,40 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                     ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
                     : turnAuthors.get(item.turnId)
                 }
-                readOnly={
-                  controlsReadOnly ||
-                  (item.type === 'approval-request' &&
-                    (items.data ?? []).some(
-                      (candidate) =>
-                        candidate.type === 'approval-decision' &&
-                        candidate.turnId === item.turnId &&
-                        candidate.approvalRequestId === item.approvalRequestId
-                    ))
+                readOnly={controlsReadOnly}
+                resolvedApproval={
+                  item.type === 'approval-request'
+                    ? (items.data ?? []).find(
+                        (
+                          candidate
+                        ): candidate is Extract<typeof candidate, { type: 'approval-decision' }> =>
+                          candidate.type === 'approval-decision' &&
+                          candidate.turnId === item.turnId &&
+                          candidate.approvalRequestId === item.approvalRequestId
+                      )
+                    : undefined
                 }
+                approvalUnavailableReason={approvalUnavailableReason(item)}
+                approvalPending={
+                  respond.isPending &&
+                  item.type === 'approval-request' &&
+                  respond.variables?.approvalRequestId === item.approvalRequestId
+                }
+                approvalError={
+                  respond.isError &&
+                  item.type === 'approval-request' &&
+                  respond.variables?.approvalRequestId === item.approvalRequestId
+                }
+                onRetryApproval={() => {
+                  if (respond.variables) respond.mutate(respond.variables);
+                }}
                 onApprovalDecision={(approvalRequestId, turnId, decision) =>
-                  respond.mutate({ approvalRequestId, turnId, decision })
+                  respond.mutate({
+                    approvalRequestId,
+                    turnId,
+                    decision,
+                    requestId: createRequestId(),
+                  })
                 }
                 onSubmitAnswers={(turnId, answers) => submitAnswers.mutate({ turnId, answers })}
                 answerPending={

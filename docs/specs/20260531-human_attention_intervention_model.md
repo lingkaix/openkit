@@ -204,7 +204,7 @@ The UI should present approval as a clear authorization decision, not as a gener
 
 The approval copy should explain what action is being authorized, which agent or session requested it, which workspace or resource is affected, why policy requires approval, and what happens if the user denies it.
 
-Approval cards should support grant and deny first.
+Approval cards should support grant and deny first. A request with a matching decision remains visible with its closed outcome and no decision controls; a terminal Turn or disconnected surface explains why controls are unavailable. Controls remain unavailable while the owning Turn status is unknown, its read failed, or the completed request does not match that Turn’s exact active approval Gate. The conversation follows authoritative Turn updates when work enters or leaves the Gate. A pending command disables duplicate submission, a failure is visible with an explicit retry, and a retry preserves the exact original request identity. Only authoritative refreshed Items settle the displayed outcome.
 
 Additional choices such as grant once, grant for this turn, grant for this workspace policy, or deny and explain can be added later only when backed by explicit policy semantics.
 

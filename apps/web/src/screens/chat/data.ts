@@ -205,7 +205,7 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
 
 /**
  * Subscribes once to the authoritative running Turn, folds item events into the
- * item cache, and projects its matching terminal Turn into the dashboard cache. Returns the same dashboard identity projection for message attribution.
+ * item cache, and projects its matching updated or terminal Turn into the dashboard cache. Returns the dashboard query for message attribution and authoritative action readiness.
  *
  * @param workspaceId Current Workspace identity, or null before selection resolves.
  * @param threadId Current Thread identity.
@@ -255,8 +255,8 @@ export function useLiveThreadItems(
           if (cancelled) break;
           clear(owner);
           const event = next.value;
-          if (event.event === 'turn.completed') {
-            const completedTurn = (
+          if (event.event === 'turn.completed' || event.event === 'turn.updated') {
+            const updatedTurn = (
               event.data as {
                 turn: Awaited<ReturnType<CoreClient['app']['getThreadDashboard']>>['turns'][number];
               }
@@ -270,7 +270,7 @@ export function useLiveThreadItems(
                   ? {
                       ...dashboard,
                       turns: dashboard.turns.map((candidate) =>
-                        candidate.id === turnId ? completedTurn : candidate
+                        candidate.id === turnId ? updatedTurn : candidate
                       ),
                     }
                   : dashboard
@@ -330,7 +330,7 @@ export function useLiveThreadItems(
     turnId,
     workspaceId,
   ]);
-  return dashboard.data;
+  return dashboard;
 }
 
 /**
@@ -531,6 +531,7 @@ export function useRespondApproval(workspaceId: string, threadId: string) {
   return useMutation({
     mutationFn: (args: {
       approvalRequestId: string;
+      requestId: string;
       turnId: string;
       decision: 'granted' | 'denied';
     }) =>
@@ -539,11 +540,13 @@ export function useRespondApproval(workspaceId: string, threadId: string) {
         threadId,
         turnId: args.turnId,
         decision: args.decision,
+        requestId: args.requestId,
       }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: chatKeys.items(workspaceId, threadId) });
-      void queryClient.invalidateQueries({ queryKey: chatKeys.dashboard(workspaceId, threadId) });
-    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: chatKeys.items(workspaceId, threadId) }),
+        queryClient.invalidateQueries({ queryKey: chatKeys.dashboard(workspaceId, threadId) }),
+      ]),
   });
 }
 

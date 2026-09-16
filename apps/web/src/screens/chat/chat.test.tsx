@@ -224,6 +224,13 @@ const ACTIVE_TURN = TurnSchema.parse({
   humanGate: null,
 });
 
+const APPROVAL_TURN = TurnSchema.parse({
+  ...ACTIVE_TURN,
+  status: 'awaiting_human',
+  items: ITEMS,
+  humanGate: { kind: 'approval', itemId: 'i3', approvalRequestId: 'ap1' },
+});
+
 const COMPLETED_TURN = TurnSchema.parse({
   ...ACTIVE_TURN,
   status: 'completed',
@@ -635,9 +642,14 @@ describe('chat starter (board 01)', () => {
 
 describe('chat thread (boards 02/03)', () => {
   it('renders the item stream: messages and an inline approval card', async () => {
-    const client = makeClient({
-      listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-    });
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({ turns: [APPROVAL_TURN] }),
+      }
+    );
     renderApp('/chat/ws1/th1', client);
     expect(
       await screen.findByRole('heading', { name: 'Competitive teardown' })
@@ -651,10 +663,15 @@ describe('chat thread (boards 02/03)', () => {
   it('responds to an inline approval', async () => {
     const user = userEvent.setup();
     const respondApproval = vi.fn().mockResolvedValue({});
-    const client = makeClient({
-      listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-      respondApproval,
-    });
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+        respondApproval,
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({ turns: [APPROVAL_TURN] }),
+      }
+    );
     renderApp('/chat/ws1/th1', client);
     await user.click(await screen.findByRole('button', { name: 'Approve' }));
     expect(respondApproval).toHaveBeenCalledWith('ap1', {
@@ -662,7 +679,142 @@ describe('chat thread (boards 02/03)', () => {
       threadId: 'th1',
       turnId: 't1',
       decision: 'granted',
+      requestId: expect.any(String),
     });
+  });
+
+  it('explains a closed approval and never offers another decision', async () => {
+    const decision = ItemSchema.parse({
+      id: 'denial',
+      workspaceId: 'ws1',
+      threadId: 'th1',
+      turnId: 't1',
+      type: 'approval-decision',
+      status: 'completed',
+      actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
+      causationId: 'i3',
+      approvalRequestId: 'ap1',
+      decision: 'denied',
+      createdAt: '2026-07-21T00:00:03.000Z',
+      completedAt: '2026-07-21T00:00:03.000Z',
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({
+        listThreadItems: vi
+          .fn()
+          .mockResolvedValue({ items: [...ITEMS, decision], nextCursor: null }),
+      })
+    );
+    expect(await screen.findByText('Denied. This approval is closed.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+  });
+
+  it('explains why an unanswered approval on an ended task cannot be operated', async () => {
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        { listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
+        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [COMPLETED_TURN] }) }
+      )
+    );
+    expect(
+      await screen.findByText('This task has ended. This approval can no longer be answered.')
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+  });
+
+  it('shows pending approval and retries a failed decision with the same request identity', async () => {
+    const pending = createDeferred<unknown>();
+    const respondApproval = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue({});
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          respondApproval,
+        },
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({ turns: [APPROVAL_TURN] }),
+        }
+      )
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    expect(screen.getByText('Submitting decision…')).toBeInTheDocument();
+    pending.reject(new Error('request failed'));
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't submit this decision.");
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(2));
+    expect(respondApproval.mock.calls[0]?.[1].requestId).toEqual(expect.any(String));
+    expect(respondApproval.mock.calls[1]).toEqual(respondApproval.mock.calls[0]);
+  });
+
+  it('waits for authoritative task status before exposing approval actions', async () => {
+    const dashboard = createDeferred<{ turns: (typeof COMPLETED_TURN)[] }>();
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        { listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
+        { getThreadDashboard: vi.fn().mockReturnValue(dashboard.promise) }
+      )
+    );
+    expect(await screen.findByText('Checking approval status…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    await act(async () => dashboard.resolve({ turns: [COMPLETED_TURN] }));
+    expect(
+      await screen.findByText('This task has ended. This approval can no longer be answered.')
+    ).toBeInTheDocument();
+  });
+
+  it('enables only the exact active approval when its authoritative Turn update arrives', async () => {
+    const release = createDeferred<void>();
+    async function* stream() {
+      await release.promise;
+      yield turnStreamEvent(1, 'turn.updated', { type: 'turn-updated', turn: APPROVAL_TURN });
+    }
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          subscribeTurnEvents: vi.fn().mockReturnValue(stream()),
+        },
+        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      )
+    );
+    expect(
+      await screen.findByText(
+        'This request is not the task’s current approval. No decision can be submitted.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    await act(async () => release.resolve());
+    expect(await screen.findByRole('button', { name: 'Approve' })).toBeEnabled();
+  });
+
+  it('does not expose controls for a different approval on the same waiting Turn', async () => {
+    const turn = TurnSchema.parse({
+      ...APPROVAL_TURN,
+      humanGate: {
+        kind: 'approval',
+        itemId: 'another-request',
+        approvalRequestId: 'another-approval',
+      },
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        { listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
+        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [turn] }) }
+      )
+    );
+    expect(
+      await screen.findByText(
+        'This request is not the task’s current approval. No decision can be submitted.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
 
   it('keeps a resolved approval request and decision legible without response controls', async () => {
@@ -1698,7 +1850,9 @@ describe('live turn subscription (S6)', () => {
     const respondApproval = vi.fn().mockResolvedValue({});
     const getThreadDashboard = vi
       .fn()
-      .mockResolvedValueOnce({ turns: [] })
+      .mockResolvedValueOnce({
+        turns: command === 'approval' ? [APPROVAL_TURN] : [],
+      })
       .mockResolvedValue({ turns: [ACTIVE_TURN] });
     const subscribeTurnEvents = vi.fn().mockReturnValue({
       [Symbol.asyncIterator]() {
@@ -2295,7 +2449,12 @@ describe('live turn subscription (S6)', () => {
       expect(screen.queryByText("Couldn't reach the local runtime.")).not.toBeInTheDocument()
     );
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'This request is not the task’s current approval. No decision can be submitted.'
+      )
+    ).toBeInTheDocument();
   });
 
   it('preserves an authoritative completed item across replayed creation and a drop', async () => {

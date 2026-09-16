@@ -28,6 +28,16 @@ export interface ItemViewProps {
     turnId: string,
     decision: 'granted' | 'denied'
   ) => void;
+  /** Matching authoritative outcome closes an approval request. */
+  resolvedApproval?: Extract<ThreadItem, { type: 'approval-decision' }>;
+  /** Explanation for unavailable approval controls. */
+  approvalUnavailableReason?: string;
+  /** Whether this request's decision is being submitted or refreshed. */
+  approvalPending?: boolean;
+  /** Whether this request's decision failed. */
+  approvalError?: boolean;
+  /** Retry the retained decision command with the same request id. */
+  onRetryApproval?: () => void;
   /** When true, decision actions are hidden (e.g. runtime disconnected). */
   readOnly?: boolean;
   /** Submit one complete non-secret answer map for the item's paused Turn. */
@@ -180,6 +190,11 @@ export function ItemView({
   viewerUserId,
   authorName,
   onApprovalDecision,
+  resolvedApproval,
+  approvalUnavailableReason,
+  approvalPending,
+  approvalError,
+  onRetryApproval,
   readOnly,
   onSubmitAnswers,
   answerPending,
@@ -233,10 +248,14 @@ export function ItemView({
           title={item.title}
           meta={item.description}
           actions={
-            readOnly ? undefined : (
+            readOnly ||
+            resolvedApproval ||
+            approvalUnavailableReason ||
+            !onApprovalDecision ? undefined : (
               <>
                 <Button
                   size="sm"
+                  isDisabled={approvalPending}
                   variant="accent"
                   onPress={() =>
                     onApprovalDecision?.(item.approvalRequestId, item.turnId, 'granted')
@@ -247,6 +266,7 @@ export function ItemView({
                 <Button
                   size="sm"
                   variant="negative-outline"
+                  isDisabled={approvalPending}
                   onPress={() =>
                     onApprovalDecision?.(item.approvalRequestId, item.turnId, 'denied')
                   }
@@ -256,7 +276,23 @@ export function ItemView({
               </>
             )
           }
-        />
+        >
+          {resolvedApproval ? (
+            <p>
+              {resolvedApproval.decision === 'granted' ? 'Approved' : 'Denied'}. This approval is
+              closed.
+            </p>
+          ) : approvalUnavailableReason || readOnly ? (
+            <p>{approvalUnavailableReason ?? 'Approval actions are unavailable in this view.'}</p>
+          ) : null}
+          {approvalPending ? <p role="status">Submitting decision…</p> : null}
+          {approvalError && !resolvedApproval ? (
+            <ErrorBanner
+              message="Couldn't submit this decision."
+              onRetry={readOnly || approvalUnavailableReason ? undefined : onRetryApproval}
+            />
+          ) : null}
+        </ItemCard>
       );
 
     case 'approval-decision':
