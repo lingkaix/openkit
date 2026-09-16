@@ -168,7 +168,7 @@ export function AccountScreen() {
         title="Account"
         subtitle="Manage access to this OpenKit account."
       />
-      <Card className="flex items-center justify-between gap-4">
+      <Card className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-bold text-fg-strong">Account access</p>
           <p className="mt-1 text-xs text-fg-muted">Sign out on this browser.</p>

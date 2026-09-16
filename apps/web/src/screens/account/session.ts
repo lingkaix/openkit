@@ -32,14 +32,19 @@ export function isUnauthenticated(error: unknown): boolean {
   );
 }
 
-/** Reads the protected authorized-Workspace collection that owns account admission. */
-export function useAccountAdmission() {
+/**
+ * Reads the protected authorized-Workspace collection that owns account admission.
+ *
+ * @param options.enabled When false, observes the existing admission cache without fetching.
+ */
+export function useAccountAdmission(options?: { readonly enabled?: boolean }) {
   const client = useCoreClient();
   return useQuery({
     queryKey: accountAdmissionKey,
     queryFn: () => client.app.listAuthorizedWorkspaces(),
     retry: false,
     structuralSharing: false,
+    enabled: options?.enabled ?? true,
   });
 }
 

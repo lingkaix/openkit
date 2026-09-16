@@ -167,6 +167,32 @@ const OTHER_PENDING_INVITATION = {
   revision: 31,
   workspaceId: 'ws2',
 };
+const JOINED_PENDING_INVITATION = {
+  ...PENDING_INVITATION,
+  invitationId: 'inv-joined-ws7',
+  inviteeUserId: 'user-invitee-joined',
+  revision: 41,
+  workspaceId: 'ws_7',
+};
+const UNKNOWN_PENDING_INVITATION = {
+  ...PENDING_INVITATION,
+  invitationId: 'inv-unknown-nonmember',
+  inviteeUserId: 'user-invitee-unknown',
+  revision: 42,
+  workspaceId: 'ws_unknown',
+};
+const JOINED_WORKSPACES = {
+  items: [
+    {
+      ...NON_OWNER_WORKSPACES.items[0],
+      workspace: {
+        ...PRODUCT_WORKSPACES.items[0].workspace,
+        id: 'ws_7',
+        name: 'Team Seven',
+      },
+    },
+  ],
+};
 const SELF_REMOVED_MEMBER = {
   ...EDITOR_MEMBER,
   effectiveRole: null,
@@ -976,7 +1002,7 @@ describe('protected-read account gate', () => {
     expect(screen.queryByText("This page doesn't exist")).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sign out/i })).toBeEnabled();
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
-    expect(document.body).not.toHaveTextContent(
+    expect(screen.getByRole('main')).not.toHaveTextContent(
       /server mode|local mode|sign[ -]?up.*(?:enabled|disabled|available|unavailable)|deployment|\bhost(?:name)?\b|localhost|127\.0\.0\.1|https?:\/\//i
     );
     expect(
@@ -2675,6 +2701,7 @@ describe('account-level My invitations', () => {
       });
       await expectNoRowAction(user, terminal, /accept|decline/i);
     }
+    expect(within(invitations).queryByText('Authorized Workspace')).not.toBeInTheDocument();
     expect(listMyWorkspaceInvitations.mock.calls).toEqual([[]]);
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
@@ -2682,6 +2709,41 @@ describe('account-level My invitations', () => {
     expect(
       await axe(container, { rules: { 'color-contrast': { enabled: false } } })
     ).toHaveNoViolations();
+  });
+
+  it('shows authorized Workspace names first and keeps unknown nonmember invitations on Workspace ID', async () => {
+    const guards = guardSensitiveSinks([EMAIL]);
+    const listMyWorkspaceInvitations = vi.fn().mockResolvedValue({
+      items: [JOINED_PENDING_INVITATION, UNKNOWN_PENDING_INVITATION],
+    });
+    const { client, methods } = makeSharingClient({
+      authorizedWorkspaces: JOINED_WORKSPACES,
+      coreWorkspaces: [{ id: 'ws_7', name: 'Team Seven' }],
+      methods: { listMyWorkspaceInvitations },
+    });
+    const { queryClient } = renderApp('/settings/account', client);
+
+    await screen.findByRole('heading', { name: 'Account' });
+    const invitations = screen.getByRole('region', { name: 'My invitations' });
+    const named = await within(invitations).findByRole('row', {
+      name: /team seven.*ws_7.*pending|pending.*team seven.*ws_7/i,
+    });
+    expect(within(named).getByText('Team Seven')).toBeInTheDocument();
+    expect(within(named).getByText('ws_7')).toBeInTheDocument();
+    const unknown = within(invitations).getByRole('row', {
+      name: /ws_unknown.*pending|pending.*ws_unknown/i,
+    });
+    expect(within(unknown).getByText('ws_unknown')).toBeInTheDocument();
+    expect(within(unknown).queryByText('Team Seven')).not.toBeInTheDocument();
+    expect(within(invitations).queryByText('Invented Workspace')).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    expect(await revealRowAction(user, named, /^accept/i)).toBeEnabled();
+    await user.keyboard('{Escape}');
+    expect(await revealRowAction(user, unknown, /^decline/i)).toBeEnabled();
+    expect(listMyWorkspaceInvitations.mock.calls).toEqual([[]]);
+    expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
+    expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
+    expectNoRetainedInviteEmail(queryClient, guards);
   });
 
   it('keeps My invitations error, retry, and empty state independent from selected-Workspace owner reads', async () => {

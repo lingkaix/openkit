@@ -291,13 +291,13 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await signIn(page, leaving);
   await selectWorkspace(page, workspaceName);
   await openSelectedWorkspaceAccount(page);
-  const membership = page.getByRole('region', { name: 'Workspace membership' });
-  await membership.getByRole('button', { name: 'Leave Workspace' }).click();
+  const role = page.getByRole('region', { name: 'Current Workspace role' });
+  await role.getByRole('button', { name: 'Leave Workspace' }).click();
   await page
     .getByRole('dialog', { name: /confirm leave workspace/i })
     .getByRole('button', { name: 'Confirm leave' })
     .click();
-  await expect(page.getByRole('region', { name: 'Workspace membership' })).toHaveCount(0);
+  await expect(role.getByRole('button', { name: 'Leave Workspace' })).toHaveCount(0);
   await expect(page.locator('body')).not.toContainText(leavingId);
 
   await expectUiOnlyBrowserStorage(page, [
