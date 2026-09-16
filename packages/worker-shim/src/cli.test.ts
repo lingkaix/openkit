@@ -2706,6 +2706,95 @@ describe('worker shim CLI parsing', () => {
 
   it.each([
     {
+      ambientNodeExtraCaCerts: '/ambient/ca/must-not-win.pem',
+      expectedNodeExtraCaCerts: '/etc/openshell-tls/ca-bundle.pem',
+      name: 'derived SSL_CERT_FILE beats ambient NODE_EXTRA_CA_CERTS',
+      sslCertDir: undefined as string | undefined,
+      sslCertFile: '/etc/openshell-tls/ca-bundle.pem',
+    },
+    {
+      ambientNodeExtraCaCerts: '/ambient/ca/must-not-win.pem',
+      expectedNodeExtraCaCerts: undefined,
+      name: 'absent SSL_CERT_FILE ignores ambient NODE_EXTRA_CA_CERTS',
+      sslCertDir: '/etc/openshell-tls/certs',
+      sslCertFile: undefined as string | undefined,
+    },
+  ])('$name', async ({
+    ambientNodeExtraCaCerts,
+    expectedNodeExtraCaCerts,
+    sslCertDir,
+    sslCertFile,
+  }) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-node-ca-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const childEnvironmentPath = join(sessionDir, 'child-environment.json');
+    const controlTokenPath = join(sessionDir, 'control-token');
+    const controlToken = 'test-control-token-parent-proc';
+    const parentSecret = 'test-undeclared-parent-secret';
+    const inferencePlaceholder = 'openshell:resolve:env:OPENKIT_WORKER_INFERENCE_TOKEN';
+    const childScript = [
+      "const fs = require('node:fs');",
+      "const parentEnvironment = process.platform === 'linux' ? fs.readFileSync('/proc/' + process.ppid + '/environ', 'utf8') : '';",
+      `fs.writeFileSync(${JSON.stringify(childEnvironmentPath)}, JSON.stringify({ childEnvironment: process.env, parentEnvironment }));`,
+    ].join('');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-process' },
+        },
+        extensions: { openkit: { turnInput: childScript } },
+        llm: { mode: 'gateway', routes: [workerLlmRoute()] },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+    writeRawFileSync(controlTokenPath, controlToken, { mode: 0o600 });
+    const controlTokenDescriptor = openSync(controlTokenPath, 'r');
+    const injectedEnvironment: Record<string, string> = {
+      ...workerShimEnvironment(),
+      NODE_EXTRA_CA_CERTS: ambientNodeExtraCaCerts,
+      OPENKIT_CONTROL_TOKEN_FD: String(controlTokenDescriptor),
+      OPENKIT_PARENT_ONLY_SECRET: parentSecret,
+      OPENKIT_WORKER_INFERENCE_TOKEN: inferencePlaceholder,
+    };
+    delete injectedEnvironment.OPENKIT_CONTROL_TOKEN;
+    for (const [key, value] of Object.entries(injectedEnvironment)) {
+      vi.stubEnv(key, value);
+    }
+    vi.stubEnv('SSL_CERT_DIR', sslCertDir);
+    vi.stubEnv('SSL_CERT_FILE', sslCertFile);
+
+    try {
+      await expect(
+        runWorkerShimCli(['--package', packagePath, '--session-dir', sessionDir])
+      ).resolves.toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const captured = JSON.parse(readFileSync(childEnvironmentPath, 'utf8')) as {
+      childEnvironment: Record<string, string>;
+    };
+    expect(captured.childEnvironment).not.toHaveProperty('OPENKIT_PARENT_ONLY_SECRET');
+    if (sslCertFile) {
+      expect(captured.childEnvironment.SSL_CERT_FILE).toBe(sslCertFile);
+    } else {
+      expect(captured.childEnvironment).not.toHaveProperty('SSL_CERT_FILE');
+    }
+    if (sslCertDir) {
+      expect(captured.childEnvironment.SSL_CERT_DIR).toBe(sslCertDir);
+    }
+    if (expectedNodeExtraCaCerts) {
+      expect(captured.childEnvironment.NODE_EXTRA_CA_CERTS).toBe(expectedNodeExtraCaCerts);
+    } else {
+      expect(captured.childEnvironment).not.toHaveProperty('NODE_EXTRA_CA_CERTS');
+    }
+    expect(captured.childEnvironment.NODE_EXTRA_CA_CERTS).not.toBe(ambientNodeExtraCaCerts);
+  });
+
+  it.each([
+    {
       credentialVisibility: 'placeholder' as const,
       expectedProviderCredential: true,
       expectedRelayPlaceholder: true,
@@ -2844,6 +2933,11 @@ describe('worker shim CLI parsing', () => {
       values: { OPENKIT_WORKER_INFERENCE_TOKEN: 'private-canary' },
     },
     { name: 'native configuration target', declared: ['PATH'], values: { PATH: 'private-canary' } },
+    {
+      name: 'reserved Node CA target',
+      declared: ['NODE_EXTRA_CA_CERTS'],
+      values: { NODE_EXTRA_CA_CERTS: 'private-canary' },
+    },
     {
       name: 'oversized value',
       declared: ['GITHUB_TOKEN'],

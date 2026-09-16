@@ -1948,7 +1948,7 @@ function readRemoteGitWorkspaceSource(value: unknown): WorkspaceGitInput['source
  * @param environment Supervisor environment candidate.
  * @param route The Shim-selected LLM route.
  * @param runtimeEnvironment Exact private Turn credentials when supervised by the Harness.
- * @returns Safe base environment plus AEP-declared credentials and route tokens.
+ * @returns Safe base environment plus AEP-declared credentials, route tokens, and Node CA derived from nonempty `SSL_CERT_FILE`.
  */
 function workerChildEnvironment(
   packageManifest: WorkerShimPackageManifest,
@@ -1984,6 +1984,7 @@ function workerChildEnvironment(
         'TMPDIR',
         'CODEX_HOME',
         'NODE_OPTIONS',
+        'NODE_EXTRA_CA_CERTS',
         'LD_PRELOAD',
         'LD_LIBRARY_PATH',
       ].includes(name) ||
@@ -2007,6 +2008,9 @@ function workerChildEnvironment(
   selected.TEMP = NATIVE_SCRATCH_ROOT;
   selected.TMP = NATIVE_SCRATCH_ROOT;
   selected.TMPDIR = NATIVE_SCRATCH_ROOT;
+  if (selected.SSL_CERT_FILE) {
+    selected.NODE_EXTRA_CA_CERTS = selected.SSL_CERT_FILE;
+  }
 
   for (const key of ['NO_PROXY', 'no_proxy'] as const) {
     const entries = (selected[key] ?? '')

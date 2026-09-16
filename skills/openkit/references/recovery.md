@@ -25,6 +25,12 @@ When NanoCore returns `recovery_required`, assume that safe exact replay cannot 
 
 For an interrupted worker or checkpoint, inspect the exposed durable lineage and status before requesting retry. Let NanoCore validate ownership, sequence, lease, scheduler, and checkpoint eligibility; do not synthesize or repair those records in the Skill or CLI.
 
+## Diagnose stalled package downloads
+
+An allowed network policy decision does not prove that TLS or a package download succeeded. Preserve the exact Turn before stopping a stalled install with `turn.interrupt`, then wait for durable terminal status. A bounded diagnostic Task can run a package metadata request with a short process timeout, disabled retries, and unbuffered output; inspect its actual exit code and error before repeating an install.
+
+`SELF_SIGNED_CERT_IN_CHAIN` from Node-based package tools can indicate missing trust for the sandbox proxy certificate. The Worker shim derives Node's additional CA file from the backend-provided `SSL_CERT_FILE`; ambient or runtime-credential `NODE_EXTRA_CA_CERTS` is not a supported repair. Do not disable certificate verification or widen network grants to bypass this failure. An authorized operator must update an affected Worker image through the existing environment preparation and activation workflow, then verify the same bounded download in a new Turn. A directory-only certificate setting does not supply Node's required CA file. Host image building and installation remain separate operator tools; see [administration.md](administration.md).
+
 ## Continue administrator Tasks with the presented credential
 
 The Task remains bound to the credential presented when it was submitted. After the work waits in queue or NanoCore restarts, NanoCore rechecks that bound Token before the next governed effect. Reads may use another authorized credential. An expired, revoked, rebound, or unusable Token denies that next effect; it is not queued capacity. Inspect exposed Task and Turn metadata and current authority. Ask the user only if the credential must be replaced, then submit a new authorized request after correction. Do not grant membership, invent a replacement Token, or repair scheduler, lease, or admission records.
