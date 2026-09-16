@@ -42,8 +42,8 @@ export function ItemCard({ kind, title, meta, actions, children }: ItemCardProps
           <Icon name={KIND_ICON[kind]} size="sm" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="break-words text-sm font-bold text-fg-strong">{title}</p>
-          {meta ? <p className="mt-0.5 break-words text-xs text-fg-muted">{meta}</p> : null}
+          <p className="text-sm font-bold text-fg-strong">{title}</p>
+          {meta ? <p className="mt-0.5 text-xs text-fg-muted">{meta}</p> : null}
           {children ? <div className="mt-2 text-sm text-fg">{children}</div> : null}
         </div>
       </div>

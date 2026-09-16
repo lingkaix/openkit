@@ -34,18 +34,21 @@ export interface MenuProps {
  * OpenKit action menu.
  *
  * React Aria owns trigger keys, focus movement, typeahead, selection, and menu
- * semantics; the wrapper supplies the compact Spectrum-tokened action surface.
+ * semantics; the wrapper bounds selected labels and exposes full wrapping choices.
  */
 export function Menu({ fill = false, items, label, onAction, selectedKey }: MenuProps) {
   return (
     <MenuTrigger>
-      <Button className={fill ? 'h-8 w-full justify-between px-3' : undefined} variant="outline">
-        {label}
-        {fill ? <Icon name="chevron-down" /> : null}
+      <Button
+        className={fill ? 'h-8 min-w-0 w-full justify-between px-3' : 'max-w-full'}
+        variant="outline"
+      >
+        <span className="min-w-0 truncate">{label}</span>
+        {fill ? <Icon name="chevron-down" className="shrink-0" /> : null}
       </Button>
       <Popover
         placement="bottom end"
-        className="min-w-(--trigger-width) overflow-auto rounded-ok border border-border bg-elevated py-1 shadow-ok-menu"
+        className="min-w-(--trigger-width) max-w-[min(32rem,calc(100vw-2rem))] overflow-auto rounded-ok border border-border bg-elevated py-1 shadow-ok-menu"
       >
         <AriaMenu
           aria-label={label}

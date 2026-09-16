@@ -777,3 +777,17 @@ describe('primitive tier — ownership', () => {
     expect(themePickerSource).toMatch(/<RadioGroup\b/);
   });
 });
+
+it('keeps complete long context and menu labels available when their compact display is bounded', async () => {
+  const user = userEvent.setup();
+  const label = 'workspace_0123456789'.repeat(20);
+  render(
+    <>
+      <P.ContextChip>{label}</P.ContextChip>
+      <P.Menu fill label={label} items={[{ id: 'one', label }]} onAction={() => {}} />
+    </>
+  );
+  expect(screen.getByTitle(label)).toHaveTextContent(label);
+  await user.click(screen.getByRole('button', { name: label }));
+  expect(await screen.findByRole('menuitem', { name: label })).toBeVisible();
+});

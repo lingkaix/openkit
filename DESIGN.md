@@ -607,8 +607,7 @@ desktop workbench** that surfaces the most information at once. It is
 - **No horizontal overflow** at any supported size. Wide content (tables, kanban,
   diagrams, code) scrolls inside its own container; the page body never scrolls
   sideways.
-- **Text fits** inside buttons, cards, theme previews, badges, and rows — wrap or
-  truncate deliberately, never overlap.
+- **Text fits** inside buttons, cards, theme previews, badges, and rows. Base typography uses overflow-wrap anywhere so long IDs and unspaced words wrap without expanding flex/grid minimum widths; ordinary words retain normal wrapping. Narrative and pre-wrapped JSON inherit it. Explicit whitespace-pre code/editor regions and wide tables retain their own horizontal scrolling. Compact context chips and selected labels truncate within their controls while preserving full accessible text and readable expanded choices. Never hide overflowing narrative content.
 - **Below the floor / true mobile is out of scope for v1.** A phone-class layout
   is not a current deliverable; do not compromise desktop density to chase it. If
   a mobile form is pursued later it gets its own design pass (and pairs with the

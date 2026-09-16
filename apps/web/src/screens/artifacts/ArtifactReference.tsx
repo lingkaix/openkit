@@ -30,7 +30,7 @@ export function ArtifactReference({ item }: { item: ArtifactReferenceItem }) {
         </Modal>
       }
     >
-      {item.summary ? <p className="break-words text-xs text-fg-muted">{item.summary}</p> : null}
+      {item.summary ? <p className="text-xs text-fg-muted">{item.summary}</p> : null}
     </ItemCard>
   );
 }
@@ -71,7 +71,7 @@ function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
     }
   }
   return (
-    <div className="flex min-w-0 flex-col gap-3 break-words">
+    <div className="flex min-w-0 flex-col gap-3">
       <p className="text-xs text-fg-muted">Version {artifact.data.version}</p>
       <p className="text-xs text-fg-muted">
         Type: {review ? 'Workspace change review' : artifact.data.kind}
@@ -102,11 +102,11 @@ function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
           )}
           <details>
             <summary className="cursor-pointer">Full recorded content</summary>
-            <pre className="whitespace-pre-wrap break-words text-xs">{content.body}</pre>
+            <pre className="whitespace-pre-wrap text-xs">{content.body}</pre>
           </details>
         </>
       ) : (
-        <pre className="whitespace-pre-wrap break-words text-xs">{content.body}</pre>
+        <pre className="whitespace-pre-wrap text-xs">{content.body}</pre>
       )}
     </div>
   );

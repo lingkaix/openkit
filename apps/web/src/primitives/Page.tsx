@@ -28,7 +28,7 @@ export interface PageHeaderProps {
   eyebrow?: string;
   title: string;
   subtitle?: string;
-  /** Right-aligned actions. */
+  /** Right-aligned actions that wrap within half the header width. */
   actions?: ReactNode;
 }
 
@@ -36,7 +36,7 @@ export interface PageHeaderProps {
 export function PageHeader({ eyebrow, title, subtitle, actions }: PageHeaderProps) {
   return (
     <header className="flex items-start justify-between gap-4">
-      <div>
+      <div className="min-w-0">
         {eyebrow ? (
           <p className="mb-1 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
             {eyebrow}
@@ -45,7 +45,11 @@ export function PageHeader({ eyebrow, title, subtitle, actions }: PageHeaderProp
         <h1 className="text-title font-extrabold text-fg-strong">{title}</h1>
         {subtitle ? <p className="mt-1 text-sm text-fg-muted">{subtitle}</p> : null}
       </div>
-      {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+      {actions ? (
+        <div className="flex min-w-0 max-w-1/2 shrink-0 flex-wrap items-center justify-end gap-2">
+          {actions}
+        </div>
+      ) : null}
     </header>
   );
 }

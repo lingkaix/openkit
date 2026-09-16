@@ -24,7 +24,7 @@ export interface DialogProps {
 export function Dialog({ title, children }: DialogProps) {
   return (
     <AriaDialog className="outline-none">
-      <Heading slot="title" className="break-words text-lg font-extrabold text-fg-strong">
+      <Heading slot="title" className="text-lg font-extrabold text-fg-strong">
         {title}
       </Heading>
       <div className="mt-4 flex flex-col gap-3 text-sm text-fg">{children}</div>

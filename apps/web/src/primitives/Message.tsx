@@ -27,10 +27,10 @@ export function UserMessage({ author, isSelf, children }: UserMessageProps) {
           name={author}
           size="sm"
         />
-        <span className="min-w-0 break-words font-bold text-fg">{author}</span>
+        <span className="min-w-0 font-bold text-fg">{author}</span>
         {isSelf ? <span>You</span> : null}
       </div>
-      <div className="max-w-[min(100%,620px)] whitespace-pre-wrap break-words rounded-ok-xl bg-sunken px-4 py-2.5 text-fg">
+      <div className="max-w-[min(100%,620px)] whitespace-pre-wrap rounded-ok-xl bg-sunken px-4 py-2.5 text-fg">
         {children}
       </div>
     </article>
@@ -72,11 +72,11 @@ export function AssistantMessage({
     >
       <div className="flex max-w-full items-center gap-2 text-xs text-fg-muted">
         <Avatar hue={hue} initials={initials} name={author} size="sm" />
-        <span className="min-w-0 break-words font-bold text-fg">{author}</span>
+        <span className="min-w-0 font-bold text-fg">{author}</span>
         {time ? <span>{time}</span> : null}
         {via ? <ChannelTag channel={via} /> : null}
       </div>
-      <div className="max-w-full whitespace-pre-wrap break-words leading-relaxed text-fg">
+      <div className="max-w-full whitespace-pre-wrap leading-relaxed text-fg">
         {children}
       </div>
     </article>

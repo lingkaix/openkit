@@ -203,7 +203,7 @@ function ApprovalDecisionView({
       title={item.decision === 'granted' ? 'Approved' : 'Denied'}
       meta={`by ${system ? 'OpenKit system' : (authorName ?? item.actor.id)}`}
     >
-      <div className="flex flex-col gap-2 break-words">
+      <div className="flex flex-col gap-2">
         <p>Request: {requestTitle ?? item.approvalRequestId}</p>
         <p>{reason}</p>
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">

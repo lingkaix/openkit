@@ -34,13 +34,18 @@ export interface ContextChipProps {
 /**
  * Context chip (`ok-ctx-chip`, DESIGN.md §9.3).
  *
- * A quiet sunken pill for composer context (workspace, mode, model). Neutral by
+ * A bounded sunken pill for composer context; long labels retain their full text and hover title. Neutral by
  * design — it carries configuration, not status.
  */
 export function ContextChip({ children }: ContextChipProps) {
   return (
-    <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-sunken px-2.5 text-xs font-medium text-fg-muted">
-      {children}
+    <span className="inline-flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-sunken px-2.5 text-xs font-medium text-fg-muted">
+      <span
+        className="min-w-0 truncate"
+        title={typeof children === 'string' ? children : undefined}
+      >
+        {children}
+      </span>
     </span>
   );
 }

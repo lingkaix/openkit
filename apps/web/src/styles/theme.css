@@ -125,6 +125,8 @@
     font-family: var(--font-sans);
     font-size: 14px;
     line-height: 1.5;
+    /* Emergency breaks also reduce flex/grid min-content widths for long IDs. */
+    overflow-wrap: anywhere;
     color: var(--text-color-default);
     background: var(--surface-page);
     -webkit-font-smoothing: antialiased;
