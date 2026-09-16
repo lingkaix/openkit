@@ -132,7 +132,7 @@ e2e/                  L4 Playwright smoke + isolated stack helpers
 playwright.config.ts
 ```
 
-Portability downloads a created project-Workspace export as `.openkit-workspace.tar.zst` and imports a local archive through dry-run preview, then an explicit apply. Archive bytes travel as `File` / `Blob` / `ReadableStream` through the existing Core Client session; Web never base64-encodes the archive or sends a server filesystem path. A selected archive hides server-export handles until Use server export clears the file input; a different File invalidates the prior dry-run before import. Archive download is bound to the selected Workspace's created export. The signed-in Better Auth session is unchanged.
+Portability downloads a created project-Workspace export through a same-origin `GET /api/app/workspaces/:workspaceId/exports/:exportId/archive` text link with encoded path segments and a new-tab indication, so native response errors do not replace the Portability page. Local archive import uses dry-run preview, then an explicit apply; archive bytes travel as `File` / `Blob` / `ReadableStream` through the existing Core Client session, never as base64 or a server filesystem path. A selected archive hides server-export handles until Use server export clears the file input; a different File invalidates the prior dry-run before import. A completed import announces Imported status with the workspace name and imported id, offers Open workspace through the existing switcher and Overview navigation, inserts the returned workspace into discovery before refetch, and keeps Review import and Import workspace disabled until the source File or handles change. The signed-in Better Auth session is unchanged.
 
 ## Status
 

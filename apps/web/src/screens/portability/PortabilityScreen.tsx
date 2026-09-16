@@ -1,4 +1,6 @@
 import { type ChangeEvent, useRef, useState } from 'react';
+import { Link } from 'react-aria-components';
+import { useNavigate } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
@@ -16,8 +18,8 @@ import {
   TextField,
 } from '../../primitives';
 import { useVault } from '../settings/data';
+import { useWorkspaceStore } from '../workspace-store';
 import {
-  downloadWorkspaceExportArchiveError,
   dryRunWorkspaceImportError,
   exportWorkspaceError,
   importWorkspaceError,
@@ -28,7 +30,6 @@ import {
   portabilityVaultStatusLabel,
   rebindWorkspaceVaultError,
   useCurrentWorkspaceId,
-  useDownloadWorkspaceExportArchive,
   useDryRunWorkspaceArchiveImport,
   useDryRunWorkspaceImport,
   useExportWorkspace,
@@ -36,6 +37,7 @@ import {
   useImportWorkspaceArchive,
   useRebindWorkspaceVaultReference,
   useWorkspaces,
+  workspaceExportArchiveHref,
 } from './data';
 
 /** Live user-scoped import plus selected-Workspace export and vault rebind. */
@@ -95,25 +97,16 @@ function ProjectExport({
   disconnected: boolean;
 }) {
   const exportWorkspace = useExportWorkspace();
-  const downloadArchive = useDownloadWorkspaceExportArchive();
   const exportBound = exportWorkspace.variables === workspaceId;
   const exportSummary = exportBound && exportWorkspace.isSuccess ? exportWorkspace.data : null;
   const writeBlocked = disconnected;
   const exportError =
     exportBound && exportWorkspace.isError ? exportWorkspaceError(exportWorkspace.error) : null;
-  const downloadBound =
-    downloadArchive.variables?.workspaceId === workspaceId &&
-    downloadArchive.variables?.exportId === exportSummary?.exportId;
-  const downloadError =
-    downloadBound && downloadArchive.isError
-      ? downloadWorkspaceExportArchiveError(downloadArchive.error)
-      : null;
 
   return (
     <section className="flex flex-col gap-3" aria-label="Export">
       <Eyebrow>Export</Eyebrow>
       {exportError ? <ErrorBanner message={exportError} /> : null}
-      {downloadError ? <ErrorBanner message={downloadError} /> : null}
       <div>
         <Button
           isDisabled={writeBlocked || exportWorkspace.isPending}
@@ -129,18 +122,16 @@ function ProjectExport({
             {exportSummary.fileCount} {exportSummary.fileCount === 1 ? 'file' : 'files'}
           </p>
           <div className="pt-2">
-            <Button
-              variant="outline"
-              isDisabled={writeBlocked || downloadArchive.isPending}
-              onPress={() =>
-                downloadArchive.mutate({
-                  exportId: exportSummary.exportId,
-                  workspaceId,
-                })
-              }
+            <Link
+              aria-label="Download archive (opens in a new tab)"
+              className="text-sm font-bold text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus data-disabled:cursor-not-allowed data-disabled:text-disabled-fg data-disabled:no-underline"
+              href={workspaceExportArchiveHref(workspaceId, exportSummary.exportId)}
+              isDisabled={writeBlocked}
+              rel="noopener noreferrer"
+              target="_blank"
             >
               Download archive
-            </Button>
+            </Link>
           </div>
         </Card>
       ) : null}
@@ -252,6 +243,8 @@ function ProjectVault({
 
 /** User-scoped dry-run review and import; usable without a selected project Workspace. */
 function ImportPanel({ disconnected }: { disconnected: boolean }) {
+  const navigate = useNavigate();
+  const setCurrentWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
   const reviewImport = useDryRunWorkspaceImport();
   const importWorkspace = useImportWorkspace();
   const reviewArchive = useDryRunWorkspaceArchiveImport();
@@ -278,11 +271,11 @@ function ImportPanel({ disconnected }: { disconnected: boolean }) {
     !archiveFile &&
     importWorkspace.variables?.sourceWorkspaceId === sourceWorkspaceId &&
     importWorkspace.variables?.exportId === exportId;
-  const importedName =
+  const imported =
     archiveFile && archiveImportBound && importArchive.isSuccess
-      ? importArchive.data.workspace.name
+      ? importArchive.data
       : !archiveFile && importBound && importWorkspace.isSuccess
-        ? importWorkspace.data.workspace.name
+        ? importWorkspace.data
         : null;
   const reviewError = archiveFile
     ? archiveReviewBound && reviewArchive.isError
@@ -325,7 +318,7 @@ function ImportPanel({ disconnected }: { disconnected: boolean }) {
   }
 
   function submitReview() {
-    if (sourceLocked) return;
+    if (sourceLocked || imported) return;
     if (archiveFile) {
       importArchive.reset();
       importWorkspace.reset();
@@ -341,6 +334,7 @@ function ImportPanel({ disconnected }: { disconnected: boolean }) {
   }
 
   function submitImport() {
+    if (imported) return;
     if (archiveFile) {
       if (!archiveReview) return;
       importArchive.mutate(nextArchiveImportCommand(importArchive.variables, archiveFile));
@@ -418,17 +412,39 @@ function ImportPanel({ disconnected }: { disconnected: boolean }) {
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="outline"
-          isDisabled={sourceLocked || !(archiveFile || handlesReady)}
+          isDisabled={sourceLocked || !(archiveFile || handlesReady) || Boolean(imported)}
           onPress={submitReview}
         >
           Review import
         </Button>
-        <Button isDisabled={writeBlocked || !review || importPending} onPress={submitImport}>
+        <Button
+          isDisabled={writeBlocked || !review || importPending || Boolean(imported)}
+          onPress={submitImport}
+        >
           Import workspace
         </Button>
       </div>
-      {review ? <ImportReviewSummary review={review} /> : null}
-      {importedName ? <p className="text-sm text-fg">{importedName}</p> : null}
+      {review && !imported ? <ImportReviewSummary review={review} /> : null}
+      {imported ? (
+        <>
+          <div role="status">
+            <StatusChip tone="positive">Imported</StatusChip>
+            <p className="text-sm font-bold text-fg-strong">{imported.workspace.name}</p>
+            <p className="text-sm text-fg">{imported.importedWorkspaceId}</p>
+          </div>
+          <div>
+            <Button
+              variant="outline"
+              onPress={() => {
+                setCurrentWorkspaceId(imported.importedWorkspaceId);
+                navigate('/');
+              }}
+            >
+              Open workspace
+            </Button>
+          </div>
+        </>
+      ) : null}
     </section>
   );
 }

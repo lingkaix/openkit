@@ -1,4 +1,9 @@
-import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
+import {
+  ApiCallError,
+  type CoreClient,
+  createRequestId,
+  type WorkspaceRecord,
+} from '@openkit/core-client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
@@ -27,9 +32,6 @@ export type PortabilityRebindTarget = {
   workspaceId: string;
   referenceId: string;
 };
-
-/** Canonical portable Workspace archive filename suffix. */
-export const WORKSPACE_EXPORT_ARCHIVE_EXTENSION = '.openkit-workspace.tar.zst';
 
 /** Re-export selected-Workspace discovery for the Portability screen. */
 export { useCurrentWorkspaceId, useWorkspaces };
@@ -124,39 +126,14 @@ export function nextArchiveImportCommand(
 }
 
 /**
- * Builds the canonical download name for one server-managed export archive.
+ * Builds the same-origin archive GET href for one created export.
  *
- * @param workspaceId Source Workspace id.
- * @param exportId Server-managed export handle.
- * @returns Filename ending in `.openkit-workspace.tar.zst`.
+ * @param workspaceId Source Workspace id; encoded as one path segment.
+ * @param exportId Server-managed export handle; encoded as one path segment.
+ * @returns Relative App API archive path.
  */
-export function workspaceExportArchiveFileName(workspaceId: string, exportId: string): string {
-  return `${workspaceId}-${exportId}${WORKSPACE_EXPORT_ARCHIVE_EXTENSION}`;
-}
-
-/**
- * Saves one archive byte stream as a local `.openkit-workspace.tar.zst` download.
- *
- * @param body Raw archive stream from `downloadWorkspaceExportArchive`.
- * @param fileName Canonical download filename.
- */
-export async function saveWorkspaceExportArchive(
-  body: ReadableStream<Uint8Array>,
-  fileName: string
-): Promise<void> {
-  const blob = await new Response(body).blob();
-  const objectUrl = URL.createObjectURL(blob);
-  try {
-    const anchor = document.createElement('a');
-    anchor.download = fileName;
-    anchor.href = objectUrl;
-    anchor.rel = 'noopener';
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+export function workspaceExportArchiveHref(workspaceId: string, exportId: string): string {
+  return `/api/app/workspaces/${encodeURIComponent(workspaceId)}/exports/${encodeURIComponent(exportId)}/archive`;
 }
 
 /**
@@ -177,23 +154,6 @@ export function exportWorkspaceError(error: unknown): string {
     return "Couldn't export this workspace.";
   }
   return 'The export result is unknown. It is not known whether the export completed.';
-}
-
-/**
- * Maps a typed or uncertain archive download failure to product-safe copy.
- *
- * @param error Mutation failure retained by TanStack Query.
- * @returns Safe banner copy.
- */
-export function downloadWorkspaceExportArchiveError(error: unknown): string {
-  const code = apiCode(error);
-  if (code === 'workspace_export_archive_forbidden' || code === 'workspace_access_denied') {
-    return 'Access denied for this workspace.';
-  }
-  if (error instanceof ApiCallError) {
-    return "Couldn't download this archive.";
-  }
-  return 'The download result is unknown. It is not known whether the download completed.';
 }
 
 /**
@@ -278,28 +238,6 @@ export function useExportWorkspace() {
 }
 
 /**
- * Downloads one created export as `.openkit-workspace.tar.zst` through the archive stream.
- *
- * @returns Mutation that triggers a local file download without retaining archive bytes.
- */
-export function useDownloadWorkspaceExportArchive() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: async (input: { exportId: string; workspaceId: string }) => {
-      const stream = await client.app.downloadWorkspaceExportArchive(
-        input.workspaceId,
-        input.exportId
-      );
-      await saveWorkspaceExportArchive(
-        stream,
-        workspaceExportArchiveFileName(input.workspaceId, input.exportId)
-      );
-    },
-    retry: false,
-  });
-}
-
-/**
  * Reviews a local portable archive through `dryRunWorkspaceArchiveImport`.
  *
  * @returns Mutation whose variables are the selected File object.
@@ -336,7 +274,12 @@ export function useImportWorkspace() {
   return useMutation({
     mutationFn: (command: PortabilityImportCommand) => client.app.importWorkspace(command),
     retry: false,
-    onSuccess: () => {
+    onSuccess: (result) => {
+      queryClient.setQueryData<WorkspaceRecord[]>(chatKeys.workspaces, (current) => {
+        if (!current) return [result.workspace];
+        if (current.some((item) => item.id === result.workspace.id)) return current;
+        return [...current, result.workspace];
+      });
       void queryClient.invalidateQueries({ queryKey: chatKeys.workspaces });
     },
   });
@@ -354,7 +297,12 @@ export function useImportWorkspaceArchive() {
     mutationFn: (command: PortabilityArchiveImportCommand) =>
       client.app.importWorkspaceArchive(command.file, command.requestId),
     retry: false,
-    onSuccess: () => {
+    onSuccess: (result) => {
+      queryClient.setQueryData<WorkspaceRecord[]>(chatKeys.workspaces, (current) => {
+        if (!current) return [result.workspace];
+        if (current.some((item) => item.id === result.workspace.id)) return current;
+        return [...current, result.workspace];
+      });
       void queryClient.invalidateQueries({ queryKey: chatKeys.workspaces });
     },
   });

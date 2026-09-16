@@ -22,11 +22,7 @@ import { surfaceById } from '../../app/surfaces';
 import { chatKeys } from '../chat/data';
 import { settingsKeys } from '../settings/data';
 import { useWorkspaceStore } from '../workspace-store';
-import {
-  encodeVaultMaterial,
-  nextArchiveImportCommand,
-  workspaceExportArchiveFileName,
-} from './data';
+import { encodeVaultMaterial, nextArchiveImportCommand, workspaceExportArchiveHref } from './data';
 import portabilityDataSource from './data.ts?raw';
 import portabilityScreenSource from './PortabilityScreen.tsx?raw';
 
@@ -397,16 +393,6 @@ function archiveFile(name = ARCHIVE_FILE_NAME): File {
   });
 }
 
-/** Builds a one-shot archive byte stream matching the Core Client download contract. */
-function archiveStream(): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(ARCHIVE_BYTES);
-      controller.close();
-    },
-  });
-}
-
 /** Proves one client body is File, Blob, or ReadableStream rather than JSON or a path. */
 function expectBinaryArchiveBody(body: unknown) {
   expect(body instanceof File || body instanceof Blob || body instanceof ReadableStream).toBe(true);
@@ -415,47 +401,6 @@ function expectBinaryArchiveBody(body: unknown) {
     expect(body).not.toHaveProperty('contentBase64');
     expect(body).not.toHaveProperty('sourcePath');
   }
-}
-
-/** Stubs object-URL download so tests can prove filename and binary Blob use. */
-function stubArchiveDownload() {
-  const clicks: Array<{ download: string; href: string }> = [];
-  const createObjectURL = vi.fn((_blob: Blob) => 'blob:openkit-workspace-archive');
-  const revokeObjectURL = vi.fn();
-  const originalCreate = URL.createObjectURL;
-  const originalRevoke = URL.revokeObjectURL;
-  const originalClick = HTMLAnchorElement.prototype.click;
-  Object.defineProperty(URL, 'createObjectURL', {
-    configurable: true,
-    value: createObjectURL,
-    writable: true,
-  });
-  Object.defineProperty(URL, 'revokeObjectURL', {
-    configurable: true,
-    value: revokeObjectURL,
-    writable: true,
-  });
-  HTMLAnchorElement.prototype.click = function click() {
-    clicks.push({ download: this.download, href: this.href });
-  };
-  return {
-    clicks,
-    createObjectURL,
-    restore() {
-      Object.defineProperty(URL, 'createObjectURL', {
-        configurable: true,
-        value: originalCreate,
-        writable: true,
-      });
-      Object.defineProperty(URL, 'revokeObjectURL', {
-        configurable: true,
-        value: originalRevoke,
-        writable: true,
-      });
-      HTMLAnchorElement.prototype.click = originalClick;
-    },
-    revokeObjectURL,
-  };
 }
 
 /** Selects one local archive through the standard file input. */
@@ -475,7 +420,9 @@ function emptyVaultUses(workspaceId: string) {
 }
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
-function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides } = {}): CoreClient {
+function makeClient(
+  overrides: { core?: MethodOverrides; app?: MethodOverrides; actionCenter?: MethodOverrides } = {}
+): CoreClient {
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
@@ -483,8 +430,13 @@ function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides }
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.core,
     },
+    actionCenter: {
+      listHumanAttention: vi.fn().mockResolvedValue({ items: [] }),
+      ...overrides.actionCenter,
+    },
     app: {
       listAuthorizedWorkspaces: vi.fn().mockResolvedValue({ items: [] }),
+      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       exportWorkspace: vi.fn().mockResolvedValue(EXPORT_RESULT),
       dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN),
       importWorkspace: vi
@@ -500,9 +452,7 @@ function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides }
         .fn()
         .mockImplementation((workspaceId: string) => Promise.resolve(emptyVaultUses(workspaceId))),
       rebindWorkspaceVaultReference: vi.fn().mockResolvedValue(REBIND_MUTATION),
-      downloadWorkspaceExportArchive: vi
-        .fn()
-        .mockImplementation(() => Promise.resolve(archiveStream())),
+      downloadWorkspaceExportArchive: vi.fn(),
       dryRunWorkspaceArchiveImport: vi.fn().mockResolvedValue(DRY_RUN),
       importWorkspaceArchive: vi.fn().mockImplementation((_body: unknown, requestId?: string) =>
         Promise.resolve(
@@ -634,6 +584,29 @@ function assertNoLeakedInternals(queryClient: QueryClient, surface: 'all' | 'cac
 
 function importSection() {
   return screen.getByRole('region', { name: 'Import' });
+}
+
+/** Visible completed-import status, identity, and open action after a known success. */
+async function expectImportedSuccess(imported: { id: string; name: string }) {
+  const section = importSection();
+  const status = await within(section).findByRole('status');
+  expect(status).toHaveTextContent('Imported');
+  expect(status).toHaveTextContent(imported.name);
+  expect(status).toHaveTextContent(imported.id);
+  expect(within(section).getByRole('button', { name: 'Open workspace' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Review import' })).toBeDisabled();
+  expect(section).not.toHaveTextContent(/already exists|new id/i);
+  expect(within(section).queryByRole('list', { name: 'What import does' })).not.toBeInTheDocument();
+}
+
+/** Same-origin encoded archive href bound to one Workspace export. */
+function expectDownloadArchiveLink(workspaceId: string, exportId: string) {
+  const link = screen.getByRole('link', { name: 'Download archive (opens in a new tab)' });
+  expect(link).toHaveAttribute('href', workspaceExportArchiveHref(workspaceId, exportId));
+  expect(link).toHaveAttribute('target', '_blank');
+  expect(link.getAttribute('rel') ?? '').toMatch(/\bnoopener\b/);
+  return link;
 }
 
 /** Inverse precommit copy that must not appear in a consequence row or the Import region. */
@@ -808,6 +781,7 @@ async function proveUserScopedImport(
     AVAILABLE_DRY_RUN_REQUEST
   );
   expect(vi.mocked(client.app.importWorkspace).mock.calls).toEqual([[acceptedImport]]);
+  await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
   expect(client.app.dryRunWorkspaceArchiveImport).not.toHaveBeenCalled();
   expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
   expectVaultUiAbsent(client);
@@ -875,6 +849,10 @@ describe('Portability', () => {
     ).toBeInTheDocument();
 
     expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+    expect(
+      screen.queryByRole('link', { name: 'Download archive (opens in a new tab)' })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Download archive' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Download archive' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use server export' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Portable archive')).toBeEnabled();
@@ -967,7 +945,7 @@ describe('Portability', () => {
     );
     expect(await screen.findByText(EXPORT_ID)).toBeInTheDocument();
     expect(screen.getByText('1 file', { exact: false })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Download archive' })).toBeEnabled();
+    expectDownloadArchiveLink(WORKSPACE.id, EXPORT_ID);
     expect(client.app.importWorkspace).not.toHaveBeenCalled();
     expect(client.app.downloadWorkspaceExportArchive).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
@@ -988,10 +966,16 @@ describe('Portability', () => {
     const acceptedImport = acceptedImportCommand(vi.mocked(client.app.importWorkspace));
     expect(vi.mocked(client.app.importWorkspace).mock.calls).toEqual([[acceptedImport]]);
     await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText(IMPORTED_WORKSPACE.name)).toBeInTheDocument();
+    await expectImportedSuccess({
+      id: COLLISION.suggestedWorkspaceId,
+      name: IMPORTED_WORKSPACE.name,
+    });
 
     importedWorkspaces.resolve({ items: [WORKSPACE, IMPORTED_WORKSPACE] });
-    expect(await screen.findByText(IMPORTED_WORKSPACE.name)).toBeInTheDocument();
+    await expectImportedSuccess({
+      id: COLLISION.suggestedWorkspaceId,
+      name: IMPORTED_WORKSPACE.name,
+    });
     assertNoLeakedInternals(queryClient);
 
     await user.type(vaultMaterialInput(), VAULT_MATERIAL);
@@ -1458,12 +1442,19 @@ describe('Portability', () => {
 
     const main = screen.getByRole('main');
     if (operation === 'import') {
-      expect(within(main).getByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
       if (settlement === 'failure') {
+        expect(within(main).getByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
         expect(within(main).queryByText(IMPORTED_WORKSPACE.name)).not.toBeInTheDocument();
         expect(await within(main).findByRole('alert')).toHaveTextContent(/couldn't import/i);
+        expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
+        expect(
+          within(main).queryByRole('button', { name: 'Open workspace' })
+        ).not.toBeInTheDocument();
       } else {
-        expect(await within(main).findByText(IMPORTED_WORKSPACE.name)).toBeInTheDocument();
+        await expectImportedSuccess({
+          id: COLLISION.suggestedWorkspaceId,
+          name: IMPORTED_WORKSPACE.name,
+        });
         expect(within(main).queryByRole('alert')).not.toBeInTheDocument();
       }
     } else {
@@ -1931,11 +1922,13 @@ describe('Portability', () => {
 
   it('keeps archive transport on File/Blob/ReadableStream and never JSON-base64 or host paths', () => {
     const production = `${portabilityDataSource}\n${portabilityScreenSource}`;
-    expect(production).toMatch(/downloadWorkspaceExportArchive\(/);
     expect(production).toMatch(/dryRunWorkspaceArchiveImport\(\s*file\s*\)/);
     expect(production).toMatch(
       /importWorkspaceArchive\(\s*command\.file,\s*command\.requestId\s*\)/
     );
+    expect(production).toMatch(/workspaceExportArchiveHref\(/);
+    expect(production).not.toMatch(/downloadWorkspaceExportArchive\(/);
+    expect(production).not.toMatch(/createObjectURL/);
     expect(production).not.toMatch(/readAsDataURL/);
     expect(production).not.toMatch(/contentBase64/);
     expect(production).not.toMatch(/arrayBufferToBase64/);
@@ -1951,12 +1944,16 @@ describe('Portability', () => {
     const changed = nextArchiveImportCommand(initial, second);
     expect(changed.file).toBe(second);
     expect(changed.requestId).not.toBe(initial.requestId);
-    expect(workspaceExportArchiveFileName(WORKSPACE.id, EXPORT_ID)).toBe(ARCHIVE_FILE_NAME);
+    expect(workspaceExportArchiveHref(WORKSPACE.id, EXPORT_ID)).toBe(
+      `/api/app/workspaces/${WORKSPACE.id}/exports/${EXPORT_ID}/archive`
+    );
+    expect(workspaceExportArchiveHref('ws 1/a', 'exp?x')).toBe(
+      '/api/app/workspaces/ws%201%2Fa/exports/exp%3Fx/archive'
+    );
   });
 
-  it('downloads the created export as a .openkit-workspace.tar.zst blob without JSON encoding', async () => {
+  it('offers a same-origin encoded archive link for the created export', async () => {
     const user = userEvent.setup();
-    const download = stubArchiveDownload();
     const client = makeClient();
     renderApp('/settings/portability', client);
 
@@ -1964,28 +1961,12 @@ describe('Portability', () => {
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
     ).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Export workspace' }));
-    expect(await screen.findByRole('button', { name: 'Download archive' })).toBeEnabled();
-    await user.click(screen.getByRole('button', { name: 'Download archive' }));
-
-    await waitFor(() =>
-      expect(vi.mocked(client.app.downloadWorkspaceExportArchive).mock.calls).toEqual([
-        [WORKSPACE.id, EXPORT_ID],
-      ])
-    );
-    await waitFor(() =>
-      expect(download.clicks).toEqual([
-        {
-          download: ARCHIVE_FILE_NAME,
-          href: 'blob:openkit-workspace-archive',
-        },
-      ])
-    );
-    expect(download.createObjectURL).toHaveBeenCalledTimes(1);
-    expect(download.createObjectURL.mock.calls[0]?.[0]).toBeInstanceOf(Blob);
-    expect(download.revokeObjectURL).toHaveBeenCalledWith('blob:openkit-workspace-archive');
+    const link = expectDownloadArchiveLink(WORKSPACE.id, EXPORT_ID);
+    expect(link).toBeEnabled();
+    expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
+    expect(client.app.downloadWorkspaceExportArchive).not.toHaveBeenCalled();
     expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
     expect(client.app.importWorkspace).not.toHaveBeenCalled();
-    download.restore();
   });
 
   it('reviews a local archive File, then imports that same File after preview', async () => {
@@ -2036,13 +2017,51 @@ describe('Portability', () => {
     expectBinaryArchiveBody(importedBody);
     expect(importedBody).toBe(file);
     expect(requestId).toEqual(expect.any(String));
-    expect(await screen.findByText(IMPORTED_WORKSPACE.name)).toBeInTheDocument();
+    await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
     expect(retainedPortabilityState(queryClient)).not.toContain(
       btoa(String.fromCharCode(...ARCHIVE_BYTES))
     );
     expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
     expect(client.app.importWorkspace).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
+  });
+
+  it('opens the imported Overview from cache while workspace refetch is still pending', async () => {
+    const user = userEvent.setup();
+    const importedWorkspaces = createDeferred<{ items: unknown[] }>();
+    const listWorkspaces = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [WORKSPACE] })
+      .mockReturnValue(importedWorkspaces.promise);
+    const client = makeClient({ core: { listWorkspaces } });
+    renderApp('/settings/portability', client);
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Portability' })
+    ).toBeInTheDocument();
+    await reviewImport(user);
+    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
+    await waitFor(() => expect(client.app.importWorkspace).toHaveBeenCalledTimes(1));
+    await expectImportedSuccess({
+      id: COLLISION.suggestedWorkspaceId,
+      name: IMPORTED_WORKSPACE.name,
+    });
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole('button', { name: 'Open workspace' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(COLLISION.suggestedWorkspaceId);
+    expect(screen.getByRole('button', { name: IMPORTED_WORKSPACE.name })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(vi.mocked(client.actionCenter.listHumanAttention).mock.calls).toEqual([
+        [COLLISION.suggestedWorkspaceId],
+      ])
+    );
+    expect(vi.mocked(client.app.listConversationNavigation).mock.calls).toEqual([
+      [COLLISION.suggestedWorkspaceId],
+    ]);
+    expect(await screen.findByText("You're all caught up")).toBeInTheDocument();
+    expect(listWorkspaces).toHaveBeenCalledTimes(2);
   });
 
   it('invalidates archive import until a new dry-run after a different File is selected', async () => {
@@ -2117,7 +2136,10 @@ describe('Portability', () => {
   it('keeps user-scoped archive import without a selected project Workspace', async () => {
     const user = userEvent.setup();
     const file = archiveFile();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [] });
+    const listWorkspaces = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValue({ items: [{ ...IMPORTED_WORKSPACE, id: EXPORTED_ABSENT_ID }] });
     const client = makeClient({
       core: { listWorkspaces },
       app: {
@@ -2139,13 +2161,17 @@ describe('Portability', () => {
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
     ).toBeInTheDocument();
     expect(screen.getByLabelText('Portable archive')).toBeEnabled();
+    expectVaultUiAbsent(client);
     await selectArchive(user, file);
     await user.click(screen.getByRole('button', { name: 'Review import' }));
     expectReviewSummary(DRY_RUN_AVAILABLE);
     await user.click(screen.getByRole('button', { name: 'Import workspace' }));
     await waitFor(() => expect(client.app.importWorkspaceArchive).toHaveBeenCalledTimes(1));
     expect(vi.mocked(client.app.importWorkspaceArchive).mock.calls[0]?.[0]).toBe(file);
-    expectVaultUiAbsent(client);
+    await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
+    await user.click(screen.getByRole('button', { name: 'Open workspace' }));
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(EXPORTED_ABSENT_ID);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
     expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
     expect(client.app.importWorkspace).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
@@ -2219,7 +2245,10 @@ describe('Portability', () => {
       );
       await pending.promise;
     });
-    expect(await screen.findByText(IMPORTED_WORKSPACE.name)).toBeInTheDocument();
+    await expectImportedSuccess({
+      id: COLLISION.suggestedWorkspaceId,
+      name: IMPORTED_WORKSPACE.name,
+    });
     expect(vi.mocked(importWorkspaceArchive).mock.calls[0]?.[0]).toBe(file);
   });
 
@@ -2239,7 +2268,7 @@ describe('Portability', () => {
 
     expect(await screen.findByRole('button', { name: 'Export workspace' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Export workspace' }));
-    expect(await screen.findByRole('button', { name: 'Download archive' })).toBeEnabled();
+    expectDownloadArchiveLink(WORKSPACE.id, EXPORT_ID);
     expect(
       within(screen.getByRole('region', { name: 'Export' })).getByText(EXPORT_ID)
     ).toBeInTheDocument();
@@ -2248,6 +2277,12 @@ describe('Portability', () => {
     expect(await screen.findByText(WORKSPACE_B.name, { exact: true })).toBeInTheDocument();
     const exportRegion = screen.getByRole('region', { name: 'Export' });
     expect(within(exportRegion).queryByText(EXPORT_ID)).not.toBeInTheDocument();
+    expect(
+      within(exportRegion).queryByRole('link', { name: 'Download archive (opens in a new tab)' })
+    ).not.toBeInTheDocument();
+    expect(
+      within(exportRegion).queryByRole('link', { name: 'Download archive' })
+    ).not.toBeInTheDocument();
     expect(
       within(exportRegion).queryByRole('button', { name: 'Download archive' })
     ).not.toBeInTheDocument();
