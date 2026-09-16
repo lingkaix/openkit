@@ -22404,6 +22404,7 @@
                     "llm",
                     "mcp",
                     "knowledge",
+                    "network",
                     "runtime",
                     "storage",
                     "workspace"
@@ -116614,5 +116615,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:1f112dbea20652e5e38d65d3a002872bcd9e66268d0308798906130697c43a19"
+  "x-openkit-source-digest": "sha256:487f5c8e96b87d64a940cf84ffa0b675044dc24ba506edae17cafce2faa0e8fb"
 }
