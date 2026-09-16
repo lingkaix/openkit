@@ -20,6 +20,8 @@ Pass bootstrap codes, tokens, and other secret inputs through stdin or a platfor
 
 Use `ops search` with terms such as `credential`, `bootstrap`, or `connection`, then use `ops describe` before calling the selected operation. Use `token.create` or `token.rotate` only with an explicit non-reserved local `destination` name such as `automation`, described by the operation. These operations require a server-admin bearer token in server mode, store the issued secret into the named slot, and return redacted token records and storage metadata. They never replace or select the endpoint administration credential.
 
+First-owner bootstrap requires a display name, email, and password as well as the one-time bootstrap code. Submit these through the discovered bootstrap operation using stdin. Successful consumption creates the same owner's Browser login credential and stores the returned administrator Token securely; use that email and password to sign in to the Web UI. Never repeat bootstrap on an initialized deployment.
+
 Treat a secure-storage preflight failure as a setup blocker. If bootstrap consumption reports that credential storage failed, do not ask the CLI to reveal the consumed token; report the typed failure and require a new explicit setup decision.
 
 ## Diagnose failures
