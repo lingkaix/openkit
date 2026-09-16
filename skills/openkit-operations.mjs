@@ -1025,6 +1025,20 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    id: 'conversation.navigation',
+    source: 'app-api',
+    appOperationId: 'listConversationNavigation',
+    clientMethod: 'app.listConversationNavigation',
+    group: 'conversation',
+    summary: 'List visible Workspace conversation activity for navigation.',
+    mutating: false,
+    requiredAccess:
+      'current Workspace access; private Threads require exact user ownership, including for admins',
+    inputSchema: strictScope(workspaceScope),
+    handler: ({ client }, input) => client.app.listConversationNavigation(input.workspaceId),
+  },
+  {
+    ...STANDARD,
     id: 'conversation.submit',
     source: 'app-api',
     appOperationId: 'submitConversation',

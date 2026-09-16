@@ -13,7 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -1795,14 +1795,35 @@ test('token create and rotate require named delivery and preflight before the pu
   }
 });
 
+/**
+ * Isolates bundled CLI credential storage from the host OpenKit config directory.
+ *
+ * @param {string} root Temporary home and XDG config root.
+ * @returns {{configDir: string, env: NodeJS.ProcessEnv, machineId?: string}} Matching CLI and test-store paths.
+ */
+function isolatedCredentialLayout(root) {
+  const darwin = process.platform === 'darwin';
+  return {
+    configDir: darwin
+      ? join(root, 'Library', 'Application Support', 'OpenKit')
+      : join(root, 'openkit'),
+    machineId: darwin ? `${hostname()}:${root}` : undefined,
+    env: {
+      HOME: root,
+      XDG_CONFIG_HOME: root,
+      PATH: root,
+    },
+  };
+}
+
 test('bundled token create and rotate preserve transport, redaction, and auth denials', async (t) => {
   const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
   const root = mkdtempSync(join(tmpdir(), 'openkit-token-cli-'));
   t.after(() => rmSync(root, { force: true, recursive: true }));
   const endpoint = 'https://nanocore.example';
+  const { configDir, env: isolatedEnv, machineId } = isolatedCredentialLayout(root);
   const env = {
-    XDG_CONFIG_HOME: root,
-    PATH: root,
+    ...isolatedEnv,
     OPENKIT_NANOCORE_URL: endpoint,
     OPENKIT_NANOCORE_TOKEN: 'okt_fake_admin',
   };
@@ -1822,7 +1843,8 @@ test('bundled token create and rotate preserve transport, redaction, and auth de
     lastUsedSource: null,
   };
   const store = createDefaultOpenKitCredentialStore({
-    configDir: join(root, 'openkit'),
+    configDir,
+    ...(machineId === undefined ? {} : { machineId }),
     execFile() {
       throw new Error('unavailable');
     },
@@ -1900,9 +1922,9 @@ test('bundled token create and rotate preserve transport, redaction, and auth de
 test('bundled token delivery reports preflight and post-issuance storage failures without secrets', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-token-failure-'));
   t.after(() => rmSync(root, { force: true, recursive: true }));
+  const { configDir, env: isolatedEnv } = isolatedCredentialLayout(root);
   const env = {
-    XDG_CONFIG_HOME: root,
-    PATH: root,
+    ...isolatedEnv,
     OPENKIT_NANOCORE_URL: 'https://nanocore.example',
     OPENKIT_NANOCORE_TOKEN: 'okt_fake_admin',
   };
@@ -1914,7 +1936,7 @@ test('bundled token delivery reports preflight and post-issuance storage failure
   });
   const blocked = join(root, 'blocked');
   writeFileSync(blocked, 'not a directory');
-  const preflight = await runCli(args, { ...env, XDG_CONFIG_HOME: blocked }, input, [
+  const preflight = await runCli(args, { ...env, HOME: blocked, XDG_CONFIG_HOME: blocked }, input, [
     dataModule(`globalThis.fetch = async () => { throw new Error('must not request'); };`),
   ]);
   assert.equal(preflight.code, 2);
@@ -1939,8 +1961,8 @@ test('bundled token delivery reports preflight and post-issuance storage failure
     dataModule(`
     import { rmSync, writeFileSync } from 'node:fs';
     globalThis.fetch = async () => {
-      rmSync(${JSON.stringify(join(root, 'openkit'))}, { recursive: true });
-      writeFileSync(${JSON.stringify(join(root, 'openkit'))}, 'blocked after issuance');
+      rmSync(${JSON.stringify(configDir)}, { recursive: true });
+      writeFileSync(${JSON.stringify(configDir)}, 'blocked after issuance');
       return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json' } });
     };
   `),
@@ -2592,6 +2614,13 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
       ['ws_team', 'th_shared'],
     ],
     ['app.search', 'searchApp', 'search', { query: 'needle' }, ['needle']],
+    [
+      'conversation.navigation',
+      'listConversationNavigation',
+      'listConversationNavigation',
+      { workspaceId: 'ws_team' },
+      ['ws_team'],
+    ],
   ]) {
     const entry = operationCatalog.find((candidate) => candidate.id === id);
     assert.ok(entry);

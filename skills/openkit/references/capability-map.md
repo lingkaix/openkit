@@ -17,7 +17,7 @@ Use this intent map to choose search terms; do not treat it as the authoritative
 | Connect, diagnose, or bootstrap | `connection`, `doctor`, `bootstrap`, `credential` | [setup.md](setup.md) |
 | Manage workspace resources | `workspace`, `resource`, `data source` | [loop.md](loop.md) |
 | Link repositories or perform Git work | `repository`, `git`, `push`, `sync` | [loop.md](loop.md) or [administration.md](administration.md) |
-| Converse or delegate bounded work | `chat`, `task`, `thread`, `turn` | [loop.md](loop.md) |
+| Converse or delegate bounded work | `chat`, `task`, `thread`, `turn`, `navigation` | [loop.md](loop.md) |
 | Plan and execute multi-step work | `goal`, `plan`, `step`, `review` | [loop.md](loop.md) |
 | Resolve human attention | `attention`, `approval`, `question`, `decision` | [loop.md](loop.md) |
 | Inspect outputs and proof | `artifact`, `evidence`, `audit`, `usage` | [loop.md](loop.md) |
