@@ -7,7 +7,7 @@ import {
 } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
-import { chatThreadPath, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
+import { chatKeys, chatThreadPath, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 
 /**
  * Workspace / Overview data hooks (WP-6). Action Center, Agents, Knowledge, and
@@ -165,6 +165,8 @@ export function useHumanAttention(workspaceId: string | null) {
         (await client.actionCenter.listHumanAttention(workspaceId as string)).items
       ),
     enabled: Boolean(workspaceId),
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
   });
 }
 
@@ -550,17 +552,34 @@ export function useCreateWorkspace() {
   });
 }
 
+/** Exact inline Action Center decision, including the request identity reused on retry. */
+export type AttentionDecisionInput = {
+  row: AttentionRow;
+  action: AttentionRow['actions'][number];
+  requestId: string;
+};
+
+/** Refresh Overview attention and conversation activity for one Workspace. */
+function invalidateAttentionScope(
+  queryClient: ReturnType<typeof useQueryClient>,
+  workspaceId: string
+) {
+  void queryClient.invalidateQueries({ queryKey: workspaceKeys.attention(workspaceId) });
+  void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(workspaceId) });
+}
+
 /**
  * Decide an Action Center row inline when the row carries enough ids.
  * Approvals map to `core.respondApproval`; other kinds without a safe mutation
  * path are left for the caller to open in-context.
  */
-export function useDecideAttention(workspaceId: string | null) {
+export function useDecideAttention() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (args: { row: AttentionRow; action: AttentionRow['actions'][number] }) => {
-      const { row, action } = args;
+    mutationKey: ['attention', 'decide'],
+    mutationFn: async (args: AttentionDecisionInput) => {
+      const { row, action, requestId } = args;
       if (
         (action.kind === 'grant_approval' || action.kind === 'deny_approval') &&
         row.source.type === 'approval' &&
@@ -572,6 +591,7 @@ export function useDecideAttention(workspaceId: string | null) {
           threadId: row.source.threadId,
           turnId: row.source.turnId,
           decision: action.kind === 'grant_approval' ? 'granted' : 'denied',
+          requestId,
         });
       }
       if (
@@ -586,17 +606,45 @@ export function useDecideAttention(workspaceId: string | null) {
           row.source.artifactVersion,
           {
             decision: action.kind === 'accept_review' ? 'accepted' : 'rejected',
+            requestId,
           }
         );
       }
       throw new Error(`Inline decision is not available for action ${action.kind}`);
     },
-    onSuccess: () => {
-      if (workspaceId) {
-        void queryClient.invalidateQueries({ queryKey: workspaceKeys.attention(workspaceId) });
+    retry: false,
+    onSuccess: (_data, variables) => {
+      invalidateAttentionScope(queryClient, variables.row.workspaceId);
+    },
+    onError: (error, variables) => {
+      if (isStaleAttentionDecision(error)) {
+        invalidateAttentionScope(queryClient, variables.row.workspaceId);
       }
     },
   });
+}
+
+/** Product label for one inline Action Center action. */
+export function inlineAttentionActionLabel(action: AttentionRow['actions'][number]): string {
+  if (action.kind === 'grant_approval') return 'Allow';
+  if (action.kind === 'deny_approval') return 'Deny';
+  return action.label;
+}
+
+/** Whether an inline decision failed because the underlying request is no longer current. */
+export function isStaleAttentionDecision(error: unknown): boolean {
+  return error instanceof ApiCallError && (error.code === 'stale' || error.code === 'conflict');
+}
+
+/** Maps an inline decision failure to public copy with no private server text. */
+export function attentionDecisionErrorMessage(error: unknown): string {
+  if (error instanceof ApiCallError && error.code === 'workspace_access_denied') {
+    return 'Access denied.';
+  }
+  if (isStaleAttentionDecision(error)) {
+    return 'That decision is no longer current.';
+  }
+  return "Couldn't save that decision.";
 }
 
 /** Whether an Action Center action can be decided inline from the row payload. */

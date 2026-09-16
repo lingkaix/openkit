@@ -199,6 +199,47 @@ const OPEN_ONLY_ROW = {
   ],
 };
 
+const GOAL_REVIEW_ROW = {
+  id: 'goal-review:ws1:th_goal:goal1:rev1',
+  kind: 'artifact_review',
+  workspaceId: 'ws1',
+  threadId: 'th_goal',
+  title: 'Review worker output',
+  summary: 'Inspect the Goal before choosing a verdict.',
+  severity: 'needs_input',
+  createdAt: TIMESTAMP_OLD,
+  recommendedAction: 'Open the Goal to accept, refine, retry, or abort.',
+  source: {
+    type: 'goal_review',
+    reviewId: 'rev1',
+    goalId: 'goal1',
+    taskId: 'task1',
+    workspaceId: 'ws1',
+    threadId: 'th_goal',
+  },
+  actions: [
+    { kind: 'accept_review', label: 'Accept review', method: 'POST' },
+    { kind: 'request_refinement', label: 'Request refinement', method: 'POST' },
+    { kind: 'retry_work', label: 'Retry work', method: 'POST' },
+    { kind: 'abort', label: 'Abort goal', method: 'POST' },
+  ],
+};
+
+const DISABLED_APPROVAL_ROW = {
+  ...APPROVAL_ROW,
+  id: 'approval:ap_disabled',
+  title: 'Read-only approval',
+  source: {
+    ...APPROVAL_ROW.source,
+    approvalRequestId: 'ap_disabled',
+  },
+  actions: APPROVAL_ROW.actions.map((action) =>
+    action.kind === 'grant_approval' || action.kind === 'deny_approval'
+      ? { ...action, disabled: true, reason: 'Viewer cannot decide this approval.' }
+      : action
+  ),
+};
+
 const AGENT_READY = {
   id: 'agent_ledger',
   name: 'Ledger',
@@ -742,6 +783,7 @@ function makeClient(
         attentionNeeded: [],
       }),
       submitArtifactReviewDecision: vi.fn().mockResolvedValue({}),
+      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listKnowledgeSources: vi.fn().mockResolvedValue({ items: [] }),
       listKnowledgeObservations: vi.fn().mockResolvedValue({ items: [] }),
       listKnowledgeClaims: vi.fn().mockResolvedValue({ items: [] }),
@@ -1195,6 +1237,32 @@ async function proveWriteDoesNotRetarget(
   expect(method.mock.calls.every((call) => call[0] === workspaceId)).toBe(true);
 }
 
+/** Viewer-authorized conversation activity used by Overview ongoing work. */
+function overviewConversation(input: {
+  id: string;
+  name: string;
+  preview: string;
+  activity: 'chat' | 'task' | 'goal' | 'unknown';
+  state: 'working' | 'needs-you' | 'idle';
+}) {
+  return {
+    thread: {
+      id: input.id,
+      workspaceId: WORKSPACE_A.id,
+      name: input.name,
+      preview: input.preview,
+      status: 'active' as const,
+      entryPath: 'conversation' as const,
+      visibility: 'workspace' as const,
+      createdAt: TIMESTAMP_OLD,
+      updatedAt: TIMESTAMP_NEW,
+    },
+    activity: input.activity,
+    state: input.state,
+    lastActivityAt: TIMESTAMP_NEW,
+  };
+}
+
 function renderApp(path: string, client: CoreClient) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
@@ -1227,6 +1295,9 @@ describe('Overview / Action Center (board 07)', () => {
   it('shows the empty "caught up" state when nothing needs you', async () => {
     renderApp('/', makeClient());
     expect(await screen.findByText("You're all caught up")).toBeInTheDocument();
+    expect(screen.queryByText('Competitive pricing report')).not.toBeInTheDocument();
+    expect(screen.queryByText('4 of 6 steps moving')).not.toBeInTheDocument();
+    expect(screen.queryByText('In progress')).not.toBeInTheDocument();
   });
 
   it('renders Needs-you rows longest-waiting first and decides approvals inline', async () => {
@@ -1250,14 +1321,18 @@ describe('Overview / Action Center (board 07)', () => {
     expect(titles[0]).toBe('Scout asks to sign in to the vendor portal');
     expect(titles[1]).toBe('Answer required');
 
-    await user.click(screen.getByRole('button', { name: 'Approve' }));
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
     await waitFor(() =>
-      expect(respondApproval).toHaveBeenCalledWith('ap1', {
-        workspaceId: 'ws1',
-        threadId: 'th1',
-        turnId: 't1',
-        decision: 'granted',
-      })
+      expect(respondApproval).toHaveBeenCalledWith(
+        'ap1',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          turnId: 't1',
+          decision: 'granted',
+          requestId: expect.any(String),
+        })
+      )
     );
   });
 
@@ -1273,6 +1348,7 @@ describe('Overview / Action Center (board 07)', () => {
       'href',
       '/chat/ws1/th2'
     );
+    expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
 
@@ -1329,11 +1405,361 @@ describe('Overview / Action Center (board 07)', () => {
     ).toBeInTheDocument();
     await waitFor(
       () => {
-        expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Allow' })).toBeDisabled();
       },
       { timeout: 3000 }
     );
     expect(screen.getByText(/stale/i)).toBeInTheDocument();
+  });
+
+  it('lists every ongoing Task and Goal with activity and status', async () => {
+    const items = [
+      overviewConversation({
+        id: 'th_goal_need',
+        name: 'Launch research program',
+        preview: 'Waiting on pricing sources',
+        activity: 'goal',
+        state: 'needs-you',
+      }),
+      ...[1, 2, 3, 4].map((index) =>
+        overviewConversation({
+          id: `th_task_${index}`,
+          name: `Task ${index}`,
+          preview: `Current task context ${index}`,
+          activity: 'task',
+          state: 'working',
+        })
+      ),
+      ...[1, 2, 3].map((index) =>
+        overviewConversation({
+          id: `th_goal_${index}`,
+          name: `Goal ${index}`,
+          preview: `Current goal context ${index}`,
+          activity: 'goal',
+          state: 'working',
+        })
+      ),
+      overviewConversation({
+        id: 'th_idle_chat',
+        name: 'Idle chat',
+        preview: 'Yesterday',
+        activity: 'chat',
+        state: 'idle',
+      }),
+    ];
+    renderApp(
+      '/',
+      makeClient({
+        app: {
+          listConversationNavigation: vi.fn().mockResolvedValue({ items }),
+        },
+      })
+    );
+
+    expect(await screen.findByText('Launch research program')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Launch research program' })).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Open goal' })[0]).toHaveAttribute(
+      'href',
+      '/goals/ws1/th_goal_need'
+    );
+    expect(screen.getAllByRole('link', { name: 'Open task' })[0]).toHaveAttribute(
+      'href',
+      '/tasks/ws1/th_task_1'
+    );
+    expect(screen.getAllByText('Working').length).toBeGreaterThanOrEqual(7);
+    expect(screen.getByRole('heading', { name: 'Task 4' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Goal 3' })).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getAllByText('Worker task · Working')).toHaveLength(4);
+    expect(screen.queryByRole('heading', { name: 'Idle chat' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Competitive pricing report')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(8);
+  });
+
+  it('does not use an unnamed Task raw input as its display title', async () => {
+    const item = overviewConversation({
+      id: 'unnamed',
+      name: 'Temporary',
+      preview: '{"schemaVersion":1,"objective":"raw-input"}',
+      activity: 'task',
+      state: 'working',
+    });
+    renderApp(
+      '/',
+      makeClient({
+        app: {
+          listConversationNavigation: vi
+            .fn()
+            .mockResolvedValue({ items: [{ ...item, thread: { ...item.thread, name: null } }] }),
+        },
+      })
+    );
+    const main = await screen.findByRole('main', { name: 'Workspace' });
+    expect(await within(main).findByRole('heading', { name: 'Worker task' })).toBeInTheDocument();
+    expect(main).not.toHaveTextContent('raw-input');
+  });
+
+  it('denies an approval inline and keeps disabled approval actions read-only', async () => {
+    const user = userEvent.setup();
+    const respondApproval = vi.fn().mockResolvedValue({});
+    renderApp(
+      '/',
+      makeClient({
+        core: { respondApproval },
+        actionCenter: {
+          listHumanAttention: vi.fn().mockResolvedValue({
+            items: [APPROVAL_ROW, DISABLED_APPROVAL_ROW],
+          }),
+        },
+      })
+    );
+    expect(
+      await screen.findByText('Scout asks to sign in to the vendor portal')
+    ).toBeInTheDocument();
+    const activeRow = screen
+      .getByRole('heading', { name: 'Scout asks to sign in to the vendor portal' })
+      .closest('[class*="border-b"]') as HTMLElement;
+    const readOnly = screen
+      .getByRole('heading', { name: 'Read-only approval' })
+      .closest('[class*="border-b"]') as HTMLElement;
+    expect(within(activeRow).getByRole('button', { name: 'Allow' })).toBeEnabled();
+    expect(within(readOnly).getByRole('button', { name: 'Allow' })).toBeDisabled();
+    expect(within(readOnly).getByRole('button', { name: 'Deny' })).toBeDisabled();
+
+    await user.click(within(activeRow).getByRole('button', { name: 'Deny' }));
+    await waitFor(() =>
+      expect(respondApproval).toHaveBeenCalledWith(
+        'ap1',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          turnId: 't1',
+          decision: 'denied',
+          requestId: expect.any(String),
+        })
+      )
+    );
+  });
+
+  it('retries a failed approval with the same request identity', async () => {
+    const user = userEvent.setup();
+    const respondApproval = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiCallError(500, 'private-approval-failure', { code: 'failed' }))
+      .mockResolvedValue({});
+    renderApp(
+      '/',
+      makeClient({
+        core: { respondApproval },
+        actionCenter: {
+          listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
+        },
+      })
+    );
+    expect(
+      await screen.findByText('Scout asks to sign in to the vendor portal')
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Couldn't save that decision/i);
+    expect(alert).not.toHaveTextContent('private-approval-failure');
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(2));
+    expect(requestIdFromCall(respondApproval.mock.calls[0])).toEqual(
+      requestIdFromCall(respondApproval.mock.calls[1])
+    );
+  });
+
+  it('refreshes after a stale denial without sending a second request', async () => {
+    const user = userEvent.setup();
+    const respondApproval = vi
+      .fn()
+      .mockRejectedValue(new ApiCallError(409, 'stale-private-denial', { code: 'stale' }));
+    const listHumanAttention = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [APPROVAL_ROW] })
+      .mockResolvedValue({ items: [] });
+    renderApp(
+      '/',
+      makeClient({
+        core: { respondApproval },
+        actionCenter: { listHumanAttention },
+      })
+    );
+    expect(
+      await screen.findByText('Scout asks to sign in to the vendor portal')
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Deny' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/no longer current/i);
+    expect(alert).not.toHaveTextContent('stale-private-denial');
+    await waitFor(() => expect(listHumanAttention.mock.calls.length).toBeGreaterThan(1));
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(respondApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables approval actions while a decision is pending', async () => {
+    const user = userEvent.setup();
+    const respondApproval = vi.fn().mockReturnValue(new Promise(() => {}));
+    renderApp(
+      '/',
+      makeClient({
+        core: { respondApproval },
+        actionCenter: {
+          listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
+        },
+      })
+    );
+    expect(
+      await screen.findByText('Scout asks to sign in to the vendor portal')
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeDisabled();
+  });
+
+  it('invalidates the original Workspace after a decision even if selection changes', async () => {
+    const user = userEvent.setup();
+    let finish!: (value: unknown) => void;
+    const respondApproval = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    const listHumanAttention = vi.fn().mockImplementation(async (workspaceId: string) => ({
+      items: workspaceId === WORKSPACE_A.id ? [APPROVAL_ROW] : [],
+    }));
+    const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
+    const queryClient = renderApp(
+      '/',
+      makeClient({
+        core: {
+          respondApproval,
+          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
+        },
+        actionCenter: { listHumanAttention },
+        app: { listConversationNavigation },
+      })
+    );
+    expect(
+      await screen.findByText('Scout asks to sign in to the vendor portal')
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(1));
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
+    await act(async () => {
+      finish({});
+    });
+    await waitFor(() => {
+      expect(queryClient.getQueryState(['attention', WORKSPACE_A.id])?.isInvalidated).toBe(true);
+      expect(
+        queryClient.getQueryState(['threads', WORKSPACE_A.id, 'navigation'])?.isInvalidated
+      ).toBe(true);
+    });
+  });
+
+  it('keeps a denied row from blocking another approval and hides its retry in another Workspace', async () => {
+    const user = userEvent.setup();
+    const respondApproval = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiCallError(403, 'private-denial', { code: 'workspace_access_denied' })
+      );
+    const other = {
+      ...APPROVAL_ROW,
+      id: 'other-approval',
+      title: 'Another approval',
+      source: { ...APPROVAL_ROW.source, approvalRequestId: 'ap2' },
+    };
+    renderApp(
+      '/',
+      makeClient({
+        core: {
+          respondApproval,
+          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
+        },
+        actionCenter: {
+          listHumanAttention: vi.fn().mockImplementation(async (id: string) => ({
+            items: id === WORKSPACE_A.id ? [APPROVAL_ROW, other] : [],
+          })),
+        },
+        app: { listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }) },
+      })
+    );
+    await screen.findByRole('heading', { name: 'Another approval' });
+    await user.click(screen.getAllByRole('button', { name: 'Allow' })[0]);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Access denied.');
+    expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Allow' })[1]).toBeEnabled();
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
+    await screen.findByText("You're all caught up");
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(respondApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries an Artifact review with the same request identity', async () => {
+    const user = userEvent.setup();
+    const submitArtifactReviewDecision = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValue({});
+    const row = {
+      ...APPROVAL_ROW,
+      id: 'review',
+      kind: 'artifact_review',
+      title: 'Review report',
+      artifactId: 'ar1',
+      artifactVersion: 1,
+      source: {
+        type: 'artifact_review',
+        workspaceId: 'ws1',
+        artifactId: 'ar1',
+        artifactVersion: 1,
+      },
+      actions: [{ kind: 'accept_review', label: 'Accept', disabled: false }],
+    };
+    renderApp(
+      '/',
+      makeClient({
+        app: { submitArtifactReviewDecision },
+        actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [row] }) },
+      })
+    );
+    await user.click(await screen.findByRole('button', { name: 'Accept' }));
+    await user.click(
+      within(await screen.findByRole('alert')).getByRole('button', { name: 'Try again' })
+    );
+    await waitFor(() => expect(submitArtifactReviewDecision).toHaveBeenCalledTimes(2));
+    expect(submitArtifactReviewDecision.mock.calls[0][3]).toEqual({
+      decision: 'accepted',
+      requestId: expect.any(String),
+    });
+    expect(submitArtifactReviewDecision.mock.calls[1]).toEqual(
+      submitArtifactReviewDecision.mock.calls[0]
+    );
+  });
+
+  it('opens a Goal review for inspection and does not decide it inline', async () => {
+    renderApp(
+      '/',
+      makeClient({
+        actionCenter: {
+          listHumanAttention: vi.fn().mockResolvedValue({ items: [GOAL_REVIEW_ROW] }),
+        },
+      })
+    );
+    expect(await screen.findByText('Review worker output')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open goal' })).toHaveAttribute(
+      'href',
+      '/goals/ws1/th_goal'
+    );
+    expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Accept review' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Request refinement' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry work' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Abort goal' })).not.toBeInTheDocument();
   });
 });
 
