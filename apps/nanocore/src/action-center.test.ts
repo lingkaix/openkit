@@ -157,6 +157,171 @@ function recordTestWorkspaceSyncReview(
   recordWorkspaceSyncReview(workspaceDb, input);
 }
 
+/** Store-valid origins exercised by Workspace Review attention projection tests. */
+type WorkspaceReviewOriginKind = 'visible' | 'private' | 'imported';
+
+/**
+ * Creates one Store-valid Artifact for workspace-review origin projection tests.
+ *
+ * Imported origin is the durable non-turn-output shape. ArtifactSchema rejects mismatched turn-output lineage.
+ *
+ * @param store Product store owned by the test.
+ * @param workspaceId Workspace that owns the review.
+ * @param input Artifact identity and origin kind.
+ * @returns Thread and Turn ids when a turn-output origin exists.
+ */
+function createWorkspaceReviewBackingArtifact(
+  store: ReturnType<typeof createDemoStore>,
+  workspaceId: string,
+  input: {
+    readonly artifactId: string;
+    readonly origin: WorkspaceReviewOriginKind;
+  }
+): { readonly threadId?: string; readonly turnId?: string; readonly turnRef: string } {
+  const artifactRequestId = `action-center-${input.origin}-workspace-review-1`;
+  const artifactBody = `{"review":"${input.origin}"}`;
+  const contentDigest = `sha256:${createHash('sha256').update(artifactBody, 'utf8').digest('hex')}`;
+  if (input.origin === 'imported') {
+    store.createArtifact({
+      id: input.artifactId,
+      workspaceId,
+      threadId: null,
+      turnId: null,
+      kind: 'file',
+      title: 'Imported workspace changes',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'json', body: artifactBody },
+      contentDigest,
+      lastMutationRequestId: artifactRequestId,
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: artifactRequestId,
+        sourceDigest: contentDigest,
+        actor: { kind: 'user', id: 'user_local' },
+        requestId: artifactRequestId,
+        recordedAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    return { turnRef: 'turn_imported_origin' };
+  }
+
+  const thread = store.createThread(
+    workspaceId,
+    `${input.origin} origin conversation`,
+    undefined,
+    'conversation',
+    input.origin === 'private'
+      ? { privateOwnerUserId: 'user_other', visibility: 'private' }
+      : undefined
+  );
+  const turn = store.createTurn(
+    workspaceId,
+    thread.id,
+    `Produce ${input.origin} workspace changes`,
+    { kind: 'user', id: input.origin === 'private' ? 'user_other' : 'user_local' },
+    null,
+    { turnId: `turn_${input.origin}_origin` }
+  );
+  store.createArtifact({
+    id: input.artifactId,
+    workspaceId,
+    threadId: thread.id,
+    turnId: turn.id,
+    kind: 'diff',
+    title: `${input.origin} workspace changes`,
+    status: 'ready',
+    summary: `${input.origin} origin.`,
+    version: 1,
+    content: { format: 'json', body: artifactBody },
+    contentDigest,
+    lastMutationRequestId: artifactRequestId,
+    origin: {
+      kind: 'turn-output',
+      threadId: thread.id,
+      turnId: turn.id,
+      requestId: artifactRequestId,
+    },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  return { threadId: thread.id, turnId: turn.id, turnRef: turn.id };
+}
+
+/**
+ * Persists one pending git workspace-review fixture for Action Center lineage tests.
+ *
+ * @param workspaceDb Workspace database owned by the test.
+ * @param input Review, Artifact, and path identities.
+ */
+function recordPendingWorkspaceReview(
+  workspaceDb: WorkspaceDb,
+  input: {
+    readonly workspaceId: string;
+    readonly artifactId: string;
+    readonly reviewId: string;
+    readonly path: string;
+    readonly turnRef: string;
+  }
+): void {
+  const patchText = `diff --git a/${input.path} b/${input.path}\n`;
+  const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
+  const changeSetId = `wcs_${input.reviewId}`;
+  recordTestWorkspaceSyncReview(workspaceDb, {
+    item: {
+      artifactId: input.artifactId,
+      changeSet: {
+        id: changeSetId,
+        materializationRecordId: `wmr_${input.reviewId}`,
+        inputSnapshotId: `wis_${input.reviewId}`,
+        workspaceId: input.workspaceId,
+        resourceId: 'repo_default',
+        strategy: 'git',
+        base: { commit: 'abc123', contentDigest: null },
+        head: { commit: 'def456', contentDigest: null },
+        changedPaths: [{ path: input.path, status: 'modified', binary: false }],
+        patch: {
+          ref: 'artifact://patch',
+          digest: patchDigest,
+          bytes: Buffer.byteLength(patchText, 'utf8'),
+        },
+        bundle: null,
+        artifactIds: [input.artifactId],
+        evidenceRefs: [{ kind: 'worker', ref: input.turnRef }],
+        redaction: { status: 'redacted', notes: [] },
+        createdAt: timestamp,
+      },
+      patchPayload: {
+        mediaType: 'text/x-diff',
+        text: patchText,
+        digest: patchDigest,
+        bytes: Buffer.byteLength(patchText, 'utf8'),
+      },
+      review: {
+        id: input.reviewId,
+        changeSetId,
+        workspaceId: input.workspaceId,
+        status: 'pending',
+        staging: {
+          strategy: 'git_worktree',
+          ref: `staging://workspace/${changeSetId}`,
+          branch: `openkit/review/${input.reviewId}`,
+        },
+        diffSummary: { filesChanged: 1, additions: 0, deletions: 0 },
+        riskSummary: '1 changed path staged for human review.',
+        validation: [{ command: 'worker', status: 'passed', ref: input.turnRef }],
+        actionCenterRowId: `workspace-review:${input.reviewId}`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    },
+  });
+}
+
 describe('action center app API', () => {
   it('rejects a missing workspace without creating its canonical directory', async () => {
     const coreDb = createCoreDb();
@@ -1965,8 +2130,89 @@ describe('action center app API', () => {
           status: 'pending',
         },
       });
+      expect(row).not.toHaveProperty('threadId');
+      expect(row).not.toHaveProperty('turnId');
       const reviewHref = `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review`;
       const decisionHref = `${reviewHref}/decision`;
+      expect(row?.actions).toEqual([
+        expect.objectContaining({ kind: 'open_artifact', href: reviewHref }),
+        { kind: 'accepted', label: 'Accept', method: 'POST', href: decisionHref },
+        { kind: 'needs_refinement', label: 'Refine', method: 'POST', href: decisionHref },
+        { kind: 'rejected', label: 'Reject', method: 'POST', href: decisionHref },
+        { kind: 'blocked', label: 'Block', method: 'POST', href: decisionHref },
+      ]);
+      expect(row?.actions.some((action) => action.disabled)).toBe(false);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      origin: 'visible' as const,
+      artifactId: 'ar_visible_workspace_review',
+      reviewId: 'swr_visible_origin',
+      expectOriginIds: true,
+    },
+    {
+      origin: 'private' as const,
+      artifactId: 'ar_private_workspace_review',
+      reviewId: 'swr_private_origin',
+      expectOriginIds: false,
+    },
+    {
+      origin: 'imported' as const,
+      artifactId: 'ar_imported_workspace_review',
+      reviewId: 'swr_imported_origin',
+      expectOriginIds: false,
+    },
+  ])('retains the workspace-review row and actions for $origin backing Artifact origin', async ({
+    origin,
+    artifactId,
+    reviewId,
+    expectOriginIds,
+  }) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore();
+    const workspace = store.createWorkspace(`${origin} workspace review origin`);
+
+    try {
+      const backing = createWorkspaceReviewBackingArtifact(store, workspace.id, {
+        artifactId,
+        origin,
+      });
+      const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+      try {
+        recordPendingWorkspaceReview(workspaceDb, {
+          workspaceId: workspace.id,
+          artifactId,
+          reviewId,
+          path: `docs/${origin}.md`,
+          turnRef: backing.turnRef,
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+
+      const app = createAuthorizedCoreApp(coreDb, store);
+      const res = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
+      const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
+        (item) => item.id === `workspace-review:${reviewId}`
+      );
+      const reviewHref = `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/${reviewId}`;
+      const decisionHref = `${reviewHref}/decision`;
+
+      expect(row).toMatchObject({
+        kind: 'workspace_review',
+        artifactId,
+        source: { type: 'workspace_review', reviewId, status: 'pending' },
+      });
+      if (expectOriginIds) {
+        expect(row).toMatchObject({ threadId: backing.threadId, turnId: backing.turnId });
+      } else {
+        expect(row).not.toHaveProperty('threadId');
+        expect(row).not.toHaveProperty('turnId');
+      }
       expect(row?.actions).toEqual([
         expect.objectContaining({ kind: 'open_artifact', href: reviewHref }),
         { kind: 'accepted', label: 'Accept', method: 'POST', href: decisionHref },

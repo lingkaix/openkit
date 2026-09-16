@@ -11,7 +11,7 @@ import { listArtifactReviews } from './artifact-reviews.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
-import { isThreadIdVisible, isThreadVisible } from './auth/thread-visibility.js';
+import { isArtifactVisible, isThreadIdVisible, isThreadVisible } from './auth/thread-visibility.js';
 import { readPendingGoalSteeringProjection } from './context/worker-context-projection.js';
 import { GoalSteeringAuthorityError } from './goal-steering-authority.js';
 import type { FsStore } from './lib/store.js';
@@ -293,11 +293,13 @@ function durableWorkspaceReviewRows(
     })
     .map((item) => {
       const inspectOnlyRecovery = genericReviewArtifactIds.has(item.artifactId);
+      const origin = visibleWorkspaceReviewOrigin(input, item.artifactId);
       return {
         id: item.review.actionCenterRowId,
         kind: 'workspace_review',
         workspaceId: item.review.workspaceId,
         artifactId: item.artifactId,
+        ...(origin ?? {}),
         title: 'Review workspace changes',
         summary: item.review.riskSummary,
         severity: inspectOnlyRecovery ? 'risk' : 'needs_input',
@@ -322,6 +324,35 @@ function durableWorkspaceReviewRows(
         ),
       } satisfies HumanAttentionRow;
     });
+}
+
+/**
+ * Returns originating Thread and Turn ids from one workspace-review Artifact when the viewer may see that Thread.
+ *
+ * Missing, workspace-mismatched, or non-turn-output Artifacts omit lineage and leave the workspace-scoped row intact.
+ * Exact origin Thread/Turn match and current audience reuse `isArtifactVisible`.
+ *
+ * @param input Projection dependencies and Workspace scope.
+ * @param artifactId Backing Artifact id recorded on the durable review.
+ * @returns Visible origin ids, or null when lineage must stay omitted.
+ */
+function visibleWorkspaceReviewOrigin(
+  input: BuildHumanAttentionRowsInput,
+  artifactId: string
+): { readonly threadId: string; readonly turnId: string } | null {
+  let artifact: ReturnType<FsStore['getArtifact']>;
+  try {
+    artifact = input.store.getArtifact(input.workspaceId, artifactId);
+  } catch {
+    return null;
+  }
+  if (artifact.workspaceId !== input.workspaceId || artifact.origin.kind !== 'turn-output') {
+    return null;
+  }
+  if (!isArtifactVisible(input.store, artifact, input.actor?.userId)) {
+    return null;
+  }
+  return { threadId: artifact.origin.threadId, turnId: artifact.origin.turnId };
 }
 
 /**

@@ -29,6 +29,8 @@ Do not promote work to a heavier mode merely because that mode exists. Let NanoC
 
 Treat Action Center as the authoritative projection of required human attention. Never approve a plan, answer a question, accept or reject a result, extend a budget, authorize spending, or resolve another decision without explicit user direction.
 
+Workspace Review attention rows may include `threadId` and `turnId` for a visible originating conversation. Use those fields to identify the source; missing fields do not mean the Workspace review is unavailable. Inspect and decide through the exact Workspace review operation, preserving its Workspace scope.
+
 A successful `conversation.submit` command or `outcome: accepted` confirms command acceptance, not Worker success. Inspect the returned Turn status and error, then re-read that exact Turn before reporting completion. If a submission connection fails, the Task may still be running; inspect durable state rather than creating a duplicate request.
 
 Treat artifacts and evidence as review inputs, not automatic proof of correctness. Compare them with the objective, constraints, requested verification, and durable status before recommending acceptance.
