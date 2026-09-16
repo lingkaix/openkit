@@ -111,12 +111,19 @@ export function RepositoriesScreen() {
   }
 
   if (repositories.isError || !repositories.data) {
+    const accessDenied =
+      repositories.error instanceof ApiCallError &&
+      repositories.error.code === 'workspace_access_denied';
     return (
       <Page>
         <RepositoriesHeader workspaceName={workspace.name} />
         <ErrorBanner
-          message="Couldn't load repositories."
-          onRetry={() => void repositories.refetch()}
+          message={
+            accessDenied
+              ? 'Access denied. Your account cannot view repositories in this workspace.'
+              : "Couldn't load repositories."
+          }
+          onRetry={accessDenied ? undefined : () => void repositories.refetch()}
         />
       </Page>
     );

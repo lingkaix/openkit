@@ -4287,6 +4287,69 @@ describe('Repositories (board 19)', () => {
     expect(executeGitPush).not.toHaveBeenCalled();
   });
 
+  it('explains typed workspace access denial without a futile retry or leaking private text', async () => {
+    const list = vi.fn().mockRejectedValue(accessDenied('repository-denied-private failure'));
+    const requestGitPushApproval = vi.fn();
+    const executeGitPush = vi.fn();
+    renderApp(
+      '/repositories',
+      makeClient({ repositories: { executeGitPush, list, requestGitPushApproval } })
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/access denied/i);
+    expect(alert).not.toHaveTextContent(/couldn't load repositories/i);
+    expect(alert).not.toHaveTextContent('repository-denied-private failure');
+    expect(alert).not.toHaveTextContent('workspace_access_denied');
+    expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(screen.queryByText(REPOSITORY_RESOURCE.displayName)).not.toBeInTheDocument();
+    expect(requestGitPushApproval).not.toHaveBeenCalled();
+    expect(executeGitPush).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'server failure',
+      error: operationFailed('repository-server-private failure'),
+      privateText: 'repository-server-private failure',
+    },
+    {
+      name: 'status-only 403',
+      error: new ApiCallError(403, 'repository-forbidden-private failure'),
+      privateText: 'repository-forbidden-private failure',
+    },
+  ])('retries a $name repository read without treating it as typed workspace access denial', async ({
+    error,
+    privateText,
+  }) => {
+    const user = userEvent.setup();
+    const list = vi
+      .fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValue({
+        items: [REPOSITORY_RESOURCE],
+        defaultResourceId: REPOSITORY_RESOURCE.resourceId,
+        defaultResource: REPOSITORY_RESOURCE,
+      });
+    const requestGitPushApproval = vi.fn();
+    const executeGitPush = vi.fn();
+    renderApp(
+      '/repositories',
+      makeClient({ repositories: { executeGitPush, list, requestGitPushApproval } })
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't load repositories/i);
+    expect(alert).not.toHaveTextContent(/access denied/i);
+    expect(alert).not.toHaveTextContent(privateText);
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(REPOSITORY_RESOURCE.displayName)).toBeInTheDocument();
+    expect(requestGitPushApproval).not.toHaveBeenCalled();
+    expect(executeGitPush).not.toHaveBeenCalled();
+  });
+
   it('replays the exact pending approval request after an external grant and executes only after the authoritative granted response', async () => {
     const user = userEvent.setup();
     const recordRead = createDeferred<typeof PUSH_RECORD>();
