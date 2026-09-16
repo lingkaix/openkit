@@ -16,17 +16,20 @@ import {
   WorkerStartupFailureSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
+import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { isThreadVisible } from '../auth/thread-visibility.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import {
+  listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
+  resolveSchedulerLeaseTokenBinding,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
-import { resolveWorkspaceRole } from '../workspace-membership.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -418,8 +421,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     string,
     ReturnType<NonNullable<NanoHostSessionDispatch['expectResultOnly']>>
   >();
-  /** Live attempts that failed image preparation before any Sandbox or storage effect. */
-  private readonly failedImagePreparations = new Set<string>();
+  /** Live attempts that failed before Sandbox creation, with any storage reservation rolled back. */
+  private readonly failedPreSandboxPreparations = new Set<string>();
   private readonly sessions = new Map<string, NanoHostBackendTurnSession>();
   private readonly sharedSandboxes = new Map<string, NanoHostSharedSandbox>();
   private readonly sharedHarnesses = new Map<string, NanoHostSharedHarness>();
@@ -985,11 +988,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           input.environmentPackage,
           input.workerStorageChoice,
           responsibleUserId,
-          currentWorkerStorageAudienceAuthorizer(
-            this.coreDb,
-            input.environmentPackage.scope.workspaceId,
-            responsibleUserId
-          )
+          currentWorkerStorageAudienceAuthorizer(this.coreDb, input.environmentPackage)
         )
       );
       return releasedBinding && input.workerStorageChoice?.kind === 'selected'
@@ -1090,7 +1089,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const durableCleanupFailure =
       session || durableSandbox ? null : this.findDurableBackendCleanupFailure(identity);
     try {
-      if (this.failedImagePreparations.has(identity.packageSnapshotId)) {
+      if (this.failedPreSandboxPreparations.has(identity.packageSnapshotId)) {
         return;
       }
       if (durableSandbox?.cleanupState === 'unknown') {
@@ -1223,7 +1222,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       this.workerControlGateway?.unregisterSession(identity.packageSnapshotId);
       this.sessions.delete(identity.packageSnapshotId);
-      this.failedImagePreparations.delete(identity.packageSnapshotId);
+      this.failedPreSandboxPreparations.delete(identity.packageSnapshotId);
     }
   }
 
@@ -1667,7 +1666,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     context: WorkerGovernanceMaterializationContext = { workspaceRoots: [] }
   ): Promise<WorkerGovernanceMaterializationRecord> {
     const identity = this.planSession(environmentPackage);
-    this.failedImagePreparations.delete(identity.packageSnapshotId);
+    this.failedPreSandboxPreparations.delete(identity.packageSnapshotId);
     const leaseId = this.requireLeaseId(environmentPackage.snapshotId);
     const image = environmentPackage.runtime.image;
     const sandboxCompatibilityKey = nanoHostSandboxCompatibilityKey(environmentPackage);
@@ -1689,8 +1688,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const choice = context.workerStorageChoice;
     const authorizeContributor = currentWorkerStorageAudienceAuthorizer(
       this.coreDb,
-      environmentPackage.scope.workspaceId,
-      responsibleUserId
+      environmentPackage
     );
     const replacementSelection = this.workerStorageReplacementSelection(
       environmentPackage,
@@ -1792,53 +1790,59 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           throw new Error('NanoHost image inspection returned a different digest.');
         }
       } catch (error) {
-        this.failedImagePreparations.add(identity.packageSnapshotId);
+        this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
         throw error;
       }
-      const storageBinding = this.coreDb.sqlite.transaction(() =>
-        choice?.kind === 'selected'
-          ? reserveWorkerStorageAttachment(this.coreDb, {
-              ...(choice.adjudicatedThreadIds
-                ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
-                : {}),
-              agentSessionId: environmentPackage.scope.agentSessionId,
-              authorizeContributor,
-              expectedRevision:
-                releasedSelectedBinding?.storageRef === choice.storageRef &&
-                releasedSelectedBinding.revision === choice.expectedRevision + 1
-                  ? releasedSelectedBinding.revision
-                  : choice.expectedRevision,
-              ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
-              layout: imageInspection.layout,
-              purpose: choice.purpose,
-              responsibleUserId,
-              ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
-              runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
-              storageRef: choice.storageRef,
-              ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
-              threadId: environmentPackage.scope.threadId,
-              workspaceId: environmentPackage.scope.workspaceId,
-            })
-          : reserveWorkerStorageAttachment(this.coreDb, {
-              agentSessionId: environmentPackage.scope.agentSessionId,
-              authorizeContributor,
-              expectedRevision: 1,
-              ...(choice?.kind === 'fresh' ? { goalId: choice.goalId } : {}),
-              layout: imageInspection.layout,
-              purpose: 'work',
-              responsibleUserId,
-              runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
-              storageRef: createWorkerStorageBinding(this.coreDb, {
-                deploymentId: identity.deploymentId,
+      let storageBinding: WorkerStorageBinding;
+      try {
+        storageBinding = this.coreDb.sqlite.transaction(() =>
+          choice?.kind === 'selected'
+            ? reserveWorkerStorageAttachment(this.coreDb, {
+                ...(choice.adjudicatedThreadIds
+                  ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
+                  : {}),
+                agentSessionId: environmentPackage.scope.agentSessionId,
+                authorizeContributor,
+                expectedRevision:
+                  releasedSelectedBinding?.storageRef === choice.storageRef &&
+                  releasedSelectedBinding.revision === choice.expectedRevision + 1
+                    ? releasedSelectedBinding.revision
+                    : choice.expectedRevision,
+                ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
                 layout: imageInspection.layout,
+                purpose: choice.purpose,
+                responsibleUserId,
+                ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
                 runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
+                storageRef: choice.storageRef,
+                ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
+                threadId: environmentPackage.scope.threadId,
                 workspaceId: environmentPackage.scope.workspaceId,
-              }).storageRef,
-              ...(choice?.kind === 'fresh' ? { taskId: choice.taskId } : {}),
-              threadId: environmentPackage.scope.threadId,
-              workspaceId: environmentPackage.scope.workspaceId,
-            })
-      )();
+              })
+            : reserveWorkerStorageAttachment(this.coreDb, {
+                agentSessionId: environmentPackage.scope.agentSessionId,
+                authorizeContributor,
+                expectedRevision: 1,
+                ...(choice?.kind === 'fresh' ? { goalId: choice.goalId } : {}),
+                layout: imageInspection.layout,
+                purpose: 'work',
+                responsibleUserId,
+                runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
+                storageRef: createWorkerStorageBinding(this.coreDb, {
+                  deploymentId: identity.deploymentId,
+                  layout: imageInspection.layout,
+                  runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
+                  workspaceId: environmentPackage.scope.workspaceId,
+                }).storageRef,
+                ...(choice?.kind === 'fresh' ? { taskId: choice.taskId } : {}),
+                threadId: environmentPackage.scope.threadId,
+                workspaceId: environmentPackage.scope.workspaceId,
+              })
+        )();
+      } catch (error) {
+        this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
+        throw error;
+      }
       const sandboxId = nanoHostSandboxId(sandboxCompatibilityKey);
       let sandboxResult: Record<string, unknown>;
       try {
@@ -1918,8 +1922,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           : {}),
         authorizeContributor: currentWorkerStorageAudienceAuthorizer(
           this.coreDb,
-          environmentPackage.scope.workspaceId,
-          responsibleUserId
+          environmentPackage
         ),
         expectedRevision: sharedSandbox.workerStorageBinding.revision,
         ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
@@ -2976,28 +2979,59 @@ function requireAttachedWorkerStorageBinding(
   return binding;
 }
 
-/**
- * Captures the current requester-aware audience required to reuse retained Worker bytes.
- *
- * Until durable Thread visibility exists, one requester may only reuse contributors they own,
- * while they still have Workspace access and every contributing Thread remains present there.
- */
+/** Rechecks exact live Worker authority and every retained contributor's current Thread audience. */
 function currentWorkerStorageAudienceAuthorizer(
   coreDb: CoreDb,
-  workspaceId: string,
-  requesterUserId: string
+  environmentPackage: AgentEnvironmentPackage
 ): (contributor: WorkerStorageContributor) => boolean {
-  const requesterHasAccess = resolveWorkspaceRole(coreDb, workspaceId, requesterUserId) !== null;
-  const threadIds = new Set(
-    loadWorkspaceFileRecords(coreDb.dataRoot)
-      .find((records) => records.workspace.id === workspaceId)
-      ?.threads.map((thread) => thread.id) ?? []
-  );
-  return (contributor) =>
-    requesterHasAccess &&
-    contributor.workspaceId === workspaceId &&
-    contributor.responsibleUserId === requesterUserId &&
-    threadIds.has(contributor.threadId);
+  const { scope } = environmentPackage;
+  const requesterUserId = responsibleUserIdForActor(scope.triggerActor);
+  const lineage = {
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    agentSessionId: scope.agentSessionId,
+    packageSnapshotId: environmentPackage.snapshotId,
+    triggerActor: scope.triggerActor,
+  };
+  return (contributor) => {
+    if (
+      !requesterUserId ||
+      contributor.workspaceId !== scope.workspaceId ||
+      contributor.responsibleUserId !== requesterUserId ||
+      !currentWorkerLineageWorkspaceAuthority(coreDb, lineage, 'runtime.launch', true)
+    )
+      return false;
+    const leases = listSchedulerSessionLeasesForTurn(coreDb, lineage).filter(
+      (lease) =>
+        lease.agentSessionId === scope.agentSessionId &&
+        lease.packageSnapshotId === environmentPackage.snapshotId
+    );
+    const lease = leases.length === 1 ? leases[0] : null;
+    const liveLease =
+      lease &&
+      resolveSchedulerLeaseTokenBinding(coreDb, {
+        sandboxBindingRef: lease.sandboxBindingRef,
+        lineage,
+      });
+    if (
+      !liveLease ||
+      liveLease.status !== 'accepted' ||
+      liveLease.lease.leaseId !== lease?.leaseId
+    ) {
+      return false;
+    }
+    const records = loadWorkspaceFileRecords(coreDb.dataRoot).find(
+      (records) => records.workspace.id === scope.workspaceId
+    );
+    const thread = records?.threads.find((thread) => thread.id === contributor.threadId);
+    return (
+      !!records &&
+      !!thread &&
+      thread.workspaceId === scope.workspaceId &&
+      isThreadVisible({ getWorkspace: () => records.workspace }, thread, requesterUserId)
+    );
+  };
 }
 
 /** Selects the stable private work slot admitted for one exact Thread and responsible user. */

@@ -29,6 +29,12 @@ For an interrupted worker or checkpoint, inspect the exposed durable lineage and
 
 The Task remains bound to the credential presented when it was submitted. After the work waits in queue or NanoCore restarts, NanoCore rechecks that bound Token before the next governed effect. Reads may use another authorized credential. An expired, revoked, rebound, or unusable Token denies that next effect; it is not queued capacity. Inspect exposed Task and Turn metadata and current authority. Ask the user only if the credential must be replaced, then submit a new authorized request after correction. Do not grant membership, invent a replacement Token, or repair scheduler, lease, or admission records.
 
+A denied storage reservation before Sandbox creation completes local cleanup after rolling back the reservation. It does not require a NanoHost restart. Retained storage still requires the same responsible user and current access to every contributing Thread; administrator Workspace authority does not expose another user's private conversation or retained bytes.
+
+## Recover a fenced NanoHost cleanup
+
+If a failed Task reports that backend cleanup requires a different fresh physical Epoch, inspect the exact Turn and `nanohost.runtime-target` before submitting more work. This is physical execution-host recovery, not a reason to rewrite scheduler records or remove storage. The public interface can inspect the failure and readiness; it does not expose a generic host-service restart. An authorized deployment operator can restart the affected NanoHost after checking other active work. Once NanoHost reports a different fenced, ready, fresh-empty physical Epoch, existing NanoCore maintenance retries the exact cleanup. Confirm the original failure is terminal and cleanup has settled before submitting a new request; restarting NanoCore is not required solely to trigger that maintenance.
+
 ## Preserve fail-closed outcomes
 
 Keep contradictory, incomplete, or stale recovery evidence visible. Do not convert it to success, invent a receipt, close a workflow locally, or create an ad hoc settlement process.

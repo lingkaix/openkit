@@ -7,7 +7,7 @@ import {
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -2691,7 +2691,13 @@ describe('minimal scheduler reconnect contract', () => {
            WHERE lease_id = ?`
         )
         .run(initialBackend.planSession(environmentPackage).backendSessionId, leaseId);
-      await initialBackend.materialize(environmentPackage, { workspaceRoots: [] });
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-07-05T00:00:07.000Z'));
+      try {
+        await initialBackend.materialize(environmentPackage, { workspaceRoots: [] });
+      } finally {
+        vi.useRealTimers();
+      }
       const harness = coreDb.sqlite
         .prepare(
           `SELECT h.adapter_id AS adapterId, h.adapter_version AS adapterVersion,

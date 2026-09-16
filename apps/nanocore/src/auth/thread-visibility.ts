@@ -7,7 +7,7 @@ type Thread = import('zod').infer<typeof ThreadSchema>;
 
 /** Unique Thread audience predicate applied after current Workspace eligibility. */
 export function isThreadVisible(
-  store: FsStore,
+  store: Pick<FsStore, 'getWorkspace'>,
   thread: Thread,
   userId: string | undefined
 ): boolean {

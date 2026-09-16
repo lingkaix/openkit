@@ -11,6 +11,7 @@ import {
 } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
@@ -20,6 +21,8 @@ import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
   dispatchNextSchedulerEntry,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
@@ -123,14 +126,8 @@ function nanoHostSandboxCreated(request: NanoHostSessionEffectRequest) {
   };
 }
 
-/** Creates the current user, Workspace membership, and Thread facts required by storage admission. */
-function authorizeNanoHostPackage(
-  coreDb: ReturnType<typeof createFactoryCoreDb>,
-  environmentPackage: AgentEnvironmentPackage
-): void {
-  const triggerActor = environmentPackage.scope.triggerActor;
-  const userId = triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
-  if (!userId) throw new Error('Test package requires one responsible user.');
+/** Inserts one active human user used by factory storage fixtures. */
+function insertFactoryUser(coreDb: ReturnType<typeof createFactoryCoreDb>, userId: string): void {
   coreDb.sqlite
     .prepare(
       `INSERT OR IGNORE INTO users (
@@ -138,11 +135,28 @@ function authorizeNanoHostPackage(
        ) VALUES (?, ?, ?, 0, 'human', 'active', 0, 0)`
     )
     .run(userId, userId, `${userId}@worker-fixture.openkit.invalid`);
+}
+
+/** Creates the current user, Workspace registry, and Thread facts required by storage admission. */
+function authorizeNanoHostPackage(
+  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  environmentPackage: AgentEnvironmentPackage,
+  options: {
+    readonly membership?: boolean;
+    readonly ownerUserId?: string;
+  } = {}
+): void {
+  const triggerActor = environmentPackage.scope.triggerActor;
+  const userId = triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
+  if (!userId) throw new Error('Test package requires one responsible user.');
+  const ownerUserId = options.ownerUserId ?? userId;
+  insertFactoryUser(coreDb, userId);
+  insertFactoryUser(coreDb, ownerUserId);
   const store = new FsStore({ dataRoot: coreDb.dataRoot });
   try {
     store.getWorkspace(environmentPackage.scope.workspaceId);
   } catch {
-    const fixture = createDemoWorkspaceForUser(userId);
+    const fixture = createDemoWorkspaceForUser(ownerUserId);
     store.importWorkspaceSnapshot({
       agentSessions: [],
       artifacts: [],
@@ -169,9 +183,99 @@ function authorizeNanoHostPackage(
   }
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: userId,
+    ownerUserId,
     workspaceId: environmentPackage.scope.workspaceId,
   });
+  if (
+    options.membership === false &&
+    coreDb.sqlite
+      .prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+      .get(environmentPackage.scope.workspaceId, userId)
+  ) {
+    throw new Error('Nonmember fixture accidentally recorded requester membership.');
+  }
+}
+
+/** Records the exact originating admission, plan, and live lease for one Worker package. */
+function bindNanoHostWorkerLineage(
+  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  environmentPackage: AgentEnvironmentPackage,
+  input: {
+    readonly leaseId: string;
+    readonly sandboxBindingRef: string;
+    readonly selectedTargetId: string;
+    readonly now?: string;
+    readonly planId?: string;
+    readonly queueEntryId?: string;
+    readonly selectedPoolId?: string;
+    readonly serverAdminTokenId?: string | null;
+  }
+): void {
+  const now = input.now ?? environmentPackage.createdAt;
+  const existingAdmission = coreDb.sqlite
+    .prepare(
+      `SELECT queue_entry_id AS queueEntryId, status
+       FROM scheduler_admission_entries
+       WHERE turn_id = ? AND status IN ('queued', 'admitted')`
+    )
+    .get(environmentPackage.scope.turnId) as
+    | { readonly queueEntryId: string; readonly status: string }
+    | undefined;
+  const queueEntryId =
+    existingAdmission?.queueEntryId ?? input.queueEntryId ?? `queue:${input.leaseId}`;
+  if (!existingAdmission) {
+    createSchedulerAdmissionEntry(coreDb, {
+      now: () => now,
+      priorityClass: 'interactive',
+      queueEntryId,
+      requestedAgentId: environmentPackage.agent.agentId,
+      requiredPoolConstraints: [],
+      serverAdminTokenId: input.serverAdminTokenId ?? null,
+      threadId: environmentPackage.scope.threadId,
+      triggerActor: environmentPackage.scope.triggerActor,
+      turnId: environmentPackage.scope.turnId,
+      turnInput: 'Factory worker storage fixture',
+      workspaceId: environmentPackage.scope.workspaceId,
+    });
+  }
+  const planId = input.planId ?? `plan:${input.leaseId}`;
+  const existingPlan = coreDb.sqlite
+    .prepare('SELECT plan_id AS planId FROM scheduler_placement_plans WHERE plan_id = ?')
+    .get(planId);
+  if (!existingPlan && (!existingAdmission || existingAdmission.status === 'queued')) {
+    createSchedulerPlacementPlan(coreDb, {
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      now: () => now,
+      planId,
+      plannedLeaseDurationMs: 900_000,
+      policyDecisionIds: [],
+      queueEntryId,
+      schedulerEpoch: 1,
+      selectedPoolId: input.selectedPoolId ?? `pool:${input.leaseId}`,
+      selectedTargetId: input.selectedTargetId,
+      degradedOptionalFeatures: [],
+    });
+  }
+  if (
+    !coreDb.sqlite
+      .prepare('SELECT 1 FROM scheduler_session_leases WHERE lease_id = ?')
+      .get(input.leaseId)
+  ) {
+    createSchedulerSessionLease(coreDb, {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      expiresAt: '2999-01-01T00:00:00.000Z',
+      heartbeatDeadline: '2999-01-01T00:00:00.000Z',
+      leaseId: input.leaseId,
+      now: () => now,
+      packageSnapshotId: environmentPackage.snapshotId,
+      planId,
+      sandboxTokenBindingRef: input.sandboxBindingRef,
+      startupDeadline: '2999-01-01T00:00:00.000Z',
+    });
+  }
 }
 
 /** Adds the already-owned pre-effect backend anchor for direct backend-unit materialization. */
@@ -208,31 +312,12 @@ function anchorNanoHostMaterialization(
     .get(leaseId) as { readonly sandboxBindingRef: string } | undefined;
   if (!lease) {
     const sandboxBindingRef = `lease-binding:${leaseId}`;
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO scheduler_session_leases (
-           lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-           package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-           heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-           sandbox_binding_ref
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?)`
-      )
-      .run(
-        leaseId,
-        `plan:${leaseId}`,
-        environmentPackage.scope.workspaceId,
-        environmentPackage.scope.threadId,
-        environmentPackage.scope.turnId,
-        environmentPackage.scope.agentSessionId,
-        environmentPackage.snapshotId,
-        `pool:${leaseId}`,
-        identity.runtimeTargetId,
-        environmentPackage.createdAt,
-        '2999-01-01T00:00:00.000Z',
-        '2999-01-01T00:00:00.000Z',
-        '2999-01-01T00:00:00.000Z',
-        sandboxBindingRef
-      );
+    bindNanoHostWorkerLineage(coreDb, environmentPackage, {
+      leaseId,
+      now: environmentPackage.createdAt,
+      sandboxBindingRef,
+      selectedTargetId: identity.runtimeTargetId,
+    });
     lease = { sandboxBindingRef };
   }
   coreDb.sqlite
@@ -377,6 +462,111 @@ function completeNanoHostPackage(input: {
       openkit: { ...baseOpenkit, ...inputOpenkit },
     },
   } as AgentEnvironmentPackage;
+}
+
+/** Records NanoHost effects while optionally mutating authority during image.inspect. */
+function createFactoryNanoHostDispatch(
+  effects: NanoHostSessionEffectRequest[],
+  hooks: { onInspect?: () => void } = {}
+): NanoHostSessionDispatch {
+  return {
+    async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+      const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+      effects.push(request);
+      if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
+      if (request.kind === 'image.inspect') {
+        hooks.onInspect?.();
+        return nanoHostImageInspection(request);
+      }
+      if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
+      if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+        return { state: 'deleted' };
+      }
+      throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+    },
+    async poll() {
+      return null;
+    },
+    async result() {},
+    async route() {
+      throw new Error('Unexpected semantic route.');
+    },
+  };
+}
+
+/** Builds one nonmember server-admin AEP with live admission, plan, and lease records. */
+function prepareNonmemberAdminWorkerStorage(label: string) {
+  const coreDb = createFactoryCoreDb();
+  const effects: NanoHostSessionEffectRequest[] = [];
+  const hooks: { onInspect?: () => void } = {};
+  const adminUserId = 'user_storage_admin';
+  const ownerUserId = 'user_storage_owner';
+  const tokenId = `token_${label}`;
+  const workspaceId = `workspace_${label}`;
+  const environmentPackage = completeNanoHostPackage({
+    scope: {
+      agentSessionId: `as_${label}`,
+      threadId: `thread_${label}`,
+      turnId: `turn_${label}`,
+      triggerActor: { kind: 'user', id: adminUserId },
+      workspaceId,
+    },
+    snapshotId: `aepsnap_${label}`,
+  });
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO nanohost_runtime_targets (
+         target_id, identity_id, deployment_id, connection_generation,
+         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+       ) VALUES (?, ?, ?, 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
+    )
+    .run(
+      `target_${label}`,
+      `identity_${label}`,
+      `deployment_${label}`,
+      environmentPackage.createdAt
+    );
+  authorizeNanoHostPackage(coreDb, environmentPackage, {
+    membership: false,
+    ownerUserId,
+  });
+  createOpenKitAccessTokenRecord(coreDb, {
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    ownerUserId: adminUserId,
+    scope: 'server-admin',
+    tokenId,
+    workspaceIds: [],
+  });
+  bindNanoHostWorkerLineage(coreDb, environmentPackage, {
+    leaseId: `lease_${label}`,
+    now: environmentPackage.createdAt,
+    planId: `plan_${label}`,
+    sandboxBindingRef: `lease-binding:${label}`,
+    selectedPoolId: `pool_${label}`,
+    selectedTargetId: `target_${label}`,
+    serverAdminTokenId: tokenId,
+  });
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    coreDb,
+    env: {},
+    nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects, hooks),
+    workerControlGateway: new WorkerControlGateway(),
+  });
+  const backend = (runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend })
+    .backend;
+  anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+  return {
+    adminUserId,
+    backend,
+    coreDb,
+    effects,
+    environmentPackage,
+    hooks,
+    ownerUserId,
+    runtime,
+    tokenId,
+    workspaceId,
+  };
 }
 
 describe('createConfiguredTurnExecutor', () => {
@@ -1793,31 +1983,14 @@ describe('createConfiguredTurnExecutor', () => {
         'Predecessor',
         'thread_selected_slot_predecessor'
       );
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?)`
-        )
-        .run(
-          'lease_selected_slot',
-          'plan_selected_slot',
-          environmentPackage.scope.workspaceId,
-          environmentPackage.scope.threadId,
-          environmentPackage.scope.turnId,
-          environmentPackage.scope.agentSessionId,
-          environmentPackage.snapshotId,
-          'pool_selected_slot',
-          'target_selected_slot',
-          '2026-09-11T00:00:01.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          'sandbox-binding:selected-slot'
-        );
+      bindNanoHostWorkerLineage(coreDb, environmentPackage, {
+        leaseId: 'lease_selected_slot',
+        now: '2026-09-11T00:00:01.000Z',
+        planId: 'plan_selected_slot',
+        sandboxBindingRef: 'sandbox-binding:selected-slot',
+        selectedPoolId: 'pool_selected_slot',
+        selectedTargetId: 'target_selected_slot',
+      });
       const runtime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         env: {},
@@ -1936,31 +2109,14 @@ describe('createConfiguredTurnExecutor', () => {
       )}`;
       expect(unrelatedPackage.workspace.inputs[0]?.target).toBe(unrelatedWorktree);
       expect(unrelatedPackage.runtime.command.workingDirectory).toBe(unrelatedWorktree);
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?)`
-        )
-        .run(
-          'lease_selected_slot_no_choice',
-          'plan_selected_slot_no_choice',
-          successorPackage.scope.workspaceId,
-          successorPackage.scope.threadId,
-          successorPackage.scope.turnId,
-          successorPackage.scope.agentSessionId,
-          successorPackage.snapshotId,
-          'pool_selected_slot',
-          'target_selected_slot',
-          '2026-09-11T00:00:02.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          'sandbox-binding:selected-slot-no-choice'
-        );
+      bindNanoHostWorkerLineage(coreDb, successorPackage, {
+        leaseId: 'lease_selected_slot_no_choice',
+        now: '2026-09-11T00:00:02.000Z',
+        planId: 'plan_selected_slot_no_choice',
+        sandboxBindingRef: 'sandbox-binding:selected-slot-no-choice',
+        selectedPoolId: 'pool_selected_slot',
+        selectedTargetId: 'target_selected_slot',
+      });
       anchorNanoHostMaterialization(coreDb, backend, successorPackage);
       const successorMaterialization = await backend.materialize(successorPackage, {
         workspaceRoots: [],
@@ -3192,26 +3348,14 @@ describe('createConfiguredTurnExecutor', () => {
         snapshotId: 'aepsnap_human_gate',
       });
       authorizeNanoHostPackage(coreDb, environmentPackage);
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref
-           ) VALUES (
-             'lease_human_gate', 'plan_human_gate', 'workspace_human_gate',
-             'thread_human_gate', 'turn_human_gate', 'as_human_gate', 'aepsnap_human_gate',
-             'pool_human_gate', 'target_human_gate', 'acquired', ?, ?, ?, ?, 0, 1,
-             'sandbox-binding:human-gate'
-           )`
-        )
-        .run(
-          '2026-09-03T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z'
-        );
+      bindNanoHostWorkerLineage(coreDb, environmentPackage, {
+        leaseId: 'lease_human_gate',
+        now: '2026-09-03T00:00:00.000Z',
+        planId: 'plan_human_gate',
+        sandboxBindingRef: 'sandbox-binding:human-gate',
+        selectedPoolId: 'pool_human_gate',
+        selectedTargetId: 'target_human_gate',
+      });
       const runtime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         env: {},
@@ -3864,6 +4008,20 @@ describe('createConfiguredTurnExecutor', () => {
           'deployment_factory_newest_lease',
           '2026-08-10T00:00:00.000Z'
         );
+      const localDigest = `sha256:${'d'.repeat(64)}`;
+      const environmentPackage = completeNanoHostPackage({
+        runtime: {
+          image: { kind: 'reference', pullPolicy: 'never', ref: localDigest },
+        },
+        scope: {
+          agentSessionId: 'as_factory_newest_lease',
+          threadId: 'thread_factory_newest_lease',
+          turnId: 'turn_factory_newest_lease',
+          workspaceId: 'ws_factory_newest_lease',
+        },
+        snapshotId: packageSnapshotId,
+      });
+      authorizeNanoHostPackage(coreDb, environmentPackage);
       const insertLease = coreDb.sqlite.prepare(
         `INSERT INTO scheduler_session_leases (
            lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
@@ -3888,13 +4046,12 @@ describe('createConfiguredTurnExecutor', () => {
           'pool_factory_newest_lease',
           'target_factory_newest_lease',
           acquiredAt,
-          '2026-08-10T00:15:00.000Z',
-          '2026-08-10T00:00:30.000Z',
-          '2026-08-10T00:02:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
           `binding:${leaseId}`
         );
       }
-
       const runtime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         env: {},
@@ -3906,20 +4063,6 @@ describe('createConfiguredTurnExecutor', () => {
           readonly backend: WorkerGovernanceBackend;
         }
       ).backend;
-      const localDigest = `sha256:${'d'.repeat(64)}`;
-      const environmentPackage = completeNanoHostPackage({
-        runtime: {
-          image: { kind: 'reference', pullPolicy: 'never', ref: localDigest },
-        },
-        scope: {
-          agentSessionId: 'as_factory_newest_lease',
-          threadId: 'thread_factory_newest_lease',
-          turnId: 'turn_factory_newest_lease',
-          workspaceId: 'ws_factory_newest_lease',
-        },
-        snapshotId: packageSnapshotId,
-      });
-      authorizeNanoHostPackage(coreDb, environmentPackage);
 
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
@@ -3953,6 +4096,19 @@ describe('createConfiguredTurnExecutor', () => {
 
       effects.length = 0;
       acquisitionResult = 'match';
+      coreDb.sqlite
+        .prepare(
+          "DELETE FROM scheduler_session_leases WHERE lease_id IN ('lease_z_older', 'lease_a_current')"
+        )
+        .run();
+      bindNanoHostWorkerLineage(coreDb, environmentPackage, {
+        leaseId: 'lease_b_current',
+        now: '2026-08-10T00:00:01.000Z',
+        planId: 'plan_lease_b_current',
+        sandboxBindingRef: 'binding:lease_b_current',
+        selectedPoolId: 'pool_factory_newest_lease',
+        selectedTargetId: 'target_factory_newest_lease',
+      });
       await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
         'Sandbox creation reached'
       );
@@ -4173,31 +4329,14 @@ describe('createConfiguredTurnExecutor', () => {
       });
       authorizeNanoHostPackage(coreDb, firstPackage);
       authorizeNanoHostPackage(coreDb, secondPackage);
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?)`
-        )
-        .run(
-          'lease-snapshot_idle_eviction_a',
-          'plan_idle_eviction_a',
-          firstPackage.scope.workspaceId,
-          firstPackage.scope.threadId,
-          firstPackage.scope.turnId,
-          firstPackage.scope.agentSessionId,
-          firstPackage.snapshotId,
-          'pool_idle_eviction',
-          'target_idle_eviction',
-          '2026-09-06T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          'lease-binding:idle-eviction-a'
-        );
+      bindNanoHostWorkerLineage(coreDb, firstPackage, {
+        leaseId: 'lease-snapshot_idle_eviction_a',
+        now: '2026-09-06T00:00:00.000Z',
+        planId: 'plan_idle_eviction_a',
+        sandboxBindingRef: 'lease-binding:idle-eviction-a',
+        selectedPoolId: 'pool_idle_eviction',
+        selectedTargetId: 'target_idle_eviction',
+      });
       const settleNext = async (
         operation: 'session.open' | 'turn.start' | 'session.inspect' | 'session.close',
         body: Readonly<Record<string, unknown>>,
@@ -5088,28 +5227,14 @@ describe('createConfiguredTurnExecutor', () => {
         })
       ).resolves.toBe('sandbox-replacement-required');
 
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref
-           ) VALUES ('lease-restart-unproved-fresh', 'plan-restart-unproved-fresh',
-                     ?, ?, ?, ?, ?, 'pool_restart_unproved', 'target_restart_unproved',
-                     'acquired', ?, ?, ?, ?, 0, 1, 'lease-binding:restart-unproved')`
-        )
-        .run(
-          secondPackage.scope.workspaceId,
-          secondPackage.scope.threadId,
-          secondPackage.scope.turnId,
-          secondPackage.scope.agentSessionId,
-          secondPackage.snapshotId,
-          '2026-09-06T00:00:02.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z'
-        );
+      bindNanoHostWorkerLineage(coreDb, secondPackage, {
+        leaseId: 'lease-restart-unproved-fresh',
+        now: '2026-09-06T00:00:02.000Z',
+        planId: 'plan-restart-unproved-fresh',
+        sandboxBindingRef: 'lease-binding:restart-unproved',
+        selectedPoolId: 'pool_restart_unproved',
+        selectedTargetId: 'target_restart_unproved',
+      });
       await expect(
         recoveringBackend.prepareAgentSessionContinuity?.({
           admissionAgentSessionId: secondPackage.scope.agentSessionId,
@@ -5793,6 +5918,186 @@ describe('createConfiguredTurnExecutor', () => {
       expect(new Set(sandboxIds).size).toBe(sandboxIds.length);
     } finally {
       coreDb.sqlite.close();
+    }
+  });
+
+  it('materializes a nonmember server-admin Task through exact admission lease lineage', async () => {
+    const fixture = prepareNonmemberAdminWorkerStorage('admin_success');
+    try {
+      expect(
+        fixture.coreDb.sqlite
+          .prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+          .get(fixture.workspaceId, fixture.adminUserId)
+      ).toBeUndefined();
+      await fixture.backend.materialize(fixture.environmentPackage, { workspaceRoots: [] });
+      expect(fixture.effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+        'sandbox.create',
+      ]);
+      const sandboxEffect = fixture.effects.find((effect) => effect.kind === 'sandbox.create');
+      if (!sandboxEffect) throw new Error('Expected Sandbox creation effect.');
+      const storage = sandboxEffect.input.storage as { storageRef: string };
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, {
+          storageRef: storage.storageRef,
+        })?.contributors.map((contributor) => contributor.responsibleUserId)
+      ).toEqual([fixture.adminUserId]);
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves contributor authorization denial after inspect and skips sandbox cleanup effects', async () => {
+    const fixture = prepareNonmemberAdminWorkerStorage('admin_revoked');
+    try {
+      fixture.hooks.onInspect = () => {
+        fixture.coreDb.sqlite
+          .prepare(
+            "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+          )
+          .run(new Date().toISOString(), fixture.tokenId);
+      };
+      await expect(
+        fixture.backend.materialize(fixture.environmentPackage, { workspaceRoots: [] })
+      ).rejects.toMatchObject({
+        code: 'authorization_denied',
+        message: 'Worker storage contributor is not currently authorized.',
+        name: 'WorkerStorageBindingError',
+      });
+      expect(fixture.effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+      ]);
+      await expect(
+        fixture.runtime.cleanupBackendSession(
+          fixture.backend.planSession(fixture.environmentPackage)
+        )
+      ).resolves.toBeUndefined();
+      expect(fixture.effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+      ]);
+      expect(
+        fixture.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+      ).toEqual({ count: 0 });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('denies selected reuse of a retained foreign-private storage contributor', async () => {
+    const fixture = prepareNonmemberAdminWorkerStorage('admin_foreign');
+    try {
+      const store = new FsStore({ dataRoot: fixture.coreDb.dataRoot });
+      const privateThread = store.createThread(
+        fixture.workspaceId,
+        'Foreign private',
+        'thread_foreign_private',
+        'conversation',
+        { privateOwnerUserId: fixture.ownerUserId, visibility: 'private' }
+      );
+      const layout = {
+        family: 'openkit-worker',
+        gid: 1000,
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+        uid: 1000,
+        version: '1',
+        workingDirectory: '/tmp/openkit-bootstrap',
+      };
+      const created = createWorkerStorageBinding(fixture.coreDb, {
+        deploymentId: `deployment_admin_foreign`,
+        layout,
+        runtimeTargetId: 'target_admin_foreign',
+        workspaceId: fixture.workspaceId,
+      });
+      const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
+        agentSessionId: 'as_foreign_private',
+        authorizeContributor: () => true,
+        expectedRevision: created.revision,
+        layout,
+        purpose: 'work',
+        responsibleUserId: fixture.adminUserId,
+        runtimeTargetId: 'target_admin_foreign',
+        storageRef: created.storageRef,
+        threadId: privateThread.id,
+        workspaceId: fixture.workspaceId,
+      });
+      const attached = activateWorkerStorageAttachment(fixture.coreDb, {
+        attachmentGeneration: reserved.attachmentGeneration,
+        expectedRevision: reserved.revision,
+        sandboxBindingRef: 'sandbox-binding:foreign-private',
+        storageRef: reserved.storageRef,
+        targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+      });
+      const idle = releaseWorkerStorageAttachment(fixture.coreDb, {
+        attachmentGeneration: attached.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: attached.revision,
+        sandboxBindingRef: 'sandbox-binding:foreign-private',
+        storageRef: attached.storageRef,
+      });
+      await expect(
+        fixture.backend.materialize(fixture.environmentPackage, {
+          workerStorageChoice: {
+            expectedRevision: idle.revision,
+            goalId: null,
+            kind: 'selected',
+            purpose: 'work',
+            storageRef: idle.storageRef,
+            taskId: null,
+          },
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({
+        code: 'authorization_denied',
+        message: 'Worker storage contributor audience is no longer authorized.',
+      });
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: idle.storageRef })
+      ).toMatchObject({
+        revision: idle.revision,
+        state: 'idle',
+      });
+      expect(fixture.effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+      ]);
+      await expect(
+        fixture.runtime.cleanupBackendSession(
+          fixture.backend.planSession(fixture.environmentPackage)
+        )
+      ).resolves.toBeUndefined();
+      expect(fixture.effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+      ]);
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('denies storage admission after the exact lease is no longer live', async () => {
+    const fixture = prepareNonmemberAdminWorkerStorage('admin_expired');
+    try {
+      fixture.coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_session_leases SET status = 'released', expires_at = '2000-01-01T00:00:00.000Z' WHERE lease_id = ?"
+        )
+        .run('lease_admin_expired');
+      await expect(
+        fixture.backend.materialize(fixture.environmentPackage, { workspaceRoots: [] })
+      ).rejects.toMatchObject({
+        code: 'authorization_denied',
+        name: 'WorkerStorageBindingError',
+      });
+      expect(fixture.effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+      ]);
+    } finally {
+      fixture.coreDb.sqlite.close();
     }
   });
 
