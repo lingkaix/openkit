@@ -18,6 +18,7 @@ import type {
   AgentEnvironmentValidationDiagnostic,
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
@@ -30,6 +31,10 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
@@ -172,8 +177,12 @@ function dispatchExecutorLease(
     readonly sandboxBindingRef: string;
     readonly threadId: string;
     readonly turnId: string;
+    readonly workspaceId?: string;
     readonly requestId?: string;
     readonly turnInput?: string;
+    readonly admittedAt?: string;
+    readonly triggerActor?: ActorRef;
+    readonly serverAdminTokenId?: string;
   }
 ): void {
   if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
@@ -226,7 +235,8 @@ function dispatchExecutorLease(
     targetId: 'target_executor_anchor',
   });
   createSchedulerAdmissionEntry(coreDb, {
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: input.triggerActor ?? { kind: 'user', id: 'user_local' },
+    ...(input.serverAdminTokenId ? { serverAdminTokenId: input.serverAdminTokenId } : {}),
     priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: `queue_${input.turnId}`,
@@ -236,8 +246,8 @@ function dispatchExecutorLease(
     threadId: input.threadId,
     turnId: input.turnId,
     turnInput: input.turnInput ?? 'Run governed worker',
-    workspaceId: 'ws_demo',
-    now: () => '2026-07-15T00:00:01.000Z',
+    workspaceId: input.workspaceId ?? 'ws_demo',
+    now: () => input.admittedAt ?? '2026-07-15T00:00:01.000Z',
   });
   dispatchNextSchedulerEntry(coreDb, {
     agentSessionId: input.agentSessionId,
@@ -247,12 +257,41 @@ function dispatchExecutorLease(
     heartbeatTimeoutMs: 30_000,
     leaseDurationMs: 900_000,
     leaseId: `lease_${input.turnId}`,
-    now: () => '2026-07-15T00:00:02.000Z',
+    now: () => input.admittedAt ?? '2026-07-15T00:00:02.000Z',
     packageSnapshotId: input.packageSnapshotId,
     planId: `plan_${input.turnId}`,
     sandboxBindingRef: input.sandboxBindingRef,
     schedulerEpoch: 1,
     startupTimeoutMs: 120_000,
+  });
+}
+
+/** Starts one fixture Worker with a real admission and lease for its exact package lineage. */
+function startWithExecutorLease(
+  coreDb: CoreDb,
+  executor: WorkerGovernanceTurnExecutor,
+  store: FsStore,
+  turn: ReturnType<FsStore['getTurnById']>,
+  agentSessionId: string,
+  admittedAt: string,
+  input: string,
+  context: NonNullable<Parameters<WorkerGovernanceTurnExecutor['startTurn']>[3]>
+): Promise<void> {
+  const sandboxBindingRef = `lease-binding:${turn.id}`;
+  dispatchExecutorLease(coreDb, {
+    admittedAt,
+    agentSessionId,
+    packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+    sandboxBindingRef,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    triggerActor: context.triggerActor ?? turn.triggerActor,
+    workspaceId: turn.workspaceId,
+  });
+  return executor.startTurn(store, turn.id, input, {
+    ...context,
+    agentSessionId,
+    sandboxBindingRef,
   });
 }
 
@@ -1237,12 +1276,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceCwd,
         workspaceRoots,
       });
+      const sandboxBindingRef = `lease-binding:${turn.id}`;
+      dispatchExecutorLease(coreDb, {
+        admittedAt: '2026-08-21T11:59:59.000Z',
+        agentSessionId,
+        packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+        sandboxBindingRef,
+        threadId: turn.threadId,
+        turnId: turn.id,
+      });
 
       await expect(
         executor.startTurn(store, turn.id, turnInput, {
           agentSessionId: prepared.agentSessionId,
           agentSetup,
           requestId: '00000000-0000-4000-8000-00000000b001',
+          sandboxBindingRef,
           sessionCompatibilityKey: prepared.sessionCompatibilityKey,
           triggerActor: { kind: 'user', id: 'user_local' },
           workspaceCwd,
@@ -1438,12 +1487,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
       missing: '00000000-0000-4000-8000-000000000232',
       'artifact-invalid': '00000000-0000-4000-8000-000000000234',
     }[mode];
-    const run = executor.startTurn(store, turn.id, `Reconcile ${mode} worker events`, {
-      agentSetup: createTestAgentSetup(),
-      requestId,
-      triggerActor: turn.triggerActor,
-      workspaceRoots: [],
-    });
+    const run = startWithExecutorLease(
+      coreDb,
+      executor,
+      store,
+      turn,
+      `as_governance_live_events_${mode}`,
+      '2026-07-15T00:00:00.000Z',
+      `Reconcile ${mode} worker events`,
+      {
+        agentSetup: createTestAgentSetup(),
+        requestId,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      }
+    );
 
     if (mode === 'exact') {
       await expect(run).resolves.toBeUndefined();
@@ -1553,6 +1611,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       })();
       return transcript;
     });
+    const runtimeProvenanceImporter = vi.fn(importWorkerRuntimeProvenance);
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -1561,16 +1620,31 @@ describe('WorkerGovernanceTurnExecutor', () => {
         kind: 'openshell',
       },
       now: () => '2026-07-15T00:00:03.000Z',
+      runtimeProvenanceImporter,
     });
 
     try {
       await expect(
-        executor.startTurn(store, turn.id, 'Do not publish stale output', {
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000235',
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [],
-        })
+        startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_governance_stale_publication_1',
+          '2026-07-15T00:00:00.000Z',
+          'Do not publish stale output',
+          {
+            agentSetup: createTestAgentSetup({
+              requiredCapabilities: [
+                'trusted-worker-inference-relay',
+                'worker.runtime-provenance.v1',
+              ],
+            }),
+            requestId: '00000000-0000-4000-8000-000000000235',
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [],
+          }
+        )
       ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
 
       expect(backend.calls).toEqual([
@@ -1578,10 +1652,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         'launch',
         'collectEvidence',
         'collectTranscript',
-        'collectWorkspaceChanges',
         'cleanupSession',
       ]);
+      expect(runtimeProvenanceImporter).not.toHaveBeenCalled();
       expect(store.listArtifacts(turn.workspaceId)).toEqual([]);
+      const workspaceDb = openTestWorkspaceDb(coreDb);
+      expect(listWorkspaceEvidenceBundles(workspaceDb, turn.workspaceId)).toEqual([]);
+      workspaceDb.sqlite.close();
       expect(store.getTurnById(turn.id)).toMatchObject({
         error: { code: 'workspace_access_denied' },
         status: 'interrupted',
@@ -1663,34 +1740,43 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => completedAt,
     });
 
-    await executor.startTurn(store, turn.id, 'Run in OpenShell', {
-      agentSetup: createTestAgentSetup({
-        agentId: 'agent_opencode_host',
-        displayName: 'OpenCode Agent',
-        provider: {
-          model: 'gpt-5-codex',
-          origin: 'server-providers',
-          providerId: 'agent-openrouter',
-          secretRef: null,
+    await startWithExecutorLease(
+      coreDb,
+      executor,
+      store,
+      turn,
+      'as_governance_1',
+      completedAt,
+      'Run in OpenShell',
+      {
+        agentSetup: createTestAgentSetup({
+          agentId: 'agent_opencode_host',
+          displayName: 'OpenCode Agent',
+          provider: {
+            model: 'gpt-5-codex',
+            origin: 'server-providers',
+            providerId: 'agent-openrouter',
+            secretRef: null,
+          },
+        }),
+        requestId: '00000000-0000-4000-8000-000000000201',
+        triggerActor: {
+          kind: 'automation',
+          id: 'automation_governance_test',
+          responsibleUserId: 'user_local',
         },
-      }),
-      requestId: '00000000-0000-4000-8000-000000000201',
-      triggerActor: {
-        kind: 'automation',
-        id: 'automation_governance_test',
-        responsibleUserId: 'user_local',
-      },
-      workspaceCwd: repositoryPath,
-      workspaceRoots: [
-        {
-          access: 'read-write',
-          id: 'repo',
-          sourceKind: 'host-dir',
-          sourcePath: repositoryPath,
-          workerPath: '/workspace/openkit',
-        },
-      ],
-    });
+        workspaceCwd: repositoryPath,
+        workspaceRoots: [
+          {
+            access: 'read-write',
+            id: 'repo',
+            sourceKind: 'host-dir',
+            sourcePath: repositoryPath,
+            workerPath: '/workspace/openkit',
+          },
+        ],
+      }
+    );
 
     expect(backend.calls).toEqual([
       'materialize',
@@ -2512,20 +2598,32 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      await executor.startTurn(store, turn.id, 'Import governed runtime provenance', {
-        agentSetup: createTestAgentSetup({
-          provider: {
-            model: 'openai/gpt-5.2',
-            origin: 'server-providers',
-            providerId: 'agent-openrouter',
-            secretRef: null,
-          },
-          requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
-        }),
-        requestId: '00000000-0000-4000-8000-000000000220',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_governance_provenance_success_1',
+        '2026-07-13T00:00:00.000Z',
+        'Import governed runtime provenance',
+        {
+          agentSetup: createTestAgentSetup({
+            provider: {
+              model: 'openai/gpt-5.2',
+              origin: 'server-providers',
+              providerId: 'agent-openrouter',
+              secretRef: null,
+            },
+            requiredCapabilities: [
+              'trusted-worker-inference-relay',
+              'worker.runtime-provenance.v1',
+            ],
+          }),
+          requestId: '00000000-0000-4000-8000-000000000220',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
 
       expect(runtimeProvenanceImporter).toHaveBeenCalledOnce();
       expect(importedCapture).toEqual({
@@ -2715,23 +2813,32 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        executor.startTurn(store, turn.id, `Reject ${failure} runtime provenance`, {
-          agentSetup: createTestAgentSetup({
-            provider: {
-              model: 'openai/gpt-5.2',
-              origin: 'server-providers',
-              providerId: 'agent-openrouter',
-              secretRef: null,
-            },
-            requiredCapabilities: [
-              'trusted-worker-inference-relay',
-              'worker.runtime-provenance.v1',
-            ],
-          }),
-          requestId: `00000000-0000-4000-8000-${failure === 'missing' ? '000000000221' : failure === 'tampered' ? '000000000222' : '000000000223'}`,
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [],
-        })
+        startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          `as_governance_provenance_${failure}_1`,
+          '2026-07-13T00:00:00.000Z',
+          `Reject ${failure} runtime provenance`,
+          {
+            agentSetup: createTestAgentSetup({
+              provider: {
+                model: 'openai/gpt-5.2',
+                origin: 'server-providers',
+                providerId: 'agent-openrouter',
+                secretRef: null,
+              },
+              requiredCapabilities: [
+                'trusted-worker-inference-relay',
+                'worker.runtime-provenance.v1',
+              ],
+            }),
+            requestId: `00000000-0000-4000-8000-${failure === 'missing' ? '000000000221' : failure === 'tampered' ? '000000000222' : '000000000223'}`,
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [],
+          }
+        )
       ).rejects.toThrow();
 
       expect(runtimeProvenanceImporter).toHaveBeenCalledOnce();
@@ -3041,21 +3148,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       try {
-        await executor.startTurn(store, turn.id, 'Persist workspace review records', {
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000203',
-          triggerActor: turn.triggerActor,
-          workspaceCwd: fixture.repositoryPath,
-          workspaceRoots: [
-            {
-              access: 'read-write',
-              id: 'repo',
-              sourceKind: 'host-dir',
-              sourcePath: fixture.repositoryPath,
-              workerPath: '/workspace/repo',
-            },
-          ],
-        });
+        await startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_actor_scope_1',
+          fixture.timestamp,
+          'Persist workspace review records',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: '00000000-0000-4000-8000-000000000203',
+            triggerActor: turn.triggerActor,
+            workspaceCwd: fixture.repositoryPath,
+            workspaceRoots: [
+              {
+                access: 'read-write',
+                id: 'repo',
+                sourceKind: 'host-dir',
+                sourcePath: fixture.repositoryPath,
+                workerPath: '/workspace/repo',
+              },
+            ],
+          }
+        );
       } catch (error) {
         startError = error;
       }
@@ -3502,29 +3618,38 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-06-16T00:00:00.000Z',
     });
 
-    await executor.startTurn(store, turn.id, 'Run with sandbox access', {
-      agentSetup: createTestAgentSetup({
-        filesystem: [
-          {
-            access: 'read-write',
-            id: 'tool_cache',
-            purpose: 'Tool cache',
-            targetPath: '/sandbox/.cache/tool',
-          },
-        ],
-        network: [
-          {
-            host: 'registry.npmjs.org',
-            id: 'npm_registry',
-            port: 443,
-            purpose: 'Install dependencies',
-          },
-        ],
-      }),
-      requestId: '00000000-0000-4000-8000-000000000204',
-      triggerActor: turn.triggerActor,
-      workspaceRoots: [],
-    });
+    await startWithExecutorLease(
+      coreDb,
+      executor,
+      store,
+      turn,
+      'as_sandbox_access_1',
+      '2026-06-15T23:59:59.000Z',
+      'Run with sandbox access',
+      {
+        agentSetup: createTestAgentSetup({
+          filesystem: [
+            {
+              access: 'read-write',
+              id: 'tool_cache',
+              purpose: 'Tool cache',
+              targetPath: '/sandbox/.cache/tool',
+            },
+          ],
+          network: [
+            {
+              host: 'registry.npmjs.org',
+              id: 'npm_registry',
+              port: 443,
+              purpose: 'Install dependencies',
+            },
+          ],
+        }),
+        requestId: '00000000-0000-4000-8000-000000000204',
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      }
+    );
 
     expect(backend.lastPackage?.policy.filesystem?.rules).toEqual(
       expect.arrayContaining([
@@ -3569,20 +3694,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await expect(
-      executor.startTurn(store, turn.id, 'Run in OpenShell', {
-        agentSetup: createTestAgentSetup(),
-        requestId: '00000000-0000-4000-8000-000000000205',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [
-          {
-            access: 'read-write',
-            id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
-            workerPath: '/workspace/openkit',
-          },
-        ],
-      })
+      startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_teardown_fail_1',
+        '2026-06-15T23:59:59.000Z',
+        'Run in OpenShell',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000205',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'repo',
+              sourceKind: 'host-dir',
+              sourcePath: repositoryPath,
+              workerPath: '/workspace/openkit',
+            },
+          ],
+        }
+      )
     ).rejects.toThrow('teardown failed');
 
     const workspaceDb = openTestWorkspaceDb(coreDb);
@@ -3623,20 +3757,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await expect(
-      executor.startTurn(store, turn.id, 'Retry OpenShell teardown', {
-        agentSetup: createTestAgentSetup(),
-        requestId: '00000000-0000-4000-8000-000000000206',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [
-          {
-            access: 'read-write',
-            id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
-            workerPath: '/workspace/openkit',
-          },
-        ],
-      })
+      startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_teardown_retry_1',
+        new Date().toISOString(),
+        'Retry OpenShell teardown',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000206',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'repo',
+              sourceKind: 'host-dir',
+              sourcePath: repositoryPath,
+              workerPath: '/workspace/openkit',
+            },
+          ],
+        }
+      )
     ).rejects.toThrow('teardown failed');
 
     expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(2);
@@ -3704,20 +3847,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        executor.startTurn(store, turn.id, 'Fail cleanup status persistence', {
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000207',
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [
-            {
-              access: 'read-write',
-              id: 'repo',
-              sourceKind: 'host-dir',
-              sourcePath: repositoryPath,
-              workerPath: '/workspace/openkit',
-            },
-          ],
-        })
+        startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_cleanup_status_1',
+          new Date().toISOString(),
+          'Fail cleanup status persistence',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: '00000000-0000-4000-8000-000000000207',
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [
+              {
+                access: 'read-write',
+                id: 'repo',
+                sourceKind: 'host-dir',
+                sourcePath: repositoryPath,
+                workerPath: '/workspace/openkit',
+              },
+            ],
+          }
+        )
       ).rejects.toThrow('cleanup status persistence failed');
 
       expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
@@ -3857,12 +4009,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        executor.startTurn(store, turn.id, 'Fail workspace storage close', {
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000210',
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [],
-        })
+        startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_workspace_close_fail_1',
+          new Date().toISOString(),
+          'Fail workspace storage close',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: '00000000-0000-4000-8000-000000000210',
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [],
+          }
+        )
       ).rejects.toThrow('workspace storage close failed');
 
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
@@ -4179,36 +4340,45 @@ describe('WorkerGovernanceTurnExecutor', () => {
       },
     });
 
-    await executor.startTurn(store, turn.id, 'Run with source catalog', {
-      agentSetup: createTestAgentSetup(),
-      requestId: '00000000-0000-4000-8000-000000000212',
-      triggerActor: turn.triggerActor,
-      workspaceDataSourceCatalog: {
-        schemaVersion: 1,
-        sources: [
+    await startWithExecutorLease(
+      coreDb,
+      executor,
+      store,
+      turn,
+      'as_source_ref_1',
+      new Date().toISOString(),
+      'Run with source catalog',
+      {
+        agentSetup: createTestAgentSetup(),
+        requestId: '00000000-0000-4000-8000-000000000212',
+        triggerActor: turn.triggerActor,
+        workspaceDataSourceCatalog: {
+          schemaVersion: 1,
+          sources: [
+            {
+              access: 'read-write',
+              allowedSlotKinds: ['worktree'],
+              displayName: 'Main repository',
+              id: 'repo_default',
+              kind: 'git',
+              locator: { repositoryResourceId: 'repo_default' },
+              sensitivity: 'internal',
+              status: 'active',
+            },
+          ],
+        },
+        workspaceRoots: [
           {
             access: 'read-write',
-            allowedSlotKinds: ['worktree'],
-            displayName: 'Main repository',
             id: 'repo_default',
-            kind: 'git',
-            locator: { repositoryResourceId: 'repo_default' },
-            sensitivity: 'internal',
-            status: 'active',
+            sourceKind: 'host-dir',
+            sourcePath: repositoryPath,
+            workerPath: '/workspace/openkit',
           },
         ],
-      },
-      workspaceRoots: [
-        {
-          access: 'read-write',
-          id: 'repo_default',
-          sourceKind: 'host-dir',
-          sourcePath: repositoryPath,
-          workerPath: '/workspace/openkit',
-        },
-      ],
-      workspaceSourceRefs: { repo_default: 'repo_default' },
-    });
+        workspaceSourceRefs: { repo_default: 'repo_default' },
+      }
+    );
 
     expect(backend.lastPackage?.workspace.inputs[0]?.source).toMatchObject({
       catalogEntryDigest: expect.stringMatching(/^sha256:/),
@@ -5079,6 +5249,73 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
+  it.each([
+    false,
+    true,
+  ])('uses exact server-admin admission for nonmember Worker effects (revoked: %s)', async (revoked) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-admin-lineage-')));
+    applyMigrations(coreDb);
+    const timestamp = '2026-07-15T00:00:03.000Z';
+    coreDb.sqlite
+      .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
+      VALUES ('user_admin_worker', 'Admin Worker', 'admin-worker@example.test', false, ?, ?, 'human', 'active')`)
+      .run(Date.parse(timestamp), Date.parse(timestamp));
+    createOpenKitAccessTokenRecord(coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_admin_worker',
+      scope: 'server-admin',
+      tokenId: 'token_admin_worker_effect',
+      workspaceIds: [],
+    });
+    const store = createDemoStore();
+    const actor = { kind: 'user', id: 'user_admin_worker' } as const;
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Run as nonmember administrator', actor);
+    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    const agentSessionId = 'as_admin_worker_effect';
+    const sandboxBindingRef = 'lease-binding:admin-worker-effect';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      triggerActor: actor,
+      serverAdminTokenId: 'token_admin_worker_effect',
+    });
+    if (revoked) {
+      revokeOpenKitAccessTokenRecord(coreDb, 'token_admin_worker_effect', new Date(timestamp));
+    }
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      now: () => timestamp,
+    });
+    try {
+      const execution = executor.startTurn(store, turn.id, 'Run as nonmember administrator', {
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: '00000000-0000-4000-8000-000000000237',
+        sandboxBindingRef,
+        triggerActor: actor,
+        workspaceRoots: [],
+      });
+      if (revoked) {
+        await expect(execution).rejects.toMatchObject({
+          code: 'workspace_access_denied',
+          status: 403,
+        });
+        expect(backend.calls).toEqual([]);
+      } else {
+        await expect(execution).resolves.toBeUndefined();
+        expect(backend.calls).toContain('launch');
+        expect(store.getTurnById(turn.id)).toMatchObject({ status: 'completed' });
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('rechecks runtime authority before backend materialization', async () => {
     const coreDb = openCoreDb(
       mkdtempSync(join(tmpdir(), 'openkit-governance-prematerialize-authority-'))
@@ -5432,49 +5669,58 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      await executor.startTurn(store, turn.id, 'Run GitHub MCP in OpenShell', {
-        agentSetup: createTestAgentSetup({
-          credentialDeclarations: [
-            {
-              id: 'github_mcp_read',
-              provider: {
-                credentialKey: 'GITHUB_TOKEN',
-                instanceId: 'provider_github_read',
-                profileId: 'github_mcp',
-                type: 'github_mcp',
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_governance_vault_1',
+        timestamp,
+        'Run GitHub MCP in OpenShell',
+        {
+          agentSetup: createTestAgentSetup({
+            credentialDeclarations: [
+              {
+                id: 'github_mcp_read',
+                provider: {
+                  credentialKey: 'GITHUB_TOKEN',
+                  instanceId: 'provider_github_read',
+                  profileId: 'github_mcp',
+                  type: 'github_mcp',
+                },
+                vaultGrantId: 'grant_github_read',
+                visibility: 'sandbox-provider',
               },
-              vaultGrantId: 'grant_github_read',
-              visibility: 'sandbox-provider',
-            },
-          ],
-          mcpIds: ['github'],
-        }),
-        requestId: '00000000-0000-4000-8000-000000000215',
-        triggerActor: turn.triggerActor,
-        workspaceMcpServerCatalog: {
-          schemaVersion: 1,
-          servers: [
-            {
-              allowedTools: ['*'],
-              approvalRequiredTools: [],
-              credentialBindings: [],
-              deniedTools: [],
-              enabled: true,
-              id: 'github',
-              pinnedSchemaSnapshotId: null,
-              schemaPolicy: 'tracking',
-              timeoutMs: 60_000,
-              transport: {
-                args: ['fixtures/github.mjs'],
-                command: 'node',
-                environment: {},
-                kind: 'stdio',
+            ],
+            mcpIds: ['github'],
+          }),
+          requestId: '00000000-0000-4000-8000-000000000215',
+          triggerActor: turn.triggerActor,
+          workspaceMcpServerCatalog: {
+            schemaVersion: 1,
+            servers: [
+              {
+                allowedTools: ['*'],
+                approvalRequiredTools: [],
+                credentialBindings: [],
+                deniedTools: [],
+                enabled: true,
+                id: 'github',
+                pinnedSchemaSnapshotId: null,
+                schemaPolicy: 'tracking',
+                timeoutMs: 60_000,
+                transport: {
+                  args: ['fixtures/github.mjs'],
+                  command: 'node',
+                  environment: {},
+                  kind: 'stdio',
+                },
               },
-            },
-          ],
-        },
-        workspaceRoots: [],
-      });
+            ],
+          },
+          workspaceRoots: [],
+        }
+      );
 
       expect(backend.lastPackage?.vault.grants).toEqual([
         expect.objectContaining({
@@ -5557,21 +5803,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      await executor.startTurn(store, turn.id, 'Run Codex auth runtime file', {
-        agentSetup: createTestAgentSetup({
-          credentialDeclarations: [
-            {
-              id: 'codex_auth_json',
-              targetPath: '/sandbox/.codex/auth.json',
-              vaultGrantId: 'grant_codex_auth_json',
-              visibility: 'runtime-file',
-            },
-          ],
-        }),
-        requestId: '00000000-0000-4000-8000-000000000216',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_governance_runtime_file_1',
+        timestamp,
+        'Run Codex auth runtime file',
+        {
+          agentSetup: createTestAgentSetup({
+            credentialDeclarations: [
+              {
+                id: 'codex_auth_json',
+                targetPath: '/sandbox/.codex/auth.json',
+                vaultGrantId: 'grant_codex_auth_json',
+                visibility: 'runtime-file',
+              },
+            ],
+          }),
+          requestId: '00000000-0000-4000-8000-000000000216',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
 
       expect(backend.lastContext?.runtimeFileCredentials).toEqual([
         {
@@ -5670,21 +5925,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      const run = executor.startTurn(store, turn.id, 'Run Codex auth runtime file', {
-        agentSetup: createTestAgentSetup({
-          credentialDeclarations: [
-            {
-              id: 'codex_auth_json',
-              targetEnvVarName: 'GITHUB_TOKEN',
-              vaultGrantId: 'grant_runtime_env',
-              visibility: 'runtime-env',
-            },
-          ],
-        }),
-        requestId: '00000000-0000-4000-8000-000000000216',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
+      const run = startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_governance_runtime_env_1',
+        timestamp,
+        'Run Codex auth runtime file',
+        {
+          agentSetup: createTestAgentSetup({
+            credentialDeclarations: [
+              {
+                id: 'codex_auth_json',
+                targetEnvVarName: 'GITHUB_TOKEN',
+                vaultGrantId: 'grant_runtime_env',
+                visibility: 'runtime-env',
+              },
+            ],
+          }),
+          requestId: '00000000-0000-4000-8000-000000000216',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
 
       if (launchFails) {
         await expect(run).rejects.toThrow('credential_materialization_failed');

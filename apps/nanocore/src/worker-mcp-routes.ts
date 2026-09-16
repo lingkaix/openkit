@@ -18,7 +18,7 @@ import type { Hono } from 'hono';
 import { resolveAgentSetup } from './agents/setup-resolver.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
-import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
+import { currentWorkerLineageWorkspaceAuthority } from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   recordUsage,
@@ -1964,10 +1964,16 @@ function requireGenerativeToolPolicy(
     throw mcpDeniedError();
   }
   if (
-    !currentWorkspaceAuthority(
+    !currentWorkerLineageWorkspaceAuthority(
       coreDb,
-      environmentPackage.scope.workspaceId,
-      environmentPackage.scope.triggerActor,
+      {
+        workspaceId: environmentPackage.scope.workspaceId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        triggerActor: environmentPackage.scope.triggerActor,
+      },
       access.policyOperation,
       true
     )
@@ -1982,10 +1988,16 @@ function hasCurrentMcpWorkspaceAuthority(
   environmentPackage: AgentEnvironmentPackage
 ): boolean {
   return Boolean(
-    currentWorkspaceAuthority(
+    currentWorkerLineageWorkspaceAuthority(
       coreDb,
-      environmentPackage.scope.workspaceId,
-      environmentPackage.scope.triggerActor,
+      {
+        workspaceId: environmentPackage.scope.workspaceId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        triggerActor: environmentPackage.scope.triggerActor,
+      },
       'tool.use',
       true
     )

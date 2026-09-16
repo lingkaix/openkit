@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { ApiErrorSchema, TurnReadProjectionSchema, TurnSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
@@ -812,6 +813,70 @@ describe('generic turn routes', () => {
         replayedTurnId: firstTurn.id,
         replayStatus: 202,
       });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('starts and replays a direct turn under one presented cross-Workspace admin token', async () => {
+    const executor = new RecordingTurnExecutor();
+    const fixture = await createSharedSchedulerFixture(executor, 'admin-direct-turn');
+    const now = Date.now();
+    fixture.coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+          id, display_name, email, email_verified, created_at, updated_at, kind, status
+        ) VALUES ('user_admin_nomember', 'Admin', 'admin-nomember@example.com', false, ?, ?, 'human', 'active')`
+      )
+      .run(now, now);
+    const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_admin_nomember',
+      scope: 'server-admin',
+      tokenId: 'token_admin_direct_turn',
+      workspaceIds: [],
+    });
+    const body = {
+      agentId: 'agent_codex_host',
+      input: 'Run the directly requested task.',
+      requestId: '00000000-0000-4000-8000-000000000304',
+      threadId: 'th_demo',
+      workspaceId: 'ws_demo',
+    };
+    const request = () =>
+      fixture.app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: {
+          authorization: `Bearer ${issued.secret}`,
+          'content-type': 'application/json',
+        },
+      });
+
+    try {
+      const first = await request();
+      expect(first.status, await first.clone().text()).toBe(202);
+      const turn = TurnSchema.parse(await first.json());
+      expect(
+        fixture.coreDb.sqlite
+          .prepare(
+            `SELECT server_admin_token_id AS tokenId, trigger_actor_json AS triggerActorJson
+             FROM scheduler_admission_entries WHERE turn_id = ?`
+          )
+          .get(turn.id)
+      ).toEqual({
+        tokenId: issued.tokenId,
+        triggerActorJson: JSON.stringify({ kind: 'user', id: 'user_admin_nomember' }),
+      });
+      const replay = await request();
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect(TurnSchema.parse(await replay.json()).id).toBe(turn.id);
+      expect(executor.startCalls).toBe(1);
+      expect(
+        fixture.coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries WHERE turn_id = ?')
+          .get(turn.id)
+      ).toEqual({ count: 1 });
     } finally {
       fixture.coreDb.sqlite.close();
     }

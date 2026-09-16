@@ -7,7 +7,7 @@ import {
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { RequestIdSchema, responsibleUserIdForActor } from '@openkit/protocol';
 import { z } from 'zod';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
   executeRepositoryPush,
   type RepositoryPushContext,
@@ -76,7 +76,7 @@ export function createOpenkitRepositoryMcpSupply(): AgentEnvironmentPackage['sup
  * @returns Public domain result and whether the exact newly created human Gate needs a stop.
  */
 export async function dispatchOpenkitRepositoryTool(
-  context: Omit<RepositoryPushContext, 'actorId' | 'repository' | 'workspaceId'>,
+  context: Omit<RepositoryPushContext, 'actorId' | 'authority' | 'repository' | 'workspaceId'>,
   environmentPackage: AgentEnvironmentPackage,
   capabilityCallId: string,
   toolName: string,
@@ -99,16 +99,18 @@ export async function dispatchOpenkitRepositoryTool(
     });
   const { scope } = environmentPackage;
   const actorId = responsibleUserIdForActor(scope.triggerActor);
+  const lineage = {
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    agentSessionId: scope.agentSessionId,
+    packageSnapshotId: environmentPackage.snapshotId,
+    triggerActor: scope.triggerActor,
+  };
   if (
     !context.coreDb ||
     !actorId ||
-    !currentWorkspaceAuthority(
-      context.coreDb,
-      scope.workspaceId,
-      scope.triggerActor,
-      'repo.push',
-      true
-    )
+    !currentWorkerLineageWorkspaceAuthority(context.coreDb, lineage, 'repo.push', true)
   ) {
     throw new McpError(ErrorCode.InvalidRequest, 'MCP tool call was denied.', {
       code: 'mcp-denied',
@@ -141,7 +143,13 @@ export async function dispatchOpenkitRepositoryTool(
     throw new McpError(ErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
       code: 'mcp-call-failed',
     });
-  const ownerContext = { ...context, actorId, repository, workspaceId: scope.workspaceId };
+  const ownerContext: RepositoryPushContext = {
+    ...context,
+    actorId,
+    authority: { kind: 'worker', lineage },
+    repository,
+    workspaceId: scope.workspaceId,
+  };
   try {
     if (toolName === 'repository_push_request_approval') {
       const input = approvalSchema.parse(args);

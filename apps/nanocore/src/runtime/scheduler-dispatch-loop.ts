@@ -10,7 +10,7 @@ import { TurnSchema } from '@openkit/protocol';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -141,13 +141,7 @@ export async function runSchedulerDispatchLoop(
     const queuedEntries = listQueuedSchedulerAdmissionEntries(input.coreDb);
     const staleEntry = queuedEntries.find(
       (entry) =>
-        !currentWorkspaceAuthority(
-          input.coreDb,
-          entry.workspaceId,
-          entry.triggerActor,
-          'runtime.launch',
-          true
-        )
+        !currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true)
     );
     if (staleEntry) {
       return {
@@ -244,6 +238,18 @@ export async function runSchedulerDispatchLoop(
       }
       throw error;
     }
+    if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true)) {
+      return {
+        startedTurns,
+        terminalResult: {
+          status: 'denied',
+          entry: denySchedulerAdmissionEntry(input.coreDb, {
+            queueEntryId: entry.queueEntryId,
+            denialReason: 'policy-cap',
+          }),
+        },
+      };
+    }
     const leaseId = (input.createLeaseId ?? createLeaseId)();
     const dispatch = dispatchNextSchedulerEntry(input.coreDb, {
       agentSessionId: preparedAgentSession.agentSessionId,
@@ -294,6 +300,20 @@ export async function runSchedulerDispatchLoop(
           'recovery_required',
           'The runtime cannot commit prepared AgentSession replacement.',
           409
+        );
+      }
+      if (
+        !currentSchedulerAdmissionWorkspaceAuthority(
+          input.coreDb,
+          dispatch.entry,
+          'runtime.launch',
+          true
+        )
+      ) {
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
         );
       }
       const agentSetupWorkspaceDb = openWorkspaceDb(

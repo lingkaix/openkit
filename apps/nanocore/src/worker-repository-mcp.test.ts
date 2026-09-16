@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import { FsStore } from './lib/store.js';
@@ -19,6 +20,11 @@ import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { recordWorkspaceApplyResult } from './runtime/workspace-apply-results.js';
+import {
+  createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
+} from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
@@ -116,8 +122,12 @@ async function fixture(mode: 'auto_allow' | 'require_human_approval' = 'auto_all
       workspaceId: 'ws_demo',
     },
   });
-  const start = (userId = 'user_local') => {
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Publish admitted commit', {
+  const start = (
+    userId = 'user_local',
+    serverAdminTokenId: string | null = null,
+    threadId = 'th_demo'
+  ) => {
+    const turn = store.createTurn('ws_demo', threadId, 'Publish admitted commit', {
       kind: 'user',
       id: userId,
     });
@@ -128,24 +138,62 @@ async function fixture(mode: 'auto_allow' | 'require_human_approval' = 'auto_all
       id: sessionId,
       message: null,
       status: 'busy',
-      threadId: 'th_demo',
+      threadId,
       updatedAt: new Date().toISOString(),
       workspaceId: 'ws_demo',
     });
     store.updateTurn(turn.id, { agentSessionId: sessionId });
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      agentSetup: createTestAgentSetup({ mcpIds: ['openkit-repository'] }),
+      agentSessionId: sessionId,
+      backend: { kind: 'openshell' },
+      createdAt: new Date().toISOString(),
+      requestId: randomUUID(),
+      triggerActor: turn.triggerActor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceRoots: [],
+    });
+    createSchedulerAdmissionEntry(coreDb, {
+      queueEntryId: `queue_${turn.id}`,
+      requestId: `request_${turn.id}`,
+      triggerActor: turn.triggerActor,
+      serverAdminTokenId,
+      workspaceId: 'ws_demo',
+      threadId,
+      turnId: turn.id,
+      turnInput: 'Publish admitted commit',
+      requestedAgentId: environmentPackage.agent.agentId,
+      priorityClass: 'interactive',
+      requiredPoolConstraints: [],
+    });
+    createSchedulerPlacementPlan(coreDb, {
+      planId: `plan_${turn.id}`,
+      queueEntryId: `queue_${turn.id}`,
+      selectedPoolId: 'pool_test',
+      selectedTargetId: 'target_test',
+      plannedLeaseDurationMs: 900_000,
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      degradedOptionalFeatures: [],
+      policyDecisionIds: [],
+      schedulerEpoch: 1,
+    });
+    createSchedulerSessionLease(coreDb, {
+      leaseId: `lease_${turn.id}`,
+      planId: `plan_${turn.id}`,
+      agentSessionId: sessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      heartbeatDeadline: '2099-01-01T00:00:00.000Z',
+      startupDeadline: '2099-01-01T00:00:00.000Z',
+      sandboxTokenBindingRef: `binding_${turn.id}`,
+    });
     return {
       turn,
-      environmentPackage: resolveAgentEnvironmentPackage({
-        agentSetup: createTestAgentSetup({ mcpIds: ['openkit-repository'] }),
-        agentSessionId: sessionId,
-        backend: { kind: 'openshell' },
-        createdAt: new Date().toISOString(),
-        requestId: randomUUID(),
-        triggerActor: turn.triggerActor,
-        turn,
-        workspaceCwd: '/workspace',
-        workspaceRoots: [],
-      }),
+      environmentPackage,
     };
   };
   let active = start();
@@ -191,14 +239,14 @@ async function fixture(mode: 'auto_allow' | 'require_human_approval' = 'auto_all
     )
   );
   const originalRunner = gitExecutor.runGitPushCommand;
-  const runner = vi.spyOn(gitExecutor, 'runGitPushCommand').mockImplementation((input) =>
+  const runHostCommand = (input: Parameters<typeof gitExecutor.runGitPushCommand>[0]) =>
     originalRunner({
       ...input,
       args: input.args.map((arg) =>
         arg === 'https://github.com/openkit/fixture.git' ? remotePath : arg
       ),
-    })
-  );
+    });
+  const runner = vi.spyOn(gitExecutor, 'runGitPushCommand').mockImplementation(runHostCommand);
   const request = {
     requestId: randomUUID(),
     resourceId: 'repo_default',
@@ -222,13 +270,18 @@ async function fixture(mode: 'auto_allow' | 'require_human_approval' = 'auto_all
     request,
     stop,
     runner,
+    runHostCommand,
     upstream,
     canary,
     git,
     remotePath,
     active: () => active,
-    successor: (userId = 'user_local') => {
-      active = start(userId);
+    successor: (
+      userId = 'user_local',
+      serverAdminTokenId: string | null = null,
+      threadId = 'th_demo'
+    ) => {
+      active = start(userId, serverAdminTokenId, threadId);
       return active;
     },
     cleanup: async () => {
@@ -258,6 +311,142 @@ async function call(
 }
 
 describe('selected repository MCP', () => {
+  it('gives identical opaque errors for private and missing approval sources before Git effects', async () => {
+    const f = await fixture();
+    try {
+      const sourceThread = f.store.getThread('ws_demo', 'th_demo');
+      Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: 'user_local' });
+      f.store.updateThread('ws_demo', 'th_demo', { name: sourceThread.name });
+      const approved = (await call(f, 'repository_push_request_approval', f.request))
+        .structuredContent as { approval: { id: string } };
+      const now = new Date().toISOString();
+      f.coreDb.sqlite
+        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
+          VALUES ('user_other', 'Other Editor', 'other-editor@example.invalid', 0, ?, ?, 'human')`)
+        .run(now, now);
+      f.coreDb.sqlite
+        .prepare(`INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+          VALUES ('ws_demo', 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?) `)
+        .run(now, now, now);
+      f.store.createThread('ws_demo', 'Other work', 'th_other');
+      const old = f.active();
+      f.store.updateTurn(old.turn.id, { status: 'completed', completedAt: now });
+      f.store.updateAgentSession(old.environmentPackage.scope.agentSessionId, { status: 'closed' });
+      f.successor('user_other', null, 'th_other');
+      const execute = (approvalRequestId: string) =>
+        call(f, 'repository_push_execute', {
+          requestId: randomUUID(),
+          resourceId: 'repo_default',
+          approvalRequestId,
+        });
+      const hidden = await execute(approved.approval.id);
+      const missing = await execute('ap_missing');
+      expect(hidden).toMatchObject({ isError: true });
+      expect(hidden.structuredContent).toEqual(missing.structuredContent);
+      expect(hidden.structuredContent).toMatchObject({ error: { code: 'not_found' } });
+      expect(f.runner).not.toHaveBeenCalled();
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('uses exact nonmember admin Worker authority and refuses a revoked successor: %s', async (revokeBeforeExecute) => {
+    const f = await fixture();
+    try {
+      const priorGrant = (await call(f, 'repository_push_request_approval', f.request))
+        .structuredContent as { approval: { id: string } };
+      const now = new Date().toISOString();
+      f.coreDb.sqlite
+        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
+            VALUES ('user_admin_push', 'Admin Push', 'admin-push@example.invalid', 0, ?, ?, 'human')`)
+        .run(now, now);
+      createOpenKitAccessTokenRecord(f.coreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: 'user_admin_push',
+        scope: 'server-admin',
+        tokenId: 'token_admin_push',
+        workspaceIds: [],
+      });
+      const old = f.active();
+      f.store.updateTurn(old.turn.id, {
+        status: 'completed',
+        completedAt: now,
+      });
+      f.store.updateAgentSession(old.environmentPackage.scope.agentSessionId, { status: 'closed' });
+      f.successor('user_admin_push', 'token_admin_push');
+      const adminApproval = await call(f, 'repository_push_request_approval', {
+        ...f.request,
+        requestId: randomUUID(),
+      });
+      expect(adminApproval.structuredContent).toMatchObject({
+        approval: { status: 'granted' },
+      });
+      if (revokeBeforeExecute) {
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+          )
+          .run(new Date().toISOString(), 'token_admin_push');
+      }
+      const execute = {
+        requestId: randomUUID(),
+        resourceId: 'repo_default',
+        approvalRequestId: priorGrant.approval.id,
+      };
+      if (revokeBeforeExecute) {
+        await expect(
+          f.client.callTool({ name: 'repository_push_execute', arguments: execute })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(f.runner).not.toHaveBeenCalled();
+        expect(() => f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toThrow();
+      } else {
+        const pushed = await call(f, 'repository_push_execute', execute);
+        expect(pushed.structuredContent).toMatchObject({
+          outcome: 'pushed',
+          actorId: 'user_admin_push',
+        });
+        expect(f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toBe(
+          f.request.commitIds[0]
+        );
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it('stops before a second credential-bearing Git call when its exact Worker lease becomes terminal', async () => {
+    const f = await fixture();
+    try {
+      const approved = (await call(f, 'repository_push_request_approval', f.request))
+        .structuredContent as { approval: { id: string } };
+      let networkCalls = 0;
+      f.runner.mockImplementation(async (input) => {
+        const result = await f.runHostCommand(input);
+        if (input.args[0] === 'ls-remote') {
+          networkCalls += 1;
+          f.coreDb.sqlite
+            .prepare("UPDATE scheduler_session_leases SET status = 'released' WHERE lease_id = ?")
+            .run(`lease_${f.active().turn.id}`);
+        }
+        return result;
+      });
+      const result = await call(f, 'repository_push_execute', {
+        requestId: randomUUID(),
+        resourceId: 'repo_default',
+        approvalRequestId: approved.approval.id,
+      });
+      expect(result.structuredContent).toMatchObject({ outcome: 'refused-policy' });
+      expect(networkCalls).toBe(1);
+      expect(f.runner.mock.calls.map(([input]) => input.args[0])).not.toContain('push');
+      expect(() => f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toThrow();
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it('auto-allows, replays and executes through the host owner while the worker remains running', async () => {
     const f = await fixture();
     try {

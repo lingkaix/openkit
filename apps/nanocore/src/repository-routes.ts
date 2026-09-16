@@ -21,16 +21,19 @@ import { z } from 'zod';
 
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
-import {
-  assertAuthorizedWorkspaceLineage,
-  currentWorkspaceAuthority,
-} from './auth/operation-authorizer.js';
+import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
+import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from './capability/usage-ledger.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { createPolicyApprovalGate } from './policy/approval-gates.js';
 import { readPolicyApprovalDecision } from './policy/permission-decisions.js';
-import { executeGitPushAttempt, runGitPushCommand } from './runtime/git-push-executor.js';
+import type { RepoPushCallerAuthority } from './runtime/git-push-executor.js';
+import {
+  currentRepoPushCallerAuthority,
+  executeGitPushAttempt,
+  runGitPushCommand,
+} from './runtime/git-push-executor.js';
 import {
   getGitPushRecord,
   getGitPushRecordByApprovalRowId,
@@ -257,6 +260,7 @@ export function registerRepositoryRoutes({
         const response = await requestRepositoryPushApproval(
           {
             actorId,
+            authority: { kind: 'request', actor: c.get('actor') },
             approvalPolicy,
             coreDb,
             inflightCommands,
@@ -310,6 +314,7 @@ export function registerRepositoryRoutes({
         const response = await executeRepositoryPush(
           {
             actorId,
+            authority: { kind: 'request', actor: c.get('actor') },
             approvalPolicy,
             coreDb,
             inflightCommands,
@@ -453,6 +458,7 @@ function repositoryReadModel(record: WorkspaceRepositoryResourceRecord): unknown
  */
 function resolveGitPushCredentialEnv(input: {
   readonly actorId: string;
+  readonly authority: RepoPushCallerAuthority;
   readonly capabilityCallId: string;
   readonly coreDb: CoreDb | undefined;
   readonly repository: WorkspaceRepositoryResourceRecord;
@@ -499,10 +505,11 @@ function resolveGitPushCredentialEnv(input: {
     (grant.approvalId === null ||
       (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
   if (
-    !currentWorkspaceAuthority(
+    !currentRepoPushCallerAuthority(
       input.coreDb,
       input.workspaceId,
-      { kind: 'user', id: input.actorId },
+      input.actorId,
+      input.authority,
       'vault.use',
       activeTargetGrant
     )
@@ -612,6 +619,8 @@ export interface RepositoryPushWorkerRequest {
 export interface RepositoryPushContext {
   /** Fresh authenticated responsible user. */
   readonly actorId: string;
+  /** Fresh HTTP actor or exact authenticated Worker package lineage. */
+  readonly authority: RepoPushCallerAuthority;
   /** Deployment-owned push approval mode. */
   readonly approvalPolicy: OpenKitConfig['policy'];
   /** Current canonical authority. */
@@ -794,7 +803,7 @@ export async function requestRepositoryPushApproval(
 }
 
 /**
- * Executes one original grant under the fresh request actor without rewriting its lineage.
+ * Executes one original grant under the current request or Worker caller without rewriting its lineage.
  * @param context Authenticated caller and repository dependencies.
  * @param input Existing approval identifier and fresh execution request identifier.
  * @returns Durable push outcome.
@@ -805,6 +814,7 @@ export async function executeRepositoryPush(
 ): Promise<GitPushRecord> {
   const {
     actorId,
+    authority,
     coreDb,
     inflightCommands,
     repository,
@@ -814,7 +824,18 @@ export async function executeRepositoryPush(
     workspaceId,
   } = context;
   const resourceId = repository.resourceId;
-  const approval = store.getApproval(input.approvalRequestId);
+  let approval: ReturnType<FsStore['getApproval']>;
+  try {
+    approval = store.getApproval(input.approvalRequestId);
+  } catch {
+    throw new TurnStartValidationError('not_found', 'Thread not found.', 404);
+  }
+  if (
+    approval.workspaceId !== workspaceId ||
+    !isThreadIdVisible(store, workspaceId, approval.threadId, actorId)
+  ) {
+    throw new TurnStartValidationError('not_found', 'Thread not found.', 404);
+  }
   const response = await runIdempotentCommand({
     store,
     inflightCommands,
@@ -945,6 +966,7 @@ export async function executeRepositoryPush(
           targetBranch: intent.targetBranch,
           workspaceId,
         },
+        authority,
         coreDb,
         objectDirectory: inspection.objectDirectory,
         objectFormat: inspection.objectFormat,
@@ -953,6 +975,7 @@ export async function executeRepositoryPush(
         resolveEnv: (capabilityCallId) =>
           resolveGitPushCredentialEnv({
             actorId,
+            authority,
             capabilityCallId,
             coreDb,
             repository,

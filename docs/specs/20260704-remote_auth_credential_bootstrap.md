@@ -25,7 +25,7 @@ updated: 2026-09-02
 - Better Auth implementation details, table layout, or session-cookie mechanics beyond their appearance in the Current Implementation Projection.
 - Worker sandbox session tokens and lease-bound worker authentication, owned by the scheduler and worker control protocol specs.
 - The NanoHost transport token family owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`: its tokens belong to a configured NanoHost `IntegrationIdentity`, use the distinct `nanohost-transport` token type and scope, authenticate only the NanoCore-to-NanoHost transport, and follow that specification's lifecycle. Reuse is limited to the `okt_` opaque-secret format, CSPRNG generation, hashing, constant-time verification, and redaction primitives; that reuse transfers no authority to this specification.
-- Workspace content recovery or membership bypass. The local operator procedure may issue deployment administration authority but does not make its target a Workspace member or authorize an ordinary Workspace read or write.
+- Workspace membership recovery. The local operator procedure does not make its target a Workspace member; a recovered server-admin Token, when presented, has the ordinary cross-Workspace bearer authority defined by the Permissions Model, with private audience isolation preserved.
 
 ## Core References
 
@@ -47,7 +47,7 @@ The clean target for human remote access is a single credential family: server-i
 - Give the bundled CLI a first-class, scoped, revocable credential instead of forwarded raw headers.
 - Bind every token-authenticated request to an explicit actor context that flows into audit labels.
 - Keep client machines free of plaintext token material at rest.
-- Intersect every Workspace-addressed bearer request with current multi-user membership and policy facts, per the NGAC direction in the policy specs.
+- Intersect every Workspace-addressed bearer request with current credential and policy facts, and require active membership except for the explicit presented server-admin bearer exception.
 
 ## Non-goals
 
@@ -89,7 +89,7 @@ NanoCore owns opaque access-token issuance and verification as the remote channe
 
 Human remote-access token scopes are a small closed set in v1:
 
-- `server-admin`: deployment-administration authority, including token issuance and revocation, user administration, server config, backup, recovery, and data-root operations; it does not imply Workspace content authority.
+- `server-admin`: deployment-administration authority, including token issuance and revocation, user administration, server config, backup, recovery, and data-root operations; when presented as a usable bearer it also grants cross-Workspace operation eligibility, including Task execution, while preserving private conversation isolation and effect-specific checks.
 - `workspace`: read and write product operations bound to an explicit list of workspace ids recorded on the token.
 - `workspace-readonly`: read-only product operations bound to an explicit list of workspace ids.
 
@@ -100,7 +100,7 @@ Rules:
 - A human remote-access token MUST carry exactly one scope. Human remote-access `workspace` and `workspace-readonly` tokens MUST carry at least one workspace id; human remote-access `server-admin` tokens MUST NOT carry workspace bindings.
 - Scope checks are authentication-layer gates. Passing a scope check MUST NOT be treated as a permission decision; policy evaluation still applies downstream, per `docs/core/permissions.md`.
 - Requests outside a token's scope MUST fail with a typed authorization error that does not reveal whether the target resource exists.
-- Every Better Auth session actor and human remote-access bearer-token actor, including a `server-admin` token actor, MUST be checked against the human token owner's current active Workspace membership and product role on every workspace-addressed product request. A missing membership verifier MUST fail closed. Human remote-access Workspace-scoped tokens MUST additionally be bound to the addressed Workspace; `server-admin` tokens are exempt only from the token-binding field, never from membership or policy evaluation.
+- Every Workspace-addressed product request MUST check the current canonical User, credential usability, target and policy. Better Auth sessions and Workspace-scoped bearer Tokens require active membership; Workspace-scoped Tokens additionally require matching bindings. A presented usable `server-admin` bearer grants cross-Workspace eligibility without membership or Workspace bindings, including Task execution; it never bypasses private audience checks. Missing required authority verification fails closed.
 - Membership tombstones, implicit-revival prohibition, and explicit reactivation follow `docs/core/identity.md`. Workspace creation and workspace import MUST record the owner membership transactionally and MUST NOT replace the first workspace registry owner.
 - Global App Search requests made by `workspace` or `workspace-readonly` tokens MUST search only token-bound workspaces with active membership. The same visible workspace set MUST constrain workspace, thread, knowledge, artifact, and item results; removing active membership MUST remove that workspace from subsequent search results and the removal MUST survive NanoCore restart.
 - Deployment-wide administration routes MUST accept the implicit local actor in local mode, a presented `server-admin` token actor, or a Better Auth session actor whose active canonical User owns at least one currently usable `server-admin` Token. A Better Auth session alone, a `workspace` token, or a `workspace-readonly` token MUST NOT confer deployment administration authority.

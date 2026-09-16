@@ -25,6 +25,10 @@ When NanoCore returns `recovery_required`, assume that safe exact replay cannot 
 
 For an interrupted worker or checkpoint, inspect the exposed durable lineage and status before requesting retry. Let NanoCore validate ownership, sequence, lease, scheduler, and checkpoint eligibility; do not synthesize or repair those records in the Skill or CLI.
 
+## Continue administrator Tasks with the presented credential
+
+The Task remains bound to the credential presented when it was submitted. After the work waits in queue or NanoCore restarts, NanoCore rechecks that bound Token before the next governed effect. Reads may use another authorized credential. An expired, revoked, rebound, or unusable Token denies that next effect; it is not queued capacity. Inspect exposed Task and Turn metadata and current authority. Ask the user only if the credential must be replaced, then submit a new authorized request after correction. Do not grant membership, invent a replacement Token, or repair scheduler, lease, or admission records.
+
 ## Preserve fail-closed outcomes
 
 Keep contradictory, incomplete, or stale recovery evidence visible. Do not convert it to success, invent a receipt, close a workflow locally, or create an ad hoc settlement process.

@@ -13,7 +13,7 @@ import type {
 } from '@openkit/config-schema';
 import { responsibleUserIdForActor, type StopReason } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
@@ -1304,6 +1304,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             }
           : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
+        now: this.now,
         providerCredentialSink: (credential) => providerCredentials.push(credential),
         credentialReceiptSink: (receipt) => credentialReceipts.push(receipt),
         requestId,
@@ -1335,6 +1336,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             },
           }
         : resolvedEnvironmentPackage;
+      const workerLineage = {
+        workspaceId: environmentPackage.scope.workspaceId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        triggerActor: environmentPackage.scope.triggerActor,
+      };
       const sessionWorkspace = (
         environmentPackage.extensions.openkit as {
           sessionWorkspace: SessionWorkspaceMaterializationPlan;
@@ -1457,13 +1466,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       };
       if (
         this.coreDb &&
-        !currentWorkspaceAuthority(
-          this.coreDb,
-          turn.workspaceId,
-          environmentPackage.scope.triggerActor,
-          'runtime.launch',
-          true
-        )
+        !currentWorkerLineageWorkspaceAuthority(this.coreDb, workerLineage, 'runtime.launch', true)
       ) {
         throw new TurnStartValidationError(
           'workspace_access_denied',
@@ -1565,13 +1568,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       if (
         this.coreDb &&
-        !currentWorkspaceAuthority(
-          this.coreDb,
-          turn.workspaceId,
-          environmentPackage.scope.triggerActor,
-          'runtime.launch',
-          true
-        )
+        !currentWorkerLineageWorkspaceAuthority(this.coreDb, workerLineage, 'runtime.launch', true)
       ) {
         throw new TurnStartValidationError(
           'workspace_access_denied',
@@ -1994,6 +1991,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): Promise<void> {
     await this.backend.collectEvidence(environmentPackage.snapshotId);
     const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId, true);
+    const workerLineage = {
+      workspaceId: environmentPackage.scope.workspaceId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      triggerActor: environmentPackage.scope.triggerActor,
+    };
     const releaseMutation = this.workspaceMutationAdmission?.enterLatePublisher(
       environmentPackage.scope.workspaceId,
       'worker-turn-closeout'
@@ -2033,6 +2038,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         });
       }
       if (environmentPackage.control.transcript?.runtimeProvenance) {
+        if (
+          this.coreDb &&
+          !currentWorkerLineageWorkspaceAuthority(
+            this.coreDb,
+            workerLineage,
+            'artifact.write',
+            true
+          )
+        ) {
+          throw new TurnStartValidationError(
+            'workspace_access_denied',
+            'Workspace access denied.',
+            403
+          );
+        }
         if (!workspaceDb) {
           throw new Error('Runtime provenance collection requires durable workspace storage.');
         }
@@ -2080,18 +2100,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       if (
         this.coreDb &&
         ((publishesWorkspaceContent &&
-          !currentWorkspaceAuthority(
+          !currentWorkerLineageWorkspaceAuthority(
             this.coreDb,
-            environmentPackage.scope.workspaceId,
-            environmentPackage.scope.triggerActor,
+            workerLineage,
             'workspace.write',
             true
           )) ||
           (publishesArtifacts &&
-            !currentWorkspaceAuthority(
+            !currentWorkerLineageWorkspaceAuthority(
               this.coreDb,
-              environmentPackage.scope.workspaceId,
-              environmentPackage.scope.triggerActor,
+              workerLineage,
               'artifact.write',
               true
             )))

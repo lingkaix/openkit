@@ -24,6 +24,8 @@ export const schedulerAdmissionEntries = sqliteTable(
     requestId: text('request_id'),
     /** Exact JSON-encoded ActorRef that triggered this admission. */
     triggerActorJson: text('trigger_actor_json').notNull(),
+    /** Non-secret id of the presented server-admin token, revalidated at each effect. */
+    serverAdminTokenId: text('server_admin_token_id'),
     /** Workspace lineage id. */
     workspaceId: text('workspace_id').notNull(),
     /** Thread lineage id. */

@@ -3,12 +3,22 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { GitPushRecord } from '@openkit/app-api-schemas';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
+import type { Actor } from '../auth/identity.js';
+import {
+  currentWorkerLineageWorkspaceAuthority,
+  currentWorkspaceAuthority,
+} from '../auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import {
+  listSchedulerSessionLeasesForTurn,
+  resolveSchedulerLeaseTokenBinding,
+  type SchedulerLeaseTokenBindingLineage,
+} from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import {
@@ -44,6 +54,64 @@ export interface GitPushCommandRunnerResult {
 export type GitPushCommandRunner = (
   input: GitPushCommandRunnerInput
 ) => Promise<GitPushCommandRunnerResult>;
+
+/** Fresh request or authenticated Worker lineage that must authorize each push effect. */
+export type RepoPushCallerAuthority =
+  | { readonly kind: 'request'; readonly actor: Actor }
+  | {
+      readonly kind: 'worker';
+      readonly lineage: SchedulerLeaseTokenBindingLineage & { readonly triggerActor: ActorRef };
+    };
+
+/** Rechecks the current caller, never the original approval requester, for one Git effect. */
+export function currentRepoPushCallerAuthority(
+  coreDb: CoreDb | undefined,
+  workspaceId: string,
+  actorId: string,
+  authority: RepoPushCallerAuthority,
+  operation: string,
+  effectAuthority: boolean
+): boolean {
+  if (!coreDb) return false;
+  if (authority.kind === 'request') {
+    return (
+      authority.actor.userId === actorId &&
+      Boolean(
+        currentWorkspaceAuthority(
+          coreDb,
+          workspaceId,
+          { kind: 'user', id: actorId },
+          operation,
+          effectAuthority,
+          authority.actor
+        )
+      )
+    );
+  }
+  const leases = listSchedulerSessionLeasesForTurn(coreDb, authority.lineage).filter(
+    (lease) =>
+      lease.agentSessionId === authority.lineage.agentSessionId &&
+      lease.packageSnapshotId === authority.lineage.packageSnapshotId
+  );
+  if (leases.length !== 1) return false;
+  const lease = leases[0];
+  if (
+    !lease ||
+    resolveSchedulerLeaseTokenBinding(coreDb, {
+      sandboxBindingRef: lease.sandboxBindingRef,
+      lineage: authority.lineage,
+    }).status !== 'accepted'
+  ) {
+    return false;
+  }
+  return (
+    authority.lineage.workspaceId === workspaceId &&
+    responsibleUserIdForActor(authority.lineage.triggerActor) === actorId &&
+    Boolean(
+      currentWorkerLineageWorkspaceAuthority(coreDb, authority.lineage, operation, effectAuthority)
+    )
+  );
+}
 
 /**
  * Runs one fixed Git push command on the NanoCore host.
@@ -84,7 +152,9 @@ export async function runGitPushCommand(
 export interface ExecuteGitPushAttemptInput {
   /** Preflight and record lineage input. */
   readonly attempt: PrepareGitPushAttemptInput;
-  /** Core database owning current Workspace membership authority. */
+  /** Fresh caller authority, revalidated before credential and remote effects. */
+  readonly authority: RepoPushCallerAuthority;
+  /** Core database owning current Workspace and presented-token authority. */
   readonly coreDb: CoreDb | undefined;
   /** Candidate process environment. */
   readonly env?: NodeJS.ProcessEnv;
@@ -269,36 +339,44 @@ export async function executeGitPushAttempt(
           remoteBase = commitId;
         }
       } else if (remoteLines.length === 0) {
-        networkCalls = 2;
-        let baseResult: GitPushCommandRunnerResult;
-        try {
-          baseResult = await input.runner({
-            args: ['ls-remote', '--symref', '--', input.remoteName, 'HEAD'],
-            command: 'git',
-            cwd: view.directory,
-            env: networkEnv,
-          });
-        } catch {
-          runnerFailed = true;
-          baseResult = { exitCode: 1, stderr: '', stdout: '' };
-        }
-        const baseLines = baseResult.stdout.split(/\r?\n/).filter(Boolean);
-        const symref = baseLines[0]?.match(/^ref: (refs\/heads\/[A-Za-z0-9._/-]+)\tHEAD$/);
-        const head = baseLines[1]?.match(/^([a-f0-9]+)\tHEAD$/);
-        if (
-          baseResult.exitCode !== 0 ||
-          baseLines.length !== 2 ||
-          !symref ||
-          !head ||
-          !isGitObjectId(head[1] ?? '', input.objectFormat)
-        ) {
+        if (!hasCurrentGitNetworkAuthority(workspaceDb, input)) {
           outcome = {
-            errorSummary: 'Git push failed because the remote base could not be verified.',
-            outcome: 'remote-unreachable',
+            errorSummary: 'Git push refused because current authority was removed.',
+            outcome: 'refused-policy',
             remoteHeadAfter: null,
           };
         } else {
-          remoteBase = head[1] ?? null;
+          networkCalls = 2;
+          let baseResult: GitPushCommandRunnerResult;
+          try {
+            baseResult = await input.runner({
+              args: ['ls-remote', '--symref', '--', input.remoteName, 'HEAD'],
+              command: 'git',
+              cwd: view.directory,
+              env: networkEnv,
+            });
+          } catch {
+            runnerFailed = true;
+            baseResult = { exitCode: 1, stderr: '', stdout: '' };
+          }
+          const baseLines = baseResult.stdout.split(/\r?\n/).filter(Boolean);
+          const symref = baseLines[0]?.match(/^ref: (refs\/heads\/[A-Za-z0-9._/-]+)\tHEAD$/);
+          const head = baseLines[1]?.match(/^([a-f0-9]+)\tHEAD$/);
+          if (
+            baseResult.exitCode !== 0 ||
+            baseLines.length !== 2 ||
+            !symref ||
+            !head ||
+            !isGitObjectId(head[1] ?? '', input.objectFormat)
+          ) {
+            outcome = {
+              errorSummary: 'Git push failed because the remote base could not be verified.',
+              outcome: 'remote-unreachable',
+              remoteHeadAfter: null,
+            };
+          } else {
+            remoteBase = head[1] ?? null;
+          }
         }
       } else {
         outcome = {
@@ -377,7 +455,7 @@ export async function executeGitPushAttempt(
     }
 
     if (!outcome && remoteBase) {
-      if (!hasCurrentRepoPushAuthority(workspaceDb, input)) {
+      if (!hasCurrentGitNetworkAuthority(workspaceDb, input)) {
         outcome = {
           errorSummary: 'Git push refused because current repo.push authority was removed.',
           outcome: 'refused-policy',
@@ -582,15 +660,35 @@ function hasCurrentRepoPushAuthority(
 ): boolean {
   const actorId = input.attempt.actorId;
   return Boolean(
-    input.coreDb &&
-      actorId &&
-      currentWorkspaceAuthority(
+    actorId &&
+      currentRepoPushCallerAuthority(
         input.coreDb,
         input.attempt.workspaceId,
-        { kind: 'user', id: actorId },
+        actorId,
+        input.authority,
         'repo.push',
         allowsRepoPush(workspaceDb, input)
       )
+  );
+}
+
+/** Rechecks current caller repo.push and vault.use eligibility before each network effect. */
+function hasCurrentGitNetworkAuthority(
+  workspaceDb: WorkspaceDb,
+  input: ExecuteGitPushAttemptInput
+): boolean {
+  const actorId = input.attempt.actorId;
+  return (
+    actorId !== null &&
+    hasCurrentRepoPushAuthority(workspaceDb, input) &&
+    currentRepoPushCallerAuthority(
+      input.coreDb,
+      input.attempt.workspaceId,
+      actorId,
+      input.authority,
+      'vault.use',
+      true
+    )
   );
 }
 

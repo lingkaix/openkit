@@ -21,6 +21,8 @@ NanoCore derives private AEP and Context input paths from the admitted AgentSess
 
 Current OpenAI flagship API and Codex subscription profiles are available as opt-in [provider templates](./data-templates/config/providers/README.md#current-openai-flagships), with official metadata overlays and exact GPT-6 routing instructions.
 
+Presented server-admin bearers may start Tasks across active Workspaces without membership. The existing scheduler admission retains only the exact non-secret Token reference; dispatch and later Worker effects revalidate current Token and User facts through exact lease/Turn/package lineage. Revocation cannot fall back to membership, and private conversation ownership, approvals and Vault grants remain separate checks.
+
 ## Selected Repository Worker Tools
 
 Codex manifests may explicitly select `mcp: [{ id: "openkit-repository" }]` to expose `repository_push_request_approval` and `repository_push_execute` over the existing authenticated MCP relay. The built-in is not automatically supplied and its catalog identity is reserved. Both tools require a UUID `requestId` and a repository `resourceId`; approval requests also supply `sourceRef`, `targetBranch`, and `commitIds`, while execution supplies `approvalRequestId`. Workspace, Thread, Turn, AgentSession, package, and actor authority come from the authenticated package and current server authority.

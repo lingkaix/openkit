@@ -12,7 +12,10 @@ import { z } from 'zod';
 
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  currentWorkerLineageWorkspaceAuthority,
+  currentWorkspaceAuthority,
+} from '../auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   recordUsage,
@@ -1486,10 +1489,16 @@ export function registerWorkerInferenceRoutes({
           : null;
       if (
         !coreDb ||
-        !currentWorkspaceAuthority(
+        !currentWorkerLineageWorkspaceAuthority(
           coreDb,
-          environmentPackage.scope.workspaceId,
-          environmentPackage.scope.triggerActor,
+          {
+            workspaceId: environmentPackage.scope.workspaceId,
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            triggerActor: environmentPackage.scope.triggerActor,
+          },
           'llm.gateway.use',
           true
         )

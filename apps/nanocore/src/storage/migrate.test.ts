@@ -416,6 +416,7 @@ describe('database setup', () => {
         'queue_entry_id',
         'request_id',
         'trigger_actor_json',
+        'server_admin_token_id',
         'workspace_cwd',
         'workspace_roots_json',
         'workspace_id',

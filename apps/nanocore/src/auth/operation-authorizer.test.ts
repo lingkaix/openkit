@@ -6,6 +6,11 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { AutomationStore } from '../lib/automation-store.js';
+import {
+  createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
+} from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -17,6 +22,9 @@ import type { AuthVariables } from './middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
 import {
   assertAuthorizedWorkspaceLineage,
+  currentScheduledTurnWorkspaceAuthority,
+  currentSchedulerAdmissionWorkspaceAuthority,
+  currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
   registerOperationAccessGuards,
 } from './operation-authorizer.js';
@@ -253,6 +261,255 @@ describe('central Workspace operation authorizer', () => {
         effectAuthority
       )
     ).toBe(expectedRole);
+  });
+
+  it('binds a presented admin bearer to its active human owner without member fallback', () => {
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_missing',
+      scope: 'server-admin',
+      tokenId: 'token_presented_current',
+      workspaceIds: [],
+    });
+    const requestActor = {
+      kind: 'token' as const,
+      tokenId: 'token_presented_current',
+      tokenScope: 'server-admin' as const,
+      userId: 'user_missing',
+    };
+    const authority = (actor: Parameters<typeof currentWorkspaceAuthority>[2]) =>
+      currentWorkspaceAuthority(
+        fixture.coreDb,
+        fixture.workspace.id,
+        actor,
+        'runtime.launch',
+        true,
+        requestActor
+      );
+    expect(authority({ kind: 'user', id: 'user_missing' })).toBe('owner');
+    expect(authority({ kind: 'user', id: 'user_local' })).toBeNull();
+    expect(
+      authority({ kind: 'automation', id: 'automation_1', responsibleUserId: 'user_local' })
+    ).toBeNull();
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+      )
+      .run(new Date().toISOString(), 'token_presented_current');
+    expect(authority({ kind: 'user', id: 'user_missing' })).toBeNull();
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'token_presented_member',
+      workspaceIds: [],
+    });
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+      )
+      .run(new Date().toISOString(), 'token_presented_member');
+    expect(
+      currentWorkspaceAuthority(
+        fixture.coreDb,
+        fixture.workspace.id,
+        { kind: 'user', id: 'user_local' },
+        'runtime.launch',
+        true,
+        { ...requestActor, tokenId: 'token_presented_member', userId: 'user_local' }
+      )
+    ).toBeNull();
+  });
+
+  it('revalidates the recorded administrator token instead of falling back to membership', () => {
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'token_admin_admission',
+      workspaceIds: [],
+    });
+    const admission = {
+      workspaceId: fixture.workspace.id,
+      triggerActor: { kind: 'user', id: 'user_local' } as const,
+      serverAdminTokenId: 'token_admin_admission',
+    };
+    expect(
+      currentSchedulerAdmissionWorkspaceAuthority(fixture.coreDb, admission, 'runtime.launch', true)
+    ).toBe('owner');
+    expect(
+      currentSchedulerAdmissionWorkspaceAuthority(
+        fixture.coreDb,
+        { ...admission, serverAdminTokenId: '' },
+        'runtime.launch',
+        true
+      )
+    ).toBeNull();
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+      )
+      .run(new Date().toISOString(), 'token_admin_admission');
+    expect(
+      currentSchedulerAdmissionWorkspaceAuthority(fixture.coreDb, admission, 'runtime.launch', true)
+    ).toBeNull();
+    expect(
+      currentSchedulerAdmissionWorkspaceAuthority(
+        fixture.coreDb,
+        { ...admission, serverAdminTokenId: null },
+        'runtime.launch',
+        true
+      )
+    ).toBe('owner');
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE openkit_access_tokens SET status = 'active', revoked_at = NULL, scope = 'workspace' WHERE token_id = ?"
+      )
+      .run('token_admin_admission');
+    expect(
+      currentSchedulerAdmissionWorkspaceAuthority(fixture.coreDb, admission, 'runtime.launch', true)
+    ).toBeNull();
+  });
+
+  it('rejects expired, wrong-owner, disabled-user, and non-human administrator provenance', () => {
+    for (const [tokenId, ownerUserId, triggerUserId, expiresAt] of [
+      ['token_admin_expired', 'user_missing', 'user_missing', '2000-01-01T00:00:00.000Z'],
+      ['token_admin_wrong_owner', 'user_local', 'user_missing', '2099-01-01T00:00:00.000Z'],
+      ['token_admin_disabled', 'user_disabled', 'user_disabled', '2099-01-01T00:00:00.000Z'],
+    ] as const) {
+      createOpenKitAccessTokenRecord(fixture.coreDb, {
+        expiresAt,
+        ownerUserId,
+        scope: 'server-admin',
+        tokenId,
+        workspaceIds: [],
+      });
+      expect(
+        currentSchedulerAdmissionWorkspaceAuthority(
+          fixture.coreDb,
+          {
+            workspaceId: fixture.workspace.id,
+            triggerActor: { kind: 'user', id: triggerUserId },
+            serverAdminTokenId: tokenId,
+          },
+          'runtime.launch',
+          true
+        )
+      ).toBeNull();
+    }
+    expect(
+      currentSchedulerAdmissionWorkspaceAuthority(
+        fixture.coreDb,
+        {
+          workspaceId: fixture.workspace.id,
+          triggerActor: { kind: 'automation', id: 'automation_1', responsibleUserId: 'user_local' },
+          serverAdminTokenId: 'token_admin_wrong_owner',
+        },
+        'runtime.launch',
+        true
+      )
+    ).toBeNull();
+  });
+
+  it('binds worker authority to the exact durable lease and package actor', () => {
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_missing',
+      scope: 'server-admin',
+      tokenId: 'token_admin_worker',
+      workspaceIds: [],
+    });
+    createSchedulerAdmissionEntry(fixture.coreDb, {
+      queueEntryId: 'queue_worker_admin',
+      triggerActor: { kind: 'user', id: 'user_missing' },
+      serverAdminTokenId: 'token_admin_worker',
+      workspaceId: fixture.workspace.id,
+      threadId: fixture.turn.threadId,
+      turnId: 'turn_worker_admin',
+      turnInput: 'Run worker',
+      requestedAgentId: 'agent_worker',
+      priorityClass: 'interactive',
+      requiredPoolConstraints: [],
+    });
+    const turnLineage = {
+      workspaceId: fixture.workspace.id,
+      threadId: fixture.turn.threadId,
+      turnId: 'turn_worker_admin',
+      triggerActor: { kind: 'user', id: 'user_missing' } as const,
+    };
+    expect(
+      currentScheduledTurnWorkspaceAuthority(fixture.coreDb, turnLineage, 'tool.use', true)
+    ).toBe('owner');
+    expect(
+      currentScheduledTurnWorkspaceAuthority(
+        fixture.coreDb,
+        { ...turnLineage, triggerActor: { kind: 'user', id: 'user_local' } },
+        'tool.use',
+        true
+      )
+    ).toBeNull();
+    createSchedulerPlacementPlan(fixture.coreDb, {
+      planId: 'plan_worker_admin',
+      queueEntryId: 'queue_worker_admin',
+      selectedPoolId: 'pool_worker_admin',
+      selectedTargetId: 'target_worker_admin',
+      plannedLeaseDurationMs: 900_000,
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      degradedOptionalFeatures: [],
+      failoverTargetId: null,
+      policyDecisionIds: [],
+      capacitySnapshotRef: 'target_worker_admin:1',
+      schedulerEpoch: 1,
+    });
+    createSchedulerSessionLease(fixture.coreDb, {
+      leaseId: 'lease_worker_admin',
+      planId: 'plan_worker_admin',
+      agentSessionId: 'as_worker_admin',
+      packageSnapshotId: 'snapshot_worker_admin',
+      sessionCompatibilityKey: 'sha256:worker-admin',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      heartbeatDeadline: '2099-01-01T00:00:00.000Z',
+      startupDeadline: '2099-01-01T00:00:00.000Z',
+      sandboxTokenBindingRef: 'lease-token:worker-admin',
+    });
+    const lineage = {
+      workspaceId: fixture.workspace.id,
+      threadId: fixture.turn.threadId,
+      turnId: 'turn_worker_admin',
+      agentSessionId: 'as_worker_admin',
+      packageSnapshotId: 'snapshot_worker_admin',
+      triggerActor: { kind: 'user', id: 'user_missing' } as const,
+    };
+    expect(currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true)).toBe(
+      'owner'
+    );
+    expect(
+      currentWorkerLineageWorkspaceAuthority(
+        fixture.coreDb,
+        { ...lineage, packageSnapshotId: 'other_snapshot' },
+        'tool.use',
+        true
+      )
+    ).toBeNull();
+    expect(
+      currentWorkerLineageWorkspaceAuthority(
+        fixture.coreDb,
+        { ...lineage, triggerActor: { kind: 'user', id: 'user_local' } },
+        'tool.use',
+        true
+      )
+    ).toBeNull();
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+      )
+      .run(new Date().toISOString(), 'token_admin_worker');
+    expect(
+      currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true)
+    ).toBeNull();
   });
 
   it('derives the Quick Chat Workspace from the authenticated actor', async () => {

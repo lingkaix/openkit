@@ -23,6 +23,7 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createApp, createDefaultWorkerControlGateway } from './app.js';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
 import {
@@ -62,6 +63,11 @@ import {
   createDefaultWorkerMcpGateway,
   WorkerMcpGatewayCallError,
 } from './runtime/worker-mcp-gateway.js';
+import {
+  createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
+} from './scheduler-records.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -107,7 +113,190 @@ const OPENKIT_GENERATIVE_SERVER = {
   transport: 'stdio',
 } as const;
 
+/** Records the admission and lease that own a manually resolved MCP worker package. */
+function recordMcpWorkerLineage(
+  coreDb: ReturnType<typeof openCoreDb>,
+  environmentPackage: AgentEnvironmentPackage,
+  serverAdminTokenId: string | null = null
+): void {
+  const scope = environmentPackage.scope;
+  createSchedulerAdmissionEntry(coreDb, {
+    queueEntryId: `queue_${scope.turnId}`,
+    requestId: `request_${scope.turnId}`,
+    triggerActor: scope.triggerActor,
+    serverAdminTokenId,
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    turnInput: 'Call MCP tool',
+    requestedAgentId: environmentPackage.agent.agentId,
+    priorityClass: 'interactive',
+    requiredPoolConstraints: [],
+  });
+  createSchedulerPlacementPlan(coreDb, {
+    planId: `plan_${scope.turnId}`,
+    queueEntryId: `queue_${scope.turnId}`,
+    selectedPoolId: 'pool_test',
+    selectedTargetId: 'target_test',
+    plannedLeaseDurationMs: 900_000,
+    heartbeatIntervalMs: 10_000,
+    heartbeatTimeoutMs: 30_000,
+    expectedControlMode: 'poll',
+    expectedDataPlaneMode: 'openshell-files',
+    degradedOptionalFeatures: [],
+    policyDecisionIds: [],
+    schedulerEpoch: 1,
+  });
+  createSchedulerSessionLease(coreDb, {
+    leaseId: `lease_${scope.turnId}`,
+    planId: `plan_${scope.turnId}`,
+    agentSessionId: scope.agentSessionId,
+    packageSnapshotId: environmentPackage.snapshotId,
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    heartbeatDeadline: '2099-01-01T00:00:00.000Z',
+    startupDeadline: '2099-01-01T00:00:00.000Z',
+    sandboxTokenBindingRef: `binding_${scope.turnId}`,
+  });
+}
+
 describe('worker MCP routes', () => {
+  it('uses the admitted admin bearer for nonmember tool calls and denies revocation or lineage drift', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-admin-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const now = Date.now();
+    coreDb.sqlite
+      .prepare(
+        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('user_mcp_admin', 'MCP Admin', 'mcp-admin@example.com', false, ?, ?, 'human', 'active')"
+      )
+      .run(now, now);
+    createOpenKitAccessTokenRecord(coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_mcp_admin',
+      scope: 'server-admin',
+      tokenId: 'token_mcp_admin',
+      workspaceIds: [],
+    });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Call MCP as admin', {
+      id: 'user_mcp_admin',
+      kind: 'user',
+    });
+    const catalog = {
+      schemaVersion: 1 as const,
+      servers: [
+        {
+          allowedTools: ['echo'],
+          approvalRequiredTools: [],
+          credentialBindings: [],
+          deniedTools: [],
+          enabled: true,
+          id: 'echo',
+          pinnedSchemaSnapshotId: null,
+          schemaPolicy: 'tracking' as const,
+          timeoutMs: 2_000,
+          transport: {
+            args: [fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url))],
+            command: process.execPath,
+            environment: {},
+            kind: 'stdio' as const,
+          },
+        },
+      ],
+    };
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      agentSessionId: 'as_mcp_admin',
+      agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
+      backend: { kind: 'openshell' },
+      createdAt: new Date().toISOString(),
+      requestId: 'req_mcp_admin',
+      triggerActor: turn.triggerActor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceMcpServerCatalog: catalog,
+      workspaceRoots: [],
+    });
+    recordMcpWorkerLineage(coreDb, environmentPackage, 'token_mcp_admin');
+    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+    const callTool = vi.spyOn(workerMcpGateway, 'callTool');
+    const app = new Hono();
+    registerWorkerMcpRoutes({
+      app,
+      coreDb,
+      runtimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          agentManifests: [],
+          workspaceMcpServerCatalogs: [
+            { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId: 'ws_demo' },
+          ],
+        }),
+      store,
+      workerControlGateway: {
+        authenticatePackageToken: vi.fn(() => environmentPackage),
+      } as unknown as WorkerControlGateway,
+      workerMcpGateway,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    });
+    const client = new Client({ name: 'admin-route-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(
+      new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
+      {
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+        requestInit: { headers: { authorization: 'Bearer capability-token' } },
+      }
+    );
+    const generativeClient = new Client({ name: 'admin-generative-route-test', version: '1.0.0' });
+    const generativeTransport = new StreamableHTTPClientTransport(
+      new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-generative'),
+      {
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+        requestInit: { headers: { authorization: 'Bearer capability-token' } },
+      }
+    );
+    try {
+      await client.connect(transport);
+      await generativeClient.connect(generativeTransport);
+      await expect(
+        client.callTool({ arguments: { message: 'admin allowed' }, name: 'echo' })
+      ).resolves.toMatchObject({ content: [{ text: 'admin allowed' }] });
+      await expect(
+        generativeClient.callTool({ arguments: {}, name: 'kernel_apps_list' })
+      ).resolves.toMatchObject({ structuredContent: { items: [] } });
+      expect(callTool).toHaveBeenCalledTimes(1);
+
+      coreDb.sqlite
+        .prepare(
+          "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = 'token_mcp_admin'"
+        )
+        .run(new Date().toISOString());
+      await expect(
+        client.callTool({ arguments: { message: 'revoked' }, name: 'echo' })
+      ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+      expect(callTool).toHaveBeenCalledTimes(1);
+
+      coreDb.sqlite
+        .prepare(
+          "UPDATE openkit_access_tokens SET status = 'active', revoked_at = NULL WHERE token_id = 'token_mcp_admin'"
+        )
+        .run();
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_session_leases SET package_snapshot_id = ? WHERE turn_id = ?')
+        .run('pkg_other', turn.id);
+      await expect(
+        client.callTool({ arguments: { message: 'mismatched' }, name: 'echo' })
+      ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+      expect(callTool).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await generativeClient.close();
+      await workerMcpGateway.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     'same',
     'changed',
@@ -171,6 +360,7 @@ describe('worker MCP routes', () => {
       workspaceMcpServerCatalog: catalog,
       workspaceRoots: [],
     });
+    recordMcpWorkerLineage(coreDb, environmentPackage);
     const workerControlGateway = {
       authenticatePackageToken: vi.fn(() => environmentPackage),
     } as unknown as WorkerControlGateway;
@@ -382,6 +572,7 @@ describe('worker MCP routes', () => {
         workspaceMcpServerCatalog: catalog,
         workspaceRoots: [],
       });
+      recordMcpWorkerLineage(coreDb, environmentPackage);
       if (argumentCase === 'changed') {
         await expect(
           client.callTool({ arguments: { message: 'different effect' }, name: 'echo' })
@@ -1850,6 +2041,7 @@ describe('worker MCP routes', () => {
       workspaceRoots: [],
     });
     const authorizedEnvironmentPackage = environmentPackage;
+    recordMcpWorkerLineage(coreDb, environmentPackage);
     const emptyNearLimitResult = { content: [{ text: '', type: 'text' as const }] };
     const nearLimitResult = {
       content: [
@@ -2633,6 +2825,7 @@ describe('worker MCP routes', () => {
       workspaceMcpServerCatalog: catalog,
       workspaceRoots: [],
     });
+    recordMcpWorkerLineage(coreDb, environmentPackage);
     const workerControlGateway = {
       authenticatePackageToken: vi.fn(() => environmentPackage),
     } as unknown as WorkerControlGateway;

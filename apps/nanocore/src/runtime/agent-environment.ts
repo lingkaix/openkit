@@ -21,9 +21,16 @@ import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protoco
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type { z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  currentScheduledTurnWorkspaceAuthority,
+  currentWorkerLineageWorkspaceAuthority,
+} from '../auth/operation-authorizer.js';
 import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
+import {
+  listSchedulerSessionLeasesForTurn,
+  resolveSchedulerLeaseTokenBinding,
+} from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
@@ -111,6 +118,8 @@ export interface ResolveAgentEnvironmentPackageInput {
   coreDb?: CoreDb;
   /** ISO timestamp used for deterministic package tests. */
   createdAt?: string;
+  /** Current clock used to recheck a materialization lease. */
+  now?: () => string;
   /** Client request id associated with the turn start. */
   requestId?: string | null;
   /** Optional immutable Context Package prepared for this exact worker Turn. */
@@ -393,7 +402,10 @@ function resolveOpenShellAgentEnvironmentPackage(
     declarations: sandboxAccess.credentialDeclarations,
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
     now: () => createdAt,
+    authorityNow: input.now ?? (() => new Date().toISOString()),
     packageSnapshotId: snapshotId,
+    threadId: input.turn.threadId,
+    turnId: input.turn.id,
     responsibleUserId,
     triggerActor,
     workspaceId: input.turn.workspaceId,
@@ -1061,8 +1073,13 @@ interface ResolveWorkerCredentialDeclarationsInput {
   readonly credentialResolution: 'materialize' | 'metadata-only';
   /** Deterministic clock for created records. */
   readonly now: () => string;
+  /** Current clock for lease liveness independent of package creation time. */
+  readonly authorityNow: () => string;
   /** Agent Environment Package snapshot id receiving the declarations. */
   readonly packageSnapshotId: string;
+  /** Exact product Thread and Turn admitted for this credential declaration. */
+  readonly threadId: string;
+  readonly turnId: string;
   /** Optional sink for backend-private provider credential material. */
   readonly providerCredentialSink?: (
     credential: ResolvedAgentEnvironmentProviderCredential
@@ -1122,14 +1139,53 @@ function resolveWorkerCredentialDeclarations(
     const injection = declarationInjectionTarget(declaration);
     const planId = `plan_${input.packageSnapshotId}_${declaration.id}`;
     const receiptId = `receipt_${input.packageSnapshotId}_${declaration.id}`;
+    const turnLineage = {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      triggerActor: input.triggerActor,
+    };
+    const authorized =
+      input.credentialResolution === 'metadata-only'
+        ? currentScheduledTurnWorkspaceAuthority(coreDb, turnLineage, 'vault.use', effectAuthority)
+        : currentWorkerLineageWorkspaceAuthority(
+            coreDb,
+            {
+              ...turnLineage,
+              agentSessionId: input.agentSessionId,
+              packageSnapshotId: input.packageSnapshotId,
+            },
+            'vault.use',
+            effectAuthority
+          );
+    const leases =
+      input.credentialResolution === 'materialize'
+        ? listSchedulerSessionLeasesForTurn(coreDb, turnLineage).filter(
+            (lease) =>
+              lease.agentSessionId === input.agentSessionId &&
+              lease.packageSnapshotId === input.packageSnapshotId
+          )
+        : [];
+    const lease = leases.length === 1 ? leases[0] : null;
+    const liveLease =
+      lease &&
+      resolveSchedulerLeaseTokenBinding(coreDb, {
+        sandboxBindingRef: lease.sandboxBindingRef,
+        lineage: {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          agentSessionId: input.agentSessionId,
+          packageSnapshotId: input.packageSnapshotId,
+        },
+        now: input.authorityNow,
+      });
     if (
-      !currentWorkspaceAuthority(
-        coreDb,
-        input.workspaceId,
-        input.triggerActor,
-        'vault.use',
-        effectAuthority
-      )
+      !authorized ||
+      (input.credentialResolution === 'materialize' &&
+        (!liveLease ||
+          liveLease.status !== 'accepted' ||
+          liveLease.lease.leaseId !== lease?.leaseId))
     ) {
       throw new TurnStartValidationError(
         'workspace_access_denied',

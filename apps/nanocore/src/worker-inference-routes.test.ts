@@ -6,6 +6,7 @@ import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import {
@@ -26,6 +27,11 @@ import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import {
+  createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
+} from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -254,7 +260,7 @@ afterEach(() => {
  * @param durableStorage Whether the app receives durable storage.
  * @param includeWorkerProvider Whether the AEP-selected provider is available.
  * @param runtimeProvenance Whether the AEP requires runtime provenance.
- * @param options Optional resolved provider-family override for Codex vs generic routes.
+ * @param options Optional provider-family and admitted admin bearer fixture selection.
  * @returns Route fixture.
  */
 function createWorkerInferenceRouteFixture(
@@ -263,7 +269,7 @@ function createWorkerInferenceRouteFixture(
   durableStorage = true,
   includeWorkerProvider = true,
   runtimeProvenance = false,
-  options: { readonly subscriptionFamily?: 'openai-codex' } = {}
+  options: { readonly subscriptionFamily?: 'openai-codex'; readonly adminBearer?: boolean } = {}
 ): WorkerInferenceRouteFixture {
   const providerProfileId =
     options.subscriptionFamily === 'openai-codex' ? CODEX_PROVIDER_ID : 'agent-openrouter';
@@ -313,11 +319,13 @@ function createWorkerInferenceRouteFixture(
       },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_worker_inference_outer_1',
-      triggerActor: {
-        kind: 'automation',
-        id: 'automation_worker_inference',
-        responsibleUserId: 'user_local',
-      },
+      triggerActor: options.adminBearer
+        ? { kind: 'user', id: 'user_inference_admin' }
+        : {
+            kind: 'automation',
+            id: 'automation_worker_inference',
+            responsibleUserId: 'user_local',
+          },
       turn,
       workspaceCwd: '/workspace/openkit',
       workspaceRoots: [],
@@ -335,6 +343,60 @@ function createWorkerInferenceRouteFixture(
   const workerCapabilityToken = trustedRelay
     ? 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'
     : 'EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE';
+  if (appCoreDb) {
+    if (options.adminBearer) {
+      const now = Date.now();
+      appCoreDb.sqlite
+        .prepare(
+          "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('user_inference_admin', 'Inference Admin', 'inference-admin@example.com', false, ?, ?, 'human', 'active')"
+        )
+        .run(now, now);
+      createOpenKitAccessTokenRecord(appCoreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: 'user_inference_admin',
+        scope: 'server-admin',
+        tokenId: 'token_worker_inference_admin',
+        workspaceIds: [],
+      });
+    }
+    createSchedulerAdmissionEntry(appCoreDb, {
+      queueEntryId: `queue_${turn.id}`,
+      requestId: 'req_worker_inference_outer_1',
+      triggerActor: environmentPackage.scope.triggerActor,
+      serverAdminTokenId: options.adminBearer ? 'token_worker_inference_admin' : null,
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      turnInput: 'Call worker inference',
+      requestedAgentId: environmentPackage.agent.agentId,
+      priorityClass: 'interactive',
+      requiredPoolConstraints: [],
+    });
+    createSchedulerPlacementPlan(appCoreDb, {
+      planId: `plan_${turn.id}`,
+      queueEntryId: `queue_${turn.id}`,
+      selectedPoolId: 'pool_test',
+      selectedTargetId: 'target_test',
+      plannedLeaseDurationMs: 900_000,
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      degradedOptionalFeatures: [],
+      policyDecisionIds: [],
+      schedulerEpoch: 1,
+    });
+    createSchedulerSessionLease(appCoreDb, {
+      leaseId: `lease_${turn.id}`,
+      planId: `plan_${turn.id}`,
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      heartbeatDeadline: '2099-01-01T00:00:00.000Z',
+      startupDeadline: '2099-01-01T00:00:00.000Z',
+      sandboxTokenBindingRef: sandboxBindingRef,
+    });
+  }
   let leaseLive = true;
   const workerControlGateway = new WorkerControlGateway({
     resolveTokenBinding: () =>
@@ -1307,6 +1369,49 @@ describe('worker inference routes', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
+  });
+
+  it('uses the exact admitted admin bearer for nonmember inference and denies revocation or lineage drift', async () => {
+    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      adminBearer: true,
+    });
+    const request = () =>
+      postWorkerResponses(fixture, {
+        input: 'Admin worker inference',
+        model: WORKER_LOGICAL_MODEL_ID,
+      });
+
+    expect((await request()).status).toBe(200);
+    expect(fixture.dispatcher.responseCalls).toHaveLength(1);
+
+    fixture
+      .coreDb!.sqlite.prepare(
+        "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = 'token_worker_inference_admin'"
+      )
+      .run(new Date().toISOString());
+    const revoked = await request();
+    expect(revoked.status).toBe(503);
+    await expect(revoked.json()).resolves.toMatchObject({
+      error: { code: 'worker_inference_unavailable' },
+    });
+    expect(fixture.dispatcher.responseCalls).toHaveLength(1);
+
+    fixture
+      .coreDb!.sqlite.prepare(
+        "UPDATE openkit_access_tokens SET status = 'active', revoked_at = NULL WHERE token_id = 'token_worker_inference_admin'"
+      )
+      .run();
+    fixture
+      .coreDb!.sqlite.prepare(
+        'UPDATE scheduler_session_leases SET package_snapshot_id = ? WHERE turn_id = ?'
+      )
+      .run('pkg_other', fixture.environmentPackage.scope.turnId);
+    const mismatched = await request();
+    expect(mismatched.status).toBe(503);
+    await expect(mismatched.json()).resolves.toMatchObject({
+      error: { code: 'worker_inference_unavailable' },
+    });
+    expect(fixture.dispatcher.responseCalls).toHaveLength(1);
   });
 
   it('rejects missing and invalid worker identity', async () => {

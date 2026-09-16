@@ -236,6 +236,7 @@ CREATE TABLE `scheduler_admission_entries` (
 	`queue_entry_id` text PRIMARY KEY NOT NULL,
 	`request_id` text,
 	`trigger_actor_json` text NOT NULL,
+	`server_admin_token_id` text,
 	`workspace_cwd` text,
 	`workspace_roots_json` text NOT NULL,
 	`workspace_id` text NOT NULL,

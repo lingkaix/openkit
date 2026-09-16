@@ -79,6 +79,10 @@ export async function startProductTurn(input: StartProductTurnInput) {
           id: input.triggerActor.id,
           responsibleUserId: input.triggerActor.responsibleUserId,
         };
+  const presentedServerAdminTokenId =
+    input.requestActor?.kind === 'token' && input.requestActor.tokenScope === 'server-admin'
+      ? (input.requestActor.tokenId ?? null)
+      : null;
   if (
     !currentWorkspaceAuthority(
       input.coreDb,
@@ -149,6 +153,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     turnInput: input.input.input,
     ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
     triggerActor: canonicalTriggerActor,
+    serverAdminTokenId: presentedServerAdminTokenId,
     workspaceCwd,
     workspaceId: input.input.workspaceId,
     workspaceRoots,

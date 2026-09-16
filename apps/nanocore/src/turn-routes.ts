@@ -343,6 +343,7 @@ export function registerTurnRoutes({
 
           const handle = await startProductTurn({
             input,
+            requestActor: c.get('actor'),
             providerCredentialResolver,
             schedulerEpoch,
             snapshot: runtimeConfig(),

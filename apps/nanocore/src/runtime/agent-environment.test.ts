@@ -12,9 +12,18 @@ import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-catalog.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import {
+  createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
+} from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -132,9 +141,64 @@ function createTestSetup(
  * @param input User-visible turn input.
  * @returns Accepted turn.
  */
-function createTurnFixture(input: string) {
+function createTurnFixture(
+  input: string,
+  coreDb?: ReturnType<typeof openCoreDb>,
+  triggerActor: ActorRef = USER_TRIGGER_ACTOR,
+  serverAdminTokenId?: string
+) {
   const store = createDemoStore();
-  return store.createTurn('ws_demo', 'th_demo', input, { kind: 'user', id: 'user_local' });
+  const turn = store.createTurn('ws_demo', 'th_demo', input, triggerActor);
+  if (coreDb) {
+    createSchedulerAdmissionEntry(coreDb, {
+      queueEntryId: `queue_${turn.id}`,
+      triggerActor,
+      ...(serverAdminTokenId ? { serverAdminTokenId } : {}),
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      turnInput: input,
+      requestedAgentId: 'agent_codex_host',
+      priorityClass: 'interactive',
+      requiredPoolConstraints: [],
+    });
+  }
+  return turn;
+}
+
+/** Gives a credential fixture its exact durable Worker package and live scheduler lease. */
+function leaseCredentialFixture(
+  coreDb: ReturnType<typeof openCoreDb>,
+  turn: ReturnType<typeof createTurnFixture>,
+  agentSessionId: string
+): void {
+  createSchedulerPlacementPlan(coreDb, {
+    planId: `plan_${turn.id}`,
+    queueEntryId: `queue_${turn.id}`,
+    selectedPoolId: 'pool_credential_fixture',
+    selectedTargetId: 'target_credential_fixture',
+    plannedLeaseDurationMs: 900_000,
+    heartbeatIntervalMs: 10_000,
+    heartbeatTimeoutMs: 30_000,
+    expectedControlMode: 'poll',
+    expectedDataPlaneMode: 'openshell-files',
+    degradedOptionalFeatures: [],
+    failoverTargetId: null,
+    policyDecisionIds: [],
+    capacitySnapshotRef: 'target_credential_fixture:1',
+    schedulerEpoch: 1,
+  });
+  createSchedulerSessionLease(coreDb, {
+    leaseId: `lease_${turn.id}`,
+    planId: `plan_${turn.id}`,
+    agentSessionId,
+    packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+    sessionCompatibilityKey: 'sha256:credential-fixture',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    heartbeatDeadline: '2099-01-01T00:00:00.000Z',
+    startupDeadline: '2099-01-01T00:00:00.000Z',
+    sandboxTokenBindingRef: `lease-token:${turn.id}`,
+  });
 }
 
 describe('agent environment package resolver', () => {
@@ -821,38 +885,41 @@ describe('agent environment package resolver', () => {
     });
 
     try {
-      const turn = createTurnFixture('Run Pi directly');
-      const resolved = resolveAgentEnvironmentPackage({
-        agentSetup: createTestSetup({
-          adapter: 'pi',
-          credentialDeclarations: [declaration],
-          network: [
-            {
-              access: 'read-write',
-              binaries: ['/usr/local/bin/node'],
-              host: 'api.anthropic.com',
-              id: 'anthropic-api',
-              port: 443,
-              protocol: 'rest',
-            },
-          ],
-          logicalModelId: 'claude',
-          requiredCapabilities: [],
-        }),
-        agentSessionId: 'session_direct_1',
-        backend: {
-          kind: 'openshell',
-        },
-        coreDb,
-        createdAt: now,
-        requestId: 'req_direct_1',
-        runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
-        turn,
-        triggerActor: AUTOMATION_TRIGGER_ACTOR,
-        vaultBackend: () => vaultUnlockState.backend(),
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      });
+      const turn = createTurnFixture('Run Pi directly', coreDb, AUTOMATION_TRIGGER_ACTOR);
+      leaseCredentialFixture(coreDb, turn, 'session_direct_1');
+      const resolve = () =>
+        resolveAgentEnvironmentPackage({
+          agentSetup: createTestSetup({
+            adapter: 'pi',
+            credentialDeclarations: [declaration],
+            network: [
+              {
+                access: 'read-write',
+                binaries: ['/usr/local/bin/node'],
+                host: 'api.anthropic.com',
+                id: 'anthropic-api',
+                port: 443,
+                protocol: 'rest',
+              },
+            ],
+            logicalModelId: 'claude',
+            requiredCapabilities: [],
+          }),
+          agentSessionId: 'session_direct_1',
+          backend: {
+            kind: 'openshell',
+          },
+          coreDb,
+          createdAt: now,
+          requestId: 'req_direct_1',
+          runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
+          turn,
+          triggerActor: AUTOMATION_TRIGGER_ACTOR,
+          vaultBackend: () => vaultUnlockState.backend(),
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        });
+      const resolved = resolve();
 
       expect(resolved.llm).toEqual({
         mode: 'gateway',
@@ -884,6 +951,27 @@ describe('agent environment package resolver', () => {
       expect(JSON.stringify(resolved)).not.toContain('direct_secret_value');
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toHaveLength(1);
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_session_leases SET package_snapshot_id = ? WHERE turn_id = ?')
+        .run('aepsnap_wrong_package', turn.id);
+      expect(resolve).toThrow(TurnStartValidationError);
+      expect(runtimeEnvCredentials).toHaveLength(1);
+      expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
+      expect(listVaultUseRecords(coreDb)).toHaveLength(1);
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_session_leases SET package_snapshot_id = ?, recovery_state = ?, recovery_deadline = ? WHERE turn_id = ?'
+        )
+        .run(
+          `aepsnap_${turn.id}_session_direct_1`,
+          'awaiting-reconnect',
+          '2099-01-01T00:00:00.000Z',
+          turn.id
+        );
+      expect(resolve).toThrow(TurnStartValidationError);
+      expect(runtimeEnvCredentials).toHaveLength(1);
+      expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
@@ -937,6 +1025,8 @@ describe('agent environment package resolver', () => {
     });
 
     try {
+      const turn = createTurnFixture('Use the Workspace GitHub account', coreDb);
+      leaseCredentialFixture(coreDb, turn, 'session_workspace_binding');
       const resolved = resolveAgentEnvironmentPackage({
         agentSetup: createTestSetup({
           credentialDeclarations: [
@@ -957,7 +1047,7 @@ describe('agent environment package resolver', () => {
         requestId: 'req_workspace_binding',
         runtimeEnvCredentialSink: (credential) =>
           runtimeEnvCredentials.push(credential.credentialValue),
-        turn: createTurnFixture('Use the Workspace GitHub account'),
+        turn,
         triggerActor: USER_TRIGGER_ACTOR,
         vaultBackend: () => vaultUnlockState.backend(),
         workspaceCwd: '/workspace/repo',
@@ -1040,6 +1130,8 @@ describe('agent environment package resolver', () => {
         version: 'Vault reference requires inspection before worker credential injection.',
         health: 'Vault backend is unavailable for worker credential injection.',
       }[failure];
+      const turn = createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
+      leaseCredentialFixture(coreDb, turn, 'session_public_github');
       expect(() =>
         resolveAgentEnvironmentPackage({
           agentSetup: createTestSetup({
@@ -1061,7 +1153,7 @@ describe('agent environment package resolver', () => {
           requestId: `req_public_github_${failure}`,
           runtimeEnvCredentialSink: (credential) =>
             runtimeEnvCredentials.push(credential.credentialValue),
-          turn: createTurnFixture(`Reject ${failure} Worker grant`),
+          turn,
           triggerActor: USER_TRIGGER_ACTOR,
           vaultBackend: () => vaultUnlockState.backend(),
           workspaceCwd: '/workspace/repo',
@@ -1078,11 +1170,10 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('previews the exact compatibility key without Vault or credential effects', () => {
+  it('previews nonmember administrator credentials without effects and denies a revoked bearer', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-compatibility-preview-'));
     const coreDb = openCoreDb(dataRoot);
     const now = '2026-07-18T00:00:00.000Z';
-    const turn = createTurnFixture('Preview compatibility without effects');
     const declaration: AgentEnvironmentCredentialDeclaration = {
       id: 'preview_api_key',
       targetEnvVarName: 'PREVIEW_API_KEY',
@@ -1109,6 +1200,24 @@ describe('agent environment package resolver', () => {
     let vaultBackendCalls = 0;
 
     applyMigrations(coreDb);
+    const triggerActor = { kind: 'user', id: 'user_admin_preview' } as const;
+    coreDb.sqlite
+      .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
+      VALUES (?, 'Preview Admin', 'preview-admin@example.test', false, ?, ?, 'human', 'active')`)
+      .run(triggerActor.id, Date.parse(now), Date.parse(now));
+    createOpenKitAccessTokenRecord(coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: triggerActor.id,
+      scope: 'server-admin',
+      tokenId: 'token_admin_preview',
+      workspaceIds: [],
+    });
+    const turn = createTurnFixture(
+      'Preview compatibility without effects',
+      coreDb,
+      triggerActor,
+      'token_admin_preview'
+    );
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -1147,7 +1256,7 @@ describe('agent environment package resolver', () => {
           sinkCalls += 1;
         },
         turn,
-        triggerActor: USER_TRIGGER_ACTOR,
+        triggerActor,
         vaultBackend: () => {
           vaultBackendCalls += 1;
           throw new Error('Compatibility preview must not resolve the Vault backend.');
@@ -1163,7 +1272,7 @@ describe('agent environment package resolver', () => {
         createdAt: now,
         requestId: 'req_preview_1',
         turn,
-        triggerActor: USER_TRIGGER_ACTOR,
+        triggerActor,
         workspaceCwd: '/workspace/repo',
         workspaceRoots: [],
       });
@@ -1180,6 +1289,23 @@ describe('agent environment package resolver', () => {
       expect(vaultBackendCalls).toBe(0);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
+      revokeOpenKitAccessTokenRecord(coreDb, 'token_admin_preview', new Date(now));
+      expect(() =>
+        resolveAgentEnvironmentPackageMetadata({
+          agentSessionId: 'session_preview_1',
+          agentSetup,
+          backend: { kind: 'openshell' },
+          coreDb,
+          createdAt: now,
+          requestId: 'req_preview_1',
+          turn,
+          triggerActor,
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        })
+      ).toThrow(TurnStartValidationError);
+      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
       const keyForContextDigest = (character: string) => {
         const environmentPackage = resolveAgentEnvironmentPackage({
@@ -1481,7 +1607,8 @@ describe('agent environment package resolver', () => {
     });
 
     try {
-      const turn = createTurnFixture('Reject missing sink');
+      const turn = createTurnFixture('Reject missing sink', coreDb, AUTOMATION_TRIGGER_ACTOR);
+      leaseCredentialFixture(coreDb, turn, 'session_missing_sink');
       expect(() =>
         resolveAgentEnvironmentPackage({
           agentSetup: createTestSetup({

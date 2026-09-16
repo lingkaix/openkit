@@ -17,6 +17,12 @@ import type { AutomationStore } from '../lib/automation-store.js';
 import type { FsStore } from '../lib/store.js';
 import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.js';
 import { evaluateWorkspaceRoleAccess, type ProductOperation } from '../policy/workspace-access.js';
+import {
+  findSchedulerAdmissionForTurn,
+  findSchedulerAdmissionForWorkerLineage,
+  type SchedulerAdmissionEntryRecord,
+  type SchedulerLeaseTokenBindingLineage,
+} from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   listActiveWorkspaceIds,
@@ -313,11 +319,15 @@ export function currentWorkspaceAuthority(
   if (!effectAuthority) {
     return null;
   }
-  if (
-    requestActor &&
-    isUsablePresentedServerAdminToken(coreDb, requestActor) &&
-    isActiveRegisteredWorkspace(coreDb, workspaceId)
-  ) {
+  if (requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin') {
+    if (
+      actor.kind !== 'user' ||
+      actor.id !== requestActor.userId ||
+      !isUsablePresentedServerAdminToken(coreDb, requestActor) ||
+      !isActiveRegisteredWorkspace(coreDb, workspaceId)
+    ) {
+      return null;
+    }
     const role: WorkspaceRole = 'owner';
     return evaluateWorkspaceRoleAccess({ operation, role }).effect === 'allow' ? role : null;
   }
@@ -330,6 +340,111 @@ export function currentWorkspaceAuthority(
     return null;
   }
   return role;
+}
+
+/**
+ * Rechecks one durable admission's presented administrator token before a scheduler or Worker effect.
+ *
+ * @param coreDb Core Workspace and Token authority.
+ * @param admission Exact originating admission context.
+ * @param operation Product operation being attempted now.
+ * @param effectAuthority Caller-owned effect authority.
+ * @returns Current Workspace role, or null if a recorded token is no longer usable.
+ */
+export function currentSchedulerAdmissionWorkspaceAuthority(
+  coreDb: CoreDb,
+  admission: Pick<
+    SchedulerAdmissionEntryRecord,
+    'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
+  >,
+  operation: string,
+  effectAuthority: boolean
+): WorkspaceRole | null {
+  if (admission.serverAdminTokenId === null) {
+    return currentWorkspaceAuthority(
+      coreDb,
+      admission.workspaceId,
+      admission.triggerActor,
+      operation,
+      effectAuthority
+    );
+  }
+  if (admission.serverAdminTokenId.length === 0 || admission.triggerActor.kind !== 'user') {
+    return null;
+  }
+  const requestActor: Actor = {
+    kind: 'token',
+    tokenId: admission.serverAdminTokenId,
+    tokenScope: 'server-admin',
+    userId: admission.triggerActor.id,
+  };
+  return currentWorkspaceAuthority(
+    coreDb,
+    admission.workspaceId,
+    admission.triggerActor,
+    operation,
+    effectAuthority,
+    requestActor
+  );
+}
+
+/**
+ * Rechecks current authority from the exact lease and package that own a Worker effect.
+ *
+ * @param coreDb Core Workspace, lease, and Token authority.
+ * @param lineage Worker package lineage and its immutable trigger actor.
+ * @param operation Product operation being attempted now.
+ * @param effectAuthority Caller-owned effect authority.
+ * @returns Current Workspace role, or null when lineage or current authority is invalid.
+ */
+export function currentWorkerLineageWorkspaceAuthority(
+  coreDb: CoreDb,
+  lineage: SchedulerLeaseTokenBindingLineage & { readonly triggerActor: ActorRef },
+  operation: string,
+  effectAuthority: boolean
+): WorkspaceRole | null {
+  const admission = findSchedulerAdmissionForWorkerLineage(coreDb, lineage);
+  if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) {
+    return null;
+  }
+  return currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, operation, effectAuthority);
+}
+
+/**
+ * Rechecks a product Turn's exact live admission before its Worker lease is created.
+ *
+ * @param coreDb Core Workspace and admission authority.
+ * @param lineage Exact product Turn and trigger actor.
+ * @param operation Product operation being attempted now.
+ * @param effectAuthority Caller-owned effect authority.
+ * @returns Current Workspace role, or null when the live admission or actor differs.
+ */
+export function currentScheduledTurnWorkspaceAuthority(
+  coreDb: CoreDb,
+  lineage: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly triggerActor: ActorRef;
+  },
+  operation: string,
+  effectAuthority: boolean
+): WorkspaceRole | null {
+  const admission = findSchedulerAdmissionForTurn(coreDb, lineage);
+  if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) {
+    return null;
+  }
+  return currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, operation, effectAuthority);
+}
+
+/** Compares immutable ActorRef fields without relying on JSON key order. */
+function sameActorRef(left: ActorRef, right: ActorRef): boolean {
+  return (
+    left.kind === right.kind &&
+    left.id === right.id &&
+    (left.kind === 'user' ||
+      (right.kind !== 'user' && left.responsibleUserId === right.responsibleUserId))
+  );
 }
 
 /**

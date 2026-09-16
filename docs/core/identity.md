@@ -151,11 +151,11 @@ The canonical owner must also have active membership. Ownership is stored once a
 ## Invariants
 
 - Identity records MUST NOT be treated as permission decisions.
-- Ordinary Workspace content access MUST come from active membership and a permission decision, not from filesystem presence, a user-owned link, an invitation, or deployment-administrator credentials alone.
-- Deployment recovery authority MAY change ownership or membership through an explicit audited recovery operation, after which normal Workspace authorization applies; it MUST NOT silently bypass membership for content access.
+- Workspace content access MUST come from current permission evaluation of active membership or an explicitly presented usable `server-admin` bearer; filesystem presence, a user-owned link, an invitation or merely owning an administrator Token supplies no authority. Private conversation ownership remains independently required.
+- Deployment recovery authority MAY change ownership or membership through an explicit audited recovery operation. The presented server-admin bearer exception is owned by the Permissions Model and MUST preserve credential attribution and private audience isolation.
 - Workspace owner transfer MUST preserve workspace identity and history.
 - Workspace-scoped human, agent, automation, and integration actions MUST preserve an `ActorRef` when attribution is required to explain who or what caused them.
-- Credential scope, token binding, active membership, and current permission MUST be intersected at request time; no one fact is sufficient by itself.
+- Credential scope, token binding, applicable membership or presented administrator authority, and current permission MUST be intersected at request time; no one fact is sufficient by itself.
 - OpenKit-authored records MUST use `AuthSession`, `AgentSession`, `ChannelSession`, or another prefixed term instead of the bare `Session`.
 - Raw token secret material MUST NOT be exposed after issuance through identity records, item payloads, audit records, or protocol summaries.
 - Automation and integration identities MUST remain distinguishable from trigger sources.

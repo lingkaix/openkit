@@ -325,18 +325,12 @@ describe('scheduler dispatch loop', () => {
   it.each([
     {
       earlierDeniedQueue: false,
-      expectedCode: 'scheduler_admission_denied',
-      expectedMessage: 'Scheduler denied this turn: policy-cap.',
     },
     {
       earlierDeniedQueue: true,
-      expectedCode: 'scheduler_admission_deferred',
-      expectedMessage: 'Turn was queued but not dispatched in this scheduler iteration.',
     },
-  ])('reports the terminal denial only when it belongs to the new queue: $earlierDeniedQueue', async ({
+  ])('dispatches the valid admin queue or defers behind another denial: $earlierDeniedQueue', async ({
     earlierDeniedQueue,
-    expectedCode,
-    expectedMessage,
   }) => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
@@ -383,40 +377,50 @@ describe('scheduler dispatch loop', () => {
     });
 
     try {
-      await expect(
-        startProductTurn({
-          cancelDeferredAdmission: true,
-          coreDb,
-          input: {
-            agentId: manifest.id,
-            input: 'Attempt admin worker dispatch.',
-            modelId: 'openai/gpt-5.2',
-            profileId: 'default',
-            requestId,
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
-          },
-          providerCredentialResolver: () => null,
-          requestActor: {
-            kind: 'token',
-            tokenId: 'token_admin_dispatch',
-            tokenScope: 'server-admin',
-            tokenWorkspaceIds: [],
-            userId: 'user_admin_dispatch',
-          },
-          schedulerEpoch: 1,
-          snapshot,
-          store,
-          triggerActor: { kind: 'user', id: 'user_admin_dispatch' },
-          turnExecutor: new RecordingTurnExecutor(),
-          workerPlacement: 'local',
-        })
-      ).rejects.toMatchObject({ code: expectedCode, message: expectedMessage, status: 409 });
+      const started = startProductTurn({
+        cancelDeferredAdmission: true,
+        coreDb,
+        input: {
+          agentId: manifest.id,
+          input: 'Attempt admin worker dispatch.',
+          modelId: 'openai/gpt-5.2',
+          profileId: 'default',
+          requestId,
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        },
+        providerCredentialResolver: () => null,
+        requestActor: {
+          kind: 'token',
+          tokenId: 'token_admin_dispatch',
+          tokenScope: 'server-admin',
+          tokenWorkspaceIds: [],
+          userId: 'user_admin_dispatch',
+        },
+        schedulerEpoch: 1,
+        snapshot,
+        store,
+        triggerActor: { kind: 'user', id: 'user_admin_dispatch' },
+        turnExecutor: new RecordingTurnExecutor(),
+        workerPlacement: 'local',
+      });
+      if (earlierDeniedQueue) {
+        await expect(started).rejects.toMatchObject({
+          code: 'scheduler_admission_deferred',
+          message: 'Turn was queued but not dispatched in this scheduler iteration.',
+          status: 409,
+        });
+      } else {
+        await expect(started).resolves.toMatchObject({ turn: { status: 'running' } });
+      }
       const entries = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        statuses: ['cancelled', 'denied'],
+        statuses: ['admitted', 'cancelled', 'denied'],
         workspaceId: 'ws_demo',
       });
-      expect(entries.find((entry) => entry.requestId === requestId)?.status).toBe('cancelled');
+      expect(entries.find((entry) => entry.requestId === requestId)).toMatchObject({
+        serverAdminTokenId: 'token_admin_dispatch',
+        status: earlierDeniedQueue ? 'cancelled' : 'admitted',
+      });
       if (earlierDeniedQueue) {
         expect(
           entries.find((entry) => entry.queueEntryId === 'queue_earlier_denied')
@@ -709,7 +713,10 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it('denies a queued admission whose actor lost current Workspace authority', async () => {
+  it.each([
+    'membership',
+    'server-admin-token',
+  ] as const)('denies a queued admission after its %s authority is revoked', async (authorityKind) => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
@@ -724,19 +731,31 @@ describe('scheduler dispatch loop', () => {
           ) VALUES ('user_revoked_dispatch', 'Revoked Dispatch', 'revoked-dispatch@example.com', false, ?, ?, 'human')`
         )
         .run(now, now);
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO workspace_members (
-            workspace_id, user_id, status, access_level, invitation_id,
-            joined_at, removed_at, revision, created_at, updated_at
-          ) VALUES ('ws_demo', 'user_revoked_dispatch', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
-        )
-        .run(timestamp, timestamp, timestamp);
+      if (authorityKind === 'membership') {
+        coreDb.sqlite
+          .prepare(
+            `INSERT INTO workspace_members (
+              workspace_id, user_id, status, access_level, invitation_id,
+              joined_at, removed_at, revision, created_at, updated_at
+            ) VALUES ('ws_demo', 'user_revoked_dispatch', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          )
+          .run(timestamp, timestamp, timestamp);
+      } else {
+        createOpenKitAccessTokenRecord(coreDb, {
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          ownerUserId: 'user_revoked_dispatch',
+          scope: 'server-admin',
+          tokenId: 'token_revoked_dispatch',
+          workspaceIds: [],
+        });
+      }
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         triggerActor: { kind: 'user', id: 'user_revoked_dispatch' },
         queueEntryId: 'queue_revoked_dispatch',
         requestId: 'req_revoked_dispatch',
+        serverAdminTokenId:
+          authorityKind === 'server-admin-token' ? 'token_revoked_dispatch' : null,
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_revoked_dispatch',
@@ -746,13 +765,21 @@ describe('scheduler dispatch loop', () => {
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
       });
-      coreDb.sqlite
-        .prepare(
-          `UPDATE workspace_members
-           SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
-           WHERE workspace_id = 'ws_demo' AND user_id = 'user_revoked_dispatch'`
-        )
-        .run(timestamp, timestamp);
+      if (authorityKind === 'membership') {
+        coreDb.sqlite
+          .prepare(
+            `UPDATE workspace_members
+             SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
+             WHERE workspace_id = 'ws_demo' AND user_id = 'user_revoked_dispatch'`
+          )
+          .run(timestamp, timestamp);
+      } else {
+        coreDb.sqlite
+          .prepare(
+            "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+          )
+          .run(timestamp, 'token_revoked_dispatch');
+      }
 
       const result = await runSchedulerDispatchLoop({
         gatewayConfig: createTestGatewayConfig(),
@@ -803,6 +830,108 @@ describe('scheduler dispatch loop', () => {
         }),
       ]);
       expect(() => store.getTurnById('turn_revoked_dispatch')).toThrow('Turn not found');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'prepare',
+    'commit',
+  ] as const)('rechecks a recorded admin token after asynchronous %s before Worker launch', async (revocationStage) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const now = Date.now();
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+            id, display_name, email, email_verified, created_at, updated_at, kind, status
+          ) VALUES ('user_admin_race', 'Admin Race', 'admin-race@example.com', false, ?, ?, 'human', 'active')`
+      )
+      .run(now, now);
+    createOpenKitAccessTokenRecord(coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_admin_race',
+      scope: 'server-admin',
+      tokenId: 'token_admin_race',
+      workspaceIds: [],
+    });
+    seedLocalSchedulerTarget(coreDb);
+    createSchedulerAdmissionEntry(coreDb, {
+      queueEntryId: 'queue_admin_race',
+      requestId: 'req_admin_race',
+      serverAdminTokenId: 'token_admin_race',
+      triggerActor: { kind: 'user', id: 'user_admin_race' },
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'turn_admin_race',
+      turnInput: 'Do not launch after revocation',
+      requestedAgentId: 'agent_codex_host',
+      priorityClass: 'interactive',
+      requiredPoolConstraints: ['openshell.local'],
+    });
+    const revoke = () =>
+      coreDb.sqlite
+        .prepare(
+          "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+        )
+        .run(new Date().toISOString(), 'token_admin_race');
+    if (revocationStage === 'prepare') {
+      const original = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+      turnExecutor.prepareAgentSessionForTurn = async (...args) => {
+        const prepared = await original(...args);
+        revoke();
+        return prepared;
+      };
+    } else {
+      const original = turnExecutor.commitPreparedAgentSessionForTurn.bind(turnExecutor);
+      turnExecutor.commitPreparedAgentSessionForTurn = async (...args) => {
+        const committed = await original(...args);
+        revoke();
+        return committed;
+      };
+    }
+    const dispatch = () =>
+      runSchedulerDispatchLoop({
+        gatewayConfig: createTestGatewayConfig(),
+        agentManifests: [agentManifest()],
+        coreDb,
+        createAgentSessionId: () => 'as_admin_race',
+        createLeaseId: () => 'lease_admin_race',
+        createPlanId: () => 'plan_admin_race',
+        expectedControlMode: 'poll',
+        expectedDataPlaneMode: 'openshell-files',
+        heartbeatIntervalMs: 10_000,
+        heartbeatTimeoutMs: 30_000,
+        leaseDurationMs: 900_000,
+        maxDispatches: 1,
+        providerRegistry: localProviderRegistry(),
+        schedulerEpoch: 1,
+        startupTimeoutMs: 120_000,
+        store,
+        turnExecutor,
+      });
+
+    try {
+      if (revocationStage === 'prepare') {
+        await expect(dispatch()).resolves.toMatchObject({
+          startedTurns: [],
+          terminalResult: {
+            status: 'denied',
+            entry: { queueEntryId: 'queue_admin_race', denialReason: 'policy-cap' },
+          },
+        });
+      } else {
+        await expect(dispatch()).rejects.toMatchObject({
+          code: 'workspace_access_denied',
+          status: 403,
+        });
+      }
+      expect(turnExecutor.calls).toEqual([]);
+      expect(coreDb.sqlite.prepare('SELECT status FROM scheduler_session_leases').all()).toEqual(
+        revocationStage === 'prepare' ? [] : [{ status: 'failed' }]
+      );
     } finally {
       coreDb.sqlite.close();
     }

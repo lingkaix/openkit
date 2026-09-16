@@ -48,6 +48,8 @@ export interface SchedulerAdmissionEntryRecord {
   readonly requestId: string | null;
   /** Exact actor that triggered the admission. */
   readonly triggerActor: ActorRef;
+  /** Non-secret id of the presented server-admin token, checked again at each effect. */
+  readonly serverAdminTokenId: string | null;
   /** Host-local working directory captured for delayed worker startup. */
   readonly workspaceCwd: string | null;
   /** Materialized workspace roots captured for delayed worker startup. */
@@ -344,6 +346,7 @@ interface SchedulerAdmissionEntryRow {
   readonly queue_entry_id: string;
   readonly request_id: string | null;
   readonly trigger_actor_json: string;
+  readonly server_admin_token_id: string | null;
   readonly workspace_cwd: string | null;
   readonly workspace_roots_json: string;
   readonly workspace_id: string;
@@ -511,6 +514,8 @@ export interface CreateSchedulerAdmissionEntryInput {
   readonly requestId?: string | null;
   /** Exact actor that triggered the admission. */
   readonly triggerActor: ActorRef;
+  /** Non-secret id of a presented server-admin bearer bound to the triggering user. */
+  readonly serverAdminTokenId?: string | null;
   /** Host-local working directory captured for delayed worker startup. */
   readonly workspaceCwd?: string | null;
   /** Materialized workspace roots captured for delayed worker startup. */
@@ -1028,9 +1033,10 @@ export function createSchedulerAdmissionEntry(
         status,
         denial_reason,
         trigger_actor_json,
+        server_admin_token_id,
         workspace_cwd,
         workspace_roots_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.queueEntryId,
@@ -1053,6 +1059,7 @@ export function createSchedulerAdmissionEntry(
       'queued',
       null,
       JSON.stringify(triggerActor),
+      input.serverAdminTokenId ?? null,
       input.workspaceCwd ?? null,
       JSON.stringify(input.workspaceRoots ?? [])
     );
@@ -2248,6 +2255,90 @@ export function requireSchedulerSessionLeaseAdmissionContext(
     requestId: row.requestId,
     triggerActor: ActorRefSchema.parse(JSON.parse(row.triggerActorJson)),
   };
+}
+
+/**
+ * Finds the original admission for one exact Worker package lineage.
+ *
+ * @param coreDb Open Core database handle.
+ * @param lineage Exact Workspace, Thread, Turn, AgentSession, and package snapshot identity.
+ * @returns Admission authority context, or null if any lease or admission lineage differs.
+ */
+export function findSchedulerAdmissionForWorkerLineage(
+  coreDb: CoreDb,
+  lineage: SchedulerLeaseTokenBindingLineage
+): Pick<
+  SchedulerAdmissionEntryRecord,
+  'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
+> | null {
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT admission.workspace_id AS workspaceId,
+              admission.trigger_actor_json AS triggerActorJson,
+              admission.server_admin_token_id AS serverAdminTokenId
+       FROM scheduler_session_leases AS lease
+       JOIN scheduler_placement_plans AS plan ON plan.plan_id = lease.plan_id
+       JOIN scheduler_admission_entries AS admission ON admission.queue_entry_id = plan.queue_entry_id
+       WHERE lease.workspace_id = ? AND lease.thread_id = ? AND lease.turn_id = ?
+         AND lease.agent_session_id = ? AND lease.package_snapshot_id = ?
+         AND plan.workspace_id = lease.workspace_id
+         AND plan.thread_id = lease.thread_id AND plan.turn_id = lease.turn_id
+         AND admission.workspace_id = lease.workspace_id
+         AND admission.thread_id = lease.thread_id AND admission.turn_id = lease.turn_id`
+    )
+    .all(
+      lineage.workspaceId,
+      lineage.threadId,
+      lineage.turnId,
+      lineage.agentSessionId,
+      lineage.packageSnapshotId
+    ) as Array<{
+    workspaceId: string;
+    triggerActorJson: string;
+    serverAdminTokenId: string | null;
+  }>;
+  const row = rows.length === 1 ? rows[0] : undefined;
+  return row
+    ? {
+        workspaceId: row.workspaceId,
+        triggerActor: ActorRefSchema.parse(JSON.parse(row.triggerActorJson)),
+        serverAdminTokenId: row.serverAdminTokenId,
+      }
+    : null;
+}
+
+/**
+ * Finds the sole queued or admitted admission for an exact product Turn before a lease exists.
+ *
+ * @param coreDb Open Core database handle.
+ * @param lineage Exact Workspace, Thread, and Turn identity.
+ * @returns Current admission authority context, or null when it has no live admission.
+ */
+export function findSchedulerAdmissionForTurn(
+  coreDb: CoreDb,
+  lineage: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
+): Pick<
+  SchedulerAdmissionEntryRecord,
+  'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
+> | null {
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT workspace_id AS workspaceId, trigger_actor_json AS triggerActorJson,
+              server_admin_token_id AS serverAdminTokenId
+       FROM scheduler_admission_entries
+       WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+         AND status IN ('queued', 'admitted')`
+    )
+    .get(lineage.workspaceId, lineage.threadId, lineage.turnId) as
+    | { workspaceId: string; triggerActorJson: string; serverAdminTokenId: string | null }
+    | undefined;
+  return row
+    ? {
+        workspaceId: row.workspaceId,
+        triggerActor: ActorRefSchema.parse(JSON.parse(row.triggerActorJson)),
+        serverAdminTokenId: row.serverAdminTokenId,
+      }
+    : null;
 }
 
 /**
@@ -3481,6 +3572,7 @@ function schedulerAdmissionSelectSql(): string {
     queue_entry_id,
     request_id,
     trigger_actor_json,
+    server_admin_token_id,
     workspace_cwd,
     workspace_roots_json,
     workspace_id,
@@ -3662,6 +3754,7 @@ function mapSchedulerAdmissionEntryRow(
     queueEntryId: row.queue_entry_id,
     requestId: row.request_id,
     triggerActor: ActorRefSchema.parse(JSON.parse(row.trigger_actor_json)),
+    serverAdminTokenId: row.server_admin_token_id,
     workspaceCwd: row.workspace_cwd,
     workspaceRoots: JSON.parse(row.workspace_roots_json) as MaterializedWorkspaceRoot[],
     workspaceId: row.workspace_id,

@@ -296,6 +296,49 @@ const terminalAccountingCorruptions: ReadonlyArray<{
 ];
 
 describe('scheduler records', () => {
+  it('retains only the non-secret presented administrator token id across a database reopen', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-token-'));
+    const first = openCoreDb(dataRoot);
+    applyMigrations(first);
+    try {
+      const input = {
+        queueEntryId: 'queue_admin_token',
+        serverAdminTokenId: 'token_admin_1',
+        triggerActor: { kind: 'user' as const, id: 'user_admin' },
+        workspaceId: 'ws_1',
+        threadId: 'th_1',
+        turnId: 'turn_1',
+        turnInput: 'Run task',
+        requestedAgentId: 'assistant',
+        priorityClass: 'interactive' as const,
+        requiredPoolConstraints: [],
+      };
+      createSchedulerAdmissionEntry(first, input);
+      expect(() =>
+        createSchedulerAdmissionEntry(first, {
+          ...input,
+          serverAdminTokenId: 'token_admin_2',
+        })
+      ).toThrow('already has a non-terminal scheduler admission entry');
+    } finally {
+      first.sqlite.close();
+    }
+    const reopened = openCoreDb(dataRoot);
+    try {
+      expect(listQueuedSchedulerAdmissionEntries(reopened)[0]).toMatchObject({
+        serverAdminTokenId: 'token_admin_1',
+        triggerActor: { kind: 'user', id: 'user_admin' },
+      });
+      expect(
+        reopened.sqlite
+          .prepare('SELECT server_admin_token_id FROM scheduler_admission_entries')
+          .get()
+      ).toEqual({ server_admin_token_id: 'token_admin_1' });
+    } finally {
+      reopened.sqlite.close();
+    }
+  });
+
   it('records supply refresh acknowledgements as durable renewal declarations', () => {
     const coreDb = createMigratedCoreDb();
 

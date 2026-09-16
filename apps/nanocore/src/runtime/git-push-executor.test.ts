@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
@@ -202,6 +203,86 @@ function recordRepoPushAllowDecision(
 }
 
 describe('Git push executor', () => {
+  it.each([
+    false,
+    true,
+  ])('uses a fresh nonmember admin bearer and stops remote mutation after revocation: %s', async (revokeAfterReads) => {
+    const workspaceDb = createWorkspaceDb();
+    const repository = createGitRepository();
+    const now = Date.now();
+    workspaceDb.coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (
+            id, display_name, email, email_verified, created_at, updated_at, kind, status
+          ) VALUES ('user_admin_push', 'Admin Push', 'admin-push@example.invalid', false, ?, ?, 'human', 'active')`
+      )
+      .run(now, now);
+    createOpenKitAccessTokenRecord(workspaceDb.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_admin_push',
+      scope: 'server-admin',
+      tokenId: 'token_admin_push',
+      workspaceIds: [],
+    });
+    const calls: Parameters<GitPushCommandRunner>[0][] = [];
+    const runner: GitPushCommandRunner = async (command) => {
+      calls.push(command);
+      if (calls.length === 1) {
+        return { exitCode: 0, stderr: '', stdout: `${BASE_COMMIT}\trefs/heads/feature/demo\n` };
+      }
+      if (calls.length === 2) return { exitCode: 0, stderr: '', stdout: '' };
+      if (calls.length === 3) {
+        if (revokeAfterReads) {
+          workspaceDb.coreDb.sqlite
+            .prepare(
+              "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+            )
+            .run(new Date().toISOString(), 'token_admin_push');
+        }
+        return { exitCode: 0, stderr: '', stdout: `${SOURCE_COMMIT}\n` };
+      }
+      if (calls.length === 4) return { exitCode: 0, stderr: '', stdout: '' };
+      throw new Error('Unexpected Git command.');
+    };
+
+    try {
+      recordLinkedCommit(workspaceDb, [SOURCE_COMMIT]);
+      recordRepoPushAllowDecision(workspaceDb, 'pd_1');
+      const record = await executeGitPushAttempt(workspaceDb, {
+        attempt: gitPushAttempt({
+          actorId: 'user_admin_push',
+          commitIds: [SOURCE_COMMIT],
+          recordId: revokeAfterReads ? 'gpr_admin_revoked' : 'gpr_admin_valid',
+          requestId: revokeAfterReads
+            ? '00000000-0000-4000-8000-000000000091'
+            : '00000000-0000-4000-8000-000000000090',
+        }),
+        authority: {
+          kind: 'request',
+          actor: {
+            kind: 'token',
+            tokenId: 'token_admin_push',
+            tokenScope: 'server-admin',
+            userId: 'user_admin_push',
+          },
+        },
+        coreDb: workspaceDb.coreDb,
+        env: { GITHUB_TOKEN: 'secret-token' },
+        objectDirectory: repository.objectDirectory,
+        objectFormat: 'sha1',
+        provider: 'github',
+        remoteName: 'https://github.com/openkit/openkit.git',
+        runner,
+        sourceCommit: SOURCE_COMMIT,
+      });
+      expect(calls).toHaveLength(revokeAfterReads ? 3 : 4);
+      expect(record.outcome).toBe(revokeAfterReads ? 'refused-policy' : 'pushed');
+    } finally {
+      workspaceDb.sqlite.close();
+      workspaceDb.coreDb.sqlite.close();
+    }
+  });
+
   it('records preflight refusals without invoking the command runner', async () => {
     const workspaceDb = createWorkspaceDb();
     const runner: GitPushCommandRunner = async () => {
@@ -215,6 +296,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_refused',
           requestId: '00000000-0000-4000-8000-000000000028',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         env: { GITHUB_TOKEN: 'secret-token' },
@@ -256,6 +338,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_current_authority_refused',
           requestId: '00000000-0000-4000-8000-000000000050',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         objectDirectory: repository.objectDirectory,
         objectFormat: 'sha1',
@@ -322,6 +405,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_authority_removed_after_read',
           requestId: '00000000-0000-4000-8000-000000000051',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: repository.objectDirectory,
@@ -378,6 +462,7 @@ describe('Git push executor', () => {
             remoteSummary: 'GitLab repository openkit on origin',
             requestId,
           }),
+          authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
           coreDb: workspaceDb.coreDb,
           cwd: '/repo',
           objectFormat: 'sha1',
@@ -413,6 +498,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_policy_missing',
           requestId: '00000000-0000-4000-8000-000000000034',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectDirectory: '/repo/.git/objects',
@@ -460,6 +546,7 @@ describe('Git push executor', () => {
       ] as const) {
         const record = await executeGitPushAttempt(workspaceDb, {
           attempt: gitPushAttempt({ policyDecisionId: decisionId, recordId, requestId }),
+          authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
           coreDb: workspaceDb.coreDb,
           objectDirectory: '/unused',
           objectFormat: 'sha1',
@@ -505,6 +592,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_policy_target_mismatch',
           requestId: '00000000-0000-4000-8000-000000000035',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectFormat: 'sha1',
@@ -542,6 +630,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_auth_failed',
           requestId: '00000000-0000-4000-8000-000000000036',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectFormat: 'sha1',
@@ -589,6 +678,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_unsafe_source',
           requestId: '00000000-0000-4000-8000-000000000040',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectDirectory: '/repo/.git/objects',
@@ -649,6 +739,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_missing_remote_branch',
           requestId: '00000000-0000-4000-8000-000000000042',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: repository.objectDirectory,
@@ -701,6 +792,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_divergent_remote_head',
           requestId: '00000000-0000-4000-8000-000000000043',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: '/repo/.git/objects',
@@ -804,6 +896,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_pushed',
           requestId: '00000000-0000-4000-8000-000000000029',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         cwd: repositoryPath,
         env: { GITHUB_TOKEN: 'secret-token', PATH: '/usr/bin' },
@@ -908,6 +1001,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_sha256',
           requestId: '00000000-0000-4000-8000-000000000044',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: repository.objectDirectory,
@@ -978,6 +1072,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_hidden_ancestor',
           requestId: '00000000-0000-4000-8000-000000000041',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: repository.objectDirectory,
@@ -1052,6 +1147,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_cas_race',
           requestId: '00000000-0000-4000-8000-000000000045',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         env: { GITHUB_TOKEN: 'secret-token' },
         objectDirectory: repository.objectDirectory,
@@ -1125,6 +1221,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_rejected',
           requestId: '00000000-0000-4000-8000-000000000030',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         env: { GITHUB_TOKEN: 'secret-token' },
@@ -1184,6 +1281,7 @@ describe('Git push executor', () => {
           recordId: 'gpr_runner_failure',
           requestId: '00000000-0000-4000-8000-000000000038',
         }),
+        authority: { kind: 'request', actor: { kind: 'session', userId: 'user_1' } },
         coreDb: workspaceDb.coreDb,
         cwd: '/repo',
         objectDirectory: '/repo/.git/objects',
