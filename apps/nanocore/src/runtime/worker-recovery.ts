@@ -571,16 +571,21 @@ export function hasExactActiveHumanGate(
  * @param coreDb Open Core database handle containing scheduler authority.
  * @param store App-local product Turn and AgentSession store.
  * @param workspaceDb Open workspace-scope database handle.
+ * @param isCandidate Audience admission required before dependent checkpoint reads.
  * @returns Interrupted worker state rows for visible restart recovery.
  */
 export function materializeInterruptedWorkerStates(
   coreDb: CoreDb,
   store: FsStore,
-  workspaceDb: WorkspaceDb
+  workspaceDb: WorkspaceDb,
+  isCandidate: (checkpoint: WorkerCheckpointRecord) => boolean
 ): InterruptedWorkerStateRecord[] {
   const materializedAt = new Date().toISOString();
 
   return listRecoverableWorkerCheckpoints(workspaceDb).flatMap((checkpoint) => {
+    if (!isCandidate(checkpoint)) {
+      return [];
+    }
     const decision = resolveInterruptedWorkerRetryDecision(coreDb, store, workspaceDb, {
       workspaceId: checkpoint.workspaceId,
       threadId: checkpoint.threadId,

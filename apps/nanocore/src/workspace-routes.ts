@@ -9,6 +9,7 @@ import type { Context, Hono } from 'hono';
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { isThreadVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
 import {
   type InflightIdempotentCommand,
@@ -37,13 +38,16 @@ export function registerWorkspaceRoutes({
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
-  /** Projects current Workspace counts from submitted outputs without rewriting retained history. */
+  /** Projects viewer-visible Workspace counts without rewriting retained history. */
   function readWorkspace(store: FsStore, workspaceId: string, userId: string | undefined) {
     const workspace = store.getWorkspace(workspaceId);
     return WorkspaceRecordSchema.parse({
       ...workspace,
       counts: {
         ...workspace.counts,
+        threadCount: store
+          .listThreads(workspaceId)
+          .filter((thread) => isThreadVisible(store, thread, userId)).length,
         artifactCount: listOutputArtifacts(store, coreDb, workspaceId, userId).length,
       },
     });

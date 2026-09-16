@@ -458,10 +458,13 @@ describe('central Workspace operation authorizer', () => {
     const deniedBeforeHandlerBody = await deniedBeforeHandler.json();
     const deniedAfterAuthorizationBody = await deniedAfterAuthorization.json();
 
-    expect(deniedAfterAuthorization.status).toBe(403);
-    expect(fixture.threadDashboardHandlerReads()).toBe(1);
-    expect(deniedAfterAuthorizationBody).toEqual(deniedBeforeHandlerBody);
-    expect(deniedAfterAuthorizationBody).toMatchObject({ code: 'workspace_access_denied' });
+    expect(deniedAfterAuthorization.status).toBe(404);
+    expect(fixture.threadDashboardHandlerReads()).toBe(0);
+    expect(deniedBeforeHandlerBody).toMatchObject({ code: 'workspace_access_denied' });
+    expect(deniedAfterAuthorizationBody).toMatchObject({
+      code: 'not_found',
+      message: 'Thread not found.',
+    });
   });
 
   it('returns one non-enumerating denial for missing and removed membership', async () => {
@@ -485,6 +488,13 @@ describe('central Workspace operation authorizer', () => {
   it('uses catalog mutation posture to cap readonly tokens', async () => {
     expect(PUBLIC_OPERATION_ACCESS.createAutomation).toMatchObject({ mutating: true });
     expect(PUBLIC_OPERATION_ACCESS.getWorkspaceDashboard).toMatchObject({ mutating: false });
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'workspace-readonly',
+      tokenId: 'token_readonly',
+      workspaceIds: [fixture.workspace.id],
+    });
     fixture.actorState.current = {
       kind: 'token',
       tokenId: 'token_readonly',
@@ -714,6 +724,13 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('intersects Workspace token bindings with current membership', async () => {
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'workspace',
+      tokenId: 'token_workspace',
+      workspaceIds: [fixture.foreignWorkspace.id, fixture.workspace.id],
+    });
     fixture.actorState.current = {
       kind: 'token',
       tokenId: 'token_workspace',

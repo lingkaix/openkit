@@ -882,7 +882,7 @@ describe('generic turn routes', () => {
         executorStarts: 0,
         leaseCount: 0,
         orphanTurnExists: false,
-        responseCode: 'turn_start_failed',
+        responseCode: 'not_found',
         responseStatus: 404,
         sourceCatalogExists: false,
       });

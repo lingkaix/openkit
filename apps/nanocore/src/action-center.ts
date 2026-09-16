@@ -11,6 +11,7 @@ import { listArtifactReviews } from './artifact-reviews.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
+import { isThreadIdVisible, isThreadVisible } from './auth/thread-visibility.js';
 import { readPendingGoalSteeringProjection } from './context/worker-context-projection.js';
 import { GoalSteeringAuthorityError } from './goal-steering-authority.js';
 import type { FsStore } from './lib/store.js';
@@ -138,7 +139,8 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
     ...questionRows(
       input.store,
       input.workspaceId,
-      turnDecisionAuthorized ? (input.actor?.userId ?? null) : null
+      turnDecisionAuthorized ? (input.actor?.userId ?? null) : null,
+      input.actor?.userId
     ),
     ...runtimeRows(input, reviewDecisionAuthorized),
     ...agentReadinessRows(input.store, input.workspaceId),
@@ -154,6 +156,18 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
 }
 
 /**
+ * Returns Threads the current Action Center viewer may use before dependent reads.
+ *
+ * @param input Projection dependencies and Workspace scope.
+ * @returns Threads visible to the authenticated viewer.
+ */
+function visibleThreadsForActor(input: BuildHumanAttentionRowsInput) {
+  return input.store
+    .listThreads(input.workspaceId)
+    .filter((thread) => isThreadVisible(input.store, thread, input.actor?.userId));
+}
+
+/**
  * Projects exact unresolved version-keyed Artifact Reviews into Action Center rows.
  *
  * @param input Projection dependencies and Workspace scope.
@@ -164,9 +178,6 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
     return [];
   }
 
-  const artifacts = new Map(
-    input.store.listArtifacts(input.workspaceId).map((artifact) => [artifact.id, artifact])
-  );
   const workspaceReviewArtifactIds = new Set(
     listWorkspaceSyncReviews(input.workspaceDb, input.workspaceId).map((item) => item.artifactId)
   );
@@ -174,10 +185,18 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
   return listArtifactReviews(input.workspaceDb)
     .filter((review) => review.decision === null)
     .filter((review) => !workspaceReviewArtifactIds.has(review.artifactId))
+    .filter((review): review is typeof review & { sourceThreadId: string; sourceTurnId: string } =>
+      Boolean(review.sourceThreadId && review.sourceTurnId)
+    )
+    .filter((review) =>
+      isThreadIdVisible(input.store, review.workspaceId, review.sourceThreadId, input.actor?.userId)
+    )
     .flatMap((review) => {
-      const artifact = artifacts.get(review.artifactId);
-      if (!review.sourceThreadId || !review.sourceTurnId) {
-        return [];
+      let artifact: ReturnType<FsStore['getArtifact']> | undefined;
+      try {
+        artifact = input.store.getArtifact(review.workspaceId, review.artifactId);
+      } catch {
+        artifact = undefined;
       }
       let sourceTurn: ReturnType<FsStore['getTurn']>;
       try {
@@ -463,6 +482,9 @@ function approvalRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] 
   return items
     .filter(isApprovalRequestItem)
     .filter((item) => !decisions.has(item.approvalRequestId))
+    .filter((item) =>
+      isThreadIdVisible(input.store, item.workspaceId, item.threadId, input.actor?.userId)
+    )
     .filter((item) => isActionableApprovalRequest(input, item))
     .map((item) => {
       const approval = input.store.getApproval(item.approvalRequestId);
@@ -513,12 +535,14 @@ function approvalRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] 
  * @param store Request-scoped workspace store.
  * @param workspaceId Workspace id to inspect.
  * @param responsibleUserId Authorized actor id that must own the request.
+ * @param viewerUserId Authenticated viewer used for Thread audience.
  * @returns Question rows.
  */
 function questionRows(
   store: FsStore,
   workspaceId: string,
-  responsibleUserId: string | null
+  responsibleUserId: string | null,
+  viewerUserId: string | undefined
 ): HumanAttentionRow[] {
   const items = store.listAllItems().filter((item) => item.workspaceId === workspaceId);
   const responses = new Set(
@@ -529,6 +553,7 @@ function questionRows(
     .filter(isUserInputRequestItem)
     .filter((item) => item.responsibleUserId === responsibleUserId)
     .filter((item) => !responses.has(item.userInputRequestId))
+    .filter((item) => isThreadIdVisible(store, item.workspaceId, item.threadId, viewerUserId))
     .filter((item) => isExactUserInputRequest(store, item))
     .map((item) => ({
       id: `question:${item.id}`,
@@ -584,15 +609,31 @@ function runtimeRows(
   }
 
   return [
-    ...schedulerAdmissionRows(input.coreDb, input.workspaceId),
-    ...workerControlRejectedEvidenceRows(input.coreDb, input.workspaceId),
-    ...schedulerOrphanWorkerRows(input.coreDb, input.workspaceId),
+    ...schedulerAdmissionRows(input.coreDb, input.store, input.workspaceId, input.actor?.userId),
+    ...workerControlRejectedEvidenceRows(
+      input.coreDb,
+      input.store,
+      input.workspaceId,
+      input.actor?.userId
+    ),
+    ...schedulerOrphanWorkerRows(input.coreDb, input.store, input.workspaceId, input.actor?.userId),
     ...(input.workspaceDb
-      ? checkpointRows(input.coreDb, input.store, input.workspaceDb, input.workspaceId)
+      ? checkpointRows(
+          input.coreDb,
+          input.store,
+          input.workspaceDb,
+          input.workspaceId,
+          input.actor?.userId
+        )
       : []),
     ...(input.workspaceDb ? workspaceRecoveryRows(input.workspaceDb, input.workspaceId) : []),
     ...(input.workspaceDb
-      ? goalRows(input.store, input.workspaceDb, input.workspaceId, reviewDecisionAuthorized)
+      ? goalRows(
+          input.workspaceDb,
+          input.workspaceId,
+          reviewDecisionAuthorized,
+          visibleThreadsForActor(input)
+        )
       : []),
     ...(input.workspaceDb ? pendingGoalSteeringRows(input) : []),
   ];
@@ -610,7 +651,7 @@ function pendingGoalSteeringRows(input: BuildHumanAttentionRowsInput): HumanAtte
     return [];
   }
 
-  return input.store.listThreads(input.workspaceId).flatMap((thread) => {
+  return visibleThreadsForActor(input).flatMap((thread) => {
     const projection = readPendingGoalSteeringProjection({
       coreDb,
       store: input.store,
@@ -677,116 +718,141 @@ function pendingGoalSteeringRows(input: BuildHumanAttentionRowsInput): HumanAtte
  * Projects durable scheduler admissions into product-visible attention rows.
  *
  * @param coreDb Open server-scope Core database handle.
+ * @param store Request-scoped workspace store.
  * @param workspaceId Workspace id to project.
+ * @param userId Authenticated viewer.
  * @returns Scheduler admission rows for queued or human-actionable denied entries.
  */
-function schedulerAdmissionRows(coreDb: CoreDb, workspaceId: string): HumanAttentionRow[] {
+function schedulerAdmissionRows(
+  coreDb: CoreDb,
+  store: FsStore,
+  workspaceId: string,
+  userId: string | undefined
+): HumanAttentionRow[] {
   return listSchedulerAdmissionEntriesForWorkspace(coreDb, {
     workspaceId,
     statuses: ['queued', 'denied'],
-  }).map((entry) => {
-    const status = entry.status === 'denied' ? 'denied' : 'queued';
+  })
+    .filter((entry) => isThreadIdVisible(store, entry.workspaceId, entry.threadId, userId))
+    .map((entry) => {
+      const status = entry.status === 'denied' ? 'denied' : 'queued';
 
-    return {
-      id: `scheduler-admission:${entry.queueEntryId}`,
-      kind: status === 'denied' ? 'blocked_turn' : 'pending_input',
-      workspaceId: entry.workspaceId,
-      threadId: entry.threadId,
-      turnId: entry.turnId,
-      title: schedulerAdmissionTitle(entry),
-      summary: schedulerAdmissionSummary(entry),
-      severity: status === 'denied' ? 'blocked' : 'info',
-      createdAt: entry.enqueuedAt,
-      recommendedAction:
-        status === 'denied'
-          ? 'Open the thread and resolve the scheduler blocker before retrying.'
-          : 'Open the thread to review the queued worker turn.',
-      source: {
-        type: 'scheduler_admission',
-        queueEntryId: entry.queueEntryId,
-        status,
-        denialReason: entry.denialReason ?? undefined,
+      return {
+        id: `scheduler-admission:${entry.queueEntryId}`,
+        kind: status === 'denied' ? 'blocked_turn' : 'pending_input',
         workspaceId: entry.workspaceId,
         threadId: entry.threadId,
         turnId: entry.turnId,
-        requestedAgentId: entry.requestedAgentId,
-        priorityClass: entry.priorityClass,
-      },
-      actions: schedulerAdmissionActions(workspaceId, entry),
-    };
-  });
+        title: schedulerAdmissionTitle(entry),
+        summary: schedulerAdmissionSummary(entry),
+        severity: status === 'denied' ? 'blocked' : 'info',
+        createdAt: entry.enqueuedAt,
+        recommendedAction:
+          status === 'denied'
+            ? 'Open the thread and resolve the scheduler blocker before retrying.'
+            : 'Open the thread to review the queued worker turn.',
+        source: {
+          type: 'scheduler_admission',
+          queueEntryId: entry.queueEntryId,
+          status,
+          denialReason: entry.denialReason ?? undefined,
+          workspaceId: entry.workspaceId,
+          threadId: entry.threadId,
+          turnId: entry.turnId,
+          requestedAgentId: entry.requestedAgentId,
+          priorityClass: entry.priorityClass,
+        },
+        actions: schedulerAdmissionActions(workspaceId, entry),
+      };
+    });
 }
 
 /**
  * Projects rejected worker-control evidence into product-visible attention rows.
  *
  * @param coreDb Open server-scope Core database handle.
+ * @param store Request-scoped workspace store.
  * @param workspaceId Workspace id to project.
+ * @param userId Authenticated viewer.
  * @returns Worker-control rejection rows.
  */
 function workerControlRejectedEvidenceRows(
   coreDb: CoreDb,
-  workspaceId: string
+  store: FsStore,
+  workspaceId: string,
+  userId: string | undefined
 ): HumanAttentionRow[] {
-  return listWorkerControlRejectedEvidenceForWorkspace(coreDb, workspaceId).map((evidence) => ({
-    id: `worker-control-rejection:${evidence.rejectionId}`,
-    kind: 'blocked_turn',
-    workspaceId: evidence.workspaceId,
-    threadId: evidence.threadId,
-    turnId: evidence.turnId,
-    title: 'Worker control evidence was rejected',
-    summary: evidence.message,
-    severity: 'risk',
-    createdAt: evidence.rejectedAt,
-    recommendedAction: 'Open the thread and inspect the rejected worker-control request.',
-    source: {
-      type: 'worker_control_rejection',
-      rejectionId: evidence.rejectionId,
+  return listWorkerControlRejectedEvidenceForWorkspace(coreDb, workspaceId)
+    .filter((evidence) => isThreadIdVisible(store, evidence.workspaceId, evidence.threadId, userId))
+    .map((evidence) => ({
+      id: `worker-control-rejection:${evidence.rejectionId}`,
+      kind: 'blocked_turn',
       workspaceId: evidence.workspaceId,
       threadId: evidence.threadId,
       turnId: evidence.turnId,
-      packageSnapshotId: evidence.packageSnapshotId,
-      route: evidence.route,
-      operation: evidence.operation,
-      errorCode: evidence.errorCode,
-      httpStatus: evidence.httpStatus,
-    },
-    actions: [openThreadAction(evidence.threadId)],
-  }));
+      title: 'Worker control evidence was rejected',
+      summary: evidence.message,
+      severity: 'risk',
+      createdAt: evidence.rejectedAt,
+      recommendedAction: 'Open the thread and inspect the rejected worker-control request.',
+      source: {
+        type: 'worker_control_rejection',
+        rejectionId: evidence.rejectionId,
+        workspaceId: evidence.workspaceId,
+        threadId: evidence.threadId,
+        turnId: evidence.turnId,
+        packageSnapshotId: evidence.packageSnapshotId,
+        route: evidence.route,
+        operation: evidence.operation,
+        errorCode: evidence.errorCode,
+        httpStatus: evidence.httpStatus,
+      },
+      actions: [openThreadAction(evidence.threadId)],
+    }));
 }
 
 /**
  * Projects scheduler orphan-worker evidence into product-visible attention rows.
  *
  * @param coreDb Open server-scope Core database handle.
+ * @param store Request-scoped workspace store.
  * @param workspaceId Workspace id to project.
+ * @param userId Authenticated viewer.
  * @returns Scheduler orphan-worker rows.
  */
-function schedulerOrphanWorkerRows(coreDb: CoreDb, workspaceId: string): HumanAttentionRow[] {
-  return listSchedulerOrphanWorkerEvidenceForWorkspace(coreDb, workspaceId).map((evidence) => ({
-    id: `scheduler-orphan-worker:${evidence.evidenceId}`,
-    kind: 'blocked_turn',
-    workspaceId: evidence.workspaceId,
-    threadId: evidence.threadId,
-    turnId: evidence.turnId,
-    title: 'Worker attempt needs recovery review',
-    summary: schedulerOrphanWorkerSummary(evidence),
-    severity: 'risk',
-    createdAt: evidence.recordedAt,
-    recommendedAction: 'Open the thread and decide whether to recover, retry, or abandon the work.',
-    source: {
-      type: 'scheduler_orphan_worker',
-      evidenceId: evidence.evidenceId,
-      leaseId: evidence.leaseId,
+function schedulerOrphanWorkerRows(
+  coreDb: CoreDb,
+  store: FsStore,
+  workspaceId: string,
+  userId: string | undefined
+): HumanAttentionRow[] {
+  return listSchedulerOrphanWorkerEvidenceForWorkspace(coreDb, workspaceId)
+    .filter((evidence) => isThreadIdVisible(store, evidence.workspaceId, evidence.threadId, userId))
+    .map((evidence) => ({
+      id: `scheduler-orphan-worker:${evidence.evidenceId}`,
+      kind: 'blocked_turn',
       workspaceId: evidence.workspaceId,
       threadId: evidence.threadId,
       turnId: evidence.turnId,
-      packageSnapshotId: evidence.packageSnapshotId,
-      reason: evidence.reason,
-      schedulerEpoch: evidence.schedulerEpoch,
-    },
-    actions: [openThreadAction(evidence.threadId)],
-  }));
+      title: 'Worker attempt needs recovery review',
+      summary: schedulerOrphanWorkerSummary(evidence),
+      severity: 'risk',
+      createdAt: evidence.recordedAt,
+      recommendedAction:
+        'Open the thread and decide whether to recover, retry, or abandon the work.',
+      source: {
+        type: 'scheduler_orphan_worker',
+        evidenceId: evidence.evidenceId,
+        leaseId: evidence.leaseId,
+        workspaceId: evidence.workspaceId,
+        threadId: evidence.threadId,
+        turnId: evidence.turnId,
+        packageSnapshotId: evidence.packageSnapshotId,
+        reason: evidence.reason,
+        schedulerEpoch: evidence.schedulerEpoch,
+      },
+      actions: [openThreadAction(evidence.threadId)],
+    }));
 }
 
 /**
@@ -869,50 +935,57 @@ function schedulerAdmissionActions(
  * @param store Product store that owns the source Turn and AgentSession.
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id to inspect.
+ * @param userId Authenticated viewer.
  * @returns Checkpoint recovery rows.
  */
 function checkpointRows(
   coreDb: CoreDb,
   store: FsStore,
   workspaceDb: WorkspaceDb,
-  workspaceId: string
+  workspaceId: string,
+  userId: string | undefined
 ): HumanAttentionRow[] {
-  return materializeInterruptedWorkerStates(coreDb, store, workspaceDb)
-    .filter((checkpoint) => checkpoint.workspaceId === workspaceId)
-    .map((checkpoint) => ({
-      id: `checkpoint:${checkpoint.checkpointId}`,
-      kind: 'checkpoint_recovery',
+  return materializeInterruptedWorkerStates(
+    coreDb,
+    store,
+    workspaceDb,
+    (checkpoint) =>
+      checkpoint.workspaceId === workspaceId &&
+      isThreadIdVisible(store, checkpoint.workspaceId, checkpoint.threadId, userId)
+  ).map((checkpoint) => ({
+    id: `checkpoint:${checkpoint.checkpointId}`,
+    kind: 'checkpoint_recovery',
+    workspaceId,
+    threadId: checkpoint.threadId,
+    turnId: checkpoint.turnId,
+    goalId: checkpoint.goalId ?? undefined,
+    taskId: checkpoint.taskId ?? undefined,
+    title: 'Worker checkpoint needs review',
+    summary: checkpoint.diagnosticsSummary ?? `Interrupted during ${checkpoint.stage}.`,
+    severity: 'blocked',
+    createdAt: checkpoint.sourceUpdatedAt,
+    recommendedAction: 'Review the interrupted worker checkpoint before continuing.',
+    source: {
+      type: 'worker_checkpoint',
+      checkpointId: checkpoint.checkpointId,
       workspaceId,
       threadId: checkpoint.threadId,
       turnId: checkpoint.turnId,
-      goalId: checkpoint.goalId ?? undefined,
-      taskId: checkpoint.taskId ?? undefined,
-      title: 'Worker checkpoint needs review',
-      summary: checkpoint.diagnosticsSummary ?? `Interrupted during ${checkpoint.stage}.`,
-      severity: 'blocked',
-      createdAt: checkpoint.sourceUpdatedAt,
-      recommendedAction: 'Review the interrupted worker checkpoint before continuing.',
-      source: {
-        type: 'worker_checkpoint',
-        checkpointId: checkpoint.checkpointId,
-        workspaceId,
-        threadId: checkpoint.threadId,
-        turnId: checkpoint.turnId,
-        stage: checkpoint.stage,
-        stopReason: checkpoint.stopReason,
-      },
-      actions: checkpoint.choices.some((choice) => choice.kind === 'retry')
-        ? [
-            openThreadAction(checkpoint.threadId),
-            {
-              kind: 'retry_from_checkpoint',
-              label: 'Retry',
-              method: 'POST',
-              href: `/api/app/workspaces/${workspaceId}/threads/${checkpoint.threadId}/recovery/interrupted-worker/${checkpoint.turnId}/retry`,
-            },
-          ]
-        : [openThreadAction(checkpoint.threadId)],
-    }));
+      stage: checkpoint.stage,
+      stopReason: checkpoint.stopReason,
+    },
+    actions: checkpoint.choices.some((choice) => choice.kind === 'retry')
+      ? [
+          openThreadAction(checkpoint.threadId),
+          {
+            kind: 'retry_from_checkpoint',
+            label: 'Retry',
+            method: 'POST',
+            href: `/api/app/workspaces/${workspaceId}/threads/${checkpoint.threadId}/recovery/interrupted-worker/${checkpoint.turnId}/retry`,
+          },
+        ]
+      : [openThreadAction(checkpoint.threadId)],
+  }));
 }
 
 /**
@@ -953,30 +1026,26 @@ function workspaceRecoveryRows(workspaceDb: WorkspaceDb, workspaceId: string): H
 }
 
 /**
- * Projects goal, goal task, and goal review attention rows.
+ * Projects goal, goal task, and goal review attention rows for caller-supplied Threads.
  *
- * @param store Request-scoped workspace store.
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id to inspect.
  * @param reviewDecisionAuthorized Whether the actor may apply Goal review decisions.
+ * @param threads Threads the caller already selected as eligible.
  * @returns Goal status rows plus currently authorized Goal review rows.
  */
 export function goalRows(
-  store: FsStore,
   workspaceDb: WorkspaceDb,
   workspaceId: string,
-  reviewDecisionAuthorized: boolean
+  reviewDecisionAuthorized: boolean,
+  threads: readonly { readonly id: string }[]
 ): HumanAttentionRow[] {
-  return store
-    .listThreads(workspaceId)
-    .flatMap((thread) =>
-      listGoalRecordsForThread(workspaceDb, { workspaceId, threadId: thread.id }).flatMap(
-        (goal) => [
-          ...goalStatusRows(goal, reviewDecisionAuthorized),
-          ...(reviewDecisionAuthorized ? goalReviewRows(workspaceDb, goal) : []),
-        ]
-      )
-    );
+  return threads.flatMap((thread) =>
+    listGoalRecordsForThread(workspaceDb, { workspaceId, threadId: thread.id }).flatMap((goal) => [
+      ...goalStatusRows(goal, reviewDecisionAuthorized),
+      ...(reviewDecisionAuthorized ? goalReviewRows(workspaceDb, goal) : []),
+    ])
+  );
 }
 
 /**

@@ -668,12 +668,12 @@ describe('workspace repository app API', () => {
       const responses = [missingRecord, foreignRecord, missingRepository, foreignApproval];
       const bodies = await Promise.all(responses.map((response) => response.clone().json()));
 
-      expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
+      expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 404]);
       expect(bodies).toEqual([
         expect.objectContaining({ code: 'workspace_access_denied' }),
         bodies[0],
         bodies[0],
-        bodies[0],
+        expect.objectContaining({ code: 'not_found', message: 'Thread not found.' }),
       ]);
       expect(store.getTurn('ws_demo', 'th_demo', turn.id)).toMatchObject({ status: 'running' });
       expect(store.getApproval('ap_foreign_git_push')).toMatchObject({

@@ -10,6 +10,7 @@ import { asApiError } from '../api-errors.js';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -54,28 +55,31 @@ export function registerSchedulerAdmissionRoutes({
           index + 1,
         ])
       );
+      const viewerUserId = c.get('actor')?.userId;
       const items = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         workspaceId,
         statuses: ['queued', 'denied'],
-      }).map((entry) => ({
-        queueEntryId: entry.queueEntryId,
-        requestId: entry.requestId,
-        workspaceId: entry.workspaceId,
-        threadId: entry.threadId,
-        turnId: entry.turnId,
-        requestedAgentId: entry.requestedAgentId,
-        profileRef: entry.profileRef,
-        modelId: entry.modelId,
-        priorityClass: entry.priorityClass,
-        enqueuedAt: entry.enqueuedAt,
-        effectivePriorityAt: entry.effectivePriorityAt,
-        firstCapDeferredAt: entry.firstCapDeferredAt,
-        requiredPoolConstraints: entry.requiredPoolConstraints,
-        status: entry.status,
-        denialReason: entry.denialReason,
-        queuePosition:
-          entry.status === 'queued' ? (queuedPositions.get(entry.queueEntryId) ?? null) : null,
-      }));
+      })
+        .filter((entry) => isThreadIdVisible(store, workspaceId, entry.threadId, viewerUserId))
+        .map((entry) => ({
+          queueEntryId: entry.queueEntryId,
+          requestId: entry.requestId,
+          workspaceId: entry.workspaceId,
+          threadId: entry.threadId,
+          turnId: entry.turnId,
+          requestedAgentId: entry.requestedAgentId,
+          profileRef: entry.profileRef,
+          modelId: entry.modelId,
+          priorityClass: entry.priorityClass,
+          enqueuedAt: entry.enqueuedAt,
+          effectivePriorityAt: entry.effectivePriorityAt,
+          firstCapDeferredAt: entry.firstCapDeferredAt,
+          requiredPoolConstraints: entry.requiredPoolConstraints,
+          status: entry.status,
+          denialReason: entry.denialReason,
+          queuePosition:
+            entry.status === 'queued' ? (queuedPositions.get(entry.queueEntryId) ?? null) : null,
+        }));
 
       return c.json(ListSchedulerAdmissionsResponseSchema.parse({ items }));
     } catch (error) {
@@ -99,7 +103,13 @@ export function registerSchedulerAdmissionRoutes({
         );
       }
 
-      const owner = requireSchedulerAdmissionEntry(coreDb, queueEntryId);
+      const owner = requireVisibleSchedulerAdmissionEntry(
+        coreDb,
+        store,
+        workspaceId,
+        queueEntryId,
+        c.get('actor')?.userId
+      );
       assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), owner.workspaceId);
       const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
         queueEntryId,
@@ -147,7 +157,13 @@ export function registerSchedulerAdmissionRoutes({
         );
       }
 
-      const owner = requireSchedulerAdmissionEntry(coreDb, queueEntryId);
+      const owner = requireVisibleSchedulerAdmissionEntry(
+        coreDb,
+        store,
+        workspaceId,
+        queueEntryId,
+        c.get('actor')?.userId
+      );
       assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), owner.workspaceId);
       const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
         queueEntryId,
@@ -178,4 +194,40 @@ export function registerSchedulerAdmissionRoutes({
       return asApiError((error as Error).message, 'scheduler_admission_cancel_failed', 400);
     }
   });
+}
+
+/**
+ * Loads one same-Workspace admission and refuses missing, mismatched, or inaccessible ids
+ * with a nondisclosing 404 before mutation.
+ *
+ * @param coreDb Open server-scope Core database handle.
+ * @param store Request-scoped workspace store.
+ * @param workspaceId Workspace that already authorized the request.
+ * @param queueEntryId Queue entry id from the route.
+ * @param userId Authenticated viewer.
+ * @returns Admission entry visible to the viewer in this Workspace.
+ * @throws HTTPException when the entry is missing, mismatched, or not visible.
+ */
+function requireVisibleSchedulerAdmissionEntry(
+  coreDb: CoreDb,
+  store: FsStore,
+  workspaceId: string,
+  queueEntryId: string,
+  userId: string | undefined
+): ReturnType<typeof requireSchedulerAdmissionEntry> {
+  let owner: ReturnType<typeof requireSchedulerAdmissionEntry> | undefined;
+  try {
+    owner = requireSchedulerAdmissionEntry(coreDb, queueEntryId, { workspaceId });
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.startsWith('Scheduler admission entry not found:')
+    ) {
+      throw error;
+    }
+  }
+  if (!owner || !isThreadIdVisible(store, workspaceId, owner.threadId, userId)) {
+    throw new HTTPException(404, { message: 'Thread not found.' });
+  }
+  return owner;
 }

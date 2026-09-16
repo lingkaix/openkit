@@ -8,6 +8,8 @@ Run `doctor`, select or create the intended workspace, and inspect its durable r
 
 Create or resume one thread for the work. Read the current thread, active mode state, Action Center, and relevant artifacts before mutating anything.
 
+Workspace access and private conversation ownership are separate. A private Thread requires the exact authenticated owner, including when the credential has administrator authority. Use `conversation.navigation` for the current actor's eligible conversation list. A missing or inaccessible Thread returns no private details; do not retry through another endpoint to bypass that result. Web and Skill credentials may belong to different users, so compare their access using their actual identities.
+
 ## Select the smallest suitable mode
 
 - Use Chat Mode for a lightweight answer that does not need delegated execution or a negotiated plan.

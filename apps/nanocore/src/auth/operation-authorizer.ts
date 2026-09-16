@@ -1,4 +1,8 @@
-import { CreateAutomationRequestSchema } from '@openkit/app-api-schemas';
+import {
+  CreateAutomationRequestSchema,
+  ExecuteGitPushRequestSchema,
+  RequestGitPushApprovalRequestSchema,
+} from '@openkit/app-api-schemas';
 import {
   type ActorRef,
   responsibleUserIdForActor,
@@ -33,6 +37,7 @@ import {
   type PublicOperationAccess,
   type WorkspaceOperationAccess,
 } from './operation-access.js';
+import { isThreadIdVisible } from './thread-visibility.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 const GatewayWorkspaceAttributionSchema = z
@@ -161,6 +166,14 @@ interface OperationRoute {
 interface AuthorizedWorkspace {
   /** Effective fixed role. */
   readonly effectiveRole: WorkspaceRole;
+  /** Canonical Workspace id. */
+  readonly workspaceId: string;
+}
+
+/** Owner resolved from an opaque child record without a parallel ACL. */
+interface OpaqueChildOwner {
+  /** Thread id when the child is Thread-scoped. */
+  readonly threadId?: string;
   /** Canonical Workspace id. */
   readonly workspaceId: string;
 }
@@ -462,7 +475,7 @@ async function authorizeWorkspaceOperation(
     kind: 'workspace',
     policyOperation: route.access.policyOperation,
   });
-  return null;
+  return denyIfThreadInaccessible(context, actor, route, input, authorized.workspaceId);
 }
 
 /** Checks the narrow original-owner authority that may only resume one deletion route. */
@@ -557,6 +570,9 @@ function authorizeWorkspace(
     }
     return { effectiveRole: 'owner', workspaceId };
   }
+  if (!isUsablePresentedAccessToken(coreDb, actor)) {
+    return null;
+  }
   if (!tokenIncludesWorkspace(actor, workspaceId, access.authentication)) {
     return null;
   }
@@ -571,6 +587,111 @@ function authorizeWorkspace(
     return null;
   }
   return { effectiveRole, workspaceId };
+}
+
+/**
+ * Applies Thread audience after current Workspace eligibility for any addressed existing Thread.
+ *
+ * Missing, corrupt, Workspace-mismatched, and inaccessible Threads fail as the same 404 before
+ * disclosure or effect. The check is independent of the catalog policy operation, including writes.
+ *
+ * @param context Authenticated request context.
+ * @param actor Authenticated request actor.
+ * @param route Exact Workspace operation route.
+ * @param input Existing lineage owners.
+ * @param workspaceId Already authorized Workspace id.
+ * @returns Uniform Thread-not-found response, or null when the operation does not address a Thread or the actor may see it.
+ */
+async function denyIfThreadInaccessible(
+  context: Context<{ Variables: AuthVariables }>,
+  actor: Actor,
+  route: OperationRoute & { readonly access: WorkspaceOperationAccess },
+  input: RegisterOperationAccessGuardsInput,
+  workspaceId: string
+): Promise<Response | null> {
+  const threadId = await requestedThreadId(context, actor, route, input, workspaceId);
+  if (threadId === null) {
+    return null;
+  }
+  if (isThreadIdVisible(input.store, workspaceId, threadId, actor.userId)) {
+    return null;
+  }
+  return threadNotFound();
+}
+
+/**
+ * Resolves the existing Thread addressed by path, query, body, or opaque child owner.
+ *
+ * @param context Authenticated request context.
+ * @param actor Authenticated request actor.
+ * @param route Exact Workspace operation route.
+ * @param input Existing lineage owners.
+ * @param workspaceId Already authorized Workspace id.
+ * @returns Thread id when the operation addresses an existing Thread, or null when it does not.
+ */
+async function requestedThreadId(
+  context: Context<{ Variables: AuthVariables }>,
+  actor: Actor,
+  route: OperationRoute & { readonly access: WorkspaceOperationAccess },
+  input: RegisterOperationAccessGuardsInput,
+  workspaceId: string
+): Promise<string | null> {
+  const pathThreadId = nonempty(context.req.param('threadId'));
+  if (pathThreadId) {
+    return pathThreadId;
+  }
+  if (route.operationKey === 'getConversationTargets') {
+    const queryThreadId = context.req.query('threadId')?.trim();
+    return queryThreadId && queryThreadId.length > 0 ? queryThreadId : null;
+  }
+  if (route.operationKey === 'POST /api/turns') {
+    const parsed = SubmitTurnInputRequestSchema.safeParse(
+      await context.req.raw
+        .clone()
+        .json()
+        .catch(() => null)
+    );
+    return parsed.success ? parsed.data.threadId : null;
+  }
+  if (route.operationKey === 'requestGitPushApproval') {
+    const parsed = RequestGitPushApprovalRequestSchema.safeParse(
+      await context.req.raw
+        .clone()
+        .json()
+        .catch(() => null)
+    );
+    if (!parsed.success) {
+      return null;
+    }
+    try {
+      return input.store.getTurn(workspaceId, parsed.data.threadId, parsed.data.turnId).threadId;
+    } catch {
+      return '';
+    }
+  }
+  if (route.operationKey === 'executeGitPush') {
+    const parsed = ExecuteGitPushRequestSchema.safeParse(
+      await context.req.raw
+        .clone()
+        .json()
+        .catch(() => null)
+    );
+    if (!parsed.success) {
+      return null;
+    }
+    try {
+      const approval = input.store.getApproval(parsed.data.approvalRequestId);
+      return approval.workspaceId === workspaceId ? approval.threadId : '';
+    } catch {
+      return '';
+    }
+  }
+  try {
+    const owner = opaqueChildOwner(context, actor, route.operationKey, input);
+    return owner?.threadId ?? null;
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -614,19 +735,45 @@ function opaqueChildWorkspaceId(
   operationKey: string,
   input: RegisterOperationAccessGuardsInput
 ): string | null {
+  return opaqueChildOwner(context, actor, operationKey, input)?.workspaceId ?? null;
+}
+
+/**
+ * Resolves Workspace and optional Thread owners from the same opaque child records.
+ *
+ * @param context Hono request context.
+ * @param actor Authenticated request actor.
+ * @param operationKey Exact opaque-child operation.
+ * @param input Existing lineage owners.
+ * @returns Opaque child owner, or null when the child cannot be resolved.
+ */
+function opaqueChildOwner(
+  context: Context<{ Variables: AuthVariables }>,
+  actor: Actor,
+  operationKey: string,
+  input: RegisterOperationAccessGuardsInput
+): OpaqueChildOwner | null {
   if (operationKey === 'updateAutomation' || operationKey === 'deleteAutomation') {
     const automationId = nonempty(context.req.param('automationId'));
     return automationId
-      ? input.automationStore.getAutomation(actor.userId, automationId).workspaceId
+      ? { workspaceId: input.automationStore.getAutomation(actor.userId, automationId).workspaceId }
       : null;
   }
   if (operationKey === 'submitTurnFeedback') {
     const turnId = nonempty(context.req.param('turnId'));
-    return turnId ? input.store.getTurnById(turnId).workspaceId : null;
+    if (!turnId) {
+      return null;
+    }
+    const turn = input.store.getTurnById(turnId);
+    return { threadId: turn.threadId, workspaceId: turn.workspaceId };
   }
   if (operationKey === 'POST /api/approvals/:approvalRequestId/respond') {
     const approvalRequestId = nonempty(context.req.param('approvalRequestId'));
-    return approvalRequestId ? input.store.getApproval(approvalRequestId).workspaceId : null;
+    if (!approvalRequestId) {
+      return null;
+    }
+    const approval = input.store.getApproval(approvalRequestId);
+    return { threadId: approval.threadId, workspaceId: approval.workspaceId };
   }
   return null;
 }
@@ -664,7 +811,29 @@ export function isUsablePresentedServerAdminToken(
   actor: Actor,
   now = new Date()
 ): boolean {
-  if (actor.kind !== 'token' || actor.tokenScope !== 'server-admin' || !actor.tokenId) {
+  return (
+    actor.kind === 'token' &&
+    actor.tokenScope === 'server-admin' &&
+    isUsablePresentedAccessToken(coreDb, actor, now)
+  );
+}
+
+/**
+ * Rechecks current presented OpenKit access-token usability from durable Token state.
+ *
+ * Session and local actors have no bearer to revalidate here. A presented workspace or
+ * workspace-readonly Token must still match its owner, exact scope, and current usability.
+ *
+ * @param coreDb Core identity and Token authority.
+ * @param actor Authenticated request actor.
+ * @param now Current time for Token usability evaluation.
+ * @returns True when the actor is not a bearer, or when the presented Token remains usable.
+ */
+function isUsablePresentedAccessToken(coreDb: CoreDb, actor: Actor, now = new Date()): boolean {
+  if (actor.kind !== 'token') {
+    return true;
+  }
+  if (!actor.tokenId || !actor.tokenScope) {
     return false;
   }
   if (!isCanonicalUserActive(coreDb, actor.userId)) {
@@ -675,7 +844,7 @@ export function isUsablePresentedServerAdminToken(
   );
   return (
     token?.ownerUserId === actor.userId &&
-    token.scope === 'server-admin' &&
+    token.scope === actor.tokenScope &&
     evaluateOpenKitAccessTokenUsability(token, now).usable
   );
 }
@@ -811,4 +980,9 @@ function nonempty(value: string | undefined): string | null {
 /** Returns the uniform non-enumerating Workspace access failure. */
 function workspaceAccessDenied(): Response {
   return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+}
+
+/** Returns the uniform missing-or-inaccessible Thread failure. */
+function threadNotFound(): Response {
+  return asApiError('Thread not found.', 'not_found', 404);
 }

@@ -3,20 +3,29 @@ import type { Context, Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 
 import { apiErrorPayload, asApiError } from './api-errors.js';
+import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
-import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
+import {
+  assertAuthorizedWorkspaceLineage,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
+import { isThreadIdVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
+import type { ProductOperation } from './policy/workspace-access.js';
+import type { CoreDb } from './storage/db.js';
 
 /**
  * Registers the Core turn event replay and live stream route.
  *
- * @param dependencies Hono app and request-scoped storage resolver.
+ * @param dependencies Hono app, request-scoped storage, and optional Core membership authority.
  */
 export function registerTurnEventRoutes({
   app,
+  coreDb,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly coreDb?: CoreDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   app.get('/api/workspaces/:workspaceId/threads/:threadId/events', (c) => {
@@ -44,6 +53,10 @@ export function registerTurnEventRoutes({
     const workspaceId = c.req.param('workspaceId');
     const threadId = c.req.param('threadId');
     const store = requestStore(c);
+    const actor = c.get('actor');
+    const workspaceAccess = c.get('workspaceAccess');
+    const policyOperation: ProductOperation =
+      workspaceAccess?.kind === 'workspace' ? workspaceAccess.policyOperation : 'thread.read';
     let ownerTurn: ReturnType<FsStore['getTurnById']>;
 
     try {
@@ -52,7 +65,6 @@ export function registerTurnEventRoutes({
       return asApiError((error as Error).message);
     }
 
-    const workspaceAccess = c.get('workspaceAccess');
     if (workspaceAccess) {
       assertAuthorizedWorkspaceLineage(workspaceAccess, ownerTurn.workspaceId);
     }
@@ -61,6 +73,25 @@ export function registerTurnEventRoutes({
       store.getTurn(workspaceId, threadId, turnId);
     } catch (error) {
       return asApiError((error as Error).message);
+    }
+
+    /**
+     * Rechecks current Workspace permission, presented Token usability, and Thread audience before any event publication.
+     *
+     * @returns True only when the current actor may still receive this stream.
+     */
+    const publicationAuthorized = (): boolean =>
+      isTurnEventPublicationAuthorized({
+        actor,
+        coreDb,
+        policyOperation,
+        store,
+        threadId,
+        workspaceId,
+      });
+
+    if (!publicationAuthorized()) {
+      return asApiError('Thread not found.', 'not_found', 404);
     }
 
     const retainedEvents = store.getTurnEvents(turnId);
@@ -112,6 +143,12 @@ export function registerTurnEventRoutes({
           if (finished || stream.aborted) {
             return;
           }
+          if (!publicationAuthorized()) {
+            finished = true;
+            stopListening();
+            await stream.close();
+            return;
+          }
 
           await stream.writeSSE({
             data: JSON.stringify(productEvent.data),
@@ -144,4 +181,33 @@ export function registerTurnEventRoutes({
       }
     });
   });
+}
+
+/**
+ * Rechecks current Workspace permission, presented Token usability, and Thread audience without a new stream registry.
+ *
+ * @param input Live stream authority facts.
+ * @returns True only when the current actor may still receive the publication.
+ */
+function isTurnEventPublicationAuthorized(input: {
+  readonly actor: Actor | undefined;
+  readonly coreDb: CoreDb | undefined;
+  readonly policyOperation: ProductOperation;
+  readonly store: FsStore;
+  readonly threadId: string;
+  readonly workspaceId: string;
+}): boolean {
+  if (!input.actor) {
+    return false;
+  }
+  if (
+    input.coreDb &&
+    !isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+      mutating: false,
+      policyOperation: input.policyOperation,
+    })
+  ) {
+    return false;
+  }
+  return isThreadIdVisible(input.store, input.workspaceId, input.threadId, input.actor.userId);
 }

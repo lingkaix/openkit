@@ -5,7 +5,7 @@ import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 
-/** Requires validated immutable audience and exact ownership after current Workspace authorization. */
+/** Unique Thread audience predicate applied after current Workspace eligibility. */
 export function isThreadVisible(
   store: FsStore,
   thread: Thread,
@@ -21,6 +21,31 @@ export function isThreadVisible(
   return thread.visibility === 'workspace' || thread.privateOwnerUserId === userId;
 }
 
+/**
+ * Loads one Thread by Workspace and id, then applies `isThreadVisible`.
+ *
+ * Missing and corrupt owners fail closed as not visible. Callers that already hold a Thread
+ * record should keep using `isThreadVisible`.
+ *
+ * @param store Product store that owns Thread records.
+ * @param workspaceId Canonical Workspace id.
+ * @param threadId Thread id to load.
+ * @param userId Authenticated viewer, or undefined when no actor is present.
+ * @returns True only when the Thread exists in that Workspace and the viewer may see it.
+ */
+export function isThreadIdVisible(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  userId: string | undefined
+): boolean {
+  try {
+    return isThreadVisible(store, store.getThread(workspaceId, threadId), userId);
+  } catch {
+    return false;
+  }
+}
+
 /** Resolves immutable Artifact origin before returning metadata from these read projections. */
 export function isArtifactVisible(
   store: FsStore,
@@ -32,13 +57,5 @@ export function isArtifactVisible(
     return artifact.threadId === null && artifact.turnId === null;
   if (artifact.threadId !== artifact.origin.threadId || artifact.turnId !== artifact.origin.turnId)
     return false;
-  try {
-    return isThreadVisible(
-      store,
-      store.getThread(artifact.workspaceId, artifact.origin.threadId),
-      userId
-    );
-  } catch {
-    return false;
-  }
+  return isThreadIdVisible(store, artifact.workspaceId, artifact.origin.threadId, userId);
 }

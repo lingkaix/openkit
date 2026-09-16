@@ -8,6 +8,7 @@ This directory contains NanoCore's composition root and feature owners. `app.ts`
 - Keep one complete route lifecycle in one feature module when practical, and pass only concrete dependencies that the module cannot import from its real owner.
 - Keep protocol and App API schemas in their owning packages; NanoCore validates and executes those contracts rather than defining parallel DTOs.
 - Keep runtime execution under `runtime/`, persistence and recovery under `storage/`, provider configuration under `providers/`, authentication under `auth/`, and secret material mechanics under `vault/`.
+- Reuse `auth/thread-visibility.ts` after Workspace eligibility for Thread-derived reads and effects. Core routes, conversation counts, attention, recovery lists, and generated presentations admit the current audience before dependent projection; an administrator credential does not grant another user's private Thread. Generated presentations also preserve their source Item's audience instead of widening it through a shared target.
 - Do not add controller, service, repository, façade, dependency-container, or compatibility layers unless they remove demonstrated complexity across multiple real consumers.
 
 ## Entry Points

@@ -108,7 +108,7 @@ describe('scheduler admission routes', () => {
     }
   });
 
-  it('denies cross-Workspace admissions before mutation while preserving missing behavior', async () => {
+  it('denies missing and cross-Workspace admissions with a nondisclosing 404 before mutation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-ownership-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -154,24 +154,33 @@ describe('scheduler admission routes', () => {
     });
 
     try {
-      const missing = await app.request(
+      const missingRetry = await app.request(
         '/api/app/workspaces/ws_demo/scheduler/admissions/queue_missing/retry',
         { method: 'POST' }
       );
+      const missingCancel = await app.request(
+        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_missing/cancel',
+        { method: 'POST' }
+      );
+      const missingRetryText = await missingRetry.text();
+      const missingCancelText = await missingCancel.text();
 
-      expect(missing.status).toBe(400);
-      await expect(missing.json()).resolves.toMatchObject({
-        code: 'scheduler_admission_retry_failed',
-      });
+      expect(missingRetry.status).toBe(404);
+      expect(missingCancel.status).toBe(404);
+      expect(missingRetryText).toBe('Thread not found.');
+      expect(missingCancelText).toBe('Thread not found.');
       for (const [queueEntryId, action, expectedStatus] of [
         ['queue_foreign_retry', 'retry', 'denied'],
         ['queue_foreign_cancel', 'cancel', 'queued'],
       ] as const) {
         const path = `/api/app/workspaces/ws_demo/scheduler/admissions/${queueEntryId}/${action}`;
         const foreign = await app.request(path, { method: 'POST' });
+        const foreignText = await foreign.text();
 
-        expect(foreign.status).toBe(403);
-        await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+        expect(foreign.status).toBe(
+          action === 'retry' ? missingRetry.status : missingCancel.status
+        );
+        expect(foreignText).toBe(action === 'retry' ? missingRetryText : missingCancelText);
         expect(
           coreDb.sqlite
             .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
@@ -189,6 +198,7 @@ describe('scheduler admission routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
+    const shared = store.createThread('ws_demo', 'Shared other-user admission');
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
       c.set('actor', { kind: 'session', userId: 'user_local' });
@@ -206,9 +216,9 @@ describe('scheduler admission routes', () => {
         queueEntryId,
         triggerActor: { kind: 'user', id: 'user_victim' },
         workspaceId: 'ws_demo',
-        threadId: 'thread_victim',
+        threadId: shared.id,
         turnId: `turn_${queueEntryId}`,
-        turnInput: 'Keep another user scheduler admission private.',
+        turnInput: 'Shared workspace admission from another actor.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
         priorityClass: 'interactive',

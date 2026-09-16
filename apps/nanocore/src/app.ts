@@ -1770,7 +1770,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
   });
 
-  registerTurnEventRoutes({ app, requestStore });
+  registerTurnEventRoutes({
+    app,
+    requestStore,
+    ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+  });
 
   return app;
 }

@@ -10,6 +10,7 @@ import type { Context, Hono } from 'hono';
 import { asApiError, asCommandError, asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -54,13 +55,16 @@ export function registerWorkerRecoveryRoutes({
       }
 
       const store = requestStore(c);
+      const userId = c.get('actor')?.userId;
 
       return c.json(
         ListInterruptedWorkerStatesResponseSchema.parse({
           items: authorizedWorkspaceIds(c).flatMap((workspaceId) => {
             const workspaceDb = repositoryWorkspaceDb(workspaceId);
             try {
-              return materializeInterruptedWorkerStates(coreDb, store, workspaceDb);
+              return materializeInterruptedWorkerStates(coreDb, store, workspaceDb, (checkpoint) =>
+                isThreadIdVisible(store, checkpoint.workspaceId, checkpoint.threadId, userId)
+              );
             } finally {
               workspaceDb.sqlite.close();
             }

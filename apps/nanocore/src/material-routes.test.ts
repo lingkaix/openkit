@@ -95,6 +95,8 @@ describe('Workspace Material app API', () => {
         `/api/app/workspaces/ws_demo/materials/${foreignMaterial.materialId}`,
         `/api/app/workspaces/ws_demo/materials/${localMaterial.materialId}/revisions/revision_missing`,
         `/api/app/workspaces/ws_demo/materials/${localMaterial.materialId}/revisions/${foreignRevision.revisionId}`,
+      ];
+      const threadNotFoundPaths = [
         '/api/app/workspaces/ws_demo/threads/thread_missing/material',
         `/api/app/workspaces/ws_demo/threads/${foreignThread.id}/material`,
       ];
@@ -106,6 +108,20 @@ describe('Workspace Material app API', () => {
           status: 409,
           code: 'stale',
         });
+      }
+      for (const path of threadNotFoundPaths) {
+        const response = await app.request(path);
+        const body = (await response.json()) as {
+          readonly code?: unknown;
+          readonly message?: unknown;
+        };
+        expect
+          .soft({ status: response.status, code: body.code, message: body.message }, path)
+          .toEqual({
+            status: 404,
+            code: 'not_found',
+            message: 'Thread not found.',
+          });
       }
 
       const deniedPath = await app.request(

@@ -1314,13 +1314,14 @@ describe('action center app API', () => {
   it('projects Workspace admissions across authenticated trigger actors', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
+    const shared = store.createThread('ws_demo', 'Shared other-user admission');
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_other_user_action_center',
         triggerActor: { kind: 'user', id: 'user_victim' },
         workspaceId: 'ws_demo',
-        threadId: 'thread_victim',
+        threadId: shared.id,
         turnId: 'turn_victim',
         turnInput: 'Show the Workspace admission to current authorized editors.',
         requestedAgentId: 'agent_codex_host',

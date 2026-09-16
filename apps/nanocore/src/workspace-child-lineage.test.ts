@@ -112,7 +112,40 @@ async function expectWorkspaceAccessDenied(
   app: ReturnType<typeof createApp>,
   request: LineageRequest
 ): Promise<void> {
-  const response = await app.request(request.path, {
+  const response = await sendLineageRequest(app, request);
+  expect(response.status, await response.clone().text()).toBe(403);
+  expect(ApiErrorSchema.parse(await response.json()).code).toBe('workspace_access_denied');
+}
+
+/** Sends one request and requires the uniform missing-or-inaccessible Thread failure. */
+async function expectThreadNotFound(
+  app: ReturnType<typeof createApp>,
+  request: LineageRequest
+): Promise<void> {
+  const response = await sendLineageRequest(app, request);
+  expect(response.status, await response.clone().text()).toBe(404);
+  expect(ApiErrorSchema.parse(await response.json())).toMatchObject({
+    code: 'not_found',
+    message: 'Thread not found.',
+  });
+}
+
+/** Sends one request and requires the Artifact owner's missing-or-inaccessible 404. */
+async function expectArtifactNotFound(
+  app: ReturnType<typeof createApp>,
+  request: LineageRequest
+): Promise<void> {
+  const response = await sendLineageRequest(app, request);
+  expect(response.status, await response.clone().text()).toBe(404);
+  expect(await response.text()).toBe('Artifact not found.');
+}
+
+/** Issues one lineage request with optional JSON body. */
+async function sendLineageRequest(
+  app: ReturnType<typeof createApp>,
+  request: LineageRequest
+): Promise<Response> {
+  return app.request(request.path, {
     method: request.method ?? 'GET',
     ...(request.body === undefined
       ? {}
@@ -121,9 +154,6 @@ async function expectWorkspaceAccessDenied(
           headers: { 'content-type': 'application/json' },
         }),
   });
-
-  expect(response.status, await response.clone().text()).toBe(403);
-  expect(ApiErrorSchema.parse(await response.json()).code).toBe('workspace_access_denied');
 }
 
 let fixture: ReturnType<typeof createLineageFixture>;
@@ -159,7 +189,7 @@ describe('Workspace child lineage', () => {
         body: { requestId: '00000000-0000-4000-8000-000000000402' },
       },
     ] satisfies LineageRequest[]) {
-      await expectWorkspaceAccessDenied(fixture.app, request);
+      await expectThreadNotFound(fixture.app, request);
     }
   });
 
@@ -213,7 +243,7 @@ describe('Workspace child lineage', () => {
         },
       },
     ] satisfies LineageRequest[]) {
-      await expectWorkspaceAccessDenied(fixture.app, request);
+      await expectArtifactNotFound(fixture.app, request);
     }
   });
 

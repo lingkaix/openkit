@@ -14,10 +14,11 @@ import type {
 import {
   GENERATIVE_UI_NATIVE_CATALOG_ID,
   GENERATIVE_UI_PROTOCOL_VERSION,
+  GenerativeUiSourceSchema,
 } from '@openkit/app-api-schemas';
-import type { ActorRef, Item } from '@openkit/protocol';
-
+import { type ActorRef, type Item, responsibleUserIdForActor } from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { isThreadIdVisible, isThreadVisible } from '../auth/thread-visibility.js';
 import {
   getLightApp,
   type KernelCommandContext,
@@ -89,6 +90,14 @@ export async function publishGenerativePresentation(
     responseKind: 'generative_presentation',
     workspaceDb: context.workspaceDb,
     execute: () => {
+      assertWritableTurn(
+        context.store,
+        context.actor,
+        context.workspaceId,
+        input.threadId,
+        input.turnId
+      );
+      assertItemSourcePublishable(context, input.source, input.threadId);
       const interrupted = findPresentationByRequest(
         context.workspaceDb,
         context.workspaceId,
@@ -123,7 +132,6 @@ export async function publishGenerativePresentation(
           maximum: ACCEPTED_MESSAGE_BYTE_LIMIT,
         });
       }
-      assertWritableTurn(context.store, context.workspaceId, input.threadId, input.turnId);
       const presentationId = randomUUID();
       const itemId = `it_${randomUUID()}`;
       const createdAt = new Date().toISOString();
@@ -182,6 +190,8 @@ export async function publishGenerativePresentation(
         context.workspaceId,
         record.response.id
       );
+      assertThreadReadable(context.store, context.actor, context.workspaceId, row.thread_id);
+      assertSourceReadable(context, parsePresentationSource(row), row.thread_id);
       if (derivePublication(context.store, row) !== 'published') {
         throw new KernelCommandError(
           'recovery_required',
@@ -192,10 +202,10 @@ export async function publishGenerativePresentation(
     },
     responseId: (id) => id,
   });
-  return projectPresentation(
-    context.store,
-    requirePresentationRow(context.workspaceDb, context.workspaceId, retained)
-  );
+  const row = requirePresentationRow(context.workspaceDb, context.workspaceId, retained);
+  assertThreadReadable(context.store, context.actor, context.workspaceId, row.thread_id);
+  assertSourceReadable(context, parsePresentationSource(row), row.thread_id);
+  return projectPresentation(context.store, row);
 }
 
 /**
@@ -210,10 +220,9 @@ export function getGenerativePresentation(
   presentationId: string
 ): GenerativePresentation {
   const row = requirePresentationRow(context.workspaceDb, context.workspaceId, presentationId);
-  assertThreadReadable(context.store, context.workspaceId, row.thread_id);
-  const presentation = projectPresentation(context.store, row);
-  assertSourceReadable(context, presentation.source);
-  return presentation;
+  assertThreadReadable(context.store, context.actor, context.workspaceId, row.thread_id);
+  assertSourceReadable(context, parsePresentationSource(row), row.thread_id);
+  return projectPresentation(context.store, row);
 }
 
 /**
@@ -412,7 +421,7 @@ function readAuthorizedSource(
   actions: readonly GenerativeUiAction[]
 ): { records?: LightAppRecord[]; text?: string; schemaRevision?: number } {
   if (source.kind === 'item') {
-    return { text: readItemSource(context.store, context.workspaceId, source) };
+    return { text: readItemSource(context, source) };
   }
   const app = getLightApp(context.dataRoot, context.workspaceId, source.appId);
   if (app.lifecycle !== 'active' || !app.schema) {
@@ -502,16 +511,14 @@ function assertWriteForm(
 }
 
 function readItemSource(
-  store: FsStore,
-  workspaceId: string,
+  context: GenerativeUiCommandContext,
   source: GenerativeUiItemSource
 ): string {
-  const item = store
-    .listAllItems()
-    .find((candidate) => candidate.id === source.itemId && candidate.workspaceId === workspaceId);
-  if (!item || item.workspaceId !== workspaceId) {
-    throw new KernelCommandError('not_found', 'Source item was not found.');
-  }
+  const item = requireVisibleItemSource(
+    context,
+    source,
+    new KernelCommandError('not_found', 'Source item was not found.')
+  );
   if (item.type !== 'assistant-message' || item.status !== 'completed') {
     throw new KernelCommandError(
       'unsupported_operation',
@@ -760,29 +767,150 @@ function parseUpdateValues(
   };
 }
 
+/**
+ * Requires current Thread audience and a writable Turn before publication.
+ *
+ * @param store Product store.
+ * @param actor Command actor whose responsible user is the audience subject.
+ * @param workspaceId Workspace id.
+ * @param threadId Thread that would receive the presentation.
+ * @param turnId Turn that would receive the presentation.
+ */
 function assertWritableTurn(
   store: FsStore,
+  actor: ActorRef,
   workspaceId: string,
   threadId: string,
   turnId: string
 ): void {
-  const thread = store.getThread(workspaceId, threadId);
+  let thread: ReturnType<FsStore['getThread']>;
+  try {
+    thread = store.getThread(workspaceId, threadId);
+  } catch {
+    throw new KernelCommandError('not_found', 'Thread not found.');
+  }
+  if (!isThreadVisible(store, thread, responsibleUserIdForActor(actor) ?? undefined)) {
+    throw new KernelCommandError('not_found', 'Thread not found.');
+  }
   if (thread.status === 'archived') {
     throw new KernelCommandError('access_denied', 'Archived threads cannot receive presentations.');
   }
-  const turn = store.getTurn(workspaceId, threadId, turnId);
+  let turn: ReturnType<FsStore['getTurn']>;
+  try {
+    turn = store.getTurn(workspaceId, threadId, turnId);
+  } catch {
+    throw new KernelCommandError('not_found', 'Thread not found.');
+  }
   if (!WRITABLE_TURN_STATUSES.has(turn.status)) {
     throw new KernelCommandError('access_denied', 'Turn is not writable for publication.');
   }
 }
 
-function assertThreadReadable(store: FsStore, workspaceId: string, threadId: string): void {
-  store.getThread(workspaceId, threadId);
+/**
+ * Requires current Thread audience before projecting a retained presentation.
+ *
+ * @param store Product store.
+ * @param actor Command actor whose responsible user is the audience subject.
+ * @param workspaceId Workspace id.
+ * @param threadId Thread that owns the presentation.
+ */
+function assertThreadReadable(
+  store: FsStore,
+  actor: ActorRef,
+  workspaceId: string,
+  threadId: string
+): void {
+  let thread: ReturnType<FsStore['getThread']>;
+  try {
+    thread = store.getThread(workspaceId, threadId);
+  } catch {
+    throw new KernelCommandError('not_found', 'Presentation was not found.');
+  }
+  if (!isThreadVisible(store, thread, responsibleUserIdForActor(actor) ?? undefined)) {
+    throw new KernelCommandError('not_found', 'Presentation was not found.');
+  }
 }
 
+/** Validates retained source lineage before audience checks or projection. */
+function parsePresentationSource(row: PresentationRow): GenerativePresentation['source'] {
+  try {
+    return GenerativeUiSourceSchema.parse(JSON.parse(row.source_json));
+  } catch {
+    throw new KernelCommandError('not_found', 'Presentation was not found.');
+  }
+}
+
+/**
+ * Finds one Workspace Item and requires the actor can see its owning Thread.
+ *
+ * @param context Command context.
+ * @param source Item source binding.
+ * @param hidden Failure used when the Item is missing or its Thread is not visible.
+ * @returns Visible source Item.
+ */
+function requireVisibleItemSource(
+  context: GenerativeUiCommandContext,
+  source: GenerativeUiItemSource,
+  hidden: KernelCommandError
+): Item {
+  const item = context.store
+    .listAllItems()
+    .find(
+      (candidate) => candidate.id === source.itemId && candidate.workspaceId === context.workspaceId
+    );
+  if (
+    !item ||
+    !isThreadIdVisible(
+      context.store,
+      item.workspaceId,
+      item.threadId,
+      responsibleUserIdForActor(context.actor) ?? undefined
+    )
+  ) {
+    throw hidden;
+  }
+  return item;
+}
+
+/**
+ * Requires Item-source Thread audience and refuses private source onto a shared dest.
+ *
+ * Kernel-record sources keep their existing resource authority.
+ *
+ * @param context Command context.
+ * @param source Publish source binding.
+ * @param destThreadId Destination Thread that would receive the presentation.
+ */
+function assertItemSourcePublishable(
+  context: GenerativeUiCommandContext,
+  source: PublishGenerativePresentationRequest['source'],
+  destThreadId: string
+): void {
+  if (source.kind !== 'item') {
+    return;
+  }
+  const item = requireVisibleItemSource(
+    context,
+    source,
+    new KernelCommandError('not_found', 'Source item was not found.')
+  );
+  let destThread: ReturnType<FsStore['getThread']>;
+  try {
+    destThread = context.store.getThread(context.workspaceId, destThreadId);
+  } catch {
+    throw new KernelCommandError('not_found', 'Thread not found.');
+  }
+  const sourceThread = context.store.getThread(item.workspaceId, item.threadId);
+  if (sourceThread.visibility === 'private' && destThread.visibility === 'workspace') {
+    throw new KernelCommandError('not_found', 'Thread not found.');
+  }
+}
+
+/** Rechecks source authority and destination audience before returning retained presentation bytes. */
 function assertSourceReadable(
   context: GenerativeUiCommandContext,
-  source: GenerativePresentation['source']
+  source: GenerativePresentation['source'],
+  destinationThreadId: string
 ): void {
   if (source.kind === 'kernel-records') {
     const app = getLightApp(context.dataRoot, context.workspaceId, source.appId);
@@ -791,14 +919,7 @@ function assertSourceReadable(
     }
     return;
   }
-  const item = context.store
-    .listAllItems()
-    .find(
-      (candidate) => candidate.id === source.itemId && candidate.workspaceId === context.workspaceId
-    );
-  if (!item) {
-    throw new KernelCommandError('unavailable', 'Presentation source is unavailable.');
-  }
+  assertItemSourcePublishable(context, source, destinationThreadId);
 }
 
 function assertActionMessageSize(event: GenerativeUiA2uiAction): void {

@@ -114,8 +114,11 @@ describe('thread dashboard app API', () => {
         `/api/app/workspaces/ws_demo/threads/${foreignThread.id}/dashboard`
       );
 
-      expect(response.status).toBe(403);
-      await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'not_found',
+        message: 'Thread not found.',
+      });
     } finally {
       coreDb.sqlite.close();
     }

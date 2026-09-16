@@ -8469,20 +8469,19 @@ describe('nanocore server', () => {
 
   it('rejects Goal Mode in the Quick Chat workspace', async () => {
     const coreDb = createCoreDb();
-    const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
+    const store = createDemoStore();
+    const thread = store.createThread('ws_quick_chat', 'Reject Goal Mode');
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
 
     try {
-      const res = await app.request(
-        '/api/app/workspaces/ws_quick_chat/threads/th_quick_chat/goal',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: 'goal-start-quick-chat',
-            objective: 'Plan a multi-step release goal.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
+      const res = await app.request(`/api/app/workspaces/ws_quick_chat/threads/${thread.id}/goal`, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: 'goal-start-quick-chat',
+          objective: 'Plan a multi-step release goal.',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
 
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toMatchObject({
@@ -8657,14 +8656,16 @@ describe('nanocore server', () => {
   it('rejects direct worker turns in the Quick Chat workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
+    const store = createDemoStore();
+    const thread = store.createThread('ws_quick_chat', 'Reject worker turn');
+    const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
       const res = await app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
           workspaceId: 'ws_quick_chat',
-          threadId: 'th_quick_chat',
+          threadId: thread.id,
           requestId: '0190f4c8-0000-7000-8000-000000000320',
           input: 'Run a worker turn.',
         }),
@@ -13023,7 +13024,25 @@ describe('nanocore server', () => {
 
   it('rejects Git push write operations in the Quick Chat workspace', async () => {
     const coreDb = createCoreDb();
-    const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
+    const store = createDemoStore();
+    const thread = store.createThread('ws_quick_chat', 'Reject Git push');
+    const turn = store.createTurn('ws_quick_chat', thread.id, 'Reject Git push', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    store.createApproval({
+      createdAt: new Date().toISOString(),
+      description: 'Reject Git push in Quick Chat.',
+      id: 'ap_quick_chat',
+      kind: 'permission',
+      resolvedAt: null,
+      status: 'pending',
+      threadId: thread.id,
+      title: 'Git push',
+      turnId: turn.id,
+      workspaceId: 'ws_quick_chat',
+    });
+    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
 
     try {
       const approvalRes = await app.request(
@@ -13033,8 +13052,8 @@ describe('nanocore server', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000030',
-            threadId: 'th_quick_chat',
-            turnId: 'turn_quick_chat',
+            threadId: thread.id,
+            turnId: turn.id,
             sourceRef: 'HEAD',
             targetBranch: 'main',
             commitIds: ['abc123'],

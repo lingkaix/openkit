@@ -483,9 +483,12 @@ export function registerDashboardRoutes({
         });
       const approvalAllowed = authorized('approval.respond');
       const turnAllowed = authorized('turn.run');
+      const visibleThreads = store
+        .listThreads(workspaceId)
+        .filter((thread) => isThreadVisible(store, thread, actor?.userId));
       const goalAttention = new Set(
         workspaceDb
-          ? goalRows(store, workspaceDb, workspaceId, authorized('review.apply'))
+          ? goalRows(workspaceDb, workspaceId, authorized('review.apply'), visibleThreads)
               .filter(
                 (row) =>
                   row.severity === 'needs_input' && row.actions.some((action) => !action.disabled)
@@ -493,11 +496,8 @@ export function registerDashboardRoutes({
               .map((row) => row.threadId)
           : []
       );
-      const rows: ConversationNavigationResponse['items'] = store
-        .listThreads(workspaceId)
-        .filter(
-          (thread) => thread.status === 'active' && isThreadVisible(store, thread, actor?.userId)
-        )
+      const rows: ConversationNavigationResponse['items'] = visibleThreads
+        .filter((thread) => thread.status === 'active')
         .map((thread) => {
           const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
           const items = store.listThreadItems(workspaceId, thread.id);
