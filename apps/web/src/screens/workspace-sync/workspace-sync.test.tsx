@@ -435,6 +435,28 @@ const UNRECOVERABLE_RECORD = WorkspaceReconciliationRecordSchema.parse({
   finishedAt: TIMESTAMP,
 });
 
+const PRESENTATION_REVIEW = WorkspaceSyncReviewItemSchema.parse({
+  ...PENDING_REVIEW,
+  review: {
+    ...PENDING_STAGED_REVIEW,
+    validation: [
+      { command: 'worker', status: 'failed', ref: 'turn_demo' },
+      { command: 'lint', status: 'passed', ref: 'turn_demo' },
+    ],
+  },
+});
+
+const MISSING_PATCH_REVIEW = WorkspaceSyncReviewItemSchema.parse({
+  ...PENDING_REVIEW,
+  artifactId: 'ar_workspace_changes_missing_patch',
+  patchPayload: null,
+  review: {
+    ...PENDING_STAGED_REVIEW,
+    id: 'swr_missing_patch',
+    actionCenterRowId: 'workspace-review:swr_missing_patch',
+  },
+});
+
 type AppOverrides = Partial<CoreClient['app']>;
 type CoreOverrides = Partial<CoreClient['core']>;
 
@@ -618,6 +640,34 @@ function changedPathRow(region: HTMLElement, path: string, requiredTexts: string
   throw new Error(`No scoped changed-path row for ${path}`);
 }
 
+/** Returns native disclosure elements whose visible summary matches `name`. */
+function namedDisclosures(name: string, scope: HTMLElement): HTMLDetailsElement[] {
+  return within(scope)
+    .getAllByText(name, { exact: true })
+    .map((summary) => {
+      const details = summary.closest('details');
+      if (!(details instanceof HTMLDetailsElement)) {
+        throw new Error(`No details for ${name}`);
+      }
+      return details;
+    });
+}
+
+/** Expands one collapsed native disclosure and returns it for visible-content assertions. */
+async function expandDisclosure(
+  user: ReturnType<typeof userEvent.setup>,
+  details: HTMLDetailsElement
+): Promise<HTMLDetailsElement> {
+  expect(details.open).toBe(false);
+  const summary = details.querySelector('summary');
+  if (!(summary instanceof HTMLElement)) {
+    throw new Error('Disclosure is missing a summary');
+  }
+  await user.click(summary);
+  expect(details.open).toBe(true);
+  return details;
+}
+
 beforeEach(() => {
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
@@ -625,6 +675,7 @@ beforeEach(() => {
 
 describe('Workspace changes', () => {
   it('is a reachable selected-Workspace surface that projects every Sync collection as summaries', async () => {
+    const user = userEvent.setup();
     const surface = surfaceById('workspace-changes');
     expect(surface).toMatchObject({
       title: 'Workspace changes',
@@ -648,12 +699,16 @@ describe('Workspace changes', () => {
     expect(destinations).toContainElement(navButton);
 
     const reviews = await screen.findByRole('region', { name: 'Reviews' });
-    expect(within(reviews).getByText(PENDING_STAGED_REVIEW.id)).toBeInTheDocument();
-    expect(within(reviews).getByText(CHANGE_SET.id)).toBeInTheDocument();
-    expect(within(reviews).getByText(PENDING_REVIEW.artifactId)).toBeInTheDocument();
-    expect(within(reviews).getByText('docs/spec.md')).toBeInTheDocument();
-    expect(within(reviews).getByText(PENDING_STAGED_REVIEW.riskSummary)).toBeInTheDocument();
-    expect(within(reviews).getByText('Pending', { exact: true })).toBeInTheDocument();
+    expect(within(reviews).getAllByText('docs/spec.md').length).toBeGreaterThan(0);
+    expect(within(reviews).getAllByText(PENDING_STAGED_REVIEW.riskSummary).length).toBeGreaterThan(
+      0
+    );
+    expect(within(reviews).getByText('Pending', { exact: true })).toBeVisible();
+    const pendingTechnical = namedDisclosures('Technical details', reviews)[0]!;
+    await expandDisclosure(user, pendingTechnical);
+    expect(within(pendingTechnical).getByText(PENDING_STAGED_REVIEW.id)).toBeVisible();
+    expect(within(pendingTechnical).getByText(CHANGE_SET.id)).toBeVisible();
+    expect(within(pendingTechnical).getByText(PENDING_REVIEW.artifactId)).toBeVisible();
     expect(
       within(reviews).getAllByRole('button', { name: `Accept ${PENDING_STAGED_REVIEW.id}` })
     ).toHaveLength(1);
@@ -669,6 +724,8 @@ describe('Workspace changes', () => {
     expect(within(reviews).queryByRole('button', { name: 'Accept' })).toBeNull();
     expect(within(reviews).getByText('Rejected', { exact: true })).toBeInTheDocument();
 
+    const diagnostics = namedDisclosures('Diagnostics', document.body)[0]!;
+    await expandDisclosure(user, diagnostics);
     expect(screen.getByRole('region', { name: 'Input snapshots' })).toHaveTextContent(/git/i);
     expect(screen.getByRole('region', { name: 'Materializations' })).toHaveTextContent(
       /openshell/i
@@ -822,7 +879,7 @@ describe('Workspace changes', () => {
     renderApp('/workspace-changes', client);
 
     const reviews = await screen.findByRole('region', { name: 'Reviews' });
-    expect(within(reviews).getByText(PENDING_STAGED_REVIEW.riskSummary)).toBeInTheDocument();
+    expect(reviews).toHaveTextContent(PENDING_STAGED_REVIEW.riskSummary);
     await user.click(
       within(reviews).getByRole('button', { name: `Accept ${PENDING_STAGED_REVIEW.id}` })
     );
@@ -830,7 +887,7 @@ describe('Workspace changes', () => {
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText('Recovery required', { exact: true })).toBeInTheDocument();
     expect(alert).not.toHaveTextContent('workspace-sync-private failure');
-    expect(within(reviews).getByText(PENDING_STAGED_REVIEW.riskSummary)).toBeInTheDocument();
+    expect(reviews).toHaveTextContent(PENDING_STAGED_REVIEW.riskSummary);
     expect(
       within(reviews).getByRole('button', { name: `Accept ${PENDING_STAGED_REVIEW.id}` })
     ).toBeInTheDocument();
@@ -844,7 +901,7 @@ describe('Workspace changes', () => {
       )
     );
     expect(submitWorkspaceSyncReviewDecision).toHaveBeenCalledTimes(1);
-    expect(within(reviews).getByText(PENDING_STAGED_REVIEW.riskSummary)).toBeInTheDocument();
+    expect(reviews).toHaveTextContent(PENDING_STAGED_REVIEW.riskSummary);
     expect(document.documentElement.outerHTML).not.toContain(HOST_PATH);
     expect(document.documentElement.outerHTML).not.toContain(POISON_SECRET);
   });
@@ -944,7 +1001,9 @@ describe('Workspace changes', () => {
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id }));
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText('Recovery required', { exact: true })).toBeInTheDocument();
-    expect(await screen.findByText(PENDING_STAGED_REVIEW.riskSummary)).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Reviews' })).toHaveTextContent(
+      PENDING_STAGED_REVIEW.riskSummary
+    );
     expect(submitWorkspaceSyncReviewDecision.mock.calls.map((call) => call[0])).toEqual([
       WORKSPACE.id,
     ]);
@@ -964,7 +1023,7 @@ describe('Workspace changes', () => {
     renderApp('/workspace-changes', client);
 
     const reviews = await screen.findByRole('region', { name: 'Reviews' });
-    expect(within(reviews).getByText(PENDING_STAGED_REVIEW.riskSummary)).toBeInTheDocument();
+    expect(reviews).toHaveTextContent(PENDING_STAGED_REVIEW.riskSummary);
     await user.click(
       within(reviews).getByRole('button', { name: `Accept ${PENDING_STAGED_REVIEW.id}` })
     );
@@ -974,7 +1033,7 @@ describe('Workspace changes', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load/i);
     expect(alert).not.toHaveTextContent('workspace-sync-private refetch failure');
-    expect(within(reviews).getByText(PENDING_STAGED_REVIEW.riskSummary)).toBeInTheDocument();
+    expect(reviews).toHaveTextContent(PENDING_STAGED_REVIEW.riskSummary);
     expect(within(reviews).getByText('Pending', { exact: true })).toBeInTheDocument();
     expect(
       within(reviews).getByRole('button', { name: `Accept ${PENDING_STAGED_REVIEW.id}` })
@@ -1075,11 +1134,13 @@ describe('Workspace changes', () => {
       within(modeRow).getByText(modeChanged.newPermissions!, { exact: true })
     ).toBeInTheDocument();
     expect(reviews).toHaveTextContent(PREVIEW_STAGED_REVIEW.riskSummary);
-    expect(
-      Array.from(reviews.querySelectorAll('pre')).some(
-        (preview) => preview.textContent === PREVIEW_PATCH_TEXT
-      )
-    ).toBe(true);
+    const viewDiff = namedDisclosures('View diff', reviews)[0]!;
+    await expandDisclosure(user, viewDiff);
+    const patchPreview = Array.from(viewDiff.querySelectorAll('pre')).find(
+      (preview) => preview.textContent === PREVIEW_PATCH_TEXT
+    );
+    expect(patchPreview).toBeDefined();
+    expect(patchPreview).toBeVisible();
     expect(PREVIEW_STAGED_REVIEW.diffSummary).toEqual({
       filesChanged: PREVIEW_CHANGE_SET.changedPaths.length,
       additions: PREVIEW_PATCH_STATS.additions,
@@ -1117,6 +1178,90 @@ describe('Workspace changes', () => {
     if (pathname !== '/workspace-changes') {
       expect(isRegisteredLivePath(pathname)).toBe(true);
     }
+  });
+
+  it('leads review cards with a meaningful summary and keeps ids and patch behind expandable disclosures', async () => {
+    const user = userEvent.setup();
+    const reviewsById = new Map([
+      [PRESENTATION_REVIEW.review.id, PRESENTATION_REVIEW],
+      [MISSING_PATCH_REVIEW.review.id, MISSING_PATCH_REVIEW],
+    ]);
+    const submitWorkspaceSyncReviewDecision = vi.fn().mockResolvedValue({
+      review: ACCEPTED_REVIEW.review,
+      workspaceApplyResult: APPLY_RESULT,
+    });
+    const client = makeClient({
+      listWorkspaceSyncReviews: vi
+        .fn()
+        .mockResolvedValue({ items: [PRESENTATION_REVIEW, MISSING_PATCH_REVIEW] }),
+      getWorkspaceSyncReview: vi.fn(async (_workspaceId: string, reviewId: string) => {
+        const item = reviewsById.get(reviewId);
+        if (!item) throw new Error(`unexpected review ${reviewId}`);
+        return item;
+      }),
+      listStagedWorkspaceReviews: vi.fn().mockResolvedValue({
+        items: [PRESENTATION_REVIEW.review, MISSING_PATCH_REVIEW.review],
+      }),
+      submitWorkspaceSyncReviewDecision,
+    });
+    renderApp('/workspace-changes', client);
+
+    const reviews = await screen.findByRole('region', { name: 'Reviews' });
+    expect(within(reviews).getAllByText('docs/spec.md')[0]).toBeVisible();
+    const pendingLabels = within(reviews).getAllByText('Pending', { exact: true });
+    expect(pendingLabels).toHaveLength(2);
+    expect(pendingLabels[0]).toBeVisible();
+    expect(pendingLabels[1]).toBeVisible();
+    expect(reviews).toHaveTextContent(PRESENTATION_REVIEW.review.riskSummary);
+    expect(reviews).toHaveTextContent('1 files changed, +0 added, -0 deleted');
+    expect(within(reviews).getByText('worker failed')).toBeVisible();
+    expect(within(reviews).getByText('No text diff was recorded.')).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Apply results' })).toHaveTextContent(/applied/i);
+    expect(screen.getByRole('region', { name: 'Recovery' })).toHaveTextContent(
+      RECOVERY_RECORD.requiredHumanDecision!
+    );
+
+    const viewDiff = namedDisclosures('View diff', reviews)[0]!;
+    const technical = namedDisclosures('Technical details', reviews).find((details) =>
+      (details.textContent ?? '').includes(PRESENTATION_REVIEW.review.id)
+    )!;
+    const diagnostics = namedDisclosures('Diagnostics', document.body)[0]!;
+    const snapshots = screen.getByRole('region', { name: 'Input snapshots' });
+    const accept = within(reviews).getByRole('button', {
+      name: `Accept ${PRESENTATION_REVIEW.review.id}`,
+    });
+    expect(viewDiff.open).toBe(false);
+    expect(technical.open).toBe(false);
+    expect(diagnostics.open).toBe(false);
+    expect(accept).toBeVisible();
+    expect(within(technical).getByText('lint passed')).not.toBeVisible();
+    expect(snapshots).not.toBeVisible();
+
+    await expandDisclosure(user, viewDiff);
+    const patchPreview = Array.from(viewDiff.querySelectorAll('pre')).find(
+      (preview) => preview.textContent === PENDING_PATCH_TEXT
+    );
+    expect(patchPreview).toBeDefined();
+    expect(patchPreview).toBeVisible();
+
+    await expandDisclosure(user, technical);
+    expect(within(technical).getByText(PRESENTATION_REVIEW.review.id)).toBeVisible();
+    expect(within(technical).getByText(CHANGE_SET.id)).toBeVisible();
+    expect(within(technical).getByText(PRESENTATION_REVIEW.artifactId)).toBeVisible();
+    expect(within(technical).getByText('lint passed')).toBeVisible();
+
+    await expandDisclosure(user, diagnostics);
+    expect(diagnostics.open).toBe(true);
+    expect(snapshots).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Change sets' })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Staged reviews' })).toHaveTextContent(/pending/i);
+
+    await user.click(accept);
+    await waitFor(() => expect(submitWorkspaceSyncReviewDecision).toHaveBeenCalledTimes(1));
+    const requestId = submitWorkspaceSyncReviewDecision.mock.calls[0]?.[2].requestId;
+    expect(submitWorkspaceSyncReviewDecision.mock.calls).toEqual([
+      [WORKSPACE.id, PRESENTATION_REVIEW.review.id, { decision: 'accepted', requestId }],
+    ]);
   });
 
   it.each([

@@ -216,162 +216,190 @@ function WorkspaceSyncSections({
           />
         ) : (
           <Card className="py-0">
-            {data.reviews.map((item) => (
-              <ListRow key={item.review.id} className="items-start">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-bold text-fg-strong">{item.review.id}</p>
-                  {item.review.status === 'pending' ? (
-                    <>
-                      <p className="text-xs text-fg-muted">{item.changeSet.id}</p>
-                      <p className="text-xs text-fg-muted">{item.artifactId}</p>
-                      {item.changeSet.changedPaths.map((path) => (
-                        <ChangedPathPreview key={path.path} path={path} />
-                      ))}
-                      {item.patchPayload?.text ? (
-                        <pre className="whitespace-pre-wrap font-mono text-xs text-fg-muted">
-                          {item.patchPayload.text}
-                        </pre>
-                      ) : null}
-                      <p className="text-sm text-fg">
-                        {item.review.diffSummary.filesChanged} files changed, +
-                        {item.review.diffSummary.additions} added, -
-                        {item.review.diffSummary.deletions} deleted
+            {data.reviews.map((item) => {
+              const noticeableChecks = item.review.validation.filter(
+                (check) => check.status !== 'passed'
+              );
+              return (
+                <ListRow key={item.review.id} className="w-full min-w-0 items-start">
+                  <div className="flex w-full min-w-0 flex-1 flex-col gap-3">
+                    <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+                      <p className="min-w-0 flex-1 text-sm font-bold text-fg-strong">
+                        {changedPathSummary(item.changeSet.changedPaths) || item.review.riskSummary}
                       </p>
-                      <p className="text-sm text-fg">{item.review.riskSummary}</p>
-                      {inspectedArtifactId === item.artifactId ? (
-                        <InspectedWorkspaceArtifact artifactId={item.artifactId} />
-                      ) : null}
-                      {item.review.validation.map((check) => (
-                        <p
-                          key={`${check.command}:${check.status}`}
-                          className="text-xs text-fg-muted"
-                        >
-                          {check.command} {check.status}
+                      <StatusChip tone={statusTone(item.review.status)} dot>
+                        {workspaceSyncStatusLabel(item.review.status)}
+                      </StatusChip>
+                    </div>
+                    <p className="text-sm text-fg">{item.review.riskSummary}</p>
+                    {noticeableChecks.map((check) => (
+                      <p key={`${check.command}:${check.status}`} className="text-sm text-fg">
+                        {check.command} {check.status}
+                      </p>
+                    ))}
+                    {item.review.status === 'pending' ? (
+                      <>
+                        {item.changeSet.changedPaths.map((path) => (
+                          <ChangedPathPreview key={path.path} path={path} />
+                        ))}
+                        <p className="text-sm text-fg">
+                          {item.review.diffSummary.filesChanged} files changed, +
+                          {item.review.diffSummary.additions} added, -
+                          {item.review.diffSummary.deletions} deleted
                         </p>
-                      ))}
-                    </>
-                  ) : null}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <StatusChip tone={statusTone(item.review.status)} dot>
-                    {workspaceSyncStatusLabel(item.review.status)}
-                  </StatusChip>
-                  {item.review.status === 'pending' ? (
-                    <>
-                      {REVIEW_ACTIONS.map((action) => (
-                        <Button
-                          key={action.decision}
-                          size="sm"
-                          variant={action.decision === 'accepted' ? 'accent' : 'outline'}
-                          aria-label={`${action.label} ${item.review.id}`}
-                          isDisabled={reviewBusy}
-                          onPress={() => onReview(item.review.id, action.decision)}
-                        >
-                          {action.label}
-                        </Button>
-                      ))}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        aria-label={`Inspect ${item.artifactId}`}
-                        onPress={() => setInspectedArtifactId(item.artifactId)}
-                      >
-                        Inspect
-                      </Button>
-                    </>
-                  ) : null}
-                </div>
-              </ListRow>
-            ))}
+                        {item.patchPayload?.text ? (
+                          <details>
+                            <summary className="cursor-pointer text-sm text-fg">View diff</summary>
+                            <pre className="mt-2 whitespace-pre-wrap font-mono text-xs text-fg-muted">
+                              {item.patchPayload.text}
+                            </pre>
+                          </details>
+                        ) : (
+                          <p className="text-sm text-fg">No text diff was recorded.</p>
+                        )}
+                        {inspectedArtifactId === item.artifactId ? (
+                          <InspectedWorkspaceArtifact artifactId={item.artifactId} />
+                        ) : null}
+                        <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+                          {REVIEW_ACTIONS.map((action) => (
+                            <Button
+                              key={action.decision}
+                              size="sm"
+                              variant={action.decision === 'accepted' ? 'accent' : 'outline'}
+                              aria-label={`${action.label} ${item.review.id}`}
+                              isDisabled={reviewBusy}
+                              onPress={() => onReview(item.review.id, action.decision)}
+                            >
+                              {action.label}
+                            </Button>
+                          ))}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            aria-label={`Inspect ${item.artifactId}`}
+                            onPress={() => setInspectedArtifactId(item.artifactId)}
+                          >
+                            Inspect
+                          </Button>
+                        </div>
+                      </>
+                    ) : null}
+                    <details>
+                      <summary className="cursor-pointer text-sm text-fg">
+                        Technical details
+                      </summary>
+                      <div className="mt-2 flex flex-col gap-1">
+                        <p className="text-xs text-fg-muted">{item.review.id}</p>
+                        <p className="text-xs text-fg-muted">{item.changeSet.id}</p>
+                        <p className="text-xs text-fg-muted">{item.artifactId}</p>
+                        {item.review.validation
+                          .filter((check) => check.status === 'passed')
+                          .map((check) => (
+                            <p
+                              key={`${check.command}:${check.status}`}
+                              className="text-xs text-fg-muted"
+                            >
+                              {check.command} {check.status}
+                            </p>
+                          ))}
+                      </div>
+                    </details>
+                  </div>
+                </ListRow>
+              );
+            })}
           </Card>
         )}
       </section>
 
-      <SummaryRegion
-        label="Input snapshots"
-        emptyTitle="No input snapshots"
-        emptyHint="Workspace input snapshots used for worker materialization will appear here."
-      >
-        {data.snapshots.map((snapshot) => (
-          <ListRow key={snapshot.id}>
-            <p className="min-w-0 flex-1 text-sm text-fg">{snapshot.strategy}</p>
-            <StatusChip tone="neutral">{snapshot.backend.kind}</StatusChip>
-          </ListRow>
-        ))}
-      </SummaryRegion>
+      <details className="flex flex-col gap-3">
+        <summary className="cursor-pointer text-sm font-bold text-fg-strong">Diagnostics</summary>
+        <SummaryRegion
+          label="Input snapshots"
+          emptyTitle="No input snapshots"
+          emptyHint="Workspace input snapshots used for worker materialization will appear here."
+        >
+          {data.snapshots.map((snapshot) => (
+            <ListRow key={snapshot.id}>
+              <p className="min-w-0 flex-1 text-sm text-fg">{snapshot.strategy}</p>
+              <StatusChip tone="neutral">{snapshot.backend.kind}</StatusChip>
+            </ListRow>
+          ))}
+        </SummaryRegion>
 
-      <SummaryRegion
-        label="Materializations"
-        emptyTitle="No materializations"
-        emptyHint="Materialization records for this Workspace will appear here."
-      >
-        {data.materializations.map((record) => (
-          <ListRow key={record.id}>
-            <p className="min-w-0 flex-1 text-sm text-fg">{record.strategy}</p>
-            <StatusChip tone="neutral">{record.backendKind}</StatusChip>
-          </ListRow>
-        ))}
-      </SummaryRegion>
+        <SummaryRegion
+          label="Materializations"
+          emptyTitle="No materializations"
+          emptyHint="Materialization records for this Workspace will appear here."
+        >
+          {data.materializations.map((record) => (
+            <ListRow key={record.id}>
+              <p className="min-w-0 flex-1 text-sm text-fg">{record.strategy}</p>
+              <StatusChip tone="neutral">{record.backendKind}</StatusChip>
+            </ListRow>
+          ))}
+        </SummaryRegion>
 
-      <SummaryRegion
-        label="Backend handles"
-        emptyTitle="No backend handles"
-        emptyHint="Redacted backend workspace handles will appear here."
-      >
-        {data.handles.map((handle) => (
-          <ListRow key={handle.id}>
-            <p className="min-w-0 flex-1 text-sm text-fg">{handle.backendKind}</p>
-            <StatusChip tone={statusTone(handle.cleanupStatus)}>
-              {workspaceSyncStatusLabel(handle.cleanupStatus)}
-            </StatusChip>
-          </ListRow>
-        ))}
-      </SummaryRegion>
+        <SummaryRegion
+          label="Backend handles"
+          emptyTitle="No backend handles"
+          emptyHint="Redacted backend workspace handles will appear here."
+        >
+          {data.handles.map((handle) => (
+            <ListRow key={handle.id}>
+              <p className="min-w-0 flex-1 text-sm text-fg">{handle.backendKind}</p>
+              <StatusChip tone={statusTone(handle.cleanupStatus)}>
+                {workspaceSyncStatusLabel(handle.cleanupStatus)}
+              </StatusChip>
+            </ListRow>
+          ))}
+        </SummaryRegion>
 
-      <SummaryRegion
-        label="Worker outputs"
-        emptyTitle="No worker outputs"
-        emptyHint="Collected worker output manifests will appear here."
-      >
-        {data.manifests.map((manifest) => (
-          <ListRow key={manifest.id}>
-            <p className="min-w-0 flex-1 text-sm text-fg">
-              {changedPathSummary(manifest.changedPaths)}
-            </p>
-            <StatusChip tone="neutral">{manifest.strategy}</StatusChip>
-          </ListRow>
-        ))}
-      </SummaryRegion>
+        <SummaryRegion
+          label="Worker outputs"
+          emptyTitle="No worker outputs"
+          emptyHint="Collected worker output manifests will appear here."
+        >
+          {data.manifests.map((manifest) => (
+            <ListRow key={manifest.id}>
+              <p className="min-w-0 flex-1 text-sm text-fg">
+                {changedPathSummary(manifest.changedPaths)}
+              </p>
+              <StatusChip tone="neutral">{manifest.strategy}</StatusChip>
+            </ListRow>
+          ))}
+        </SummaryRegion>
 
-      <SummaryRegion
-        label="Change sets"
-        emptyTitle="No change sets"
-        emptyHint="Collected workspace change sets will appear here."
-      >
-        {data.changeSets.map((changeSet) => (
-          <ListRow key={changeSet.id}>
-            <p className="min-w-0 flex-1 text-sm text-fg">
-              {changedPathSummary(changeSet.changedPaths)}
-            </p>
-            <StatusChip tone="neutral">{changeSet.strategy}</StatusChip>
-          </ListRow>
-        ))}
-      </SummaryRegion>
+        <SummaryRegion
+          label="Change sets"
+          emptyTitle="No change sets"
+          emptyHint="Collected workspace change sets will appear here."
+        >
+          {data.changeSets.map((changeSet) => (
+            <ListRow key={changeSet.id}>
+              <p className="min-w-0 flex-1 text-sm text-fg">
+                {changedPathSummary(changeSet.changedPaths)}
+              </p>
+              <StatusChip tone="neutral">{changeSet.strategy}</StatusChip>
+            </ListRow>
+          ))}
+        </SummaryRegion>
 
-      <SummaryRegion
-        label="Staged reviews"
-        emptyTitle="No staged reviews"
-        emptyHint="Durable staged review rows will appear here."
-      >
-        {data.staged.map((review) => (
-          <ListRow key={review.id}>
-            <p className="min-w-0 flex-1 text-sm text-fg">{review.id}</p>
-            <StatusChip tone={statusTone(review.status)} dot>
-              {workspaceSyncStatusLabel(review.status)}
-            </StatusChip>
-          </ListRow>
-        ))}
-      </SummaryRegion>
+        <SummaryRegion
+          label="Staged reviews"
+          emptyTitle="No staged reviews"
+          emptyHint="Durable staged review rows will appear here."
+        >
+          {data.staged.map((review) => (
+            <ListRow key={review.id}>
+              <p className="min-w-0 flex-1 text-sm text-fg">{review.id}</p>
+              <StatusChip tone={statusTone(review.status)} dot>
+                {workspaceSyncStatusLabel(review.status)}
+              </StatusChip>
+            </ListRow>
+          ))}
+        </SummaryRegion>
+      </details>
 
       <SummaryRegion
         label="Apply plans"
@@ -415,9 +443,14 @@ function WorkspaceSyncSections({
         ) : (
           <Card className="py-0">
             {data.recovery.map((record) => (
-              <ListRow key={record.id} className="items-start">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-bold text-fg-strong">{record.id}</p>
+              <ListRow key={record.id} className="w-full min-w-0 items-start">
+                <div className="flex w-full min-w-0 flex-1 flex-col gap-3">
+                  <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+                    <p className="min-w-0 flex-1 text-sm font-bold text-fg-strong">{record.id}</p>
+                    <StatusChip tone={statusTone(record.stateAfter)} dot>
+                      {workspaceSyncStatusLabel(record.stateAfter)}
+                    </StatusChip>
+                  </div>
                   <p className="text-xs text-fg-muted">{record.backendReachability.status}</p>
                   {record.collectedOutputManifestIds.map((manifestId) => (
                     <p key={manifestId} className="text-xs text-fg-muted">
@@ -440,13 +473,9 @@ function WorkspaceSyncSections({
                   {record.retentionDecision ? (
                     <p className="text-xs text-fg-muted">{record.retentionDecision}</p>
                   ) : null}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <StatusChip tone={statusTone(record.stateAfter)} dot>
-                    {workspaceSyncStatusLabel(record.stateAfter)}
-                  </StatusChip>
-                  {record.stateAfter === 'requires-human'
-                    ? RECOVERY_ACTIONS.map((action) => {
+                  {record.stateAfter === 'requires-human' ? (
+                    <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+                      {RECOVERY_ACTIONS.map((action) => {
                         const preview = recoveryDecisionEffects(action.outcome, record);
                         if (action.decision !== 'abandon') {
                           return (
@@ -507,8 +536,9 @@ function WorkspaceSyncSections({
                             </Dialog>
                           </Modal>
                         );
-                      })
-                    : null}
+                      })}
+                    </div>
+                  ) : null}
                 </div>
               </ListRow>
             ))}
