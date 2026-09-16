@@ -114,6 +114,7 @@ function createFixture() {
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const app = new Hono<{ Variables: AuthVariables }>();
   let administrationHandlerReads = 0;
+  let deleteWorkspaceHandlerReads = 0;
   let threadDashboardHandlerReads = 0;
 
   app.use('*', async (c, next) => {
@@ -149,6 +150,10 @@ function createFixture() {
   app.get('/api/app/workspaces/:workspaceId/dashboard', (c) =>
     c.json(c.get('workspaceAccess') ?? null)
   );
+  app.post('/api/app/workspaces/:workspaceId/delete', (c) => {
+    deleteWorkspaceHandlerReads += 1;
+    return c.json(c.get('workspaceAccess') ?? { resumed: true });
+  });
   app.get('/api/app/workspaces/:workspaceId/worker-environments', (c) =>
     c.json(c.get('workspaceAccess') ?? null)
   );
@@ -165,6 +170,7 @@ function createFixture() {
     app,
     administrationHandlerReads: () => administrationHandlerReads,
     coreDb,
+    deleteWorkspaceHandlerReads: () => deleteWorkspaceHandlerReads,
     filesystemOnlyWorkspace,
     foreignThread,
     foreignWorkspace,
@@ -1152,6 +1158,43 @@ describe('central Workspace operation authorizer', () => {
     expect(ownerMembershipStatus(actorQuickChatId, 'user_missing')).toBe('removed');
     expect(registeredWorkspaceOwner(actorQuickChatId)).toBe('user_missing');
   });
+
+  it('lets a usable original-owner server-admin resume deletion without content access', async () => {
+    markWorkspaceDeleting(fixture.workspace.id);
+    presentServerAdmin('user_local', 'token_admin_delete_retry');
+
+    const retry = await requestWorkspaceDeletion(fixture.workspace.id);
+    const content = await fixture.app.request(
+      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+    );
+
+    expect(retry.status, await retry.clone().text()).toBe(200);
+    expect(fixture.deleteWorkspaceHandlerReads()).toBe(1);
+    expect(content.status).toBe(403);
+    await expect(content.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+  });
+
+  it('denies foreign, revoked, and disabled server-admin deletion retries', async () => {
+    markWorkspaceDeleting(fixture.workspace.id);
+    presentServerAdmin('user_missing', 'token_admin_delete_foreign');
+    const foreign = await requestWorkspaceDeletion(fixture.workspace.id);
+    presentServerAdmin('user_local', 'token_admin_delete_revoked');
+    revokeOpenKitAccessTokenRecord(fixture.coreDb, 'token_admin_delete_revoked');
+    const revoked = await requestWorkspaceDeletion(fixture.workspace.id);
+    presentServerAdmin('user_local', 'token_admin_delete_disabled');
+    fixture.coreDb.sqlite
+      .prepare(`UPDATE users SET status = 'disabled' WHERE id = 'user_local'`)
+      .run();
+    const disabled = await requestWorkspaceDeletion(fixture.workspace.id);
+
+    expect(foreign.status).toBe(403);
+    expect(revoked.status).toBe(403);
+    expect(disabled.status).toBe(403);
+    expect(fixture.deleteWorkspaceHandlerReads()).toBe(0);
+    await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    await expect(revoked.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    await expect(disabled.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+  });
 });
 
 /** Presents one server-admin bearer on the shared fixture actor. */
@@ -1178,6 +1221,30 @@ function submitAdministrationConversation(body: Record<string, unknown>): Promis
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  });
+}
+
+/** Marks one existing registry row as deleting without changing its owner. */
+function markWorkspaceDeleting(workspaceId: string): void {
+  fixture.coreDb.sqlite
+    .prepare(
+      `UPDATE workspace_registry
+       SET status = 'deleting', revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ?`
+    )
+    .run(new Date().toISOString(), workspaceId);
+}
+
+/** Posts one guarded Workspace deletion stub. */
+function requestWorkspaceDeletion(workspaceId: string): Promise<Response> {
+  return fixture.app.request(`/api/app/workspaces/${workspaceId}/delete`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      confirmation: `permanently-delete-workspace:${workspaceId}:2`,
+      expectedRegistryRevision: 2,
+      requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',
+    }),
   });
 }
 

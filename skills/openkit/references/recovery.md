@@ -15,6 +15,8 @@ For a failed Worker inference stream, inspect the Turn and its attributed calls 
 
 For an owner-requested permanent Workspace deletion, use `workspace.delete` and preserve its exact `requestId`, confirmation, and returned phase. A fenced response is not deletion success; retry the same request only after the returned runtime blockers become terminal. Use local-mode `workspace.deleted-recover` only when the retained deletion export and closure verify successfully; recovery always remints the Workspace identity.
 
+A current usable server-admin bearer owned by the original deleting Workspace owner can resume that exact deletion request after the registry becomes `deleting` or `deleted`. This grants no ordinary Workspace content access and no foreign-owner deletion authority. An administrator without ownership must use the existing explicit access-recovery path before starting deletion; Quick Chat remains owner-only.
+
 ## Handle retries conservatively
 
 Reuse the same request only when the public operation contract and returned state make replay safe. Treat changed input under the same idempotency identity as a conflict.

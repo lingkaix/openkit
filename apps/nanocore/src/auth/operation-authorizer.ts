@@ -600,11 +600,10 @@ function hasWorkspaceDeletionRetryAuthority(
   actor: Actor,
   workspaceId: string
 ): boolean {
-  if (
-    actor.kind === 'token' &&
-    (actor.tokenScope !== 'workspace' || !actor.tokenWorkspaceIds?.includes(workspaceId))
-  ) {
-    return false;
+  if (actor.kind === 'token' && !isUsablePresentedServerAdminToken(coreDb, actor)) {
+    if (actor.tokenScope !== 'workspace' || !actor.tokenWorkspaceIds?.includes(workspaceId)) {
+      return false;
+    }
   }
   const row = coreDb.sqlite
     .prepare(
