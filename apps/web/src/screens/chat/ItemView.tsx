@@ -9,6 +9,7 @@ import {
   TextField,
   UserMessage,
 } from '../../primitives';
+import { ArtifactReference } from '../artifacts/ArtifactReference';
 import type { ThreadItem } from './data';
 import { GenerativePresentationView } from './GenerativePresentationView';
 
@@ -230,7 +231,7 @@ export function ItemView({
       );
 
     case 'artifact-reference':
-      return <ArtifactRow name={item.title} icon="file" time={item.summary ?? undefined} />;
+      return <ArtifactReference key={`${item.workspaceId}:${item.id}`} item={item} />;
 
     case 'command-execution':
       return (

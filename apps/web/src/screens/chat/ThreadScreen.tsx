@@ -16,6 +16,7 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
+import { ArtifactReference } from '../artifacts/ArtifactReference';
 import { createRequestId, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
 import {
   chatKeys,
@@ -52,13 +53,13 @@ function SidePanel({ workspaceId, threadId }: { workspaceId: string | null; thre
         {artifacts.length === 0 ? (
           <p className="text-xs text-fg-muted">No artifacts yet.</p>
         ) : (
-          artifacts.map((item) => (
-            <ArtifactRow
-              key={item.id}
-              name={item.type === 'artifact-reference' ? item.title : item.path}
-              icon="file"
-            />
-          ))
+          artifacts.map((item) =>
+            item.type === 'artifact-reference' ? (
+              <ArtifactReference key={`${item.workspaceId}:${item.id}`} item={item} />
+            ) : (
+              <ArtifactRow key={item.id} name={item.path} icon="file" />
+            )
+          )
         )}
       </div>
     </aside>

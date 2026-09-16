@@ -1,5 +1,11 @@
 import type { CoreClient } from '@openkit/core-client';
-import { ItemSchema, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
+import {
+  ArtifactReferenceItemSchema,
+  ArtifactSchema,
+  ItemSchema,
+  TurnSchema,
+  WorkspaceRecordSchema,
+} from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -2937,5 +2943,142 @@ describe('mode entry and feedback (S8)', () => {
     );
     await waitFor(() => expect(badButton).toHaveAttribute('aria-pressed', 'true'));
     expect(queryClient.getQueryData(chatKeys.feedback('ws1', 'th1', 't-other'))).toBeUndefined();
+  });
+});
+
+describe('conversation artifact inspection', () => {
+  const reference = ArtifactReferenceItemSchema.parse({
+    ...ITEMS[0],
+    type: 'artifact-reference',
+    id: 'artifact-ref',
+    artifactId: 'artifact_diff',
+    artifactVersion: 1,
+    lastMutationRequestId: 'req-artifact',
+    title: 'Workspace changes ready for review',
+    summary: '1 changed path staged for human review.',
+  });
+  const artifact = ArtifactSchema.parse({
+    id: 'artifact_diff',
+    workspaceId: 'ws1',
+    threadId: 'th1',
+    turnId: 't1',
+    kind: 'diff',
+    title: reference.title,
+    status: 'ready',
+    summary: reference.summary,
+    version: 1,
+    content: { format: 'text', body: 'diff --git a/example.txt b/example.txt\n+Reviewed content' },
+    contentDigest: `sha256:${'a'.repeat(64)}`,
+    lastMutationRequestId: 'req-artifact',
+    origin: { kind: 'turn-output', threadId: 'th1', turnId: 't1', requestId: 'req-artifact' },
+    createdAt: reference.createdAt,
+    updatedAt: reference.createdAt,
+  });
+
+  it('opens the referenced content from both the stream and side panel only on demand', async () => {
+    const user = userEvent.setup();
+    const getArtifact = vi.fn().mockResolvedValue(artifact);
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({
+        listThreadItems: vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
+        getArtifact,
+      })
+    );
+    await screen.findAllByText(reference.title);
+    expect(getArtifact).not.toHaveBeenCalled();
+    await user.click(screen.getAllByRole('button', { name: 'View content' })[0]);
+    const dialog = await screen.findByRole('dialog', { name: reference.title });
+    expect(await within(dialog).findByText(/Reviewed content/)).toBeInTheDocument();
+    expect(getArtifact).toHaveBeenCalledWith('ws1', 'artifact_diff');
+    expect(within(dialog).getByText('Version 1')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await user.click(
+      within(screen.getByRole('complementary', { name: 'Side panel' })).getByRole('button', {
+        name: 'View content',
+      })
+    );
+    expect(await screen.findByRole('dialog', { name: reference.title })).toBeInTheDocument();
+  });
+
+  it('shows load failure with retry and never labels a newer version as the referenced content', async () => {
+    const user = userEvent.setup();
+    const getArtifact = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('unavailable'))
+      .mockResolvedValue({ ...artifact, version: 2 });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({
+        listThreadItems: vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
+        getArtifact,
+      })
+    );
+    await user.click((await screen.findAllByRole('button', { name: 'View content' }))[0]);
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText("Couldn't load that artifact.")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: /Try again/i }));
+    expect(
+      await within(dialog).findByText(
+        /This message references version 1, but the artifact is now version 2/
+      )
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Reviewed content/)).not.toBeInTheDocument();
+  });
+  it('makes recorded workspace paths and patch readable without treating the snapshot as a current decision', async () => {
+    const user = userEvent.setup();
+    const body = JSON.stringify({
+      changeSet: {
+        id: 'cs1',
+        workspaceId: 'ws1',
+        resourceId: 'default',
+        materializationRecordId: 'mat1',
+        inputSnapshotId: 'snap1',
+        strategy: 'git',
+        base: { commit: 'abc', contentDigest: null },
+        head: { commit: 'def', contentDigest: null },
+        changedPaths: [{ path: 'example.txt', status: 'added', binary: false }],
+        patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 8 },
+        bundle: null,
+        artifactIds: ['artifact_diff'],
+        evidenceRefs: [],
+        redaction: { status: 'redacted', notes: [] },
+        createdAt: reference.createdAt,
+      },
+      patchPayload: {
+        mediaType: 'text/x-diff',
+        text: '+new line',
+        bytes: 8,
+        digest: 'sha256:patch',
+      },
+      review: {
+        id: 'review1',
+        changeSetId: 'cs1',
+        workspaceId: 'ws1',
+        status: 'pending',
+        staging: { strategy: 'git_worktree', ref: 'staging://review1', branch: null },
+        diffSummary: { filesChanged: 1, additions: 1, deletions: 0 },
+        riskSummary: 'One changed path.',
+        validation: [],
+        actionCenterRowId: 'workspace-review:review1',
+        createdAt: reference.createdAt,
+        updatedAt: reference.createdAt,
+      },
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({
+        listThreadItems: vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
+        getArtifact: vi.fn().mockResolvedValue({ ...artifact, content: { format: 'json', body } }),
+      })
+    );
+    await user.click((await screen.findAllByRole('button', { name: 'View content' }))[0]);
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('example.txt')).toBeInTheDocument();
+    expect(within(dialog).getByText('+new line')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Current review decisions are available in Workspace changes/)
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument();
   });
 });

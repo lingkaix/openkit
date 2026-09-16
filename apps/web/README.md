@@ -152,3 +152,5 @@ The Composer Agent selector shows target descriptions and availability reasons t
 - Client boundary — `@openkit/core-client`
 
 Conversation approval requests retain their resolved outcome beside the original request. Unavailable controls explain their state; pending decisions disable repeat submission, and failed decisions retry the same request identity.
+
+Chat and Task Artifact references share an on-demand View content dialog in the stream and side panel. It uses the existing exact Artifact read, requires the message version to match, and renders recorded workspace-change paths and patch bytes with a full-content disclosure. Failed reads expose retry; inspection never applies or decides changes.

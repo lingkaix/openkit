@@ -463,6 +463,8 @@ outputs; a completed turn always leaves visible evidence of output, reachable fr
 the main flow (board 12 adds a provenance rail: created-by, plan step, versions,
 evidence + a review gate).
 
+Thread Artifact references expose View content in both the stream and side index. Inspection reads the referenced Workspace and Artifact, displays only a matching version, and provides loading, retry and close controls. Workspace-change Artifacts show recorded paths and available text diff with full escaped content; recorded review status is historical evidence, not current decision authority.
+
 ### 9.10 Toast (`ok-toast`)
 The only floating layer. Dark, ≥340px, bottom-center, with a "View" action and a
 close button. Transient, dismissible, non-blocking — for events that finished while
