@@ -12,7 +12,7 @@ Worker closeout refuses a Git review whose exact repository resource has no link
 
 The Agent catalog is a live, product-safe projection of current server manifests through the shared Workspace resources read path. Catalog list/detail, health refresh and dashboard consumers share it; Workspace launch pins do not hide supply. Missing authored roles project as null, and catalog presence does not claim observed runtime health.
 
-Chat Mode distinguishes explicit external search or browsing requests from ordinary topic mentions and questions about supplied Artifact content. The shared conversation admission path retains external-search refusal without treating words such as Web or internet alone as a request to browse. Explicit Artifact references use their immutable version and remain separate from permission to perform external work.
+Chat Mode distinguishes explicit external search or browsing requests from ordinary topic mentions and questions about supplied Artifact content. The shared conversation admission path retains external-search refusal without treating words such as Web or internet alone as a request to browse. Explicit Artifact references use their immutable version and remain separate from permission to perform external work. Assistant submissions with admitted Artifacts skip the Knowledge-only answer shortcut so the supplied content reaches the answering provider; the explicitly selected Knowledge Manager retains its own path.
 
 ## Scope
 

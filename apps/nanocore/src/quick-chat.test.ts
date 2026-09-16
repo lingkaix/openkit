@@ -536,6 +536,98 @@ describe('quick chat app API', () => {
     ]);
   });
 
+  it('answers explicit Artifact input without substituting matching Workspace Knowledge', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-artifact-source-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    try {
+      const prompts: string[] = [];
+      const app = createApp({
+        ...createQuickChatProviderOptions(),
+        dataRoot,
+        coreDb,
+        store: createDemoStore({ dataRoot }),
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: {
+          createChatCompletion: async (_provider, request) => {
+            const user = request.messages.find((message) => message.role === 'user');
+            prompts.push(typeof user?.content === 'string' ? user.content : '');
+            return {
+              id: 'chatcmpl_artifact_source',
+              object: 'chat.completion',
+              created: 1,
+              model: request.model,
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: 'assistant',
+                    content: 'artifact-roundtrip-c7f46a19; 62 passed.',
+                  },
+                  finish_reason: 'stop',
+                },
+              ],
+            };
+          },
+        } as unknown as PiAiGatewayClient,
+      });
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+      const knowledge = await app.request('/api/workspaces/ws_demo/knowledge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: '00000000-0000-4000-8000-00000000c002',
+          kind: 'project-context',
+          title: 'Maintenance report acceptance',
+          content: 'Maintenance report acceptance: unrelated-knowledge-marker.',
+        }),
+      });
+      expect(knowledge.status).toBe(201);
+      const content = '# Maintenance report acceptance\n\nartifact-roundtrip-c7f46a19; 62 passed.';
+      const imported = await app.request('/api/app/workspaces/ws_demo/artifacts/imports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'artifact-source-import',
+          title: 'Maintenance report acceptance',
+          mediaType: 'text/markdown',
+          contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+          content,
+        }),
+      });
+      expect(imported.status, await imported.clone().text()).toBe(201);
+      const artifact = await imported.json();
+      const input =
+        '请只阅读本次附件，回复其中的验收标记和测试通过数量；无法读取时请说明，不要猜测。';
+      const response = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...conversationRequest(input, 'artifact-source-answer'),
+            artifactRefs: [
+              { artifactId: artifact.artifactId, artifactVersion: artifact.artifactVersion },
+            ],
+          }),
+        }
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      const answer = SubmitConversationResponseSchema.parse(await response.json());
+      expect(answer).toMatchObject({
+        outcome: 'answered',
+        explanation: 'The Assistant answered directly.',
+        handoff: null,
+      });
+      expect(prompts).toEqual([expect.stringContaining(content)]);
+      expect(prompts[0]).toContain(input);
+      expect(prompts[0]).not.toContain('unrelated-knowledge-marker');
+      expect(answer.item.text).toBe('artifact-roundtrip-c7f46a19; 62 passed.');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('asks a bounded clarification question for vague Chat Mode requests', async () => {
     const store = createDemoStore();
     const app = createApp({

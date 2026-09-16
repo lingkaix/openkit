@@ -3321,8 +3321,11 @@ export function registerQuickAndChatModeRoutes({
         };
       }
 
-      const knowledgeResponse = answerFromWorkspaceKnowledge('assistant');
-      if (knowledgeResponse) return knowledgeResponse;
+      // Admitted Artifact input must reach the Assistant, not a knowledge-only shortcut.
+      if (artifacts.length === 0) {
+        const knowledgeResponse = answerFromWorkspaceKnowledge('assistant');
+        if (knowledgeResponse) return knowledgeResponse;
+      }
 
       if (
         (isRepositoryFileListChatPrompt(chatInput.input) ||
