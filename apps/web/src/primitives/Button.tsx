@@ -1,3 +1,4 @@
+import type { Ref } from 'react';
 import {
   Button as AriaButton,
   type ButtonProps,
@@ -25,6 +26,8 @@ const SIZE: Record<ButtonSize, string> = {
 };
 
 export interface OkButtonProps extends ButtonProps {
+  /** Native control reference for restoring focus after a related surface closes. */
+  ref?: Ref<HTMLButtonElement>;
   /** Visual variant. Defaults to the primary accent pill. */
   variant?: ButtonVariant;
   /** Control height. Defaults to 32px (md). */

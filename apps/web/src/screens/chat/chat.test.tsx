@@ -3189,3 +3189,20 @@ describe('approval decision evidence', () => {
     expect(screen.queryByText('Inherited timestamp')).not.toBeInTheDocument();
   });
 });
+
+it('closes the outputs panel from inside and returns focus to its toggle', async () => {
+  const user = userEvent.setup();
+  renderApp('/chat/ws1/th1', makeClient());
+  const panel = await screen.findByRole('complementary', { name: 'Side panel' });
+  await user.click(within(panel).getByRole('button', { name: 'Close outputs' }));
+  expect(screen.queryByRole('complementary', { name: 'Side panel' })).not.toBeInTheDocument();
+  const toggle = screen.getByRole('button', { name: 'Show Side panel' });
+  expect(toggle).toHaveFocus();
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await user.click(toggle);
+  expect(screen.getByRole('complementary', { name: 'Side panel' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Hide Side panel' })).toHaveAttribute(
+    'aria-expanded',
+    'true'
+  );
+});

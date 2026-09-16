@@ -158,3 +158,5 @@ Chat and Task Artifact references share an on-demand View content dialog in the 
 Approval decision cards show the recorded user display name or system actor, matching request, reason where the system operation establishes it, time and source. Recovery denials explicitly label inherited timestamps and missing recovery time; human client and reason fields remain unrecorded rather than inferred. Record identifiers stay in a disclosure.
 
 The conversation side panel reuses the stream Item renderer so saved outputs and file-change records keep the same type labels, version or change kind, full wrapped names, and inspection actions. Its list scrolls vertically; Artifact subtypes are shown after loading the referenced content rather than inferred from a title.
+
+The Thread layout uses a CSS container query: the conversation retains a 32rem minimum and the 15rem auxiliary panel docks only from a 47rem container width. Below that width the panel overlays the conversation without shrinking the composer. Close inside the non-modal panel restores focus to its header toggle. No viewport listener or duplicate panel tree is needed.

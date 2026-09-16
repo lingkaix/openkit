@@ -203,7 +203,7 @@ Spectrum-calm, better for non-technical users (D-003).
 
 ### 3.3 Right Side panel — optional auxiliary index, never required
 
-The **Side panel** only mirrors and indexes Thread auxiliary information. Its current Chat projection is the Thread's Artifact and file-change index, not the global Artifact inventory; future accepted projections may add approvals, activity, Worker, or Goal context without making the panel canonical. D-006: turning it off must never block a core action. Its Approvals tab reads "Approve in conversation" and points back to the Thread; it carries "you *can* look," never "you *must* do." It collapses to a 48px icon strip.
+The **Side panel** only mirrors and indexes Thread auxiliary information. Its current Chat projection is the Thread's Artifact and file-change index, not the global Artifact inventory; future accepted projections may add approvals, activity, Worker, or Goal context without making the panel canonical. D-006: turning it off must never block a core action. Its Approvals tab reads "Approve in conversation" and points back to the Thread; it carries "you *can* look," never "you *must* do." The Thread header toggles the panel. The conversation region keeps a 32rem minimum width within the supported workbench. The 15rem panel docks beside it only when the Thread container is at least 47rem wide; below that threshold it overlays the right side without changing the conversation or composer width. The non-modal panel includes its own Close control, which returns focus to the header toggle.
 
 Because the rail is optional, **required actions surface through three non-rail
 channels** (D-006), by urgency: **(1) in-thread inline** (primary) — approval /
@@ -603,11 +603,7 @@ OpenKit is a productivity and supervision tool; the design **optimizes for the
 desktop workbench** that surfaces the most information at once. It is
 **responsive but not mobile-first.**
 
-- **Supported floor: 800×600.** The three-region shell, centered main column, and
-  composer dock stay usable and free of horizontal overflow down to 800×600. At
-  narrower widths the aux rail collapses to its 48px strip first, then the left
-  sidebar collapses to icons; the main column keeps a readable width and never
-  splits.
+- **Supported floor: 800×600.** The shell, centered main column, and composer dock stay usable and free of horizontal overflow down to 800×600. The Thread auxiliary panel overlays rather than compressing the conversation when their combined minimum widths do not fit (§3.3); the main column keeps a readable width and never splits.
 - **No horizontal overflow** at any supported size. Wide content (tables, kanban,
   diagrams, code) scrolls inside its own container; the page body never scrolls
   sideways.

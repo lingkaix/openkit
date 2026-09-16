@@ -1,5 +1,5 @@
 import { useMutationState } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
@@ -36,7 +36,15 @@ import { ItemView } from './ItemView';
 import { ThreadStream } from './ThreadStream';
 
 /** Right Side panel — Thread Artifact and file-change index (DESIGN.md §3.3, D-006). */
-function SidePanel({ workspaceId, threadId }: { workspaceId: string | null; threadId: string }) {
+function SidePanel({
+  workspaceId,
+  threadId,
+  onClose,
+}: {
+  workspaceId: string | null;
+  threadId: string;
+  onClose: () => void;
+}) {
   const items = useThreadItems(workspaceId, threadId);
   const artifacts = (items.data ?? []).filter(
     (item) => item.type === 'artifact-reference' || item.type === 'file-change'
@@ -44,9 +52,21 @@ function SidePanel({ workspaceId, threadId }: { workspaceId: string | null; thre
   return (
     <aside
       aria-label="Side panel"
-      className="w-60 shrink-0 overflow-y-auto border-l border-separator bg-layer-1 p-3"
+      className="absolute inset-y-0 right-0 z-10 w-60 shrink-0 overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu @min-[47rem]/thread:static @min-[47rem]/thread:shadow-none"
     >
-      <Eyebrow>Conversation outputs</Eyebrow>
+      <div className="flex items-center justify-between gap-2">
+        <Eyebrow>Conversation outputs</Eyebrow>
+        <Button
+          size="sm"
+          variant="quiet"
+          aria-label="Close outputs"
+          title="Close outputs"
+          className="h-7 w-7 shrink-0 px-0!"
+          onPress={onClose}
+        >
+          <Icon name="close" />
+        </Button>
+      </div>
       <p className="mt-1 text-xs text-fg-muted">
         Saved outputs and file-change records from this conversation.
       </p>
@@ -143,6 +163,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const submitFeedback = useSubmitTurnFeedback();
   const { failed: disconnected } = useConnection();
   const [showRail, setShowRail] = useState(mode === 'chat');
+  const railToggle = useRef<HTMLButtonElement>(null);
 
   const title = thread.data?.name ?? thread.data?.preview ?? (mode === 'task' ? 'Task' : 'Chat');
   const [renameDrafts, setRenameDrafts] = useState<
@@ -229,8 +250,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   }
 
   return (
-    <div className="flex h-full">
-      <div className="flex h-full min-w-0 flex-1 flex-col">
+    <div className="@container/thread relative isolate flex h-full">
+      <div className="flex h-full min-w-lg flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-separator px-6 py-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {mode === 'task' ? <StatusChip tone="informative">Task</StatusChip> : null}
@@ -301,6 +322,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             <Button
               size="sm"
               variant="quiet"
+              ref={railToggle}
+              aria-expanded={showRail}
               aria-label={showRail ? 'Hide Side panel' : 'Show Side panel'}
               title={showRail ? 'Hide Side panel' : 'Show Side panel'}
               className="h-8 w-8 px-0"
@@ -457,7 +480,16 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           </div>
         </div>
       </div>
-      {showRail ? <SidePanel workspaceId={workspaceId} threadId={threadId} /> : null}
+      {showRail ? (
+        <SidePanel
+          workspaceId={workspaceId}
+          threadId={threadId}
+          onClose={() => {
+            setShowRail(false);
+            railToggle.current?.focus();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
