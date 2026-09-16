@@ -48,6 +48,8 @@ docker run --rm -it -p 8080:8080 -v /tmp/openkit-data:/data/openkit openkit/app:
 
 Caddy serves the SPA from `/srv/web`, proxies ordinary `/api/*` and `/internal/*` requests to the NanoCore App HTTP/1.1 listener on loopback without stripping route prefixes, returns `404` for `/api/nanohost/transport/*`, and disables gzip plus enables immediate flushing for turn SSE routes.
 
+When a Linux host already has the restricted App-update identity configured, in-product App update also needs the existing protected identity and known-hosts files bind-mounted read-only at `/run/openkit/app-update/id_ed25519` and `/run/openkit/app-update/known_hosts`. Recreate or replace that App with those two binds and every other current mount unchanged. The generic `pnpm run app:run` helper does not know a deployment's App-update host paths and does not enable host-update authority. Do not write key values into the image, Data Root, or this cookbook.
+
 ## Smoke
 
 ```bash
