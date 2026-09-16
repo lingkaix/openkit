@@ -541,6 +541,29 @@ export function inspectNanoHostAgentSessionContinuity(
   };
 }
 
+/** Reads the sole native AgentSession occupying one Workspace Thread, if any. */
+export function readNanoHostThreadAgentSessionBinding(
+  coreDb: CoreDb,
+  input: {
+    readonly threadId: string;
+    readonly workspaceId: string;
+  }
+): { readonly agentSessionId: string } | null {
+  requireIdentity(input.workspaceId, 'Workspace');
+  requireIdentity(input.threadId, 'Thread');
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT agent_session_id AS agentSessionId
+       FROM agent_session_runtime_bindings
+       WHERE workspace_id = ? AND thread_id = ?`
+    )
+    .all(input.workspaceId, input.threadId) as Array<{ readonly agentSessionId: string }>;
+  if (rows.length > 1) {
+    throw new Error('NanoHost Harness already has a current AgentSession for this Thread.');
+  }
+  return rows[0] ?? null;
+}
+
 /** Opens one pending native-conversation binding and consumes only open-session capacity. */
 export function openNanoHostAgentSessionBinding(
   coreDb: CoreDb,

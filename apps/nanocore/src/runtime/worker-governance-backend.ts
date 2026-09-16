@@ -700,6 +700,16 @@ export interface WorkerGovernanceBackend {
   ): 'available' | 'capacity-saturated';
 
   /**
+   * Reads the sole native AgentSession occupying one Workspace Thread, if any.
+   *
+   * An absent method or a null row means this Thread currently has no native binding.
+   */
+  readThreadAgentSessionBinding?(input: {
+    readonly threadId: string;
+    readonly workspaceId: string;
+  }): { readonly agentSessionId: string } | null;
+
+  /**
    * Proves exact retained continuity or closes the predecessor after scheduler admission.
    *
    * An absent method means the backend cannot prove either reusable or absent durable continuity.

@@ -689,7 +689,46 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    const current = currentSessions[0];
+    let current = currentSessions[0];
+    if (!current) {
+      let blockingBinding: { readonly agentSessionId: string } | null | undefined;
+      try {
+        blockingBinding = this.backend.readThreadAgentSessionBinding?.({
+          threadId: input.turn.threadId,
+          workspaceId: input.turn.workspaceId,
+        });
+      } catch {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The worker backend is not ready for fresh AgentSession admission.',
+          409
+        );
+      }
+      if (blockingBinding) {
+        try {
+          current = store.getAgentSession(blockingBinding.agentSessionId);
+        } catch {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The worker backend is not ready for fresh AgentSession admission.',
+            409
+          );
+        }
+        if (
+          current.threadId !== input.turn.threadId ||
+          current.workspaceId !== input.turn.workspaceId ||
+          (current.status !== 'failed' &&
+            current.status !== 'interrupted' &&
+            current.status !== 'closed')
+        ) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The worker backend is not ready for fresh AgentSession admission.',
+            409
+          );
+        }
+      }
+    }
     if (!current) {
       if (!this.backend.prepareAgentSessionContinuity) {
         throw new TurnStartValidationError(
@@ -911,7 +950,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       return;
     }
 
-    const current = currentSessions[0];
+    const predecessorIsTerminal =
+      prepared.currentAgentSession.status === 'failed' ||
+      prepared.currentAgentSession.status === 'interrupted' ||
+      prepared.currentAgentSession.status === 'closed';
+    const current = predecessorIsTerminal
+      ? store.getAgentSession(prepared.currentAgentSession.id)
+      : currentSessions[0];
     const currentSnapshot: PreparedCurrentAgentSession | null = current
       ? {
           agentId: current.agentId,
@@ -924,15 +969,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
       : null;
     if (
-      currentSessions.length !== 1 ||
+      (predecessorIsTerminal
+        ? currentSessions.length !== 0 || !prepared.replacementRequired
+        : currentSessions.length !== 1 || current?.status !== 'idle' || current.stale) ||
       !isDeepStrictEqual(currentSnapshot, prepared.currentAgentSession) ||
-      !current ||
-      current.status !== 'idle' ||
-      current.stale
+      !current
     ) {
       throw new TurnStartValidationError(
         'recovery_required',
-        'The current AgentSession changed after scheduler dispatch.',
+        predecessorIsTerminal
+          ? 'The predecessor AgentSession changed after scheduler dispatch.'
+          : 'The current AgentSession changed after scheduler dispatch.',
         409
       );
     }
@@ -1066,11 +1113,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         committedWorkerStorageChoice = { ...choice, expectedRevision: advance.revision };
       }
     }
-    store.updateAgentSession(current.id, {
-      message: 'Replaced before a Turn with incompatible or unproved runtime continuity.',
-      status: 'closed',
-      updatedAt: this.now(),
-    });
+    if (!predecessorIsTerminal) {
+      store.updateAgentSession(current.id, {
+        message: 'Replaced before a Turn with incompatible or unproved runtime continuity.',
+        status: 'closed',
+        updatedAt: this.now(),
+      });
+    }
     if (
       store
         .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)

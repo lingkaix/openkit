@@ -1236,6 +1236,255 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(store.listThreadTurns(turn.workspaceId, turn.threadId)).toEqual(historyBefore);
   });
 
+  it.each([
+    'failed',
+    'interrupted',
+    'closed',
+  ] as const)('retires a %s predecessor binding after admission without rewriting Core history', async (status) => {
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Admit successor after terminal');
+    const predecessorCompatibilityKey = `sha256:${'a'.repeat(64)}`;
+    const freshCompatibilityKey = `sha256:${'b'.repeat(64)}`;
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      id: 'as-older-failed',
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey: predecessorCompatibilityKey,
+      status: 'failed',
+      threadId: turn.threadId,
+      updatedAt: '2026-08-20T00:00:00.000Z',
+      workspaceId: turn.workspaceId,
+    });
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-08-21T00:00:00.000Z',
+      id: 'as-terminal-predecessor',
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey: predecessorCompatibilityKey,
+      status,
+      threadId: turn.threadId,
+      updatedAt: '2026-08-21T00:00:00.000Z',
+      workspaceId: turn.workspaceId,
+    });
+    const events: string[] = [];
+    let finishClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => {
+      finishClose = resolve;
+    });
+    const continuity = vi.fn(
+      async (input: { readonly agentSessionId: string; readonly reuseAllowed: boolean }) => {
+        events.push(
+          input.reuseAllowed ? `inspect:${input.agentSessionId}` : `close:${input.agentSessionId}`
+        );
+        if (input.agentSessionId !== 'as-terminal-predecessor') {
+          throw new Error('Fresh identity must not inspect the blocking Thread binding.');
+        }
+        if (input.reuseAllowed) return 'replacement-required' as const;
+        await closeGate;
+        return 'closed' as const;
+      }
+    );
+    const backend = new FakeWorkerGovernanceBackend();
+    Object.assign(backend, {
+      prepareAgentSessionContinuity: continuity,
+      readThreadAgentSessionBinding: (input: {
+        readonly threadId: string;
+        readonly workspaceId: string;
+      }) =>
+        input.threadId === turn.threadId && input.workspaceId === turn.workspaceId
+          ? { agentSessionId: 'as-terminal-predecessor' }
+          : null,
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      now: () => '2026-09-17T00:00:01.000Z',
+    });
+    Object.assign(executor, {
+      previewAgentSessionCompatibilityKey: (agentSessionId: string) =>
+        agentSessionId === 'as-fresh-after-terminal'
+          ? freshCompatibilityKey
+          : predecessorCompatibilityKey,
+    });
+    const preparation = {
+      agentSetup: createTestAgentSetup(),
+      freshAgentSessionId: 'as-fresh-after-terminal',
+      requestId: 'req-terminal-predecessor',
+      turn,
+      turnInput: turn.input,
+      workspaceCwd: null,
+      workspaceRoots: [],
+    };
+    const historyBefore = store.listThreadTurns(turn.workspaceId, turn.threadId);
+    const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+    expect(prepared).toMatchObject({
+      agentSessionId: 'as-fresh-after-terminal',
+      currentAgentSession: { id: 'as-terminal-predecessor', status },
+      replacementRequired: true,
+      sessionCompatibilityKey: freshCompatibilityKey,
+    });
+    const committed = executor.commitPreparedAgentSessionForTurn(store, {
+      leaseId: 'lease-terminal-predecessor',
+      prepared,
+      preparation,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(events).toEqual([
+      'inspect:as-terminal-predecessor',
+      'inspect:as-terminal-predecessor',
+      'close:as-terminal-predecessor',
+    ]);
+    expect(store.getAgentSession('as-terminal-predecessor').status).toBe(status);
+    expect(store.getAgentSession('as-older-failed').status).toBe('failed');
+    expect(() => store.getAgentSession('as-fresh-after-terminal')).toThrow();
+    finishClose();
+    await committed;
+    expect(store.getAgentSession('as-terminal-predecessor')).toMatchObject({
+      status,
+      updatedAt: '2026-08-21T00:00:00.000Z',
+    });
+    expect(store.getAgentSession('as-older-failed').status).toBe('failed');
+    expect(() => store.getAgentSession('as-fresh-after-terminal')).toThrow();
+    expect(store.listThreadTurns(turn.workspaceId, turn.threadId)).toEqual(historyBefore);
+  });
+
+  it.each([
+    {
+      name: 'active Turn',
+      expected: 'The current AgentSession still owns an active Turn.',
+      setup: 'active' as const,
+    },
+    {
+      name: 'foreign Thread',
+      expected: null,
+      setup: 'foreign' as const,
+    },
+    {
+      name: 'refused close',
+      expected: 'The worker backend did not retire predecessor AgentSession continuity.',
+      setup: 'refused' as const,
+    },
+    {
+      name: 'absent binding',
+      expected: null,
+      setup: 'absent' as const,
+    },
+  ])('keeps the uniqueness barrier for a $name predecessor binding', async ({
+    expected,
+    setup,
+  }) => {
+    const store = createDemoStore();
+    const predecessorTurn = createAssignedTurn(
+      store,
+      'ws_demo',
+      'th_demo',
+      'Terminal predecessor work'
+    );
+    store.createThread(predecessorTurn.workspaceId, 'Foreign thread', 'th_other');
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Keep predecessor barrier');
+    const foreignTurn = createAssignedTurn(store, 'ws_demo', 'th_other', 'Foreign thread work');
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-08-21T00:00:00.000Z',
+      id: 'as-local-predecessor',
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey: `sha256:${'c'.repeat(64)}`,
+      status: 'failed',
+      threadId: turn.threadId,
+      updatedAt: '2026-08-21T00:00:00.000Z',
+      workspaceId: turn.workspaceId,
+    });
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-08-21T00:00:00.000Z',
+      id: 'as-foreign-predecessor',
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey: `sha256:${'c'.repeat(64)}`,
+      status: 'failed',
+      threadId: foreignTurn.threadId,
+      updatedAt: '2026-08-21T00:00:00.000Z',
+      workspaceId: turn.workspaceId,
+    });
+    if (setup === 'active') {
+      store.updateTurn(predecessorTurn.id, {
+        agentSessionId: 'as-local-predecessor',
+        status: 'running',
+      });
+    }
+    const inspected = new Set<string>();
+    const continuity = vi.fn(
+      async (input: { readonly agentSessionId: string; readonly reuseAllowed: boolean }) => {
+        inspected.add(input.agentSessionId);
+        if (input.agentSessionId === 'as-foreign-predecessor') {
+          throw new Error('Foreign Thread binding must not be closed.');
+        }
+        if (!input.reuseAllowed) {
+          return setup === 'refused' ? ('replacement-required' as const) : ('closed' as const);
+        }
+        return input.agentSessionId === 'as-local-predecessor'
+          ? ('replacement-required' as const)
+          : ('absent' as const);
+      }
+    );
+    const backend = new FakeWorkerGovernanceBackend();
+    Object.assign(backend, {
+      prepareAgentSessionContinuity: continuity,
+      readThreadAgentSessionBinding: (input: {
+        readonly threadId: string;
+        readonly workspaceId: string;
+      }) =>
+        setup === 'foreign' ||
+        setup === 'absent' ||
+        input.threadId !== turn.threadId ||
+        input.workspaceId !== turn.workspaceId
+          ? null
+          : { agentSessionId: 'as-local-predecessor' },
+    });
+    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    Object.assign(executor, {
+      previewAgentSessionCompatibilityKey: () => `sha256:${'d'.repeat(64)}`,
+    });
+    const preparation = {
+      agentSetup: createTestAgentSetup(),
+      freshAgentSessionId: 'as-fresh-barrier',
+      requestId: 'req-terminal-barrier',
+      turn,
+      turnInput: turn.input,
+      workspaceCwd: null,
+      workspaceRoots: [],
+    };
+    if (expected && setup !== 'refused') {
+      await expect(executor.prepareAgentSessionForTurn(store, preparation)).rejects.toThrow(
+        expected
+      );
+    } else {
+      const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+      if (setup === 'foreign' || setup === 'absent') {
+        expect(prepared).toMatchObject({
+          agentSessionId: 'as-fresh-barrier',
+          currentAgentSession: null,
+          replacementRequired: false,
+        });
+        expect(inspected.has('as-local-predecessor')).toBe(false);
+      } else {
+        await expect(
+          executor.commitPreparedAgentSessionForTurn(store, {
+            leaseId: 'lease-terminal-barrier',
+            prepared,
+            preparation,
+          })
+        ).rejects.toThrow(expected);
+      }
+    }
+    expect(inspected.has('as-foreign-predecessor')).toBe(false);
+    expect(store.getAgentSession('as-local-predecessor').status).toBe('failed');
+    expect(store.getAgentSession('as-foreign-predecessor').status).toBe('failed');
+  });
+
   it('starts an ordinary product Turn from the real pre-lease preview key without a Context Package', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-preview-launch-')));
     applyMigrations(coreDb);

@@ -46,6 +46,7 @@ import {
   type NanoHostHarnessResult,
   openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
+  readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeByBinding,
   removeNanoHostSandboxRuntimeForHarness,
 } from './nanohost-harness-records.js';
@@ -932,6 +933,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           workspaceId: environmentPackage.scope.workspaceId,
         }
       : undefined;
+  }
+
+  /** Reads the sole native AgentSession occupying one Workspace Thread, if any. */
+  public readThreadAgentSessionBinding(input: {
+    readonly threadId: string;
+    readonly workspaceId: string;
+  }): { readonly agentSessionId: string } | null {
+    return readNanoHostThreadAgentSessionBinding(this.coreDb, input);
   }
 
   /** Proves exact retained continuity or closes one durable AgentSession-local binding. */

@@ -18,6 +18,7 @@ import {
   markNanoHostHarnessOperationUnknown,
   openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
+  readNanoHostThreadAgentSessionBinding,
   settleNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
 import {
@@ -212,6 +213,18 @@ describe('private NanoHost Harness records', () => {
           })
         )
         .toThrow();
+      expect(
+        readNanoHostThreadAgentSessionBinding(coreDb, {
+          threadId: 'thread-1',
+          workspaceId: 'workspace-1',
+        })
+      ).toEqual({ agentSessionId: 'agent-session-1' });
+      expect(
+        readNanoHostThreadAgentSessionBinding(coreDb, {
+          threadId: 'thread-missing',
+          workspaceId: 'workspace-1',
+        })
+      ).toBeNull();
       expect
         .soft(
           coreDb.sqlite
@@ -269,6 +282,162 @@ describe('private NanoHost Harness records', () => {
           )
           .get()
       ).toBeUndefined();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'closed',
+    'failed',
+  ] as const)('keeps an unproved %s native inspect on the Thread uniqueness selector', (state) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-unproved-inspect-')));
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-1',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-1',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      seedLease(coreDb);
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          aepRef: 'sandbox://aep/1',
+          agentSessionId: 'agent-session-1',
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          contextPackageId: 'context-package-1',
+          contextRef: 'sandbox://context/1',
+          deadline: '2099-01-01T00:00:00.000Z',
+          leaseId: 'lease-1',
+          packageSnapshotId: 'package-snapshot-1',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          turnSequence: 0,
+          workspaceId: 'workspace-1',
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.start',
+        timestamp: now,
+      });
+      const started = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+      });
+      settleNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result: {
+          body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' },
+          disposition: 'succeeded',
+          harnessInstanceId: 'harness-1',
+          operationId: started!.operationId,
+          schemaVersion: 2,
+          sequence: 0,
+        },
+        timestamp: now,
+      });
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          agentSessionId: 'agent-session-1',
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.inspect',
+        timestamp: now,
+      });
+      const inspect = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+      });
+      settleNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result: {
+          body: {
+            childState: 'running',
+            cleanupState: 'pending',
+            nativeHandleDigest: null,
+            nativeHandleState: 'pending',
+            state,
+          },
+          disposition: 'succeeded',
+          harnessInstanceId: 'harness-1',
+          operationId: inspect!.operationId,
+          schemaVersion: 2,
+          sequence: 1,
+        },
+        timestamp: now,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
+                      current_turn_id AS currentTurnId, current_lease_id AS currentLeaseId,
+                      cleanup_state AS cleanupState
+               FROM agent_session_runtime_bindings
+               WHERE agent_session_runtime_binding_id = ?`
+          )
+          .get('agent-session-binding-1')
+      ).toEqual({
+        agentSessionId: 'agent-session-1',
+        cleanupState: 'clean',
+        currentLeaseId: 'lease-1',
+        currentTurnId: 'turn-1',
+        lifecycleState: state,
+      });
+      expect(() =>
+        openNanoHostAgentSessionBinding(coreDb, {
+          agentSessionCompatibilityKey: 'c'.repeat(64),
+          agentSessionId: 'agent-session-2',
+          agentSessionRuntimeBindingId: 'agent-session-binding-2',
+          effectiveSetupGeneration: 1,
+          harnessInstanceId: 'harness-1',
+          threadId: 'thread-1',
+          timestamp: now,
+          workspaceId: 'workspace-1',
+        })
+      ).toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
+      expect(
+        readNanoHostThreadAgentSessionBinding(coreDb, {
+          threadId: 'thread-1',
+          workspaceId: 'workspace-1',
+        })
+      ).toEqual({ agentSessionId: 'agent-session-1' });
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO agent_session_runtime_bindings (
+               agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
+               workspace_id, thread_id, agent_session_compatibility_key,
+               effective_setup_generation, native_handle_state, native_handle_digest,
+               lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence, cleanup_state,
+               created_at, updated_at
+             ) VALUES (?, 'harness-1', ?, 'workspace-1', 'thread-1', ?, 1, 'pending', NULL,
+                       'opening', NULL, NULL, 0, 'clean', ?, ?)`
+        )
+        .run('agent-session-binding-2', 'agent-session-2', 'c'.repeat(64), now, now);
+      expect(() =>
+        readNanoHostThreadAgentSessionBinding(coreDb, {
+          threadId: 'thread-1',
+          workspaceId: 'workspace-1',
+        })
+      ).toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
     } finally {
       coreDb.sqlite.close();
     }
