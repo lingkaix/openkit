@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -56,6 +58,68 @@ describe('data-root backup manifest', () => {
 
     expect(readFileSync(join(backupRoot, 'preserved.txt'), 'utf8')).toBe('preserved\n');
     expect(existsSync(join(backupRoot, 'server', 'runtime', 'nanocore.lock'))).toBe(false);
+  });
+
+  it('retains owner-only vault directory mode through hot backup and restore under umask 022', async () => {
+    const previousUmask = process.umask(0o022);
+
+    try {
+      const parent = mkdtempSync(join(tmpdir(), 'openkit-data-root-vault-mode-'));
+      const dataRoot = join(parent, 'data');
+      const backupRoot = join(parent, 'backup');
+      const restoredRoot = join(parent, 'restored', 'data');
+      const vaultDir = join(dataRoot, 'server', 'vault');
+      const vaultFile = join(vaultDir, 'secret.bin');
+
+      mkdirSync(vaultDir, { recursive: true, mode: 0o700 });
+      chmodSync(vaultDir, 0o700);
+      chmodSync(join(dataRoot, 'server'), 0o755);
+      writeFileSync(join(dataRoot, 'server', 'layout.json'), '{"layoutVersion":1}\n');
+      writeFileSync(vaultFile, 'secret\n', { mode: 0o600 });
+      chmodSync(vaultFile, 0o600);
+      const readonlyDir = join(dataRoot, 'server', 'readonly');
+      mkdirSync(readonlyDir, { recursive: true });
+      writeFileSync(join(readonlyDir, 'note.txt'), 'note\n');
+      chmodSync(readonlyDir, 0o555);
+      const stickyDir = join(dataRoot, 'server', 'sticky');
+      mkdirSync(stickyDir, { recursive: true });
+      chmodSync(stickyDir, 0o1777);
+      const stickySupported = (statSync(stickyDir).mode & 0o7777) === 0o1777;
+
+      expect(statSync(vaultDir).mode & 0o777).toBe(0o700);
+      expect(statSync(vaultFile).mode & 0o777).toBe(0o600);
+
+      await writeHotDataRootBackup({
+        dataRoot,
+        backupRoot,
+        backupId: 'drbak_vault_mode',
+        sourceDeploymentId: 'dep_local',
+        startedAt: timestamp,
+        completedAt: timestamp,
+      });
+
+      expect(statSync(join(backupRoot, 'server', 'vault')).mode & 0o777).toBe(0o700);
+      expect(statSync(join(backupRoot, 'server', 'vault', 'secret.bin')).mode & 0o777).toBe(0o600);
+      expect(statSync(join(backupRoot, 'server')).mode & 0o777).toBe(0o755);
+      expect(statSync(join(backupRoot, 'server', 'readonly')).mode & 0o777).toBe(0o555);
+      if (stickySupported) {
+        expect(statSync(join(backupRoot, 'server', 'sticky')).mode & 0o7777).toBe(0o1777);
+      }
+
+      restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
+
+      expect(statSync(join(restoredRoot, 'server', 'vault')).mode & 0o777).toBe(0o700);
+      expect(statSync(join(restoredRoot, 'server', 'vault', 'secret.bin')).mode & 0o777).toBe(
+        0o600
+      );
+      expect(statSync(join(restoredRoot, 'server')).mode & 0o777).toBe(0o755);
+      expect(statSync(join(restoredRoot, 'server', 'readonly')).mode & 0o777).toBe(0o555);
+      if (stickySupported) {
+        expect(statSync(join(restoredRoot, 'server', 'sticky')).mode & 0o7777).toBe(0o1777);
+      }
+    } finally {
+      process.umask(previousUmask);
+    }
   });
 
   it('writes and verifies a cold backup manifest over a copied data root', () => {

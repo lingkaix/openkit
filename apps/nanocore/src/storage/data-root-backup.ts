@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -10,6 +11,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -22,6 +24,9 @@ import Database from 'better-sqlite3';
 
 /** File name for the data-root backup manifest. */
 export const DATA_ROOT_BACKUP_MANIFEST_FILE = 'openkit-data-root-backup.json';
+
+/** Destination directories stay owner-only until their source mode is restored. */
+const OWNER_ONLY_DIRECTORY_MODE = 0o700;
 
 /** Input for writing one cold data-root backup manifest. */
 export interface WriteColdDataRootBackupManifestInput {
@@ -158,12 +163,10 @@ export function copyColdDataRoot(input: CopyColdDataRootInput): void {
     : null;
 
   mkdirSync(dirname(input.backupRoot), { recursive: true });
-  cpSync(input.dataRoot, input.backupRoot, {
+  copyDataRootTree(input.dataRoot, input.backupRoot, {
     errorOnExist: true,
     filter: (source) => resolve(source) !== omittedLock,
-    force: false,
     preserveTimestamps: true,
-    recursive: true,
   });
 }
 
@@ -237,7 +240,7 @@ export async function writeHotDataRootBackup(
   const appsBefore = listLightAppDirectoryPaths(input.dataRoot);
   rmSync(input.backupRoot, { recursive: true, force: true });
   mkdirSync(dirname(input.backupRoot), { recursive: true });
-  cpSync(input.dataRoot, input.backupRoot, { recursive: true, force: true });
+  copyDataRootTree(input.dataRoot, input.backupRoot);
 
   for (const path of listRegularBackupFiles(input.dataRoot).filter((path) =>
     path.endsWith('.sqlite')
@@ -400,7 +403,7 @@ export function restoreDataRootBackup(
   rmSync(stagingRoot, { recursive: true, force: true });
   rmSync(previousRoot, { recursive: true, force: true });
   mkdirSync(dirname(stagingRoot), { recursive: true });
-  cpSync(input.backupRoot, stagingRoot, { recursive: true, force: true });
+  copyDataRootTree(input.backupRoot, stagingRoot);
 
   try {
     if (existsSync(input.dataRoot)) {
@@ -417,6 +420,78 @@ export function restoreDataRootBackup(
   }
 
   return verified;
+}
+
+/**
+ * Copies one data-root tree through `cpSync`, keeping destination directories owner-only
+ * until native copy finishes. Node recursive copy drops directory modes under umask 022;
+ * creating directories as 0700 also keeps a 0555 source directory writable during copy.
+ *
+ * @param sourceRoot Source data-root or backup tree.
+ * @param destinationRoot Destination tree root.
+ * @param options Optional existence check, path filter, and timestamp preservation.
+ * @throws Error when the source is unsafe, the destination exists with `errorOnExist`, or a node is unsupported.
+ */
+function copyDataRootTree(
+  sourceRoot: string,
+  destinationRoot: string,
+  options: {
+    errorOnExist?: boolean;
+    filter?: (source: string) => boolean;
+    preserveTimestamps?: boolean;
+  } = {}
+): void {
+  const source = resolve(sourceRoot);
+  const destination = resolve(destinationRoot);
+  const rootStat = lstatSync(source);
+
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error(`Copy source must be a real directory: ${source}`);
+  }
+  if (existsSync(destination)) {
+    if (options.errorOnExist) {
+      throw new Error('Copy destination must not already exist.');
+    }
+    rmSync(destination, { recursive: true, force: true });
+  }
+
+  mkdirSync(dirname(destination), { recursive: true });
+  mkdirSync(destination, { mode: OWNER_ONLY_DIRECTORY_MODE });
+  chmodSync(destination, OWNER_ONLY_DIRECTORY_MODE);
+
+  const directoryStats = [{ path: destination, stat: rootStat }];
+  cpSync(source, destination, {
+    filter: (src, dest) => {
+      const stat = lstatSync(src);
+      const relativePath = relative(source, src).split(sep).join('/');
+
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Backup tree must not contain symlinks: ${relativePath}`);
+      }
+      if (stat.isDirectory()) {
+        if (resolve(src) !== source) {
+          mkdirSync(dest, { mode: OWNER_ONLY_DIRECTORY_MODE });
+          chmodSync(dest, OWNER_ONLY_DIRECTORY_MODE);
+          directoryStats.push({ path: dest, stat });
+        }
+        return true;
+      }
+      if (!stat.isFile()) {
+        throw new Error(`Backup tree contains unsupported file type: ${relativePath}`);
+      }
+      return options.filter?.(src) ?? true;
+    },
+    force: true,
+    preserveTimestamps: options.preserveTimestamps === true,
+    recursive: true,
+  });
+
+  for (const entry of directoryStats.reverse()) {
+    chmodSync(entry.path, entry.stat.mode & 0o7777);
+    if (options.preserveTimestamps) {
+      utimesSync(entry.path, entry.stat.atime, entry.stat.mtime);
+    }
+  }
 }
 
 /**
