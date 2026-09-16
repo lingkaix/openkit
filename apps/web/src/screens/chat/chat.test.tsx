@@ -579,7 +579,7 @@ describe('chat starter (board 01)', () => {
 
     await user.click(within(recent!).getByRole('button', { name: 'Worker task' }));
     expect(await screen.findByRole('heading', { name: 'Worker task' })).toBeInTheDocument();
-    expect(screen.getByText('Task')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Task' })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith('ws1', 'th_task');
   });
 
@@ -2629,8 +2629,8 @@ describe('task thread (board 04)', () => {
       listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
     });
     renderApp('/tasks/ws1/th1', client);
-    expect(await screen.findByText('Task')).toBeInTheDocument();
-    expect(screen.getByText('Approve $5 spend')).toBeInTheDocument();
+    expect(await screen.findByRole('img', { name: 'Task' })).toBeInTheDocument();
+    expect(await screen.findByText('Approve $5 spend')).toBeInTheDocument();
   });
 
   it('dispatches the task Composer through the reusable warm Worker target', async () => {

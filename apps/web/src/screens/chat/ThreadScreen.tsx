@@ -258,7 +258,11 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
       <div className="flex h-full min-w-lg flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-separator px-6 py-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            {mode === 'task' ? <StatusChip tone="informative">Task</StatusChip> : null}
+            {mode === 'task' ? (
+              <span className="shrink-0" title="Task">
+                <Icon name="agents" size="lg" label="Task" />
+              </span>
+            ) : null}
             <h1 className="min-w-0 truncate text-sm font-bold text-fg-strong">{title}</h1>
             <Button
               size="sm"
