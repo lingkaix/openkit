@@ -217,7 +217,7 @@ export function GoalReviewGate({ workspaceId, threadId, goal, readOnly }: GoalRe
  */
 export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProps) {
   const preApproval = goal.status === 'planning' || goal.status === 'awaiting_plan_approval';
-  const planQuery = useGoalPlan(workspaceId, threadId, goal.status);
+  const planQuery = useGoalPlan(workspaceId, threadId, goal.goalId, goal.status);
   const approve = useApproveGoalPlan(workspaceId, threadId);
   const revise = useReviseGoalPlan(workspaceId, threadId);
   const [spendGrant, setSpendGrant] = useState(false);
@@ -225,7 +225,7 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
   const [reviseOpen, setReviseOpen] = useState(false);
   const [revision, setRevision] = useState('');
 
-  const planTasks = planQuery.data?.plan.tasks;
+  const planTasks = planQuery.data?.plan?.tasks;
   const planItemId = planQuery.data?.planItemId;
   const steps = buildDisplaySteps(goal, planTasks, preApproval);
 
@@ -250,7 +250,14 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
 
       <Card>
         <Eyebrow>Plan</Eyebrow>
-        {preApproval && planQuery.isLoading ? (
+        {preApproval && planQuery.isError ? (
+          <div className="mt-3">
+            <ErrorBanner
+              message="Couldn't load the current Goal plan."
+              onRetry={() => void planQuery.refetch()}
+            />
+          </div>
+        ) : preApproval && planQuery.isLoading ? (
           <div className="mt-3" aria-busy="true">
             <Skeleton lines={4} />
           </div>

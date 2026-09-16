@@ -11,9 +11,9 @@ export type ThreadGoalSummaryResponse = Awaited<
 >;
 /** Thread-level Goal Mode summary when a goal is present. */
 export type ThreadGoalSummary = NonNullable<ThreadGoalSummaryResponse['goal']>;
-/** Reviewable plan payload returned by `app.createThreadGoalPlan`. */
-export type CreateThreadGoalPlanResponse = Awaited<
-  ReturnType<CoreClient['app']['createThreadGoalPlan']>
+/** Current durable Goal Plan read returned by `app.getThreadGoalPlan`. */
+export type ThreadGoalPlanReadResponse = Awaited<
+  ReturnType<CoreClient['app']['getThreadGoalPlan']>
 >;
 /** One server-owned, version-keyed Artifact Review projection. */
 export type ArtifactReview = Awaited<
@@ -32,7 +32,12 @@ export type ArtifactReviewDecisionInput = Parameters<
 export const goalKeys = {
   summary: (workspaceId: string, threadId: string) =>
     ['goal-summary', workspaceId, threadId] as const,
-  plan: (workspaceId: string, threadId: string) => ['goal-plan', workspaceId, threadId] as const,
+  plan: (workspaceId: string, threadId: string, goalId?: string) =>
+    goalId === undefined
+      ? (['goal-plan', workspaceId, threadId] as const)
+      : (['goal-plan', workspaceId, threadId, goalId] as const),
+  planCreateRequest: (workspaceId: string, threadId: string, goalId: string) =>
+    [...goalKeys.plan(workspaceId, threadId, goalId), 'create-request'] as const,
   artifact: (workspaceId: string, artifactId: string) =>
     ['artifact', workspaceId, artifactId] as const,
   reviews: (workspaceId: string, artifactId: string) =>
@@ -202,24 +207,59 @@ export function useSubmitGoalReviewDecision(
 }
 
 /**
- * Load (or create) the reviewable Goal Mode plan when the goal is still in the
- * planning gate. `createThreadGoalPlan` is the App API owner of the plan payload
- * — the summary read model does not embed plan steps.
+ * Read the current Goal Plan, and create one only when the GET Goal is planning.
+ * `getThreadGoalPlan` owns recovery; create never runs for a missing Goal or from
+ * `awaiting_plan_approval`. Request identity is reused only within one Goal id.
  */
 export function useGoalPlan(
   workspaceId: string | null,
   threadId: string,
+  goalId: string,
   status: ThreadGoalSummary['status'] | undefined
 ) {
   const client = useCoreClient();
+  const queryClient = useQueryClient();
   const needsPlan = status === 'planning' || status === 'awaiting_plan_approval';
   return useQuery({
-    queryKey: goalKeys.plan(workspaceId ?? '', threadId),
-    queryFn: (): Promise<CreateThreadGoalPlanResponse> =>
-      client.app.createThreadGoalPlan(workspaceId as string, threadId, {
-        requestId: createRequestId(),
-      }),
-    enabled: Boolean(workspaceId && threadId && needsPlan),
+    queryKey: goalKeys.plan(workspaceId ?? '', threadId, goalId),
+    queryFn: async (): Promise<ThreadGoalPlanReadResponse> => {
+      const current = await client.app.getThreadGoalPlan(workspaceId as string, threadId);
+      if (current.goal) {
+        installGoalSummary(queryClient, workspaceId as string, threadId, current.goal);
+      }
+      if (current.plan && current.planItemId && current.goal) {
+        queryClient.removeQueries({
+          queryKey: goalKeys.planCreateRequest(
+            workspaceId as string,
+            threadId,
+            current.goal.goalId
+          ),
+          exact: true,
+        });
+        return current;
+      }
+      if (!current.goal || current.goal.status !== 'planning') {
+        return current;
+      }
+      const createRequestKey = goalKeys.planCreateRequest(
+        workspaceId as string,
+        threadId,
+        current.goal.goalId
+      );
+      const requestId = queryClient.getQueryData<string>(createRequestKey) ?? createRequestId();
+      queryClient.setQueryData(createRequestKey, requestId);
+      const created = await client.app.createThreadGoalPlan(workspaceId as string, threadId, {
+        requestId,
+      });
+      queryClient.removeQueries({ queryKey: createRequestKey, exact: true });
+      installGoalSummary(queryClient, workspaceId as string, threadId, created.goal);
+      return {
+        goal: created.goal,
+        planItemId: created.planItemId,
+        plan: created.plan,
+      };
+    },
+    enabled: Boolean(workspaceId && threadId && goalId && needsPlan),
     staleTime: Number.POSITIVE_INFINITY,
   });
 }

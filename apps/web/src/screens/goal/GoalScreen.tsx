@@ -4,7 +4,6 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
-  Composer,
   EmptyState,
   ErrorBanner,
   PhaseStepper,
@@ -37,7 +36,7 @@ const LENS_TABS: { id: GoalLens; label: string }[] = [
  * Goal screen shell (WP-5) — boards 05 / 05b / 05c / 06 / 21.
  *
  * One dataset, three lenses (Thread / Plan / Board) switched via `?lens=`, with
- * a phase stepper for lifecycle and a bottom steer bar (disabled when
+ * one durable-state phase strip and a steering-only input (disabled when
  * disconnected). Completed goals show the board-21 closeout on the plan lens.
  */
 export function GoalScreen() {
@@ -53,6 +52,7 @@ export function GoalScreen() {
   const resume = useResumeThreadGoal(workspaceId ?? '', threadId);
   const step = useRunThreadGoalStep(workspaceId ?? '', threadId);
   const steer = useSteerGoal(workspaceId ?? '', threadId);
+  const [steerDraft, setSteerDraft] = useState('');
   const lifecyclePending = pause.isPending || resume.isPending || step.isPending;
 
   /** Submit one trimmed objective with a stable request id across unchanged retries. */
@@ -65,6 +65,15 @@ export function GoalScreen() {
         : { objective: trimmed, requestId: createRequestId() };
     startIntent.current = intent;
     start.mutate(intent);
+  }
+
+  /** Send the current steer draft unchanged; trim only decides whether send is enabled. */
+  function submitSteer() {
+    if (!steerDraft.trim() || disconnected || steer.isPending) return;
+    void steer.mutateAsync(steerDraft).then(
+      () => setSteerDraft(''),
+      () => undefined
+    );
   }
 
   if (summary.isLoading || !workspaceId) {
@@ -241,11 +250,44 @@ export function GoalScreen() {
               Couldn't send that steer. Try again.
             </p>
           ) : null}
-          <Composer
-            placeholder="Steer the goal — a nudge lands in the Thread lens"
-            disabledReason={disconnected ? "Couldn't reach the local runtime." : undefined}
-            onSubmit={(draft) => steer.mutateAsync(draft.input)}
-          />
+          <form
+            className="flex items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitSteer();
+            }}
+          >
+            <label htmlFor="goal-steer" className="sr-only">
+              Message
+            </label>
+            <textarea
+              id="goal-steer"
+              value={steerDraft}
+              onChange={(event) => setSteerDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+                  return;
+                }
+                event.preventDefault();
+                submitSteer();
+              }}
+              placeholder={
+                disconnected
+                  ? "Couldn't reach the local runtime."
+                  : 'Steer the goal — a nudge lands in the Thread lens'
+              }
+              rows={3}
+              disabled={disconnected || steer.isPending}
+              className="min-w-0 flex-1 resize-y rounded-ok border border-border bg-card p-3 text-sm text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
+            />
+            <Button
+              type="submit"
+              size="sm"
+              isDisabled={disconnected || steer.isPending || !steerDraft.trim()}
+            >
+              Steer
+            </Button>
+          </form>
         </div>
       </div>
     </div>

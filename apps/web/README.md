@@ -45,7 +45,9 @@ Settings Administration **Workspace access recovery** at `/settings/workspace-ac
 
 Settings **App update** projects deployment-admin prepare, start and status operations through `client.app`. It is scoped to the deployment, independent of the selected Workspace. The administrator reviews an immutable prepared source and explicitly consents to maintenance; the host receipt owns the result across App restarts. The deployed host helper must be configured before this surface can perform an update.
 
-The shared Composer begins directly with the message input on starter, Chat, Task, and Goal surfaces. Conversation titles and mode labels do not consume input-box space; selected attachments remain removable below the input.
+The shared Composer begins directly with the message input on starter, Chat, and Task surfaces. Conversation titles and mode labels do not consume input-box space; selected attachments remain removable below the input.
+
+Goal projects one Draft › Plan › Execute › Review strip from the current durable Goal status. Its bottom input is a steering-only labeled textarea (`submitThreadGoalSteering`) with Enter to send, Shift+Enter for a newline, and IME-safe composition; Agent, logical-model, and attachment Composer controls are absent. Plan recovery reads `client.app.getThreadGoalPlan` and creates a plan only when that GET Goal is `planning`, reusing the caller request id across uncertain create retries for the same Goal. Local spend/push switches remain presentation-only and do not write Goal autonomy.
 
 Thread header icon commands use 20px glyphs in 32px square buttons without inherited horizontal padding. Shared icons retain their declared width inside flex layouts and inherit the active theme foreground. Task thread headers show the sidebar Worker-task glyph at 20px in a nonshrinking titled span labeled Task.
 

@@ -317,6 +317,21 @@ function goalSummary(status: string) {
   return { goal: { ...GOAL_BASE, status } };
 }
 
+const ABSENT_PLAN_READ = {
+  goal: null,
+  planItemId: null,
+  plan: null,
+};
+
+/** Current durable Goal Plan read for the latest Goal on the Thread. */
+function currentPlanRead(status = 'awaiting_plan_approval') {
+  return {
+    goal: goalSummary(status).goal,
+    planItemId: 'it_goal_plan_goal1',
+    plan: PLAN,
+  };
+}
+
 /** Build a running or paused goal at the safe boundary required by lifecycle commands. */
 function safeBoundaryGoalSummary(status: 'running' | 'paused') {
   return {
@@ -355,6 +370,7 @@ function makeClient(
           ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
         >),
       getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('running')),
+      getThreadGoalPlan: vi.fn().mockResolvedValue(ABSENT_PLAN_READ),
       startThreadGoal: vi.fn().mockResolvedValue({
         goal: goalSummary('planning').goal,
         objectiveItemId: 'it_goal_objective',
@@ -491,6 +507,7 @@ describe('goal surfaces (WP-5)', () => {
     const client = makeClient({
       app: {
         getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('awaiting_plan_approval')),
+        getThreadGoalPlan: vi.fn().mockResolvedValue(currentPlanRead()),
       },
     });
     renderApp('/goals/ws1/th1?lens=plan', client);
@@ -499,6 +516,187 @@ describe('goal surfaces (WP-5)', () => {
     expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /adjust plan/i })).toBeInTheDocument();
     expect(screen.getByText('Planned')).toBeInTheDocument();
+  });
+
+  it('rehydrates awaiting_plan_approval from getThreadGoalPlan without creating', async () => {
+    const getThreadGoalPlan = vi.fn().mockResolvedValue(currentPlanRead());
+    const createThreadGoalPlan = vi.fn();
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('awaiting_plan_approval')),
+        getThreadGoalPlan,
+        createThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument();
+    expect(screen.getByText('Planned')).toBeInTheDocument();
+    expect(screen.getAllByRole('list', { name: /Goal phase:/ })).toHaveLength(1);
+    expect(screen.getByRole('list', { name: 'Goal phase: Plan' })).toBeInTheDocument();
+    expect(getThreadGoalPlan).toHaveBeenCalledWith('ws1', 'th1');
+    expect(createThreadGoalPlan).not.toHaveBeenCalled();
+  });
+
+  it('generates a plan only while planning, refreshes the summary, and reuses the create request id', async () => {
+    const user = userEvent.setup();
+    const created = {
+      status: 'awaiting_plan_approval' as const,
+      goal: goalSummary('awaiting_plan_approval').goal,
+      planItemId: 'it_goal_plan_goal1',
+      planner: {
+        mode: 'goal' as const,
+        sourceAgentId: 'worker-coordinator' as const,
+        confidence: 0.84,
+        rationale: 'Workflow Coordinator drafted a reviewable Goal Mode plan.',
+        contextRefs: [
+          { kind: 'workspace' as const, id: 'ws1' },
+          { kind: 'thread' as const, id: 'th1' },
+        ],
+        requiredApprovals: ['plan_approval'],
+        plan: PLAN,
+      },
+      plan: PLAN,
+    };
+    const getThreadGoalPlan = vi.fn().mockResolvedValue({
+      goal: goalSummary('planning').goal,
+      planItemId: null,
+      plan: null,
+    });
+    const createThreadGoalPlan = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce(created);
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('planning')),
+        getThreadGoalPlan,
+        createThreadGoalPlan,
+      },
+    });
+    const queryClient = renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Couldn't load the current Goal plan/i
+    );
+    expect(screen.queryByText('No plan steps yet.')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /try again/i }));
+    expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument();
+    expect(createThreadGoalPlan).toHaveBeenCalledTimes(2);
+    expect(createThreadGoalPlan.mock.calls[0]?.[2]).toEqual({
+      requestId: expect.stringMatching(/\S/),
+    });
+    expect(createThreadGoalPlan.mock.calls[0]?.[2]).toEqual(
+      createThreadGoalPlan.mock.calls[1]?.[2]
+    );
+    expect(queryClient.getQueryData(goalKeys.summary('ws1', 'th1'))).toEqual({
+      goal: created.goal,
+    });
+    expect(screen.getByRole('list', { name: 'Goal phase: Plan' })).toBeInTheDocument();
+  });
+
+  it('surfaces a failed current-plan read with retry instead of an empty plan', async () => {
+    const getThreadGoalPlan = vi.fn().mockRejectedValue(new Error('boom'));
+    const createThreadGoalPlan = vi.fn();
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('awaiting_plan_approval')),
+        getThreadGoalPlan,
+        createThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Couldn't load the current Goal plan/i
+    );
+    expect(screen.queryByText('No plan steps yet.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /approve plan/i })).not.toBeInTheDocument();
+    expect(createThreadGoalPlan).not.toHaveBeenCalled();
+  });
+
+  it('does not create from a stale planning prop when GET reports a non-planning Goal', async () => {
+    const freshGoal = goalSummary('running').goal;
+    const getThreadGoalPlan = vi.fn().mockResolvedValue({
+      goal: freshGoal,
+      planItemId: null,
+      plan: null,
+    });
+    const createThreadGoalPlan = vi.fn();
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('planning')),
+        getThreadGoalPlan,
+        createThreadGoalPlan,
+      },
+    });
+    const queryClient = renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('list', { name: 'Goal phase: Execute' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /approve plan/i })).not.toBeInTheDocument();
+    expect(createThreadGoalPlan).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(goalKeys.summary('ws1', 'th1'))).toEqual({ goal: freshGoal });
+  });
+
+  it('scopes plan cache and create request id to the current Goal id on a reused Thread', async () => {
+    const firstGoal = { ...goalSummary('planning').goal, goalId: 'goal1' };
+    const secondGoal = { ...goalSummary('planning').goal, goalId: 'goal2', title: 'Second goal' };
+    const created = {
+      status: 'awaiting_plan_approval' as const,
+      goal: {
+        ...goalSummary('awaiting_plan_approval').goal,
+        goalId: 'goal2',
+        title: 'Second goal',
+      },
+      planItemId: 'it_goal_plan_goal2',
+      planner: {
+        mode: 'goal' as const,
+        sourceAgentId: 'worker-coordinator' as const,
+        confidence: 0.84,
+        rationale: 'Workflow Coordinator drafted a reviewable Goal Mode plan.',
+        contextRefs: [
+          { kind: 'workspace' as const, id: 'ws1' },
+          { kind: 'thread' as const, id: 'th1' },
+        ],
+        requiredApprovals: ['plan_approval'],
+        plan: PLAN,
+      },
+      plan: PLAN,
+    };
+    const getThreadGoalPlan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        goal: firstGoal,
+        planItemId: null,
+        plan: null,
+      })
+      .mockResolvedValue({
+        goal: secondGoal,
+        planItemId: null,
+        plan: null,
+      });
+    const createThreadGoalPlan = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue(created);
+    const getThreadGoalSummary = vi
+      .fn()
+      .mockResolvedValueOnce({ goal: firstGoal })
+      .mockResolvedValue({ goal: secondGoal });
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary,
+        getThreadGoalPlan,
+        createThreadGoalPlan,
+      },
+    });
+    const queryClient = renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Couldn't load the current Goal plan/i
+    );
+    const firstRequestId = createThreadGoalPlan.mock.calls[0]?.[2]?.requestId as string;
+    expect(firstRequestId).toEqual(expect.stringMatching(/\S/));
+    queryClient.setQueryData(goalKeys.summary('ws1', 'th1'), { goal: secondGoal });
+    expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument();
+    expect(createThreadGoalPlan).toHaveBeenCalledTimes(2);
+    expect(createThreadGoalPlan.mock.calls[1]?.[2]?.requestId).toEqual(expect.stringMatching(/\S/));
+    expect(createThreadGoalPlan.mock.calls[1]?.[2]?.requestId).not.toBe(firstRequestId);
   });
 
   it('calls app.approveThreadGoalPlan when approving the plan', async () => {
@@ -511,6 +709,7 @@ describe('goal surfaces (WP-5)', () => {
     const client = makeClient({
       app: {
         getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('awaiting_plan_approval')),
+        getThreadGoalPlan: vi.fn().mockResolvedValue(currentPlanRead()),
         approveThreadGoalPlan,
       },
     });
@@ -1489,6 +1688,36 @@ describe('goal surfaces (WP-5)', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled(), {
       timeout: 3000,
     });
+  });
+
+  it('preserves multiline steering and keeps the original draft after a failed send', async () => {
+    const user = userEvent.setup();
+    const submitThreadGoalSteering = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({});
+    const client = makeClient({ app: { submitThreadGoalSteering } });
+    renderApp('/goals/ws1/th1?lens=thread', client);
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await user.type(message, ' first{Shift>}{Enter}{/Shift}second ');
+    expect(submitThreadGoalSteering).not.toHaveBeenCalled();
+    await user.keyboard('{Enter}');
+    await screen.findByText(/Couldn't send that steer/);
+    expect(message).toHaveValue(' first\nsecond ');
+    expect(submitThreadGoalSteering).toHaveBeenLastCalledWith('ws1', 'th1', {
+      message: ' first\nsecond ',
+    });
+    await user.click(screen.getByRole('button', { name: 'Steer' }));
+    await waitFor(() => expect(message).toHaveValue(''));
+  });
+
+  it('offers steering-only input without Composer target, model, or attachment controls', async () => {
+    const client = makeClient();
+    renderApp('/goals/ws1/th1', client);
+    expect(await screen.findByRole('textbox', { name: 'Message' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Conversation agent')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Logical model')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Add artifact or upload attachment')).not.toBeInTheDocument();
   });
 
   it('shows empty and error states for missing or failed goal fetches', async () => {
