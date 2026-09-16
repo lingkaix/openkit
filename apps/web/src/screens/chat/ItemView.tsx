@@ -29,6 +29,8 @@ export interface ItemViewProps {
     turnId: string,
     decision: 'granted' | 'denied'
   ) => void;
+  /** Title of the exact approval request in this Turn, when present in the loaded stream. */
+  approvalRequestTitle?: string;
   /** Matching authoritative outcome closes an approval request. */
   resolvedApproval?: Extract<ThreadItem, { type: 'approval-decision' }>;
   /** Explanation for unavailable approval controls. */
@@ -178,6 +180,64 @@ function UserInputRequestView({
   );
 }
 
+/** Explains recorded decisions without fabricating human reasons, client attribution, or recovery time. */
+function ApprovalDecisionView({
+  item,
+  authorName,
+  requestTitle,
+}: {
+  item: Extract<ThreadItem, { type: 'approval-decision' }>;
+  authorName?: string;
+  requestTitle?: string;
+}) {
+  const system = item.actor.kind === 'system';
+  const recovery = system && item.actor.id === 'nanocore-boot-reconciliation';
+  const timestamp = item.completedAt ?? item.createdAt;
+  const reason = recovery
+    ? 'The task had already ended without an approval decision. Server recovery closed the pending approval.'
+    : system
+      ? 'Automatically granted by the repository push policy.'
+      : 'No reason was recorded.';
+  return (
+    <ItemCard
+      kind={item.decision === 'granted' ? 'positive' : 'neutral'}
+      title={item.decision === 'granted' ? 'Approved' : 'Denied'}
+      meta={`by ${system ? 'OpenKit system' : (authorName ?? item.actor.id)}`}
+    >
+      <div className="flex flex-col gap-2 break-words">
+        <p>Request: {requestTitle ?? item.approvalRequestId}</p>
+        <p>{reason}</p>
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+          <dt className="text-fg-muted">{recovery ? 'Inherited timestamp' : 'Decision time'}</dt>
+          <dd>
+            <time dateTime={timestamp} title={timestamp}>
+              {new Date(timestamp).toLocaleString(undefined, { timeZoneName: 'short' })}
+            </time>
+          </dd>
+          <dt className="text-fg-muted">Source</dt>
+          <dd>
+            {recovery ? 'Server recovery' : system ? 'Repository push policy' : 'User decision'}
+          </dd>
+          <dt className="text-fg-muted">Client</dt>
+          <dd>{system ? 'Not applicable — automatic server action' : 'Not recorded'}</dd>
+        </dl>
+        {recovery ? (
+          <p className="text-xs text-fg-muted">
+            This timestamp was inherited from task completion, task start, or request creation. The
+            actual recovery time was not recorded.
+          </p>
+        ) : null}
+        <details className="text-xs text-fg-muted">
+          <summary className="cursor-pointer">Record identifiers</summary>
+          <p>Actor: {item.actor.id}</p>
+          <p>Approval: {item.approvalRequestId}</p>
+          <p>Cause: {item.causationId}</p>
+        </details>
+      </div>
+    </ItemCard>
+  );
+}
+
 /**
  * Item view (WP-4) — renders one thread Item with the primitive tier.
  *
@@ -191,6 +251,7 @@ export function ItemView({
   viewerUserId,
   authorName,
   onApprovalDecision,
+  approvalRequestTitle,
   resolvedApproval,
   approvalUnavailableReason,
   approvalPending,
@@ -298,10 +359,10 @@ export function ItemView({
 
     case 'approval-decision':
       return (
-        <ItemCard
-          kind={item.decision === 'granted' ? 'positive' : 'neutral'}
-          title={item.decision === 'granted' ? 'Approved' : 'Denied'}
-          meta={`by ${authorName ?? item.actor.id}`}
+        <ApprovalDecisionView
+          item={item}
+          authorName={authorName}
+          requestTitle={approvalRequestTitle}
         />
       );
 

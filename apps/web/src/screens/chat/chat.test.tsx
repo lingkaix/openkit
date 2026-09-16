@@ -849,7 +849,7 @@ describe('chat thread (boards 02/03)', () => {
 
     expect(await screen.findByText('Approve $5 spend')).toBeInTheDocument();
     expect(screen.getByText('Approved')).toBeInTheDocument();
-    expect(screen.getByText(/user_approver/)).toBeInTheDocument();
+    expect(screen.getByText('by user_approver')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
   });
@@ -1761,7 +1761,7 @@ describe('thread lifecycle and attribution (S7)', () => {
 
     renderApp('/chat/ws1/th1', client);
 
-    expect(await screen.findByText(/user_approver/)).toBeInTheDocument();
+    expect(await screen.findByText('by user_approver')).toBeInTheDocument();
     expect(screen.getByText(/user_responder/)).toBeInTheDocument();
   });
 
@@ -3080,5 +3080,87 @@ describe('conversation artifact inspection', () => {
       within(dialog).getByText(/Current review decisions are available in Workspace changes/)
     ).toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument();
+  });
+});
+
+describe('approval decision evidence', () => {
+  const decision = ItemSchema.parse({
+    ...ITEMS[0],
+    id: 'decision-evidence',
+    type: 'approval-decision',
+    actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
+    approvalRequestId: 'ap1',
+    causationId: 'i3',
+    decision: 'denied',
+  });
+
+  it('explains recovery denial and labels its inherited timestamp instead of inventing a decision time', async () => {
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({
+        listThreadItems: vi
+          .fn()
+          .mockResolvedValue({ items: [...ITEMS, decision], nextCursor: null }),
+      })
+    );
+    expect(await screen.findByText('by OpenKit system')).toBeInTheDocument();
+    expect(screen.getByText('Request: Approve $5 spend')).toBeInTheDocument();
+    expect(
+      screen.getByText(/The task had already ended without an approval decision/)
+    ).toBeInTheDocument();
+    expect(screen.getByText('Inherited timestamp')).toBeInTheDocument();
+    expect(screen.getByText(/The actual recovery time was not recorded/)).toBeInTheDocument();
+    expect(screen.getByText('Server recovery')).toBeInTheDocument();
+    expect(screen.getByText('Not applicable — automatic server action')).toBeInTheDocument();
+    expect(document.querySelector('time')).toHaveAttribute('datetime', decision.createdAt);
+  });
+
+  it('uses the recorded human identity and time without guessing a reason or client', async () => {
+    const human = ItemSchema.parse({
+      ...decision,
+      actor: { kind: 'user', id: 'user_reviewer' },
+      causationId: 'req-denial',
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi
+            .fn()
+            .mockResolvedValue({ items: [...ITEMS, human], nextCursor: null }),
+        },
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            turns: [],
+            viewerUserId: 'user_someone_else',
+            participants: [{ kind: 'user', id: 'user_reviewer', displayName: 'Alex Chen' }],
+          }),
+        }
+      )
+    );
+    expect(await screen.findByText('by Alex Chen')).toBeInTheDocument();
+    expect(screen.getByText('Decision time')).toBeInTheDocument();
+    expect(screen.getByText('No reason was recorded.')).toBeInTheDocument();
+    expect(screen.getByText('Not recorded')).toBeInTheDocument();
+    expect(screen.getByText('User decision')).toBeInTheDocument();
+  });
+
+  it('distinguishes an automatic policy grant from human approval and recovery', async () => {
+    const grant = ItemSchema.parse({
+      ...decision,
+      actor: { kind: 'system', id: 'nanocore-repo-push-policy', responsibleUserId: null },
+      decision: 'granted',
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({
+        listThreadItems: vi.fn().mockResolvedValue({ items: [...ITEMS, grant], nextCursor: null }),
+      })
+    );
+    expect(await screen.findByText('Repository push policy')).toBeInTheDocument();
+    expect(
+      screen.getByText('Automatically granted by the repository push policy.')
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Inherited timestamp')).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 ---
 # Conversation Item Actions And Evidence
 
@@ -16,7 +16,7 @@ The engineer's September 16 browser annotations on staging Thread ws_7/th_74 ide
 
 The live UI confirms a request followed by a system denial with no remaining response controls. `deriveApprovalStateFromItems` closes undecided requests belonging to terminal Turns at boot, attributing them to nanocore-boot-reconciliation; its timestamp is copied from Turn completion/start or request creation, not necessarily boot wall time. The Artifact row has no onOpen handler. Initial scope is frontend projection over existing authoritative records; no durable schema change is currently needed.
 
-Approval usability is committed as 60ebbbb. Artifact inspection is implemented and verified; the next action after its dedicated commit is decision explanations. Source-record limitations must remain explicit rather than fabricated.
+Approval usability is committed as 60ebbbb and Artifact inspection as 0a9931e6. Decision explanations are implemented and verified in the final dedicated commit. Source-record limitations remain explicit rather than fabricated.
 
 ## Acceptance
 
@@ -31,3 +31,13 @@ Independent reviewer review_conversation_targets found no remaining actionable f
 ## Artifact Fix Verification
 
 The two initial regression cases failed because neither stream nor sidebar exposed View content. The shared inspection now loads only on opening, supports retry, refuses a different Artifact version, and displays recorded change paths and patch content. Three focused regressions passed; the full Chat suite passed 86 tests. Web typecheck/build, focused Biome, documentation validation (274 documents), and whitespace checks passed. An additional unchanged Artifact inventory suite failed collection because its existing Thread fixture omits required visibility; both that fixture and the Thread schema are unchanged from HEAD. Independent reviewer review_conversation_targets inspected the actual component and consumers and found no actionable findings; its focused tests, typecheck, lint and whitespace checks passed. Browser inspection of the actual source components with built styles at 831 by 803 confirmed a readable dialog, expanded full content, reachable Close, and no horizontal document overflow. No live review was decided or applied.
+
+## Verification
+
+The three initial decision-evidence regressions failed on missing system attribution, recovery provenance, and policy-grant explanation. All now pass; the complete Chat suite passes 89 tests. Two existing broad actor-name queries were narrowed to the same exact visible attribution because the new identifier disclosure repeats the stable actor id. Web typecheck/build passed, retaining the existing large-chunk warning; documentation validation passed for 274 documents. Browser inspection at the reported 831 by 803 viewport used actual source components and production CSS: request correlation, localized timestamp with timezone, recovery explanation, source/client facts, and expanded record identifiers were readable with no document overflow. Temporary tabs/server were closed and the viewport reset. This is local evidence, not a staging deployment. The unrelated Artifact inventory fixture collection failure remains documented above.
+
+Independent reviewer review_conversation_targets inspected the final diff, protocol, schema and all decision producers, found no actionable findings, and independently passed Web typecheck and whitespace validation. Staged lint passed for all six final-slice files.
+
+## Closeout Summary
+
+The three annotated UI problems are handled in separate commits: truthful approval availability with retry, readable exact-version Artifact inspection from both entry points, and decision explanations grounded in stored actor and operation semantics. The annotated denial is a server recovery closure of a terminal task's undecided approval; its inherited timestamp cannot establish actual recovery time. Human reason and client metadata absent from the current Item contract remain explicitly unrecorded. No external approval, workspace apply, Git push, deployment, or new durable audit model was introduced.

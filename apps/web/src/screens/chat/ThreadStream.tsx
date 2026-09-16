@@ -155,6 +155,17 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                       )
                     : undefined
                 }
+                approvalRequestTitle={
+                  item.type === 'approval-decision'
+                    ? group.items.find(
+                        (
+                          candidate
+                        ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
+                          candidate.type === 'approval-request' &&
+                          candidate.approvalRequestId === item.approvalRequestId
+                      )?.title
+                    : undefined
+                }
                 approvalUnavailableReason={approvalUnavailableReason(item)}
                 approvalPending={
                   respond.isPending &&

@@ -515,6 +515,8 @@ An approval row is actionable only when the referenced Turn is `awaiting_human`,
 
 Rows backed by app-local runtime state should expose opaque app-local IDs until the shape stabilizes.
 
+Decision cards identify the recorded actor and matching request, distinguish human responses from system recovery and repository-policy grants, and expose the recorded time with its provenance. A boot-reconciliation timestamp inherited from a terminal Turn or request MUST NOT be labelled as the actual recovery time. Missing human reasons and client/channel evidence remain explicitly unrecorded; the current browser session cannot supply historical attribution. These are read-only Item projections under the protocol and audit owners, not a new decision ledger.
+
 ## Implementation Mapping
 
 The first implementation is tracked as an App API and product read-model slice, not a core protocol expansion.
