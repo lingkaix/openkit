@@ -318,6 +318,7 @@ function createLineageExportInput(
         name: 'Lineage thread',
         preview: 'Lineage thread',
         entryPath: 'conversation',
+        visibility: 'workspace',
         status: 'active',
         createdAt: timestamp,
         updatedAt: timestamp,
