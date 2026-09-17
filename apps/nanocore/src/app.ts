@@ -26,6 +26,7 @@ import { projectAgentCatalogEntries } from './agents/catalog-projection.js';
 import { registerAgentCatalogRoutes } from './agents/catalog-routes.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
+import { registerWorkspaceWorkerRoutes } from './agents/workspace-workers.js';
 import { asApiError } from './api-errors.js';
 import { registerDashboardRoutes } from './app-dashboard.js';
 import { registerAppUpdateRoutes } from './app-update/app-update-routes.js';
@@ -1597,6 +1598,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerSearchRoutes({ app, authorizedWorkspaceIds, coreDb: options.coreDb, requestStore });
 
   registerAgentCatalogRoutes({ app, authorizedWorkspaceIds, requestStore });
+  registerWorkspaceWorkerRoutes({
+    app,
+    coreDb: options.coreDb,
+    repositoryWorkspaceDb,
+    requestStore,
+  });
 
   registerResourceCatalogRoutes({
     app,

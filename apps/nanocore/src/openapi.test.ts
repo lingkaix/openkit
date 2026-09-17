@@ -831,6 +831,21 @@ describe('app api openapi projection', () => {
         },
       },
     });
+    expect(document.paths['/api/app/workspaces/{workspaceId}/workers']?.get).toMatchObject({
+      operationId: 'listWorkspaceWorkers',
+      tags: ['agents'],
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/WorkspaceWorkersResponse',
+              },
+            },
+          },
+        },
+      },
+    });
     expect(
       document.paths[
         '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry'
@@ -3587,6 +3602,7 @@ describe('app api openapi projection', () => {
       'searchApp',
       'listAgentCatalog',
       'getAgentCatalogEntry',
+      'listWorkspaceWorkers',
       'getWorkspaceCatalog',
       'listSkillCatalog',
       'importSkill',
@@ -3626,6 +3642,7 @@ describe('app api openapi projection', () => {
       'getThreadDashboard',
       'startTaskMode',
       'getThreadGoalSummary',
+      'getThreadGoalPlan',
       'startThreadGoal',
       'submitThreadGoalSteering',
       'convertGoalSteeringToFollowUp',

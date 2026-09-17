@@ -358,6 +358,7 @@ registerOperations(
     'listSchedulerAdmissions',
     'getWorkspaceDashboard',
     'listConversationNavigation',
+    'listWorkspaceWorkers',
     'listWorkspaceMaterials',
     'listWorkspaceSyncReviews',
     'listWorkspaceInputSnapshots',

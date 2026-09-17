@@ -288,6 +288,46 @@ const AGENT_DETAIL = {
   health: { status: 'ready', message: 'Authoritative health', checkedAt: TIMESTAMP_NEW },
 };
 
+/** Builds one Worker row matching WorkspaceWorkersResponseSchema. */
+function workspaceWorker(overrides: Record<string, unknown> = {}) {
+  return {
+    threadId: 'th_worker',
+    threadTitle: 'Implement inventory',
+    agentId: 'agent_ledger',
+    agentName: 'Ledger',
+    status: 'busy',
+    recordUpdatedAt: TIMESTAMP_NEW,
+    stale: false,
+    work: {
+      kind: 'goal',
+      turnId: 'turn_worker',
+      goalId: 'goal_worker',
+      taskId: 'task_worker',
+    },
+    packageDetails: {
+      kind: 'available',
+      preferredLogicalModelId: 'openai/gpt-preferred',
+      mcpServers: [
+        {
+          id: 'github',
+          allowedTools: ['list_issues'],
+          deniedTools: ['delete_repo'],
+          approvalRequiredTools: ['create_issue'],
+        },
+      ],
+      filesystem: { default: 'deny', enforcement: 'openshell', ruleCount: 1 },
+      network: { default: 'deny', enforcement: 'openshell', ruleCount: 0 },
+      process: null,
+    },
+    lastUsedModel: {
+      kind: 'available',
+      modelId: 'openai/gpt-last-used',
+      recordedAt: TIMESTAMP_NEW,
+    },
+    ...overrides,
+  };
+}
+
 const DEFAULT_REPOSITORY_INPUT = {
   displayName: 'Linked default repository',
   localPath: '/tmp/openkit-default-repo',
@@ -798,6 +838,10 @@ function makeClient(
       }),
       submitArtifactReviewDecision: vi.fn().mockResolvedValue({}),
       listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
+      listWorkspaceWorkers: vi.fn().mockImplementation(async (workspaceId: string) => ({
+        workspaceId,
+        items: [],
+      })),
       listKnowledgeSources: vi.fn().mockResolvedValue({ items: [] }),
       listKnowledgeObservations: vi.fn().mockResolvedValue({ items: [] }),
       listKnowledgeClaims: vi.fn().mockResolvedValue({ items: [] }),
@@ -2046,13 +2090,28 @@ describe('Agents roster continued', () => {
   it('marks readiness stale when disconnected', async () => {
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
+      app: {
+        listWorkspaceWorkers: vi.fn().mockResolvedValue({
+          workspaceId: WORKSPACE_A.id,
+          items: [workspaceWorker({ stale: false })],
+        }),
+      },
       agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
     });
     renderApp('/agents', client);
-    expect(await screen.findByText('Ledger')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/stale/i)).toBeInTheDocument(), {
-      timeout: 3000,
-    });
+    expect(await screen.findByText('Implement inventory')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Configured agents' })).toHaveTextContent('Ledger');
+    await waitFor(
+      () => {
+        expect(screen.getByText('Readiness may be stale')).toBeInTheDocument();
+        expect(screen.getByText('Worker read may be stale')).toBeInTheDocument();
+      },
+      {
+        timeout: 3000,
+      }
+    );
+    expect(screen.queryByText('Setup outdated')).not.toBeInTheDocument();
+    expect(screen.queryByText('Stale')).not.toBeInTheDocument();
   });
 
   it('refreshes health for the selected Workspace then refetches authoritative agents', async () => {
@@ -2229,12 +2288,316 @@ describe('Agents roster continued', () => {
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ['core', 'meta'] });
     });
-    await waitFor(() => expect(screen.getByText(/stale/i)).toBeInTheDocument());
+    await waitFor(() => {
+      expect(screen.getByText('Readiness may be stale')).toBeInTheDocument();
+      expect(screen.getByText('Worker read may be stale')).toBeInTheDocument();
+    });
     const retry = within(alert).getByRole('button', { name: /try again/i });
     expect(retry).toBeDisabled();
     await user.click(retry);
     expect(refreshHealth).toHaveBeenCalledTimes(1);
     expect(refreshHealth.mock.calls).toEqual([[WORKSPACE_A.id]]);
+  });
+});
+
+describe('Agents actual Workers', () => {
+  it('keeps configured catalog labeled separately below actual Workers', async () => {
+    const listWorkspaceWorkers = vi.fn().mockResolvedValue({
+      workspaceId: WORKSPACE_A.id,
+      items: [workspaceWorker({ stale: true })],
+    });
+    renderApp(
+      '/agents',
+      makeClient({
+        app: { listWorkspaceWorkers },
+        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+      })
+    );
+
+    expect(await screen.findByText('Implement inventory')).toBeInTheDocument();
+    const workers = screen.getByRole('region', { name: 'Workers' });
+    const catalog = screen.getByRole('region', { name: 'Configured agents' });
+    expect(
+      workers.compareDocumentPosition(catalog) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(within(workers).getByText('Implement inventory')).toBeInTheDocument();
+    expect(within(catalog).getByText('Ledger')).toBeInTheDocument();
+    expect(within(catalog).getByText('Ready')).toBeInTheDocument();
+    expect(within(workers).getByText('Busy')).toBeInTheDocument();
+    expect(within(workers).getByText(/Last recorded/)).toBeInTheDocument();
+    expect(within(workers).getByText('Setup outdated')).toBeInTheDocument();
+    expect(within(workers).queryByText('Stale')).not.toBeInTheDocument();
+    expect(screen.queryByText('Worker read may be stale')).not.toBeInTheDocument();
+    expect(listWorkspaceWorkers).toHaveBeenCalledWith(WORKSPACE_A.id);
+  });
+
+  it('keeps catalog-only supply when the Worker read returns no rows', async () => {
+    renderApp(
+      '/agents',
+      makeClient({
+        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+      })
+    );
+
+    expect(await screen.findByText('Ledger')).toBeInTheDocument();
+    expect(screen.getByText('No current workers')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Configured agents' })).toHaveTextContent('Ledger');
+    expect(screen.queryByRole('link', { name: /open conversation/i })).not.toBeInTheDocument();
+  });
+
+  it('does not report an absent selected Workspace as a successful empty Worker read', async () => {
+    const listWorkspaceWorkers = vi.fn().mockResolvedValue({
+      workspaceId: WORKSPACE_A.id,
+      items: [],
+    });
+    renderApp(
+      '/agents',
+      makeClient({
+        core: { listWorkspaces: vi.fn().mockResolvedValue({ items: [] }) },
+        app: { listWorkspaceWorkers },
+      })
+    );
+
+    expect(
+      await screen.findByText('Select a Workspace to see current workers.')
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No current workers')).not.toBeInTheDocument();
+    expect(listWorkspaceWorkers).not.toHaveBeenCalled();
+  });
+
+  it('keeps two Workers of one Agent distinct by Thread with exact Goal assignment and conversation link', async () => {
+    const user = userEvent.setup();
+    const listWorkspaceWorkers = vi.fn().mockResolvedValue({
+      workspaceId: WORKSPACE_A.id,
+      items: [
+        workspaceWorker({
+          threadId: 'th_alpha',
+          threadTitle: 'Alpha thread',
+          work: {
+            kind: 'goal',
+            turnId: 'turn_alpha',
+            goalId: 'goal_alpha',
+            taskId: 'task_alpha',
+          },
+        }),
+        workspaceWorker({
+          threadId: 'th_beta',
+          threadTitle: 'Beta thread',
+          status: 'idle',
+          work: { kind: 'none' },
+          lastUsedModel: { kind: 'unavailable' },
+        }),
+      ],
+    });
+    renderApp(
+      '/agents',
+      makeClient({
+        app: { listWorkspaceWorkers },
+        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+      })
+    );
+
+    const workers = await screen.findByRole('region', { name: 'Workers' });
+    expect(await within(workers).findByText('Alpha thread')).toBeInTheDocument();
+    expect(within(workers).getByText('Beta thread')).toBeInTheDocument();
+    expect(within(workers).getByText('Goal goal_alpha · Task task_alpha')).toBeInTheDocument();
+    expect(within(workers).getByText('No current assignment')).toBeInTheDocument();
+    expect(
+      within(workers).getByRole('link', { name: 'Open conversation Alpha thread' })
+    ).toHaveAttribute('href', `/tasks/${WORKSPACE_A.id}/th_alpha`);
+    expect(
+      within(workers).getByRole('link', { name: 'Open conversation Beta thread' })
+    ).toHaveAttribute('href', `/tasks/${WORKSPACE_A.id}/th_beta`);
+    const idleDetails = within(workers)
+      .getAllByText('View details')[1]
+      ?.closest('details') as HTMLElement;
+    await user.click(within(idleDetails).getByText('View details'));
+    expect(within(idleDetails).getByText('Last-used model').closest('div')).toHaveTextContent(
+      'Unavailable'
+    );
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+  });
+
+  it('keeps a Worker visible after it leaves the configured catalog, including long agent and Thread names', async () => {
+    const longTitle =
+      'Very long Thread title that must wrap inside the existing Agents layout without overlapping refresh actions';
+    const longAgent = 'FormerConfiguredAgentWithAnExceptionallyLongDisplayName';
+    renderApp(
+      '/agents',
+      makeClient({
+        app: {
+          listWorkspaceWorkers: vi.fn().mockResolvedValue({
+            workspaceId: WORKSPACE_A.id,
+            items: [
+              workspaceWorker({
+                agentId: 'agent_retired',
+                agentName: longAgent,
+                threadTitle: longTitle,
+              }),
+            ],
+          }),
+        },
+        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+      })
+    );
+
+    const workers = await screen.findByRole('region', { name: 'Workers' });
+    expect(await within(workers).findByText(longAgent)).toBeInTheDocument();
+    expect(within(workers).getByText(longTitle)).toBeInTheDocument();
+    expect(within(workers).queryByText('Ledger')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Configured agents' })).toHaveTextContent('Ledger');
+  });
+
+  it('shows package preference, last-used Restricted or Unavailable, and bounded policy details without joining catalog models', async () => {
+    const user = userEvent.setup();
+    renderApp(
+      '/agents',
+      makeClient({
+        app: {
+          listWorkspaceWorkers: vi.fn().mockResolvedValue({
+            workspaceId: WORKSPACE_A.id,
+            items: [
+              workspaceWorker({
+                lastUsedModel: { kind: 'restricted' },
+                packageDetails: {
+                  kind: 'available',
+                  preferredLogicalModelId: 'openai/gpt-preferred',
+                  mcpServers: [
+                    {
+                      id: 'github',
+                      allowedTools: ['list_issues'],
+                      deniedTools: ['delete_repo'],
+                      approvalRequiredTools: ['create_issue'],
+                    },
+                  ],
+                  filesystem: { default: 'deny', enforcement: 'openshell', ruleCount: 1 },
+                  network: { default: null, enforcement: null, ruleCount: 2 },
+                  process: null,
+                },
+              }),
+            ],
+          }),
+        },
+        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+      })
+    );
+
+    const workers = await screen.findByRole('region', { name: 'Workers' });
+    const details = (await within(workers).findByText('View details')).closest(
+      'details'
+    ) as HTMLElement;
+    await user.click(within(details).getByText('View details'));
+    expect(within(details).getByText('openai/gpt-preferred')).toBeInTheDocument();
+    expect(within(details).getByText('Restricted')).toBeInTheDocument();
+    expect(within(details).queryByText('gpt-test')).not.toBeInTheDocument();
+    await user.click(within(details).getByText('MCP and tool policy'));
+    expect(within(details).getByText('github')).toBeInTheDocument();
+    expect(within(details).getByText(/list_issues/)).toBeInTheDocument();
+    expect(within(details).getByText(/delete_repo/)).toBeInTheDocument();
+    expect(within(details).getByText(/create_issue/)).toBeInTheDocument();
+    await user.click(within(details).getByText('Policy summary'));
+    expect(
+      within(details).getByText(/Filesystem: default deny, enforcement openshell, 1 rule/)
+    ).toBeInTheDocument();
+    expect(
+      within(details).getByText(/Network: default Not reported, enforcement Not reported, 2 rules/)
+    ).toBeInTheDocument();
+    expect(within(details).getByText('Process: Not recorded')).toBeInTheDocument();
+    expect(within(details).queryByText(/Process: Unavailable/)).not.toBeInTheDocument();
+  });
+
+  it('does not treat a failed Worker read as an empty success and keeps the catalog', async () => {
+    const listWorkspaceWorkers = vi
+      .fn()
+      .mockRejectedValue(new ApiCallError(500, 'Private worker dump.', { code: 'failed' }));
+    renderApp(
+      '/agents',
+      makeClient({
+        app: { listWorkspaceWorkers },
+        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+      })
+    );
+
+    expect(await screen.findByText('Ledger')).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't load workers/i);
+    expect(alert).not.toHaveTextContent('Private worker dump.');
+    expect(screen.queryByText('No current workers')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Configured agents' })).toHaveTextContent('Ledger');
+  });
+
+  it('refreshes the Worker read without refreshing catalog health', async () => {
+    const user = userEvent.setup();
+    const listWorkspaceWorkers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        workspaceId: WORKSPACE_A.id,
+        items: [workspaceWorker({ status: 'busy' })],
+      })
+      .mockResolvedValueOnce({
+        workspaceId: WORKSPACE_A.id,
+        items: [workspaceWorker({ status: 'idle', work: { kind: 'none' } })],
+      });
+    const refreshHealth = vi.fn().mockResolvedValue({ items: [] });
+    renderApp(
+      '/agents',
+      makeClient({
+        app: { listWorkspaceWorkers },
+        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }), refreshHealth },
+      })
+    );
+
+    expect(await screen.findByText('Busy')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /refresh workers/i }));
+    await waitFor(() => expect(listWorkspaceWorkers).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Idle')).toBeInTheDocument();
+    expect(refreshHealth).not.toHaveBeenCalled();
+  });
+
+  it('queries Workers only for the selected Workspace and replaces the previous Workspace rows', async () => {
+    const user = userEvent.setup();
+    const listWorkspaceWorkers = vi.fn().mockImplementation((workspaceId: string) =>
+      Promise.resolve({
+        workspaceId,
+        items:
+          workspaceId === WORKSPACE_A.id
+            ? [workspaceWorker({ threadTitle: 'Visible A thread', threadId: 'th_a' })]
+            : [
+                workspaceWorker({
+                  threadTitle: 'Visible B thread',
+                  threadId: 'th_b',
+                  agentName: 'Scout',
+                }),
+              ],
+      })
+    );
+    renderApp(
+      '/agents',
+      makeClient({
+        core: {
+          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
+        },
+        app: { listWorkspaceWorkers },
+        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+      })
+    );
+
+    expect(await screen.findByText('Visible A thread')).toBeInTheDocument();
+    expect(screen.queryByText('Visible B thread')).not.toBeInTheDocument();
+    await waitFor(() => expect(listWorkspaceWorkers).toHaveBeenCalledWith(WORKSPACE_A.id));
+
+    await user.click(screen.getByRole('button', { name: WORKSPACE_A.name }));
+    await user.click(await screen.findByRole('menuitem', { name: WORKSPACE_B.name }));
+
+    expect(await screen.findByText('Visible B thread')).toBeInTheDocument();
+    expect(screen.queryByText('Visible A thread')).not.toBeInTheDocument();
+    expect(listWorkspaceWorkers).toHaveBeenCalledWith(WORKSPACE_B.id);
+    expect(
+      listWorkspaceWorkers.mock.calls.every(
+        ([id]) => id === WORKSPACE_A.id || id === WORKSPACE_B.id
+      )
+    ).toBe(true);
   });
 });
 

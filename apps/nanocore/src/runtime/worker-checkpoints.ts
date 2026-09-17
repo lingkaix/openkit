@@ -455,6 +455,25 @@ export function getWorkerCheckpoint(
 }
 
 /**
+ * Reads uncleared checkpoints for one already-authorized Thread, including missing-Turn lineage.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace id.
+ * @param threadId Authorized Thread id.
+ * @returns Unordered recorded checkpoints without inspecting another Thread.
+ */
+export function listThreadWorkerCheckpoints(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  threadId: string
+): WorkerCheckpointRecord[] {
+  const rows = workspaceDb.sqlite
+    .prepare(`${workerCheckpointSelectSql()} WHERE workspace_id = ? AND thread_id = ?`)
+    .all(workspaceId, threadId) as WorkerCheckpointRow[];
+  return rows.map(mapWorkerCheckpointRow);
+}
+
+/**
  * Deletes one worker checkpoint.
  *
  * @param workspaceDb Open workspace-scope database handle.

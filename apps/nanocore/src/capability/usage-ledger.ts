@@ -591,6 +591,78 @@ export function listWorkspaceUsageRecords(
     .map(usageRecordFromRow);
 }
 
+/** Latest current-session LLM usage joined to a family=llm capability call. */
+export interface CurrentAgentSessionLlmUsage {
+  /** Capability call that attributed the usage. */
+  readonly capabilityCallId: string;
+  /** Last attributed logical model id. */
+  readonly modelId: string;
+  /** Usage recording timestamp. */
+  readonly recordedAt: string;
+  /** Exact Turn id recorded on the usage and capability call. */
+  readonly turnId: string;
+}
+
+/**
+ * Reads the most recent category=llm usage for one current AgentSession joined to a family=llm call.
+ *
+ * @param workspaceDb Workspace database that owns the ledger rows.
+ * @param input Exact Workspace, Thread, and current AgentSession lineage.
+ * @returns Latest matching usage, or null when attribution is absent.
+ */
+export function readLatestCurrentAgentSessionLlmUsage(
+  workspaceDb: WorkspaceDb,
+  input: {
+    readonly agentSessionId: string;
+    readonly threadId: string;
+    readonly workspaceId: string;
+  }
+): CurrentAgentSessionLlmUsage | null {
+  const row = workspaceDb.sqlite
+    .prepare(
+      `SELECT
+         usage.capability_call_id AS capability_call_id,
+         usage.model_id AS model_id,
+         usage.recorded_at AS recorded_at,
+         usage.turn_id AS turn_id
+       FROM usage_records usage
+       INNER JOIN capability_calls call ON call.call_id = usage.capability_call_id
+       WHERE usage.workspace_id = ?
+         AND usage.thread_id = ?
+         AND usage.agent_session_id = ?
+         AND usage.category = 'llm'
+         AND usage.model_id IS NOT NULL
+         AND usage.model_id != ''
+         AND usage.turn_id IS NOT NULL
+         AND call.family = 'llm'
+         AND call.workspace_id = usage.workspace_id
+         AND call.thread_id = usage.thread_id
+         AND call.turn_id = usage.turn_id
+         AND call.agent_session_id = usage.agent_session_id
+       ORDER BY usage.recorded_at DESC, usage.usage_id DESC
+       LIMIT 1`
+    )
+    .get(input.workspaceId, input.threadId, input.agentSessionId) as
+    | {
+        readonly capability_call_id: string;
+        readonly model_id: string;
+        readonly recorded_at: string;
+        readonly turn_id: string;
+      }
+    | undefined;
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    capabilityCallId: row.capability_call_id,
+    modelId: row.model_id,
+    recordedAt: row.recorded_at,
+    turnId: row.turn_id,
+  };
+}
+
 /**
  * Imports exported workspace capability usage rows into the target workspace database.
  *

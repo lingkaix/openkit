@@ -2650,6 +2650,13 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
       { workspaceId: 'ws_team' },
       ['ws_team'],
     ],
+    [
+      'worker.list',
+      'listWorkspaceWorkers',
+      'listWorkspaceWorkers',
+      { workspaceId: 'ws_team' },
+      ['ws_team'],
+    ],
   ]) {
     const entry = operationCatalog.find((candidate) => candidate.id === id);
     assert.ok(entry);
@@ -2691,6 +2698,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
       '/api/app/workspaces/ws_team/threads/th_private/dashboard',
     ],
     ['app.search', { query: 'private needle' }, '/api/app/search?q=private%20needle'],
+    ['worker.list', { workspaceId: 'ws_team' }, '/api/app/workspaces/ws_team/workers'],
   ]) {
     for (const status of [401, 403, 404]) {
       const result = await runCli(

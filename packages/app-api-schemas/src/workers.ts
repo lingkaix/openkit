@@ -111,6 +111,7 @@ export const WorkspaceWorkerSchema = z
     agentName: z.string().min(1),
     status: WorkspaceWorkerStatusSchema,
     recordUpdatedAt: TimestampSchema,
+    /** Existing setup/continuity staleness; does not describe read freshness or process liveness. */
     stale: z.boolean(),
     work: WorkspaceWorkerWorkSchema,
     packageDetails: WorkspaceWorkerPackageDetailsSchema,

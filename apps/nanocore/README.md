@@ -12,6 +12,8 @@ Worker closeout refuses a Git review whose exact repository resource has no link
 
 The Agent catalog is a live, product-safe projection of current server manifests through the shared Workspace resources read path. Catalog list/detail, health refresh and dashboard consumers share it; Workspace launch pins do not hide supply. Missing authored roles project as null, and catalog presence does not claim observed runtime health.
 
+Current Workers are a separate selected-Workspace read at `GET /api/app/workspaces/:workspaceId/workers`. The projection lists current nonterminal AgentSessions of visible Threads, copies exact matching checkpoint Task/Goal assignment, and labels package preference and last-used model separately. Thread audience is checked before checkpoint, package, or usage reads; missing Turns and conflicting checkpoint lineage remain unavailable. Reading it creates no Worker lifecycle; last-used usage requires existing `audit.read` or is returned as restricted.
+
 Chat Mode distinguishes explicit external search or browsing requests from ordinary topic mentions and questions about supplied Artifact content. The shared conversation admission path retains external-search refusal without treating words such as Web or internet alone as a request to browse. Explicit Artifact references use their immutable version and remain separate from permission to perform external work. Chat and selected Worker submissions use the canonical Artifact reference identity so persisted attachments remain readable after restart. Assistant submissions with admitted Artifacts skip the Knowledge-only answer shortcut so the supplied content reaches the answering provider; the explicitly selected Knowledge Manager retains its own path.
 
 ## Scope

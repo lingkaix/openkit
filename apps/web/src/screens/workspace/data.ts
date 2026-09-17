@@ -7,7 +7,13 @@ import {
 } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
-import { chatKeys, chatThreadPath, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
+import {
+  chatKeys,
+  chatThreadPath,
+  taskThreadPath,
+  useCurrentWorkspaceId,
+  useWorkspaces,
+} from '../chat/data';
 
 /**
  * Workspace / Overview data hooks (WP-6). Action Center, Agents, Knowledge, and
@@ -17,6 +23,7 @@ import { chatKeys, chatThreadPath, useCurrentWorkspaceId, useWorkspaces } from '
 export const workspaceKeys = {
   attention: (workspaceId: string) => ['attention', workspaceId] as const,
   agents: (workspaceId: string) => ['agents', workspaceId] as const,
+  workers: (workspaceId: string) => ['workspace-workers', workspaceId] as const,
   knowledge: (workspaceId: string) => ['knowledge', workspaceId] as const,
   knowledgeSources: (workspaceId: string) => ['knowledge-sources', workspaceId] as const,
   knowledgeObservations: (workspaceId: string) => ['knowledge-observations', workspaceId] as const,
@@ -28,8 +35,8 @@ export const workspaceKeys = {
   catalog: (workspaceId: string) => ['catalog', workspaceId] as const,
 };
 
-/** Re-export workspace selection for Overview / Agents / Knowledge / First-run. */
-export { chatThreadPath, useCurrentWorkspaceId, useWorkspaces };
+/** Re-export workspace selection and Worker conversation paths for Overview / Agents / Knowledge / First-run. */
+export { chatThreadPath, taskThreadPath, useCurrentWorkspaceId, useWorkspaces };
 
 /** Human attention row from `actionCenter.listHumanAttention`. */
 export type AttentionRow = Awaited<
@@ -39,6 +46,10 @@ export type AttentionRow = Awaited<
 export type AgentEntry = Awaited<
   ReturnType<CoreClient['core']['getWorkspaceResources']>
 >['agents'][number];
+/** Current Worker row from `client.app.listWorkspaceWorkers`. */
+export type WorkspaceWorkerRow = Awaited<
+  ReturnType<CoreClient['app']['listWorkspaceWorkers']>
+>['items'][number];
 /** Knowledge entry from `core.listKnowledge`. */
 export type KnowledgeItem = KnowledgeEntry;
 /** Bounded Knowledge Store projection returned by the three live list reads. */
@@ -187,6 +198,22 @@ export function useAgents(workspaceId: string | null) {
     queryKey: workspaceKeys.agents(workspaceId ?? ''),
     queryFn: async () => (await client.core.getWorkspaceResources(workspaceId as string)).agents,
     enabled: Boolean(workspaceId),
+  });
+}
+
+/**
+ * Read current Workers for one selected Workspace.
+ *
+ * @param workspaceId Selected Workspace identity, or null before selection settles.
+ * @returns TanStack query for `client.app.listWorkspaceWorkers`.
+ */
+export function useWorkspaceWorkers(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: workspaceKeys.workers(workspaceId ?? ''),
+    queryFn: () => client.app.listWorkspaceWorkers(workspaceId as string),
+    enabled: Boolean(workspaceId),
+    retry: false,
   });
 }
 

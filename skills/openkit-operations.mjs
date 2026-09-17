@@ -743,6 +743,20 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    id: 'worker.list',
+    source: 'app-api',
+    appOperationId: 'listWorkspaceWorkers',
+    clientMethod: 'app.listWorkspaceWorkers',
+    group: 'worker',
+    summary: 'List current Workers in one selected Workspace.',
+    mutating: false,
+    requiredAccess:
+      'current Workspace read; private Thread audience; last-used usage requires audit.read or is omitted as restricted',
+    inputSchema: strictScope(workspaceScope),
+    handler: ({ client }, input) => client.app.listWorkspaceWorkers(input.workspaceId),
+  },
+  {
+    ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
     id: 'provider-subscription.provider-list',
     source: 'app-api',

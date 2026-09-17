@@ -296,6 +296,7 @@ import {
   WorkspaceOwnershipMutationResponseSchema,
   WorkspaceRepositoryDiagnosticsResponseSchema,
   WorkspaceVaultGrantSchema,
+  WorkspaceWorkersResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
   AgentIdSchema,
@@ -3560,6 +3561,33 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/workspaces/{workspaceId}/workers': {
+        get: {
+          operationId: 'listWorkspaceWorkers',
+          tags: ['agents'],
+          summary: 'Read current Workers for one selected Workspace.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [WORKSPACE_ID_PARAMETER],
+          responses: {
+            '200': {
+              description: 'Current Worker inventory for the selected Workspace.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceWorkersResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/app/workspaces/{workspaceId}/dashboard': {
         get: {
           operationId: 'getWorkspaceDashboard',
@@ -6675,6 +6703,7 @@ export function createAppOpenApiDocument() {
         WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
         ConversationNavigationResponse: toJsonSchema(ConversationNavigationResponseSchema),
         WorkspaceDashboardResponse: toJsonSchema(WorkspaceDashboardResponseSchema),
+        WorkspaceWorkersResponse: toJsonSchema(WorkspaceWorkersResponseSchema),
         WorkspaceId: toJsonSchema(WorkspaceIdSchema),
         WorkspaceRepositoryDiagnosticsResponse: toJsonSchema(
           WorkspaceRepositoryDiagnosticsResponseSchema

@@ -5921,6 +5921,55 @@
         }
       }
     },
+    "/api/app/workspaces/{workspaceId}/workers": {
+      "get": {
+        "operationId": "listWorkspaceWorkers",
+        "tags": [
+          "agents"
+        ],
+        "summary": "Read current Workers for one selected Workspace.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current Worker inventory for the selected Workspace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceWorkersResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/workspaces/{workspaceId}/dashboard": {
       "get": {
         "operationId": "getWorkspaceDashboard",
@@ -117183,6 +117232,438 @@
         ],
         "additionalProperties": false
       },
+      "WorkspaceWorkersResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threadTitle": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "agentId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "agentName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "created",
+                    "initializing",
+                    "ready",
+                    "busy",
+                    "idle",
+                    "degraded",
+                    "suspended"
+                  ]
+                },
+                "recordUpdatedAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "work": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "none"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "unavailable"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "task"
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "turnId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "goal"
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "goalId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "taskId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "turnId",
+                        "goalId",
+                        "taskId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "packageDetails": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "available"
+                        },
+                        "preferredLogicalModelId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "mcpServers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "allowedTools": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "deniedTools": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "approvalRequiredTools": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "allowedTools",
+                              "deniedTools",
+                              "approvalRequiredTools"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "filesystem": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "default": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "allow",
+                                        "deny"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "enforcement": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "openshell",
+                                        "none"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "ruleCount": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "default",
+                                "enforcement",
+                                "ruleCount"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "network": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "default": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "allow",
+                                        "deny"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "enforcement": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "openshell",
+                                        "none"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "ruleCount": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "default",
+                                "enforcement",
+                                "ruleCount"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "process": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "default": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "allow",
+                                        "deny"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "enforcement": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "openshell",
+                                        "none"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "ruleCount": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "default",
+                                "enforcement",
+                                "ruleCount"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "preferredLogicalModelId",
+                        "mcpServers",
+                        "filesystem",
+                        "network",
+                        "process"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "unavailable"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "lastUsedModel": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "available"
+                        },
+                        "modelId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "recordedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "modelId",
+                        "recordedAt"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "unavailable"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "restricted"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "threadId",
+                "threadTitle",
+                "agentId",
+                "agentName",
+                "status",
+                "recordUpdatedAt",
+                "stale",
+                "work",
+                "packageDetails",
+                "lastUsedModel"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "workspaceId",
+          "items"
+        ],
+        "additionalProperties": false
+      },
       "WorkspaceId": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "string",
@@ -117344,5 +117825,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:508855bbd53e91cc16870cab106159e4f2bbd047575be1f79c2e8869ef480fb2"
+  "x-openkit-source-digest": "sha256:4b9601ddd37ef7d8c90d5739f018fe1011e3edd6a7c04667ee9bc9a8741a4abc"
 }

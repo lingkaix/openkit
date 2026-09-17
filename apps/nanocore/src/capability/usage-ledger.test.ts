@@ -7,6 +7,7 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   finishCapabilityCall,
   listWorkspaceCapabilityCalls,
+  readLatestCurrentAgentSessionLlmUsage,
   recordUsage,
   recoverRunningCapabilityCalls,
   startCapabilityCall,
@@ -626,6 +627,120 @@ describe('capability usage ledger', () => {
           workspace_id: 'ws_demo',
         }),
       ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('reads only current-session category llm usage joined to a family llm call', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-current-session-llm-usage-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const current = startCapabilityCall({
+        agentId: 'agent_codex',
+        agentSessionId: 'as_current',
+        authorityActor: { kind: 'user', id: 'user_ledger' },
+        callId: 'cap_current_llm',
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        now: new Date('2026-09-17T02:00:00.000Z'),
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+        requestId: '00000000-0000-4000-8000-000000000301',
+        threadId: 'th_demo',
+        turnId: 'turn_current',
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+      recordUsage({
+        call: current,
+        now: new Date('2026-09-17T02:00:01.000Z'),
+        records: [
+          {
+            category: 'llm',
+            modelId: 'openai/gpt-current',
+            quantity: 3,
+            unit: 'tokens',
+            usageId: 'use_current_llm',
+          },
+        ],
+        workspaceDb,
+      });
+      const predecessor = startCapabilityCall({
+        agentId: 'agent_codex',
+        agentSessionId: 'as_predecessor',
+        authorityActor: { kind: 'user', id: 'user_ledger' },
+        callId: 'cap_predecessor_llm',
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        now: new Date('2026-09-17T02:00:02.000Z'),
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+        requestId: '00000000-0000-4000-8000-000000000302',
+        threadId: 'th_demo',
+        turnId: 'turn_predecessor',
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+      recordUsage({
+        call: predecessor,
+        now: new Date('2026-09-17T02:00:03.000Z'),
+        records: [
+          {
+            category: 'llm',
+            modelId: 'openai/gpt-predecessor',
+            quantity: 5,
+            unit: 'tokens',
+            usageId: 'use_predecessor_llm',
+          },
+        ],
+        workspaceDb,
+      });
+      const mismatchedFamily = startCapabilityCall({
+        agentId: 'agent_codex',
+        agentSessionId: 'as_current',
+        authorityActor: { kind: 'user', id: 'user_ledger' },
+        callId: 'cap_current_mcp',
+        capabilityId: 'mcp.call',
+        family: 'mcp',
+        now: new Date('2026-09-17T02:00:04.000Z'),
+        operation: 'mcp.call_tool',
+        redactionClass: 'metadata-only',
+        requestId: '00000000-0000-4000-8000-000000000303',
+        threadId: 'th_demo',
+        turnId: 'turn_current',
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+      recordUsage({
+        call: mismatchedFamily,
+        now: new Date('2026-09-17T02:00:05.000Z'),
+        records: [
+          {
+            category: 'llm',
+            modelId: 'openai/gpt-mcp-family',
+            quantity: 1,
+            unit: 'tokens',
+            usageId: 'use_current_mcp_family',
+          },
+        ],
+        workspaceDb,
+      });
+
+      expect(
+        readLatestCurrentAgentSessionLlmUsage(workspaceDb, {
+          agentSessionId: 'as_current',
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        })
+      ).toEqual({
+        capabilityCallId: 'cap_current_llm',
+        modelId: 'openai/gpt-current',
+        recordedAt: '2026-09-17T02:00:01.000Z',
+        turnId: 'turn_current',
+      });
     } finally {
       workspaceDb.sqlite.close();
     }
