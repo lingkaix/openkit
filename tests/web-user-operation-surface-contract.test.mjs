@@ -48,6 +48,7 @@ const WEB_OPERATION_GROUPS = {
     listWorkspaceWorkers: { disposition: 'workflow', surface: 'Agents' },
   },
   Administration: {
+    applyAdministrationConfiguration: { disposition: 'workflow', surface: 'Administration' },
     getWorkerEnvironmentStatus: { disposition: 'live', surface: 'Administration' },
     listWorkerEnvironments: { disposition: 'live', surface: 'Administration' },
     purgeWorkerEnvironment: { disposition: 'live', surface: 'Administration' },

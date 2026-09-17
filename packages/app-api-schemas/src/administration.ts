@@ -44,6 +44,20 @@ export const ProposeAdministrationConfigurationRequestSchema = z
   })
   .strict();
 
+/** Immutable private Artifact body shared by proposal, human review and application. */
+export const ConfigurationCandidateArtifactSchema =
+  ProposeAdministrationConfigurationRequestSchema.extend({
+    kind: z.literal('administration-configuration-candidate'),
+    before: z.record(z.string(), z.unknown()),
+    after: z.record(z.string(), z.unknown()),
+    restartRequired: z.boolean(),
+    command: z.literal('administration.configuration.apply'),
+    operation: z.literal('update'),
+  }).strict();
+
+/** Exact catalog preview; configuration authority remains with the server owner. */
+export type ConfigurationCandidateArtifact = z.infer<typeof ConfigurationCandidateArtifactSchema>;
+
 /** Human command confirming the exact immutable candidate shown in the private Thread. */
 export const ApplyAdministrationConfigurationRequestSchema = z
   .object({

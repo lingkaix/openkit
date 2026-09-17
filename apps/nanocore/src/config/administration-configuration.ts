@@ -5,6 +5,7 @@ import {
   ApplyAdministrationConfigurationRequestSchema,
   type ApplyAdministrationConfigurationResponse,
   ApplyAdministrationConfigurationResponseSchema,
+  ConfigurationCandidateArtifactSchema,
   type ProposeAdministrationConfigurationRequest,
   ProposeAdministrationConfigurationRequestSchema,
 } from '@openkit/app-api-schemas';
@@ -46,14 +47,6 @@ const gatewayChanges = z
     defaultLogicalModelId: z.string().min(1).optional(),
   })
   .strict();
-const candidateBodySchema = ProposeAdministrationConfigurationRequestSchema.extend({
-  kind: z.literal('administration-configuration-candidate'),
-  before: z.record(z.string(), z.unknown()),
-  after: z.record(z.string(), z.unknown()),
-  restartRequired: z.boolean(),
-  command: z.literal('administration.configuration.apply'),
-  operation: z.literal('update'),
-}).strict();
 
 /** Shared private catalog candidate dependencies; the file service remains the only writer. */
 export interface AdministrationConfigurationOptions {
@@ -221,7 +214,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       requireHome(home.threadId, home.turnId);
       const request = ProposeAdministrationConfigurationRequestSchema.parse(unsafeRequest);
       const prepared = prepare(request);
-      const body = candidateBodySchema.parse({
+      const body = ConfigurationCandidateArtifactSchema.parse({
         ...request,
         changes: prepared.changes,
         kind: 'administration-configuration-candidate',
@@ -254,7 +247,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         digest(artifact.content.body) !== artifact.contentDigest
       )
         fail('configuration_candidate_conflict');
-      const body = candidateBodySchema.parse(JSON.parse(artifact.content.body));
+      const body = ConfigurationCandidateArtifactSchema.parse(JSON.parse(artifact.content.body));
       const outcomeId = `artifact_configuration_result_${digest(JSON.stringify({ userId: actor.userId, request })).slice(7)}`;
       return runIdempotentCommand({
         store,

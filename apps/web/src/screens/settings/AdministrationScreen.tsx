@@ -1,4 +1,5 @@
 import type {
+  ApplyAdministrationConfigurationResponse,
   GetWorkerEnvironmentStatusResponse,
   PrepareWorkerEnvironmentRequest,
   PrepareWorkerEnvironmentResponse,
@@ -8,6 +9,8 @@ import type {
   WorkerEnvironmentSummary,
 } from '@openkit/app-api-schemas';
 import {
+  ApplyAdministrationConfigurationResponseSchema,
+  ConfigurationCandidateArtifactSchema,
   PrepareWorkerEnvironmentRequestSchema,
   WorkerEnvironmentAuthoredCandidateArtifactSchema,
   WorkerEnvironmentResolvedCandidateArtifactSchema,
@@ -43,6 +46,10 @@ import {
   useWorkspaces,
 } from '../chat/data';
 import { ThreadStream } from '../chat/ThreadStream';
+import {
+  AdministrationConfigurationReview,
+  type ConfigurationCandidate,
+} from './AdministrationConfigurationReview';
 
 const administrationKeys = {
   access: ['settings', 'administration', 'access'] as const,
@@ -131,7 +138,7 @@ export function AdministrationScreen() {
   const candidateFingerprint = artifactReferences
     .map((item) => `${item.artifactId}:${item.artifactVersion}`)
     .join('|');
-  const environmentCandidate = useQuery({
+  const threadCandidates = useQuery({
     queryKey: [
       'settings',
       'administration',
@@ -141,7 +148,7 @@ export function AdministrationScreen() {
       candidateFingerprint,
     ],
     queryFn: () =>
-      discoverEnvironmentCandidate(
+      discoverAdministrationCandidates(
         client,
         quickChat?.id as string,
         threadId as string,
@@ -265,15 +272,30 @@ export function AdministrationScreen() {
             </form>
           </section>
 
+          {threadCandidates.data?.configuration && quickChat && threadId ? (
+            <AdministrationConfigurationReview
+              key={`${quickChat.id}:${threadId}:${threadCandidates.data.configuration.candidate.artifactId}:${threadCandidates.data.configuration.candidate.artifactVersion}:${threadCandidates.data.configuration.candidate.contentDigest}`}
+              candidate={threadCandidates.data.configuration}
+              confirmationBlocked={
+                connection.failed ||
+                threadCandidates.isError ||
+                administrationItems.isError ||
+                !administrationThread.isSuccess
+              }
+              threadId={threadId}
+              workspaceId={quickChat.id}
+            />
+          ) : null}
+
           <WorkerEnvironmentSection
             key={workspaceId ?? 'no-workspace'}
             administrationThreadId={threadId}
             administrationWorkspaceId={quickChat?.id ?? null}
-            candidate={environmentCandidate.data ?? null}
-            candidateError={environmentCandidate.isError}
-            candidateLoading={environmentCandidate.isLoading && artifactReferences.length > 0}
+            candidate={threadCandidates.data?.environment ?? null}
+            candidateError={threadCandidates.isError}
+            candidateLoading={threadCandidates.isLoading && artifactReferences.length > 0}
             disconnected={connection.failed}
-            onRetryCandidate={() => void environmentCandidate.refetch()}
+            onRetryCandidate={() => void threadCandidates.refetch()}
             workspaceId={workspaceId}
             workspaceName={workspace?.name ?? null}
           />
@@ -1136,14 +1158,19 @@ function formatBytes(bytes: number): string {
   }).format(bytes);
 }
 
-/** Finds the newest unresolved authored or resolved candidate in one private Thread. */
-async function discoverEnvironmentCandidate(
+/** Finds newest environment and catalog candidates from one authorized private Thread read. */
+async function discoverAdministrationCandidates(
   client: CoreClient,
   workspaceId: string,
   threadId: string,
   references: readonly { artifactId: string; artifactVersion: number }[]
-): Promise<EnvironmentCandidate | null> {
+): Promise<{
+  configuration: ConfigurationCandidate | null;
+  environment: EnvironmentCandidate | null;
+}> {
   const candidates: EnvironmentCandidate[] = [];
+  const outcomes: ApplyAdministrationConfigurationResponse[] = [];
+  let configuration: ConfigurationCandidate | null = null;
   for (const reference of references.toReversed()) {
     const artifact = await client.core.getArtifact(workspaceId, reference.artifactId);
     if (
@@ -1190,18 +1217,46 @@ async function discoverEnvironmentCandidate(
     const authored = WorkerEnvironmentAuthoredCandidateArtifactSchema.safeParse(content);
     if (authored.success) {
       candidates.push({ details: authored.data, kind: 'authored', recoverFrom: artifactRef });
+      continue;
     }
+    const catalog = ConfigurationCandidateArtifactSchema.safeParse(content);
+    if (catalog.success) {
+      if (!configuration) {
+        configuration = { candidate: artifactRef, details: catalog.data, outcome: null };
+      }
+      continue;
+    }
+    const outcome = ApplyAdministrationConfigurationResponseSchema.safeParse(content);
+    if (outcome.success) outcomes.push(outcome.data);
   }
+  if (configuration) {
+    const selected = configuration;
+    const recorded =
+      outcomes.find(
+        (outcome) =>
+          outcome.candidate.artifactId === selected.candidate.artifactId &&
+          outcome.candidate.artifactVersion === selected.candidate.artifactVersion &&
+          outcome.candidate.contentDigest === selected.candidate.contentDigest
+      ) ?? null;
+    configuration = { ...selected, outcome: recorded };
+  }
+  let environment: EnvironmentCandidate | null = null;
   for (const candidate of candidates) {
-    if (candidate.kind === 'resolved') return candidate;
+    if (candidate.kind === 'resolved') {
+      environment = candidate;
+      break;
+    }
     const alreadyResolved = candidates.some(
       (other) =>
         other.kind === 'resolved' &&
         sameCandidateRef(other.details.authoredCandidate, candidate.recoverFrom)
     );
-    if (!alreadyResolved) return candidate;
+    if (!alreadyResolved) {
+      environment = candidate;
+      break;
+    }
   }
-  return null;
+  return { configuration, environment };
 }
 
 function preparedCandidateFromResponse(

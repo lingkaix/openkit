@@ -1,4 +1,7 @@
-import { workerEnvironmentActivationConfirmation } from '@openkit/app-api-schemas';
+import {
+  ApplyAdministrationConfigurationRequestSchema,
+  workerEnvironmentActivationConfirmation,
+} from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
@@ -161,6 +164,82 @@ const AUTHORED_ARTIFACT = {
   content: { format: 'json', body: JSON.stringify(AUTHORED_PAYLOAD) },
   contentDigest: AUTHORED_CANDIDATE.contentDigest,
 } as const;
+const CONFIG_CANDIDATE = {
+  artifactId: 'artifact_configuration',
+  artifactVersion: 1 as const,
+  contentDigest: `sha256:${'9'.repeat(64)}`,
+};
+const CONFIG_PAYLOAD = {
+  after: { displayName: 'OpenAI production', models: ['gpt-4'] },
+  before: { displayName: 'OpenAI', models: ['gpt-4'] },
+  changes: { displayName: 'OpenAI production' },
+  command: 'administration.configuration.apply',
+  expectedRevision: CONFIG_REVISION,
+  kind: 'administration-configuration-candidate',
+  operation: 'update',
+  restartRequired: true,
+  targetFamily: 'provider',
+  targetId: 'openai',
+} as const;
+const CONFIG_ITEM = {
+  ...CANDIDATE_ITEM,
+  id: 'item_configuration',
+  artifactId: CONFIG_CANDIDATE.artifactId,
+  artifactVersion: CONFIG_CANDIDATE.artifactVersion,
+  title: 'Administration configuration candidate',
+} as const;
+const CONFIG_ARTIFACT = {
+  ...CANDIDATE_ARTIFACT,
+  id: CONFIG_CANDIDATE.artifactId,
+  title: CONFIG_ITEM.title,
+  version: CONFIG_CANDIDATE.artifactVersion,
+  content: { format: 'json', body: JSON.stringify(CONFIG_PAYLOAD) },
+  contentDigest: CONFIG_CANDIDATE.contentDigest,
+} as const;
+const CONFIG_CANDIDATE_B = {
+  artifactId: 'artifact_configuration_b',
+  artifactVersion: 1 as const,
+  contentDigest: `sha256:${'6'.repeat(64)}`,
+};
+const CONFIG_ITEM_B = {
+  ...CONFIG_ITEM,
+  id: 'item_configuration_b',
+  artifactId: CONFIG_CANDIDATE_B.artifactId,
+  artifactVersion: CONFIG_CANDIDATE_B.artifactVersion,
+} as const;
+const CONFIG_ARTIFACT_B = {
+  ...CONFIG_ARTIFACT,
+  id: CONFIG_CANDIDATE_B.artifactId,
+  content: {
+    format: 'json',
+    body: JSON.stringify({
+      ...CONFIG_PAYLOAD,
+      after: { displayName: 'OpenAI staging', models: ['gpt-4'] },
+      changes: { displayName: 'OpenAI staging' },
+    }),
+  },
+  contentDigest: CONFIG_CANDIDATE_B.contentDigest,
+} as const;
+const CONFIG_OUTCOME = {
+  candidate: CONFIG_CANDIDATE,
+  persisted: true,
+  reload: 'failed' as const,
+  restartRequired: true,
+  revision: `sha256:${'8'.repeat(64)}`,
+};
+const CONFIG_OUTCOME_ITEM = {
+  ...CONFIG_ITEM,
+  id: 'item_configuration_outcome',
+  artifactId: 'artifact_configuration_outcome',
+  title: 'Administration configuration result',
+} as const;
+const CONFIG_OUTCOME_ARTIFACT = {
+  ...CONFIG_ARTIFACT,
+  id: CONFIG_OUTCOME_ITEM.artifactId,
+  title: CONFIG_OUTCOME_ITEM.title,
+  content: { format: 'json', body: JSON.stringify(CONFIG_OUTCOME) },
+  contentDigest: `sha256:${'7'.repeat(64)}`,
+} as const;
 
 function makeClient(
   app: Partial<CoreClient['app']> = {},
@@ -169,6 +248,7 @@ function makeClient(
 ): CoreClient {
   return {
     app: {
+      applyAdministrationConfiguration: vi.fn(),
       listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }),
       listWorkerEnvironments: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       ...app,
@@ -208,7 +288,7 @@ function makeClient(
 
 function renderScreen(client: CoreClient) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
         <MemoryRouter>
@@ -217,6 +297,7 @@ function renderScreen(client: CoreClient) {
       </CoreClientProvider>
     </QueryClientProvider>
   );
+  return { queryClient, ...view };
 }
 
 beforeEach(() => {
@@ -686,5 +767,321 @@ describe('Administration', () => {
     expect(await screen.findByText('No environment candidate')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review activation' })).not.toBeInTheDocument();
     expect(getArtifact).toHaveBeenCalledWith(QUICK_CHAT.id, RESOLVED_CANDIDATE.artifactId);
+  });
+
+  it('does not apply a discovered configuration candidate until the administrator confirms it', async () => {
+    const applyAdministrationConfiguration = vi.fn();
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    renderScreen(client);
+
+    expect(await screen.findByText('Prepared configuration change')).toBeInTheDocument();
+    expect(screen.getByText('Ready for review')).toBeInTheDocument();
+    expect(screen.getAllByText('Provider openai').length).toBeGreaterThan(0);
+    expect(screen.getByText(`Base revision ${CONFIG_REVISION}`)).toBeInTheDocument();
+    expect(screen.getByText('Restart required')).toBeInTheDocument();
+    expect(screen.getByText(/"displayName": "OpenAI",/)).toBeInTheDocument();
+    expect(screen.getByText(/"displayName": "OpenAI production"/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Apply configuration' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/candidate id/i)).not.toBeInTheDocument();
+    expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('applies the exact private Thread candidate after human review', async () => {
+    const user = userEvent.setup();
+    const applyAdministrationConfiguration = vi.fn().mockResolvedValue(CONFIG_OUTCOME);
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    renderScreen(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Review configuration' }));
+    expect(screen.getByRole('dialog', { name: 'Apply configuration?' })).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        `Configuration Artifact ${CONFIG_CANDIDATE.artifactId} v1 · ${CONFIG_CANDIDATE.contentDigest}`
+      )
+    ).not.toHaveLength(0);
+    expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
+    await waitFor(() => expect(applyAdministrationConfiguration).toHaveBeenCalledTimes(1));
+    expect(applyAdministrationConfiguration).toHaveBeenCalledWith({
+      candidate: CONFIG_CANDIDATE,
+      confirmation: {
+        action: 'administration.configuration.apply',
+        contentDigest: CONFIG_CANDIDATE.contentDigest,
+      },
+      requestId: expect.any(String),
+    });
+    expect(await screen.findByText('Configuration write persisted')).toBeInTheDocument();
+    expect(screen.getByText('Reload failed')).toBeInTheDocument();
+    expect(screen.getByText('Persisted')).toBeInTheDocument();
+    expect(screen.queryByText('Ready for review')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Reload did not confirm a live configuration. Inspect the persisted revision and prepare a fresh candidate; do not retry this Apply.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review configuration' })).toBeDisabled();
+    expect(applyAdministrationConfiguration).toHaveBeenCalledTimes(1);
+
+    act(() => useWorkspaceStore.getState().setCurrentWorkspaceId(SECOND_PROJECT.id));
+    expect(await screen.findByText('Target Workspace: Project Borealis')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review configuration' })).toBeDisabled();
+    expect(applyAdministrationConfiguration).toHaveBeenCalledTimes(1);
+  });
+
+  it('fences a failed Apply without a retry control', async () => {
+    const user = userEvent.setup();
+    const applyAdministrationConfiguration = vi
+      .fn()
+      .mockRejectedValue(new Error('configuration_candidate_conflict'));
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    renderScreen(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Review configuration' }));
+    await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
+
+    expect(
+      await screen.findByText(
+        'Configuration application could not be confirmed. Inspect persistence and reload, then prepare a fresh candidate.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText('Apply not confirmed')).toBeInTheDocument();
+    expect(screen.queryByText('Ready for review')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review configuration' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
+    expect(applyAdministrationConfiguration).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables configuration review while disconnected without applying', async () => {
+    const applyAdministrationConfiguration = vi.fn();
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+        meta: vi.fn().mockRejectedValue(new Error('down')),
+      }
+    );
+    renderScreen(client);
+
+    expect(await screen.findByText('Prepared configuration change')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Review configuration' })).toBeDisabled()
+    );
+    expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('reuses the exact command after a fresh render without an outcome', async () => {
+    const user = userEvent.setup();
+    const applyAdministrationConfiguration = vi.fn().mockRejectedValue(new Error('unknown result'));
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const view = renderScreen(client);
+      await user.click(await screen.findByRole('button', { name: 'Review configuration' }));
+      await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
+      await waitFor(() =>
+        expect(applyAdministrationConfiguration).toHaveBeenCalledTimes(attempt + 1)
+      );
+      view.unmount();
+    }
+    expect(applyAdministrationConfiguration.mock.calls[1]?.[0]).toEqual(
+      applyAdministrationConfiguration.mock.calls[0]?.[0]
+    );
+    expect(
+      ApplyAdministrationConfigurationRequestSchema.safeParse(
+        applyAdministrationConfiguration.mock.calls[0]?.[0]
+      ).success
+    ).toBe(true);
+  });
+
+  it.each([
+    'connection',
+    'candidate',
+  ])('disables and ignores Apply after %s read failure while the confirmation is open', async (failedRead) => {
+    const user = userEvent.setup();
+    const applyAdministrationConfiguration = vi.fn();
+    let connected = true;
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact: vi
+          .fn()
+          .mockImplementation(() =>
+            !connected && failedRead === 'candidate'
+              ? Promise.reject(new Error('candidate unavailable'))
+              : Promise.resolve(CONFIG_ARTIFACT)
+          ),
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+        meta: vi
+          .fn()
+          .mockImplementation(() =>
+            connected || failedRead !== 'connection'
+              ? Promise.resolve({})
+              : Promise.reject(new Error('down'))
+          ),
+      }
+    );
+    const { queryClient } = renderScreen(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Review configuration' }));
+    expect(screen.getByRole('dialog', { name: 'Apply configuration?' })).toBeInTheDocument();
+    connected = false;
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled()
+    );
+    await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
+    expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('unmounts an open confirmation when the discovered candidate identity changes', async () => {
+    const user = userEvent.setup();
+    const applyAdministrationConfiguration = vi.fn();
+    let items: Array<typeof CONFIG_ITEM | typeof CONFIG_ITEM_B> = [CONFIG_ITEM];
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact: vi
+          .fn()
+          .mockImplementation((_workspaceId, artifactId) =>
+            Promise.resolve(
+              artifactId === CONFIG_CANDIDATE_B.artifactId ? CONFIG_ARTIFACT_B : CONFIG_ARTIFACT
+            )
+          ),
+        listThreadItems: vi.fn().mockImplementation(() => Promise.resolve({ items })),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    const { queryClient } = renderScreen(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Review configuration' }));
+    expect(screen.getByRole('dialog', { name: 'Apply configuration?' })).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        `Configuration Artifact ${CONFIG_CANDIDATE.artifactId} v1 · ${CONFIG_CANDIDATE.contentDigest}`
+      )
+    ).not.toHaveLength(0);
+
+    items = [CONFIG_ITEM_B];
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Apply configuration?' })).not.toBeInTheDocument()
+    );
+    expect(await screen.findByText(/"displayName": "OpenAI staging"/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        `Configuration Artifact ${CONFIG_CANDIDATE.artifactId} v1 · ${CONFIG_CANDIDATE.contentDigest}`
+      )
+    ).not.toBeInTheDocument();
+    expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('shows a recorded apply outcome for the exact candidate on a fresh render', async () => {
+    const applyAdministrationConfiguration = vi.fn();
+    const getArtifact = vi
+      .fn()
+      .mockImplementation((_workspaceId, artifactId) =>
+        Promise.resolve(
+          artifactId === CONFIG_OUTCOME_ITEM.artifactId ? CONFIG_OUTCOME_ARTIFACT : CONFIG_ARTIFACT
+        )
+      );
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact,
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM, CONFIG_OUTCOME_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    renderScreen(client);
+
+    expect(await screen.findByText('Configuration write persisted')).toBeInTheDocument();
+    expect(screen.getByText('Reload failed')).toBeInTheDocument();
+    expect(screen.getByText('Persisted')).toBeInTheDocument();
+    expect(screen.queryByText('Ready for review')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review configuration' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Apply configuration' })).not.toBeInTheDocument();
+    expect(getArtifact).toHaveBeenCalledWith(QUICK_CHAT.id, CONFIG_CANDIDATE.artifactId);
+    expect(getArtifact).toHaveBeenCalledWith(QUICK_CHAT.id, CONFIG_OUTCOME_ITEM.artifactId);
+    expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('ignores a catalog Artifact that is not the authorized private Thread identity', async () => {
+    const applyAdministrationConfiguration = vi.fn();
+    const getArtifact = vi.fn().mockResolvedValue({
+      ...CONFIG_ARTIFACT,
+      threadId: 'thread_other',
+      origin: { ...CONFIG_ARTIFACT.origin, threadId: 'thread_other' },
+    });
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact,
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    renderScreen(client);
+
+    await waitFor(() => expect(getArtifact).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('No environment candidate')).toBeInTheDocument();
+    expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review configuration' })).not.toBeInTheDocument();
+    expect(getArtifact).toHaveBeenCalledWith(QUICK_CHAT.id, CONFIG_CANDIDATE.artifactId);
+    expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('rejects a catalog candidate whose Artifact version differs from its reference Item', async () => {
+    const applyAdministrationConfiguration = vi.fn();
+    const getArtifact = vi.fn().mockResolvedValue({ ...CONFIG_ARTIFACT, version: 2 });
+    const client = makeClient(
+      { applyAdministrationConfiguration },
+      {
+        getArtifact,
+        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    renderScreen(client);
+
+    await waitFor(() => expect(getArtifact).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review configuration' })).not.toBeInTheDocument();
+    expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
   });
 });
