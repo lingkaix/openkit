@@ -40,10 +40,10 @@ test('completes the local Workspace self-check', async ({ page }) => {
     timeout: 15_000,
   });
 
+  await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^General$/ }).click();
   await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
   await expect(page.getByLabel('Display name')).toHaveValue('Story Workspace');
-  await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^Debug$/ }).click();
   await expect(page.getByRole('heading', { name: 'Debug' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Runtime evidence' })).toBeVisible();
