@@ -1,7 +1,38 @@
-import type { ReactNode } from 'react';
+import MarkdownIt from 'markdown-it';
+import { type ReactNode, useMemo } from 'react';
 import { Avatar } from './Avatar';
 import { ChannelTag } from './ChannelTag';
 import type { WorkerHue } from './status';
+
+// Only parser-generated markup reaches the report body: no raw HTML, media, or plugins.
+const reportMarkdown = new MarkdownIt({ html: false, linkify: false, breaks: true });
+reportMarkdown.validateLink = (url) => /^https?:\/\//i.test(url);
+reportMarkdown.renderer.rules.image = (tokens, index) =>
+  reportMarkdown.utils.escapeHtml(tokens[index]?.content ?? '');
+reportMarkdown.renderer.rules.link_open = (tokens, index, options, _env, renderer) => {
+  tokens[index]?.attrSet('target', '_blank');
+  tokens[index]?.attrSet('rel', 'noopener noreferrer');
+  return renderer.renderToken(tokens, index, options);
+};
+for (const rule of ['heading_open', 'heading_close']) {
+  reportMarkdown.renderer.rules[rule] = (tokens, index, options, _env, renderer) => {
+    const token = tokens[index];
+    if (token) token.tag = `h${Math.min(6, Number(token.tag.slice(1)) + 2)}`;
+    return renderer.renderToken(tokens, index, options);
+  };
+}
+// Native focusable overflow regions keep wide report evidence readable with the keyboard.
+for (const rule of ['fence', 'code_block']) {
+  const render = reportMarkdown.renderer.rules[rule];
+  reportMarkdown.renderer.rules[rule] = (tokens, index, options, env, renderer) =>
+    (render?.(tokens, index, options, env, renderer) ?? '').replace(
+      '<pre>',
+      '<pre tabindex="0" role="group" aria-label="Code block">'
+    );
+}
+reportMarkdown.renderer.rules.table_open = () =>
+  '<div class="overflow-x-auto" tabindex="0" role="group" aria-label="Table"><table>';
+reportMarkdown.renderer.rules.table_close = () => '</table></div>';
 
 export interface UserMessageProps {
   /** Canonical display name, or the recorded actor id when unavailable. */
@@ -65,6 +96,10 @@ export function AssistantMessage({
   via,
   children,
 }: AssistantMessageProps) {
+  const report = useMemo(
+    () => (typeof children === 'string' ? reportMarkdown.render(children) : null),
+    [children]
+  );
   return (
     <article
       aria-label={`Message from ${author}`}
@@ -76,7 +111,15 @@ export function AssistantMessage({
         {time ? <span>{time}</span> : null}
         {via ? <ChannelTag channel={via} /> : null}
       </div>
-      <div className="max-w-full whitespace-pre-wrap leading-relaxed text-fg">{children}</div>
+      {report === null ? (
+        <div className="max-w-full whitespace-pre-wrap leading-relaxed text-fg">{children}</div>
+      ) : (
+        <div
+          className="ok-message-report min-w-0 w-full max-w-full leading-relaxed text-fg"
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown-it generates all markup with raw HTML and media disabled; links are HTTP(S) only.
+          dangerouslySetInnerHTML={{ __html: report }}
+        />
+      )}
     </article>
   );
 }

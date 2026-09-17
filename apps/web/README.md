@@ -67,6 +67,7 @@ Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/202607
   The two never overlap.
 - **React Router** — routing.
 - **jsonc-parser** — scanner-only JSONC syntax highlighting for the native configuration textarea; NanoCore remains the parser and validator.
+- **markdown-it** — the parser already supplied by A2UI, directly configured for readable assistant reports. Raw HTML is disabled, images remain escaped text, and only explicit HTTP(S) links are navigable. Human messages and raw evidence remain verbatim; the Web projection does not change API or Skill message text.
 - **A2UI native Chat renderer** — live Thread Items of type `generative-ui-reference` render through official `@a2ui/react@0.11.0` v0.9. The unpublished `/generative` fixture shell remains Tier C.
 - **Iconify + Remix Icon** — icons for the primitive and screen tiers.
 - **Biome** — lint/format (repo-wide config). **Vitest** + Testing Library — unit.

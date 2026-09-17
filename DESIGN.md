@@ -402,7 +402,7 @@ All class names are prefixed `ok-`.
 
 ### 9.1 Conversation items
 - **User message** (`ok-msg-user`): soft sunken bubble, 16px radius, with a name and circular initials avatar. The authenticated human's messages and identity row align right and carry a You marker; other humans align left.
-- **Assistant message** (`ok-msg-assistant`): left-aligned calm *unboxed* flow with a square avatar and a small identity meta row (avatar · author · time · optional `via` channel tag).
+- **Assistant message** (`ok-msg-assistant`): left-aligned calm *unboxed* flow with a square avatar and a small identity meta row (avatar · author · time · optional `via` channel tag). Assistant report text renders Markdown with scoped semantic typography for headings, lists, links, quotes, and code. Headings start below the page heading; wide code and tables scroll within the message. Raw HTML stays literal, images remain text rather than loading external resources, and links cannot execute code. Human messages and raw diagnostic/evidence content remain verbatim; rendering never changes the stored message.
 - **Item card** (`ok-item-card`): soft 10px card for in-stream system events —
   mode transitions, task status, approvals, results. An `ok-item-glyph`
   (informative/notice/positive/neutral) badges its kind. Never louder than needed.

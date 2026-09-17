@@ -133,3 +133,58 @@
     -webkit-font-smoothing: antialiased;
   }
 }
+
+/* Assistant report typography stays local; human messages and evidence are verbatim. */
+@layer components {
+  .ok-message-report > * + * {
+    @apply mt-3;
+  }
+  .ok-message-report :is(h3, h4, h5, h6) {
+    @apply font-bold;
+  }
+  .ok-message-report h3 {
+    @apply text-lg;
+  }
+  .ok-message-report ul {
+    @apply list-disc pl-6;
+  }
+  .ok-message-report ol {
+    @apply list-decimal pl-6;
+  }
+  .ok-message-report li + li,
+  .ok-message-report li > p + p {
+    @apply mt-1;
+  }
+  .ok-message-report blockquote {
+    @apply border-l-2 border-border pl-4 text-fg-muted;
+  }
+  .ok-message-report a {
+    @apply text-accent underline;
+  }
+  .ok-message-report code {
+    @apply rounded-ok-sm bg-sunken px-1 font-mono text-sm;
+  }
+  .ok-message-report pre {
+    @apply max-w-full overflow-x-auto whitespace-pre rounded-ok bg-sunken p-3;
+  }
+  .ok-message-report pre code {
+    @apply rounded-none bg-transparent p-0;
+  }
+  .ok-message-report table {
+    @apply w-full border-collapse text-sm;
+    overflow-wrap: normal;
+  }
+  .ok-message-report th,
+  .ok-message-report td {
+    @apply border border-border px-3 py-2 text-left;
+  }
+  .ok-message-report th {
+    @apply bg-sunken font-bold;
+  }
+  .ok-message-report hr {
+    @apply border-border;
+  }
+  .ok-message-report :is(a, pre, [tabindex]):focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
+  }
+}
