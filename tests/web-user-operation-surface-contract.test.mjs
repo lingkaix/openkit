@@ -3,10 +3,10 @@ import { describe, it } from 'node:test';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 228;
-const EXPECTED_SERVER_SIZE = 49;
+const EXPECTED_CATALOG_SIZE = 242;
+const EXPECTED_SERVER_SIZE = 51;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 177;
+const EXPECTED_INCLUDED_SIZE = 189;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -46,6 +46,12 @@ const WEB_OPERATION_GROUPS = {
     getAgentCatalogEntry: { disposition: 'workflow', surface: 'Agents' },
     listAgentCatalog: { disposition: 'live', surface: 'Agents' },
     listWorkspaceWorkers: { disposition: 'workflow', surface: 'Agents' },
+  },
+  Administration: {
+    getWorkerEnvironmentStatus: { disposition: 'live', surface: 'Administration' },
+    listWorkerEnvironments: { disposition: 'live', surface: 'Administration' },
+    purgeWorkerEnvironment: { disposition: 'live', surface: 'Administration' },
+    submitAdministrationConversation: { disposition: 'live', surface: 'Administration' },
   },
   'App utilities': {
     cancelSchedulerAdmission: { disposition: 'live', surface: 'Recovery' },
@@ -152,6 +158,7 @@ const WEB_OPERATION_GROUPS = {
     cancelGoalSteering: { disposition: 'live', surface: 'Material' },
     convertGoalSteeringToFollowUp: { disposition: 'live', surface: 'Material' },
     createThreadGoalPlan: { disposition: 'live', surface: 'Goal' },
+    getThreadGoalPlan: { disposition: 'live', surface: 'Goal' },
     getThreadGoalSummary: { disposition: 'live', surface: 'Goal' },
     pauseThreadGoal: { disposition: 'live', surface: 'Goal' },
     resumeThreadGoal: { disposition: 'live', surface: 'Goal' },
@@ -187,12 +194,17 @@ const WEB_OPERATION_GROUPS = {
     importWorkspace: { disposition: 'live', surface: 'Portability' },
   },
   Vault: {
+    createWorkspaceVaultGrant: { disposition: 'live', surface: 'Vault backend' },
+    createWorkspaceVaultSecret: { disposition: 'live', surface: 'Vault backend' },
     listWorkspaceVaultGrants: { disposition: 'live', surface: 'Vault' },
     listWorkspaceVaultInjectionPlans: { disposition: 'live', surface: 'Vault' },
     listWorkspaceVaultInjectionReceipts: { disposition: 'live', surface: 'Vault' },
     listWorkspaceVaultReferences: { disposition: 'live', surface: 'Vault' },
     listWorkspaceVaultUseRecords: { disposition: 'live', surface: 'Vault' },
     rebindWorkspaceVaultReference: { disposition: 'live', surface: 'Portability' },
+    revokeWorkspaceVaultGrant: { disposition: 'live', surface: 'Vault backend' },
+    revokeWorkspaceVaultSecret: { disposition: 'live', surface: 'Vault backend' },
+    rotateWorkspaceVaultSecret: { disposition: 'live', surface: 'Vault backend' },
   },
   'Workspace sharing': {
     acceptWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
