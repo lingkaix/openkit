@@ -640,6 +640,9 @@ async function runWorkerShimImplementation(
     if (!options.sessionControlRoot) {
       await rm(controlRoot, { force: true, recursive: true });
     }
+    if (options.nativeTurnDirectory) {
+      await rm(options.nativeTurnDirectory, { force: true, recursive: true });
+    }
     throw error;
   }
   let controlSession: WorkerControlClient | null = null;

@@ -17,6 +17,18 @@
     {
       "file": "rollout-child-0001.jsonl",
       "sha256": "67e3f36cadba2ab9fcb719baaccf6c25c916a9cebf2d08e27bdd48201957d759"
+    },
+    {
+      "file": "unknown-model-fallback-prompt.md",
+      "sha256": "3b08633fa672906666659d764864dfda1d7af5b5111ea5817c8f46e5de4e1a8d",
+      "upstreamPath": "codex-rs/models-manager/prompt.md",
+      "upstreamSha256": "ac8ae107a0d72fe3476b430afb161ea4e67da2e446d778aefc44828160559807",
+      "transform": "Remove the ## Planning and ## `update_plan` sections, preserving all other bytes, as codex-rs/core/src/context/update_plan_instructions.rs does for this pinned prompt with default update_plan disabled."
+    },
+    {
+      "file": "bundled-models.json",
+      "upstreamPath": "codex-rs/models-manager/models.json",
+      "sha256": "d7136a413cfac1b5b1686d9e0dcc5c80ca05bebed5e9fc3911376561d0ef6ee8"
     }
   ]
 }

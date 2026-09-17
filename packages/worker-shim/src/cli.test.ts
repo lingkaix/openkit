@@ -2576,10 +2576,91 @@ describe('worker shim CLI parsing', () => {
     expect(existsSync(stateRoot)).toBe(false);
   });
 
-  it('removes native state created by adapter preparation before preparation fails', async () => {
+  it.each([
+    'completed',
+    'failed',
+    'interrupted',
+  ] as const)('cleans the Codex Turn catalog after %s while retaining native state', async (status) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-codex-catalog-terminal-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const stateRoot = join(sessionDir, 'retained-home');
+    const controlRoot = join(sessionDir, 'retained-control');
+    const nativeTurnDirectory = join(sessionDir, 'turn-private');
+    const catalogPath = join(nativeTurnDirectory, 'model-catalog.json');
+    const canaryPath = join(stateRoot, 'retained-canary');
+    mkdirSync(stateRoot, { recursive: true });
+    mkdirSync(controlRoot, { recursive: true });
+    writeRawFileSync(canaryPath, 'retain across turns', 'utf8');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: { adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' } },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+    const abort = new AbortController();
+    const runner = new FakeWorkerProcessRunner(
+      {
+        exitCode: status === 'completed' ? 0 : status === 'failed' ? 1 : null,
+        signal: status === 'interrupted' ? 'SIGTERM' : null,
+        stderr: '',
+        stdout: `{"type":"thread.started","thread_id":"${CODEX_TEST_UUID}"}\n`,
+      },
+      () => {
+        expect(JSON.parse(readFileSync(catalogPath, 'utf8')).models).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ slug: 'gpt-5', apply_patch_tool_type: 'freeform' }),
+          ])
+        );
+        const rolloutDir = join(stateRoot, 'sessions', '2026', '07', '13');
+        mkdirSync(rolloutDir, { recursive: true });
+        writeRawFileSync(
+          join(rolloutDir, `rollout-${CODEX_TEST_UUID}.jsonl`),
+          `${JSON.stringify({
+            type: 'session_meta',
+            timestamp: '2026-07-13T00:00:00.000Z',
+            payload: {
+              id: CODEX_TEST_UUID,
+              session_id: CODEX_TEST_UUID,
+              cli_version: '0.153.4',
+              cwd: sessionDir,
+              originator: 'codex_exec',
+              source: 'exec',
+              timestamp: '2026-07-13T00:00:00.000Z',
+            },
+          })}\n`,
+          'utf8'
+        );
+        if (status === 'interrupted') abort.abort();
+      }
+    );
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: workerShimEnvironment(),
+        nativeTurnDirectory,
+        sessionStateRoot: stateRoot,
+        sessionControlRoot: controlRoot,
+        signal: abort.signal,
+        runner,
+      })
+    ).resolves.toMatchObject({ status });
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.env.CODEX_HOME).toBe(stateRoot);
+    expect(existsSync(nativeTurnDirectory)).toBe(false);
+    expect(readFileSync(canaryPath, 'utf8')).toBe('retain across turns');
+  });
+
+  it.each([
+    false,
+    true,
+  ])('cleans failed preparation Turn files with retained state %s', async (retained) => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-prepare-state-failure-'));
     const packagePath = join(sessionDir, 'package.json');
     const stateRoot = join(sessionDir, 'native-state');
+    const nativeTurnDirectory = join(sessionDir, 'turn-private');
+    const controlRoot = join(sessionDir, 'native-control');
     const eventsPath = join(sessionDir, 'events.jsonl');
     const itemsPath = join(sessionDir, 'items.jsonl');
     const artifactsPath = join(sessionDir, 'artifacts.jsonl');
@@ -2592,6 +2673,8 @@ describe('worker shim CLI parsing', () => {
       expect(readFileSync(artifactsPath, 'utf8')).toBe('');
       mkdirSync(root, { recursive: true });
       writeRawFileSync(join(root, 'partial-state'), 'partial', 'utf8');
+      mkdirSync(nativeTurnDirectory, { recursive: true });
+      writeRawFileSync(join(nativeTurnDirectory, 'model-catalog.json'), '{}', 'utf8');
       throw new Error('fixture-prepare-failed');
     };
     writeFileSync(
@@ -2611,6 +2694,8 @@ describe('worker shim CLI parsing', () => {
       runWorkerShim({
         args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
         environment: workerShimEnvironment(),
+        nativeTurnDirectory,
+        ...(retained ? { sessionStateRoot: stateRoot, sessionControlRoot: controlRoot } : {}),
         runner: new FakeWorkerProcessRunner({
           exitCode: 0,
           signal: null,
@@ -2619,7 +2704,11 @@ describe('worker shim CLI parsing', () => {
         }),
       })
     ).rejects.toThrow('fixture-prepare-failed');
-    expect(existsSync(stateRoot)).toBe(false);
+    expect(existsSync(nativeTurnDirectory)).toBe(false);
+    expect(existsSync(stateRoot)).toBe(retained);
+    if (retained) {
+      expect(readFileSync(join(stateRoot, 'partial-state'), 'utf8')).toBe('partial');
+    }
     expect(readFileSync(eventsPath, 'utf8')).toBe('');
     expect(readFileSync(itemsPath, 'utf8')).toBe('');
     expect(readFileSync(artifactsPath, 'utf8')).toBe('');

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // openkit-test-platform: posix
 import {
   existsSync,
@@ -14,6 +15,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkerAdapterPrepareInput, WorkerNativeProcessResult } from '../adapter-registry.js';
 import { codexAdapter } from './codex.js';
+import { loadCodexUnknownModelFallbackPrompt } from './codex-unknown-model-catalog.js';
 
 const NATIVE_OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
 const TEST_THREAD_ID = '019f0000-0000-7000-8000-000000000099';
@@ -113,6 +115,31 @@ function writeRootRollout(stateRoot: string, threadId: string): void {
   );
 }
 
+/** Resolves the startup-bound native catalog path from one Codex launch plan. */
+function catalogPathFromArgv(argv: readonly string[]): string {
+  for (let index = 0; index < argv.length - 1; index += 1) {
+    const override = argv[index + 1];
+    if (argv[index] === '-c' && override?.startsWith('model_catalog_json=')) {
+      return JSON.parse(override.slice('model_catalog_json='.length)) as string;
+    }
+  }
+  throw new Error('Codex launch plan is missing model_catalog_json.');
+}
+
+/** Reads the secret-free native catalog bound into one Codex launch plan. */
+function readBoundCatalog(argv: readonly string[]): {
+  catalog: { models: Array<Record<string, unknown>> };
+  path: string;
+} {
+  const path = catalogPathFromArgv(argv);
+  return {
+    catalog: JSON.parse(readFileSync(path, 'utf8')) as {
+      models: Array<Record<string, unknown>>;
+    },
+    path,
+  };
+}
+
 /** Supplies the native conversation proof required by a successful continuity Turn. */
 async function collectTestTurn(
   input: WorkerAdapterPrepareInput,
@@ -188,7 +215,10 @@ describe('Codex worker adapter', () => {
       nativeHandleState: 'ready',
     });
 
-    const resumedPlan = await codexAdapter.prepareTurn(first);
+    const resumedPlan = await codexAdapter.prepareTurn({
+      ...first,
+      nativeTurnDirectory: join(first.sessionDirectory, 'second-turn'),
+    });
     const resumeIndex = resumedPlan.argv.indexOf('resume');
     expect(resumedPlan.argv[resumeIndex + 1]).toBe('--json');
     expect(resumedPlan.argv.at(-2)).toBe(threadId);
@@ -262,6 +292,8 @@ describe('Codex worker adapter', () => {
       '-c',
       'skills.bundled.enabled=false',
       '-c',
+      `model_catalog_json=${JSON.stringify(join(input.controlRoot, 'model-catalog.json'))}`,
+      '-c',
       'model_provider="openkit-worker-inference"',
       '-c',
       'web_search="disabled"',
@@ -287,6 +319,109 @@ describe('Codex worker adapter', () => {
     expect(plan.environment.CODEX_HOME).toContain(input.stateRoot);
     expect(plan.argv).not.toContain('openshell-placeholder-value');
     expect(plan).not.toHaveProperty('configArtifacts');
+  });
+
+  it.each([
+    'file',
+    'symlink',
+  ])('rejects an existing catalog %s without changing its target', async (kind) => {
+    const input = codexInput();
+    const nativeTurnDirectory = join(input.sessionDirectory, 'private-turn');
+    mkdirSync(nativeTurnDirectory, { recursive: true });
+    const target = join(input.sessionDirectory, 'unrelated.txt');
+    const catalog = join(nativeTurnDirectory, 'model-catalog.json');
+    writeFileSync(target, 'preserve-me');
+    if (kind === 'symlink') symlinkSync(target, catalog);
+    else writeFileSync(catalog, 'stale-catalog');
+    await expect(codexAdapter.prepareTurn({ ...input, nativeTurnDirectory })).rejects.toMatchObject(
+      { code: 'EEXIST' }
+    );
+    expect(readFileSync(target, 'utf8')).toBe('preserve-me');
+    expect(readFileSync(catalog, 'utf8')).toBe(
+      kind === 'symlink' ? 'preserve-me' : 'stale-catalog'
+    );
+  });
+
+  it('leaves pinned bundled catalog matches without a generated descriptor', async () => {
+    const input = codexInput();
+    for (const model of ['gpt-6-astra', 'gpt-5.2', 'gpt-5.2-codex', 'custom/gpt-5.4'] as const) {
+      const plan = await codexAdapter.prepareTurn({
+        ...input,
+        llmRoute: { ...input.llmRoute, model },
+      });
+      expect(plan.argv.some((argument) => argument.startsWith('model_catalog_json='))).toBe(false);
+      expect(plan.argv[plan.argv.indexOf('--model') + 1]).toBe(model);
+    }
+    expect(existsSync(join(input.controlRoot, 'model-catalog.json'))).toBe(false);
+  });
+
+  it('binds a Turn-private unknown-model catalog with freeform apply_patch at first exec and UUID resume', async () => {
+    const input = codexInput();
+    const nativeTurnDirectory = join(input.sessionDirectory, 'turns', 'native-turn');
+    const prepared = {
+      ...input,
+      nativeTurnDirectory,
+    };
+    mkdirSync(prepared.controlRoot, { recursive: true });
+    const firstPlan = await codexAdapter.prepareTurn(prepared);
+    const firstCatalog = readBoundCatalog(firstPlan.argv);
+    const serialized = JSON.stringify(firstCatalog.catalog);
+    const [model] = firstCatalog.catalog.models;
+
+    expect(firstPlan.argv).not.toContain('resume');
+    expect(firstCatalog.path).toBe(join(nativeTurnDirectory, 'model-catalog.json'));
+    expect(existsSync(join(prepared.stateRoot, 'model-catalog.json'))).toBe(false);
+    expect(existsSync(join(prepared.controlRoot, 'model-catalog.json'))).toBe(false);
+    const bundled = JSON.parse(
+      readFileSync(
+        new URL('../../snapshots/codex-0.153.4/bundled-models.json', import.meta.url),
+        'utf8'
+      )
+    );
+    expect(firstCatalog.catalog.models.slice(1)).toEqual(bundled.models);
+    expect(model).toMatchObject({
+      apply_patch_tool_type: 'freeform',
+      base_instructions: loadCodexUnknownModelFallbackPrompt(),
+      context_window: 272_000,
+      description: null,
+      display_name: 'gpt-5',
+      experimental_supported_tools: [],
+      include_apps_usage_instructions: false,
+      max_context_window: 272_000,
+      priority: 99,
+      shell_type: 'unified_exec',
+      slug: 'gpt-5',
+      support_verbosity: false,
+      supported_in_api: true,
+      supported_reasoning_levels: [],
+      truncation_policy: { limit: 10_000, mode: 'bytes' },
+      visibility: 'none',
+    });
+    expect(createHash('sha256').update(String(model?.base_instructions)).digest('hex')).toBe(
+      '3b08633fa672906666659d764864dfda1d7af5b5111ea5817c8f46e5de4e1a8d'
+    );
+    expect(model).not.toHaveProperty('model_messages');
+    expect(serialized).not.toContain(prepared.childEnvironment.OPENKIT_WORKER_INFERENCE_TOKEN);
+    expect(serialized).not.toContain('openkit-worker-inference');
+    expect(JSON.stringify(model)).not.toContain('GPT-6-Astra');
+    expect(firstPlan.argv[firstPlan.argv.indexOf('--model') + 1]).toBe('gpt-5');
+
+    writeFileSync(
+      firstPlan.argv[firstPlan.argv.indexOf('--output-last-message') + 1] as string,
+      'First answer.',
+      'utf8'
+    );
+    await collectTestTurn(prepared, firstPlan, nativeResult());
+    const resumedPlan = await codexAdapter.prepareTurn({
+      ...prepared,
+      nativeTurnDirectory: join(input.sessionDirectory, 'turns', 'next-turn'),
+    });
+    const resumedCatalog = readBoundCatalog(resumedPlan.argv);
+
+    expect(resumedPlan.argv).toContain('resume');
+    expect(resumedPlan.argv.at(-2)).toBe(TEST_THREAD_ID);
+    expect(resumedCatalog.path).not.toBe(firstCatalog.path);
+    expect(resumedCatalog.catalog).toEqual(firstCatalog.catalog);
   });
 
   it('projects selected MCP servers through fixed authenticated loopback URLs', async () => {
@@ -423,7 +558,8 @@ describe('Codex worker adapter', () => {
   });
 
   it('removes a stale final message before preparing a reused session', async () => {
-    const input = codexInput();
+    const original = codexInput();
+    const input = { ...original, llmRoute: { ...original.llmRoute, model: 'gpt-6-astra' } };
     mkdirSync(input.sessionDirectory, { recursive: true });
     const firstPlan = await codexAdapter.prepareTurn(input);
     const finalPath = firstPlan.argv[firstPlan.argv.indexOf('--output-last-message') + 1];

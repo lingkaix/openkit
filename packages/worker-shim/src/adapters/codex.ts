@@ -25,6 +25,11 @@ import {
   CodexRuntimeProvenanceCapture,
   proveCodexNativeConversation,
 } from '../codex-runtime-provenance.js';
+import {
+  buildCodexUnknownModelCatalogJson,
+  CODEX_UNKNOWN_MODEL_CATALOG_FILE,
+  hasPinnedCodexModelMetadata,
+} from './codex-unknown-model-catalog.js';
 
 /** Maximum accepted Codex final-message size. */
 const FINAL_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
@@ -150,6 +155,17 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
       throw error;
     }
   });
+  const catalogArgs: string[] = [];
+  if (!hasPinnedCodexModelMetadata(input.llmRoute.model)) {
+    const catalogRoot = input.nativeTurnDirectory ?? input.controlRoot;
+    await mkdir(catalogRoot, { mode: 0o700, recursive: true });
+    const catalogPath = join(catalogRoot, CODEX_UNKNOWN_MODEL_CATALOG_FILE);
+    await writeFile(catalogPath, buildCodexUnknownModelCatalogJson(input.llmRoute.model), {
+      flag: 'wx',
+      mode: 0o600,
+    });
+    catalogArgs.push('-c', `model_catalog_json=${quoteTomlString(catalogPath)}`);
+  }
   const provenance = input.runtimeProvenance
     ? new CodexRuntimeProvenanceCapture({
         adapterVersion: '0.153.4',
@@ -188,6 +204,7 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
       ...cwdArgs,
       '-c',
       'skills.bundled.enabled=false',
+      ...catalogArgs,
       '-c',
       `model_provider=${quoteTomlString(RELAY_PROVIDER_ID)}`,
       '-c',

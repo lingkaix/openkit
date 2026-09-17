@@ -69,6 +69,7 @@
       "!apps/nanocore/openapi/app-api.openapi.json",
       "!apps/nanocore/openapi/oas-3.1-schema-2022-10-07.json",
       "!packages/models-dev-catalog/snapshots/**/api.json",
+      "!packages/worker-shim/snapshots/codex-0.153.4/bundled-models.json",
       "!**/packages/protocol/generated",
       "!**/packages/codex-app-server-schema/generated-schema",
       "!**/*.min.js",
