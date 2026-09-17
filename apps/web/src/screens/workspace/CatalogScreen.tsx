@@ -326,10 +326,10 @@ export function CatalogScreen() {
                 aria-label="Skill folder files"
                 disabled={writeBlocked || importSkill.isPending || !skillName.trim()}
                 onChange={(event) => {
-                  const files = event.target.files;
+                  const files = Array.from(event.target.files ?? []);
                   event.target.value = '';
                   setSkillTreeError(null);
-                  if (!files?.length || !workspaceId || writeBlocked || !skillName.trim()) return;
+                  if (!files.length || !workspaceId || writeBlocked || !skillName.trim()) return;
                   void filesToCatalogTree(files).then(
                     (tree) => {
                       importSkill.mutate({
@@ -396,12 +396,12 @@ export function CatalogScreen() {
                 className="sr-only"
                 aria-label="Skill candidate folder files"
                 onChange={(event) => {
-                  const files = event.target.files;
+                  const files = Array.from(event.target.files ?? []);
                   const skillId = candidateSkillId;
                   event.target.value = '';
                   setCandidateSkillId(null);
                   setSkillTreeError(null);
-                  if (!files?.length || !workspaceId || writeBlocked || !skillId) return;
+                  if (!files.length || !workspaceId || writeBlocked || !skillId) return;
                   const skill = summary?.skills.find((entry) => entry.id === skillId);
                   void filesToCatalogTree(files).then(
                     (tree) => {
@@ -673,9 +673,9 @@ export function CatalogScreen() {
               className="sr-only"
               aria-label="Plugin package files"
               onChange={(event) => {
-                const files = event.target.files;
+                const files = Array.from(event.target.files ?? []);
                 event.target.value = '';
-                if (!files?.length || !workspaceId || writeBlocked) return;
+                if (!files.length || !workspaceId || writeBlocked) return;
                 void filesToCatalogTree(files).then((tree) => {
                   importPlugin.mutate({
                     workspaceId,
@@ -737,14 +737,13 @@ function mutationMessage(error: unknown, fallback: string): string {
 
 /** Converts a selected folder file list into a catalog tree, stripping the top folder. Browser File API listings omit empty directories and executable bits; this projection does not invent them. */
 async function filesToCatalogTree(
-  files: FileList
+  files: readonly File[]
 ): Promise<Array<{ contentBase64?: string; kind: 'directory' | 'file'; path: string }>> {
-  const listed = [...files];
-  const relativePaths = listed.map((file) => relativePluginPath(file));
+  const relativePaths = files.map((file) => relativePluginPath(file));
   const prefix = commonPluginPrefix(relativePaths);
   const tree: Array<{ contentBase64?: string; kind: 'directory' | 'file'; path: string }> = [];
   const directories = new Set<string>();
-  for (const [index, file] of listed.entries()) {
+  for (const [index, file] of files.entries()) {
     const relative = stripPluginPrefix(relativePaths[index] ?? file.name, prefix);
     if (!relative) continue;
     const parts = relative.split('/');

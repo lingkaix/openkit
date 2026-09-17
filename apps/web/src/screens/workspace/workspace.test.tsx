@@ -1892,6 +1892,34 @@ function catalogRelativeFile(content: string, relativePath: string) {
   return file;
 }
 
+/**
+ * Installs a live FileList that empties in place when the input value is cleared,
+ * matching native directory inputs. Static userEvent FileList mocks do not.
+ */
+function bindLiveDirectoryFiles(input: HTMLInputElement, selected: File[]) {
+  const files = [...selected];
+  Object.defineProperty(input, 'files', {
+    configurable: true,
+    get: () => files,
+  });
+  Object.defineProperty(input, 'value', {
+    configurable: true,
+    get: () => (files[0] ? `C:\\fakepath\\${files[0].name}` : ''),
+    set(next: string) {
+      if (next === '') files.length = 0;
+    },
+  });
+}
+
+/** Dispatches change with a native-like live FileList, then flushes file reads. */
+async function changeLiveDirectoryFiles(input: HTMLInputElement, selected: File[]) {
+  bindLiveDirectoryFiles(input, selected);
+  await act(async () => {
+    fireEvent.change(input);
+    await Promise.all(selected.map((file) => file.arrayBuffer()));
+  });
+}
+
 describe('Catalog', () => {
   it('lists Skill, MCP, and plugin empty states from the selected Workspace catalog', async () => {
     const get = vi
@@ -2210,6 +2238,108 @@ describe('Catalog', () => {
     ]);
     expect(selectSkillDefault).not.toHaveBeenCalled();
     expect(decideSkillCandidate).not.toHaveBeenCalled();
+  });
+
+  it('imports Skill, candidate, and plugin folders after the native chooser clears the live FileList', async () => {
+    const user = userEvent.setup();
+    const digest = 'sha256:' + 'a'.repeat(64);
+    const importSkill = vi.fn().mockResolvedValue({ revision: 3 });
+    const submitSkillCandidate = vi.fn().mockResolvedValue({ revision: 4 });
+    const importPlugin = vi.fn().mockResolvedValue({ revision: 3 });
+    const get = vi.fn().mockResolvedValue({
+      revision: 3,
+      candidates: [],
+      skills: [
+        {
+          availability: 'available',
+          currentDigest: digest,
+          description: null,
+          displayName: 'Repo guidelines',
+          id: 'repo-guidelines',
+          pinDigest: null,
+          versions: [{ createdAt: TIMESTAMP_NEW, digest }],
+        },
+      ],
+      mcp: [],
+      plugins: [],
+    });
+    renderApp(
+      '/catalog',
+      makeClient({ catalog: { get, importSkill, submitSkillCandidate, importPlugin } })
+    );
+    const displayNames = await screen.findAllByRole('textbox', { name: 'Display name' });
+    await user.type(displayNames[0]!, 'Repo guidelines');
+    await user.type(
+      screen.getByRole('textbox', { name: 'Candidate summary' }),
+      'Clarify the rollback section.'
+    );
+
+    const skillFiles = [
+      catalogRelativeFile('# Hello\n', 'repo-guidelines/SKILL.md'),
+      catalogRelativeFile('Do not skip rollback.\n', 'repo-guidelines/references/rollback.md'),
+    ];
+    const candidateFiles = [
+      catalogRelativeFile('# v2\n', 'repo-guidelines/SKILL.md'),
+      catalogRelativeFile('Clarify rollback.\n', 'repo-guidelines/references/rollback.md'),
+    ];
+    const pluginFiles = [catalogRelativeFile('{"name":"demo"}\n', 'demo-plugin/plugin.json')];
+    await changeLiveDirectoryFiles(
+      screen.getByLabelText('Skill folder files') as HTMLInputElement,
+      skillFiles
+    );
+    await user.click(screen.getByRole('button', { name: 'Propose folder update' }));
+    await changeLiveDirectoryFiles(
+      screen.getByLabelText('Skill candidate folder files') as HTMLInputElement,
+      candidateFiles
+    );
+    await changeLiveDirectoryFiles(
+      screen.getByLabelText('Plugin package files') as HTMLInputElement,
+      pluginFiles
+    );
+
+    expect(importSkill).toHaveBeenCalled();
+    expect(importSkill.mock.calls[0]?.[1].tree).toEqual([
+      {
+        contentBase64: btoa('# Hello\n'),
+        kind: 'file',
+        path: 'SKILL.md',
+      },
+      {
+        kind: 'directory',
+        path: 'references',
+      },
+      {
+        contentBase64: btoa('Do not skip rollback.\n'),
+        kind: 'file',
+        path: 'references/rollback.md',
+      },
+    ]);
+    expect(submitSkillCandidate).toHaveBeenCalled();
+    expect(submitSkillCandidate.mock.calls[0]?.[2].tree).toEqual([
+      {
+        contentBase64: btoa('# v2\n'),
+        kind: 'file',
+        path: 'SKILL.md',
+      },
+      {
+        kind: 'directory',
+        path: 'references',
+      },
+      {
+        contentBase64: btoa('Clarify rollback.\n'),
+        kind: 'file',
+        path: 'references/rollback.md',
+      },
+    ]);
+    expect(submitSkillCandidate.mock.calls[0]?.[2]).not.toHaveProperty('activate');
+    expect(importPlugin).toHaveBeenCalled();
+    expect(importPlugin.mock.calls[0]?.[1].tree).toEqual([
+      {
+        contentBase64: btoa('{"name":"demo"}\n'),
+        kind: 'file',
+        path: 'plugin.json',
+      },
+    ]);
   });
 
   it('disables catalog writes while disconnected', async () => {
