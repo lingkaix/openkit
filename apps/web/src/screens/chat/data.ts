@@ -8,7 +8,7 @@ import {
 } from '@openkit/core-client';
 import { ItemSchema } from '@openkit/protocol';
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useConnectionFailure, useCoreClient } from '../../app/core-client';
 import type { ComposerWorkerEnvironmentOption, ComposerWorkerEnvironments } from '../../primitives';
 import { useWorkspaceStore } from '../workspace-store';
@@ -453,6 +453,7 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
  * Subscribes once to the authoritative running Turn, folds item events into the
  * item cache, and projects its matching updated or terminal Turn into the dashboard cache.
  * Idle Chat/Task foreground refresh stays on the existing item and dashboard query observers.
+ * Latest dashboard Turn id/status changes invalidate this Thread's conversation-target catalog.
  * Returns the dashboard query for message attribution and authoritative action readiness.
  *
  * @param workspaceId Current Workspace identity, or null before selection resolves.
@@ -476,9 +477,28 @@ export function useLiveThreadItems(
     enabled && !queryClient.getQueryData(chatKeys.dashboard(workspaceId ?? '', threadId))
   );
   const turnId = dashboard.data?.turns.findLast((turn) => turn.status === 'running')?.id;
+  const latestTurnId = dashboard.data?.turns.at(-1)?.id;
+  const latestTurnStatus = dashboard.data?.turns.at(-1)?.status;
+  const targetScope = useRef<{ workspaceId: string; threadId: string } | null>(null);
   const owner = useMemo(() => ({ threadId, turnId, workspaceId }), [threadId, turnId, workspaceId]);
 
   useEffect(() => () => clear(owner), [clear, owner]);
+
+  useEffect(() => {
+    if (!workspaceId || !dashboard.isSuccess) return;
+    const previous = targetScope.current;
+    targetScope.current = { workspaceId, threadId };
+    if (
+      previous?.workspaceId !== workspaceId ||
+      previous.threadId !== threadId ||
+      !latestTurnId ||
+      !latestTurnStatus
+    )
+      return;
+    void queryClient.invalidateQueries({
+      queryKey: chatKeys.conversationTargets(workspaceId, threadId),
+    });
+  }, [dashboard.isSuccess, latestTurnId, latestTurnStatus, queryClient, threadId, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId || !turnId || !baselineReady) return;

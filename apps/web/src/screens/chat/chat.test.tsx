@@ -2676,6 +2676,94 @@ describe('open thread external activity', () => {
     vi.useRealTimers();
   });
 
+  it.each([
+    'SSE terminal refresh',
+    'idle dashboard poll',
+    'first completed Turn poll',
+  ] as const)('makes the current Worker selectable after %s without reloading', async (path) => {
+    const user = userEvent.setup();
+    let completed = false;
+    const getConversationTargets = vi.fn(async (workspaceId: string, threadId?: string) => ({
+      ...CONVERSATION_TARGET,
+      workspaceId,
+      threadId: threadId ?? null,
+      targets: [
+        ...CONVERSATION_TARGET.targets,
+        {
+          ...CONVERSATION_TARGET.targets[1]!,
+          targetRef: 'running-worker:th1',
+          kind: 'running-worker' as const,
+          label: 'Current Worker',
+          threadId: 'th1',
+          availability: completed ? ('available' as const) : ('unavailable' as const),
+          unavailableReason: completed ? null : 'Worker is busy.',
+        },
+      ],
+    }));
+    const completion = createDeferred<void>();
+    async function* stream() {
+      await completion.promise;
+      yield turnStreamEvent(1, 'turn.completed', {
+        type: 'turn-completed',
+        stopReason: 'completed',
+        turn: COMPLETED_TURN,
+      });
+    }
+    const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
+    const getThreadDashboard = vi.fn(async () =>
+      path === 'first completed Turn poll'
+        ? { turns: [] }
+        : path === 'idle dashboard poll'
+          ? { turns: [idleTurn] }
+          : { turns: [ACTIVE_TURN] }
+    );
+    if (path !== 'SSE terminal refresh') {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    }
+    renderApp(
+      '/tasks/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi.fn(async () => ({ items: ITEMS, nextCursor: null })),
+          subscribeTurnEvents,
+        },
+        { getConversationTargets, getThreadDashboard }
+      )
+    );
+    await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+    expect(await screen.findByRole('option', { name: /Current Worker/ })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
+    await user.keyboard('{Escape}');
+    completed = true;
+    if (path === 'SSE terminal refresh') {
+      await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
+      await act(async () => completion.resolve());
+    } else {
+      getThreadDashboard.mockResolvedValue(laterDashboard());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+    }
+    await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: /Current Worker/ })).not.toHaveAttribute(
+        'aria-disabled',
+        'true'
+      )
+    );
+    await user.click(screen.getByRole('option', { name: /Current Worker/ }));
+    expect(
+      screen.getByRole('button', { name: /Current Worker.*Conversation agent/ })
+    ).toBeInTheDocument();
+    expect(
+      getConversationTargets.mock.calls.every(
+        ([workspaceId, threadId]) => workspaceId === 'ws1' && threadId === 'th1'
+      )
+    ).toBe(true);
+  });
+
   it('refetches an idle open Thread on the foreground item poll', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     let items = ITEMS;
