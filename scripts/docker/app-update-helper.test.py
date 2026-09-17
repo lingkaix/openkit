@@ -2172,6 +2172,25 @@ class ReviewFindingTests(unittest.TestCase):
             self.assertIsNone(body["predicates"]["nanohostReady"])
             self.assertTrue(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
+    def test_unready_configured_nanohost_fails_before_acquire(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_ready = False
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"NanoHost")
+            receipt = json.loads(
+                (root / "receipts" / (body["requestId"] + ".json")).read_text(encoding="utf-8")
+            )
+            self.assertIs(receipt["previousNanoHost"]["ready"], False)
+            self.assertFalse(body.get("previousAppRestored"))
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            self.assertFalse(any("build-image.sh" in " ".join(call) for call in effects.calls))
+            self.assertFalse(any(call[:1] == ["git"] and "fetch" in call for call in effects.calls))
+
     def test_non_server_mode_404_fails_before_stop(self) -> None:
         self._assert_nanohost_fails_before_stop(
             404, api_error("nanohost_transport_admin_server_mode_required")

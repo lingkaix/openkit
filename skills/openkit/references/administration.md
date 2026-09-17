@@ -58,6 +58,8 @@ For App-update connection diagnosis, search `app-update` and describe `app-updat
 
 A host helper can remain reachable while its separate `adminTokenFile` is stale after a server rebuild; failed authenticated diagnostics are not proof that the public Skill credential is invalid. An authorized host operator refreshes that existing credential and rechecks the helper. For repository-backed deployments, the operator declares the existing read/write `/srv/repos` mount with the helper’s protected `repositoryDirectory`; the update preserves the exact configured source and refuses undeclared or mismatched mounts before interruption. Neither Web nor this Skill can add mount paths to an update request.
 
+If the configured NanoHost reports `ready: false`, App update refuses before acquiring the candidate or stopping the current App. Inspect `nanohost.runtime-target` and arrange separately authorized execution-host recovery before preparing another update. A healthy App or reachable helper does not establish NanoHost readiness. A deployment with no configured NanoHost remains supported; do not remove a configured target to bypass its readiness check.
+
 An accepted administration command can still return `outcome: refused` and a failed Turn. `administration_execution_failed` may identify missing admitted model selection or responses/tool-calling support; inspect the explanation and authoritative model metadata. `context_compaction_unavailable` identifies a missing context policy after capability admission. Neither refusal proves an inference ran.
 
 ## Diagnose a missing repository or stale Worker source

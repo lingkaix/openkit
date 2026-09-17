@@ -1463,6 +1463,11 @@ class AppUpdateHelper:
             "identityId": identity,
             "ready": ready is True,
         }
+        if receipt["previousNanoHost"]["ready"] is not True:
+            raise HelperError(
+                "app_update_unavailable",
+                "Configured NanoHost is not ready.",
+            )
 
     def _snapshot_retained_auth(self, receipt: Dict[str, Any]) -> None:
         status, body = self._authorized_get("/api/app/auth/tokens")
