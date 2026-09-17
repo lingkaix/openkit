@@ -95,7 +95,7 @@ function assistantMessage(content: AgentAssistantMessage['content']): AgentAssis
 describe('goal.plan.propose Tool', () => {
   it('submits a schema-valid Plan through existing graph checks', async () => {
     const submitted: GoalPlanOutput[] = [];
-    const tool = createGoalPlanProposeTool((plan) => {
+    const tool = createGoalPlanProposeTool(PREVIOUS_PLAN, (plan) => {
       submitted.push(plan);
     });
     const plan = twoTaskPlan(PREVIOUS_PLAN);
@@ -105,12 +105,15 @@ describe('goal.plan.propose Tool', () => {
     });
     expect(tool.name).toBe(GOAL_PLAN_PROPOSE_TOOL_NAME);
     expect(result.isError).not.toBe(true);
+    expect(result.content).toEqual([
+      { type: 'text', text: 'Proposed Goal Plan passed revision checks.' },
+    ]);
     expect(submitted).toEqual([plan]);
   });
 
   it('rejects a cyclic Plan without submitting', async () => {
     const submitted: GoalPlanOutput[] = [];
-    const tool = createGoalPlanProposeTool((plan) => {
+    const tool = createGoalPlanProposeTool(PREVIOUS_PLAN, (plan) => {
       submitted.push(plan);
     });
     const first = PREVIOUS_PLAN.tasks[0];
@@ -128,6 +131,28 @@ describe('goal.plan.propose Tool', () => {
       { callId: 'call_1', signal: new AbortController().signal }
     );
     expect(result.isError).toBe(true);
+    expect(result.content).toEqual([
+      { type: 'text', text: 'The proposed Goal Plan failed schema or graph checks.' },
+    ]);
+    expect(submitted).toEqual([]);
+  });
+
+  it('rejects an unchanged previous Plan without submitting', async () => {
+    const submitted: GoalPlanOutput[] = [];
+    const tool = createGoalPlanProposeTool(PREVIOUS_PLAN, (plan) => {
+      submitted.push(plan);
+    });
+    const result = await tool.execute(PREVIOUS_PLAN, {
+      callId: 'call_unchanged',
+      signal: new AbortController().signal,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([
+      {
+        type: 'text',
+        text: 'Pre-approval Goal Plan revision cannot repeat the previous draft.',
+      },
+    ]);
     expect(submitted).toEqual([]);
   });
 });
@@ -182,6 +207,73 @@ describe('pre-approval Goal Plan revision Turn', () => {
       previousPlan: PREVIOUS_PLAN,
       revision: REVISION,
     });
+    expect(firstCall?.systemPrompt).toContain('no unresolved questions');
+    expect(firstCall?.systemPrompt).toContain('differ materially from the previous Plan');
+    expect(firstCall?.systemPrompt).toMatch(/[Dd]o not invent/);
+  });
+
+  it('returns a Tool error for a questioned proposal then accepts a corrected two-task Plan in the same loop', async () => {
+    const questioned = {
+      ...twoTaskPlan(PREVIOUS_PLAN),
+      questions: ['Who should own the second task?'],
+    };
+    const proposed = twoTaskPlan(PREVIOUS_PLAN);
+    const callProvider = vi
+      .fn<InternalAgentProviderCall>()
+      .mockResolvedValueOnce({
+        message: assistantMessage([
+          {
+            type: 'toolCall',
+            callId: 'call_questions',
+            name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+            arguments: questioned,
+          },
+        ]),
+      })
+      .mockImplementationOnce(async (request) => {
+        const toolMessage = request.messages.find(
+          (message) => message.role === 'tool' && message.callId === 'call_questions'
+        );
+        expect(toolMessage).toMatchObject({
+          role: 'tool',
+          callId: 'call_questions',
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: 'Pre-approval Goal Plan revision must propose an approvable draft.',
+            },
+          ],
+        });
+        return {
+          message: assistantMessage([
+            {
+              type: 'toolCall',
+              callId: 'call_corrected',
+              name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+              arguments: proposed,
+            },
+          ]),
+        };
+      })
+      .mockResolvedValueOnce({
+        message: assistantMessage([{ type: 'text', text: 'Proposed.' }]),
+      });
+
+    const plan = await runPreApprovalGoalPlanRevision({
+      goal: GOAL,
+      previousPlan: PREVIOUS_PLAN,
+      previousPlanItemId: 'it_goal_plan_prior',
+      revisionText: REVISION,
+      model: MODEL,
+      contextManagement: CONTEXT,
+      limits: { maxModelTurns: 4, maxToolCalls: 2, deadlineMs: 5_000 },
+      callProvider,
+      signal: new AbortController().signal,
+    });
+
+    expect(plan).toEqual(proposed);
+    expect(callProvider).toHaveBeenCalledTimes(3);
   });
 
   it('fails closed when the model never proposes a Plan', async () => {

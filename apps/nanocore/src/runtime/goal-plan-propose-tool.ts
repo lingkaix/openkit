@@ -17,7 +17,12 @@ import {
   type GoalPlanOutput,
   GoalPlanOutputSchema,
 } from './goal-plan.js';
-import { type GoalPlanner, type GoalPlannerInput, GoalPlanRevisionError } from './goal-planning.js';
+import {
+  assertApprovableGoalPlanRevision,
+  type GoalPlanner,
+  type GoalPlannerInput,
+  GoalPlanRevisionError,
+} from './goal-planning.js';
 
 /** Exact model-visible Tool name for one pre-approval Goal Plan proposal. */
 export const GOAL_PLAN_PROPOSE_TOOL_NAME = 'goal.plan.propose';
@@ -34,6 +39,8 @@ const GOAL_PLAN_PROPOSE_INPUT_SCHEMA = stripJsonSchemaMetadata(
 const REVISION_SYSTEM_PROMPT = [
   'You are the OpenKit Goal Orchestrator drafting one revised Goal Plan before human approval.',
   'Use only goal.plan.propose. Submit one complete Plan that consumes the recorded human revision and the exact previous Plan.',
+  'The submitted Plan must have no unresolved questions and must differ materially from the previous Plan.',
+  'Do not invent facts that the Goal, previous Plan, or revision do not contain.',
   'You cannot approve a Plan, dispatch Workers, access repository tools, MCP or Vault, widen Goal authority, or terminalize the Goal.',
 ].join(' ');
 
@@ -60,10 +67,14 @@ export interface PreApprovalGoalPlanRevisionPlannerOptions {
 /**
  * Creates the single pre-approval `goal.plan.propose` Tool.
  *
- * @param submit Closure that receives one schema- and graph-validated Plan.
+ * @param previousPlan Exact previous Plan used by owner revision guards.
+ * @param submit Closure that receives one owner-validated Plan.
  * @returns Model-visible Tool bound to the existing Goal Plan owner checks.
  */
-export function createGoalPlanProposeTool(submit: (plan: GoalPlanOutput) => void): AgentTool {
+export function createGoalPlanProposeTool(
+  previousPlan: GoalPlanOutput,
+  submit: (plan: GoalPlanOutput) => void
+): AgentTool {
   return {
     name: GOAL_PLAN_PROPOSE_TOOL_NAME,
     description:
@@ -73,22 +84,26 @@ export function createGoalPlanProposeTool(submit: (plan: GoalPlanOutput) => void
       try {
         const plan = GoalPlanOutputSchema.parse(value);
         assertValidGoalPlanGraph(plan.tasks);
+        assertApprovableGoalPlanRevision(plan, previousPlan);
         submit(plan);
         return {
           content: [
             {
               type: 'text',
-              text: 'Proposed Goal Plan was accepted for human review.',
+              text: 'Proposed Goal Plan passed revision checks.',
             },
           ],
         };
-      } catch {
+      } catch (error) {
         return {
           isError: true,
           content: [
             {
               type: 'text',
-              text: 'The proposed Goal Plan failed schema or graph checks.',
+              text:
+                error instanceof GoalPlanRevisionError
+                  ? error.message
+                  : 'The proposed Goal Plan failed schema or graph checks.',
             },
           ],
         };
@@ -129,7 +144,7 @@ export async function runPreApprovalGoalPlanRevision(input: {
 }): Promise<GoalPlanOutput> {
   let proposed: GoalPlanOutput | null = null;
   const tools = [
-    createGoalPlanProposeTool((plan) => {
+    createGoalPlanProposeTool(input.previousPlan, (plan) => {
       proposed = plan;
     }),
   ];

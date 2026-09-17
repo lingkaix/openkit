@@ -201,18 +201,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
         'Pre-approval Goal Plan revision planner failed.'
       );
     }
-    if (plan.questions.length > 0) {
-      throw new GoalPlanRevisionError(
-        'goal_plan_revision_invalid',
-        'Pre-approval Goal Plan revision must propose an approvable draft.'
-      );
-    }
-    if (computeGoalPlanDigest(plan) === computeGoalPlanDigest(revision.previousPlan)) {
-      throw new GoalPlanRevisionError(
-        'goal_plan_revision_invalid',
-        'Pre-approval Goal Plan revision cannot repeat the previous draft.'
-      );
-    }
+    assertApprovableGoalPlanRevision(plan, revision.previousPlan);
   } else {
     const turn = input.store.createTurn(
       input.workspaceId,
@@ -319,6 +308,31 @@ export async function runExclusiveGoalPlanCommand<T>(input: {
     if (storeInflight.get(lockKey)?.promise === promise) {
       storeInflight.delete(lockKey);
     }
+  }
+}
+
+/**
+ * Asserts that a revised Plan is approvable against the exact previous draft.
+ *
+ * @param plan Candidate revision Plan.
+ * @param previousPlan Exact previous immutable Plan.
+ * @throws GoalPlanRevisionError when the Plan has questions or repeats the previous digest.
+ */
+export function assertApprovableGoalPlanRevision(
+  plan: GoalPlanOutput,
+  previousPlan: GoalPlanOutput
+): void {
+  if (plan.questions.length > 0) {
+    throw new GoalPlanRevisionError(
+      'goal_plan_revision_invalid',
+      'Pre-approval Goal Plan revision must propose an approvable draft.'
+    );
+  }
+  if (computeGoalPlanDigest(plan) === computeGoalPlanDigest(previousPlan)) {
+    throw new GoalPlanRevisionError(
+      'goal_plan_revision_invalid',
+      'Pre-approval Goal Plan revision cannot repeat the previous draft.'
+    );
   }
 }
 
