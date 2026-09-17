@@ -2,7 +2,7 @@
 
 This directory owns the bounded App API and in-process administration operations for retained Worker environments. It projects Core-owned `WorkerStorageBinding` records and delegates fixed host observations and effects to `WorkerEnvironmentRuntimeEffects`.
 
-Every operation rechecks the initiating user's current usable deployment-administrator authority and current target Workspace policy. Until durable Thread visibility is implemented, source-audience admission fails closed unless every contributor belongs to the current user and its source Thread still exists in the same Workspace.
+Every operation rechecks the initiating user's current usable deployment-administrator authority and current target Workspace policy. Source-audience admission requires every contributor to belong to the current user and its source Thread to remain visible to that user in the same Workspace. Selection also requires current visibility of the exact target Thread; missing, foreign and inaccessible targets share the same not-found result. These guards use the shared Thread audience predicate and run before host inspection or purge effects.
 
 The surface never exposes host paths, native runtime handles, credentials, or retained file contents. Selection only validates an explicit future-work choice; ordinary Task and Goal admission remains the runtime scheduler's owner. Purge checks unfinished Goal and queued, denied or nonterminal admitted work before reserving an idle association through Core revision compare-and-set, delegates the fixed whole-ref effect, and records a definite purged, retained, or truthful unknown settlement under the existing command receipt owner. Missing reference authority prevents deletion.
 

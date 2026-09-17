@@ -21,6 +21,7 @@ import {
   isWorkspaceOperationAuthorized,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import { hasNonterminalGoalWorkerStorageReference } from '../runtime/goal-store.js';
 import {
@@ -134,7 +135,7 @@ export function createWorkerEnvironmentOperations(
 
     select(context, input) {
       requireOperationAuthority(dependencies.coreDb, context, false);
-      requireThread(dependencies.store, context.workspaceId, input.threadId);
+      requireThread(dependencies.store, context.workspaceId, input.threadId, context.actor.userId);
       const authorizeContributor = contributorAuthorizer(dependencies.store, context);
       const binding = requireAuthorizedBinding(
         dependencies.coreDb,
@@ -367,22 +368,10 @@ function contributorAuthorizer(
   store: FsStore,
   context: WorkerEnvironmentOperationContext
 ): (contributor: WorkerStorageContributor) => boolean {
-  return (contributor) => {
-    if (
-      contributor.workspaceId !== context.workspaceId ||
-      contributor.responsibleUserId !== context.actor.userId
-    ) {
-      return false;
-    }
-    try {
-      return (
-        store.getThread(context.workspaceId, contributor.threadId).workspaceId ===
-        context.workspaceId
-      );
-    } catch {
-      return false;
-    }
-  };
+  return (contributor) =>
+    contributor.workspaceId === context.workspaceId &&
+    contributor.responsibleUserId === context.actor.userId &&
+    isThreadIdVisible(store, context.workspaceId, contributor.threadId, context.actor.userId);
 }
 
 /** Reads one binding only after complete current audience admission. */
@@ -404,11 +393,14 @@ function requireAuthorizedBinding(
   return binding;
 }
 
-/** Requires one exact live source Thread without disclosing cross-Workspace lineage. */
-function requireThread(store: FsStore, workspaceId: string, threadId: string): void {
-  try {
-    store.getThread(workspaceId, threadId);
-  } catch {
+/** Requires one currently visible target Thread without disclosing missing, foreign, or private lineage. */
+function requireThread(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  userId: string
+): void {
+  if (!isThreadIdVisible(store, workspaceId, threadId, userId)) {
     throw new WorkerEnvironmentOperationError('not_found', 'Worker environment was not found.');
   }
 }

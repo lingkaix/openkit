@@ -303,6 +303,146 @@ describe('Worker environment operations', () => {
     });
   });
 
+  it('hides missing, foreign, and private-inaccessible selection targets as the same not_found', () => {
+    const fixture = createFixture();
+    const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
+    const inaccessible = fixture.store.createThread(
+      fixture.workspaceId,
+      'Other private conversation',
+      'thread_private_other',
+      'conversation',
+      { privateOwnerUserId: 'user_other', visibility: 'private' }
+    );
+    const foreign = fixture.store.createThread(
+      fixture.store.ensureQuickChatWorkspace('user_local').id,
+      'Private assistant'
+    );
+    const hidden = {
+      code: 'not_found',
+      message: 'Worker environment was not found.',
+    };
+
+    for (const threadId of ['thread_missing', foreign.id, inaccessible.id]) {
+      expect(() =>
+        fixture.operations.select(context, {
+          adjudicatedThreadIds: [],
+          expectedRevision: fixture.binding.revision,
+          goalId: null,
+          layoutDigest: fixture.binding.layoutDigest,
+          purpose: 'work',
+          storageRef: fixture.binding.storageRef,
+          taskId: null,
+          threadId,
+        })
+      ).toThrow(expect.objectContaining(hidden));
+    }
+  });
+
+  it('selects onto the caller visible private and shared Threads', () => {
+    const fixture = createFixture();
+    const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
+    const ownPrivate = fixture.store.createThread(
+      fixture.workspaceId,
+      'Own private conversation',
+      'thread_private_own',
+      'conversation',
+      { privateOwnerUserId: 'user_local', visibility: 'private' }
+    );
+
+    expect(
+      fixture.operations.select(context, {
+        adjudicatedThreadIds: [],
+        expectedRevision: fixture.binding.revision,
+        goalId: null,
+        layoutDigest: fixture.binding.layoutDigest,
+        purpose: 'work',
+        storageRef: fixture.binding.storageRef,
+        taskId: null,
+        threadId: fixture.threadId,
+      })
+    ).toMatchObject({ selected: { storageRef: fixture.binding.storageRef, state: 'idle' } });
+    expect(
+      fixture.operations.select(context, {
+        adjudicatedThreadIds: [],
+        expectedRevision: fixture.binding.revision,
+        goalId: null,
+        layoutDigest: fixture.binding.layoutDigest,
+        purpose: 'work',
+        storageRef: fixture.binding.storageRef,
+        taskId: null,
+        threadId: ownPrivate.id,
+      })
+    ).toMatchObject({ selected: { storageRef: fixture.binding.storageRef, state: 'idle' } });
+  });
+
+  it('defense-in-depth: hides list and refuses host status/purge for inconsistent invisible contributor lineage', async () => {
+    // Thread visibility is immutable. This SQL retarget is not valid audience narrowing.
+    let inspectCalls = 0;
+    let purgeCalls = 0;
+    const fixture = createFixture({
+      inspectStorage: async () => {
+        inspectCalls += 1;
+        throw new Error('Host status must not run.');
+      },
+      purgeStorage: async () => {
+        purgeCalls += 1;
+        throw new Error('Host purge must not run.');
+      },
+    });
+    const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
+    fixture.store.createThread(
+      fixture.workspaceId,
+      'Other private conversation',
+      'thread_private_source',
+      'conversation',
+      { privateOwnerUserId: 'user_other', visibility: 'private' }
+    );
+    fixture.coreDb.sqlite
+      .prepare('UPDATE worker_storage_contributors SET thread_id = ? WHERE storage_ref = ?')
+      .run('thread_private_source', fixture.binding.storageRef);
+
+    expect(fixture.operations.list(context, { limit: 50 })).toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    expect(() =>
+      fixture.operations.select(context, {
+        adjudicatedThreadIds: [],
+        expectedRevision: fixture.binding.revision,
+        goalId: null,
+        layoutDigest: fixture.binding.layoutDigest,
+        purpose: 'work',
+        storageRef: fixture.binding.storageRef,
+        taskId: null,
+        threadId: fixture.threadId,
+      })
+    ).toThrow(
+      expect.objectContaining({
+        code: 'not_found',
+        message: 'Worker environment was not found.',
+      })
+    );
+    await expect(
+      fixture.operations.status(context, { storageRef: fixture.binding.storageRef })
+    ).rejects.toMatchObject({
+      code: 'not_found',
+      message: 'Worker environment was not found.',
+    });
+    await expect(
+      fixture.operations.purge(context, {
+        confirmation: `purge-worker-environment:${fixture.binding.storageRef}:${fixture.binding.revision}`,
+        expectedRevision: fixture.binding.revision,
+        requestId: '00000000-0000-4000-8000-000000000005',
+        storageRef: fixture.binding.storageRef,
+      })
+    ).rejects.toMatchObject({
+      code: 'not_found',
+      message: 'Worker environment was not found.',
+    });
+    expect(inspectCalls).toBe(0);
+    expect(purgeCalls).toBe(0);
+  });
+
   it('rejects a stale selection revision through the Core compare-and-set owner', () => {
     const fixture = createFixture();
 
