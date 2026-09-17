@@ -130,13 +130,13 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const thread = useThread(workspaceId, threadId);
-  const items = useThreadItems(workspaceId, threadId);
-  const dashboard = useThreadDashboard(workspaceId, threadId);
+  const dashboard = useThreadDashboard(workspaceId, threadId, true, true);
+  const activeTurn = dashboard.data?.turns.findLast((turn) => turn.status === 'running');
+  const items = useThreadItems(workspaceId, threadId, !activeTurn);
   const targets = useConversationTargets(workspaceId, threadId);
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, threadId);
   const workspaceArtifacts = useArtifacts(workspaceId);
   const importArtifact = useImportWorkspaceArtifact();
-  const activeTurn = dashboard.data?.turns.findLast((turn) => turn.status === 'running');
   const send = useSendTurn();
   const rename = useRenameThread();
   const archive = useArchiveThread();

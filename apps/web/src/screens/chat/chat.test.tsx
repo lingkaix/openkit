@@ -11,7 +11,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { useWorkspaceStore } from '../workspace-store';
@@ -2620,6 +2620,211 @@ describe('live turn subscription (S6)', () => {
     releaseReplay();
     expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
     expect(screen.getByText('Already authoritative')).toBeInTheDocument();
+  });
+});
+
+describe('open thread external activity', () => {
+  const idleTurn = COMPLETED_TURN;
+  const laterItem = ItemSchema.parse({
+    id: 'i48',
+    workspaceId: 'ws1',
+    threadId: 'th1',
+    turnId: 't48',
+    type: 'assistant-message',
+    status: 'completed',
+    text: 'CATALOG_OK_GROK',
+    createdAt: '2026-07-21T00:01:00.000Z',
+    completedAt: '2026-07-21T00:01:00.000Z',
+  });
+
+  function navigationItem(
+    thread: typeof THREAD,
+    lastActivityAt: string
+  ): {
+    activity: 'chat';
+    lastActivityAt: string;
+    state: 'idle';
+    thread: typeof THREAD & { entryPath: 'conversation'; visibility: 'workspace' };
+  } {
+    return {
+      activity: 'chat',
+      lastActivityAt,
+      state: 'idle',
+      thread: {
+        ...thread,
+        entryPath: 'conversation',
+        visibility: 'workspace',
+      },
+    };
+  }
+
+  function laterDashboard() {
+    return {
+      turns: [
+        idleTurn,
+        TurnSchema.parse({
+          ...idleTurn,
+          id: 't48',
+          startedAt: '2026-07-21T00:01:00.000Z',
+          completedAt: '2026-07-21T00:01:00.000Z',
+        }),
+      ],
+    };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('refetches an idle open Thread on the foreground item poll', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let items = ITEMS;
+    const listThreadItems = vi.fn(async () => ({ items, nextCursor: null }));
+    const getThreadDashboard = vi.fn(async () => ({ turns: [idleTurn] }));
+    const listThreads = vi.fn(async () => ({ items: [THREAD] }));
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({ listThreadItems, listThreads }, { getThreadDashboard })
+    );
+    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    expect(screen.queryByText('CATALOG_OK_GROK')).not.toBeInTheDocument();
+    const itemCallsAfterBaseline = listThreadItems.mock.calls.length;
+    const dashboardCallsAfterBaseline = getThreadDashboard.mock.calls.length;
+
+    items = [...ITEMS, laterItem];
+    getThreadDashboard.mockResolvedValue(laterDashboard());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    await waitFor(() => expect(screen.getByText('CATALOG_OK_GROK')).toBeInTheDocument());
+    expect(listThreadItems.mock.calls.length).toBeGreaterThan(itemCallsAfterBaseline);
+    expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(dashboardCallsAfterBaseline);
+  });
+
+  it('refetches stale items when the dashboard is already new', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let items = ITEMS;
+    const listThreadItems = vi.fn(async () => ({ items, nextCursor: null }));
+    const getThreadDashboard = vi.fn(async () => laterDashboard());
+    renderApp('/chat/ws1/th1', makeClient({ listThreadItems }, { getThreadDashboard }));
+    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    expect(screen.queryByText('CATALOG_OK_GROK')).not.toBeInTheDocument();
+    const itemCallsAfterItems = listThreadItems.mock.calls.length;
+
+    items = [...ITEMS, laterItem];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    await waitFor(() => expect(screen.getByText('CATALOG_OK_GROK')).toBeInTheDocument());
+    expect(listThreadItems.mock.calls.length).toBeGreaterThan(itemCallsAfterItems);
+  });
+
+  it('does not poll items while a Turn is running', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const listThreadItems = vi.fn(async () => ({ items: ITEMS, nextCursor: null }));
+    async function* hang() {
+      yield turnStreamEvent(1, 'item.created', { type: 'item-created', item: ITEMS[1] });
+      await new Promise(() => undefined);
+    }
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        { listThreadItems, subscribeTurnEvents: vi.fn().mockReturnValue(hang()) },
+        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      )
+    );
+    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    const itemCalls = listThreadItems.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(listThreadItems.mock.calls.length).toBe(itemCalls);
+  });
+
+  it('does not fetch unrelated Thread items when switching workspace', async () => {
+    const user = userEvent.setup();
+    const otherThread = {
+      ...THREAD,
+      id: 'th2',
+      name: 'Workspace B teardown',
+      preview: 'Workspace B teardown',
+    };
+    const listConversationNavigation = vi.fn(async (workspaceId: string) => ({
+      items:
+        workspaceId === 'ws1'
+          ? [
+              navigationItem(THREAD, '2026-07-21T00:00:02.000Z'),
+              navigationItem(otherThread, '2026-07-21T00:00:00.000Z'),
+            ]
+          : [
+              navigationItem(
+                { ...otherThread, workspaceId: 'ws2', name: 'Second workspace thread' },
+                '2026-07-21T00:00:00.000Z'
+              ),
+            ],
+    }));
+    const listThreadItems = vi.fn(async (workspaceId: string, threadId: string) => ({
+      items:
+        threadId === 'th2'
+          ? [
+              ItemSchema.parse({
+                ...ITEMS[0],
+                id: 'i-th2',
+                workspaceId,
+                threadId: 'th2',
+                text: 'Other thread baseline.',
+              }),
+            ]
+          : ITEMS,
+      nextCursor: null,
+    }));
+    const getThread = vi.fn(async (workspaceId: string, threadId: string) =>
+      threadId === 'th2'
+        ? {
+            ...otherThread,
+            workspaceId,
+            name: workspaceId === 'ws2' ? 'Second workspace thread' : otherThread.name,
+          }
+        : THREAD
+    );
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        {
+          getThread,
+          listThreadItems,
+          listThreads: vi.fn(async (workspaceId: string) => ({
+            items: workspaceId === 'ws1' ? [THREAD, otherThread] : [otherThread],
+          })),
+        },
+        {
+          listConversationNavigation,
+          getThreadDashboard: vi.fn(async () => ({ turns: [idleTurn] })),
+        }
+      )
+    );
+
+    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    const th1ItemCalls = listThreadItems.mock.calls.filter(
+      ([, threadId]) => threadId === 'th1'
+    ).length;
+    await user.click(await screen.findByRole('button', { name: 'Workspace B teardown' }));
+    expect(await screen.findByText('Other thread baseline.')).toBeInTheDocument();
+    expect(listThreadItems.mock.calls.filter(([, threadId]) => threadId === 'th2')).toHaveLength(1);
+    expect(listThreadItems.mock.calls.filter(([, threadId]) => threadId === 'th1').length).toBe(
+      th1ItemCalls
+    );
+
+    await user.click(await workspaceSelectTrigger());
+    await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
+    expect(
+      await screen.findByRole('heading', { name: 'What can we get done?' })
+    ).toBeInTheDocument();
+    expect(
+      listThreadItems.mock.calls.filter(([workspaceId]) => workspaceId === 'ws2')
+    ).toHaveLength(0);
   });
 });
 

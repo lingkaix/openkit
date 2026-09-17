@@ -4,7 +4,7 @@ The conversation stream uses the authorized dashboard taskInputs summaries for v
 
 Status chips retain their full single-line label under flex pressure; surrounding descriptions wrap instead. Goal attention explanations appear as full body text below the short status label.
 
-Conversation messages resolve authorized participant names from the Thread dashboard. Only the authenticated human aligns right with a You marker; other humans use left-aligned circular avatars and bubbles, while agents use square avatars and unboxed content. Missing profiles retain recorded ids, and messages without exact agent provenance show Agent. Account transitions discard viewer-bearing dashboard caches.
+Conversation messages resolve authorized participant names from the Thread dashboard. Only the authenticated human aligns right with a You marker; other humans use left-aligned circular avatars and bubbles, while agents use square avatars and unboxed content. Missing profiles retain recorded ids, and messages without exact agent provenance show Agent. Account transitions discard viewer-bearing dashboard caches. An idle Chat or Task Thread refreshes its existing item and dashboard query observers every 5s in the foreground, so another client's completed Chat turns appear without reload even when dashboard and items arrive in different orders; a running Turn keeps SSE as the sole live writer, Administration does not opt into this poll, and other Threads or Workspaces are not refreshed.
 
 The OpenKit Web UI — a React SPA that projects stable NanoCore / App API
 contracts as a supervisor's workbench. This is the rebuilt app; the previous

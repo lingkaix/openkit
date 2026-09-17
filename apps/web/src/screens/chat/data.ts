@@ -367,23 +367,43 @@ export function useThread(workspaceId: string | null, threadId: string) {
  * @param workspaceId Current Workspace identity, or null before selection resolves.
  * @param threadId Current Thread identity.
  * @param enabled Whether this observer may fetch instead of only following cached state.
+ * @param poll When true, refresh this observer every 5s in the foreground unless a Turn is running.
  */
-export function useThreadDashboard(workspaceId: string | null, threadId: string, enabled = true) {
+export function useThreadDashboard(
+  workspaceId: string | null,
+  threadId: string,
+  enabled = true,
+  poll = false
+) {
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.dashboard(workspaceId ?? '', threadId),
     queryFn: () => client.app.getThreadDashboard(workspaceId as string, threadId),
     enabled: Boolean(workspaceId) && enabled,
+    refetchInterval: (query) => {
+      if (!poll) return false;
+      if (query.state.data?.turns.some((turn) => turn.status === 'running')) return false;
+      return 5_000;
+    },
+    refetchIntervalInBackground: false,
   });
 }
 
-/** Replay a thread's item stream. */
-export function useThreadItems(workspaceId: string | null, threadId: string) {
+/**
+ * Replay a thread's item stream.
+ *
+ * @param workspaceId Current Workspace identity, or null before selection resolves.
+ * @param threadId Current Thread identity.
+ * @param poll When true, refresh this observer every 5s in the foreground.
+ */
+export function useThreadItems(workspaceId: string | null, threadId: string, poll = false) {
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.items(workspaceId ?? '', threadId),
     queryFn: async () => (await client.core.listThreadItems(workspaceId as string, threadId)).items,
     enabled: Boolean(workspaceId),
+    refetchInterval: poll ? 5_000 : false,
+    refetchIntervalInBackground: false,
   });
 }
 
@@ -431,7 +451,9 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
 
 /**
  * Subscribes once to the authoritative running Turn, folds item events into the
- * item cache, and projects its matching updated or terminal Turn into the dashboard cache. Returns the dashboard query for message attribution and authoritative action readiness.
+ * item cache, and projects its matching updated or terminal Turn into the dashboard cache.
+ * Idle Chat/Task foreground refresh stays on the existing item and dashboard query observers.
+ * Returns the dashboard query for message attribution and authoritative action readiness.
  *
  * @param workspaceId Current Workspace identity, or null before selection resolves.
  * @param threadId Current Thread identity.
