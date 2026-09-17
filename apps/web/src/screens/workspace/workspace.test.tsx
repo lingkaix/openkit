@@ -1,7 +1,7 @@
 import { KnowledgeDerivedIndexesResponseSchema } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -1895,6 +1895,57 @@ describe('Catalog', () => {
     await waitFor(() => expect(get).toHaveBeenCalledWith(WORKSPACE_A.id));
   });
 
+  it('keeps fresh catalog values empty so placeholders cannot submit', async () => {
+    const user = userEvent.setup();
+    const importSkill = vi.fn();
+    const createMcpConfig = vi.fn();
+    const get = vi
+      .fn()
+      .mockResolvedValue({ revision: 2, candidates: [], skills: [], mcp: [], plugins: [] });
+    renderApp('/catalog', makeClient({ catalog: { get, importSkill, createMcpConfig } }));
+    expect(await screen.findByRole('button', { name: 'Import SKILL.md' })).toBeDisabled();
+
+    const [skillName, mcpName] = screen.getAllByRole('textbox', { name: 'Display name' });
+    expect(skillName).toHaveValue('');
+    expect(skillName).toHaveAttribute('placeholder', 'Repo guidelines');
+    const candidateSummary = screen.getByRole('textbox', { name: 'Candidate summary' });
+    expect(candidateSummary).toHaveValue('');
+    expect(candidateSummary).toHaveAttribute('placeholder', 'Clarify the rollback section.');
+    const skillFile = screen.getByLabelText('Skill markdown file');
+    expect(skillFile).toBeDisabled();
+    const skippedImport = new File(['# Hello\n'], 'SKILL.md', { type: 'text/markdown' });
+    await act(async () => {
+      fireEvent.change(skillFile, { target: { files: [skippedImport] } });
+      await skippedImport.arrayBuffer();
+    });
+    expect(importSkill).not.toHaveBeenCalled();
+
+    const mcpId = screen.getByRole('textbox', { name: 'Id' });
+    expect(mcpId).toHaveValue('');
+    expect(mcpId).toHaveAttribute('placeholder', 'echo');
+    expect(mcpName).toHaveValue('');
+    expect(mcpName).toHaveAttribute('placeholder', 'Echo');
+    expect(screen.getByRole('textbox', { name: 'Command' })).toHaveValue('');
+    const mcpTools = screen.getByRole('textbox', { name: 'Allowed tools' });
+    expect(mcpTools).toHaveValue('');
+    expect(mcpTools).toHaveAttribute('placeholder', 'echo');
+    expect(screen.getByRole('button', { name: 'Add inactive configuration' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Add inactive configuration' }));
+    expect(createMcpConfig).not.toHaveBeenCalled();
+
+    await selectListedOption(user, document.body, 'Transport', 'HTTP');
+    const mcpEndpoint = screen.getByRole('textbox', { name: 'Endpoint' });
+    expect(mcpEndpoint).toHaveValue('');
+    expect(mcpEndpoint).toHaveAttribute('placeholder', 'https://example.invalid/mcp');
+    expect(screen.getByRole('button', { name: 'Add inactive configuration' })).toBeDisabled();
+    await user.type(mcpId, 'echo');
+    await user.type(mcpName, 'Echo');
+    await user.type(mcpTools, 'echo');
+    expect(screen.getByRole('button', { name: 'Add inactive configuration' })).toBeDisabled();
+    await user.type(mcpEndpoint, 'https://example.invalid/mcp');
+    expect(screen.getByRole('button', { name: 'Add inactive configuration' })).toBeEnabled();
+  });
+
   it('imports a SKILL.md file through the catalog client', async () => {
     const user = userEvent.setup();
     const importSkill = vi.fn().mockResolvedValue({
@@ -1937,6 +1988,10 @@ describe('Catalog', () => {
       });
     renderApp('/catalog', makeClient({ catalog: { get, importSkill } }));
     expect(await screen.findByText('Import SKILL.md')).toBeInTheDocument();
+    await user.type(
+      screen.getAllByRole('textbox', { name: 'Display name' })[0]!,
+      'Repo guidelines'
+    );
     const file = new File(['# Hello\n'], 'SKILL.md', { type: 'text/markdown' });
     await user.upload(screen.getByLabelText('Skill markdown file'), file);
     await waitFor(() => expect(importSkill).toHaveBeenCalled());
@@ -1989,6 +2044,10 @@ describe('Catalog', () => {
     });
     renderApp('/catalog', makeClient({ catalog: { get, submitSkillCandidate } }));
     expect(await screen.findByRole('button', { name: 'Propose update' })).toBeInTheDocument();
+    await user.type(
+      screen.getByRole('textbox', { name: 'Candidate summary' }),
+      'Clarify the rollback section.'
+    );
     await user.click(screen.getByRole('button', { name: 'Propose update' }));
     const file = new File(['# v2\n'], 'SKILL.md', { type: 'text/markdown' });
     await user.upload(screen.getByLabelText('Skill candidate markdown file'), file);

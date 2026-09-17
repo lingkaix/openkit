@@ -33,7 +33,8 @@ import {
  * Workspace Skill, MCP, and Agent Plugin catalog (product workflow, not an API console).
  *
  * Live reads use `catalog.get`. Skill import uploads a SKILL.md tree. Owners can
- * pin, select, and review candidates. MCP create stays inactive until enabled;
+ * pin, select, and review candidates. Fresh create/import fields stay empty and
+ * show examples only as native placeholders. MCP create stays inactive until enabled;
  * stdio enablement remains a deployment-admin authority on the server. Plugin
  * import takes a package directory. Writes stay disabled while disconnected.
  */
@@ -52,14 +53,14 @@ export function CatalogScreen() {
   const importPlugin = useImportPlugin();
   const { checking, failed: disconnected } = useConnection();
   const writeBlocked = checking || disconnected || !workspaceId || catalog.isFetching;
-  const [skillName, setSkillName] = useState('Repo guidelines');
-  const [candidateSummary, setCandidateSummary] = useState('Clarify the rollback section.');
-  const [mcpId, setMcpId] = useState('echo');
-  const [mcpName, setMcpName] = useState('Echo');
+  const [skillName, setSkillName] = useState('');
+  const [candidateSummary, setCandidateSummary] = useState('');
+  const [mcpId, setMcpId] = useState('');
+  const [mcpName, setMcpName] = useState('');
   const [mcpKind, setMcpKind] = useState('stdio');
   const [mcpCommand, setMcpCommand] = useState('');
-  const [mcpEndpoint, setMcpEndpoint] = useState('https://example.invalid/mcp');
-  const [mcpTools, setMcpTools] = useState('echo');
+  const [mcpEndpoint, setMcpEndpoint] = useState('');
+  const [mcpTools, setMcpTools] = useState('');
   const skillFile = useRef<HTMLInputElement>(null);
   const candidateFile = useRef<HTMLInputElement>(null);
   const [candidateSkillId, setCandidateSkillId] = useState<string | null>(null);
@@ -252,12 +253,14 @@ export function CatalogScreen() {
                 label="Display name"
                 value={skillName}
                 onChange={setSkillName}
+                placeholder="Repo guidelines"
                 isDisabled={writeBlocked}
               />
               <TextField
                 label="Candidate summary"
                 value={candidateSummary}
                 onChange={setCandidateSummary}
+                placeholder="Clarify the rollback section."
                 isDisabled={writeBlocked}
               />
               <input
@@ -266,16 +269,17 @@ export function CatalogScreen() {
                 accept=".md,text/markdown"
                 className="sr-only"
                 aria-label="Skill markdown file"
+                disabled={writeBlocked || importSkill.isPending || !skillName.trim()}
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   event.target.value = '';
-                  if (!file || !workspaceId || writeBlocked) return;
+                  if (!file || !workspaceId || writeBlocked || !skillName.trim()) return;
                   void file.arrayBuffer().then((buffer) =>
                     importSkill.mutateAsync({
                       workspaceId,
                       input: {
                         activate: true,
-                        displayName: skillName.trim() || file.name,
+                        displayName: skillName.trim(),
                         expectedRevision: revision,
                         requestId: createRequestId(),
                         tree: [
@@ -427,11 +431,18 @@ export function CatalogScreen() {
               />
             )}
             <div className="flex flex-col gap-3 pt-3">
-              <TextField label="Id" value={mcpId} onChange={setMcpId} isDisabled={writeBlocked} />
+              <TextField
+                label="Id"
+                value={mcpId}
+                onChange={setMcpId}
+                placeholder="echo"
+                isDisabled={writeBlocked}
+              />
               <TextField
                 label="Display name"
                 value={mcpName}
                 onChange={setMcpName}
+                placeholder="Echo"
                 isDisabled={writeBlocked}
               />
               <Select
@@ -456,6 +467,7 @@ export function CatalogScreen() {
                   label="Endpoint"
                   value={mcpEndpoint}
                   onChange={setMcpEndpoint}
+                  placeholder="https://example.invalid/mcp"
                   isDisabled={writeBlocked}
                 />
               )}
@@ -463,6 +475,7 @@ export function CatalogScreen() {
                 label="Allowed tools"
                 value={mcpTools}
                 onChange={setMcpTools}
+                placeholder="echo"
                 description="Comma-separated tool names."
                 isDisabled={writeBlocked}
               />
