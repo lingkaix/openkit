@@ -570,15 +570,32 @@ function isConcretePrWorkerPrompt(prompt: string): boolean {
   return hasPr && hasAction;
 }
 
+const AFFIRMATIVE_LEADING_EXECUTION =
+  /^(please\s+)?(?!run\s+it\s+again\b)(implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug)\b/;
+
+/**
+ * True when the prompt starts with an affirmative worker-execution verb.
+ *
+ * Later review, refine, retry, or handoff wording is then a constraint. Negated
+ * leading execution such as "do not implement" and the explicit retry phrase
+ * "run it again" are not this seam.
+ *
+ * @param prompt Lowercase trimmed prompt.
+ * @returns True when leading intent is worker execution.
+ */
+function hasAffirmativeLeadingExecution(prompt: string): boolean {
+  return AFFIRMATIVE_LEADING_EXECUTION.test(prompt);
+}
+
 /**
  * Checks for review-mode prompts.
  *
  * @param prompt Lowercase prompt.
- * @returns True when review is likely.
+ * @returns True when review is the routing kind.
  */
 function isReviewPrompt(prompt: string): boolean {
   // Concrete PR review/approve/merge Tasks are worker execution, not human review-mode.
-  if (isConcretePrWorkerPrompt(prompt)) {
+  if (isConcretePrWorkerPrompt(prompt) || hasAffirmativeLeadingExecution(prompt)) {
     return false;
   }
   return /\breview\b|\baudit\b|\bcheck\s+the\s+work\b/.test(prompt);
@@ -588,30 +605,39 @@ function isReviewPrompt(prompt: string): boolean {
  * Checks for refinement-mode prompts.
  *
  * @param prompt Lowercase prompt.
- * @returns True when refinement is likely.
+ * @returns True when refinement is the routing kind.
  */
 function isRefinementPrompt(prompt: string): boolean {
-  return /\brefine\b|\biterate\b|\bmake\s+it\s+better\b|\bupdate\s+the\s+previous\b/.test(prompt);
+  return (
+    !hasAffirmativeLeadingExecution(prompt) &&
+    /\brefine\b|\biterate\b|\bmake\s+it\s+better\b|\bupdate\s+the\s+previous\b/.test(prompt)
+  );
 }
 
 /**
  * Checks for retry-mode prompts.
  *
  * @param prompt Lowercase prompt.
- * @returns True when retry is likely.
+ * @returns True when retry is the routing kind.
  */
 function isRetryPrompt(prompt: string): boolean {
-  return /\bretry\b|\brerun\b|\btry\s+again\b|\brun\s+it\s+again\b/.test(prompt);
+  return (
+    !hasAffirmativeLeadingExecution(prompt) &&
+    /\bretry\b|\brerun\b|\btry\s+again\b|\brun\s+it\s+again\b/.test(prompt)
+  );
 }
 
 /**
  * Checks for handoff-mode prompts.
  *
  * @param prompt Lowercase prompt.
- * @returns True when handoff is likely.
+ * @returns True when handoff is the routing kind.
  */
 function isHandoffPrompt(prompt: string): boolean {
-  return /\bhandoff\b|\bhand\s+off\b|\bpass\s+to\b/.test(prompt);
+  return (
+    !hasAffirmativeLeadingExecution(prompt) &&
+    /\bhandoff\b|\bhand\s+off\b|\bpass\s+to\b/.test(prompt)
+  );
 }
 
 /**

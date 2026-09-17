@@ -439,16 +439,40 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       explanation: 'The request is asking to evaluate recent work rather than start new execution.',
     },
     {
+      prompt: 'Do not implement anything. Review the previous result.',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+      explanation: 'The request is asking to evaluate recent work rather than start new execution.',
+    },
+    {
       prompt: 'Refine the previous result.',
       decision: 'refinement',
       requiredUserAction: 'confirm_worker_turn',
       explanation: 'The request appears to refine prior output in the current thread.',
     },
     {
-      prompt: 'Hand off this work to another worker.',
+      prompt: 'Hand off this work to another worker. Do not implement it here.',
       decision: 'handoff',
       requiredUserAction: 'choose_worker',
       explanation: 'The request asks to hand work to another worker or phase.',
+    },
+    {
+      prompt: 'Review the previous worker output. Then implement a follow-up if asked.',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+      explanation: 'The request is asking to evaluate recent work rather than start new execution.',
+    },
+    {
+      prompt: 'Retry the previous worker turn. Do not implement a new slice.',
+      decision: 'retry',
+      requiredUserAction: 'confirm_worker_turn',
+      explanation: 'The request asks to retry prior worker execution.',
+    },
+    {
+      prompt: 'Run it again.',
+      decision: 'retry',
+      requiredUserAction: 'confirm_worker_turn',
+      explanation: 'The request asks to retry prior worker execution.',
     },
   ] as const)('classifies $decision requests without selecting a worker turn', ({
     decision,
@@ -470,6 +494,26 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       selectedWorkerCandidate: null,
       workerRequest: null,
     });
+  });
+
+  it.each([
+    'Implement the focused fix. Do not accept any human review/approval.',
+    'Implement the focused fix. Leave code available for the existing workspace-change review handoff.',
+  ])('delegates explicit implementation despite later review or handoff constraints: %s', (prompt) => {
+    const routing = createWorkerCoordinatorDecision({
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(routing).toMatchObject({
+      decision: 'worker_turn',
+      requiredUserAction: 'none',
+      selectedWorkerCandidate: { agentId: 'agent_codex' },
+      workerRequest: { objective: prompt },
+    });
+    expect(routing.delegationDraft).not.toBeNull();
   });
 
   it.each([
