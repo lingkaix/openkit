@@ -197,9 +197,11 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByText(/doesn't exist/i)).toBeInTheDocument();
   });
 
-  it('groups Settings into User, Server, and Administration', async () => {
+  it('groups Settings into Workspace, User, Server, and Administration', async () => {
     await renderAt('/settings/account');
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(await screen.findByText('Workspace')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'General' })).toBeInTheDocument();
     expect(screen.getByText('User')).toBeInTheDocument();
     expect(screen.getByText('Server')).toBeInTheDocument();
     expect(screen.getAllByText('Administration')).toHaveLength(2);
@@ -254,14 +256,21 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getAllByRole('button', { name: 'Settings' })).toHaveLength(1);
     settings.focus();
     await user.keyboard('{Enter}');
-    expect(await screen.findByRole('menuitem', { name: 'Workspace settings' })).toBeInTheDocument();
-    await user.keyboard('{Escape}');
-    await waitFor(() => expect(settings).toHaveFocus());
+    expect(
+      await screen.findByRole('navigation', { name: 'Settings sections' })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Workspace settings' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'General' }));
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(screen.getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page');
 
     await user.click(screen.getByRole('button', { name: 'Authoritative Workspace' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Other Workspace' }));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws_other');
     expect(await screen.findByRole('button', { name: 'Other Workspace' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page');
+    await user.click(screen.getByRole('button', { name: 'Account' }));
+    expect(screen.getByRole('button', { name: 'Account' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('opens existing Search from the brand-row icon instead of a pinned main strip', async () => {
@@ -279,10 +288,10 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(within(shortcuts).getAllByRole('button')).toHaveLength(1);
     await user.click(within(shortcuts).getByRole('button', { name: 'Settings' }));
     expect(screen.queryByRole('menuitem', { name: 'Workspace settings' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('menuitem', { name: 'Settings' }));
     expect(
       await screen.findByRole('navigation', { name: 'Settings sections' })
     ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'General' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Repositories' })).not.toBeInTheDocument();
   });
 

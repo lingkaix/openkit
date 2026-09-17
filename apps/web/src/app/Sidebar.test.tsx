@@ -180,16 +180,15 @@ describe('conversation navigation sidebar', () => {
     await user.click(screen.getByRole('button', { name: 'Restore conversation' }));
     expect(await screen.findByRole('button', { name: 'Updated conversation' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Settings' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Workspace settings' }));
-    expect(screen.getByLabelText('Location')).toHaveTextContent('/workspace');
-    expect(screen.getByRole('button', { name: 'Settings' })).toHaveAttribute(
-      'aria-current',
-      'page'
-    );
-    await user.click(screen.getByRole('button', { name: 'Settings' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Settings' }));
     expect(screen.getByLabelText('Location')).toHaveTextContent('/settings/account');
     expect(screen.getByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Workspace settings' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'General' }));
+    expect(screen.getByLabelText('Location')).toHaveTextContent('/workspace');
+    expect(screen.getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page');
+    await user.click(screen.getByRole('button', { name: 'Account' }));
+    expect(screen.getByLabelText('Location')).toHaveTextContent('/settings/account');
+    expect(screen.getByRole('button', { name: 'Account' })).toHaveAttribute('aria-current', 'page');
     queryClient.clear();
   });
 

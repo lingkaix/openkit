@@ -15,6 +15,7 @@ export type NavGroup =
   | 'primary'
   | 'workspace-compact'
   | 'demos'
+  | 'settings-workspace'
   | 'settings-user'
   | 'settings-server'
   | 'settings-admin'
@@ -99,7 +100,7 @@ export const SURFACES: Surface[] = [
     title: 'General',
     path: '/workspace',
     tier: 'A',
-    nav: 'workspace-compact',
+    nav: 'settings-workspace',
     icon: 'settings',
     board: '10',
     wp: 'WP-7',

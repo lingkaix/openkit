@@ -1761,7 +1761,6 @@ describe('Portability', () => {
     const appNav = await screen.findByRole('navigation', { name: 'Primary workspace navigation' });
     expect(within(appNav).queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
     await user.click(within(appNav).getByRole('button', { name: 'Settings' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Settings' }));
     const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
     await user.click(await within(nav).findByRole('button', { name: 'Portability' }));
 

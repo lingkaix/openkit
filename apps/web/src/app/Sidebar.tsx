@@ -131,7 +131,7 @@ export function Sidebar() {
   const workspaceId = useCurrentWorkspaceId();
   const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
-  const inSettings = pathname.startsWith('/settings');
+  const inSettings = pathname === '/workspace' || pathname.startsWith('/settings');
   const navigation = useConversationNavigation(inSettings ? null : workspaceId);
   const go = (path: string) => navigate(path);
   const compactSurfaces = surfacesInGroup('workspace-compact', workspace?.kind);
@@ -180,6 +180,14 @@ export function Sidebar() {
       {inSettings ? (
         <>
           <NavRow icon="chevron-right" label="Back to app" onPress={() => go('/')} />
+          {workspace ? (
+            <NavSection
+              group="settings-workspace"
+              heading="Workspace"
+              pathname={pathname}
+              go={go}
+            />
+          ) : null}
           <NavSection group="settings-user" heading="User" pathname={pathname} go={go} />
           <NavSection group="settings-server" heading="Server" pathname={pathname} go={go} />
           <NavSection group="settings-admin" heading="Administration" pathname={pathname} go={go} />
@@ -278,20 +286,16 @@ export function Sidebar() {
               className="grid min-w-0 grid-cols-4 justify-items-center gap-0.5 border-0 p-0"
               aria-label="Sidebar shortcuts"
             >
-              <Menu
-                icon="settings"
-                label="Settings"
-                selectedKey={workspace && pathname === '/workspace' ? '/workspace' : null}
-                items={[
-                  ...(workspace ? [{ id: '/workspace', label: 'Workspace settings' }] : []),
-                  { id: '/settings/account', label: 'Settings' },
-                ]}
-                onAction={(key) => go(String(key))}
-              />
-              {(workspace
-                ? compactSurfaces.filter((surface) => surface.id !== 'settings')
-                : []
-              ).map((surface) => (
+              <Button
+                variant="quiet"
+                title="Settings"
+                aria-label="Settings"
+                className="h-8 w-8 shrink-0 px-0!"
+                onPress={() => go('/settings/account')}
+              >
+                <Icon name="settings" />
+              </Button>
+              {(workspace ? compactSurfaces : []).map((surface) => (
                 <Button
                   key={surface.id}
                   variant="quiet"
