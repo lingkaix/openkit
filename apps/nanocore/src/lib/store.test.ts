@@ -10,10 +10,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 
-import { AgentSessionSchema } from '@openkit/protocol';
+import { AgentSessionSchema, RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-
+import { uuidv5 } from '../generative-kernel/uuid.js';
 import { createPendingUserTurnRecord } from '../goal-steering-authority.js';
 import { openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
@@ -69,6 +69,24 @@ function findStorageFilesContaining(root: string, value: string): string[] {
  */
 function artifactDigest(content: string): string {
   return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
+}
+
+/**
+ * Expected protocol envelope request id for one scoped non-UUID App command id.
+ *
+ * @param workspaceId Workspace that owns the event.
+ * @param threadId Thread that owns the event.
+ * @param requestId Nonempty non-UUID App command id.
+ * @returns Canonical lowercase UUID v5.
+ */
+function scopedProtocolTurnEventRequestId(
+  workspaceId: string,
+  threadId: string,
+  requestId: string
+): string {
+  return uuidv5(
+    `openkit:protocol.turn-event.request:${JSON.stringify([workspaceId, threadId, requestId])}`
+  );
 }
 
 /**
@@ -875,6 +893,142 @@ describe('FsStore persistence', () => {
       expect.soft(serializedEnvelope).not.toContain(sourcePath);
       expect.soft(parsed.data.agentSession).toEqual(expectedAgentSession);
     }
+  });
+
+  it('emits non-UUID completion and failure envelopes with one scoped protocol request id', () => {
+    const store = new FsStore();
+    seedDemoWorkspace(store);
+    const thread = store.createThread('ws_demo', 'Goal step event projection');
+    const otherThread = store.createThread('ws_demo', 'Other scoped command id');
+    const completionTurn = store.createTurn(
+      'ws_demo',
+      thread.id,
+      'Complete projection',
+      LOCAL_ACTOR
+    );
+    const failureTurn = store.createTurn('ws_demo', thread.id, 'Fail projection', LOCAL_ACTOR);
+    const otherTurn = store.createTurn(
+      'ws_demo',
+      otherThread.id,
+      'Same command id different thread',
+      LOCAL_ACTOR
+    );
+    const commandId = 'human-approved-readonly-goal-step-20260917-th7';
+    const expectedRequestId = scopedProtocolTurnEventRequestId('ws_demo', thread.id, commandId);
+    const completedTurn = store.updateTurn(completionTurn.id, {
+      completedAt: completionTurn.startedAt ?? new Date().toISOString(),
+      status: 'completed',
+    });
+    const failedTurn = store.updateTurn(failureTurn.id, {
+      completedAt: failureTurn.startedAt ?? new Date().toISOString(),
+      error: { code: 'worker_governance_turn_failed', message: 'Worker execution failed.' },
+      status: 'failed',
+    });
+
+    const completed = store.emitTurnEvent(completionTurn.id, {
+      data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
+      event: 'turn.completed',
+      requestId: commandId,
+      threadId: thread.id,
+      turnId: completionTurn.id,
+      workspaceId: 'ws_demo',
+    });
+    const failed = store.emitTurnEvent(failureTurn.id, {
+      data: { stopReason: 'error', turn: failedTurn, type: 'turn-completed' },
+      event: 'turn.completed',
+      requestId: commandId,
+      threadId: thread.id,
+      turnId: failureTurn.id,
+      workspaceId: 'ws_demo',
+    });
+    const repeated = store.emitTurnEvent(failureTurn.id, {
+      data: {
+        code: 'worker_governance_turn_failed',
+        message: 'Worker execution failed.',
+        type: 'error',
+      },
+      event: 'error',
+      requestId: commandId,
+      threadId: thread.id,
+      turnId: failureTurn.id,
+      workspaceId: 'ws_demo',
+    });
+    const otherScope = store.emitTurnEvent(otherTurn.id, {
+      data: { stopReason: 'error', turn: otherTurn, type: 'turn-completed' },
+      event: 'turn.completed',
+      requestId: commandId,
+      threadId: otherThread.id,
+      turnId: otherTurn.id,
+      workspaceId: 'ws_demo',
+    });
+
+    expect(RequestIdSchema.parse(completed.requestId)).toBe(expectedRequestId);
+    expect(failed.requestId).toBe(expectedRequestId);
+    expect(repeated.requestId).toBe(expectedRequestId);
+    expect(otherScope.requestId).toBe(
+      scopedProtocolTurnEventRequestId('ws_demo', otherThread.id, commandId)
+    );
+    expect(otherScope.requestId).not.toBe(expectedRequestId);
+    expect(store.getTurnEvents(completionTurn.id).map((event) => event.event)).toEqual([
+      'turn.completed',
+    ]);
+    expect(store.getTurnEvents(failureTurn.id).map((event) => event.event)).toEqual([
+      'turn.completed',
+      'error',
+    ]);
+  });
+
+  it('leaves a canonical protocol UUID request id unchanged on turn events', () => {
+    const store = new FsStore();
+    seedDemoWorkspace(store);
+    const thread = store.createThread('ws_demo', 'Canonical request id');
+    const turn = store.createTurn('ws_demo', thread.id, 'Keep UUID identity', LOCAL_ACTOR);
+    const requestId = '0190f4c8-0000-7000-8000-000000000701';
+    const completedTurn = store.updateTurn(turn.id, {
+      completedAt: turn.startedAt ?? new Date().toISOString(),
+      status: 'completed',
+    });
+
+    const emitted = store.emitTurnEvent(turn.id, {
+      data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
+      event: 'turn.completed',
+      requestId,
+      threadId: thread.id,
+      turnId: turn.id,
+      workspaceId: 'ws_demo',
+    });
+
+    expect(emitted.requestId).toBe(requestId);
+  });
+
+  it('still rejects blank turn event request ids', () => {
+    const store = new FsStore();
+    seedDemoWorkspace(store);
+    const thread = store.createThread('ws_demo', 'Blank request id');
+    const turn = store.createTurn('ws_demo', thread.id, 'Reject blank identity', LOCAL_ACTOR);
+    const completedTurn = store.updateTurn(turn.id, {
+      completedAt: turn.startedAt ?? new Date().toISOString(),
+      status: 'completed',
+    });
+    const event = {
+      data: {
+        stopReason: 'completed' as const,
+        turn: completedTurn,
+        type: 'turn-completed' as const,
+      },
+      event: 'turn.completed' as const,
+      threadId: thread.id,
+      turnId: turn.id,
+      workspaceId: 'ws_demo',
+    };
+
+    expect(() => store.emitTurnEvent(turn.id, { ...event, requestId: '' })).toThrow(
+      /Invalid uuid/i
+    );
+    expect(() => store.emitTurnEvent(turn.id, { ...event, requestId: '   ' })).toThrow(
+      /Invalid uuid/i
+    );
+    expect(store.getTurnEvents(turn.id)).toEqual([]);
   });
 
   it('persists command idempotency records and prunes expired entries after restart', () => {

@@ -19,6 +19,7 @@ import type {
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import { RequestIdSchema } from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
@@ -2330,6 +2331,67 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ])
     );
     coreDb.sqlite.close();
+  });
+
+  it.each([
+    'completed',
+    'failed',
+  ] as const)('preserves a non-UUID App command through Worker launch and %s closeout', async (outcome) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-command-id-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Check command identity');
+    const agentSessionId = `as_command_id_${outcome}`;
+    const requestId = 'human-approved-readonly-goal-step-20260917-th7';
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      ...(outcome === 'failed'
+        ? {
+            awaitWorkerCompletion: async () => ({
+              acceptedAt: '2026-07-15T00:00:03.000Z',
+              status: 'failed' as const,
+              stopReason: 'error',
+            }),
+          }
+        : {}),
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        agentSessionId,
+        '2026-07-15T00:00:03.000Z',
+        'Check command identity',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId,
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
+      expect(backend.lastPackage?.scope.requestId).toBe(requestId);
+      expect(backend.planSession(backend.lastPackage!).backendSessionId).toBe(
+        `openkit-${agentSessionId}`
+      );
+      expect(store.getTurnById(turn.id).status).toBe(outcome);
+      const events = store
+        .getTurnEvents(turn.id)
+        .filter((event) => event.event === 'turn.completed');
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) {
+        expect(RequestIdSchema.safeParse(event.requestId).success).toBe(true);
+      }
+      expect(new Set(events.map((event) => event.requestId)).size).toBe(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('cleans an ask-user worker before interrupting the product owners and requiring recovery', async () => {

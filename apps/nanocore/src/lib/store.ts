@@ -35,12 +35,14 @@ import {
   ArtifactSchema,
   ItemSchema,
   PROTOCOL_VERSION,
+  RequestIdSchema,
   responsibleUserIdForActor,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
 } from '@openkit/protocol';
 import { resolveDataRoot } from '../config/data-root.js';
+import { uuidv5 } from '../generative-kernel/uuid.js';
 import {
   type KnowledgePageReferenceProof,
   KnowledgePageValidationError,
@@ -170,7 +172,7 @@ type TurnEventInput = Omit<
   SseEventEnvelope,
   'protocolVersion' | 'requestId' | 'sequence' | 'timestamp'
 > & {
-  requestId?: SseEventEnvelope['requestId'];
+  requestId?: string | null;
 };
 
 const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -625,6 +627,38 @@ export function knowledgeAuthorityId(
   tuple: Readonly<Record<string, string>>
 ): string {
   return `${prefix}${createHash('sha256').update(JSON.stringify(tuple), 'utf8').digest('hex')}`;
+}
+
+/**
+ * Projects App command request ids onto protocol event envelope identity.
+ *
+ * Canonical UUIDs pass through. Null remains null. Blank strings stay invalid so the envelope schema still rejects them. Other nonempty ids become a Workspace/Thread-scoped UUID from the shared RFC 4122 helper.
+ *
+ * @param requestId App command id, protocol UUID, blank, or null.
+ * @param workspaceId Workspace carried by the event.
+ * @param threadId Optional Thread carried by the event.
+ * @returns Protocol envelope requestId before schema parse.
+ */
+function projectTurnEventRequestId(
+  requestId: string | null | undefined,
+  workspaceId: string,
+  threadId: string | undefined
+): string | null {
+  if (requestId == null) {
+    return null;
+  }
+
+  const canonical = RequestIdSchema.safeParse(requestId);
+  if (canonical.success) {
+    return canonical.data;
+  }
+  if (requestId.trim() === '') {
+    return requestId;
+  }
+
+  return uuidv5(
+    `openkit:protocol.turn-event.request:${JSON.stringify([workspaceId, threadId ?? '', requestId])}`
+  );
 }
 
 /**
@@ -3983,7 +4017,7 @@ export class FsStore {
     const envelope = SseEventEnvelopeSchema.parse({
       ...event,
       protocolVersion: PROTOCOL_VERSION,
-      requestId: event.requestId ?? null,
+      requestId: projectTurnEventRequestId(event.requestId, event.workspaceId, event.threadId),
       sequence: stream.sequence + 1,
       timestamp: now(),
     });
