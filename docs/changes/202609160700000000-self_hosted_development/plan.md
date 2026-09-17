@@ -12,6 +12,18 @@ Source: the engineer's 2026-09-16 request after redeploying the latest code on S
 
 Source: the engineer's subsequent 2026-09-16 browser comments and deployment confirmation. Replace the overflowing Task header text badge with an icon. Improve Account section spacing and relationships, prioritizing Workspace names over ids in invitations. Make Overview a useful current-Workspace summary of ongoing Tasks and Goals and required decisions, including direct Allow and Deny for approvals. Continue parallel corrections and live checks after the engineer's A2 redeployment; commit each correction separately. Cursor CLI and Claude Code authentication are available again; use Cursor for bounded implementation and Claude Code for consequential consultation.
 
+## Intent Epoch — Native Patch Capability Approval
+
+Source: the engineer's 2026-09-18 reply "批准方案" approves the previously presented Codex-only capability descriptor. Amend the existing communication and Codex adapter owners; preserve pinned 0.153.4 fallback metadata, logical model and Gateway routing, changing only native apply_patch_tool_type to freeform. The secret-free descriptor is Turn-private, startup-bound for first exec and exact resume, and removed with existing control cleanup. No shared Harness native-file envelope or expanded editing authority is authorized.
+
+## Intent Epoch — Move Work Before Platform Perfection
+
+Source: the engineer's subsequent 2026-09-18 clarification asks how far migration remains and states that perfection is unnecessary: move the next development and maintenance work, including the present work, into OpenKit and iterate there. Migration acceptance is one real bounded edit, test, review/application, commit, deployment and subsequent continuation through the supported product surfaces. Completing R092, exhaustive page coverage, further UI polish, all roadmap features and every independent open finding are not prerequisites. Preserve their obligations for later platform-hosted work; do not waive authorization, credential protection or safe recovery.
+
+## Current Migration Checkpoint
+
+Native patch capability is now approved and implementation is in progress; older pending-decision statements below are historical. Cursor worker-diagnostics owns the Codex adapter and focused regression files; primary owns the specification amendments, guide and this record. Expected change: the pinned native request exposes freeform apply_patch without another metadata, route or privilege change; actual bounded editing works and Turn cleanup removes the descriptor. A failure to preserve the native fallback is evidence to correct this narrow implementation, not to widen the shared Harness contract. Then qualify the Worker image and resume the retained R092 correction as the migration workload. Do not complete R092 portability or repeat accepted UI probes before testing the development loop. The pending R092 review is not approved by the descriptor decision; ordinary review/application authority remains separate. Independent reviewer r092_increment_review inspected the exact three-file authority/checkpoint amendment and found no blocking scope or authority issue. Documentation-model validation passed for 277 documents, specification lifecycle validation passed, and git diff --check passed. These results accept the amendment only; implementation, native image and development-loop evidence remain pending.
+
 ## Owners
 
 - `docs/core/work-model.md` owns the user-facing work backbone and execution narratives.

@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-10
+updated: 2026-09-18
 ---
 # Codex Worker Adapter
 
@@ -78,7 +78,7 @@ The shared harness supplies the adapter with:
 
 The adapter must not read NanoCore private storage or invent missing provider, model, policy, or credential decisions.
 
-The shared Harness supplies the admitted retained Thread-private data root plus a fresh AgentSession-private control binding. `openSession` selects its fixed `CODEX_HOME`, reports the native handle `pending`, and starts no process because the pinned CLI creates a conversation only with the first prompt. `prepareTurn` selects a fresh Turn-private final-message path beneath that AgentSession, uses the first command when no handle exists, and uses exact UUID resume when the binding already holds one proved handle. It returns no config or authentication files. AEP-resolved authentication and provider material may enter the child only through backend-materialized credential bindings and adapter-owned argv or safe environment. For each exact selected MCP server id, the adapter adds only `mcp_servers.<id>.url="http://127.0.0.1:17892/capabilities/mcp/<id>"` and `mcp_servers.<id>.bearer_token_env_var="OPENKIT_WORKER_CAPABILITY_TOKEN"` through inline `-c`; the raw token remains only in that environment variable and never enters argv. Unselected executable MCP entries and hooks remain disabled; retained data/configuration does not widen current launch authority, and sibling AgentSessions remain separately addressed. `--ignore-user-config` and `--ignore-rules` prevent the native runtime from treating Workspace policy files as hidden execution authority.
+The shared Harness supplies the admitted retained Thread-private data root plus a fresh AgentSession-private control binding. `openSession` selects its fixed `CODEX_HOME`, reports the native handle `pending`, and starts no process because the pinned CLI creates a conversation only with the first prompt. `prepareTurn` selects a fresh Turn-private final-message path beneath that AgentSession, uses the first command when no handle exists, and uses exact UUID resume when the binding already holds one proved handle. It returns no config or authentication files; it directly writes only the secret-free Turn-private model capability descriptor below. AEP-resolved authentication and provider material may enter the child only through backend-materialized credential bindings and adapter-owned argv or safe environment. For each exact selected MCP server id, the adapter adds only `mcp_servers.<id>.url="http://127.0.0.1:17892/capabilities/mcp/<id>"` and `mcp_servers.<id>.bearer_token_env_var="OPENKIT_WORKER_CAPABILITY_TOKEN"` through inline `-c`; the raw token remains only in that environment variable and never enters argv. Unselected executable MCP entries and hooks remain disabled; retained data/configuration does not widen current launch authority, and sibling AgentSessions remain separately addressed. `--ignore-user-config` and `--ignore-rules` prevent the native runtime from treating Workspace policy files as hidden execution authority.
 
 ## Launch Plan
 
@@ -89,6 +89,14 @@ No environment variable, AEP extension, test option, or image diagnostic may rep
 `collectTurn` requires exactly one `thread.started` event whose UUID equals the binding's existing native handle on resume or establishes the handle on the first Turn. It also requires the session-local rollout metadata to identify that same thread before returning the lowercase SHA-256 handle digest used by private Harness proof. The raw UUID remains only in the AgentSession-private adapter state and is never a product field, ordinary diagnostic, command result, or authorization input.
 
 `inspectSession` proves whether no child is active, whether the exact handle and same-thread session metadata remain available, and whether Turn-private writers are absent. `closeSession` is admitted only without an active child, removes its ephemeral native-handle/control binding and Turn-local outputs, preserves the complete retained `CODEX_HOME`, and returns exact writer/binding absence proof. The adapter contract has no separate interrupt or provenance operation; the shared Harness owns process-group termination, while `prepareTurn` may attach the existing Codex-local provenance sink lifecycle to the launch plan.
+
+## Logical Model Patch Capability
+
+OpenKit logical model IDs may be unknown to the pinned Codex model catalog. The adapter preserves the 0.153.4 unknown-model fallback capabilities and instructions, with the sole capability change `apply_patch_tool_type: freeform`, so a declared editing Worker can obey its native patch-tool instruction. This is native tool presentation, not model selection, context policy or new filesystem permission; the AEP's exact logical slug, trusted Gateway route and Sandbox authority remain unchanged. No unrelated model's catalog entry may be substituted.
+
+For each first or resumed Turn, the adapter directly creates one private, secret-free JSON model descriptor beneath the supplied Turn control/output directory and binds its absolute path with the pinned startup `-c model_catalog_json=<path>` option before spawning Codex. It never accepts a caller-supplied native catalog, places the descriptor in retained CODEX_HOME, or adds a shared Harness file envelope. The descriptor contains only the selected logical slug and pinned native capability metadata, never credentials, Provider identity, user input or permission grants. The native fallback instructions and all other capabilities remain unchanged.
+
+Creation and validation failure prevents child launch. A fresh Turn creates a fresh descriptor; stale or missing prior descriptors are never discovered or reused. The existing control lifecycle removes it after supervised writer termination on success, failure, interrupt and close, including failed preparation cleanup, while retaining native data. Tests must cover first exec and exact UUID resume, private creation and cleanup, unchanged model/route/credentials, and pinned native freeform patch exposure. A bounded real native edit is required for Worker-image qualification; argv assertions alone do not prove that the pinned runtime exposes or executes the tool.
 
 ## Native Output Mapping
 
