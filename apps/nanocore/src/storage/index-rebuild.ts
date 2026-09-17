@@ -1511,7 +1511,7 @@ function addKnowledgeFullTextTerms(
  * @param text Text to tokenize.
  * @returns Lowercase Unicode word tokens.
  */
-function tokenizeKnowledgeText(text: string): string[] {
+export function tokenizeKnowledgeText(text: string): string[] {
   return [...text.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]);
 }
 

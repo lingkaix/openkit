@@ -538,6 +538,74 @@ describe('quick chat app API', () => {
     ]);
   });
 
+  it('does not answer a generic Assistant prompt from a one-token Knowledge overlap', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-weak-knowledge-'));
+    let providerCalls = 0;
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      dataRoot,
+      store: createDemoStore({ dataRoot }),
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async (_provider, request) => {
+          providerCalls += 1;
+          return {
+            id: 'chatcmpl_catalog_ok_grok',
+            object: 'chat.completion',
+            created: 1,
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'CATALOG_OK_GROK' },
+                finish_reason: 'stop',
+              },
+            ],
+          };
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
+      method: 'POST',
+      body: JSON.stringify({
+        requestId: '00000000-0000-4000-8000-00000000c002',
+        kind: 'project-context',
+        title: 'Workspace maintenance notes',
+        content: 'This page is not about the selected Assistant model.',
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(createRes.status).toBe(201);
+
+    const res = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(
+          conversationRequest(
+            'Reply exactly CATALOG_OK_GROK. Do not call tools.',
+            'req_chat_weak_knowledge_overlap'
+          )
+        ),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+
+    expect(res.status, await res.clone().text()).toBe(200);
+    const parsed = SubmitConversationResponseSchema.parse(await res.json());
+    expect(providerCalls).toBe(1);
+    expect(parsed).toMatchObject({
+      outcome: 'answered',
+      explanation: 'The Assistant answered directly.',
+      item: {
+        type: 'assistant-message',
+        text: 'CATALOG_OK_GROK',
+      },
+    });
+    expect(parsed.item.text).not.toContain('This page is not about the selected Assistant model.');
+  });
+
   it('answers explicit Artifact input without substituting matching Workspace Knowledge', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-artifact-source-'));
     const coreDb = openCoreDb(dataRoot);

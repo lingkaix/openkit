@@ -18,6 +18,7 @@ import { resolveDataRootPath } from './storage/fs-layout.js';
 import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
+  tokenizeKnowledgeText,
 } from './storage/index-rebuild.js';
 
 /** Workspace Knowledge Page projection consumed by request-scoped Knowledge operations. */
@@ -334,13 +335,15 @@ export function answerKnowledgeManager(
   if (!pages) {
     throw new Error('Knowledge retrieval selected an unavailable page.');
   }
-  const matches = pages.map((page) => ({
-    id: page.knowledgePageId,
-    content: page.body,
-    kind: page.kind,
-    sourceReferences: page.sourceRefs,
-    title: page.title,
-  }));
+  const matches = pages
+    .map((page) => ({
+      id: page.knowledgePageId,
+      content: page.body,
+      kind: page.kind,
+      sourceReferences: page.sourceRefs,
+      title: page.title,
+    }))
+    .filter((page) => knowledgeAnswerCoversQueryTerms(input.query, page.title, page.content));
 
   if (matches.length === 0) {
     return {
@@ -354,7 +357,10 @@ export function answerKnowledgeManager(
       answer: 'I do not have enough source-traceable workspace knowledge to answer that.',
       citations: [],
       confidence: 0,
-      uncertainty: 'No matching workspace knowledge entries were found.',
+      uncertainty:
+        pages.length === 0
+          ? 'No matching workspace knowledge entries were found.'
+          : 'Retrieved workspace knowledge does not sufficiently cover the query.',
     };
   }
 
@@ -544,6 +550,33 @@ export function checkKnowledgeHealth(
     ],
     repairSuggestions: repairReport.suggestions,
   };
+}
+
+/**
+ * Returns whether a selected page covers enough distinct query terms to answer.
+ *
+ * @param query Caller query text.
+ * @param title Selected page title.
+ * @param body Selected page body.
+ * @returns True when two distinct query terms appear on the page, or a one-term query matches its title.
+ */
+function knowledgeAnswerCoversQueryTerms(query: string, title: string, body: string): boolean {
+  const queryTerms = new Set(tokenizeKnowledgeText(query));
+  if (queryTerms.size === 0) {
+    return false;
+  }
+  const titleTerms = new Set(tokenizeKnowledgeText(title));
+  if (queryTerms.size === 1) {
+    return [...queryTerms].every((term) => titleTerms.has(term));
+  }
+  const pageTerms = new Set([...titleTerms, ...tokenizeKnowledgeText(body)]);
+  let covered = 0;
+  for (const term of queryTerms) {
+    if (pageTerms.has(term)) {
+      covered += 1;
+    }
+  }
+  return covered >= 2;
 }
 
 /**

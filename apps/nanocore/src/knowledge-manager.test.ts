@@ -1045,6 +1045,81 @@ describe('Knowledge Manager answer operation', () => {
     });
   });
 
+  it('returns insufficient evidence for a single shared query token', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-weak-overlap-'));
+    const store = createDemoStore({ dataRoot });
+    const app = createApp({ dataRoot, store });
+    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requestId,
+        kind: 'project-context',
+        title: 'Workspace maintenance notes',
+        content: 'This page is not about the selected Assistant model.',
+      }),
+    });
+    expect(createRes.status).toBe(201);
+
+    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/answer', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: 'Reply exactly CATALOG_OK_GROK. Do not call tools.',
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(KnowledgeManagerAnswerResponseSchema.parse(await res.json())).toMatchObject({
+      citations: [],
+      confidence: 0,
+      outcome: 'insufficient-evidence',
+      uncertainty: 'Retrieved workspace knowledge does not sufficiently cover the query.',
+    });
+  });
+
+  it('answers a one-term query that appears on the selected page', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-one-term-answer-'));
+    const store = createDemoStore({ dataRoot });
+    const app = createApp({ dataRoot, store });
+    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requestId,
+        kind: 'project-context',
+        title: 'Cadence',
+        content: 'Weekly ship after smoke.',
+      }),
+    });
+    expect(createRes.status).toBe(201);
+
+    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/answer', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: 'Cadence' }),
+    });
+    expect(res.status).toBe(200);
+    const body = KnowledgeManagerAnswerResponseSchema.parse(await res.json());
+    expect(body).toMatchObject({
+      outcome: 'answered',
+      caller: 'app-api',
+    });
+    expect(body.answer).toContain('Weekly ship after smoke.');
+    expect(body.citations).toEqual([
+      expect.objectContaining({
+        title: 'Cadence',
+      }),
+    ]);
+    const incidental = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/answer', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: 'Weekly' }),
+    });
+    expect(KnowledgeManagerAnswerResponseSchema.parse(await incidental.json()).outcome).toBe(
+      'insufficient-evidence'
+    );
+  });
+
   it('returns only the governed retrieval projection without a second context owner', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-context-retrieval-'));
     const coreDb = openCoreDb(dataRoot);

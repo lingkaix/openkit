@@ -14,6 +14,8 @@ Perform one knowledge mutation at a time and re-read its durable result. Treat c
 
 Present knowledge proposals and conflicts to the user with their evidence and scope. Resolve or promote them only through an exposed operation and explicit user direction when that decision changes shared knowledge.
 
+A retrieved page is not automatically a sufficient answer. The Knowledge Manager answer operation checks distinct query-term coverage and can return `insufficient-evidence` even when retrieval found a page. Assistant Chat then uses its selected model; explicit Knowledge Manager calls retain the insufficient-evidence result.
+
 Use retrieval or bounded context preparation to obtain scoped knowledge evidence. Worker delivery is owned by Task Mode and its governed Context Package; do not create or materialize a second standalone Knowledge package. Do not bulk-load the knowledge store when a scoped query is sufficient, and do not treat retrieved context as authorization to mutate another record or external system.
 
 Use repair or health operations only for the condition they describe. Re-read the affected durable records after repair and report any remaining conflict, missing dependency, or typed failure.
