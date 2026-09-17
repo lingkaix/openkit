@@ -16,6 +16,9 @@ export {
   type ComposerArtifactOption,
   type ComposerDraft,
   type ComposerProps,
+  type ComposerWorkerEnvironmentCheck,
+  type ComposerWorkerEnvironmentOption,
+  type ComposerWorkerEnvironments,
 } from './Composer';
 export { Dialog, type DialogProps, Modal, type ModalProps } from './Dialog';
 export { CodeView, type CodeViewProps, DiffView, type DiffViewProps } from './DiffView';

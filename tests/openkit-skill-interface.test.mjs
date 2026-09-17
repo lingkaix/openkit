@@ -99,6 +99,72 @@ test('Worker environment discovery preserves admin scope and exact target routin
   );
 });
 
+test('conversation.submit forwards the exact Worker storage choice on the shared request body', async () => {
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find((entry) => entry.id === 'conversation.submit');
+  assert.ok(operation);
+  assert.equal(operation.appOperationId, 'submitConversation');
+  assert.equal(operation.clientMethod, 'app.submitConversation');
+  const storageRef = `wst_${'a'.repeat(32)}`;
+  const workerStorageChoice = {
+    expectedRevision: 4,
+    kind: 'selected',
+    purpose: 'work',
+    storageRef,
+  };
+  const input = {
+    artifactRefs: [],
+    input: 'Implement the focused Task Mode fix.',
+    requestId: '11111111-1111-4111-8111-111111111111',
+    targetRef: 'new-task-worker',
+    threadId: 'th_demo',
+    workspaceId: 'ws_demo',
+    workerStorageChoice,
+  };
+  assert.deepEqual(operation.inputSchema.parse(input).workerStorageChoice, workerStorageChoice);
+  assert.equal(
+    operation.inputSchema.safeParse({
+      ...input,
+      workerStorageChoice: { ...workerStorageChoice, goalId: 'goal_forged' },
+    }).success,
+    false
+  );
+  let observed;
+  await operation.handler(
+    {
+      client: {
+        app: {
+          submitConversation: async (...args) => {
+            observed = args;
+            return { outcome: 'accepted' };
+          },
+        },
+      },
+    },
+    operation.inputSchema.parse(input)
+  );
+  assert.deepEqual(observed, [
+    'ws_demo',
+    'th_demo',
+    {
+      artifactRefs: [],
+      input: 'Implement the focused Task Mode fix.',
+      requestId: '11111111-1111-4111-8111-111111111111',
+      targetRef: 'new-task-worker',
+      workerStorageChoice,
+    },
+  ]);
+  const omitted = operation.inputSchema.parse({
+    artifactRefs: [],
+    input: 'Implement the focused Task Mode fix.',
+    requestId: '11111111-1111-4111-8111-111111111111',
+    targetRef: 'new-task-worker',
+    threadId: 'th_demo',
+    workspaceId: 'ws_demo',
+  });
+  assert.equal('workerStorageChoice' in omitted, false);
+});
+
 test('catalog configuration application requires exact human confirmation and forwards the shared payload', async () => {
   const { operationCatalog } = await operations();
   const operation = operationCatalog.find(

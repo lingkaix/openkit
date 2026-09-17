@@ -165,6 +165,7 @@ const WEB_OPERATION_GROUPS = {
     resumeThreadGoal: { disposition: 'live', surface: 'Goal' },
     reviseThreadGoalPlan: { disposition: 'live', surface: 'Goal' },
     runThreadGoalStep: { disposition: 'live', surface: 'Goal' },
+    selectWorkerEnvironment: { disposition: 'live', surface: 'Chat' },
     submitConversation: { disposition: 'live', surface: 'Chat' },
     startTaskMode: { disposition: 'live', surface: 'Task' },
     startThreadGoal: { disposition: 'live', surface: 'Goal' },

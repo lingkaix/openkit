@@ -1,13 +1,16 @@
-import type {
-  CoreClient,
-  ListThreadItemsResponse,
-  SseEventEnvelope,
-  Thread,
+import type { WorkerEnvironmentSummary } from '@openkit/app-api-schemas';
+import {
+  ApiCallError,
+  type CoreClient,
+  type ListThreadItemsResponse,
+  type SseEventEnvelope,
+  type Thread,
 } from '@openkit/core-client';
 import { ItemSchema } from '@openkit/protocol';
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { useConnectionFailure, useCoreClient } from '../../app/core-client';
+import type { ComposerWorkerEnvironmentOption, ComposerWorkerEnvironments } from '../../primitives';
 import { useWorkspaceStore } from '../workspace-store';
 
 /** One item in a thread's stream (the protocol Item union, via the response type). */
@@ -29,6 +32,7 @@ export const chatKeys = {
     ['thread-dashboard', workspaceId, threadId] as const,
   conversationTargets: (workspaceId: string, threadId?: string) =>
     ['conversation-targets', workspaceId, threadId ?? 'starter'] as const,
+  workerEnvironments: (workspaceId: string) => ['worker-environments', workspaceId] as const,
   feedback: (workspaceId: string, threadId: string, turnId: string) =>
     ['turn-feedback', workspaceId, threadId, turnId] as const,
   submitMutation: ['conversation', 'submit'] as const,
@@ -43,6 +47,176 @@ export interface ConversationDraft {
   logicalModelId?: string;
   artifactRefs: Array<{ artifactId: string; artifactVersion: number }>;
   requestId: string;
+  workerStorageChoice?: {
+    expectedRevision: number;
+    kind: 'selected';
+    purpose: 'work';
+    storageRef: string;
+  };
+}
+
+/** Maps one retained-environment list page onto Composer Advanced options. */
+export function projectWorkerEnvironmentOptions(
+  environments: readonly WorkerEnvironmentSummary[],
+  threads: readonly Pick<Thread, 'id' | 'name' | 'preview'>[]
+): ComposerWorkerEnvironmentOption[] {
+  return environments.map((environment) => {
+    const labels = contributorLabels(environment.contributors, threads);
+    return {
+      expectedRevision: environment.revision,
+      layoutDigest: environment.layoutDigest,
+      lineage: contributorLineage(environment.contributors, labels),
+      occupancy: environmentOccupancy(environment.state),
+      purpose: 'work',
+      sourceLabel: labels.join(', ') || 'Authorized conversation',
+      storageRef: environment.storageRef,
+    };
+  });
+}
+
+/** Loads retained environments for Composer Advanced settings after the operator opens them. */
+export function useComposerWorkerEnvironments(
+  workspaceId: string | null,
+  threadId: string | null
+): ComposerWorkerEnvironments {
+  const client = useCoreClient();
+  const [browse, setBrowse] = useState(false);
+  const query = useQuery({
+    queryKey: chatKeys.workerEnvironments(workspaceId ?? ''),
+    enabled: Boolean(workspaceId) && browse,
+    retry: false,
+    queryFn: async () => {
+      const [environments, threads] = await Promise.all([
+        client.app.listWorkerEnvironments(workspaceId as string, { limit: 100 }),
+        client.core.listThreads(workspaceId as string),
+      ]);
+      return projectWorkerEnvironmentOptions(environments.items, threads.items);
+    },
+  });
+  const check = useMutation({
+    mutationFn: async (environment: ComposerWorkerEnvironmentOption) =>
+      client.app.selectWorkerEnvironment(
+        workspaceId as string,
+        workerEnvironmentSelectRequest(threadId as string, environment)
+      ),
+  });
+  return {
+    items: query.data ?? [],
+    onBrowse: () => {
+      if (browse) {
+        void query.refetch();
+        return;
+      }
+      setBrowse(true);
+    },
+    onCheck: threadId
+      ? (environment) => {
+          check.mutate(environment);
+        }
+      : undefined,
+    selectionCheck:
+      threadId && check.variables
+        ? {
+            message: check.isPending
+              ? 'Checking permission…'
+              : check.isError
+                ? workerEnvironmentCheckMessage(check.error)
+                : 'Preview passed. Task permissions are checked again when you send.',
+            status: check.isPending ? 'pending' : check.isError ? 'denied' : 'admitted',
+            storageRef: check.variables.storageRef,
+          }
+        : null,
+    status: !browse
+      ? 'idle'
+      : query.isPending
+        ? 'loading'
+        : query.isError
+          ? isWorkerEnvironmentAccessDenied(query.error)
+            ? 'denied'
+            : 'error'
+          : 'ready',
+    threadId,
+  };
+}
+
+/** Resolves visible contributor Threads to readable source labels. */
+function contributorLabels(
+  contributors: readonly WorkerEnvironmentSummary['contributors'][number][],
+  threads: readonly Pick<Thread, 'id' | 'name' | 'preview'>[]
+): string[] {
+  return [
+    ...new Set(
+      contributors.flatMap((contributor) => {
+        const thread = threads.find((candidate) => candidate.id === contributor.threadId);
+        const label = thread?.name?.trim() || thread?.preview?.trim();
+        return label ? [label] : [];
+      })
+    ),
+  ];
+}
+
+/** Summarizes recorded contributor purposes without inferring the new Task purpose. */
+function contributorLineage(
+  contributors: readonly WorkerEnvironmentSummary['contributors'][number][],
+  labels: readonly string[]
+): string {
+  const purposes = [
+    ...new Set(
+      contributors.map((contributor) =>
+        contributor.purpose === 'independent-review' ? 'Independent review' : 'Work'
+      )
+    ),
+  ];
+  const purposeText = purposes.join(', ') || 'Work';
+  return labels.length > 0 ? `${purposeText} from ${labels.join(', ')}` : purposeText;
+}
+
+/** Labels recorded occupancy without claiming that reuse is authorized. */
+function environmentOccupancy(state: WorkerEnvironmentSummary['state']): string {
+  switch (state) {
+    case 'idle':
+      return 'Idle';
+    case 'reserved':
+      return 'Busy';
+    case 'attached':
+      return 'Attached';
+    case 'purge-pending':
+      return 'Unavailable';
+    default:
+      return 'Unknown';
+  }
+}
+
+/** Builds a read-only selection preview for an independent Task. */
+function workerEnvironmentSelectRequest(
+  threadId: string,
+  environment: Pick<
+    ComposerWorkerEnvironmentOption,
+    'expectedRevision' | 'layoutDigest' | 'purpose' | 'storageRef'
+  >
+) {
+  return {
+    adjudicatedThreadIds: [] as string[],
+    expectedRevision: environment.expectedRevision,
+    goalId: null,
+    layoutDigest: environment.layoutDigest,
+    purpose: environment.purpose,
+    storageRef: environment.storageRef,
+    taskId: null,
+    threadId,
+  };
+}
+
+/** Preserves the public selection refusal without discarding the draft. */
+function workerEnvironmentCheckMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : "Couldn't use this Worker environment.";
+}
+
+/** Distinguishes an access refusal from an unavailable inventory. */
+function isWorkerEnvironmentAccessDenied(error: unknown): boolean {
+  return error instanceof ApiCallError && (error.status === 401 || error.status === 403);
 }
 
 /** Lists the current Workspace Composer targets for a starter or active Thread. */

@@ -1,4 +1,4 @@
-import type { CoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import {
   ArtifactReferenceItemSchema,
   ArtifactSchema,
@@ -3477,4 +3477,440 @@ it('closes the outputs panel from inside and returns focus to its toggle', async
     'aria-expanded',
     'true'
   );
+});
+
+const WORKER_STORAGE_REF = 'wst_7115b4a86a474d0db40bcf65482ecd58';
+const WORKER_LAYOUT_DIGEST = `sha256:${'e'.repeat(64)}`;
+const WORKER_ENVIRONMENT = {
+  attachmentGeneration: 1,
+  contributors: [
+    {
+      attachmentGeneration: 1,
+      createdAt: '2026-09-16T14:24:10.747Z',
+      goalId: null,
+      purpose: 'work' as const,
+      responsibleUserId: 'user_owner',
+      taskId: null,
+      threadId: THREAD.id,
+    },
+  ],
+  createdAt: '2026-09-16T14:24:10.746Z',
+  layout: {
+    family: 'openkit-worker',
+    version: '1',
+    uid: 1000,
+    gid: 1000,
+    workingDirectory: '/tmp/openkit-bootstrap',
+    platform: { architecture: 'arm64', os: 'linux' },
+    targets: [{ target: '/workspace' }, { target: '/sandbox' }],
+  },
+  layoutDigest: WORKER_LAYOUT_DIGEST,
+  revision: 4,
+  state: 'idle' as const,
+  storageRef: WORKER_STORAGE_REF,
+  updatedAt: '2026-09-16T15:05:28.713Z',
+  workspaceId: 'ws1',
+};
+
+async function chooseNewTaskWorker(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+  await user.click(await screen.findByRole('option', { name: 'New task worker' }));
+}
+
+function workerSelectRequest(
+  threadId: string,
+  environment: Pick<
+    typeof WORKER_ENVIRONMENT,
+    'revision' | 'layoutDigest' | 'storageRef'
+  > = WORKER_ENVIRONMENT
+) {
+  return {
+    adjudicatedThreadIds: [],
+    expectedRevision: environment.revision,
+    goalId: null,
+    layoutDigest: environment.layoutDigest,
+    purpose: 'work' as const,
+    storageRef: environment.storageRef,
+    taskId: null,
+    threadId,
+  };
+}
+
+async function chooseRetainedEnvironment(
+  user: ReturnType<typeof userEvent.setup>,
+  optionName = 'Competitive teardown · Idle',
+  storageRef = WORKER_STORAGE_REF
+) {
+  await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+  const details = screen.getByText('Advanced settings').closest('details');
+  expect(details).toBeInstanceOf(HTMLDetailsElement);
+  expect((details as HTMLDetailsElement).open).toBe(false);
+  await user.click(screen.getByText('Advanced settings'));
+  await waitFor(() => expect(screen.getByRole('option', { name: optionName })).toBeInTheDocument());
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Worker environment' }),
+    storageRef
+  );
+  await user.keyboard('{Escape}');
+}
+
+describe('Worker environment Advanced choice', () => {
+  it('omits a new-environment choice and does not list or select retained storage', async () => {
+    const user = userEvent.setup();
+    const listWorkerEnvironments = vi.fn();
+    const selectWorkerEnvironment = vi.fn();
+    const submitConversation = vi.fn().mockResolvedValue({
+      ...CHAT_MODE_RESPONSE,
+      targetRef: 'new-task-worker',
+    });
+    const client = makeClient(
+      { listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
+      { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
+    );
+    renderApp('/chat/ws1/th1', client);
+    await chooseNewTaskWorker(user);
+    await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Fresh worker');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() =>
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        'th1',
+        expect.objectContaining({
+          input: 'Fresh worker',
+          targetRef: 'new-task-worker',
+        })
+      )
+    );
+    expect(submitConversation.mock.calls[0]?.[2]).not.toHaveProperty('workerStorageChoice');
+    expect(listWorkerEnvironments).not.toHaveBeenCalled();
+    expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /environment/i })).not.toBeInTheDocument();
+  });
+
+  it('labels occupancy from Thread names and shows independent-review as lineage, not Task purpose', async () => {
+    const user = userEvent.setup();
+    const attachedRef = 'wst_164a606d43e246a1a1c9a952dffcb39f';
+    const attachedThread = {
+      ...THREAD,
+      id: 'th_12',
+      name: 'Goal closeout',
+      preview: 'Goal closeout',
+    };
+    const attached = {
+      ...WORKER_ENVIRONMENT,
+      contributors: [
+        {
+          ...WORKER_ENVIRONMENT.contributors[0]!,
+          purpose: 'independent-review' as const,
+          threadId: attachedThread.id,
+        },
+      ],
+      state: 'attached' as const,
+      storageRef: attachedRef,
+    };
+    const selectWorkerEnvironment = vi.fn().mockResolvedValue({ selected: attached });
+    const listWorkerEnvironments = vi.fn().mockResolvedValue({
+      items: [WORKER_ENVIRONMENT, attached],
+      nextCursor: null,
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          listThreads: vi.fn().mockResolvedValue({ items: [THREAD, attachedThread] }),
+        },
+        { listWorkerEnvironments, selectWorkerEnvironment }
+      )
+    );
+    await chooseNewTaskWorker(user);
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    expect(
+      await screen.findByRole('option', { name: 'Competitive teardown · Idle' })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Goal closeout · Attached' })).toBeInTheDocument();
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Worker environment' }),
+      attachedRef
+    );
+    expect(screen.getByText('Independent review from Goal closeout')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(selectWorkerEnvironment).toHaveBeenCalledWith(
+        'ws1',
+        workerSelectRequest('th1', attached)
+      )
+    );
+    expect(screen.queryByText('Eligible')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(WORKER_LAYOUT_DIGEST);
+    expect(document.body).not.toHaveTextContent(WORKER_STORAGE_REF);
+    expect(document.body).not.toHaveTextContent(attachedRef);
+    expect(document.body).not.toHaveTextContent('th_12');
+  });
+
+  it('previews select on an existing Thread then forwards the exact choice without a send-time select', async () => {
+    const user = userEvent.setup();
+    const listWorkerEnvironments = vi
+      .fn()
+      .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null });
+    const selectWorkerEnvironment = vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT });
+    const submitConversation = vi.fn().mockResolvedValue({
+      ...CHAT_MODE_RESPONSE,
+      targetRef: 'new-task-worker',
+    });
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+        listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+      },
+      { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
+    );
+    renderApp('/chat/ws1/th1', client);
+    await chooseNewTaskWorker(user);
+    await chooseRetainedEnvironment(user);
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await waitFor(() =>
+      expect(selectWorkerEnvironment).toHaveBeenCalledWith('ws1', workerSelectRequest('th1'))
+    );
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
+      'Competitive teardown · Idle'
+    );
+    expect(screen.getByText('Idle')).toBeInTheDocument();
+    expect(
+      screen.getByText('Preview passed. Task permissions are checked again when you send.')
+    ).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(WORKER_STORAGE_REF);
+    expect(document.body).not.toHaveTextContent('/tmp/openkit-bootstrap');
+    expect(document.body).not.toHaveTextContent(WORKER_LAYOUT_DIGEST);
+    await user.keyboard('{Escape}');
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Reuse worker');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() =>
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        'th1',
+        expect.objectContaining({
+          input: 'Reuse worker',
+          targetRef: 'new-task-worker',
+          workerStorageChoice: {
+            expectedRevision: 4,
+            kind: 'selected',
+            purpose: 'work',
+            storageRef: WORKER_STORAGE_REF,
+          },
+        })
+      )
+    );
+    expect(submitConversation.mock.calls[0]?.[2]).not.toHaveProperty(
+      'workerEnvironmentLayoutDigest'
+    );
+    expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
+    expect(selectWorkerEnvironment.mock.invocationCallOrder[0]).toBeLessThan(
+      submitConversation.mock.invocationCallOrder[0] ?? 0
+    );
+  });
+
+  it('tells a starter that send checks permission and retries the exact submit after transport failure', async () => {
+    const user = userEvent.setup();
+    const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
+    const listWorkerEnvironments = vi
+      .fn()
+      .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null });
+    const selectWorkerEnvironment = vi.fn();
+    const submitConversation = vi.fn().mockRejectedValue(new Error('chat_mode_unavailable'));
+    const client = makeClient(
+      { createThread, listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }) },
+      { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
+    );
+    renderApp('/chat', client);
+    await chooseNewTaskWorker(user);
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('option', { name: 'Competitive teardown · Idle' })
+      ).toBeInTheDocument()
+    );
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Worker environment' }),
+      WORKER_STORAGE_REF
+    );
+    expect(screen.getByText('Permission is checked when you send.')).toBeInTheDocument();
+    expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+    await user.keyboard('{Escape}');
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    await user.type(input, 'Starter reuse');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText("Couldn't start that chat. Try again.")).toBeInTheDocument();
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+    expect(createThread.mock.invocationCallOrder[0]).toBeLessThan(
+      submitConversation.mock.invocationCallOrder[0] ?? 0
+    );
+    expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+    const submitted = submitConversation.mock.calls[0]?.[2] as { requestId: string };
+    expect(input).toHaveValue('Starter reuse');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
+    expect(submitConversation.mock.calls[1]?.[2]).toMatchObject({
+      input: 'Starter reuse',
+      requestId: submitted.requestId,
+      targetRef: 'new-task-worker',
+      workerStorageChoice: {
+        expectedRevision: 4,
+        kind: 'selected',
+        purpose: 'work',
+        storageRef: WORKER_STORAGE_REF,
+      },
+    });
+    expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('keeps a stale retained choice after server send denial and does not substitute a new environment', async () => {
+    const user = userEvent.setup();
+    const listWorkerEnvironments = vi
+      .fn()
+      .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null });
+    const selectWorkerEnvironment = vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT });
+    const submitConversation = vi.fn().mockRejectedValue(
+      new ApiCallError(409, 'Worker environment revision changed.', {
+        code: 'revision_conflict',
+      })
+    );
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+        listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+      },
+      { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
+    );
+    renderApp('/chat/ws1/th1', client);
+    await chooseNewTaskWorker(user);
+    await chooseRetainedEnvironment(user);
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await user.type(input, 'Stale reuse');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+    expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
+    expect(submitConversation.mock.calls[0]?.[2]).toMatchObject({
+      input: 'Stale reuse',
+      workerStorageChoice: {
+        expectedRevision: 4,
+        kind: 'selected',
+        purpose: 'work',
+        storageRef: WORKER_STORAGE_REF,
+      },
+    });
+    expect(input).toHaveValue('Stale reuse');
+    expect(document.body).not.toHaveTextContent('revision_conflict');
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveValue(
+      WORKER_STORAGE_REF
+    );
+  });
+
+  it('shows idle occupancy with the actual select denial on an existing Thread', async () => {
+    const user = userEvent.setup();
+    const listWorkerEnvironments = vi
+      .fn()
+      .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null });
+    const selectWorkerEnvironment = vi.fn().mockRejectedValue(
+      new ApiCallError(403, 'Current deployment administrator authority is required.', {
+        code: 'deployment_admin_required',
+      })
+    );
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+        listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+      },
+      { listWorkerEnvironments, selectWorkerEnvironment }
+    );
+    renderApp('/chat/ws1/th1', client);
+    await chooseNewTaskWorker(user);
+    await chooseRetainedEnvironment(user);
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    expect(await screen.findByText('Idle')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Current deployment administrator authority is required.')
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Eligible')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('deployment_admin_required');
+    expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
+    expect(selectWorkerEnvironment).toHaveBeenCalledWith('ws1', workerSelectRequest('th1'));
+  });
+
+  it('preserves the selected retained environment when inventory order changes', async () => {
+    const user = userEvent.setup();
+    const otherRef = 'wst_164a606d43e246a1a1c9a952dffcb39f';
+    const otherThread = {
+      ...THREAD,
+      id: 'th_12',
+      name: 'Goal closeout',
+      preview: 'Goal closeout',
+    };
+    const other = {
+      ...WORKER_ENVIRONMENT,
+      contributors: [
+        {
+          ...WORKER_ENVIRONMENT.contributors[0]!,
+          threadId: otherThread.id,
+        },
+      ],
+      storageRef: otherRef,
+    };
+    const listWorkerEnvironments = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [WORKER_ENVIRONMENT, other], nextCursor: null })
+      .mockResolvedValue({ items: [other], nextCursor: null });
+    const selectWorkerEnvironment = vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          listThreads: vi.fn().mockResolvedValue({ items: [THREAD, otherThread] }),
+        },
+        { listWorkerEnvironments, selectWorkerEnvironment }
+      )
+    );
+    await chooseNewTaskWorker(user);
+    await chooseRetainedEnvironment(user);
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveValue(
+      WORKER_STORAGE_REF
+    );
+    await user.click(screen.getByText('Advanced settings'));
+    await waitFor(() => expect(listWorkerEnvironments).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('option', { name: 'Goal closeout · Idle' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Competitive teardown · Idle' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveValue(
+      WORKER_STORAGE_REF
+    );
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
+      'Competitive teardown · Idle'
+    );
+    expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows list denial without widening authority', async () => {
+    const user = userEvent.setup();
+    const listWorkerEnvironments = vi.fn().mockRejectedValue(
+      new ApiCallError(403, 'Current deployment administrator authority is required.', {
+        code: 'deployment_admin_required',
+      })
+    );
+    const client = makeClient(
+      { listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
+      { listWorkerEnvironments }
+    );
+    renderApp('/chat/ws1/th1', client);
+    await chooseNewTaskWorker(user);
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(listWorkerEnvironments).toHaveBeenCalledWith('ws1', { limit: 100 });
+    expect(screen.queryByLabelText(/token/i)).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('deployment_admin_required');
+  });
 });

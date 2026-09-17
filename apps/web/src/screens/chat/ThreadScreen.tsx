@@ -20,6 +20,7 @@ import {
   type ThreadItem,
   taskThreadPath,
   useArchiveThread,
+  useComposerWorkerEnvironments,
   useConversationTargets,
   useCurrentWorkspaceId,
   useInterruptTurn,
@@ -132,6 +133,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const items = useThreadItems(workspaceId, threadId);
   const dashboard = useThreadDashboard(workspaceId, threadId);
   const targets = useConversationTargets(workspaceId, threadId);
+  const workerEnvironments = useComposerWorkerEnvironments(workspaceId, threadId);
   const workspaceArtifacts = useArtifacts(workspaceId);
   const importArtifact = useImportWorkspaceArtifact();
   const activeTurn = dashboard.data?.turns.findLast((turn) => turn.status === 'running');
@@ -505,6 +507,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 version: artifact.version,
                 label: artifact.title,
               }))}
+              workerEnvironments={workerEnvironments}
               onImportFile={importFile}
               disabledReason={
                 disconnected

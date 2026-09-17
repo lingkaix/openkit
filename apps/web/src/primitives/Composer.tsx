@@ -34,6 +34,41 @@ export interface ComposerDraft {
   logicalModelId?: string;
   artifactRefs: Array<{ artifactId: string; artifactVersion: number }>;
   requestId: string;
+  workerStorageChoice?: {
+    expectedRevision: number;
+    kind: 'selected';
+    purpose: 'work';
+    storageRef: string;
+  };
+}
+
+/** Product-safe retained-environment option for Composer Advanced settings. */
+export interface ComposerWorkerEnvironmentOption {
+  expectedRevision: number;
+  layoutDigest: string;
+  lineage: string;
+  occupancy: string;
+  purpose: 'work';
+  sourceLabel: string;
+  storageRef: string;
+}
+
+/** Result of the existing selectWorkerEnvironment admission check. */
+export interface ComposerWorkerEnvironmentCheck {
+  message: string;
+  status: 'pending' | 'admitted' | 'denied' | 'waiting-for-thread';
+  storageRef: string;
+}
+
+/** Bounded retained-environment inventory for Composer Advanced settings. */
+export interface ComposerWorkerEnvironments {
+  items: ComposerWorkerEnvironmentOption[];
+  onBrowse: () => void;
+  onCheck?: (environment: ComposerWorkerEnvironmentOption) => void;
+  selectionCheck?: ComposerWorkerEnvironmentCheck | null;
+  status: 'idle' | 'loading' | 'ready' | 'denied' | 'error';
+  /** Existing Thread identity, or null on a starter that has not created one. */
+  threadId?: string | null;
 }
 
 export interface ComposerProps {
@@ -42,6 +77,7 @@ export interface ComposerProps {
   disabledReason?: string;
   targetCatalog?: ConversationTargetCatalog | null;
   artifacts?: ComposerArtifactOption[];
+  workerEnvironments?: ComposerWorkerEnvironments;
   onImportFile?: (file: File) => Promise<ComposerArtifactOption>;
   onSubmit?: (draft: ComposerDraft) => unknown;
 }
@@ -52,6 +88,7 @@ export function Composer({
   disabledReason,
   targetCatalog,
   artifacts = [],
+  workerEnvironments,
   onImportFile,
   onSubmit,
 }: ComposerProps) {
@@ -59,6 +96,8 @@ export function Composer({
   const [targetRef, setTargetRef] = useState('');
   const [logicalModelId, setLogicalModelId] = useState('');
   const [selectedArtifacts, setSelectedArtifacts] = useState<ComposerArtifactOption[]>([]);
+  const [selectedEnvironment, setSelectedEnvironment] =
+    useState<ComposerWorkerEnvironmentOption | null>(null);
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingImport, setPendingImport] = useState(false);
@@ -67,10 +106,13 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled = Boolean(disabledReason);
   const selectedTarget = targetCatalog?.targets.find((target) => target.targetRef === targetRef);
+  const environmentApplicable = isWorkerEnvironmentTarget(selectedTarget?.kind);
+  const environmentReady = selectedEnvironment === null || environmentApplicable;
   const canSubmit =
     !disabled &&
     !pending &&
     !pendingImport &&
+    environmentReady &&
     Boolean(value.trim() || selectedArtifacts.length) &&
     (!targetCatalog ||
       (selectedTarget?.availability === 'available' &&
@@ -119,9 +161,20 @@ export function Composer({
           artifactVersion: artifact.version,
         })),
         requestId,
+        ...(selectedEnvironment
+          ? {
+              workerStorageChoice: {
+                expectedRevision: selectedEnvironment.expectedRevision,
+                kind: 'selected' as const,
+                purpose: selectedEnvironment.purpose,
+                storageRef: selectedEnvironment.storageRef,
+              },
+            }
+          : {}),
       });
       setValue('');
       setSelectedArtifacts([]);
+      setSelectedEnvironment(null);
       setRequestId(crypto.randomUUID());
     } catch {
       // The caller owns error presentation; retaining state here preserves exact retry identity.
@@ -251,6 +304,13 @@ export function Composer({
                   </button>
                 </>
               ) : null}
+              {environmentApplicable || selectedEnvironment ? (
+                <WorkerEnvironmentPicker
+                  environments={workerEnvironments}
+                  selected={selectedEnvironment}
+                  onSelect={setSelectedEnvironment}
+                />
+              ) : null}
             </Dialog>
           </Popover>
         </DialogTrigger>
@@ -283,8 +343,114 @@ export function Composer({
           <Icon name={pending ? 'spinner' : 'send'} />
         </AriaButton>
       </div>
+      {selectedEnvironment && !environmentApplicable ? (
+        <div className="mt-2 flex flex-col items-start gap-1">
+          <p className="text-xs text-fg-muted">
+            Reset this Worker environment to new, or choose a Task Worker target.
+          </p>
+          <button
+            type="button"
+            onClick={() => setSelectedEnvironment(null)}
+            className="text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          >
+            Use new environment
+          </button>
+        </div>
+      ) : null}
     </form>
   );
+}
+
+/** Identifies targets that start new Task work and accept a storage choice. */
+function isWorkerEnvironmentTarget(kind: ConversationTarget['kind'] | undefined): boolean {
+  return kind === 'warm-worker' || kind === 'new-task-worker';
+}
+
+/** Native Advanced settings for an explicit retained Worker environment choice. */
+function WorkerEnvironmentPicker({
+  environments,
+  onSelect,
+  selected,
+}: {
+  environments?: ComposerWorkerEnvironments;
+  onSelect: (environment: ComposerWorkerEnvironmentOption | null) => void;
+  selected: ComposerWorkerEnvironmentOption | null;
+}) {
+  const options = retainedEnvironmentOptions(environments?.items ?? [], selected);
+  const selectedItem = options.find((item) => item.storageRef === selected?.storageRef) ?? selected;
+  const check =
+    selected && environments?.selectionCheck?.storageRef === selected.storageRef
+      ? environments.selectionCheck
+      : selected && environments?.threadId === null
+        ? {
+            message: 'Permission is checked when you send.',
+            status: 'waiting-for-thread' as const,
+            storageRef: selected.storageRef,
+          }
+        : null;
+  return (
+    <details
+      className="mt-2"
+      onToggle={(event) => {
+        if (event.currentTarget.open) environments?.onBrowse();
+      }}
+    >
+      <summary className="cursor-pointer px-2 py-1 text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus">
+        Advanced settings
+      </summary>
+      <div className="mt-2 flex flex-col gap-1 px-2">
+        <label className="text-xs font-bold text-fg-muted" htmlFor="composer-worker-environment">
+          Worker environment
+        </label>
+        <select
+          id="composer-worker-environment"
+          aria-label="Worker environment"
+          value={selected?.storageRef ?? 'new'}
+          onChange={(event) => {
+            const value = event.currentTarget.value;
+            if (value === 'new') {
+              onSelect(null);
+              return;
+            }
+            const listed = options.find((item) => item.storageRef === value);
+            if (!listed) return;
+            onSelect(listed);
+            environments?.onCheck?.(listed);
+          }}
+          className="w-full rounded-ok border border-border bg-card px-2 py-1 text-sm text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+        >
+          <option value="new">New environment</option>
+          {options.map((item) => (
+            <option key={item.storageRef} value={item.storageRef}>
+              {item.sourceLabel} · {item.occupancy}
+            </option>
+          ))}
+        </select>
+        {environments?.status === 'denied' ? (
+          <p className="text-xs text-fg-muted">Access denied</p>
+        ) : environments?.status === 'error' ? (
+          <p className="text-xs text-fg-muted">Couldn't load retained environments.</p>
+        ) : selectedItem ? (
+          <>
+            <p className="text-xs text-fg-muted">{selectedItem.lineage}</p>
+            <p className="text-xs text-fg-muted">{selectedItem.occupancy}</p>
+            {check ? <p className="text-xs text-fg-muted">{check.message}</p> : null}
+          </>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+/** Keeps the exact selected environment available when a later inventory omits it. */
+function retainedEnvironmentOptions(
+  items: ComposerWorkerEnvironmentOption[],
+  selected: ComposerWorkerEnvironmentOption | null
+): ComposerWorkerEnvironmentOption[] {
+  if (!selected || items.some((item) => item.storageRef === selected.storageRef)) {
+    return items;
+  }
+  return [...items, selected];
 }
 
 function InlineSelect({

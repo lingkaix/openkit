@@ -13,6 +13,7 @@ import { createRequestId, useArtifacts, useImportWorkspaceArtifact } from '../ar
 import {
   chatThreadPath,
   taskThreadPath,
+  useComposerWorkerEnvironments,
   useConversationNavigation,
   useConversationTargets,
   useCreateThread,
@@ -37,6 +38,7 @@ export function ChatStarter() {
   const artifacts = useArtifacts(workspaceId);
   const importArtifact = useImportWorkspaceArtifact();
   const create = useCreateThread();
+  const workerEnvironments = useComposerWorkerEnvironments(workspaceId, null);
   const { failed: disconnected } = useConnection();
   const createOwner = create.variables?.workspaceId === workspaceId;
   const conversations = navigation.data ?? [];
@@ -102,6 +104,7 @@ export function ChatStarter() {
           version: artifact.version,
           label: artifact.title,
         }))}
+        workerEnvironments={workerEnvironments}
         onImportFile={importFile}
         disabledReason={
           disconnected

@@ -1,5 +1,6 @@
 import { ItemSchema, ProductTurnSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
 
 /** One immutable Artifact version referenced by a conversation submission. */
 export const ConversationArtifactReferenceSchema = z
@@ -59,6 +60,8 @@ export const SubmitConversationRequestSchema = z
     logicalModelId: z.string().min(1).optional(),
     artifactRefs: z.array(ConversationArtifactReferenceSchema).default([]),
     requestId: z.string().min(1),
+    /** Explicit retained-storage choice forwarded only to new Task Worker starts. */
+    workerStorageChoice: WorkerEnvironmentStorageChoiceSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {

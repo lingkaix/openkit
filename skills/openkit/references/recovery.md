@@ -53,7 +53,7 @@ A denied storage reservation before Sandbox creation completes local cleanup aft
 
 ## Recover a retained checkout
 
-Use this sequence when the user wants a new Task on an authorized idle association that still holds a predecessor checkout. The Web conversation composer currently cannot send `workerStorageChoice`; use public Skill `task.start` or the same App API for this operation. `conversation.submit` cannot carry the choice.
+Use this sequence when the user wants a new Task on an authorized idle association that still holds a predecessor checkout. Web Advanced settings can select the retained environment for new Task Worker work, and public `conversation.submit` forwards `workerStorageChoice` on warm/new Task Worker targets. Recovering one exact predecessor checkout also requires the existing explicit `reuseWorkSlotRef`; use public Skill `task.start` or `conversation.submit` with that exact choice, rather than assuming environment selection resumes a particular checkout.
 
 1. Describe `worker-environment.list`, `worker-environment.status`, `worker-environment.select`, `environment.snapshot-list`, and `task.start` before calling them.
 2. List retained environments for the Workspace and copy the intended `storageRef`, current `revision`, `layoutDigest`, occupancy, and contributor Thread lineage. Do not reuse a `revision` remembered from an earlier call.
@@ -63,7 +63,7 @@ Use this sequence when the user wants a new Task on an authorized idle associati
 6. Start the Task with a new `requestId` and `workerStorageChoice` `{ "kind": "selected", "storageRef": "<storageRef>", "expectedRevision": <current revision>, "purpose": "work", "reuseWorkSlotRef": "<workSlotRef>" }` only when the intent is that predecessor checkout. Selected `storageRef` without `reuseWorkSlotRef` can attach the same volume while placing a distinct Thread slot, so it does not recover the same checkout.
 7. Re-read `worker-environment.status` and the Task Turn. Claim recovery only after the selected association is attached for this work and a read-only Worker inspection of that checkout matches the predecessor files. A clean unrelated worktree, a successful select, or command acceptance alone is not recovery.
 
-Preserve stale, unknown, audience, layout, or competing-writer refusals. Do not weaken the reuse check or fall back to `conversation.submit`.
+Preserve stale, unknown, audience, layout, or competing-writer refusals. Do not weaken the reuse check or drop the selected storage or work-slot choice when changing submission surfaces.
 
 ## Recover a fenced NanoHost cleanup
 

@@ -16,6 +16,8 @@ Personal admin-token list and default selection are exposed as `token.my-admin-l
 
 Generic access-token creation and rotation are exposed as `token.create` and `token.rotate` with server-admin bearer authority in server mode and an explicit safe local `destination`. Named slots have separate keychain and encrypted fallback identities from the endpoint administration credential, with persisted backend selection to prevent stale reads after replacement, deletion or restart. Responses contain only redacted records, destination and storage metadata; normal authentication keeps using the endpoint credential. `skills/openkit-secrets.mjs` owns named preflight/write/read/delete and backend isolation. Run `node --test tests/openkit-skill-interface.test.mjs` after `pnpm build:openkit` to verify the source and regenerated executable together.
 
+Conversation submission can forward the existing explicit retained Worker storage choice for new Task work. The public loop reference and Web Advanced settings share the same selection, authority and send-time admission rules; omitting the choice keeps the default new environment.
+
 ## Operations Interface
 
 The operations package contains its entrypoint, directly linked canonical operator references and any bounded support scripts required by an accepted operation owner. It works from outside the source checkout and can guide recovery while NanoCore is unavailable. Procedures name required host tools and explicitly acquire source when needed. Credentials and host authority come from the user's Agent environment, not the Skill. NanoCore/Web updates and separately authorized NanoHost work remain distinct.

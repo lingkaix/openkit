@@ -48594,6 +48594,67 @@
           "requestId": {
             "type": "string",
             "minLength": 1
+          },
+          "workerStorageChoice": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "fresh"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "adjudicatedThreadIds": {
+                    "maxItems": 1000,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "expectedRevision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "selected"
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "work",
+                      "independent-review"
+                    ]
+                  },
+                  "reuseWorkSlotRef": {
+                    "type": "string",
+                    "pattern": "^wsl_[a-f0-9]{32}$"
+                  },
+                  "storageRef": {
+                    "type": "string",
+                    "pattern": "^wst_[a-f0-9]{32}$"
+                  }
+                },
+                "required": [
+                  "expectedRevision",
+                  "kind",
+                  "purpose",
+                  "storageRef"
+                ],
+                "additionalProperties": false
+              }
+            ]
           }
         },
         "required": [
@@ -117825,5 +117886,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4b9601ddd37ef7d8c90d5739f018fe1011e3edd6a7c04667ee9bc9a8741a4abc"
+  "x-openkit-source-digest": "sha256:68abbc9c834c811fc52bc118fb1426ab582459938efee7d721f5f66ea0d48387"
 }

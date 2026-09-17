@@ -703,6 +703,349 @@ describe('primitive tier — behavior', () => {
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
   });
 
+  it('keeps Advanced Worker environment settings closed inside + and omits a new-environment choice', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const onBrowse = vi.fn();
+    render(
+      <Composer
+        onSubmit={onSubmit}
+        workerEnvironments={{ status: 'idle', items: [], onBrowse }}
+        targetCatalog={{
+          workspaceId: 'ws_demo',
+          threadId: null,
+          defaultTargetRef: 'internal-role:assistant',
+          targets: [
+            {
+              targetRef: 'internal-role:assistant',
+              kind: 'assistant',
+              label: 'Assistant',
+              description: null,
+              availability: 'available',
+              unavailableReason: null,
+              threadId: null,
+              profileId: null,
+              logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+              defaultLogicalModelId: 'default',
+            },
+            {
+              targetRef: 'new-task-worker',
+              kind: 'new-task-worker',
+              label: 'New task worker',
+              description: null,
+              availability: 'available',
+              unavailableReason: null,
+              threadId: null,
+              profileId: null,
+              logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+              defaultLogicalModelId: 'default',
+            },
+          ],
+        }}
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: /environment/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    expect(screen.queryByText('Advanced settings')).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    await user.click(screen.getByRole('button', { name: /Conversation agent/ }));
+    await user.click(screen.getByRole('option', { name: 'New task worker' }));
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    const details = screen.getByText('Advanced settings').closest('details');
+    expect(details).toBeInstanceOf(HTMLDetailsElement);
+    expect((details as HTMLDetailsElement).open).toBe(false);
+    expect(onBrowse).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /environment/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByText('Advanced settings'));
+    expect((details as HTMLDetailsElement).open).toBe(true);
+    expect(onBrowse).toHaveBeenCalled();
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
+      'New environment'
+    );
+    await user.keyboard('{Escape}');
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start fresh');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: 'Start fresh',
+        targetRef: 'new-task-worker',
+      })
+    );
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('workerStorageChoice');
+  });
+
+  it('forwards a retained environment from Advanced select and requires an explicit reset on an inapplicable target', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const onCheck = vi.fn();
+    const storageRef = `wst_${'a'.repeat(32)}`;
+    const retained = {
+      expectedRevision: 4,
+      layoutDigest: `sha256:${'b'.repeat(64)}`,
+      lineage: 'Independent review from Goal closeout',
+      occupancy: 'Idle',
+      purpose: 'work' as const,
+      sourceLabel: 'Goal closeout',
+      storageRef,
+    };
+    render(
+      <Composer
+        onSubmit={onSubmit}
+        workerEnvironments={{
+          items: [retained],
+          onBrowse: vi.fn(),
+          onCheck,
+          status: 'ready',
+          threadId: 'th_demo',
+        }}
+        targetCatalog={{
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          defaultTargetRef: 'new-task-worker',
+          targets: [
+            {
+              targetRef: 'internal-role:assistant',
+              kind: 'assistant',
+              label: 'Assistant',
+              description: null,
+              availability: 'available',
+              unavailableReason: null,
+              threadId: null,
+              profileId: null,
+              logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+              defaultLogicalModelId: 'default',
+            },
+            {
+              targetRef: 'new-task-worker',
+              kind: 'new-task-worker',
+              label: 'New task worker',
+              description: null,
+              availability: 'available',
+              unavailableReason: null,
+              threadId: null,
+              profileId: null,
+              logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+              defaultLogicalModelId: 'default',
+            },
+          ],
+        }}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Worker environment' }),
+      storageRef
+    );
+    expect(onCheck).toHaveBeenCalledWith(retained);
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
+      'Goal closeout · Idle'
+    );
+    expect(screen.getByText('Independent review from Goal closeout')).toBeInTheDocument();
+    expect(screen.getByText('Idle')).toBeInTheDocument();
+    expect(screen.queryByText('Eligible')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(storageRef);
+    await user.keyboard('{Escape}');
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Reuse storage');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: 'Reuse storage',
+        targetRef: 'new-task-worker',
+        workerStorageChoice: {
+          expectedRevision: 4,
+          kind: 'selected',
+          purpose: 'work',
+          storageRef,
+        },
+      })
+    );
+
+    onSubmit.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Worker environment' }),
+      storageRef
+    );
+    await user.keyboard('{Escape}');
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Keep reuse');
+    await user.click(screen.getByRole('button', { name: /Conversation agent/ }));
+    await user.click(screen.getByRole('option', { name: 'Assistant' }));
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Use new environment' }));
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
+      input: 'Keep reuse',
+      targetRef: 'internal-role:assistant',
+    });
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('workerStorageChoice');
+  });
+
+  it('shows an idle occupancy with the actual select denial and tells a starter that send checks permission', async () => {
+    const user = userEvent.setup();
+    const storageRef = `wst_${'c'.repeat(32)}`;
+    const retained = {
+      expectedRevision: 4,
+      layoutDigest: `sha256:${'d'.repeat(64)}`,
+      lineage: 'Work from Competitive teardown',
+      occupancy: 'Idle',
+      purpose: 'work' as const,
+      sourceLabel: 'Competitive teardown',
+      storageRef,
+    };
+    const { rerender } = render(
+      <Composer
+        workerEnvironments={{
+          items: [retained],
+          onBrowse: vi.fn(),
+          selectionCheck: {
+            message: 'Current deployment administrator authority is required.',
+            status: 'denied',
+            storageRef,
+          },
+          status: 'ready',
+          threadId: 'th_demo',
+        }}
+        targetCatalog={{
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          defaultTargetRef: 'new-task-worker',
+          targets: [
+            {
+              targetRef: 'new-task-worker',
+              kind: 'new-task-worker',
+              label: 'New task worker',
+              description: null,
+              availability: 'available',
+              unavailableReason: null,
+              threadId: null,
+              profileId: null,
+              logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+              defaultLogicalModelId: 'default',
+            },
+          ],
+        }}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Worker environment' }),
+      storageRef
+    );
+    expect(screen.getByRole('option', { name: 'Competitive teardown · Idle' })).toBeInTheDocument();
+    expect(
+      screen.getByText('Current deployment administrator authority is required.')
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Eligible')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('deployment_admin_required');
+
+    rerender(
+      <Composer
+        workerEnvironments={{
+          items: [retained],
+          onBrowse: vi.fn(),
+          status: 'ready',
+          threadId: null,
+        }}
+        targetCatalog={{
+          workspaceId: 'ws_demo',
+          threadId: null,
+          defaultTargetRef: 'new-task-worker',
+          targets: [
+            {
+              targetRef: 'new-task-worker',
+              kind: 'new-task-worker',
+              label: 'New task worker',
+              description: null,
+              availability: 'available',
+              unavailableReason: null,
+              threadId: null,
+              profileId: null,
+              logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+              defaultLogicalModelId: 'default',
+            },
+          ],
+        }}
+      />
+    );
+    expect(screen.getByText('Permission is checked when you send.')).toBeInTheDocument();
+  });
+
+  it('keeps the selected retained environment when inventory disappears until New is chosen', async () => {
+    const user = userEvent.setup();
+    const storageRef = `wst_${'e'.repeat(32)}`;
+    const otherRef = `wst_${'f'.repeat(32)}`;
+    const retained = {
+      expectedRevision: 4,
+      layoutDigest: `sha256:${'b'.repeat(64)}`,
+      lineage: 'Work from Competitive teardown',
+      occupancy: 'Idle',
+      purpose: 'work' as const,
+      sourceLabel: 'Competitive teardown',
+      storageRef,
+    };
+    const replacement = {
+      ...retained,
+      sourceLabel: 'Goal closeout',
+      lineage: 'Work from Goal closeout',
+      storageRef: otherRef,
+    };
+    const catalog = {
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      defaultTargetRef: 'new-task-worker',
+      targets: [
+        {
+          targetRef: 'new-task-worker',
+          kind: 'new-task-worker' as const,
+          label: 'New task worker',
+          description: null,
+          availability: 'available' as const,
+          unavailableReason: null,
+          threadId: null,
+          profileId: null,
+          logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+          defaultLogicalModelId: 'default',
+        },
+      ],
+    };
+    const { rerender } = render(
+      <Composer
+        workerEnvironments={{ items: [retained, replacement], onBrowse: vi.fn(), status: 'ready' }}
+        targetCatalog={catalog}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Worker environment' }),
+      storageRef
+    );
+    rerender(
+      <Composer
+        workerEnvironments={{ items: [replacement], onBrowse: vi.fn(), status: 'ready' }}
+        targetCatalog={catalog}
+      />
+    );
+    const combobox = screen.getByRole('combobox', { name: 'Worker environment' });
+    expect(combobox).toHaveValue(storageRef);
+    expect(combobox).toHaveDisplayValue('Competitive teardown · Idle');
+    expect(screen.getByRole('option', { name: 'Goal closeout · Idle' })).toBeInTheDocument();
+    await user.selectOptions(combobox, 'new');
+    expect(combobox).toHaveValue('new');
+    expect(
+      screen.queryByRole('option', { name: 'Competitive teardown · Idle' })
+    ).not.toBeInTheDocument();
+  });
+
   it('NavRow marks the active destination and fires onPress', async () => {
     const user = userEvent.setup();
     const onPress = vi.fn();

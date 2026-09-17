@@ -3782,6 +3782,48 @@ describe('app api schemas', () => {
       }).input
     ).toBe('What is this workspace?');
     expect(
+      SubmitConversationRequestSchema.parse({
+        input: 'What is this workspace?',
+        targetRef: 'internal-role:assistant',
+        requestId: 'req_chat_1',
+      }).workerStorageChoice
+    ).toBeUndefined();
+    expect(
+      SubmitConversationRequestSchema.parse({
+        input: 'Ship the bounded task.',
+        requestId: 'req_chat_storage_fresh',
+        targetRef: 'new-task-worker',
+        workerStorageChoice: { kind: 'fresh' },
+      }).workerStorageChoice
+    ).toEqual({ kind: 'fresh' });
+    expect(
+      SubmitConversationRequestSchema.parse({
+        input: 'Ship the bounded task.',
+        requestId: 'req_chat_storage_selected',
+        targetRef: 'warm-worker:agent_codex_host:default',
+        workerStorageChoice: {
+          expectedRevision: 4,
+          kind: 'selected',
+          purpose: 'work',
+          storageRef: `wst_${'a'.repeat(32)}`,
+        },
+      }).workerStorageChoice
+    ).toMatchObject({ expectedRevision: 4, kind: 'selected', storageRef: `wst_${'a'.repeat(32)}` });
+    expect(
+      SubmitConversationRequestSchema.safeParse({
+        input: 'Ship the bounded task.',
+        requestId: 'req_chat_storage_forged',
+        targetRef: 'new-task-worker',
+        workerStorageChoice: {
+          expectedRevision: 4,
+          goalId: 'goal_forged',
+          kind: 'selected',
+          purpose: 'work',
+          storageRef: `wst_${'a'.repeat(32)}`,
+        },
+      }).success
+    ).toBe(false);
+    expect(
       SubmitConversationResponseSchema.parse({
         outcome: 'task-handoff',
         explanation: 'The request needs bounded worker execution.',

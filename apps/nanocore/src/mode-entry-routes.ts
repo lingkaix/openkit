@@ -1213,6 +1213,40 @@ function directTaskWorkerStorageChoice(
 }
 
 /**
+ * Builds the canonical conversation.submit input hashed for idempotency and Worker checkpoint identity.
+ *
+ * @param chatInput Parsed conversation submission.
+ * @returns Closed command input used for hashing.
+ */
+function conversationCommandInput(chatInput: {
+  readonly input: string;
+  readonly targetRef: string;
+  readonly logicalModelId?: string | undefined;
+  readonly artifactRefs: unknown;
+  readonly workerStorageChoice?: WorkerEnvironmentStorageChoice | undefined;
+}) {
+  return {
+    artifactRefs: chatInput.artifactRefs,
+    input: chatInput.input,
+    logicalModelId: chatInput.logicalModelId ?? null,
+    targetRef: chatInput.targetRef,
+    workerStorageChoice: chatInput.workerStorageChoice,
+  };
+}
+
+/**
+ * Returns whether the selected conversation target may carry a Worker storage choice.
+ *
+ * @param kind Accepted conversation target kind.
+ * @returns Whether structured submit may forward a Worker storage choice.
+ */
+function conversationTargetAcceptsWorkerStorageChoice(
+  kind: z.infer<typeof ConversationTargetCatalogSchema>['targets'][number]['kind']
+): boolean {
+  return kind === 'warm-worker' || kind === 'new-task-worker';
+}
+
+/**
  * Detects one Chat-subordinate worker checkpoint whose owning Chat receipt is absent.
  *
  * @param store Store that owns the outer Chat command receipt.
@@ -2547,6 +2581,16 @@ export function registerQuickAndChatModeRoutes({
         );
       }
       freshLogicalModelId = logicalModelId;
+      if (
+        chatInput.workerStorageChoice &&
+        !conversationTargetAcceptsWorkerStorageChoice(acceptedTarget.kind)
+      ) {
+        throw new TurnStartValidationError(
+          'worker_storage_choice_not_applicable',
+          'Worker environment choice is not accepted for this conversation target.',
+          409
+        );
+      }
       const outputs = new Map(
         (chatInput.artifactRefs.length
           ? listOutputArtifacts(store, coreDb, workspaceId, actorId)
@@ -2938,12 +2982,7 @@ export function registerQuickAndChatModeRoutes({
             workspaceId,
             threadId: receivingThreadId,
             requestId: chatInput.requestId,
-            requestInputHash: commandInputHash({
-              input: chatInput.input,
-              targetRef: chatInput.targetRef,
-              logicalModelId: chatInput.logicalModelId ?? null,
-              artifactRefs: chatInput.artifactRefs,
-            }),
+            requestInputHash: commandInputHash(conversationCommandInput(chatInput)),
             reviewRequired: false,
             remainingWorkerIterations: 0,
             prepare: () => {
@@ -2988,6 +3027,9 @@ export function registerQuickAndChatModeRoutes({
             },
             reserveTurn: () => ({ turnId: reservedTurnId }),
             startWorker: async ({ turnId, prepared }) => {
+              const workerStorageChoice = directTaskWorkerStorageChoice(
+                chatInput.workerStorageChoice
+              );
               const turn = await startModeWorkerTurn({
                 triggerActor,
                 requestActor: c.get('actor'),
@@ -3000,6 +3042,7 @@ export function registerQuickAndChatModeRoutes({
                 requestId: chatInput.requestId,
                 requestedAgentId: agentId!,
                 reservedTurnId: turnId,
+                ...(workerStorageChoice ? { workerStorageChoice } : {}),
               });
               return { workerSessionId: turn.agentSessionId ?? null };
             },
@@ -3517,12 +3560,7 @@ export function registerQuickAndChatModeRoutes({
         command: 'conversation.submit',
         execute: () => executeChatCommand(store, workspaceId, threadId),
         inflightCommands,
-        input: {
-          input: chatInput.input,
-          targetRef: chatInput.targetRef,
-          logicalModelId: chatInput.logicalModelId ?? null,
-          artifactRefs: chatInput.artifactRefs,
-        },
+        input: conversationCommandInput(chatInput),
         replay: (record) =>
           replayConversationCommand(
             store,
