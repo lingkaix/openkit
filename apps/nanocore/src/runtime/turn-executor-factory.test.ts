@@ -1365,7 +1365,38 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('rejects and fences a never-polled Harness operation from its enqueue deadline', async () => {
+  it.each([
+    {
+      cleanupFailed: false,
+      dispatched: false,
+      expected: 'NanoHost Harness harness.drain result outage budget expired: never-dispatched.',
+      label: 'never-polled',
+    },
+    {
+      cleanupFailed: false,
+      dispatched: true,
+      expected:
+        'NanoHost Harness harness.drain result outage budget expired: dispatched-awaiting-result.',
+      label: 'dispatched no-result',
+    },
+    {
+      cleanupFailed: true,
+      dispatched: false,
+      expected: 'NanoHost Harness harness.drain result outage cleanup failed: never-dispatched.',
+      label: 'never-polled cleanup-failure',
+    },
+    {
+      cleanupFailed: true,
+      dispatched: true,
+      expected:
+        'NanoHost Harness harness.drain result outage cleanup failed: dispatched-awaiting-result.',
+      label: 'dispatched no-result cleanup-failure',
+    },
+  ] as const)('rejects and fences a $label Harness operation from its enqueue deadline', async ({
+    cleanupFailed,
+    dispatched,
+    expected,
+  }) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00.000Z'));
     const coreDb = createFactoryCoreDb();
@@ -1373,11 +1404,11 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
-             target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-           ) VALUES ('target_never_polled', 'identity_never_polled',
-                     'deployment_never_polled', 1, 1, 1, 1,
-                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
+               target_id, identity_id, deployment_id, connection_generation,
+               predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+             ) VALUES ('target_never_polled', 'identity_never_polled',
+                       'deployment_never_polled', 1, 1, 1, 1,
+                       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
@@ -1411,15 +1442,36 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      const session = {
+      const session: {
+        harnessBindingRef: string;
+        harnessInstanceId: string;
+        pendingHarnessOperation: { operationId: string | null } | null;
+      } = {
         harnessBindingRef: 'harness-binding-never-polled',
         harnessInstanceId: 'harness-never-polled',
         pendingHarnessOperation: null,
       };
       const pending = backend.queueAndWaitForHarnessOperation(session, 'harness.drain', {});
       void pending.catch(() => undefined);
+      if (dispatched) {
+        const command = dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-never-polled',
+        });
+        if (!command || !session.pendingHarnessOperation) {
+          throw new Error('Expected a dispatched harness.drain command.');
+        }
+        session.pendingHarnessOperation.operationId = command.operationId;
+      }
+      if (cleanupFailed) {
+        coreDb.sqlite
+          .prepare('DELETE FROM harness_instance_records WHERE harness_instance_id = ?')
+          .run('harness-never-polled');
+      }
       await vi.advanceTimersByTimeAsync(300_000);
-      await expect(pending).rejects.toThrow(/outage budget expired/i);
+      await expect(pending).rejects.toMatchObject({ message: expected });
+      if (cleanupFailed) {
+        return;
+      }
       expect(
         dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-never-polled',

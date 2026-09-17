@@ -8,6 +8,8 @@ The authorized Thread dashboard projects the authenticated viewer and only recor
 
 NanoCore derives private AEP and Context input paths from the admitted AgentSession, opens or inspects that exact session before importing its complete Turn inputs, and starts the Worker only after all imports succeed. Turn-specific paths and payloads do not partition otherwise compatible shared Sandbox or Harness identities.
 
+Harness result timeouts identify the fixed operation and whether it was never dispatched or dispatched while awaiting a result. These diagnostics use the existing Turn failure projection without runtime identities or command content; they do not prove whether a dispatched effect executed or authorize automatic retry.
+
 After a NanoCore-only restart, current package compatibility and the ready physical Epoch can restore an exact healthy idle Sandbox/Harness and its attached storage before later-Turn reuse classification. Empty process-local caches alone do not authorize replacement; native-session proof and current admission remain required.
 
 Worker closeout refuses a Git review whose exact repository resource has no linked host apply target. Its diagnostic identifies that resource and the supported recovery path; it creates no actionable review or change set. Linking the repository does not replay the failed handoff. An available retained checkout can be inspected and collected by a new authorized Task, which creates its own review under the ordinary human decision gate; see the public Skill [recovery guide](../../skills/openkit/references/recovery.md).

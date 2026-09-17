@@ -2972,7 +2972,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     pending.timeout = setTimeout(() => {
       if (!isCurrent()) return;
       clearOwner();
-      let timeoutError = new Error('NanoHost Harness result outage budget expired.');
+      const phase = pending.operationId ? 'dispatched-awaiting-result' : 'never-dispatched';
+      let timeoutError = new Error(
+        `NanoHost Harness ${pending.operation} result outage budget expired: ${phase}.`
+      );
       try {
         if (pending.operationId) {
           markNanoHostHarnessOperationUnknown(this.coreDb, {
@@ -2987,9 +2990,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           });
         }
       } catch (error) {
-        timeoutError = new Error('NanoHost Harness result outage cleanup failed.', {
-          cause: error,
-        });
+        timeoutError = new Error(
+          `NanoHost Harness ${pending.operation} result outage cleanup failed: ${phase}.`,
+          { cause: error }
+        );
       }
       pending.reject(timeoutError);
     }, NANO_HOST_HARNESS_RESULT_BUDGET_MS);
