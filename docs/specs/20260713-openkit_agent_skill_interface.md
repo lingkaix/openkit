@@ -350,6 +350,8 @@ Bootstrap consumption retains `credentialStore.writeToken({ baseUrl, token })` f
 
 Redaction applies to stdout, stderr, errors, operation traces, test evidence, Skill examples, artifacts, knowledge, and audit summaries.
 
+CLI result redaction removes credentials and secret material, not generic absolute-path text. NanoCore's authorized operation projections own the non-exposure of private host layout and internal routes; the CLI preserves paths, quoting, and syntax in authorized configuration documents and review patches so these product contents remain usable. This does not authorize new filesystem access, expose private projection fields, or relax Token, provider-secret, runtime-credential, or one-time-secret protection. Missing or failed authorization remains a server rejection; the CLI must not reconstruct withheld content. This presentation rule creates no durable state or new lifecycle, and applies equally to fresh reads and retries.
+
 ### Default loop method
 
 The Skill teaches one default end-user loop:

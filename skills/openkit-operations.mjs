@@ -40,7 +40,7 @@ const STANDARD = Object.freeze({
   inputSensitivity: 'standard',
   outputSensitivity: 'redacted public response',
   requiredAccess: 'authenticated user',
-  redaction: 'recursive secrets and local paths',
+  redaction: 'recursive credentials and secrets',
 });
 const SECRET_INPUT = Object.freeze({
   ...STANDARD,

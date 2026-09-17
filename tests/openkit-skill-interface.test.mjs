@@ -2114,7 +2114,7 @@ test('credential resolution is endpoint-scoped, fail-closed, and redacted', asyn
   assert.deepEqual(
     redactPublicValue({ path: '/Users/demo/private', token: 'okt_value' }, ['okt_value']),
     {
-      path: '[redacted-local-path]',
+      path: '/Users/demo/private',
       token: '[redacted]',
     }
   );
@@ -2507,7 +2507,9 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
   const rejectionEnvelope = JSON.parse(rejection.stdout);
   assert.equal(rejectionEnvelope.error.code, 'conflict');
   assert.equal(rejectionEnvelope.requestId, 'server_request_1');
-  assert.doesNotMatch(`${rejection.stdout}${rejection.stderr}`, /okt_environment|\/Users\/private/);
+  assert.equal(rejectionEnvelope.error.details.path, '/Users/private');
+  assert.equal(rejectionEnvelope.error.details.token, '[redacted]');
+  assert.doesNotMatch(`${rejection.stdout}${rejection.stderr}`, /okt_environment/);
 
   const masterKeyBase64 = 'master-key-value-that-must-stay-secret';
   const secretFailure = await runCli(

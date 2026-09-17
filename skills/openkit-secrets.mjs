@@ -20,7 +20,6 @@ import { dirname, join } from 'node:path';
 const KEYCHAIN_SERVICE = 'openkit.nanocore.token';
 const NAMED_KEYCHAIN_SERVICE = 'openkit.nanocore.named-token';
 const OPENKIT_TOKEN_PATTERN = /okt_[A-Za-z0-9._~-]+/g;
-const ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'`(])(?:\/(?=\S)|~\/|[A-Za-z]:[\\/]|\\\\|\/\/)\S*/g;
 
 /** Warning emitted when the CLI stores NanoCore credentials outside the OS keychain. */
 const ENCRYPTED_FALLBACK_CREDENTIAL_STORAGE_WARNING =
@@ -254,8 +253,8 @@ export function resolveCredential(input) {
 }
 
 /**
- * Redacts credentials and host-local paths recursively from a public value.
- * Standalone slash punctuation is left unchanged.
+ * Redacts credentials and secret material recursively from a public value.
+ * Authorized path text, quoting, and slash punctuation are left unchanged.
  *
  * @param {unknown} value Value to redact.
  * @param {readonly string[]} [extraSecrets] Exact additional secrets to replace.
@@ -288,19 +287,14 @@ function invalidConfigurationError() {
 }
 
 /**
- * Redacts credentials and local paths from one text value.
+ * Redacts credentials and exact extra secrets from one text value.
  *
  * @param {string} value Text to redact.
  * @param {readonly string[]} extraSecrets Exact additional secrets to replace.
  * @returns {string} Redacted text.
  */
 function redactText(value, extraSecrets) {
-  let redacted = value
-    .replace(OPENKIT_TOKEN_PATTERN, '[redacted]')
-    .replace(ABSOLUTE_PATH_PATTERN, (match) => {
-      const prefix = /^[\s"'`(]/.test(match) ? match[0] : '';
-      return `${prefix}[redacted-local-path]`;
-    });
+  let redacted = value.replace(OPENKIT_TOKEN_PATTERN, '[redacted]');
   for (const secret of extraSecrets) {
     if (secret) {
       redacted = redacted.split(secret).join('[redacted]');
