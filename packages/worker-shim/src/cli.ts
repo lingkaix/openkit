@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { closeSync, readSync } from 'node:fs';
+import { closeSync, existsSync, readSync } from 'node:fs';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -1948,7 +1948,7 @@ function readRemoteGitWorkspaceSource(value: unknown): WorkspaceGitInput['source
  * @param environment Supervisor environment candidate.
  * @param route The Shim-selected LLM route.
  * @param runtimeEnvironment Exact private Turn credentials when supervised by the Harness.
- * @returns Safe base environment plus AEP-declared credentials, route tokens, and Node CA derived from nonempty `SSL_CERT_FILE`.
+ * @returns Safe base environment plus AEP-declared credentials, route tokens, Node header directory when bundled `include/node/node.h` exists, and Node CA derived from nonempty `SSL_CERT_FILE`.
  */
 function workerChildEnvironment(
   packageManifest: WorkerShimPackageManifest,
@@ -1975,6 +1975,7 @@ function workerChildEnvironment(
     if (
       !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
       name.startsWith('OPENKIT_') ||
+      name.toLowerCase() === 'npm_config_nodedir' ||
       SAFE_WORKER_CHILD_ENVIRONMENT_KEYS.includes(
         name as (typeof SAFE_WORKER_CHILD_ENVIRONMENT_KEYS)[number]
       ) ||
@@ -2010,6 +2011,11 @@ function workerChildEnvironment(
   selected.TMPDIR = NATIVE_SCRATCH_ROOT;
   if (selected.SSL_CERT_FILE) {
     selected.NODE_EXTRA_CA_CERTS = selected.SSL_CERT_FILE;
+  }
+  const bundledNodeRoot = dirname(dirname(process.execPath));
+  if (existsSync(join(bundledNodeRoot, 'include', 'node', 'node.h'))) {
+    selected.NPM_CONFIG_NODEDIR = bundledNodeRoot;
+    selected.npm_config_nodedir = bundledNodeRoot;
   }
 
   for (const key of ['NO_PROXY', 'no_proxy'] as const) {

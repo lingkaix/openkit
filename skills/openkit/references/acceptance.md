@@ -18,6 +18,8 @@ With deployment-admin authority, use `diagnostics` discovery for boot/readiness,
 
 Distinguish product failure, environment failure, tool failure and insufficient evidence. Preserve the returned error and relevant observations before correcting anything. A local timeout stops waiting, not necessarily remote work; read current state before retrying. Never rewrite product state to make a check pass.
 
+For authorized Worker dependency setup, distinguish blocked native-addon downloads from missing build tools. The Worker Shim defaults node-gyp to its own Node installation only when local `include/node/node.h` exists; it does not install headers or expand network access. A command using another Node version must select matching headers explicitly. Older Worker images may need an explicit matching `npm_config_nodedir` in the sandbox command environment until an approved image update supplies the default; never declare this setting as a runtime credential. Preserve the lockfile and report the actual install and native-module smoke results; successful model inference alone does not prove the development environment is ready.
+
 The Agent host may separately have SSH, browser, repository or deployment tools. Use them only within the user's explicit scope and outside the Skill CLI. An operator repair or version change ends the original attempt; test the repaired behavior in a new attempt. Do not copy secrets, raw configuration dumps or unrestricted logs into the task.
 
 ## Report And Continue

@@ -12,7 +12,7 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   parseWorkerShimArgs,
@@ -54,6 +54,24 @@ const workspaceGitFixtureLifecycle = vi.hoisted(() => ({
   materialize: null as MaterializeWorkspaceGitInputs | null,
   publish: null as PublishWorkspaceGitSnapshots | null,
 }));
+/** Test-only probe for bundled `include/node/node.h`; `null` uses the real filesystem. */
+const nativeNodeHeaderProbe = vi.hoisted(() => ({ present: null as boolean | null }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    existsSync(path: Parameters<typeof actual.existsSync>[0]) {
+      if (
+        nativeNodeHeaderProbe.present !== null &&
+        String(path).replaceAll('\\', '/').endsWith('include/node/node.h')
+      ) {
+        return nativeNodeHeaderProbe.present;
+      }
+      return actual.existsSync(path);
+    },
+  };
+});
 
 const CODEX_TEST_UUID = '0198a0b1-c2d3-74e5-8f60-123456789abc';
 
@@ -167,6 +185,7 @@ describe('worker shim CLI parsing', () => {
     processFixtureLifecycle.prepareFailure = null;
     workspaceGitFixtureLifecycle.materialize = null;
     workspaceGitFixtureLifecycle.publish = null;
+    nativeNodeHeaderProbe.present = null;
     vi.unstubAllGlobals();
   });
 
@@ -2795,6 +2814,51 @@ describe('worker shim CLI parsing', () => {
 
   it.each([
     {
+      headersPresent: true,
+      name: 'defaults native Node header directory when bundled headers exist',
+    },
+    {
+      headersPresent: false,
+      name: 'omits native Node header directory when bundled headers are absent',
+    },
+  ])('$name', async ({ headersPresent }) => {
+    nativeNodeHeaderProbe.present = headersPresent;
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-nodedir-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const runner = new FakeWorkerProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: { adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-process' } },
+        extensions: { openkit: { turnInput: 'void 0' } },
+        llm: { routes: [workerLlmRoute()] },
+        runtime: { command: { workingDirectory: sessionDir } },
+      })
+    );
+
+    await runWorkerShim({
+      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: workerShimEnvironment(),
+      runner,
+    });
+
+    const bundledNodeRoot = dirname(dirname(process.execPath));
+    if (headersPresent) {
+      expect(runner.calls[0]?.env.npm_config_nodedir).toBe(bundledNodeRoot);
+      expect(runner.calls[0]?.env.NPM_CONFIG_NODEDIR).toBe(bundledNodeRoot);
+    } else {
+      expect(runner.calls[0]?.env).not.toHaveProperty('npm_config_nodedir');
+      expect(runner.calls[0]?.env).not.toHaveProperty('NPM_CONFIG_NODEDIR');
+    }
+  });
+
+  it.each([
+    {
       credentialVisibility: 'placeholder' as const,
       expectedProviderCredential: true,
       expectedRelayPlaceholder: true,
@@ -2937,6 +3001,21 @@ describe('worker shim CLI parsing', () => {
       name: 'reserved Node CA target',
       declared: ['NODE_EXTRA_CA_CERTS'],
       values: { NODE_EXTRA_CA_CERTS: 'private-canary' },
+    },
+    {
+      name: 'reserved Node header directory target',
+      declared: ['npm_config_nodedir'],
+      values: { npm_config_nodedir: '/private/nodedir' },
+    },
+    {
+      name: 'reserved uppercase Node header directory target',
+      declared: ['NPM_CONFIG_NODEDIR'],
+      values: { NPM_CONFIG_NODEDIR: '/private/nodedir' },
+    },
+    {
+      name: 'reserved mixed-case Node header directory target',
+      declared: ['NPM_Config_NodeDir'],
+      values: { NPM_Config_NodeDir: '/private/nodedir' },
     },
     {
       name: 'oversized value',
