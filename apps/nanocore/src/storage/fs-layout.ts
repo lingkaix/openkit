@@ -676,10 +676,14 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Fails closed when file-backed text records embed the current absolute DATA_ROOT path.
+ * Fails closed when canonical product records embed the current absolute DATA_ROOT path.
+ *
+ * The provenance writer stores verbatim streams under `evidence/backend/<bundleId>/raw/`;
+ * bundle-root manifest and native-index siblings remain product-record locations.
+ * Authored Skill and Plugin snapshot trees under scoped `catalog/` are retained verbatim.
  *
  * @param root Data root directory.
- * @throws Error when a text record contains an absolute DATA_ROOT path.
+ * @throws Error when a canonical product record contains an absolute DATA_ROOT path.
  */
 function verifyNoEmbeddedDataRootPaths(root: string): void {
   const dataRoot = resolve(root);
@@ -687,7 +691,7 @@ function verifyNoEmbeddedDataRootPaths(root: string): void {
   for (const path of listDescendantFiles(root)) {
     const reportPath = toDataRootReportPath(root, path);
 
-    if (!isTextRecordPath(reportPath)) {
+    if (!isCanonicalProductRecordLocation(reportPath)) {
       continue;
     }
 
@@ -695,6 +699,23 @@ function verifyNoEmbeddedDataRootPaths(root: string): void {
       throw new Error(`DATA_ROOT text record embeds absolute DATA_ROOT path: ${reportPath}`);
     }
   }
+}
+
+/**
+ * Returns whether a data-root report path is a canonical product-record location.
+ *
+ * Verbatim payloads are only server- or Workspace-scoped backend raw streams and catalog Skill or Plugin snapshot trees.
+ *
+ * @param path Slash-separated path relative to DATA_ROOT.
+ * @returns True when embedded DATA_ROOT path scanning applies.
+ */
+function isCanonicalProductRecordLocation(path: string): boolean {
+  return (
+    isTextRecordPath(path) &&
+    !/^(?:server|workspaces\/[^/]+)\/(?:evidence\/backend\/[^/]+\/raw\/|catalog\/(?:skill|plugin)-snapshots\/)/.test(
+      path
+    )
+  );
 }
 
 /**

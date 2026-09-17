@@ -41,6 +41,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 - Replace JSON records through a same-directory temporary file and rename.
 - Append item and event revisions to JSONL; readers select the latest item revision by id and preserve event sequence.
 - Fail closed on malformed canonical records, invalid lineage, unsupported required features, path escapes, and legacy authority files.
+- `ensureLayout` rejects absolute DATA_ROOT paths only in canonical product-record locations. Verbatim exceptions are anchored to `server/` or `workspaces/<workspaceId>/`: backend streams under `evidence/backend/<bundleId>/raw/`, and Skill or Plugin snapshot trees under `catalog/skill-snapshots/` and `catalog/plugin-snapshots/`. Backend bundle manifest and native-index siblings remain scanned; nested misleading names, unsafe links, ownership, envelope, and canonical-path checks still apply.
 - Export V2 preserves complete canonical history and exact portable file bytes; V1 exports are intentionally rejected.
 - Import writes the complete workspace tree and workspace database under `.staging`, publishes with one same-filesystem rename inside the Core transaction, and removes the published workspace when synchronous Core replay fails; this is coordinated rollback, not crash-atomic filesystem and SQLite commit.
 - Deletion removes the canonical file or directory so restart cannot resurrect stale state.
