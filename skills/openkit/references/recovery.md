@@ -69,6 +69,8 @@ Preserve stale, unknown, audience, layout, or competing-writer refusals. Do not 
 
 If a failed Task reports that backend cleanup requires a different fresh physical Epoch, inspect the exact Turn and `nanohost.runtime-target` before submitting more work. This is physical execution-host recovery, not a reason to rewrite scheduler records or remove storage. The public interface can inspect the failure and readiness; it does not expose a generic host-service restart. An authorized deployment operator can restart the affected NanoHost after checking other active work. Once NanoHost reports a different fenced, ready, fresh-empty physical Epoch, existing NanoCore maintenance retries the exact cleanup. Confirm the original failure is terminal and cleanup has settled before submitting a new request; restarting NanoCore is not required solely to trigger that maintenance.
 
+A terminal failed Task can also leave an idle failed Sandbox with an unknown Harness operation, while `recovery.worker-list` is empty because its leases are already terminal. After the existing authenticated replacement-host procedure proves a different fenced, ready, fresh-empty physical Epoch, a new authorized Task can retire those absent runtime handles through normal admission. Active Turns, nonterminal leases, Goal pins, storage checks and authorization still block unsafe replacement. The old Task remains failed or unknown; this neither retries its operation nor deletes retained storage. Same-Epoch reconnect or an increased connection generation alone is insufficient.
+
 ## Preserve fail-closed outcomes
 
 Keep contradictory, incomplete, or stale recovery evidence visible. Do not convert it to success, invent a receipt, close a workflow locally, or create an ad hoc settlement process.

@@ -5091,10 +5091,11 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it.each([
-    [true, false],
-    [false, false],
-    [true, true],
-  ])('retires a failed pre-witness resident (Harness: %s, storage: %s) before fresh materialization', async (withHarness, withStorage) => {
+    ['pre-witness', true, false, 'idle'],
+    ['pre-witness', false, false, 'idle'],
+    ['pre-witness', true, true, 'idle'],
+    ['f'.repeat(64), true, true, 'unknown'],
+  ] as const)('retires a failed resident from %s (Harness: %s, storage: %s, operation: %s) before fresh materialization', async (originPhysicalEpoch, withHarness, withStorage, operationState) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     try {
@@ -5132,12 +5133,20 @@ describe('createConfiguredTurnExecutor', () => {
         timestamp: '2026-09-06T00:00:00.000Z',
         workspaceId: 'workspace_capacity_guard_resident',
       });
-      coreDb.sqlite.exec(`
-        UPDATE sandbox_runtime_records
-        SET origin_physical_epoch = 'pre-witness', lifecycle_state = 'failed',
-            health_state = 'unknown', drain_state = 'draining', cleanup_state = 'unknown';
-        UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining';
-      `);
+      coreDb.sqlite
+        .prepare(
+          `UPDATE sandbox_runtime_records
+           SET origin_physical_epoch = ?, lifecycle_state = 'failed',
+               health_state = 'unknown', drain_state = 'draining', cleanup_state = 'unknown'`
+        )
+        .run(originPhysicalEpoch);
+      coreDb.sqlite.exec(
+        `UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining'${
+          operationState === 'unknown'
+            ? ", operation = 'session.close', operation_state = 'unknown'"
+            : ''
+        }`
+      );
       if (!withHarness) coreDb.sqlite.exec('DELETE FROM harness_instance_records');
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
@@ -5200,9 +5209,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
         .run('a'.repeat(64));
       expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
-      coreDb.sqlite.exec(
-        "UPDATE sandbox_runtime_records SET origin_physical_epoch = 'pre-witness', pinned_goal_id = 'goal_guard'"
-      );
+      coreDb.sqlite
+        .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?, pinned_goal_id = ?')
+        .run(originPhysicalEpoch, 'goal_guard');
       expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
       coreDb.sqlite.exec('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL');
       if (withHarness) {
@@ -5216,6 +5225,17 @@ describe('createConfiguredTurnExecutor', () => {
         );
         expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
         coreDb.sqlite.exec('UPDATE agent_session_runtime_bindings SET current_lease_id = NULL');
+        if (operationState === 'unknown') {
+          for (const blockedState of ['queued', 'dispatched'] as const) {
+            coreDb.sqlite.exec(
+              `UPDATE harness_instance_records SET operation_state = '${blockedState}'`
+            );
+            expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+              'capacity-saturated'
+            );
+          }
+          coreDb.sqlite.exec("UPDATE harness_instance_records SET operation_state = 'unknown'");
+        }
       }
       authorizeNanoHostPackage(coreDb, desiredPackage);
       expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');

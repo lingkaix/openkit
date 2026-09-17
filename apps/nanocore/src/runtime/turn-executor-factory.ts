@@ -1476,7 +1476,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       (harnesses.length === 0 && !failedSandboxRetirement) ||
       harnesses.some(
         (harness) =>
-          harness.activeTurnCount !== 0 || !['idle', 'settled'].includes(harness.operationState)
+          harness.activeTurnCount !== 0 ||
+          (!['idle', 'settled'].includes(harness.operationState) &&
+            !(failedSandboxRetirement && harness.operationState === 'unknown'))
       )
     ) {
       return 'capacity-saturated';
@@ -1599,6 +1601,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           }
         }
         const timestamp = new Date().toISOString();
+        const physicalAbsentFlag = Number(eviction.physicalAbsent);
         const sandboxUpdate = this.coreDb.sqlite
           .prepare(
             `UPDATE sandbox_runtime_records
@@ -1609,17 +1612,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                  OR (? = 1 AND lifecycle_state = 'failed' AND health_state = 'unknown'
                      AND drain_state = 'draining' AND cleanup_state = 'unknown'))`
           )
-          .run(timestamp, eviction.sandboxRuntimeId, Number(eviction.physicalAbsent));
+          .run(timestamp, eviction.sandboxRuntimeId, physicalAbsentFlag);
         const harnessUpdate = this.coreDb.sqlite
           .prepare(
             `UPDATE harness_instance_records
              SET drain_state = 'draining', updated_at = ?
              WHERE sandbox_runtime_id = ? AND active_turn_count = 0
-               AND operation_state IN ('idle', 'settled')
+               AND (
+                 operation_state IN ('idle', 'settled')
+                 OR (? = 1 AND operation_state = 'unknown')
+               )
                AND ((lifecycle_state = 'open' AND drain_state = 'accepting')
                  OR (? = 1 AND lifecycle_state = 'failed' AND drain_state = 'draining'))`
           )
-          .run(timestamp, eviction.sandboxRuntimeId, Number(eviction.physicalAbsent));
+          .run(timestamp, eviction.sandboxRuntimeId, physicalAbsentFlag, physicalAbsentFlag);
         if (
           sandboxUpdate.changes !== 1 ||
           (!eviction.physicalAbsent && harnessUpdate.changes < 1)
