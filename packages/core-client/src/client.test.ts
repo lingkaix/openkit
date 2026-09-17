@@ -4586,7 +4586,7 @@ describe('createCoreClient', () => {
           subscriptionProviderId: 'xai',
           displayName: 'xAI',
           loginModes: ['device_code'],
-          quotaCapability: 'unsupported',
+          quotaCapability: 'available',
         },
       ],
     };
@@ -4621,8 +4621,17 @@ describe('createCoreClient', () => {
     const quota = {
       subscriptionProviderId: 'xai',
       accountSlotId: 'team_slot',
-      availability: 'unsupported',
+      availability: 'available',
       observedAt: timestamp,
+      planType: 'SuperGrok',
+      windows: [
+        {
+          id: 'included',
+          remainingPercent: 57.5,
+          resetsAt: timestamp,
+          usedPercent: 42.5,
+        },
+      ],
     };
     const encodedStatusPath =
       '/api/app/provider-subscriptions/xai%2Fpreview/accounts/slot%20%EF%BF%BD%2Fa/status';

@@ -366,6 +366,9 @@ describe('app api schema package boundary', () => {
     }
     for (const branch of appApiSchemas.ProviderSubscriptionQuotaSchema.options) {
       expect
+        .soft(branch.shape.subscriptionProviderId, `quota ${branch.shape.availability.value}`)
+        .toBe(ConfigSubscriptionProviderIdSchema);
+      expect
         .soft(branch.shape.accountSlotId, `quota ${branch.shape.availability.value}`)
         .toBe(ProviderSubscriptionAccountSlotIdSchema);
     }
@@ -4506,7 +4509,7 @@ describe('app api schemas', () => {
           subscriptionProviderId: 'xai',
           displayName: 'xAI',
           loginModes: ['device_code'],
-          quotaCapability: 'unsupported',
+          quotaCapability: 'available',
         },
       ],
     };
@@ -4598,7 +4601,7 @@ describe('app api schemas', () => {
     }
   });
 
-  it('accepts only the three provider-subscription quota dispositions', () => {
+  it('accepts only the two provider-subscription quota dispositions', () => {
     const quotaSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionQuotaSchema') as
       | typeof AppDiagnosticsResponseSchema
       | undefined;
@@ -4623,11 +4626,20 @@ describe('app api schemas', () => {
         },
       ],
     };
-    const unsupported = {
+    const availableXai = {
       subscriptionProviderId: 'xai',
       accountSlotId: 'work',
-      availability: 'unsupported',
+      availability: 'available',
       observedAt: timestamp,
+      planType: 'SuperGrok',
+      windows: [
+        {
+          id: 'included',
+          usedPercent: 42.5,
+          remainingPercent: 57.5,
+          resetsAt: timestamp,
+        },
+      ],
     };
     const unavailable = {
       subscriptionProviderId: 'openai-codex',
@@ -4636,12 +4648,25 @@ describe('app api schemas', () => {
       observedAt: timestamp,
       retryAfter: timestamp,
     };
+    const unavailableXai = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'work',
+      availability: 'temporarily_unavailable',
+      observedAt: timestamp,
+    };
+    const unsupported = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'work',
+      availability: 'unsupported',
+      observedAt: timestamp,
+    };
 
     expect(quotaSchema.parse(available)).toEqual(available);
-    expect(quotaSchema.parse(unsupported)).toEqual(unsupported);
+    expect(quotaSchema.parse(availableXai)).toEqual(availableXai);
     expect(quotaSchema.parse(unavailable)).toEqual(unavailable);
+    expect(quotaSchema.parse(unavailableXai)).toEqual(unavailableXai);
     for (const quota of [
-      { ...available, subscriptionProviderId: 'xai' },
+      unsupported,
       { ...unsupported, subscriptionProviderId: 'openai-codex' },
       {
         ...available,
@@ -4659,9 +4684,9 @@ describe('app api schemas', () => {
         ...available,
         windows: [{ ...available.windows[0], resetsAt: 'not-a-datetime' }],
       },
-      { ...unsupported, observedAt: 'not-a-datetime' },
       { ...unavailable, observedAt: 'not-a-datetime' },
       { ...unavailable, retryAfter: 'not-a-datetime' },
+      { ...unavailableXai, observedAt: 'not-a-datetime' },
     ]) {
       expect.soft(quotaSchema.safeParse(quota).success).toBe(false);
     }

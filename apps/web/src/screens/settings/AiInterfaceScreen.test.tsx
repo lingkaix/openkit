@@ -7,6 +7,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { AiInterfaceScreen } from './AiInterfaceScreen';
 
 const TIMESTAMP = '2026-08-30T00:00:00.000Z';
+const REFRESHED_AT = '2026-08-30T01:00:00.000Z';
 const API_KEY = 'sk-live-provider-key-never-store';
 const SERVER_JSONC = `{
   "schemaVersion": 1,
@@ -77,7 +78,18 @@ const CODEX_QUOTA = {
   accountSlotId: 'primary',
   availability: 'available' as const,
   observedAt: TIMESTAMP,
-  windows: [{ id: 'primary', usedPercent: 40, remainingPercent: 60 }],
+  planType: 'plus',
+  windows: [
+    { id: 'primary', usedPercent: 40.4, remainingPercent: 59.6, resetsAt: TIMESTAMP },
+    { id: 'secondary', usedPercent: 99.6, remainingPercent: 0.4 },
+  ],
+};
+const XAI_QUOTA = {
+  subscriptionProviderId: 'xai' as const,
+  accountSlotId: 'primary',
+  availability: 'available' as const,
+  observedAt: TIMESTAMP,
+  windows: [{ id: 'included', usedPercent: 12.5, remainingPercent: 87.5, resetsAt: TIMESTAMP }],
 };
 const DIAGNOSTICS = {
   service: 'nanocore',
@@ -243,7 +255,15 @@ function makeClient(
       startAccountLogin: vi.fn().mockResolvedValue(PENDING_ACCOUNT),
       cancelAccountLogin: vi.fn().mockResolvedValue(CODEX_ACCOUNT),
       logoutAccount: vi.fn().mockResolvedValue(CODEX_ACCOUNT),
-      getAccountQuota: vi.fn().mockResolvedValue(CODEX_QUOTA),
+      getAccountQuota: vi
+        .fn()
+        .mockImplementation((providerId: string, accountSlotId: string) =>
+          Promise.resolve(
+            providerId === 'xai'
+              ? { ...XAI_QUOTA, accountSlotId }
+              : { ...CODEX_QUOTA, accountSlotId }
+          )
+        ),
       ...overrides.providerSubscriptions,
     },
   } as unknown as CoreClient;
@@ -266,6 +286,62 @@ beforeEach(() => {
 });
 
 describe('AI interface deployment-admin workflow', () => {
+  it('keeps account management available when one quota read fails without an observation', async () => {
+    const user = userEvent.setup();
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts: vi.fn().mockImplementation((providerId: string) =>
+          Promise.resolve({
+            accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: providerId }],
+          })
+        ),
+        getAccountQuota: vi
+          .fn()
+          .mockImplementation((providerId: string) =>
+            providerId === 'xai'
+              ? Promise.reject(new ApiCallError(500, 'private-quota-error-canary'))
+              : Promise.resolve(CODEX_QUOTA)
+          ),
+      },
+    });
+    renderScreen(client);
+    const xai = await screen.findByRole('region', { name: 'xAI' });
+    expect(within(xai).getByText('Could not read quota')).toBeInTheDocument();
+    expect(within(xai).queryByRole('time')).not.toBeInTheDocument();
+    expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
+    expect(screen.queryByText(/private-quota-error-canary/)).not.toBeInTheDocument();
+    await user.click(within(xai).getByText('Account settings'));
+    expect(within(xai).getByRole('button', { name: 'Rename account' })).toBeEnabled();
+  });
+
+  it.each([401, 403])('keeps quota HTTP %s access denial global', async (status) => {
+    renderScreen(
+      makeClient({
+        providerSubscriptions: {
+          getAccountQuota: vi.fn().mockRejectedValue(new ApiCallError(status, 'private-denial')),
+        },
+      })
+    );
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByText('Account settings')).not.toBeInTheDocument();
+    expect(screen.queryByText(/private-denial/)).not.toBeInTheDocument();
+  });
+
+  it.each([401, 403])('closes account controls after a refresh returns HTTP %s', async (status) => {
+    const user = userEvent.setup();
+    const getAccountQuota = vi
+      .fn()
+      .mockResolvedValueOnce(CODEX_QUOTA)
+      .mockRejectedValue(new ApiCallError(status, 'private-denial'));
+    renderScreen(makeClient({ providerSubscriptions: { getAccountQuota } }));
+    await user.click(await screen.findByRole('button', { name: 'Refresh quota' }));
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByText('Account settings')).not.toBeInTheDocument();
+    getAccountQuota.mockResolvedValue(CODEX_QUOTA);
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Account settings')).toBeInTheDocument();
+  });
+
   it('shows access denied with retry and never asks for a server-admin token', async () => {
     const user = userEvent.setup();
     const listProviders = vi.fn().mockRejectedValue(
@@ -288,6 +364,7 @@ describe('AI interface deployment-admin workflow', () => {
     renderScreen(client);
 
     const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    await user.click(within(codex).getByText('Add account slot'));
     await user.type(within(codex).getByLabelText('Account slot id'), 'secondary');
     await user.type(within(codex).getByLabelText('Display name'), 'Codex secondary');
     await user.click(within(codex).getByRole('button', { name: 'Create account slot' }));
@@ -299,6 +376,7 @@ describe('AI interface deployment-admin workflow', () => {
       })
     );
 
+    await user.click(within(codex).getByText('Account settings'));
     const rename = within(codex).getByLabelText('Account display name');
     await user.clear(rename);
     await user.type(rename, 'Renamed Codex');
@@ -405,18 +483,78 @@ describe('AI interface deployment-admin workflow', () => {
 
     const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
     expect(within(codex).queryByRole('button', { name: 'Start login' })).not.toBeInTheDocument();
+    await user.click(within(codex).getByText('Account settings'));
     await user.click(within(codex).getByRole('button', { name: 'Log out' }));
     expect(await screen.findByText(/Couldn't log out this account/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(logoutAccount).toHaveBeenCalledTimes(2));
+  });
+
+  it('refreshes only the selected quota pair and updates last checked and reset times', async () => {
+    const user = userEvent.setup();
+    const listProviders = vi.fn().mockResolvedValue(PROVIDERS);
+    const listAccounts = vi.fn().mockImplementation((providerId: string) =>
+      Promise.resolve({
+        accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+      })
+    );
+    let codexQuotaReads = 0;
+    const getAccountQuota = vi
+      .fn()
+      .mockImplementation((providerId: string, accountSlotId: string) => {
+        if (providerId === 'openai-codex' && accountSlotId === 'primary') {
+          codexQuotaReads += 1;
+          return Promise.resolve(
+            codexQuotaReads === 1
+              ? CODEX_QUOTA
+              : {
+                  ...CODEX_QUOTA,
+                  observedAt: REFRESHED_AT,
+                  windows: [
+                    {
+                      id: 'primary',
+                      usedPercent: 40.4,
+                      remainingPercent: 59.6,
+                      resetsAt: REFRESHED_AT,
+                    },
+                    { id: 'secondary', usedPercent: 99.6, remainingPercent: 0.4 },
+                  ],
+                }
+          );
+        }
+        return Promise.resolve({ ...XAI_QUOTA, accountSlotId });
+      });
+    const client = makeClient({
+      listProviders,
+      providerSubscriptions: { listAccounts, getAccountQuota },
+    });
+    renderScreen(client);
+
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    expect(await screen.findByText('Last checked', { exact: false })).toBeInTheDocument();
+    expect(
+      within(codex)
+        .getAllByRole('time')
+        .some((node) => node.getAttribute('datetime') === TIMESTAMP)
+    ).toBe(true);
+    const accountsAfterLoad = listAccounts.mock.calls.length;
+    const quotaAfterLoad = getAccountQuota.mock.calls.length;
+    expect(quotaAfterLoad).toBe(1);
+    expect(codexQuotaReads).toBe(1);
 
     await user.click(within(codex).getByRole('button', { name: 'Refresh quota' }));
-    await waitFor(() =>
-      expect(client.providerSubscriptions.getAccountQuota).toHaveBeenCalledWith(
-        'openai-codex',
-        'primary'
-      )
-    );
+    await waitFor(() => {
+      expect(
+        within(codex)
+          .getAllByRole('time')
+          .some((node) => node.getAttribute('datetime') === REFRESHED_AT)
+      ).toBe(true);
+    });
+    expect(codexQuotaReads).toBe(2);
+    expect(getAccountQuota).toHaveBeenCalledTimes(quotaAfterLoad + 1);
+    expect(getAccountQuota).toHaveBeenLastCalledWith('openai-codex', 'primary');
+    expect(listAccounts.mock.calls.length).toBe(accountsAfterLoad);
+    expect(listProviders).toHaveBeenCalledTimes(1);
   });
 
   it('shows configured provider profiles and the logical Gateway catalog', async () => {
@@ -588,5 +726,62 @@ describe('AI interface deployment-admin workflow', () => {
     await new Promise((resolve) => setTimeout(resolve, 2500));
     expect(listAccounts.mock.calls.length).toBe(settled);
     expect(within(codex).queryByRole('button', { name: 'Start login' })).not.toBeInTheDocument();
+  });
+
+  it('keeps quota refresh and login reachable while secondary account controls stay collapsed', async () => {
+    const user = userEvent.setup();
+    const client = makeClient();
+    renderScreen(client);
+
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    expect(within(codex).getByRole('button', { name: 'Refresh quota' })).toBeInTheDocument();
+    expect(within(codex).getByRole('button', { name: 'Start login' })).toBeInTheDocument();
+    expect(
+      within(codex).getByRole('meter', { name: 'Primary remaining 59.6%' })
+    ).toBeInTheDocument();
+    const settings = within(codex).getByText('Account settings').closest('details');
+    const createSlot = within(codex).getByText('Add account slot').closest('details');
+    expect(settings).not.toBeNull();
+    expect(createSlot).not.toBeNull();
+    expect(settings?.open).toBe(false);
+    expect(createSlot?.open).toBe(false);
+    await user.click(within(codex).getByText('Account settings'));
+    expect(settings?.open).toBe(true);
+    expect(within(codex).getByRole('button', { name: 'Delete account' })).toBeInTheDocument();
+    await user.click(within(codex).getByText('Add account slot'));
+    expect(createSlot?.open).toBe(true);
+    expect(within(codex).getByRole('textbox', { name: 'Account slot id' })).toBeInTheDocument();
+  });
+
+  it('formats remaining percents without rounding tiny or near-full values to 0 or 100', async () => {
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts: vi.fn().mockImplementation((providerId: string) =>
+          Promise.resolve({
+            accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+          })
+        ),
+        getAccountQuota: vi.fn().mockResolvedValue({
+          ...CODEX_QUOTA,
+          windows: [
+            { id: 'primary', remainingPercent: 99.996 },
+            { id: 'secondary', remainingPercent: 0.004, usedPercent: 7.1 },
+          ],
+        }),
+      },
+    });
+    renderScreen(client);
+
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    expect(within(codex).getByText('Primary >99.99% remaining')).toBeInTheDocument();
+    expect(within(codex).getByText('Secondary <0.01% remaining')).toBeInTheDocument();
+    expect(
+      within(codex).getByRole('meter', { name: 'Primary remaining >99.99%' })
+    ).toBeInTheDocument();
+    expect(
+      within(codex).getByRole('meter', { name: 'Secondary remaining <0.01%' })
+    ).toBeInTheDocument();
+    expect(within(codex).getByText('7.1% used')).toBeInTheDocument();
+    expect(within(codex).queryByText(/92\.9/)).not.toBeInTheDocument();
   });
 });

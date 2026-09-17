@@ -11,6 +11,7 @@ export { DataRootBackupScreen } from './DataRootBackupScreen';
 export { DebugScreen } from './DebugScreen';
 export { DisableUserScreen } from './DisableUserScreen';
 export {
+  overlayConnectedAppQuota,
   projectAepSnapshotDetail,
   projectAepSnapshots,
   projectConnectedApps,

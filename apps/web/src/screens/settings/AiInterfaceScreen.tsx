@@ -8,7 +8,6 @@ import {
   Card,
   EmptyState,
   ErrorBanner,
-  ListRow,
   Page,
   PageHeader,
   Select,
@@ -18,7 +17,9 @@ import {
 } from '../../primitives';
 import {
   type ConnectedAppProviderRow,
+  type ConnectedAppQuotaWindow,
   type ConnectedAppRow,
+  overlayConnectedAppQuota,
   projectConnectedApps,
   settingsKeys,
 } from './data';
@@ -59,6 +60,7 @@ export function AiInterfaceScreen() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   const { failed: disconnected } = useConnection();
+  const [quotaAccessDenied, setQuotaAccessDenied] = useState(false);
   const accountsKey = [...settingsKeys.aiInterface, 'accounts'] as const;
   const diagnosticsKey = [...settingsKeys.aiInterface, 'diagnostics'] as const;
 
@@ -73,10 +75,12 @@ export function AiInterfaceScreen() {
           );
           const quotas = await Promise.all(
             listed.accounts.map((account) =>
-              client.providerSubscriptions.getAccountQuota(
-                provider.subscriptionProviderId,
-                account.accountSlotId
-              )
+              client.providerSubscriptions
+                .getAccountQuota(provider.subscriptionProviderId, account.accountSlotId)
+                .catch((error: unknown) => {
+                  if (isAdminDenied(error)) throw error;
+                  return null;
+                })
             )
           );
           return projectConnectedApps(provider, listed, quotas);
@@ -99,6 +103,7 @@ export function AiInterfaceScreen() {
   });
 
   function retry() {
+    setQuotaAccessDenied(false);
     queryClient.removeQueries({
       queryKey: [...settingsKeys.aiInterface, 'status'],
     });
@@ -106,7 +111,7 @@ export function AiInterfaceScreen() {
     void diagnostics.refetch();
   }
 
-  const adminDenied = isAdminDenied(accounts.error);
+  const adminDenied = quotaAccessDenied || isAdminDenied(accounts.error);
   const onAccountsChanged = useCallback(() => {
     queryClient.removeQueries({
       queryKey: [...settingsKeys.aiInterface, 'status'],
@@ -147,13 +152,13 @@ export function AiInterfaceScreen() {
 
       {accounts.isLoading ? (
         <Skeleton lines={6} />
-      ) : accounts.isError && adminDenied ? (
+      ) : adminDenied ? (
         <EmptyState
           icon="key"
           title="Access denied"
           hint="AI interface requires derived server-admin authority on the signed-in session."
           action={
-            <Button variant="outline" onPress={() => void accounts.refetch()}>
+            <Button variant="outline" onPress={retry}>
               Retry
             </Button>
           }
@@ -170,6 +175,7 @@ export function AiInterfaceScreen() {
             disconnected={disconnected}
             providers={accounts.data ?? []}
             onAccountsChanged={onAccountsChanged}
+            onAccessDenied={() => setQuotaAccessDenied(true)}
           />
           {diagnostics.isError ? (
             <ErrorBanner
@@ -201,22 +207,26 @@ function SubscriptionAccounts({
   disconnected,
   providers,
   onAccountsChanged,
+  onAccessDenied,
 }: {
   client: CoreClient;
   disconnected: boolean;
   providers: ConnectedAppProviderRow[];
   onAccountsChanged: () => void;
+  onAccessDenied: () => void;
 }) {
   return (
-    <section className="flex flex-col gap-3" aria-labelledby="ai-connected-apps">
-      <div className="flex items-baseline gap-2">
+    <section className="flex min-w-0 w-full flex-col gap-3" aria-labelledby="ai-connected-apps">
+      <div className="flex min-w-0 w-full flex-wrap items-baseline gap-2">
         <h2
           id="ai-connected-apps"
           className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
         >
           Subscription accounts
         </h2>
-        <span className="text-xs text-fg-muted">OpenAI Codex and xAI device-code login</span>
+        <span className="text-wrap text-xs text-fg-muted">
+          OpenAI Codex and xAI device-code login
+        </span>
       </div>
       {providers.length === 0 ? (
         <EmptyState
@@ -225,7 +235,7 @@ function SubscriptionAccounts({
           hint="Supported subscription providers appear here once inventory loads."
         />
       ) : (
-        <div className="flex flex-col gap-4">
+        <div className="flex min-w-0 w-full flex-col gap-4">
           {providers.map((provider) => (
             <ProviderAccounts
               key={provider.subscriptionProviderId}
@@ -233,6 +243,7 @@ function SubscriptionAccounts({
               disconnected={disconnected}
               provider={provider}
               onAccountsChanged={onAccountsChanged}
+              onAccessDenied={onAccessDenied}
             />
           ))}
         </div>
@@ -247,11 +258,13 @@ function ProviderAccounts({
   disconnected,
   provider,
   onAccountsChanged,
+  onAccessDenied,
 }: {
   client: CoreClient;
   disconnected: boolean;
   provider: ConnectedAppProviderRow;
   onAccountsChanged: () => void;
+  onAccessDenied: () => void;
 }) {
   const [slotId, setSlotId] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -271,12 +284,12 @@ function ProviderAccounts({
 
   return (
     <section
-      className="flex flex-col gap-2"
+      className="flex min-w-0 w-full flex-col gap-2"
       aria-label={provider.displayName}
       aria-labelledby={headingId}
     >
-      <div className="flex items-baseline justify-between gap-2">
-        <h3 id={headingId} className="text-sm font-bold text-fg-strong">
+      <div className="flex min-w-0 w-full flex-wrap items-baseline justify-between gap-2">
+        <h3 id={headingId} className="min-w-0 text-wrap text-sm font-bold text-fg-strong">
           {provider.displayName}
         </h3>
         <span className="text-xs text-fg-muted">
@@ -284,11 +297,9 @@ function ProviderAccounts({
         </span>
       </div>
       {provider.accounts.length === 0 ? (
-        <Card>
-          <p className="text-xs text-fg-muted">No account slots configured.</p>
-        </Card>
+        <p className="text-wrap text-xs text-fg-muted">No account slots configured.</p>
       ) : (
-        <Card className="flex flex-col gap-3 p-4">
+        <div className="flex min-w-0 w-full flex-col gap-3">
           {provider.accounts.map((account) => (
             <AccountControls
               key={account.identity}
@@ -297,39 +308,45 @@ function ProviderAccounts({
               disconnected={disconnected}
               providerId={provider.subscriptionProviderId}
               onAccountsChanged={onAccountsChanged}
+              onAccessDenied={onAccessDenied}
             />
           ))}
-        </Card>
-      )}
-      <Card className="flex flex-col gap-3">
-        <TextField
-          label="Account slot id"
-          value={slotId}
-          onChange={setSlotId}
-          isDisabled={disconnected || create.isPending}
-        />
-        <TextField
-          label="Display name"
-          value={displayName}
-          onChange={setDisplayName}
-          isDisabled={disconnected || create.isPending}
-        />
-        {create.isError ? (
-          <ErrorBanner
-            message="Couldn't create that account slot."
-            onRetry={() => create.mutate()}
-          />
-        ) : null}
-        <div className="flex justify-end">
-          <Button
-            size="sm"
-            isDisabled={disconnected || create.isPending || !slotId.trim()}
-            onPress={() => create.mutate()}
-          >
-            Create account slot
-          </Button>
         </div>
-      </Card>
+      )}
+      <details className="min-w-0 w-full">
+        <summary className="cursor-pointer text-sm font-medium text-fg">Add account slot</summary>
+        <div className="mt-3 flex min-w-0 w-full flex-col gap-3">
+          <TextField
+            className="min-w-0 w-full"
+            label="Account slot id"
+            value={slotId}
+            onChange={setSlotId}
+            isDisabled={disconnected || create.isPending}
+          />
+          <TextField
+            className="min-w-0 w-full"
+            label="Display name"
+            value={displayName}
+            onChange={setDisplayName}
+            isDisabled={disconnected || create.isPending}
+          />
+          {create.isError ? (
+            <ErrorBanner
+              message="Couldn't create that account slot."
+              onRetry={() => create.mutate()}
+            />
+          ) : null}
+          <div className="flex min-w-0 w-full flex-wrap justify-end gap-2">
+            <Button
+              size="sm"
+              isDisabled={disconnected || create.isPending || !slotId.trim()}
+              onPress={() => create.mutate()}
+            >
+              Create account slot
+            </Button>
+          </div>
+        </div>
+      </details>
     </section>
   );
 }
@@ -341,12 +358,14 @@ function AccountControls({
   disconnected,
   providerId,
   onAccountsChanged,
+  onAccessDenied,
 }: {
   account: ConnectedAppRow;
   client: CoreClient;
   disconnected: boolean;
   providerId: SubscriptionProviderId;
   onAccountsChanged: () => void;
+  onAccessDenied: () => void;
 }) {
   const queryClient = useQueryClient();
   const [displayName, setDisplayName] = useState(account.displayName);
@@ -428,136 +447,162 @@ function AccountControls({
     },
   });
   const quota = useMutation({
-    mutationFn: () =>
-      client.providerSubscriptions.getAccountQuota(providerId, account.accountSlotId),
-    onSuccess: onAccountsChanged,
+    mutationFn: async () => {
+      const result = await client.providerSubscriptions.getAccountQuota(
+        providerId,
+        account.accountSlotId
+      );
+      if (
+        result.subscriptionProviderId !== providerId ||
+        result.accountSlotId !== account.accountSlotId
+      ) {
+        throw new Error('Provider subscription projection failed.');
+      }
+      return result;
+    },
+    onError: (error) => {
+      if (isAdminDenied(error)) onAccessDenied();
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData<ConnectedAppProviderRow[]>(
+        [...settingsKeys.aiInterface, 'accounts'],
+        (current) => (current ? overlayConnectedAppQuota(current, result) : current)
+      );
+    },
   });
 
   return (
-    <ListRow>
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <p className="truncate text-sm font-bold text-fg-strong">{live.displayName}</p>
-          <p className="text-xs text-fg-muted">
+    <Card className="flex min-w-0 w-full flex-col gap-3">
+      <div className="flex min-w-0 w-full flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-wrap text-sm font-bold text-fg-strong">{live.displayName}</p>
+          <p className="text-wrap text-xs text-fg-muted">
             {live.accountLabel ?? `Slot ${live.accountSlotId}`}
             {live.planLabel ? ` · ${live.planLabel}` : ''}
             {live.boundProviderCount > 0
               ? ` · ${live.boundProviderCount} provider binding${live.boundProviderCount === 1 ? '' : 's'}`
               : ''}
           </p>
-          <QuotaStatus account={live} />
-          {live.message ? <p className="text-xs text-fg-muted">{live.message}</p> : null}
-          {live.status === 'pending' && live.verificationUrl && live.userCode ? (
-            <p className="text-xs text-fg">
-              Open{' '}
-              <a
-                className="font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
-                href={live.verificationUrl}
-                rel="noreferrer"
-                target="_blank"
-              >
-                {live.verificationUrl}
-              </a>{' '}
-              and enter <code>{live.userCode}</code>
-            </p>
-          ) : null}
         </div>
-        <TextField
-          label="Account display name"
-          value={displayName}
-          onChange={setDisplayName}
-          isDisabled={disconnected}
+        <StatusChip tone={disconnected ? 'notice' : statusLabel.tone} dot>
+          {disconnected ? `${statusLabel.label} · may be stale` : statusLabel.label}
+        </StatusChip>
+      </div>
+      <QuotaStatus account={live} />
+      {live.message ? <p className="text-wrap text-xs text-fg-muted">{live.message}</p> : null}
+      {live.status === 'pending' && live.verificationUrl && live.userCode ? (
+        <p className="min-w-0 w-full text-wrap text-xs text-fg">
+          Open{' '}
+          <a
+            className="font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
+            href={live.verificationUrl}
+            rel="noreferrer"
+            target="_blank"
+          >
+            {live.verificationUrl}
+          </a>{' '}
+          and enter <code>{live.userCode}</code>
+        </p>
+      ) : null}
+      {login.isError ? (
+        <ErrorBanner message="Couldn't start login." onRetry={() => login.mutate()} />
+      ) : null}
+      {cancel.isError ? (
+        <ErrorBanner message="Couldn't cancel login." onRetry={() => cancel.mutate()} />
+      ) : null}
+      {quota.isError ? (
+        <ErrorBanner message="Couldn't refresh quota." onRetry={() => quota.mutate()} />
+      ) : null}
+      {status.isError ? (
+        <ErrorBanner
+          message="Couldn't refresh login status."
+          onRetry={() => void status.refetch()}
         />
-        {rename.isError ? (
-          <ErrorBanner message="Couldn't rename this account." onRetry={() => rename.mutate()} />
-        ) : null}
-        {remove.isError ? (
-          <ErrorBanner message="Couldn't delete this account." onRetry={() => remove.mutate()} />
-        ) : null}
-        {login.isError ? (
-          <ErrorBanner message="Couldn't start login." onRetry={() => login.mutate()} />
-        ) : null}
-        {cancel.isError ? (
-          <ErrorBanner message="Couldn't cancel login." onRetry={() => cancel.mutate()} />
-        ) : null}
-        {logout.isError ? (
-          <ErrorBanner message="Couldn't log out this account." onRetry={() => logout.mutate()} />
-        ) : null}
-        {quota.isError ? (
-          <ErrorBanner message="Couldn't refresh quota." onRetry={() => quota.mutate()} />
-        ) : null}
-        {status.isError ? (
-          <ErrorBanner
-            message="Couldn't refresh login status."
-            onRetry={() => void status.refetch()}
-          />
-        ) : null}
-        <div className="flex flex-wrap gap-2">
+      ) : null}
+      <div className="flex min-w-0 w-full flex-wrap gap-2">
+        <Button
+          size="sm"
+          isDisabled={disconnected || quota.isPending}
+          onPress={() => quota.mutate()}
+        >
+          Refresh quota
+        </Button>
+        {live.status === 'pending' ? (
           <Button
             size="sm"
             variant="outline"
-            isDisabled={disconnected || rename.isPending || !displayName.trim()}
-            onPress={() => rename.mutate()}
+            isDisabled={disconnected || cancel.isPending || !live.interactionId}
+            onPress={() => cancel.mutate()}
           >
-            Rename account
+            Cancel login
           </Button>
-          {live.status === 'pending' ? (
-            <Button
-              size="sm"
-              variant="outline"
-              isDisabled={disconnected || cancel.isPending || !live.interactionId}
-              onPress={() => cancel.mutate()}
-            >
-              Cancel login
-            </Button>
-          ) : live.status === 'logged_out' ||
-            live.status === 'error' ||
-            live.status === 'unavailable' ? (
-            <Button
-              size="sm"
-              isDisabled={disconnected || login.isPending}
-              onPress={() => login.mutate()}
-            >
-              Start login
-            </Button>
-          ) : null}
-          {live.status === 'logged_in' ||
+        ) : live.status === 'logged_out' ||
           live.status === 'error' ||
           live.status === 'unavailable' ? (
+          <Button
+            size="sm"
+            isDisabled={disconnected || login.isPending}
+            onPress={() => login.mutate()}
+          >
+            Start login
+          </Button>
+        ) : null}
+      </div>
+      <details className="min-w-0 w-full">
+        <summary className="cursor-pointer text-sm font-medium text-fg">Account settings</summary>
+        <div className="mt-3 flex min-w-0 w-full flex-col gap-3">
+          <TextField
+            className="min-w-0 w-full"
+            label="Account display name"
+            value={displayName}
+            onChange={setDisplayName}
+            isDisabled={disconnected}
+          />
+          {rename.isError ? (
+            <ErrorBanner message="Couldn't rename this account." onRetry={() => rename.mutate()} />
+          ) : null}
+          {remove.isError ? (
+            <ErrorBanner message="Couldn't delete this account." onRetry={() => remove.mutate()} />
+          ) : null}
+          {logout.isError ? (
+            <ErrorBanner message="Couldn't log out this account." onRetry={() => logout.mutate()} />
+          ) : null}
+          <div className="flex min-w-0 w-full flex-wrap gap-2">
             <Button
               size="sm"
               variant="outline"
-              isDisabled={disconnected || logout.isPending}
-              onPress={() => logout.mutate()}
+              isDisabled={disconnected || rename.isPending || !displayName.trim()}
+              onPress={() => rename.mutate()}
             >
-              Log out
+              Rename account
             </Button>
-          ) : null}
-          <Button
-            size="sm"
-            variant="outline"
-            isDisabled={disconnected || quota.isPending}
-            onPress={() => quota.mutate()}
-          >
-            Refresh quota
-          </Button>
-          <Button
-            size="sm"
-            variant="negative-outline"
-            isDisabled={disconnected || remove.isPending}
-            onPress={() => {
-              if (!window.confirm('Delete this account slot?')) return;
-              remove.mutate();
-            }}
-          >
-            Delete account
-          </Button>
+            {live.status === 'logged_in' ||
+            live.status === 'error' ||
+            live.status === 'unavailable' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                isDisabled={disconnected || logout.isPending}
+                onPress={() => logout.mutate()}
+              >
+                Log out
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              variant="negative-outline"
+              isDisabled={disconnected || remove.isPending}
+              onPress={() => {
+                if (!window.confirm('Delete this account slot?')) return;
+                remove.mutate();
+              }}
+            >
+              Delete account
+            </Button>
+          </div>
         </div>
-      </div>
-      <StatusChip tone={disconnected ? 'notice' : statusLabel.tone} dot>
-        {disconnected ? `${statusLabel.label} · may be stale` : statusLabel.label}
-      </StatusChip>
-    </ListRow>
+      </details>
+    </Card>
   );
 }
 
@@ -588,23 +633,110 @@ function overlayAccount(
   };
 }
 
-/** Renders the bounded quota posture for one provider-subscription account. */
-function QuotaStatus({ account }: { account: ConnectedAppRow }) {
-  if (account.quotaAvailability === 'unsupported') {
-    return <p className="text-xs text-fg-muted">Quota unsupported</p>;
+/** Maps frozen OpenKit quota window ids to readable labels without inventing durations. */
+function subscriptionQuotaWindowLabel(id: string): string {
+  switch (id) {
+    case 'primary':
+      return 'Primary';
+    case 'secondary':
+      return 'Secondary';
+    case 'included':
+      return 'Included';
+    default:
+      return id;
   }
-  if (account.quotaAvailability === 'temporarily_unavailable') {
-    return <p className="text-xs text-fg-muted">Quota temporarily unavailable</p>;
+}
+
+/** Renders a browser-local instant, or an explicit unknown label when missing or invalid. */
+function QuotaInstant({ label, value }: { label: string; value: string | null }) {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  if (!value || !Number.isFinite(parsed)) {
+    return <p className="text-wrap text-xs text-fg-muted">{label} unknown</p>;
   }
   return (
-    <div className="flex flex-wrap gap-2 text-xs text-fg-muted">
-      {account.quotaRemainingPercents.length === 0 ? (
-        <span>Quota available</span>
+    <p className="text-wrap text-xs text-fg-muted">
+      {label}{' '}
+      <time dateTime={value} title={value}>
+        {new Date(value).toLocaleString(undefined, { timeZoneName: 'short' })}
+      </time>
+    </p>
+  );
+}
+
+/** Formats a quota percent without rounding positive tiny values to 0% or near-full values to 100%. */
+function formatQuotaPercent(value: number): string {
+  if (value > 0 && value < 0.01) {
+    return '<0.01%';
+  }
+  if (value < 100 && value > 99.99) {
+    return '>99.99%';
+  }
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)}%`;
+}
+
+/** Renders one quota window with remaining as the prominent labeled meter. */
+function QuotaWindow({ window }: { window: ConnectedAppQuotaWindow }) {
+  const label = subscriptionQuotaWindowLabel(window.id);
+  const remaining =
+    window.remainingPercent === null ? null : formatQuotaPercent(window.remainingPercent);
+  return (
+    <li className="min-w-0 w-full text-wrap">
+      {remaining !== null && window.remainingPercent !== null ? (
+        <>
+          <p className="text-sm font-bold text-fg-strong">
+            {label} {remaining} remaining
+          </p>
+          <meter
+            className="h-2 w-full min-w-0"
+            min={0}
+            max={100}
+            value={window.remainingPercent}
+            aria-label={`${label} remaining ${remaining}`}
+          />
+        </>
       ) : (
-        <span>
-          {account.quotaRemainingPercents.map((percent) => `${percent}% remaining`).join(' · ')}
-        </span>
+        <p className="text-sm font-bold text-fg-strong">{label}</p>
       )}
+      {window.usedPercent !== null ? (
+        <p className="text-xs text-fg-muted">{formatQuotaPercent(window.usedPercent)} used</p>
+      ) : null}
+      <QuotaInstant label="Resets" value={window.resetsAt} />
+    </li>
+  );
+}
+
+/** Renders the bounded quota posture for one provider-subscription account. */
+function QuotaStatus({ account }: { account: ConnectedAppRow }) {
+  if (account.quotaAvailability === null) {
+    return <p className="text-wrap text-xs text-fg-muted">Could not read quota</p>;
+  }
+  const lastChecked = <QuotaInstant label="Last checked" value={account.quotaObservedAt} />;
+  if (account.quotaAvailability === 'temporarily_unavailable') {
+    return (
+      <div className="flex min-w-0 w-full flex-col gap-1">
+        <p className="text-wrap text-xs text-fg-muted">Quota temporarily unavailable</p>
+        {account.quotaRetryAfter ? (
+          <QuotaInstant label="Retry after" value={account.quotaRetryAfter} />
+        ) : null}
+        {lastChecked}
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-w-0 w-full flex-col gap-1">
+      {account.quotaPlanType ? (
+        <p className="text-wrap text-xs text-fg-muted">Quota plan {account.quotaPlanType}</p>
+      ) : null}
+      {account.quotaWindows.length === 0 ? (
+        <p className="text-wrap text-xs text-fg-muted">Quota available</p>
+      ) : (
+        <ul className="flex min-w-0 w-full flex-col gap-2">
+          {account.quotaWindows.map((window) => (
+            <QuotaWindow key={window.id} window={window} />
+          ))}
+        </ul>
+      )}
+      {lastChecked}
     </div>
   );
 }

@@ -45,7 +45,7 @@ const XaiSubscriptionDescriptorSchema = z
     subscriptionProviderId: z.literal('xai'),
     displayName: z.literal('xAI'),
     loginModes: z.tuple([z.literal('device_code')]),
-    quotaCapability: z.literal('unsupported'),
+    quotaCapability: z.literal('available'),
   })
   .strict();
 
@@ -161,7 +161,7 @@ const QuotaWindowSchema = z
 export const ProviderSubscriptionQuotaSchema = z.discriminatedUnion('availability', [
   z
     .object({
-      subscriptionProviderId: z.literal('openai-codex'),
+      subscriptionProviderId: SubscriptionProviderIdSchema,
       accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
       availability: z.literal('available'),
       observedAt: TimestampSchema,
@@ -171,15 +171,7 @@ export const ProviderSubscriptionQuotaSchema = z.discriminatedUnion('availabilit
     .strict(),
   z
     .object({
-      subscriptionProviderId: z.literal('xai'),
-      accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
-      availability: z.literal('unsupported'),
-      observedAt: TimestampSchema,
-    })
-    .strict(),
-  z
-    .object({
-      subscriptionProviderId: z.literal('openai-codex'),
+      subscriptionProviderId: SubscriptionProviderIdSchema,
       accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
       availability: z.literal('temporarily_unavailable'),
       observedAt: TimestampSchema,

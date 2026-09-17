@@ -27,6 +27,7 @@ import {
   type ProviderSubscriptionAccountManager,
   type ProviderSubscriptionAccountPair,
 } from './provider-subscription-accounts.js';
+import { readXaiQuota } from './xai-quota.js';
 
 const PROVIDERS = ProviderSubscriptionsResponseSchema.parse({
   providers: [
@@ -39,7 +40,7 @@ const PROVIDERS = ProviderSubscriptionsResponseSchema.parse({
     {
       displayName: 'xAI',
       loginModes: ['device_code'],
-      quotaCapability: 'unsupported',
+      quotaCapability: 'available',
       subscriptionProviderId: 'xai',
     },
   ],
@@ -284,16 +285,11 @@ export function registerProviderSubscriptionRoutes(
     }
     return runAccountOperation(c, async () => {
       await manager().reconcileAccount(pair);
-      if (pair.subscriptionProviderId === 'xai') {
-        return ProviderSubscriptionQuotaSchema.parse({
-          accountSlotId: pair.accountSlotId,
-          availability: 'unsupported',
-          observedAt: now(),
-          subscriptionProviderId: pair.subscriptionProviderId,
-        });
-      }
       const handle = await manager().getPairHandle(pair);
-      const quota = await readCodexQuota(handle.credentials);
+      const quota =
+        pair.subscriptionProviderId === 'xai'
+          ? await readXaiQuota(handle.models)
+          : await readCodexQuota(handle.credentials);
       return ProviderSubscriptionQuotaSchema.parse({
         accountSlotId: pair.accountSlotId,
         availability: quota ? 'available' : 'temporarily_unavailable',

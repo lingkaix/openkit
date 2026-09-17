@@ -43339,7 +43339,10 @@
             "properties": {
               "subscriptionProviderId": {
                 "type": "string",
-                "const": "openai-codex"
+                "enum": [
+                  "openai-codex",
+                  "xai"
+                ]
               },
               "accountSlotId": {
                 "type": "string",
@@ -43404,36 +43407,10 @@
             "properties": {
               "subscriptionProviderId": {
                 "type": "string",
-                "const": "xai"
-              },
-              "accountSlotId": {
-                "type": "string",
-                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
-              },
-              "availability": {
-                "type": "string",
-                "const": "unsupported"
-              },
-              "observedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
-              }
-            },
-            "required": [
-              "subscriptionProviderId",
-              "accountSlotId",
-              "availability",
-              "observedAt"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "subscriptionProviderId": {
-                "type": "string",
-                "const": "openai-codex"
+                "enum": [
+                  "openai-codex",
+                  "xai"
+                ]
               },
               "accountSlotId": {
                 "type": "string",
@@ -43526,7 +43503,7 @@
                   },
                   "quotaCapability": {
                     "type": "string",
-                    "const": "unsupported"
+                    "const": "available"
                   }
                 },
                 "required": [
@@ -117886,5 +117863,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:68abbc9c834c811fc52bc118fb1426ab582459938efee7d721f5f66ea0d48387"
+  "x-openkit-source-digest": "sha256:2f82e4a463e6f2f0ee3923c4f27409ae61dea4efdce47d2582de6d93c07aefc4"
 }

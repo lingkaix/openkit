@@ -141,6 +141,8 @@ Provider IDs, upstream model IDs, routes, and credential references are private 
 
 Supported OpenAI Codex and xAI subscription profiles use `kind: "oauth"`, omit `baseUrl` and `secretRef`, and bind an account slot through `extensions.openkit.subscriptionAccount.accountSlotId`. See [Provider Subscription Accounts](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260721-provider_subscription_accounts.md).
 
+Both subscription providers expose on-demand quota through the public account-quota operation and Settings AI interface. The result separates observation time from optional reset times; missing values remain absent, and a temporary quota-read failure does not block inference. Use the existing account slot and pi-ai authentication rather than copying credentials or reading a vendor billing page. See the [public subscription quota workflow](https://github.com/lingkaix/openkit/blob/main/skills/openkit/references/administration.md#inspect-subscription-quota).
+
 ## `config/gateway.jsonc`
 
 The Gateway maps stable logical model IDs to ordered private Provider routes. A worker requests a logical model; the Gateway selects its current route without exposing Provider or upstream model identity.

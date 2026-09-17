@@ -28,8 +28,40 @@ import { type CreateAppOptions, createApp } from './test-support/app.js';
 
 const NOW = '2026-07-24T00:00:00.000Z';
 const MAX_CODEX_QUOTA_BODY_BYTES = 65_536;
+const MAX_XAI_QUOTA_BODY_BYTES = 65_536;
+const XAI_USER_TIMEOUT_MS = 10_000;
+const XAI_BILLING_TIMEOUT_MS = 15_000;
 const CODEX_ACCESS_CANARY = 'codex-access-canary';
 const CODEX_ACCOUNT_CANARY = 'codex-account-canary';
+const XAI_API_KEY_CANARY = 'xai-access-canary';
+const XAI_USER_ID_CANARY = 'xai-user-canary';
+const XAI_AUTH = { auth: { apiKey: XAI_API_KEY_CANARY }, source: 'OAuth' } as const;
+const XAI_USER = {
+  email: 'quota-user-canary@example.invalid',
+  subscriptionTier: 'SuperGrok',
+  userId: XAI_USER_ID_CANARY,
+} as const;
+const XAI_BILLING = {
+  config: {
+    creditUsagePercent: 42.5,
+    currentPeriod: {
+      end: '2026-09-01T00:00:00.000Z',
+      start: '2026-08-01T00:00:00.000Z',
+      type: 'USAGE_PERIOD_TYPE_MONTHLY',
+    },
+    monthlyLimit: { val: 9_999 },
+    prepaidBalance: { val: 12 },
+    used: { val: 4_200 },
+  },
+  onDemandEnabled: true,
+  provider_private: 'raw-xai-quota-canary',
+} as const;
+const INCLUDED_QUOTA_WINDOW = {
+  id: 'included',
+  remainingPercent: 57.5,
+  resetsAt: '2026-09-01T00:00:00.000Z',
+  usedPercent: 42.5,
+} as const;
 const CODEX_CREDENTIAL = {
   access: CODEX_ACCESS_CANARY,
   accountId: CODEX_ACCOUNT_CANARY,
@@ -190,6 +222,141 @@ function jsonBodyAtUtf8ByteLength(
   return body;
 }
 
+const XAI_USER_URL = 'https://cli-chat-proxy.grok.com/v1/user?include=subscription';
+const XAI_BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits';
+const XAI_QUOTA_HEADERS = {
+  Authorization: `Bearer ${XAI_API_KEY_CANARY}`,
+  'X-XAI-Token-Auth': 'xai-grok-cli',
+  'x-grok-client-mode': 'headless',
+  'x-grok-client-version': '1.0.12',
+} as const;
+
+/**
+ * Stubs the exact two xAI quota URLs without following any other provider path.
+ *
+ * @param responses Optional per-URL response factories.
+ * @returns Fetch spy.
+ */
+function mockXaiQuotaFetch(
+  responses: {
+    billing?: (init?: RequestInit) => Response | Promise<Response>;
+    user?: (init?: RequestInit) => Response | Promise<Response>;
+  } = {}
+) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url === XAI_USER_URL) {
+      return await (responses.user ?? (async () => new Response(JSON.stringify(XAI_USER))))(init);
+    }
+    if (url === XAI_BILLING_URL) {
+      return await (responses.billing ?? (async () => new Response(JSON.stringify(XAI_BILLING))))(
+        init
+      );
+    }
+    throw new Error(`unexpected provider url ${url}`);
+  });
+}
+
+/**
+ * Stubs the exact two xAI quota URLs with optional JSON or raw bodies.
+ *
+ * @param bodies Optional discovery and billing payloads.
+ * @returns Fetch spy.
+ */
+function mockXaiQuotaUpstream(
+  bodies: { billing?: unknown; billingBody?: string; user?: unknown } = {}
+) {
+  return mockXaiQuotaFetch({
+    billing: async () =>
+      new Response(bodies.billingBody ?? JSON.stringify(bodies.billing ?? XAI_BILLING)),
+    user: async () => new Response(JSON.stringify(bodies.user ?? XAI_USER)),
+  });
+}
+
+/**
+ * Builds a streamed quota body that crosses the raw-byte ceiling on the second pull.
+ *
+ * @param value Otherwise-valid JSON object.
+ * @returns Pull spy and overflowing response body.
+ */
+function overflowingQuotaBody(value: Readonly<Record<string, unknown>>) {
+  const bytes = new TextEncoder().encode(
+    jsonBodyAtUtf8ByteLength(value, MAX_XAI_QUOTA_BODY_BYTES + 1)
+  );
+  const pulls = vi.fn();
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        pulls();
+        if (pulls.mock.calls.length === 1) {
+          controller.enqueue(bytes.subarray(0, MAX_XAI_QUOTA_BODY_BYTES));
+          return;
+        }
+        if (pulls.mock.calls.length === 2) {
+          controller.enqueue(bytes.subarray(MAX_XAI_QUOTA_BODY_BYTES));
+          return;
+        }
+        throw new Error('Bearer forbidden-extra-pull-canary');
+      },
+    },
+    { highWaterMark: 0 }
+  );
+  return { pulls, stream };
+}
+
+/**
+ * Builds a JSON body whose UTF-8 marker is replaced with an invalid sequence.
+ *
+ * @param value Otherwise-valid JSON object.
+ * @returns Invalid UTF-8 blob.
+ */
+function invalidUtf8QuotaBody(value: Readonly<Record<string, unknown>>) {
+  const marker = 'invalid-utf8-marker';
+  const body = JSON.stringify({ ...value, ignored_utf8: marker });
+  const markerIndex = body.indexOf(marker);
+  return new Blob([
+    body.slice(0, markerIndex),
+    Uint8Array.of(0xc3, 0x28),
+    body.slice(markerIndex + marker.length),
+  ]);
+}
+
+/**
+ * Returns a hanging quota body after the request has almost reached its deadline.
+ *
+ * @param delayMs Delay before the headers arrive.
+ * @returns Pending response whose body never completes.
+ */
+function stalledQuotaBody(delayMs: number) {
+  return new Promise<Response>((resolve) => {
+    setTimeout(
+      () =>
+        resolve(
+          new Response(
+            new ReadableStream({
+              pull: () => new Promise<void>(() => undefined),
+            })
+          )
+        ),
+      delayMs
+    );
+  });
+}
+
+/**
+ * Returns the unavailable xAI quota projection for one existing slot.
+ *
+ * @returns Redacted temporary-unavailability payload.
+ */
+function unavailableXaiQuota() {
+  return {
+    accountSlotId: 'default',
+    availability: 'temporarily_unavailable',
+    observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
+    subscriptionProviderId: 'xai',
+  };
+}
+
 /**
  * Creates one sanitized manager snapshot.
  *
@@ -230,6 +397,7 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
   const credentialModify = vi.fn().mockName('credentialModify');
   const credentialDelete = vi.fn().mockName('credentialDelete');
   const credentialList = vi.fn().mockName('credentialList');
+  const modelsGetAuth = vi.fn(async () => XAI_AUTH).mockName('modelsGetAuth');
   const modelsGetProvider = vi.fn().mockName('modelsGetProvider');
   const spies = {
     cancelLogin: vi
@@ -251,7 +419,7 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
         modify: credentialModify,
         read: credentialRead,
       } as never,
-      models: { getProvider: modelsGetProvider } as never,
+      models: { getAuth: modelsGetAuth, getProvider: modelsGetProvider } as never,
     }),
     getStatus: vi
       .fn(async (pair: ProviderSubscriptionAccountPair) => snapshot(pair))
@@ -285,6 +453,7 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
     credentialList,
     credentialModify,
     credentialRead,
+    modelsGetAuth,
     modelsGetProvider,
   };
   Object.assign(manager, {
@@ -408,7 +577,7 @@ describe('provider-subscription app API', () => {
           {
             displayName: 'xAI',
             loginModes: ['device_code'],
-            quotaCapability: 'unsupported',
+            quotaCapability: 'available',
             subscriptionProviderId: 'xai',
           },
         ],
@@ -1207,8 +1376,158 @@ describe('provider-subscription app API', () => {
     }
   });
 
-  it('keeps xAI quota network- and credential-free after reconciliation', async () => {
+  it('projects xAI credits quota through getAuth without reading the credential store', async () => {
     const fixture = createFixture();
+    const fetchSpy = mockXaiQuotaUpstream();
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(quota).toEqual({
+        accountSlotId: 'default',
+        availability: 'available',
+        observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
+        planType: 'SuperGrok',
+        subscriptionProviderId: 'xai',
+        windows: [INCLUDED_QUOTA_WINDOW],
+      });
+      expect(fixture.spies.reconcileAccount).toHaveBeenCalledTimes(1);
+      expect(fixture.spies.getPairHandle).toHaveBeenCalledTimes(1);
+      expect(fixture.spies.modelsGetAuth).toHaveBeenCalledExactlyOnceWith('xai');
+      expect(fixture.spies.credentialRead).not.toHaveBeenCalled();
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(fetchSpy.mock.calls[0]?.[0]).toBe(XAI_USER_URL);
+      expect(fetchSpy.mock.calls[0]?.[1]).toEqual({
+        headers: XAI_QUOTA_HEADERS,
+        method: 'GET',
+        redirect: 'error',
+        signal: expect.any(AbortSignal),
+      });
+      expect(fetchSpy.mock.calls[1]?.[0]).toBe(XAI_BILLING_URL);
+      expect(fetchSpy.mock.calls[1]?.[1]).toEqual({
+        headers: { ...XAI_QUOTA_HEADERS, 'x-userid': XAI_USER_ID_CANARY },
+        method: 'GET',
+        redirect: 'error',
+        signal: expect.any(AbortSignal),
+      });
+      expect(JSON.stringify(quota)).not.toMatch(
+        /xai-access-canary|xai-user-canary|quota-user-canary|raw-xai-quota-canary/i
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it('canonicalizes an RFC 3339 offset period end to UTC Date.toISOString form', async () => {
+    const fixture = createFixture();
+    const fetchSpy = mockXaiQuotaUpstream({
+      billing: {
+        config: {
+          creditUsagePercent: 42.5,
+          currentPeriod: { end: '2026-09-01T10:00:00+10:00' },
+        },
+      },
+    });
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(quota).toMatchObject({
+        availability: 'available',
+        windows: [{ ...INCLUDED_QUOTA_WINDOW, resetsAt: '2026-09-01T00:00:00.000Z' }],
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it.each([
+    {
+      end: '2026-09-17',
+      name: 'date-only period end',
+    },
+    {
+      end: 'September 17 2026',
+      name: 'non-RFC 3339 period end',
+    },
+    {
+      end: '2026-09-31T00:00:00.000Z',
+      name: 'invalid calendar period end',
+    },
+  ])('redacts xAI quota $name as temporarily unavailable', async ({ end }) => {
+    const fixture = createFixture();
+    const fetchSpy = mockXaiQuotaUpstream({
+      billing: {
+        config: {
+          creditUsagePercent: 10,
+          currentPeriod: { end },
+          monthlyLimit: { val: 100 },
+        },
+      },
+    });
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(quota).toEqual(unavailableXaiQuota());
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it('fails closed on a discovery redirect without a billing request', async () => {
+    const fixture = createFixture();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (init?.redirect === 'error') {
+        throw new TypeError('unexpected redirect');
+      }
+      if (url === XAI_USER_URL) {
+        return fetch(XAI_BILLING_URL, init);
+      }
+      if (url === XAI_BILLING_URL) {
+        return new Response(JSON.stringify(XAI_BILLING));
+      }
+      throw new Error(`unexpected provider url ${url}`);
+    });
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(quota).toEqual(unavailableXaiQuota());
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]?.[0]).toBe(XAI_USER_URL);
+      expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ redirect: 'error' });
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it('redacts xAI auth-resolution failure as temporary quota unavailability without provider requests', async () => {
+    const fixture = createFixture();
+    fixture.spies.modelsGetAuth.mockResolvedValue(undefined);
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockRejectedValue(new Error('xAI quota must not perform a network request.'));
@@ -1220,21 +1539,269 @@ describe('provider-subscription app API', () => {
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
       expect(response.status).toBe(200);
-      expect(quota).toEqual({
-        accountSlotId: 'default',
-        availability: 'unsupported',
-        observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
-        subscriptionProviderId: 'xai',
-      });
-      expect(fixture.spies.reconcileAccount).toHaveBeenCalledTimes(1);
-      expect(fixture.spies.reconcileAccount).toHaveBeenLastCalledWith({
-        accountSlotId: 'default',
-        subscriptionProviderId: 'xai',
-      });
+      expect(quota).toEqual(unavailableXaiQuota());
+      expect(fixture.spies.modelsGetAuth).toHaveBeenCalledExactlyOnceWith('xai');
       expect(fetchSpy).not.toHaveBeenCalled();
-      expect(fixture.spies.getPairHandle).not.toHaveBeenCalled();
       expect(fixture.spies.credentialRead).not.toHaveBeenCalled();
     } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it.each([
+    {
+      billing: { monthlyLimit: { val: 9_999 }, used: { val: 4_200 } },
+      name: 'absent config',
+    },
+    {
+      billing: { config: { creditUsagePercent: -0.1 } },
+      name: 'negative usage',
+    },
+    {
+      billingBody: '{"config":{"creditUsagePercent":1e309}}',
+      name: 'nonfinite usage',
+    },
+    {
+      billing: { config: { creditUsagePercent: '10' } },
+      name: 'string usage',
+    },
+    {
+      billing: { config: { creditUsagePercent: 10, currentPeriod: null } },
+      name: 'null period',
+    },
+    {
+      billing: {
+        config: {
+          billingPeriodEnd: '2026-09-01T00:00:00.000Z',
+          billingPeriodStart: '2026-08-01T00:00:00.000Z',
+          monthlyLimit: { val: 9_999 },
+          used: { val: 4_200 },
+        },
+      },
+      name: 'legacy monthly fields without credits',
+    },
+    {
+      billing: { config: { creditUsagePercent: 42.5 } },
+      name: 'absent current period',
+      quota: {
+        availability: 'available' as const,
+        planType: 'SuperGrok',
+        windows: [{ id: 'included', remainingPercent: 57.5, usedPercent: 42.5 }],
+      },
+    },
+    {
+      billing: { config: { creditUsagePercent: 42.5, currentPeriod: {} } },
+      name: 'absent period end',
+      quota: {
+        availability: 'available' as const,
+        planType: 'SuperGrok',
+        windows: [{ id: 'included', remainingPercent: 57.5, usedPercent: 42.5 }],
+      },
+    },
+    {
+      name: 'absent subscription tier',
+      quota: {
+        availability: 'available' as const,
+        windows: [INCLUDED_QUOTA_WINDOW],
+      },
+      user: { userId: XAI_USER_ID_CANARY },
+    },
+    {
+      billing: {
+        config: {
+          creditUsagePercent: 142.5,
+          currentPeriod: { end: '2026-09-01T00:00:00.000Z' },
+        },
+      },
+      name: 'overage clamp',
+      quota: {
+        availability: 'available' as const,
+        planType: 'SuperGrok',
+        windows: [
+          {
+            id: 'included',
+            remainingPercent: 0,
+            resetsAt: '2026-09-01T00:00:00.000Z',
+            usedPercent: 100,
+          },
+        ],
+      },
+    },
+  ])('projects xAI billing $name through the credits reader', async (testCase) => {
+    const fixture = createFixture();
+    const fetchSpy = mockXaiQuotaUpstream({
+      billing: testCase.billing,
+      billingBody: testCase.billingBody,
+      user: testCase.user,
+    });
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(quota).toEqual({
+        ...unavailableXaiQuota(),
+        ...testCase.quota,
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(quota)).not.toMatch(
+        /xai-access-canary|xai-user-canary|quota-user-canary|raw-xai-quota-canary|monthlyLimit|billingPeriod/i
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it.each([
+    {
+      expectedFetches: 1,
+      name: 'discovery body overflow',
+      responses: () => {
+        const overflow = overflowingQuotaBody(XAI_USER);
+        return {
+          overflow,
+          responses: {
+            billing: async () => {
+              throw new Error('xAI billing must not run after a discovery body overflow.');
+            },
+            user: async () => new Response(overflow.stream),
+          },
+        };
+      },
+    },
+    {
+      expectedFetches: 2,
+      name: 'billing body overflow',
+      responses: () => {
+        const overflow = overflowingQuotaBody(XAI_BILLING);
+        return {
+          overflow,
+          responses: {
+            billing: async () => new Response(overflow.stream),
+          },
+        };
+      },
+    },
+  ])('redacts xAI $name without reading past the byte ceiling', async (testCase) => {
+    const fixture = createFixture();
+    const { overflow, responses } = testCase.responses();
+    const fetchSpy = mockXaiQuotaFetch(responses);
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(quota).toEqual(unavailableXaiQuota());
+      expect(overflow.pulls).toHaveBeenCalledTimes(2);
+      expect(fetchSpy).toHaveBeenCalledTimes(testCase.expectedFetches);
+      expect(JSON.stringify(quota)).not.toContain('forbidden-extra-pull-canary');
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it.each([
+    {
+      expectedFetches: 1,
+      name: 'discovery invalid UTF-8',
+      responses: {
+        billing: async () => {
+          throw new Error('xAI billing must not run after a discovery UTF-8 failure.');
+        },
+        user: async () => new Response(invalidUtf8QuotaBody(XAI_USER)),
+      },
+    },
+    {
+      expectedFetches: 2,
+      name: 'billing invalid UTF-8',
+      responses: {
+        billing: async () => new Response(invalidUtf8QuotaBody(XAI_BILLING)),
+      },
+    },
+  ])('redacts xAI $name as temporarily unavailable', async (testCase) => {
+    const fixture = createFixture();
+    const fetchSpy = mockXaiQuotaFetch(testCase.responses);
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(quota).toEqual(unavailableXaiQuota());
+      expect(fetchSpy).toHaveBeenCalledTimes(testCase.expectedFetches);
+      expect(JSON.stringify(quota)).not.toContain('invalid-utf8-marker');
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it.each([
+    {
+      expectedFetches: 1,
+      name: 'discovery stalled body',
+      timeoutMs: XAI_USER_TIMEOUT_MS,
+      responses: {
+        billing: async () => {
+          throw new Error('xAI billing must not run after a discovery body stall.');
+        },
+        user: async () => stalledQuotaBody(XAI_USER_TIMEOUT_MS - 1),
+      },
+    },
+    {
+      expectedFetches: 2,
+      name: 'billing stalled body',
+      timeoutMs: XAI_BILLING_TIMEOUT_MS,
+      responses: {
+        billing: async () => stalledQuotaBody(XAI_BILLING_TIMEOUT_MS - 1),
+      },
+    },
+  ])('redacts xAI $name at the request-and-body deadline', async (testCase) => {
+    const fixture = createFixture();
+    const fetchSpy = mockXaiQuotaFetch(testCase.responses);
+    vi.useFakeTimers();
+
+    try {
+      const responsePromise = fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      let settled = false;
+      void responsePromise.finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchSpy).toHaveBeenCalledTimes(testCase.expectedFetches);
+      const request = new Request(
+        ...(fetchSpy.mock.calls[testCase.expectedFetches - 1] as ConstructorParameters<
+          typeof Request
+        >)
+      );
+      await vi.advanceTimersByTimeAsync(testCase.timeoutMs - 1);
+      expect(request.signal.aborted).toBe(false);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(request.signal.aborted).toBe(true);
+      expect(settled).toBe(true);
+
+      const response = await responsePromise;
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(quota).toEqual(unavailableXaiQuota());
+      expect(fetchSpy).toHaveBeenCalledTimes(testCase.expectedFetches);
+    } finally {
+      vi.useRealTimers();
       fetchSpy.mockRestore();
       fixture.close();
     }

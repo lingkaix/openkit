@@ -10,7 +10,7 @@ import { isSurfaceLive } from '../../app/flags';
 import { AppRoutes } from '../../app/routes';
 import { surfaceById } from '../../app/surfaces';
 import { useWorkspaceStore } from '../workspace-store';
-import { projectConnectedApps } from './data';
+import { overlayConnectedAppQuota, projectConnectedApps } from './data';
 import { projectSafeValue, redactSecretShapedText, stripSecretFields } from './secret-safe';
 
 const TIMESTAMP = '2026-07-21T12:00:00.000Z';
@@ -65,7 +65,7 @@ const PROVIDERS = {
       subscriptionProviderId: 'xai' as const,
       displayName: 'xAI' as const,
       loginModes: ['device_code'] as ['device_code'],
-      quotaCapability: 'unsupported' as const,
+      quotaCapability: 'available' as const,
     },
   ] as const,
 };
@@ -135,14 +135,18 @@ const CODEX_QUOTA = {
   availability: 'available' as const,
   observedAt: TIMESTAMP,
   planType: 'plus',
-  windows: [{ id: 'primary', usedPercent: 40, remainingPercent: 60 }],
+  windows: [
+    { id: 'primary', usedPercent: 40.4, remainingPercent: 59.6, resetsAt: TIMESTAMP },
+    { id: 'secondary', usedPercent: 99.6, remainingPercent: 0.4 },
+  ],
 };
 
 const XAI_QUOTA = {
   subscriptionProviderId: 'xai' as const,
   accountSlotId: 'primary',
-  availability: 'unsupported' as const,
+  availability: 'available' as const,
   observedAt: TIMESTAMP,
+  windows: [{ id: 'included', usedPercent: 12.5, remainingPercent: 87.5, resetsAt: TIMESTAMP }],
 };
 
 const DIAGNOSTICS = {
@@ -924,6 +928,63 @@ describe('provider subscription projection', () => {
     expect(() =>
       projectConnectedApps(PROVIDERS.providers[0], { accounts: [CODEX_ACCOUNT] }, [quota])
     ).toThrow();
+  });
+
+  it('preserves full quota windows instead of remaining percents only', () => {
+    const projected = projectConnectedApps(PROVIDERS.providers[0], { accounts: [CODEX_ACCOUNT] }, [
+      {
+        ...CODEX_QUOTA,
+        windows: [
+          { id: 'primary', usedPercent: 40.4, remainingPercent: 59.6, resetsAt: TIMESTAMP },
+          { id: 'secondary', usedPercent: 99.6 },
+        ],
+      },
+    ]);
+    expect(projected.accounts[0]?.quotaWindows).toEqual([
+      {
+        id: 'primary',
+        usedPercent: 40.4,
+        remainingPercent: 59.6,
+        resetsAt: TIMESTAMP,
+      },
+      { id: 'secondary', usedPercent: 99.6, remainingPercent: null, resetsAt: null },
+    ]);
+    expect(projected.accounts[0]).not.toHaveProperty('quotaRemainingPercents');
+  });
+
+  it('overlays a newer matching quota and ignores stale or mismatched pairs', () => {
+    const providers = [
+      projectConnectedApps(PROVIDERS.providers[0], { accounts: [CODEX_ACCOUNT] }, [CODEX_QUOTA]),
+      projectConnectedApps(PROVIDERS.providers[1], { accounts: [XAI_ACCOUNT] }, [XAI_QUOTA]),
+    ];
+    const newerAt = '2026-07-21T13:00:00.000Z';
+    const newer = overlayConnectedAppQuota(providers, {
+      ...CODEX_QUOTA,
+      observedAt: newerAt,
+      windows: [{ id: 'primary', usedPercent: 10, remainingPercent: 90, resetsAt: newerAt }],
+    });
+    expect(newer[0]?.accounts[0]?.quotaObservedAt).toBe(newerAt);
+    expect(newer[0]?.accounts[0]?.quotaWindows).toEqual([
+      { id: 'primary', usedPercent: 10, remainingPercent: 90, resetsAt: newerAt },
+    ]);
+    expect(newer[1]?.accounts[0]?.quotaWindows[0]?.id).toBe('included');
+
+    const stale = overlayConnectedAppQuota(newer, {
+      ...CODEX_QUOTA,
+      observedAt: TIMESTAMP,
+      windows: [{ id: 'primary', usedPercent: 1, remainingPercent: 99 }],
+    });
+    expect(stale[0]?.accounts[0]?.quotaObservedAt).toBe(newerAt);
+    expect(stale[0]?.accounts[0]?.quotaWindows[0]?.remainingPercent).toBe(90);
+
+    const mismatched = overlayConnectedAppQuota(newer, {
+      ...CODEX_QUOTA,
+      accountSlotId: 'secondary',
+      observedAt: '2026-07-21T14:00:00.000Z',
+      windows: [{ id: 'primary', usedPercent: 1, remainingPercent: 99 }],
+    });
+    expect(mismatched[0]?.accounts[0]?.accountSlotId).toBe('primary');
+    expect(mismatched[0]?.accounts[0]?.quotaObservedAt).toBe(newerAt);
   });
 });
 
@@ -1717,8 +1778,15 @@ describe('AI interface (board 20)', () => {
     ).toBeTruthy();
     expect(screen.getByText('Codex primary')).toBeInTheDocument();
     expect(screen.getByText('xAI primary')).toBeInTheDocument();
-    expect(screen.getByText('60% remaining')).toBeInTheDocument();
-    expect(screen.getByText('Quota unsupported')).toBeInTheDocument();
+    expect(screen.getByText('Primary 59.6% remaining')).toBeInTheDocument();
+    expect(screen.getByText('Secondary 0.4% remaining')).toBeInTheDocument();
+    expect(screen.getByText('Included 87.5% remaining')).toBeInTheDocument();
+    expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
+    expect(screen.getByRole('meter', { name: 'Included remaining 87.5%' })).toBeInTheDocument();
+    expect(screen.getByText('40.4% used')).toBeInTheDocument();
+    expect(screen.getByText('Resets unknown')).toBeInTheDocument();
+    expect(screen.queryByText('Quota unsupported')).not.toBeInTheDocument();
+    expect(screen.queryByText(/5h|\bweekly\b/i)).not.toBeInTheDocument();
     expect((await screen.findAllByText('Demo provider')).length).toBeGreaterThan(0);
     expect(client.app.getDiagnostics).toHaveBeenCalled();
 
@@ -1843,8 +1911,15 @@ describe('AI interface (board 20)', () => {
     expect(screen.queryByText(/Couldn't load AI interface/i)).not.toBeInTheDocument();
     expect(screen.getByText('Codex primary')).toBeInTheDocument();
     expect(screen.getByText('xAI primary')).toBeInTheDocument();
-    expect(screen.getByText('60% remaining')).toBeInTheDocument();
-    expect(screen.getByText('Quota unsupported')).toBeInTheDocument();
+    expect(screen.getByText('Primary 59.6% remaining')).toBeInTheDocument();
+    expect(screen.getByText('Secondary 0.4% remaining')).toBeInTheDocument();
+    expect(screen.getByText('Included 87.5% remaining')).toBeInTheDocument();
+    expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
+    expect(screen.getByRole('meter', { name: 'Included remaining 87.5%' })).toBeInTheDocument();
+    expect(screen.getByText('40.4% used')).toBeInTheDocument();
+    expect(screen.getByText('Resets unknown')).toBeInTheDocument();
+    expect(screen.queryByText('Quota unsupported')).not.toBeInTheDocument();
+    expect(screen.queryByText(/5h|\bweekly\b/i)).not.toBeInTheDocument();
   });
 
   it('disables reconnect actions when disconnected', async () => {
@@ -1856,6 +1931,7 @@ describe('AI interface (board 20)', () => {
     await waitFor(
       () => {
         expect(screen.getByRole('button', { name: /Refresh status/i })).toBeDisabled();
+        expect(screen.getAllByRole('button', { name: 'Refresh quota' })[0]).toBeDisabled();
       },
       { timeout: 3000 }
     );

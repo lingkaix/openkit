@@ -46,6 +46,14 @@ export type ProviderSubscriptionAccountsPayload = Awaited<
 export type ProviderSubscriptionQuotaPayload = Awaited<
   ReturnType<CoreClient['providerSubscriptions']['getAccountQuota']>
 >;
+/** Safe quota window copied from the public available payload. */
+export interface ConnectedAppQuotaWindow {
+  id: string;
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  resetsAt: string | null;
+}
+
 /** Safe connected-app row for the AI interface surface. */
 export interface ConnectedAppRow {
   identity: string;
@@ -55,8 +63,11 @@ export interface ConnectedAppRow {
   accountLabel: string | null;
   planLabel: string | null;
   boundProviderCount: number;
-  quotaAvailability: ProviderSubscriptionQuotaPayload['availability'];
-  quotaRemainingPercents: number[];
+  quotaAvailability: ProviderSubscriptionQuotaPayload['availability'] | null;
+  quotaPlanType: string | null;
+  quotaObservedAt: string | null;
+  quotaRetryAfter: string | null;
+  quotaWindows: ConnectedAppQuotaWindow[];
   verificationUrl: string | null;
   userCode: string | null;
   interactionId: string | null;
@@ -444,21 +455,114 @@ export function projectWorkspace(workspace: WorkspaceRecord): WorkspaceRecord {
 }
 
 /**
+ * Copies the public quota envelope into the display whitelist without collapsing windows.
+ *
+ * @param quota Bounded quota result, or null when no server observation was read.
+ * @returns Availability, optional plan type, observation times, and full windows.
+ */
+function projectQuotaObservation(
+  quota: ProviderSubscriptionQuotaPayload | null
+): Pick<
+  ConnectedAppRow,
+  'quotaAvailability' | 'quotaPlanType' | 'quotaObservedAt' | 'quotaRetryAfter' | 'quotaWindows'
+> {
+  if (quota === null) {
+    return {
+      quotaAvailability: null,
+      quotaPlanType: null,
+      quotaObservedAt: null,
+      quotaRetryAfter: null,
+      quotaWindows: [],
+    };
+  }
+  const observedAt =
+    typeof quota.observedAt === 'string' && quota.observedAt !== ''
+      ? (projectSafeValue(quota.observedAt) as string)
+      : null;
+  if (quota.availability === 'available') {
+    return {
+      quotaAvailability: quota.availability,
+      quotaPlanType: quota.planType ? (projectSafeValue(quota.planType) as string) : null,
+      quotaObservedAt: observedAt,
+      quotaRetryAfter: null,
+      quotaWindows: quota.windows.map((window) => ({
+        id: projectSafeValue(window.id) as string,
+        usedPercent: window.usedPercent ?? null,
+        remainingPercent: window.remainingPercent ?? null,
+        resetsAt: window.resetsAt ? (projectSafeValue(window.resetsAt) as string) : null,
+      })),
+    };
+  }
+  return {
+    quotaAvailability: quota.availability,
+    quotaPlanType: null,
+    quotaObservedAt: observedAt,
+    quotaRetryAfter: quota.retryAfter ? (projectSafeValue(quota.retryAfter) as string) : null,
+    quotaWindows: [],
+  };
+}
+
+/** Converts observation time for stale-read ordering without inventing a missing instant. */
+function observationMillis(value: string | null): number | null {
+  if (!value) return null;
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) ? millis : null;
+}
+
+/**
+ * Replaces one matching slot's quota observation when identity matches and the
+ * observation is not older than the cached value.
+ *
+ * @param providers Current AI interface account cache.
+ * @param quota Typed quota payload for one provider-slot pair.
+ * @returns Updated provider rows; unmatched or stale payloads leave cache unchanged.
+ */
+export function overlayConnectedAppQuota(
+  providers: readonly ConnectedAppProviderRow[],
+  quota: ProviderSubscriptionQuotaPayload
+): ConnectedAppProviderRow[] {
+  const observation = projectQuotaObservation(quota);
+  const identity = `${quota.subscriptionProviderId}:${quota.accountSlotId}`;
+  return providers.map((provider) => {
+    if (provider.subscriptionProviderId !== quota.subscriptionProviderId) {
+      return provider;
+    }
+    return {
+      ...provider,
+      accounts: provider.accounts.map((row) => {
+        if (row.accountSlotId !== quota.accountSlotId || row.identity !== identity) {
+          return row;
+        }
+        const nextObserved = observationMillis(observation.quotaObservedAt);
+        if (nextObserved === null) {
+          return row;
+        }
+        const currentObserved = observationMillis(row.quotaObservedAt);
+        if (currentObserved !== null && nextObserved < currentObserved) {
+          return row;
+        }
+        return { ...row, ...observation };
+      }),
+    };
+  });
+}
+
+/**
  * Projects one provider-scoped account list and its quotas into safe status rows.
  *
  * @param provider Fixed provider inventory descriptor.
  * @param payload Provider-scoped account list.
- * @param quotas Quota result for each account at the matching array index.
+ * @param quotas Quota result or null observation for each account at the matching array index.
  * @returns Provider section with account rows, including pending device-code fields.
  */
 export function projectConnectedApps(
   provider: ProviderSubscriptionDescriptor,
   payload: ProviderSubscriptionAccountsPayload,
-  quotas: readonly ProviderSubscriptionQuotaPayload[]
+  quotas: readonly (ProviderSubscriptionQuotaPayload | null)[]
 ): ConnectedAppProviderRow {
   const safeProvider = projectSafeValue(provider) as ProviderSubscriptionDescriptor;
   const safePayload = projectSafeValue(payload) as ProviderSubscriptionAccountsPayload;
-  const safeQuotas = projectSafeValue(quotas) as ProviderSubscriptionQuotaPayload[];
+  const safeQuotas = projectSafeValue(quotas) as (ProviderSubscriptionQuotaPayload | null)[];
   return {
     subscriptionProviderId: safeProvider.subscriptionProviderId,
     displayName: safeProvider.displayName,
@@ -467,10 +571,13 @@ export function projectConnectedApps(
         throw new Error('Provider subscription projection failed.');
       }
       const quota = safeQuotas[index];
+      if (quota === undefined) {
+        throw new Error('Provider subscription projection failed.');
+      }
       if (
-        !quota ||
-        quota.subscriptionProviderId !== account.subscriptionProviderId ||
-        quota.accountSlotId !== account.accountSlotId
+        quota !== null &&
+        (quota.subscriptionProviderId !== account.subscriptionProviderId ||
+          quota.accountSlotId !== account.accountSlotId)
       ) {
         throw new Error('Provider subscription projection failed.');
       }
@@ -488,13 +595,7 @@ export function projectConnectedApps(
         accountLabel: account.accountLabel ?? null,
         planLabel: account.planLabel ?? null,
         boundProviderCount: account.boundProviderIds.length,
-        quotaAvailability: quota.availability,
-        quotaRemainingPercents:
-          quota.availability === 'available'
-            ? quota.windows.flatMap((window) =>
-                window.remainingPercent === undefined ? [] : [window.remainingPercent]
-              )
-            : [],
+        ...projectQuotaObservation(quota),
         verificationUrl: interaction?.verificationUrl
           ? (projectSafeValue(interaction.verificationUrl) as string)
           : null,
