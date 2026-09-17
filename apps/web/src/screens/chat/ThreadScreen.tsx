@@ -122,7 +122,7 @@ export interface ThreadScreenProps {
  * only the authoritative records returned by Core; a failed latest Turn shows its
  * recorded error in the header without retrying work. Earlier failed Turns keep
  * that same error beside their own stream messages. The active Turn shows its supplied
- * trigger actor without deployment or identity inference.
+ * trigger actor with authorized participant labels, without deployment or identity inference.
  */
 export function ThreadScreen({ mode }: ThreadScreenProps) {
   const navigate = useNavigate();
@@ -336,7 +336,18 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             {failedTurn ? <StatusChip tone="negative">Failed</StatusChip> : null}
           </div>
           {activeTurn ? (
-            <p className="text-xs text-fg-muted">Triggered by {activeTurn.triggerActor.id}</p>
+            <p className="text-xs text-fg-muted">
+              Triggered by{' '}
+              {dashboard.data?.participants?.find(
+                (participant) =>
+                  participant.kind === activeTurn.triggerActor.kind &&
+                  participant.id === activeTurn.triggerActor.id
+              )?.displayName ?? activeTurn.triggerActor.id}
+              {activeTurn.triggerActor.kind === 'user' &&
+              activeTurn.triggerActor.id === dashboard.data?.viewerUserId
+                ? ' (You)'
+                : ''}
+            </p>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
             {activeTurn ? (

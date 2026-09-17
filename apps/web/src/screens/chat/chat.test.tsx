@@ -1923,6 +1923,55 @@ describe('thread lifecycle and attribution (S7)', () => {
     expect(getSetupDiagnostics).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      label: 'matching viewer',
+      triggerActor: { kind: 'user' as const, id: 'user_admin' },
+      expected: 'Triggered by Administrator (You)',
+      unexpected: ['user_admin'],
+    },
+    {
+      label: 'automation sharing a user id',
+      triggerActor: {
+        kind: 'automation' as const,
+        id: 'user_admin',
+        responsibleUserId: 'user_admin',
+      },
+      expected: 'Triggered by user_admin',
+      unexpected: ['Administrator', '(You)'],
+    },
+  ])('resolves the running Task trigger for a $label without borrowing another kind', async ({
+    triggerActor,
+    expected,
+    unexpected,
+  }) => {
+    const subscribeTurnEvents = vi.fn().mockReturnValue({
+      [Symbol.asyncIterator]() {
+        return { next: vi.fn().mockResolvedValue({ value: undefined, done: true }) };
+      },
+    });
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+        subscribeTurnEvents,
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          viewerUserId: 'user_admin',
+          participants: [{ kind: 'user', id: 'user_admin', displayName: 'Administrator' }],
+          turns: [TurnSchema.parse({ ...ACTIVE_TURN, triggerActor })],
+        }),
+      }
+    );
+
+    renderApp('/tasks/ws1/th1', client);
+
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+    for (const value of unexpected) {
+      expect(screen.queryByText(new RegExp(value))).not.toBeInTheDocument();
+    }
+  });
+
   it('leaves an intentionally actorless assistant item without an inferred actor label', async () => {
     const client = makeClient({
       listThreadItems: vi.fn().mockResolvedValue({ items: [ITEMS[1]], nextCursor: null }),
