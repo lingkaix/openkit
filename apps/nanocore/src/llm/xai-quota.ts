@@ -16,11 +16,11 @@ interface XaiQuotaWindow {
   /** Stable OpenKit window identifier. */
   readonly id: 'included';
   /** Percentage of included credits that remains. */
-  readonly remainingPercent: number;
+  readonly remainingPercent?: number;
   /** Canonical reset timestamp, when the provider supplied a valid period end. */
   readonly resetsAt?: string;
   /** Provider-reported included-credit usage, clamped to 0..100. */
-  readonly usedPercent: number;
+  readonly usedPercent?: number;
 }
 
 /** Validated provider quota fields consumed by the App API route. */
@@ -51,8 +51,9 @@ export async function readXaiQuota(models: Models): Promise<XaiQuotaObservation 
     );
     const window: XaiQuotaWindow = {
       id: 'included',
-      remainingPercent: 100 - billing.usedPercent,
-      usedPercent: billing.usedPercent,
+      ...(billing.usedPercent === undefined
+        ? {}
+        : { remainingPercent: 100 - billing.usedPercent, usedPercent: billing.usedPercent }),
       ...(billing.resetsAt === undefined ? {} : { resetsAt: billing.resetsAt }),
     };
     return {
@@ -187,29 +188,31 @@ function parseXaiUser(value: unknown): { planType?: string; userId: string } {
  * Validates consumed credits-config fields and projects the public included window.
  *
  * @param value Parsed JSON value.
- * @returns Clamped usage and optional canonical reset timestamp.
+ * @returns Supplied clamped usage and/or canonical reset timestamp, without guessed percentages.
  */
-function parseXaiBilling(value: unknown): { resetsAt?: string; usedPercent: number } {
+function parseXaiBilling(value: unknown): { resetsAt?: string; usedPercent?: number } {
   if (!isRecord(value) || !isRecord(value.config)) {
     throw new Error('xAI quota response is invalid.');
   }
   const { creditUsagePercent, currentPeriod } = value.config;
   if (
-    typeof creditUsagePercent !== 'number' ||
-    !Number.isFinite(creditUsagePercent) ||
-    creditUsagePercent < 0
+    creditUsagePercent !== undefined &&
+    (typeof creditUsagePercent !== 'number' ||
+      !Number.isFinite(creditUsagePercent) ||
+      creditUsagePercent < 0)
   ) {
     throw new Error('xAI quota response is invalid.');
   }
-  const usedPercent = Math.min(100, creditUsagePercent);
-  if (currentPeriod === undefined) {
-    return { usedPercent };
-  }
-  if (!isRecord(currentPeriod)) {
+  const usage =
+    creditUsagePercent === undefined ? {} : { usedPercent: Math.min(100, creditUsagePercent) };
+  if (currentPeriod !== undefined && !isRecord(currentPeriod)) {
     throw new Error('xAI quota response is invalid.');
   }
-  if (currentPeriod.end === undefined) {
-    return { usedPercent };
+  if (currentPeriod?.end === undefined) {
+    if (creditUsagePercent === undefined) {
+      throw new Error('xAI quota response contains no recognized values.');
+    }
+    return usage;
   }
   const parsedEnd = XaiRfc3339TimestampSchema.safeParse(currentPeriod.end);
   if (!parsedEnd.success) {
@@ -219,7 +222,7 @@ function parseXaiBilling(value: unknown): { resetsAt?: string; usedPercent: numb
   if (Number.isNaN(resetsAt.getTime())) {
     throw new Error('xAI quota response is invalid.');
   }
-  return { resetsAt: resetsAt.toISOString(), usedPercent };
+  return { resetsAt: resetsAt.toISOString(), ...usage };
 }
 
 /**

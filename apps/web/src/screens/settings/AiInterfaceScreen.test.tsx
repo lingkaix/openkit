@@ -784,4 +784,55 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(codex).getByText('7.1% used')).toBeInTheDocument();
     expect(within(codex).queryByText(/92\.9/)).not.toBeInTheDocument();
   });
+
+  it('shows unknown usage with reset and last checked when xAI omits credit percent', async () => {
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts: vi.fn().mockImplementation((providerId: string) =>
+          Promise.resolve({
+            accounts:
+              providerId === 'openai-codex'
+                ? [CODEX_ACCOUNT]
+                : [
+                    {
+                      ...CODEX_ACCOUNT,
+                      subscriptionProviderId: 'xai' as const,
+                      displayName: 'xAI primary',
+                    },
+                  ],
+          })
+        ),
+        getAccountQuota: vi.fn().mockImplementation((providerId: string) =>
+          Promise.resolve(
+            providerId === 'xai'
+              ? {
+                  subscriptionProviderId: 'xai' as const,
+                  accountSlotId: 'primary',
+                  availability: 'available' as const,
+                  observedAt: TIMESTAMP,
+                  windows: [{ id: 'included', resetsAt: TIMESTAMP }],
+                }
+              : CODEX_QUOTA
+          )
+        ),
+      },
+    });
+    renderScreen(client);
+
+    const xai = await screen.findByRole('region', { name: 'xAI' });
+    expect(within(xai).getByText('Provider did not report usage')).toBeInTheDocument();
+    expect(within(xai).getByText('Included')).toBeInTheDocument();
+    expect(within(xai).queryByRole('meter')).not.toBeInTheDocument();
+    expect(within(xai).queryByText(/0%/)).not.toBeInTheDocument();
+    expect(within(xai).queryByText(/remaining/)).not.toBeInTheDocument();
+    expect(within(xai).queryByText(/used/)).not.toBeInTheDocument();
+    expect(
+      within(xai)
+        .getAllByRole('time')
+        .filter((node) => node.getAttribute('datetime') === TIMESTAMP)
+    ).toHaveLength(2);
+    expect(within(xai).getByText('Resets', { exact: false })).toBeInTheDocument();
+    expect(within(xai).getByText('Last checked', { exact: false })).toBeInTheDocument();
+    expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
+  });
 });

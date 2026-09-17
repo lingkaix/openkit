@@ -1555,6 +1555,29 @@ describe('provider-subscription app API', () => {
       name: 'absent config',
     },
     {
+      billing: { config: { currentPeriod: { end: '2026-09-01T10:00:00+10:00' } } },
+      name: 'missing percentage with known reset',
+      quota: {
+        availability: 'available' as const,
+        planType: 'SuperGrok',
+        windows: [{ id: 'included', resetsAt: '2026-09-01T00:00:00.000Z' }],
+      },
+    },
+    {
+      billing: { config: {} },
+      name: 'missing all quota values',
+    },
+    {
+      billing: { config: { currentPeriod: { end: 'not-a-timestamp' } } },
+      name: 'missing percentage and invalid reset',
+    },
+    {
+      billing: {
+        config: { creditUsagePercent: null, currentPeriod: { end: '2026-09-01T00:00:00Z' } },
+      },
+      name: 'null percentage with known reset',
+    },
+    {
       billing: { config: { creditUsagePercent: -0.1 } },
       name: 'negative usage',
     },

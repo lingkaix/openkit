@@ -695,7 +695,12 @@ function QuotaWindow({ window }: { window: ConnectedAppQuotaWindow }) {
           />
         </>
       ) : (
-        <p className="text-sm font-bold text-fg-strong">{label}</p>
+        <>
+          <p className="text-sm font-bold text-fg-strong">{label}</p>
+          {window.usedPercent === null ? (
+            <p className="text-xs text-fg-muted">Provider did not report usage</p>
+          ) : null}
+        </>
       )}
       {window.usedPercent !== null ? (
         <p className="text-xs text-fg-muted">{formatQuotaPercent(window.usedPercent)} used</p>
