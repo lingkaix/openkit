@@ -351,7 +351,7 @@ describe('app shell — disconnected affordance (DESIGN.md §9.12)', () => {
     );
   });
 
-  it('holds the 800x600 workbench floor', async () => {
+  it('holds the 600x600 workbench floor', async () => {
     const { container } = render(
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
@@ -364,7 +364,8 @@ describe('app shell — disconnected affordance (DESIGN.md §9.12)', () => {
       </QueryClientProvider>
     );
     await screen.findByRole('navigation');
-    expect(container.querySelector('.min-w-\\[800px\\]')).not.toBeNull();
+    expect(container.querySelector('.min-w-\\[600px\\]')).not.toBeNull();
     expect(container.querySelector('.min-h-\\[600px\\]')).not.toBeNull();
+    expect(container.querySelector('.min-w-\\[800px\\]')).toBeNull();
   });
 });

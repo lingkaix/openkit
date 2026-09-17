@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
  *
  * Scope note: the scan covers the primitive, screen, and app-shell tiers — every
  * layer that emits component markup. Layout dimensions (`w-[264px]`,
- * `max-w-[760px]`, `size-[22px]`, the 800x600 floor) are structural constants
+ * `max-w-[760px]`, `size-[22px]`, the 600x600 floor, the 800px persistent-nav threshold) are structural constants
  * from DESIGN.md §3/§12, not palette/type/spacing-scale values, so they are not
  * flagged; padding/margin/gap use the Tailwind 4-based scale (= the §6 ramp).
  */

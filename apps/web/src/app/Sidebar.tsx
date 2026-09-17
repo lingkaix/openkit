@@ -116,6 +116,12 @@ function BrandSearch() {
   );
 }
 
+/** Optional overlay-drawer close control used by the narrow App shell. */
+export interface SidebarProps {
+  /** When set, the sidebar shows an explicit Close control. */
+  onClose?: () => void;
+}
+
 /**
  * Left sidebar — navigation and persistent context (DESIGN.md §3.1).
  *
@@ -124,7 +130,7 @@ function BrandSearch() {
  * Theme selection is NOT here — it lives in Settings → Appearance (§4.5).
  * Identity lives inside Settings, not a stacked user row (D-002).
  */
-export function Sidebar() {
+export function Sidebar({ onClose }: SidebarProps = {}) {
   const { pathname, search } = useLocation();
   const navigate = useNavigate();
   const workspaces = useWorkspaces();
@@ -159,11 +165,24 @@ export function Sidebar() {
   return (
     <nav
       aria-label={inSettings ? 'Settings sections' : 'Primary workspace navigation'}
-      className="flex w-[264px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-separator bg-sunken p-3"
+      className="flex h-full w-[264px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-separator bg-sunken p-3"
     >
       <div className="relative mb-1 flex min-w-0 items-center justify-between gap-2">
         <BrandMark />
-        <BrandSearch />
+        <div className="flex min-w-0 items-center gap-1">
+          <BrandSearch />
+          {onClose ? (
+            <Button
+              variant="quiet"
+              aria-label="Close navigation"
+              title="Close navigation"
+              className="h-8 w-8 shrink-0 px-0!"
+              onPress={onClose}
+            >
+              <Icon name="close" />
+            </Button>
+          ) : null}
+        </div>
       </div>
       <div className="mb-2">
         <Menu

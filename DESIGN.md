@@ -61,7 +61,7 @@ tokens:
     control-height: "28 sm · 32 md (default) · 40 lg"
     min-touch: "44px"
   layout:
-    min-viewport: "800×600 (desktop workbench floor — see §3.4 / §12)"
+    min-viewport: "600×600 (desktop workbench floor — see §3.4 / §12)"
     posture: "desktop-first, responsive, NOT mobile-first"
   icons:
     set: "Spectrum workflow icons, baked as tintable data-URI masks (--ic-*)"
@@ -212,14 +212,9 @@ needs-review cards grow next to the work (board 04); **(2) global queue + counts
 — transient, dismissible notice for background events, with a "View" action back
 to the source, never blocking.
 
-### 3.4 Viewport floor — desktop workbench, 800×600
+### 3.4 Viewport floor — desktop workbench, 600×600
 
-OpenKit is a **productivity/supervision tool**, so the design prioritizes the
-desktop workbench that shows the most information at once. **The supported
-minimum viewport is 800×600.** The three-region shell, the centered main column,
-and the composer dock must remain usable and free of horizontal overflow at that
-floor. See §12 for the full responsive contract (responsive, but **not**
-mobile-first).
+OpenKit is a **productivity/supervision tool**, so the design prioritizes the desktop workbench that shows the most information at once. **The supported minimum viewport is 600×600.** At widths below 800px, the left navigation defaults to closed and opens through a top navigation button as an overlay drawer, preserving the main column's readable width. At 800px and above it remains a persistent sidebar. The shell, centered main column, and composer dock must remain usable and free of horizontal overflow at the supported floor. See §12 for the full responsive contract (responsive, but **not** mobile-first).
 
 ---
 
@@ -603,7 +598,7 @@ OpenKit is a productivity and supervision tool; the design **optimizes for the
 desktop workbench** that surfaces the most information at once. It is
 **responsive but not mobile-first.**
 
-- **Supported floor: 800×600.** The shell, centered main column, and composer dock stay usable and free of horizontal overflow down to 800×600. The Thread auxiliary panel overlays rather than compressing the conversation when their combined minimum widths do not fit (§3.3); the main column keeps a readable width and never splits.
+- **Supported floor: 600×600.** The shell, centered main column, and composer dock stay usable and free of horizontal overflow down to 600×600. Below 800px the left navigation is a modal overlay drawer, closed initially and opened by a labelled top button. Escape, outside dismissal, an explicit close control, or selecting a navigation destination closes it; focus is contained while open and restored on dismissal. Resizing to at least 800px restores the persistent sidebar and dismisses the drawer; returning to a narrow viewport starts closed. App and Settings use this same shell behavior. The Thread auxiliary panel overlays rather than compressing the conversation when their combined minimum widths do not fit (§3.3); the main column keeps a readable width and never splits.
 - **No horizontal overflow** at any supported size. Wide content (tables, kanban,
   diagrams, code) scrolls inside its own container; the page body never scrolls
   sideways.

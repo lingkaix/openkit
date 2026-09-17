@@ -75,7 +75,7 @@ Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/202607
 - **Biome** — lint/format (repo-wide config). **Vitest** + Testing Library — unit.
   **Playwright** — e2e.
 
-The isolated simulator-backed Web stack seeds a visibly synthetic local NanoHost Epoch after Core startup and after a Core restart in its disposable data root, matching the simulator unit-test precondition. Non-simulator stacks receive no synthetic readiness. Production backend-session validation stays enabled. These checks prove Web and Core interaction against the simulator; they do not prove real NanoHost readiness or Worker execution on a deployed server. The Material self-check exercises Artifact review and acceptance at the supported 800×600 viewport floor without page-level horizontal overflow.
+The isolated simulator-backed Web stack seeds a visibly synthetic local NanoHost Epoch after Core startup and after a Core restart in its disposable data root, matching the simulator unit-test precondition. Non-simulator stacks receive no synthetic readiness. Production backend-session validation stays enabled. These checks prove Web and Core interaction against the simulator; they do not prove real NanoHost readiness or Worker execution on a deployed server. The Material self-check exercises Artifact review and acceptance at 800×600 without page-level horizontal overflow. shell-smoke verifies Settings and Chat at 600 and 742 without page-level horizontal overflow, and persistent left navigation at 800.
 
 ## Commands
 

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 let stack: IsolatedWebStack | null = null;
@@ -67,6 +67,92 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   }));
   expect(viewport.bodyWidth).toBeLessThanOrEqual(viewport.viewportWidth);
   expect(runtimeErrors).toEqual([]);
+});
+
+/**
+ * Reads page-level horizontal overflow against the current viewport.
+ *
+ * @param page Playwright page under test.
+ */
+async function pageOverflow(page: Page) {
+  return page.evaluate(() => ({
+    bodyWidth: document.body.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }));
+}
+
+/**
+ * Narrow workbench: 600×600 floor, overlay drawer below 800px, persistent nav at 800px.
+ */
+test('keeps Settings and Chat usable at 600 and 742 without page overflow', async ({ page }) => {
+  stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
+
+  await page.setViewportSize({ width: 600, height: 600 });
+  await page.goto(stack.webUrl);
+  await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Navigation' })).toBeVisible();
+  await expect(page.getByRole('navigation')).toHaveCount(0);
+  let overflow = await pageOverflow(page);
+  expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+
+  const opener = page.getByRole('button', { name: 'Navigation' });
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: 'Navigation' });
+  await expect(dialog).toBeVisible();
+  await expect(
+    page.getByRole('navigation', { name: 'Primary workspace navigation' })
+  ).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(opener).toBeFocused();
+
+  await opener.click();
+  await page.getByRole('button', { name: 'Close navigation' }).click();
+  await expect(dialog).toBeHidden();
+
+  await opener.click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+
+  await page.goto(`${stack.webUrl}/settings/account`);
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+  overflow = await pageOverflow(page);
+  expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+
+  await page.goto(`${stack.webUrl}/chat`);
+  await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
+  overflow = await pageOverflow(page);
+  expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+
+  await page.setViewportSize({ width: 742, height: 600 });
+  await page.goto(`${stack.webUrl}/settings/account`);
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Navigation' })).toBeVisible();
+  await expect(page.getByRole('navigation')).toHaveCount(0);
+  overflow = await pageOverflow(page);
+  expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+
+  await page.goto(`${stack.webUrl}/chat`);
+  await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
+  overflow = await pageOverflow(page);
+  expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+
+  await opener.click();
+  await expect(dialog).toBeVisible();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByRole('navigation', { name: 'Primary workspace navigation' })
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Navigation' })).toHaveCount(0);
+  overflow = await pageOverflow(page);
+  expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+
+  await page.setViewportSize({ width: 600, height: 600 });
+  await expect(page.getByRole('navigation')).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Navigation' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Navigation' })).toBeVisible();
 });
 
 /**
