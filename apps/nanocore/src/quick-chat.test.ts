@@ -1425,6 +1425,11 @@ describe('quick chat app API', () => {
           },
           id: 'openai_codex',
           kind: 'oauth',
+          modelMetadata: {
+            'openai-codex/gpt-5.1-codex': {
+              limit: { context: 400_000, output: 128_000 },
+            },
+          },
           models: ['openai-codex/gpt-5.1-codex'],
           vendor: 'openai_codex',
         },

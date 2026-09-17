@@ -1,5 +1,5 @@
 import { type GatewayConfig, resolveProviderSubscriptionFamily } from '@openkit/config-schema';
-import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-07-11/api.json' with {
+import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-09-17/api.json' with {
   type: 'json',
 };
 
@@ -196,7 +196,7 @@ function modelContract(
 }
 
 /**
- * Merges pinned metadata with loaded extension/profile leaves and applies subscription context limits.
+ * Merges pinned snapshot metadata with loaded extension and profile leaves.
  *
  * @param profile Provider profile that lists the model.
  * @param nativeId Exact provider-native model id.
@@ -268,13 +268,6 @@ export function resolveEffectiveModelMetadata(
     effective.cost = cost;
   }
 
-  // The product cap applies to every Codex subscription model after all metadata overlays.
-  if (
-    resolveSubscriptionFamily(profile) === 'openai-codex' &&
-    effective.limit?.context !== undefined
-  ) {
-    effective.limit.context = Math.min(effective.limit.context, 256_000);
-  }
   return effective;
 }
 

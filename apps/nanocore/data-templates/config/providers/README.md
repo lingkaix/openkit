@@ -15,7 +15,7 @@ These templates are copied into `OPENKIT_DATA_ROOT/config/providers/` when missi
 
 Operators should keep credentials out of provider files and create the matching vault reference before enabling a provider.
 
-The active starter provider ids and model ids are traceable to the vendored `models.dev` snapshot under `packages/models-dev-catalog/snapshots/2026-07-11/`.
+The active starter provider ids and model ids are traceable to the vendored `models.dev` snapshot under `packages/models-dev-catalog/snapshots/2026-09-17/`.
 
 The custom OpenAI-compatible template is operator-defined and intentionally has no upstream `models.dev` provider id. Its placeholder model has no real context limit; adding a fabricated limit to satisfy startup validation is not a supported activation procedure.
 
@@ -23,7 +23,7 @@ The custom OpenAI-compatible template is operator-defined and intentionally has 
 
 `openai-flagship.provider.jsonc` and `openai-codex-subscription.provider.jsonc` are installed with a non-loadable `.example` suffix. They provide official `modelMetadata` overlays for models newer than the pinned inventory, using the existing [Gateway metadata contract](../../../../../docs/specs/20260526-llm_gateway_responses_api.md#provider-model-metadata). They do not replace an operator profile, select an account slot, or change the default Gateway routes automatically.
 
-All four direct API models use the official 1,050,000-token context window. By Simon's product constraint, every Codex subscription model advertises a 256,000-token context window instead. Both templates retain the official 128,000-token maximum output, text/image input, text output, reasoning, and function calling. The direct API template uses the API IDs below; the subscription template prefixes each with `openai-codex/`. Metadata keys exactly match the corresponding `models` entries.
+All four direct API models use the official 1,050,000-token context window. The opt-in subscription template declares conservative 256,000-token context defaults. Deployment operators can centralize different operating limits in `model-catalog.jsonc` and remove the superseded profile leaves; there is no subscription-family clamp after metadata composition. Both templates retain the official 128,000-token maximum output, text/image input, text output, reasoning, and function calling. The direct API template uses the API IDs below; the subscription template prefixes each with `openai-codex/`. Metadata keys exactly match the corresponding `models` entries.
 
 | API model ID | Knowledge cutoff | Reasoning efforts | Input / cached input / output USD per MTok |
 | --- | --- | --- | --- |

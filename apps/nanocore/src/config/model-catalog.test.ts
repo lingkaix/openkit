@@ -88,7 +88,7 @@ describe('deployment model extension catalog', () => {
   it('resolves snapshot → extension → profile without changing authored or vendored bytes', () => {
     const { root, profilePath } = fixture();
     const snapshotPath = new URL(
-      '../../../../packages/models-dev-catalog/snapshots/2026-07-11/api.json',
+      '../../../../packages/models-dev-catalog/snapshots/2026-09-17/api.json',
       import.meta.url
     );
     const before = readFileSync(snapshotPath, 'utf8');
@@ -268,21 +268,18 @@ describe('deployment model extension catalog', () => {
   it.each([
     'openai-codex',
     'openai_codex',
-  ])('passes catalog-only %s metadata through the real adapter and caps context after overlays', async (vendor) => {
+  ])('passes catalog-only %s context 268000 through the shared resolver and request-local adapter, then a smaller profile overlay wins', async (vendor) => {
     const { root, path, profilePath } = fixture();
     const nativeId = 'openai-codex/future-subscription-model';
-    writeFileSync(
-      profilePath,
-      JSON.stringify({
-        id: 'primary',
-        vendor,
-        displayName: 'Subscription',
-        kind: 'oauth',
-        models: [nativeId],
-        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
-        modelMetadata: { [nativeId]: { limit: { context: 900000 } } },
-      })
-    );
+    const catalogOnlyProfile = {
+      id: 'primary',
+      vendor,
+      displayName: 'Subscription',
+      kind: 'oauth',
+      models: [nativeId],
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
+    };
+    writeFileSync(profilePath, JSON.stringify(catalogOnlyProfile));
     writeFileSync(
       path,
       JSON.stringify({
@@ -291,7 +288,7 @@ describe('deployment model extension catalog', () => {
           [vendor]: {
             models: {
               [nativeId]: {
-                limit: { context: 1000000, output: 10000 },
+                limit: { context: 268000, output: 10000 },
                 reasoning: true,
                 cost: { input: 2, output: 3, cache_read: 0, cache_write: 0 },
               },
@@ -300,8 +297,8 @@ describe('deployment model extension catalog', () => {
         },
       })
     );
-    const profile = loadProviderProfiles(root).profiles[0]!;
-    expect(resolveEffectiveModelMetadata(profile, nativeId).limit?.context).toBe(256000);
+    const catalogOnly = loadProviderProfiles(root).profiles[0]!;
+    expect(resolveEffectiveModelMetadata(catalogOnly, nativeId).limit?.context).toBe(268000);
     let seen: Model<string> | undefined;
     const faux = fauxProvider({
       api: 'openai-codex-responses',
@@ -318,8 +315,9 @@ describe('deployment model extension catalog', () => {
       },
     ]);
     const observed: unknown[] = [];
-    await new PiAiGatewayClient().createChatCompletion(
-      resolveProviderProfileToLLMConfig(profile),
+    const client = new PiAiGatewayClient();
+    await client.createChatCompletion(
+      resolveProviderProfileToLLMConfig(catalogOnly),
       { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
       (usage) => observed.push(usage),
       {},
@@ -327,7 +325,7 @@ describe('deployment model extension catalog', () => {
     );
     expect(seen).toMatchObject({
       id: 'future-subscription-model',
-      contextWindow: 256000,
+      contextWindow: 268000,
       maxTokens: 10000,
       reasoning: true,
       cost: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0 },
@@ -336,6 +334,36 @@ describe('deployment model extension catalog', () => {
     const usage = observed[0] as { input: number; output: number; cost: { total: number } };
     expect(usage.input).toBeGreaterThan(0);
     expect(usage.cost.total).toBeCloseTo((2 * usage.input + 3 * usage.output) / 1_000_000, 12);
+    expect(models.getModels('openai-codex')).toEqual(stock);
+    expect(models.getModel('openai-codex', 'future-subscription-model')).toBeUndefined();
+
+    writeFileSync(
+      profilePath,
+      JSON.stringify({
+        ...catalogOnlyProfile,
+        modelMetadata: { [nativeId]: { limit: { context: 100000 } } },
+      })
+    );
+    const overlay = loadProviderProfiles(root).profiles[0]!;
+    expect(resolveEffectiveModelMetadata(overlay, nativeId).limit?.context).toBe(100000);
+    seen = undefined;
+    faux.setResponses([
+      (_context, _options, _state, model) => {
+        seen = model;
+        return fauxAssistantMessage('Overlay response');
+      },
+    ]);
+    await client.createChatCompletion(
+      resolveProviderProfileToLLMConfig(overlay),
+      { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
+      () => undefined,
+      {},
+      models
+    );
+    expect(seen).toMatchObject({
+      id: 'future-subscription-model',
+      contextWindow: 100000,
+    });
     expect(models.getModels('openai-codex')).toEqual(stock);
     expect(models.getModel('openai-codex', 'future-subscription-model')).toBeUndefined();
   });

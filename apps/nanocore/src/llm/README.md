@@ -34,4 +34,4 @@ Native Responses text preserves the stock parser's message identity and optional
 
 Synthetic text and reasoning item ids use one UUID namespace per response, shared by every stream frame and its terminal payload. Content indices alone collide across requests and can replace earlier conversation items, causing native clients to select an intermediate message as the final answer. Native ids and tool-call identities remain unchanged.
 
-Deployment extension metadata reaches the shared resolver through loaded Provider metadata. Snapshot → extension → profile leaf precedence applies equally to Gateway contracts and request-local adapter models; the resolver caps Codex subscription context at 256,000 tokens after composition without inventing absent context.
+Deployment extension metadata reaches the shared resolver through loaded Provider metadata. Snapshot → extension → profile leaf precedence applies equally to Gateway contracts and request-local adapter models. Missing context still fails closed; the resolver does not impose a second context cap.

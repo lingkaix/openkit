@@ -1016,10 +1016,11 @@ describe('PiAiGatewayClient', () => {
         pairModels
       )
     ).rejects.toThrow('does not expose model');
+    const uncataloguedNativeId = 'openai-codex/gpt-unlisted-handwritten';
     await expect(
       new PiAiGatewayClient().createChatCompletion(
-        { ...config, modelMetadata: {} },
-        request,
+        { ...config, models: [uncataloguedNativeId], modelMetadata: {} },
+        { ...request, model: uncataloguedNativeId },
         undefined,
         {},
         pairModels

@@ -317,6 +317,7 @@ function localProviderRegistry(): ProviderRegistry {
       id: 'agent-openrouter',
       kind: 'local',
       models: ['openai/gpt-5.2'],
+      modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
     },
   ]);
 }
