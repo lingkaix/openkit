@@ -45,6 +45,16 @@ The target selector may show the built-in Assistant, a running Goal Orchestrator
 
 Enter submits while text composition is inactive, Shift+Enter inserts a newline, every icon-only action has an accessible name and visible focus treatment, both selectors are keyboard operable, and unavailable choices expose their reason. Send is enabled only when non-whitespace text or at least one accepted Artifact reference is present, no local import is pending, the selected target remains available, the selected model remains admitted, and an identical request is not already pending. A failed or uncertain submission preserves the exact draft, target, model, Artifact references, and request identity.
 
+## Advanced Worker Environment Choice
+
+For submission that starts new Task Worker work, the pre-send Advanced settings offer `New environment` (the default) and explicit `Reuse existing environment`. Advanced settings are reached through the existing `+` entry; this adds no permanently visible Composer action or selector. Other targets do not accept this choice. A retained choice is never silently discarded when the target changes: the client requires an applicable target or an explicit reset to the default before submission.
+
+The persistent Worker volume owner remains authoritative for the complete retained bytes, source audience, responsible User, layout, revision, attachment and admission. Advanced settings show readable source provenance and the result of the existing eligibility check; they do not expose host paths, runtime placement or credentials. A successful eligibility check neither attaches storage nor starts work. The public `workerStorageChoice` is forwarded unchanged through structured submission to the existing Task owner, included in canonical input hashing, and retained with the exact draft and request identity after failure or uncertainty. Omission means fresh environment under that owner. Supplied choices on an inapplicable target fail before effects rather than being ignored.
+
+Submission checks the actual receiving scope and current source authority, complete contributor audience, layout and expected revision again through existing admission. The client must not substitute a new environment or drop the selected storage when it is stale, inaccessible, busy or incompatible. An originating Thread is not proof of the receiving linked Task Thread's audience. No new storage lifecycle, implicit reuse heuristic, independent authorization rule or repair mechanism is introduced. Web and public Skill submit the same owned choice and receive the same rejection semantics.
+
+Acceptance covers default fresh work, explicit reuse with provenance and eligibility, exact choice forwarding and changed-choice idempotency conflict, rejection on inapplicable targets, stale/revoked selection at send, originating versus receiving scope, complete draft retention, and no extra permanent Composer control. Existing Task admission tests remain the authority for attachment and complete-volume audience checks.
+
 ## Target Catalog
 
 NanoCore exposes `GET /api/app/workspaces/:workspaceId/conversation-targets`. The response is a Workspace-authorized read model whose entries have this closed product shape:
@@ -92,6 +102,7 @@ interface SubmitConversationTurnRequest {
   input: string;
   targetRef: string;
   logicalModelId?: string;
+  workerStorageChoice?: WorkerEnvironmentStorageChoice;
   artifactRefs: readonly {
     artifactId: string;
     artifactVersion: number;
@@ -101,7 +112,7 @@ interface SubmitConversationTurnRequest {
 
 `input` may be empty only when at least one Artifact reference is present. Artifact references are ordered, unique by `(artifactId, artifactVersion)`, and must resolve to readable versions in the same Workspace. A local uploaded UTF-8 Markdown, text, or JSON file first uses the existing `artifact.import` command, after which the Composer submits the resulting Artifact reference. This slice adds no multipart route, transient upload handle, binary upload, or parallel attachment owner.
 
-The immutable command scope is actor, Workspace, originating Thread, and `requestId`. The canonical input hash includes the exact input, target reference, optional logical-model preference, and ordered Artifact references. An identical replay returns the original result without re-resolving the target or repeating role, workflow, provider, Thread, Turn, Item, Artifact, worker, or Goal effects. Reusing the request identity with different canonical input returns `idempotency_key_conflict` before effects.
+The immutable command scope is actor, Workspace, originating Thread, and `requestId`. The canonical input hash includes the exact input, target reference, optional logical-model preference, optional Worker storage choice, and ordered Artifact references. An identical replay returns the original result without re-resolving the target or repeating role, workflow, provider, Thread, Turn, Item, Artifact, worker, or Goal effects. Reusing the request identity with different canonical input returns `idempotency_key_conflict` before effects.
 
 NanoCore validates the selected catalog entry and logical model at command acceptance. An omitted model uses the effective preference chain owned by the configuration, Agent-profile, and internal-role contracts. A supplied model is a per-submission logical-model preference and must be admitted for the selected target. The accepted logical model stays visible in the response and durable inference lineage, while concrete Gateway route selection remains private and may vary for each Provider call within the accepted logical model's derived capability and model-family contract.
 
