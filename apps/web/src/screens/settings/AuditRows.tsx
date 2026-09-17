@@ -37,7 +37,7 @@ export function evidenceStatus(value: string): { label: string; tone: StatusTone
 }
 
 /** Renders one recorded instant, or an explicit unavailable label when the producer omitted it. */
-function RecordedTime({ value }: { value?: string }) {
+export function RecordedTime({ value }: { value?: string }) {
   return (
     <p className="text-xs text-fg-muted">
       {value ? (

@@ -10,7 +10,7 @@ import {
   Skeleton,
   StatusChip,
 } from '../../primitives';
-import { AuditEventRow, evidenceStatus, PermissionDecisionRow } from './AuditRows';
+import { AuditEventRow, evidenceStatus, PermissionDecisionRow, RecordedTime } from './AuditRows';
 import {
   type CapabilityUsageCallRow,
   type UsageRecordRow,
@@ -94,14 +94,27 @@ export function UsageScreen() {
                 hint="Capability calls and measured usage for this Workspace will appear here."
               />
             ) : (
-              <Card className="py-0">
-                {evidence.data.capabilityCalls.map((call) => (
-                  <CapabilityCallRow key={call.id} call={call} />
-                ))}
-                {evidence.data.usageRecords.map((record) => (
-                  <UsageRow key={record.id} record={record} />
-                ))}
-              </Card>
+              <>
+                {evidence.data.usageRecords.length > 0 ? (
+                  <Card className="py-0">
+                    {evidence.data.usageRecords.map((record) => (
+                      <UsageRow key={record.id} record={record} />
+                    ))}
+                  </Card>
+                ) : null}
+                {evidence.data.capabilityCalls.length > 0 ? (
+                  <details>
+                    <summary className="cursor-pointer py-3 text-sm font-bold text-fg-strong">
+                      Capability calls
+                    </summary>
+                    <Card className="py-0">
+                      {evidence.data.capabilityCalls.map((call) => (
+                        <CapabilityCallRow key={call.id} call={call} />
+                      ))}
+                    </Card>
+                  </details>
+                ) : null}
+              </>
             )}
           </section>
 
@@ -183,6 +196,7 @@ function CapabilityCallRow({ call }: { call: CapabilityUsageCallRow }) {
         <p className="text-sm font-bold text-fg-strong">{call.operation}</p>
         {call.summary ? <p className="text-xs text-fg-muted">{call.summary}</p> : null}
         <p className="text-xs text-fg-muted">{call.family}</p>
+        <RecordedTime value={call.startedAt} />
       </div>
       <StatusChip tone={status.tone} dot>
         {status.label}
@@ -201,9 +215,16 @@ function UsageRow({ record }: { record: UsageRecordRow }) {
     <ListRow>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-bold text-fg-strong">
-          {record.quantity} {record.unit}
+          <span>{record.measurement}</span> ·{' '}
+          <span>
+            {record.quantity} {record.unit}
+          </span>
         </p>
         <p className="text-xs text-fg-muted">{record.category}</p>
+        {record.category === 'llm' ? (
+          <p className="text-xs text-fg-muted">Logical model: {record.modelId ?? 'Not recorded'}</p>
+        ) : null}
+        <RecordedTime value={record.recordedAt} />
       </div>
     </ListRow>
   );

@@ -1365,6 +1365,55 @@ describe('Debug settings (board 11)', () => {
 });
 
 describe('Usage and audit settings (board 17)', () => {
+  it('labels recorded measurements and keeps capability details collapsed until opened', async () => {
+    const user = userEvent.setup();
+    const sources = ['input', 'output', 'cache_read', 'cache_write', 'total', 'cost_estimate'];
+    const client = makeClient({
+      app: {
+        getCapabilityUsage: vi.fn().mockResolvedValue({
+          ...CAPABILITY_USAGE,
+          usageRecords: [
+            ...sources.map((source, index) => ({
+              ...CAPABILITY_USAGE.usageRecords[0],
+              id: `usage_${index}`,
+              source: `llm-gateway-adapter-reported:${source}`,
+              unit: source === 'cost_estimate' ? 'usd' : 'tokens',
+            })),
+            {
+              ...CAPABILITY_USAGE.usageRecords[0],
+              id: 'unknown',
+              source: 'untrusted:input',
+              modelId: null,
+            },
+          ],
+        }),
+      },
+    });
+    renderApp('/workspace/usage', client);
+    for (const label of [
+      'Input',
+      'Output',
+      'Cache read',
+      'Cache write',
+      'Total',
+      'Estimated cost',
+    ]) {
+      expect(await screen.findByText(label, { exact: true })).toBeVisible();
+    }
+    expect(screen.getAllByText('Logical model: gpt-5')).toHaveLength(6);
+    expect(screen.getByText('Logical model: Not recorded')).toBeVisible();
+    const call = screen.getByText('chat_completions', { exact: true });
+    const disclosure = call.closest('details');
+    expect(disclosure).not.toHaveAttribute('open');
+    expect(call).not.toBeVisible();
+    expect(document.querySelectorAll(`time[datetime="${TIMESTAMP}"]`)).toHaveLength(10);
+    await user.click(screen.getByText('Capability calls', { exact: true }));
+    expect(disclosure).toHaveAttribute('open');
+    expect(call).toBeVisible();
+    expect(document.body.textContent).not.toContain('untrusted:input');
+    expect(document.body.textContent).not.toContain('llm-gateway-adapter-reported');
+  });
+
   it('is a selected-Workspace read-only surface with exact live reads and a bounded DOM', async () => {
     const client = makeClient();
     const surface = surfaceById('usage');
@@ -1388,7 +1437,7 @@ describe('Usage and audit settings (board 17)', () => {
     expect(screen.getByText('Approved', { exact: true })).toBeInTheDocument();
     expect(screen.getAllByText('Done', { exact: true }).length).toBeGreaterThan(0);
     const usageTimes = document.querySelectorAll(`time[datetime="${TIMESTAMP}"]`);
-    expect(usageTimes).toHaveLength(2);
+    expect(usageTimes).toHaveLength(4);
     expect(usageTimes[0]).toHaveTextContent(
       new Date(TIMESTAMP).toLocaleString(undefined, { timeZoneName: 'short' })
     );

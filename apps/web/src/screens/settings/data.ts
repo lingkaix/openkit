@@ -159,6 +159,7 @@ export interface CapabilityUsageCallRow {
   operation: string;
   status: string;
   summary: string | null;
+  startedAt?: string;
 }
 
 /** Whitelisted metering metadata exposed to Usage & audit. */
@@ -167,6 +168,9 @@ export interface UsageRecordRow {
   category: string;
   unit: string;
   quantity: number;
+  measurement: string;
+  modelId: string | null;
+  recordedAt?: string;
 }
 
 /** Whitelisted audit metadata shared by the separate Workspace and server surfaces. */
@@ -352,15 +356,39 @@ export function projectUsageAndAudit(
       operation: projectSafeValue(call.operation) as string,
       status: projectSafeValue(call.status) as string,
       summary: call.summary === null ? null : (projectSafeValue(call.summary) as string),
+      startedAt: recordedInstant(call.startedAt),
     })),
     usageRecords: usage.usageRecords.map((record) => ({
       id: projectSafeValue(record.id) as string,
       category: projectSafeValue(record.category) as string,
       unit: projectSafeValue(record.unit) as string,
       quantity: record.quantity,
+      measurement: usageMeasurement(record.source),
+      modelId: record.modelId ? (projectSafeValue(record.modelId) as string) : null,
+      recordedAt: recordedInstant(record.recordedAt),
     })),
     ...projectAuditAndDecisions(audit, decisions),
   };
+}
+
+/** Labels only known Gateway measurements; other producers keep a neutral label. */
+function usageMeasurement(source: string | null): string {
+  switch (source) {
+    case 'llm-gateway-adapter-reported:input':
+      return 'Input';
+    case 'llm-gateway-adapter-reported:output':
+      return 'Output';
+    case 'llm-gateway-adapter-reported:cache_read':
+      return 'Cache read';
+    case 'llm-gateway-adapter-reported:cache_write':
+      return 'Cache write';
+    case 'llm-gateway-adapter-reported:total':
+      return 'Total';
+    case 'llm-gateway-adapter-reported:cost_estimate':
+      return 'Estimated cost';
+    default:
+      return 'Recorded usage';
+  }
 }
 
 /** Returns a redacted recorded instant, or nothing when the producer omitted one. */
