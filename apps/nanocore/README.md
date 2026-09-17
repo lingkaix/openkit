@@ -34,6 +34,8 @@ Presented server-admin bearers may start Tasks across active Workspaces without 
 
 Actor-derived Quick Chat operations establish a usable server-admin bearer's own private home through the existing Workspace provisioner before evaluating Workspace access. This supports first-time administration Assistant use without a preceding browser session. It accepts no caller-selected owner or Workspace, preserves membership tombstones, and never provisions for revoked, expired, or disabled credentials.
 
+Goal step replay and boot recovery share the existing Goal closeout classifier. A failed pre-launch attempt can settle its original Goal Task and command receipt only when the exact request, failed unanchored lease and absence of runtime, control, package and output evidence prove no Worker ran. Its original user input remains history and contributes no Worker evidence. Contradictory or incomplete tuples remain recovery-required; this path never starts a replacement Worker. See the public Skill [recovery guide](../../skills/openkit/references/recovery.md).
+
 ## Selected Repository Worker Tools
 
 Codex manifests may explicitly select `mcp: [{ id: "openkit-repository" }]` to expose `repository_push_request_approval` and `repository_push_execute` over the existing authenticated MCP relay. The built-in is not automatically supplied and its catalog identity is reserved. Both tools require a UUID `requestId` and a repository `resourceId`; approval requests also supply `sourceRef`, `targetBranch`, and `commitIds`, while execution supplies `approvalRequestId`. Workspace, Thread, Turn, AgentSession, package, and actor authority come from the authenticated package and current server authority.

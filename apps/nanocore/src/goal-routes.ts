@@ -75,6 +75,7 @@ import type { ProviderSubscriptionAccountManager } from './llm/provider-subscrip
 import { registerAppApiRoute } from './openapi.js';
 import { recordGoalWorkerLaunchDecision } from './policy/permission-decisions.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
+import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
 import {
   approveGoalPlan,
   GoalPlanApprovalError,
@@ -131,6 +132,7 @@ import {
   stopReasonForTurnStatus,
 } from './runtime/stop-after-turn.js';
 import type { TurnExecutor } from './runtime/types.js';
+import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import {
   getWorkerCheckpoint,
   parseWorkerCheckpointContextAssembly,
@@ -149,6 +151,7 @@ import {
   completeSchedulerLeaseForTerminalTurn,
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
+  type SchedulerSessionLeaseRecord,
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -1277,7 +1280,7 @@ function commitGoalStepOwnerOutcome(input: {
     readonly itemIds: readonly string[];
     readonly artifactIds: readonly string[];
   };
-  readonly contextAssembly: WorkerCheckpointContextAssemblySummary;
+  readonly contextAssembly: WorkerCheckpointContextAssemblySummary | null;
 }): GoalStepResponse {
   const decision = createWorkerCoordinatorGoalStopDecision({
     workspaceId: input.workspaceId,
@@ -1539,6 +1542,100 @@ function hasCommittedGoalStepOwnerOutcome(input: {
 }
 
 /**
+ * Proves a failed Goal attempt stopped before any Worker runtime effect.
+ *
+ * @param input Existing checkpoint and storage owners.
+ * @param leases Exact leases for the checkpoint Turn.
+ * @returns Whether absent execution and output evidence is proven, rather than unknown.
+ */
+function isProvenNeverLaunchedGoalAttempt(
+  input: {
+    readonly coreDb: CoreDb;
+    readonly store: FsStore;
+    readonly workspaceDb: WorkspaceDb;
+    readonly checkpoint: WorkerCheckpointRecord;
+  },
+  leases: readonly SchedulerSessionLeaseRecord[]
+): boolean {
+  const { coreDb, store, workspaceDb, checkpoint } = input;
+  const lease = leases[0];
+  if (
+    !checkpoint.goalId ||
+    !checkpoint.taskId ||
+    checkpoint.stage !== 'failed' ||
+    checkpoint.iteration !== 0 ||
+    checkpoint.workerSessionId !== null ||
+    checkpoint.stopReason !== 'error' ||
+    !checkpoint.contextDigest ||
+    checkpoint.diagnosticsSummary !== null ||
+    leases.length !== 1 ||
+    !lease ||
+    lease.status !== 'failed' ||
+    lease.releaseReason !== 'turn-start-failed' ||
+    lease.recoveryState !== 'needs-evidence' ||
+    lease.lastAcceptedHeartbeatAt !== null ||
+    lease.lastWorkerSequence !== null
+  )
+    return false;
+  const turn = store.getTurn(checkpoint.workspaceId, checkpoint.threadId, checkpoint.turnId);
+  const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+  if (
+    turn.status !== 'failed' ||
+    turn.humanGate !== null ||
+    (turn.agentSessionId != null && turn.agentSessionId !== lease.agentSessionId) ||
+    admission.requestId !== checkpoint.requestId ||
+    admission.triggerActor.kind !== 'user' ||
+    turn.triggerActor.kind !== 'user' ||
+    turn.triggerActor.id !== admission.triggerActor.id
+  )
+    return false;
+  const anchor = coreDb.sqlite
+    .prepare(
+      'SELECT backend_anchor_state AS state FROM scheduler_session_leases WHERE lease_id = ?'
+    )
+    .get(lease.leaseId) as { state: string } | undefined;
+  if (anchor?.state !== 'unanchored') return false;
+  const items = store
+    .listThreadItems(checkpoint.workspaceId, checkpoint.threadId)
+    .filter((item) => item.turnId === checkpoint.turnId);
+  if (
+    items.length !== 1 ||
+    items[0]?.type !== 'user-message' ||
+    items[0].status !== 'completed' ||
+    items[0].actor.kind !== 'user' ||
+    items[0].actor.id !== admission.triggerActor.id ||
+    store.getTurnEvents(checkpoint.turnId).length !== 0 ||
+    listWorkerBackendSessions(coreDb).some(
+      (row) =>
+        row.leaseId === lease.leaseId ||
+        row.agentSessionId === lease.agentSessionId ||
+        row.turnId === checkpoint.turnId
+    ) ||
+    listExportableAgentEnvironmentPackageSnapshots(workspaceDb, checkpoint.workspaceId).some(
+      (row) => row.agentSessionId === lease.agentSessionId || row.turnId === checkpoint.turnId
+    )
+  )
+    return false;
+  return !coreDb.sqlite
+    .prepare(`
+    SELECT 1 FROM worker_control_records WHERE agent_session_id = @session OR turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_commands WHERE agent_session_id = @session OR turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE agent_session_id = @session OR turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE agent_session_id = @session OR turn_id = @turn
+    UNION ALL SELECT 1 FROM agent_session_runtime_bindings
+      WHERE agent_session_id = @session OR current_turn_id = @turn OR current_lease_id = @lease
+    UNION ALL SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref = @binding
+    LIMIT 1
+  `)
+    .get({
+      session: lease.agentSessionId,
+      turn: checkpoint.turnId,
+      lease: lease.leaseId,
+      binding: lease.sandboxBindingRef,
+    });
+}
+
+/**
  * Classifies one Goal step checkpoint after scheduler restart fencing.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
@@ -1558,7 +1655,19 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
     turnId: checkpoint.turnId,
   });
   const lease = leases[0];
-  if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
+  let neverLaunched = false;
+  try {
+    neverLaunched = isProvenNeverLaunchedGoalAttempt(input, leases);
+  } catch (error) {
+    throw goalStepRecoveryError(
+      `The Goal checkpoint launch evidence could not be read: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (
+    leases.length !== 1 ||
+    !lease ||
+    (lease.agentSessionId !== checkpoint.workerSessionId && !neverLaunched)
+  ) {
     throw goalStepRecoveryError('The boot Goal checkpoint has no exact scheduler lease.');
   }
   let admission: ReturnType<typeof requireSchedulerSessionLeaseAdmissionContext>;
@@ -1624,12 +1733,9 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
 
   let stopReason: StopReason;
   try {
-    stopReason = recoverWorkerCheckpointStopReason(
-      input.coreDb,
-      input.store,
-      input.workspaceDb,
-      checkpoint
-    );
+    stopReason = neverLaunched
+      ? 'error'
+      : recoverWorkerCheckpointStopReason(input.coreDb, input.store, input.workspaceDb, checkpoint);
   } catch (error) {
     throw goalStepRecoveryError(
       `The boot Goal checkpoint has no complete worker owner tuple: ${error instanceof Error ? error.message : String(error)}`
@@ -1640,12 +1746,13 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
     input.store.listThreadItems(checkpoint.workspaceId, checkpoint.threadId),
     checkpoint.turnId
   );
-  const evidence =
-    checkpoint.stage === 'running_worker'
+  const evidence = neverLaunched
+    ? { itemIds: [], artifactIds: [] }
+    : checkpoint.stage === 'running_worker'
       ? currentEvidence
       : parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
   if (
-    !contextAssembly ||
+    (!contextAssembly && !neverLaunched) ||
     !evidence ||
     evidence.itemIds.some((itemId) => !currentEvidence.itemIds.includes(itemId)) ||
     evidence.artifactIds.some((artifactId) => !currentEvidence.artifactIds.includes(artifactId))
@@ -3624,9 +3731,36 @@ export function registerGoalRoutes({
               reservedTurnId
             );
             if (checkpoint) {
-              throw goalStepRecoveryError(
-                'Goal step effects exist without a completed command receipt.'
+              const outcome = await classifyGoalStepCheckpointAfterSchedulerRecovery({
+                coreDb,
+                store,
+                workspaceDb,
+                checkpoint,
+              });
+              if (outcome === 'live') {
+                throw new TurnStartValidationError(
+                  'thread_busy',
+                  'The original Goal step is still active, awaiting reconnection, or waiting for a human response.',
+                  409
+                );
+              }
+              const recovered = store.getCommandRequest(
+                'goal.step',
+                parsed.data.requestId,
+                { actorId: triggerActor.id, workspaceId, threadId },
+                workspaceDb
               );
+              if (!recovered) {
+                throw goalStepRecoveryError(
+                  'Goal step effects exist without a completed command receipt.'
+                );
+              }
+              return projectGoalStepResponse({
+                workspaceDb,
+                workspaceId,
+                threadId,
+                record: recovered,
+              });
             }
             let reservedTurnExists = false;
             try {

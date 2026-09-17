@@ -29,7 +29,10 @@ import { StructuredWorkerDelegationRequestSchema } from './internal-agents/deleg
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
+import {
+  listExportableAgentEnvironmentPackageSnapshots,
+  recordAgentEnvironmentPackageSnapshot,
+} from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import * as goalPlanPropose from './runtime/goal-plan-propose-tool.js';
 import {
@@ -57,6 +60,8 @@ import type {
   TurnStartRuntimeContext,
 } from './runtime/types.js';
 import {
+  getWorkerBackendSession,
+  listWorkerBackendSessions,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
@@ -757,6 +762,248 @@ function createFailingGoalTurnExecutor(
       throw new Error('injected worker start failure');
     },
   });
+}
+
+/** Public App used by never-launched Goal step closeout tests. */
+type GoalStepTestApp = ReturnType<typeof createApp>;
+
+/** Durable owners after one public Goal step fails before Worker launch. */
+interface NeverLaunchedGoalStepFailure {
+  /** App that owns the public Goal step route. */
+  readonly app: GoalStepTestApp;
+  /** Open Core database. */
+  readonly coreDb: CoreDb;
+  /** Failed scheduler lease. */
+  readonly lease: ReturnType<typeof requireSchedulerSessionLease>;
+  /** Same-request Goal step identity. */
+  readonly requestId: string;
+  /** Scheduler start contexts observed by the failing executor. */
+  readonly startContexts: TurnStartRuntimeContext[];
+  /** Product store. */
+  readonly store: ReturnType<typeof createDemoStore>;
+  /** Thread that owns the Goal. */
+  readonly thread: ReturnType<ReturnType<typeof createDemoStore>['createThread']>;
+  /** Reserved Goal step Turn id. */
+  readonly turnId: string;
+  /** Original completed user-message Item id. */
+  readonly userMessageId: string;
+  /** Open workspace database. */
+  readonly workspaceDb: WorkspaceDb;
+}
+
+/**
+ * Starts the existing failing Goal step fixture through the public route.
+ *
+ * @param requestId Same-request Goal step identity.
+ * @returns Durable owners after the first never-launched failure.
+ */
+async function startNeverLaunchedGoalStepFailure(
+  requestId: string
+): Promise<NeverLaunchedGoalStepFailure> {
+  const coreDb = createCoreDb();
+  const workspaceDb = createWorkspaceDb(coreDb);
+  const store = createDemoStore();
+  const thread = store.createThread('ws_demo', 'Never-launched goal step thread');
+  const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-never-launched-goal-step-repo-'));
+  seedWritableGitRepository(repositoryPath);
+  seedReadyRepository(coreDb, repositoryPath);
+  const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide failure context', {
+    kind: 'user',
+    id: 'user_local',
+  });
+  store.createItem({
+    id: `it_context_${thread.id}`,
+    workspaceId: 'ws_demo',
+    threadId: thread.id,
+    turnId: contextTurn.id,
+    type: 'user-message',
+    status: 'completed',
+    actor: contextTurn.triggerActor,
+    text: 'Start the worker and preserve failure evidence.',
+    createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+    completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+  });
+  store.updateTurn(contextTurn.id, {
+    status: 'completed',
+    completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
+    durationMs: 0,
+  });
+  createGoalRecord(workspaceDb, {
+    workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+    goalId: 'goal_failing_step',
+    workspaceId: 'ws_demo',
+    threadId: thread.id,
+    title: 'Fail one worker step',
+    objective: 'Preserve terminal state when worker startup fails.',
+    status: 'running',
+  });
+  updateGoalStatus(workspaceDb, {
+    workspaceId: 'ws_demo',
+    threadId: thread.id,
+    goalId: 'goal_failing_step',
+    status: 'running',
+    planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+  });
+  createGoalTask(workspaceDb, {
+    workspaceId: 'ws_demo',
+    threadId: thread.id,
+    goalId: 'goal_failing_step',
+    taskId: 'task_failing_step',
+    title: 'Start the failing worker',
+    objective: 'Start one worker that fails during startup.',
+    orderIndex: 0,
+    dependsOnTaskIds: [],
+    acceptanceCriteria: ['Failure state is durable.'],
+    contextBudgetTokens: 12_000,
+    ...GOAL_TASK_EXECUTION_FIELDS,
+    verificationChecks: [{ kind: 'manual', description: 'Review failure state.' }],
+    status: 'ready',
+  });
+  const startContexts: TurnStartRuntimeContext[] = [];
+  const app = createApp({
+    agentManifests: [createTestAgentSetup().manifest],
+    coreDb,
+    providerRegistry: testProviderRegistry(),
+    store,
+    turnExecutor: createFailingGoalTurnExecutor(startContexts),
+  });
+  const stepRes = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId }),
+  });
+  expect(stepRes.status).toBe(409);
+  await expect(stepRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+  const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+    workspaceId: 'ws_demo',
+    statuses: ['admitted'],
+  })[0]!;
+  const sandboxBindingRef = startContexts[0]!.sandboxBindingRef!;
+  const lease = requireSchedulerSessionLease(
+    coreDb,
+    sandboxBindingRef.slice('lease-binding:'.length)
+  );
+  const failedTurn = store.getTurn('ws_demo', thread.id, admission.turnId);
+  const timestamp = failedTurn.completedAt ?? failedTurn.startedAt ?? '2026-05-31T00:00:00.000Z';
+  const failedTurnUserMessageId = `it_user_${admission.turnId}`;
+  store.createItem({
+    actor: { kind: 'user', id: LOCAL_USER_ID },
+    completedAt: timestamp,
+    createdAt: timestamp,
+    id: failedTurnUserMessageId,
+    status: 'completed',
+    text: 'Start the worker and preserve failure evidence.',
+    threadId: thread.id,
+    turnId: admission.turnId,
+    type: 'user-message',
+    workspaceId: 'ws_demo',
+  });
+  updateWorkerCheckpoint(workspaceDb, {
+    authorityActor: { kind: 'user', id: LOCAL_USER_ID },
+    diagnosticsSummary: null,
+    threadId: thread.id,
+    turnId: admission.turnId,
+    workspaceId: 'ws_demo',
+  });
+  const fixture = {
+    app,
+    coreDb,
+    lease,
+    requestId,
+    startContexts,
+    store,
+    thread,
+    turnId: admission.turnId,
+    userMessageId: failedTurnUserMessageId,
+    workspaceDb,
+  };
+  expectNeverLaunchedGoalStepTuple(fixture);
+  return fixture;
+}
+
+/**
+ * Asserts the exact never-launched Goal step owner tuple.
+ *
+ * @param fixture Durable owners after the first public Goal step failure.
+ */
+function expectNeverLaunchedGoalStepTuple(fixture: NeverLaunchedGoalStepFailure): void {
+  const { coreDb, lease, requestId, store, thread, turnId, userMessageId, workspaceDb } = fixture;
+  const leases = listSchedulerSessionLeasesForTurn(coreDb, {
+    workspaceId: 'ws_demo',
+    threadId: thread.id,
+    turnId,
+  });
+  const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, turnId);
+  const workerTurn = store.getTurn('ws_demo', thread.id, turnId);
+  const anchor = coreDb.sqlite
+    .prepare(
+      'SELECT backend_anchor_state AS state FROM scheduler_session_leases WHERE lease_id = ?'
+    )
+    .get(lease.leaseId) as { state: 'unanchored' | 'anchored' } | undefined;
+  const controlCount = (
+    coreDb.sqlite
+      .prepare('SELECT COUNT(*) AS count FROM worker_control_records WHERE agent_session_id = ?')
+      .get(lease.agentSessionId) as { count: number }
+  ).count;
+  const sandboxBindingCount = (
+    coreDb.sqlite
+      .prepare(
+        'SELECT COUNT(*) AS count FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?'
+      )
+      .get(lease.sandboxBindingRef) as { count: number }
+  ).count;
+
+  expect(checkpoint).toMatchObject({
+    contextDigest: expect.stringMatching(/\S/),
+    diagnosticsSummary: null,
+    iteration: 0,
+    requestId,
+    stage: 'failed',
+    stopReason: 'error',
+    workerSessionId: null,
+  });
+  expect(workerTurn).toMatchObject({
+    status: 'failed',
+    humanGate: null,
+    triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+  });
+  expect(lease).toMatchObject({ lastAcceptedHeartbeatAt: null, lastWorkerSequence: null });
+  expect(leases).toHaveLength(1);
+  expect(leases[0]).toMatchObject({
+    leaseId: lease.leaseId,
+    recoveryState: 'needs-evidence',
+    releaseReason: 'turn-start-failed',
+    status: 'failed',
+    turnId,
+  });
+  expect(anchor).toEqual({ state: 'unanchored' });
+  expect(getWorkerBackendSession(coreDb, lease.leaseId)).toBeNull();
+  expect(
+    listWorkerBackendSessions(coreDb).filter(
+      (record) =>
+        record.leaseId === lease.leaseId ||
+        record.agentSessionId === lease.agentSessionId ||
+        record.turnId === turnId
+    )
+  ).toEqual([]);
+  expect(controlCount).toBe(0);
+  expect(sandboxBindingCount).toBe(0);
+  expect(
+    listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo').filter(
+      (record) => record.agentSessionId === lease.agentSessionId || record.turnId === turnId
+    )
+  ).toEqual([]);
+  expect(store.getTurnEvents(turnId)).toEqual([]);
+  expect(
+    store.listThreadItems('ws_demo', thread.id).filter((item) => item.turnId === turnId)
+  ).toEqual([
+    expect.objectContaining({
+      id: userMessageId,
+      status: 'completed',
+      turnId,
+      type: 'user-message',
+    }),
+  ]);
 }
 
 /**
@@ -3895,6 +4142,204 @@ describe('thread goal summary app API', () => {
           statuses: ['admitted'],
         })
       ).toHaveLength(1);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'replay',
+    'boot',
+  ] as const)('closes a never-launched Goal step through %s', async (route) => {
+    const fixture = await startNeverLaunchedGoalStepFailure('req_goal_never_launched_closeout');
+    const { app, coreDb, requestId, startContexts, store, thread, turnId, workspaceDb } = fixture;
+
+    try {
+      if (route === 'boot') {
+        await expect(
+          classifyGoalStepCheckpointAfterSchedulerRecovery({
+            coreDb,
+            store,
+            workspaceDb,
+            checkpoint: getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, turnId)!,
+          })
+        ).resolves.toBe('complete');
+      }
+      const replayRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId }),
+        }
+      );
+
+      expect(replayRes.status, await replayRes.clone().text()).toBe(200);
+      await expect(replayRes.json()).resolves.toMatchObject({
+        goal: {
+          currentTask: null,
+          goalId: 'goal_failing_step',
+          status: 'failed',
+          terminalState: { status: 'failed', stopReason: 'error' },
+        },
+      });
+      expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_failing_step')).toMatchObject({
+        currentTaskId: null,
+        status: 'failed',
+        terminalStopReason: 'error',
+      });
+      expect(
+        listGoalTasks(workspaceDb, {
+          goalId: 'goal_failing_step',
+          threadId: thread.id,
+          workspaceId: 'ws_demo',
+        })
+      ).toEqual([expect.objectContaining({ status: 'failed', taskId: 'task_failing_step' })]);
+      expect(
+        store.getCommandRequest(
+          'goal.step',
+          requestId,
+          { actorId: LOCAL_USER_ID, threadId: thread.id, workspaceId: 'ws_demo' },
+          workspaceDb
+        )
+      ).toMatchObject({
+        command: 'goal.step',
+        requestId,
+        response: { id: 'goal_failing_step', kind: 'goal' },
+      });
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, turnId)).toBeNull();
+      expect(startContexts).toHaveLength(1);
+      expect(store.getTurnEvents(turnId)).toEqual([]);
+      expect(
+        store.listThreadItems('ws_demo', thread.id).filter((item) => item.turnId === turnId)
+      ).toEqual([expect.objectContaining({ id: fixture.userMessageId, type: 'user-message' })]);
+      const replayAgain = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId }),
+        }
+      );
+      expect(replayAgain.status).toBe(200);
+      expect(startContexts).toHaveLength(1);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'anchored-lease',
+    'backend-row',
+    'mismatched-lineage',
+    'mismatched-turn',
+    'control-command',
+    'worker-output',
+  ] as const)('keeps recovery_required when a never-launched Goal step is %s', async (poison) => {
+    const fixture = await startNeverLaunchedGoalStepFailure(`req_goal_never_launched_${poison}`);
+    const { app, coreDb, lease, requestId, startContexts, store, thread, turnId, workspaceDb } =
+      fixture;
+
+    try {
+      if (poison === 'anchored-lease') {
+        coreDb.sqlite
+          .prepare(
+            `UPDATE scheduler_session_leases
+               SET backend_anchor_state = 'anchored'
+               WHERE lease_id = ?`
+          )
+          .run(lease.leaseId);
+      } else if (poison === 'backend-row') {
+        const timestamp = '2026-05-31T00:00:00.000Z';
+        coreDb.sqlite
+          .prepare(
+            `INSERT INTO worker_backend_sessions (
+                 lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+                 package_snapshot_id, backend_kind, deployment_id,
+                 backend_session_id, staging_directory_ref, workspace_handoff_state,
+                 state, created_at, updated_at, origin_physical_epoch
+               ) VALUES (?, ?, ?, ?, ?, ?, 'openshell', 'deployment-test', ?, ?, 'pending',
+                         'materializing', ?, ?, 'epoch_never_launched')`
+          )
+          .run(
+            lease.leaseId,
+            'ws_demo',
+            thread.id,
+            turnId,
+            lease.agentSessionId,
+            lease.packageSnapshotId,
+            `openkit-${lease.agentSessionId}`,
+            `server/runtime/worker-backend-sessions/${lease.packageSnapshotId}`,
+            timestamp,
+            timestamp
+          );
+      } else if (poison === 'control-command') {
+        coreDb.sqlite
+          .prepare(`INSERT INTO worker_control_commands (
+          workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id,
+          command_id, command_kind, sequence, payload_json, status, queued_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'command_ambiguous', 'interrupt', 1, '{}', 'queued', ?)`)
+          .run(
+            'ws_demo',
+            thread.id,
+            turnId,
+            lease.agentSessionId,
+            lease.packageSnapshotId,
+            requestId,
+            '2026-05-31T00:00:00.000Z'
+          );
+      } else if (poison === 'worker-output') {
+        store.createItem({
+          id: 'it_unproved_worker_output',
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          turnId,
+          type: 'assistant-message',
+          status: 'completed',
+          actor: { kind: 'agent', id: 'agent_test' },
+          text: 'Unproved execution output',
+          createdAt: '2026-05-31T00:00:00.000Z',
+          completedAt: '2026-05-31T00:00:00.000Z',
+        });
+      } else if (poison === 'mismatched-turn') {
+        coreDb.sqlite
+          .prepare('UPDATE scheduler_session_leases SET turn_id = ? WHERE lease_id = ?')
+          .run('tu_foreign_never_launched', lease.leaseId);
+      } else {
+        store.updateTurn(turnId, { agentSessionId: 'as_mismatched_never_launched' });
+      }
+
+      const replayRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/step`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId }),
+        }
+      );
+
+      expect(replayRes.status).toBe(409);
+      await expect(replayRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(
+        store.getCommandRequest(
+          'goal.step',
+          requestId,
+          { actorId: LOCAL_USER_ID, threadId: thread.id, workspaceId: 'ws_demo' },
+          workspaceDb
+        )
+      ).toBeNull();
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, turnId)).toMatchObject({
+        requestId,
+        stage: 'failed',
+      });
+      expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_failing_step')).toMatchObject({
+        currentTaskId: 'task_failing_step',
+        status: 'running',
+        terminalStopReason: null,
+      });
+      expect(startContexts).toHaveLength(1);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
