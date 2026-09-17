@@ -5,6 +5,7 @@ import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
+  computeGoalPlanDigest,
   createDeterministicGoalPlanFallback,
   type GoalPlanOutput,
   GoalPlanOutputSchema,
@@ -18,8 +19,54 @@ import {
   getGoalRecord,
   updateGoalStatus,
 } from './goal-store.js';
+import type { InflightIdempotentCommand } from './idempotent-command.js';
 
 type GoalPlanItem = ReturnType<FsStore['createItem']>;
+
+/** Stable failure codes for pre-approval Goal Plan revision planning. */
+export type GoalPlanRevisionErrorCode =
+  | 'goal_plan_revision_unavailable'
+  | 'goal_plan_revision_invalid'
+  | 'stale'
+  | 'recovery_required';
+
+/** Error raised when a pre-approval revision cannot produce a new Plan. */
+export class GoalPlanRevisionError extends Error {
+  /** Stable API error code. */
+  public readonly code: GoalPlanRevisionErrorCode;
+  /** HTTP response status. */
+  public readonly status: 400 | 409 | 503;
+
+  /**
+   * Creates one pre-approval revision planning error.
+   *
+   * @param code Stable failure code.
+   * @param message Product-safe failure message.
+   */
+  public constructor(code: GoalPlanRevisionErrorCode, message: string) {
+    super(message);
+    this.name = 'GoalPlanRevisionError';
+    this.code = code;
+    this.status =
+      code === 'goal_plan_revision_unavailable'
+        ? 503
+        : code === 'goal_plan_revision_invalid'
+          ? 400
+          : 409;
+  }
+}
+
+/**
+ * Durable pre-approval revision lineage used to assemble one semantic planning Turn.
+ */
+export interface PreApprovalGoalPlanRevision {
+  /** Immutable prior Plan Item id. */
+  readonly previousPlanItemId: string;
+  /** Exact previous Plan payload. */
+  readonly previousPlan: GoalPlanOutput;
+  /** Recorded human revision instruction. */
+  readonly revisionText: string;
+}
 
 /**
  * Planner input for one Goal Mode planning run.
@@ -27,6 +74,12 @@ type GoalPlanItem = ReturnType<FsStore['createItem']>;
 export interface GoalPlannerInput {
   /** Stored goal record to plan. */
   readonly goal: GoalRecord;
+  /** Exact previous Plan when this run follows a recorded pre-approval revision. */
+  readonly previousPlan?: GoalPlanOutput;
+  /** Immutable prior Plan Item id for the recorded revision. */
+  readonly previousPlanItemId?: string;
+  /** Recorded human revision instruction. */
+  readonly revisionText?: string;
 }
 
 /**
@@ -52,7 +105,7 @@ export interface CreateGoalPlanInput {
   readonly goalId: string;
   /** Request that creates the immutable Plan authority. */
   readonly requestId: string;
-  /** Optional planner effect; deterministic fallback is used when omitted. */
+  /** Optional planner effect; omitted initial drafts use the deterministic fallback. */
   readonly planner?: GoalPlanner;
 }
 
@@ -106,6 +159,7 @@ export type GoalPlanResult =
  * @param input Planning input and effect dependencies.
  * @returns Planning result with the updated goal state reflected in storage.
  * @throws Error when the goal does not exist in the requested scope.
+ * @throws GoalPlanRevisionError when a recorded revision cannot use the deterministic draft.
  */
 export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPlanResult> {
   const goal = requirePlanningGoal(
@@ -114,7 +168,102 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     input.threadId,
     input.goalId
   );
+  const revision =
+    goal.status === 'planning' && goal.planItemId === null
+      ? readPreApprovalGoalPlanRevision({
+          store: input.store,
+          workspaceDb: input.workspaceDb,
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          goalId: input.goalId,
+        })
+      : null;
+  const plannerInput: GoalPlannerInput = revision
+    ? {
+        goal,
+        previousPlan: revision.previousPlan,
+        previousPlanItemId: revision.previousPlanItemId,
+        revisionText: revision.revisionText,
+      }
+    : { goal };
   const ids = goalPlanCreationIds(input);
+
+  let plan: GoalPlanOutput;
+  if (revision) {
+    try {
+      plan = await runGoalPlanner(input.planner, plannerInput, false);
+    } catch (error) {
+      if (error instanceof GoalPlanRevisionError) {
+        throw error;
+      }
+      throw new GoalPlanRevisionError(
+        'goal_plan_revision_unavailable',
+        'Pre-approval Goal Plan revision planner failed.'
+      );
+    }
+    if (plan.questions.length > 0) {
+      throw new GoalPlanRevisionError(
+        'goal_plan_revision_invalid',
+        'Pre-approval Goal Plan revision must propose an approvable draft.'
+      );
+    }
+    if (computeGoalPlanDigest(plan) === computeGoalPlanDigest(revision.previousPlan)) {
+      throw new GoalPlanRevisionError(
+        'goal_plan_revision_invalid',
+        'Pre-approval Goal Plan revision cannot repeat the previous draft.'
+      );
+    }
+  } else {
+    const turn = input.store.createTurn(
+      input.workspaceId,
+      input.threadId,
+      `Plan goal: ${goal.title}`,
+      input.triggerActor,
+      null,
+      { turnId: ids.turnId }
+    );
+    const timestamp = turn.startedAt ?? new Date().toISOString();
+    try {
+      plan = await runGoalPlanner(input.planner, plannerInput, true);
+    } catch {
+      const errorMessage = 'Goal planner failed.';
+      const errorItem = input.store.createItem({
+        id: ids.errorItemId,
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: turn.id,
+        type: 'status',
+        status: 'failed',
+        causationId: input.requestId,
+        level: 'error',
+        title: 'Goal planning failed',
+        summary: errorMessage,
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+
+      input.store.updateTurn(turn.id, {
+        status: 'failed',
+        error: {
+          code: 'goal_planner_failed',
+          message: errorMessage,
+        },
+        completedAt: timestamp,
+        durationMs: 0,
+      });
+      updateGoalStatus(input.workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        goalId: goal.goalId,
+        status: 'failed',
+        terminalStopReason: 'error',
+      });
+
+      return { status: 'failed', errorMessage, errorItem };
+    }
+    return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan);
+  }
+
   const turn = input.store.createTurn(
     input.workspaceId,
     input.threadId,
@@ -124,47 +273,74 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     { turnId: ids.turnId }
   );
   const timestamp = turn.startedAt ?? new Date().toISOString();
+  return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan);
+}
 
-  let plan: GoalPlanOutput;
-  try {
-    plan = await runGoalPlanner(input.planner, goal);
-  } catch {
-    const errorMessage = 'Goal planner failed.';
-    const errorItem = input.store.createItem({
-      id: ids.errorItemId,
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      turnId: turn.id,
-      type: 'status',
-      status: 'failed',
-      causationId: input.requestId,
-      level: 'error',
-      title: 'Goal planning failed',
-      summary: errorMessage,
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
-
-    input.store.updateTurn(turn.id, {
-      status: 'failed',
-      error: {
-        code: 'goal_planner_failed',
-        message: errorMessage,
-      },
-      completedAt: timestamp,
-      durationMs: 0,
-    });
-    updateGoalStatus(input.workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      goalId: goal.goalId,
-      status: 'failed',
-      terminalStopReason: 'error',
-    });
-
-    return { status: 'failed', errorMessage, errorItem };
+/**
+ * Coalesces one Goal Plan requestId and rejects a distinct in-flight request for the same Goal.
+ *
+ * @param input Process-local inflight map, Goal identity, and the command body.
+ * @returns The in-flight or freshly executed result.
+ * @throws GoalPlanApprovalError when another Plan request for this Goal is already running.
+ */
+export async function runExclusiveGoalPlanCommand<T>(input: {
+  readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly store: FsStore;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly actorId: string;
+  readonly goalId: string;
+  readonly requestId: string;
+  readonly run: () => Promise<T>;
+}): Promise<T> {
+  const lockKey = `goal-plan-admission:${JSON.stringify([
+    input.workspaceId,
+    input.threadId,
+    input.goalId,
+  ])}`;
+  const commandIdentity = JSON.stringify([input.actorId, input.requestId]);
+  let storeInflight = input.inflightCommands.get(input.store);
+  if (!storeInflight) {
+    storeInflight = new Map<string, InflightIdempotentCommand>();
+    input.inflightCommands.set(input.store, storeInflight);
   }
+  const existing = storeInflight.get(lockKey);
+  if (existing) {
+    if (existing.inputHash === commandIdentity) {
+      return (await existing.promise) as T;
+    }
+    throw new GoalPlanApprovalError('stale', 'The Goal already has an in-flight Plan request.');
+  }
+  const promise = Promise.resolve().then(input.run);
+  storeInflight.set(lockKey, { inputHash: commandIdentity, promise });
+  try {
+    return await promise;
+  } finally {
+    if (storeInflight.get(lockKey)?.promise === promise) {
+      storeInflight.delete(lockKey);
+    }
+  }
+}
 
+/**
+ * Persists questions or an approvable Plan after a successful planner run.
+ *
+ * @param input Planning command identity and stores.
+ * @param goal Goal being planned.
+ * @param ids Request-owned Turn and Item ids.
+ * @param turn Created planning Turn.
+ * @param timestamp Turn start timestamp.
+ * @param plan Validated planner output.
+ * @returns Planning result with durable owners.
+ */
+function persistGoalPlanResult(
+  input: CreateGoalPlanInput,
+  goal: GoalRecord,
+  ids: ReturnType<typeof goalPlanCreationIds>,
+  turn: ReturnType<FsStore['createTurn']>,
+  timestamp: string,
+  plan: GoalPlanOutput
+): GoalPlanResult {
   if (plan.questions.length > 0) {
     const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
     if (responsibleUserId === null) {
@@ -355,6 +531,59 @@ export function readGoalPlanCreation(
 }
 
 /**
+ * Reads the latest recorded pre-approval Plan revision for one Goal.
+ *
+ * @param input Goal scope and owner stores.
+ * @returns Exact previous Plan and revision instruction, or null when none exists.
+ * @throws GoalPlanRevisionError when revision lineage fails its durable digest check.
+ */
+export function readPreApprovalGoalPlanRevision(input: {
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly goalId: string;
+}): PreApprovalGoalPlanRevision | null {
+  const items = input.store.listThreadItems(input.workspaceId, input.threadId);
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (
+      !item ||
+      item.type !== 'user-message' ||
+      item.status !== 'completed' ||
+      !item.parentItemId ||
+      typeof item.text !== 'string' ||
+      item.text.trim().length === 0
+    ) {
+      continue;
+    }
+    let record: ReturnType<typeof getGoalPlanRecord>;
+    try {
+      record = getGoalPlanRecord(
+        input.workspaceDb,
+        input.workspaceId,
+        input.threadId,
+        item.parentItemId
+      );
+    } catch {
+      throw new GoalPlanRevisionError(
+        'recovery_required',
+        'Pre-approval Goal Plan revision lineage failed its durable digest check.'
+      );
+    }
+    if (!record || record.goalId !== input.goalId) {
+      continue;
+    }
+    return {
+      previousPlanItemId: item.parentItemId,
+      previousPlan: selectGoalPlanPayload(record),
+      revisionText: item.text,
+    };
+  }
+  return null;
+}
+
+/**
  * Reads a goal for planning or throws a scoped error.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -415,22 +644,33 @@ function goalPlanCreationIds(input: Omit<CreateGoalPlanInput, 'goalId' | 'planne
 }
 
 /**
- * Runs the injected planner or deterministic fallback through one validation path.
+ * Runs the injected planner or, for an initial draft only, the deterministic fallback.
  *
  * @param planner Optional planner effect.
- * @param goal Goal to plan.
+ * @param input Goal and optional recorded revision lineage.
+ * @param allowDeterministicFallback Whether an omitted planner may synthesize the initial draft.
  * @returns Validated plan output.
+ * @throws GoalPlanRevisionError when a revision run has no semantic planner.
  */
 async function runGoalPlanner(
   planner: GoalPlanner | undefined,
-  goal: GoalRecord
+  input: GoalPlannerInput,
+  allowDeterministicFallback: boolean
 ): Promise<GoalPlanOutput> {
-  const plan =
-    planner?.({ goal }) ??
-    createDeterministicGoalPlanFallback({
-      goalTitle: goal.title,
-      objective: goal.objective,
-    });
+  if (!planner) {
+    if (!allowDeterministicFallback) {
+      throw new GoalPlanRevisionError(
+        'goal_plan_revision_unavailable',
+        'Pre-approval Goal Plan revision requires an admitted semantic planner.'
+      );
+    }
+    return GoalPlanOutputSchema.parse(
+      createDeterministicGoalPlanFallback({
+        goalTitle: input.goal.title,
+        objective: input.goal.objective,
+      })
+    );
+  }
 
-  return GoalPlanOutputSchema.parse(await plan);
+  return GoalPlanOutputSchema.parse(await planner(input));
 }

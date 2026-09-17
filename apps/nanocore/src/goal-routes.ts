@@ -43,6 +43,7 @@ import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { CoreMode } from './config/mode.js';
+import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { requireVerifiedGoalSteeringTrace } from './context/worker-context-projection.js';
 import {
   claimPendingUserTurnRecord,
@@ -69,8 +70,11 @@ import {
   type WorkerCoordinatorDecision,
 } from './internal-agents/worker-coordinator.js';
 import type { CommandRequestRecord, FsStore } from './lib/store.js';
+import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
+import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from './openapi.js';
 import { recordGoalWorkerLaunchDecision } from './policy/permission-decisions.js';
+import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import {
   approveGoalPlan,
   GoalPlanApprovalError,
@@ -78,7 +82,14 @@ import {
   readGoalPlanRevision,
   reviseGoalPlan,
 } from './runtime/goal-plan-approval.js';
-import { createGoalPlan, readGoalPlanCreation } from './runtime/goal-planning.js';
+import { createPreApprovalGoalPlanRevisionPlanner } from './runtime/goal-plan-propose-tool.js';
+import {
+  createGoalPlan,
+  GoalPlanRevisionError,
+  readGoalPlanCreation,
+  readPreApprovalGoalPlanRevision,
+  runExclusiveGoalPlanCommand,
+} from './runtime/goal-planning.js';
 import {
   createGoalReviewRecord,
   GoalReviewResolutionError,
@@ -2604,9 +2615,13 @@ export function registerGoalRoutes({
   assertProjectWorkspace,
   coreDb,
   inflightCommands,
+  llmGatewayDispatcher,
   mode,
+  providerSubscriptionAccountManager,
   repositoryWorkspaceDb,
   requestStore,
+  resolveGatewayProvider,
+  runtimeConfig,
   startModeWorkerTurn,
   turnExecutor,
   workerCoordinatorCandidates,
@@ -2622,12 +2637,20 @@ export function registerGoalRoutes({
   readonly coreDb: CoreDb | undefined;
   /** Process-local duplicate collapse for durable Goal commands. */
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  /** Existing logical Gateway dispatcher used by pre-approval revision Turns. */
+  readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   /** Deployment mode that gates deterministic local-only routes. */
   readonly mode: CoreMode;
+  /** Optional subscription-backed account manager for revision model dispatch. */
+  readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Opens the migrated workspace database. */
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   /** Resolves request-scoped storage. */
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
+  /** Resolves one dispatchable provider profile for the shared Gateway projection. */
+  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  /** Current runtime configuration snapshot. */
+  readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Starts one reserved worker turn through the durable scheduler. */
   readonly startModeWorkerTurn: (input: {
     readonly triggerActor: ActorRef;
@@ -3001,55 +3024,90 @@ export function registerGoalRoutes({
           scope: { actorId: c.get('actor').userId, workspaceId, threadId },
           input: {},
           responseKind: 'goal_plan',
-          execute: async () => {
-            const existing = readGoalPlanCreation({
-              triggerActor: { kind: 'user', id: c.get('actor').userId },
-              workspaceDb,
+          execute: async () =>
+            runExclusiveGoalPlanCommand({
+              inflightCommands,
               store,
               workspaceId,
               threadId,
+              actorId: c.get('actor').userId,
+              goalId: requireLatestActiveGoal(workspaceDb, workspaceId, threadId).goalId,
               requestId: parsed.data.requestId,
-            });
-            if (existing) {
-              return buildGoalPlanCreationResponse(workspaceDb, workspaceId, threadId, existing);
-            }
+              run: async () => {
+                const existing = readGoalPlanCreation({
+                  triggerActor: { kind: 'user', id: c.get('actor').userId },
+                  workspaceDb,
+                  store,
+                  workspaceId,
+                  threadId,
+                  requestId: parsed.data.requestId,
+                });
+                if (existing) {
+                  return buildGoalPlanCreationResponse(
+                    workspaceDb,
+                    workspaceId,
+                    threadId,
+                    existing
+                  );
+                }
 
-            const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-            if (goal.status !== 'planning' || goal.planItemId !== null) {
-              throw new TurnStartValidationError(
-                'goal_not_planning',
-                'Goal is not ready for planning.',
-                409
-              );
-            }
-            const planner = createWorkerCoordinatorGoalPlanDraft({
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              title: goal.title,
-              objective: goal.objective,
-            });
-            const result = await createGoalPlan({
-              triggerActor: { kind: 'user', id: c.get('actor').userId },
-              workspaceDb,
-              store,
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              requestId: parsed.data.requestId,
-              planner: () => planner.plan,
-            });
-            if (result.status !== 'awaiting_plan_approval') {
-              throw new GoalPlanApprovalError(
-                'recovery_required',
-                'Goal Plan request produced owners that the public command cannot acknowledge.'
-              );
-            }
-            return buildGoalPlanCreationResponse(workspaceDb, workspaceId, threadId, {
-              goalId: goal.goalId,
-              ...result,
-            });
-          },
+                const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
+                if (goal.status !== 'planning' || goal.planItemId !== null) {
+                  throw new TurnStartValidationError(
+                    'goal_not_planning',
+                    'Goal is not ready for planning.',
+                    409
+                  );
+                }
+                const revision = readPreApprovalGoalPlanRevision({
+                  store,
+                  workspaceDb,
+                  workspaceId,
+                  threadId,
+                  goalId: goal.goalId,
+                });
+                const planner = revision
+                  ? createPreApprovalGoalPlanRevisionPlanner({
+                      runtimeConfig,
+                      llmGatewayDispatcher,
+                      resolveGatewayProvider,
+                      workspaceId,
+                      userId: c.get('actor').userId,
+                      signal: c.req.raw.signal,
+                      ...(providerSubscriptionAccountManager
+                        ? { providerSubscriptionAccountManager }
+                        : {}),
+                    })
+                  : () =>
+                      createWorkerCoordinatorGoalPlanDraft({
+                        workspaceId,
+                        threadId,
+                        goalId: goal.goalId,
+                        title: goal.title,
+                        objective: goal.objective,
+                      }).plan;
+                const result = await createGoalPlan({
+                  triggerActor: { kind: 'user', id: c.get('actor').userId },
+                  workspaceDb,
+                  store,
+                  workspaceId,
+                  threadId,
+                  goalId: goal.goalId,
+                  requestId: parsed.data.requestId,
+                  planner,
+                });
+                if (result.status !== 'awaiting_plan_approval') {
+                  throw new GoalPlanApprovalError(
+                    'recovery_required',
+                    'Goal Plan request produced owners that the public command cannot acknowledge.'
+                  );
+                }
+                return buildGoalPlanCreationResponse(workspaceDb, workspaceId, threadId, {
+                  goalId: goal.goalId,
+                  ...result,
+                });
+              },
+            }),
           replay: (record) => {
             if (record.response.kind !== 'goal_plan') {
               throw new GoalPlanApprovalError(
@@ -3077,6 +3135,7 @@ export function registerGoalRoutes({
         }).catch((error) => {
           if (
             error instanceof GoalPlanApprovalError ||
+            error instanceof GoalPlanRevisionError ||
             error instanceof IdempotencyKeyConflictError ||
             error instanceof TurnStartValidationError
           ) {
@@ -3106,7 +3165,7 @@ export function registerGoalRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      if (error instanceof GoalPlanApprovalError) {
+      if (error instanceof GoalPlanApprovalError || error instanceof GoalPlanRevisionError) {
         return asApiError(error.message, error.code, error.status);
       }
       return asCommandError(error, 'goal_plan_create_failed', 400);

@@ -413,4 +413,85 @@ describe('GET current Goal plan', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('does not regenerate the deterministic draft after a recorded pre-approval revision', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = store.createThread(
+      'ws_demo',
+      'Revision route thread',
+      undefined,
+      'conversation',
+      {
+        visibility: 'workspace',
+      }
+    );
+    const app = createApp({ coreDb, store });
+
+    try {
+      const startRes = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/goal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'goal-plan-revise-route-start',
+          objective: 'Make v0.0.6 ready to publish.',
+          title: 'Ship v0.0.6',
+        }),
+      });
+      expect(startRes.status).toBe(200);
+
+      const createRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'goal-plan-revise-route-create' }),
+        }
+      );
+      expect(createRes.status).toBe(200);
+      const created = (await createRes.json()) as {
+        planItemId: string;
+        plan: { tasks: readonly unknown[] };
+      };
+      expect(created.plan.tasks).toHaveLength(1);
+
+      const reviseRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/revise`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'goal-plan-revise-route-revise',
+            revision: 'Split this into two bounded worker tasks.',
+          }),
+        }
+      );
+      expect(reviseRes.status).toBe(200);
+
+      const retryRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'goal-plan-revise-route-retry' }),
+        }
+      );
+      expect(retryRes.status).not.toBe(200);
+      const retryBody = (await retryRes.json()) as { code?: string; plan?: { tasks: unknown[] } };
+      expect(retryBody.plan).toBeUndefined();
+      expect(retryBody.code).toBe('goal_plan_revision_unavailable');
+
+      const currentRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`
+      );
+      expect(currentRes.status).toBe(200);
+      await expect(currentRes.json()).resolves.toMatchObject({
+        goal: { status: 'planning' },
+        planItemId: null,
+        plan: null,
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });
