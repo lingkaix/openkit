@@ -128,6 +128,56 @@ async function createDisposableGitRepository(fixtureRoot: string): Promise<strin
 }
 
 /**
+ * Installs the isolated self-check scheduler RuntimeTarget used by SimulatedTurnExecutor.
+ *
+ * This is fixture-only synthetic Epoch authority: `physicalEpoch` is `'a'.repeat(64)`, identity is
+ * `identity_local`, and no NanoHost observation or real-host connection is claimed. Production
+ * backend-session guards stay unchanged. Mirrors `configureLocalSchedulerCapacity` target setup in
+ * `apps/nanocore/src/lib/simulator.test.ts`.
+ *
+ * Call after Core startup, which invalidates the previous physical generation.
+ *
+ * @param dataRoot Disposable NanoCore data root whose Core startup has completed.
+ * @returns Resolves after `target_local` is ready and the local scheduler baseline exists.
+ * @throws When Core storage, layout marker, allocation, or readiness projection fails.
+ */
+export async function seedSyntheticLocalSchedulerTarget(dataRoot: string): Promise<void> {
+  const [
+    { openCoreDb },
+    { readDataRootLayoutMarker },
+    { allocateNanoHostRuntimeTargetConnectionGeneration, upsertNanoHostRuntimeTarget },
+    { ensureConfiguredSchedulerBaseline },
+  ] = await Promise.all([
+    import('../../../nanocore/dist/storage/db.js'),
+    import('../../../nanocore/dist/storage/fs-layout.js'),
+    import('../../../nanocore/dist/runtime/nanohost-runtime-target.js'),
+    import('../../../nanocore/dist/scheduler-records.js'),
+  ]);
+  const coreDb = openCoreDb(dataRoot);
+
+  try {
+    const observedAt = new Date().toISOString();
+    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+      identityId: 'identity_local',
+      observedAt,
+      targetId: 'target_local',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...runtimeTarget,
+      freshEmpty: true,
+      observedAt,
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
+    ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
+  } finally {
+    coreDb.sqlite.close();
+  }
+}
+
+/**
  * Records the disposable fixture Git repository as the ready default needed by real Turns.
  *
  * @param dataRoot NanoCore data root that owns the demo Workspace.

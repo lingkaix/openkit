@@ -6,6 +6,27 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './servers.js';
 
+const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
+
+/**
+ * Reads isolated fixture `target_local` and closes the Core handle before stack cleanup.
+ *
+ * @param dataRoot Stack-owned NanoCore data root.
+ * @returns Durable target projection, or null when the row is absent.
+ */
+async function readFixtureLocalRuntimeTarget(dataRoot: string) {
+  const [{ openCoreDb }, { getNanoHostRuntimeTarget }] = await Promise.all([
+    import('../../../nanocore/dist/storage/db.js'),
+    import('../../../nanocore/dist/runtime/nanohost-runtime-target.js'),
+  ]);
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    return getNanoHostRuntimeTarget(coreDb, 'target_local');
+  } finally {
+    coreDb.sqlite.close();
+  }
+}
+
 test('restarts Core on the same port and data root before final cleanup', async () => {
   test.setTimeout(45_000);
   const stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
@@ -15,18 +36,49 @@ test('restarts Core on the same port and data root before final cleanup', async 
 
   try {
     const firstPid = JSON.parse(readFileSync(lockPath, 'utf8')).pid as number;
+    const beforeTarget = await readFixtureLocalRuntimeTarget(dataRoot);
+    expect(beforeTarget).toMatchObject({
+      freshEmpty: true,
+      physicalEpoch: SYNTHETIC_LOCAL_EPOCH,
+      predecessorFenced: true,
+      ready: true,
+      targetId: 'target_local',
+    });
     await stack.restartCore();
     const secondPid = JSON.parse(readFileSync(lockPath, 'utf8')).pid as number;
+    const afterTarget = await readFixtureLocalRuntimeTarget(dataRoot);
 
     expect(stack.coreUrl).toBe(coreUrl);
     expect(stack.dataRoot).toBe(dataRoot);
     expect(secondPid).not.toBe(firstPid);
     await expect(fetch(`${coreUrl}/api/health`)).resolves.toMatchObject({ ok: true });
+    expect(afterTarget).toMatchObject({
+      freshEmpty: true,
+      physicalEpoch: SYNTHETIC_LOCAL_EPOCH,
+      predecessorFenced: true,
+      ready: true,
+      targetId: 'target_local',
+    });
+    expect(afterTarget?.connectionGeneration).toBeGreaterThan(beforeTarget!.connectionGeneration);
   } finally {
     await stack.stop();
   }
 
   expect(existsSync(dataRoot)).toBe(false);
+});
+
+test('does not create a ready synthetic RuntimeTarget when the local stack disables the simulator', async () => {
+  test.setTimeout(45_000);
+  const stack = await startIsolatedWebStack({ mode: 'local', useSimulator: false });
+
+  try {
+    const target = await readFixtureLocalRuntimeTarget(stack.dataRoot);
+    expect(target).toBeNull();
+  } finally {
+    await stack.stop();
+  }
+
+  expect(existsSync(stack.dataRoot)).toBe(false);
 });
 
 /**

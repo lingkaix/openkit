@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { seedDemoWorkspaceDataRoot } from './demo-data.js';
+import { seedDemoWorkspaceDataRoot, seedSyntheticLocalSchedulerTarget } from './demo-data.js';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const repoRoot = resolve(webRoot, '../..');
@@ -129,6 +129,9 @@ export async function startIsolatedWebStack(
     await stopProcess(core);
     core = spawnCore();
     await waitForHttp(`${coreUrl}/api/health`, core);
+    if (mode === 'local' && (options.useSimulator ?? true)) {
+      await seedSyntheticLocalSchedulerTarget(dataRoot);
+    }
   };
 
   /** Stops every spawned process and removes the exact roots owned by this stack. */
@@ -142,6 +145,9 @@ export async function startIsolatedWebStack(
 
   try {
     await waitForHttp(`${coreUrl}/api/health`, core);
+    if (mode === 'local' && (options.useSimulator ?? true)) {
+      await seedSyntheticLocalSchedulerTarget(dataRoot);
+    }
     web = spawn(
       'pnpm',
       [

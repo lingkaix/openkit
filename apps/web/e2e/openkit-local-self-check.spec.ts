@@ -353,8 +353,20 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('complementary', { name: 'Provenance and review' })).toContainText(
     threadId
   );
-  await page.getByRole('button', { name: /^Accept$/ }).click();
+  const previousViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+  await page.setViewportSize({ width: 800, height: 600 });
+  const overflow = await page.evaluate(() => ({
+    bodyWidth: document.body.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }));
+  expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+  await expect(page.getByRole('region', { name: /reviewed artifact proposal/i })).toBeVisible();
+  const accept = page.getByRole('button', { name: /^Accept$/ });
+  await accept.scrollIntoViewIfNeeded();
+  await expect(accept).toBeVisible();
+  await accept.click();
   await expect(page.getByRole('status', { name: 'Artifact review' })).toContainText('Approved');
+  await page.setViewportSize(previousViewport);
 
   await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
   await expect(materialEditor).toHaveValue(proposals[0]!.content.body);
