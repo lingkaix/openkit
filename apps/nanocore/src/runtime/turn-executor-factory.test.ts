@@ -37,7 +37,10 @@ import {
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import {
+  resolveAgentEnvironmentPackage,
+  resolveAgentEnvironmentPackageMetadata,
+} from './agent-environment.js';
 import {
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
@@ -1839,6 +1842,430 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
       ).toEqual({ count: 0 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('reuses same-epoch idle AgentSession continuity after restart without process-local warmup', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        if (request.kind === 'image.acquire') {
+          return { digest: request.input.imageReference };
+        }
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+        if (request.kind === 'sandbox.create') {
+          return nanoHostSandboxCreated(request);
+        }
+        if (request.kind === 'bridge.open') {
+          return { accepted: true, integrationReady: true, state: 'open' };
+        }
+        return { state: 'deleted' };
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_restart_same_epoch', 'identity_restart_same_epoch', 'deployment_restart_same_epoch', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
+        )
+        .run('2026-09-06T00:00:00.000Z');
+      const layout = {
+        family: 'openkit-worker',
+        gid: 1000,
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+        uid: 1000,
+        version: '1',
+        workingDirectory: '/tmp/openkit-bootstrap',
+      };
+      const createdStorage = createWorkerStorageBinding(coreDb, {
+        deploymentId: 'deployment_restart_same_epoch',
+        layout,
+        runtimeTargetId: 'target_restart_same_epoch',
+        workspaceId: 'workspace_restart_same_epoch',
+      });
+      const predecessor = reserveWorkerStorageAttachment(coreDb, {
+        agentSessionId: 'as_restart_same_epoch_predecessor',
+        authorizeContributor: () => true,
+        expectedRevision: createdStorage.revision,
+        layout,
+        purpose: 'work',
+        responsibleUserId: 'user-factory',
+        runtimeTargetId: 'target_restart_same_epoch',
+        storageRef: createdStorage.storageRef,
+        threadId: 'thread_restart_same_epoch_predecessor',
+        workspaceId: 'workspace_restart_same_epoch',
+      });
+      const predecessorAttached = activateWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: predecessor.attachmentGeneration,
+        expectedRevision: predecessor.revision,
+        sandboxBindingRef: 'sandbox_restart_same_epoch_predecessor',
+        storageRef: predecessor.storageRef,
+        targets: predecessor.targets.map((target) => ({ ...target, initialized: true })),
+      });
+      const idleStorage = releaseWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: predecessorAttached.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: predecessorAttached.revision,
+        sandboxBindingRef: 'sandbox_restart_same_epoch_predecessor',
+        storageRef: predecessorAttached.storageRef,
+      });
+      const retainedWorkSlotRef = predecessor.currentWorkSlotRef;
+      if (!retainedWorkSlotRef) throw new Error('Expected predecessor retained work slot.');
+      expect(retainedWorkSlotRef).not.toBe(
+        workerStorageDefaultWorkSlotRef('workspace_restart_same_epoch', 'thread_restart_same_epoch')
+      );
+      const triggerActor = { kind: 'user' as const, id: 'user-factory' };
+      const packageResolution = {
+        agentSessionId: 'as_restart_same_epoch',
+        agentSetup: createTestAgentSetup(),
+        backend: { kind: 'openshell' as const },
+        createdAt: '2026-08-21T00:00:00.000Z',
+        requestId: 'request_factory_fixture',
+        triggerActor,
+        turn: {
+          completedAt: null,
+          configVersion: null,
+          durationMs: null,
+          error: null,
+          humanGate: null,
+          id: 'turn_restart_same_epoch',
+          items: [],
+          startedAt: '2026-08-21T00:00:00.000Z',
+          status: 'running' as const,
+          threadId: 'thread_restart_same_epoch',
+          triggerActor,
+          workspaceId: 'workspace_restart_same_epoch',
+        },
+        turnInput: 'Run fixture',
+        workspaceCwd: '/workspace',
+        workspaceRoots: [] as const,
+      };
+      const digestImage = {
+        kind: 'reference' as const,
+        pullPolicy: 'never' as const,
+        ref: `sha256:${'1'.repeat(64)}`,
+      };
+      const withDigestImage = (pkg: AgentEnvironmentPackage): AgentEnvironmentPackage => ({
+        ...pkg,
+        runtime: { ...pkg.runtime, image: digestImage },
+      });
+      const environmentPackage = withDigestImage(
+        resolveAgentEnvironmentPackage({
+          ...packageResolution,
+          workerStorageWorkSlotRef: retainedWorkSlotRef,
+        })
+      );
+      const plannedPackage = withDigestImage(
+        resolveAgentEnvironmentPackageMetadata(packageResolution)
+      );
+      expect(
+        (plannedPackage.extensions.openkit as { workerStorage: { workSlotRef: string } })
+          .workerStorage.workSlotRef
+      ).toBe(
+        workerStorageDefaultWorkSlotRef('workspace_restart_same_epoch', 'thread_restart_same_epoch')
+      );
+      authorizeNanoHostPackage(coreDb, environmentPackage);
+      new FsStore({ dataRoot: coreDb.dataRoot }).createThread(
+        environmentPackage.scope.workspaceId,
+        'Predecessor',
+        'thread_restart_same_epoch_predecessor'
+      );
+      bindNanoHostWorkerLineage(coreDb, environmentPackage, {
+        leaseId: `lease-${environmentPackage.snapshotId}`,
+        now: '2026-09-06T00:00:00.000Z',
+        planId: 'plan_restart_same_epoch',
+        sandboxBindingRef: 'lease-binding:restart-same-epoch',
+        selectedPoolId: 'pool_restart_same_epoch',
+        selectedTargetId: 'target_restart_same_epoch',
+      });
+      const firstRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const firstBackend = (
+        firstRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            inspectTerminalHarnessSession(session: unknown): Promise<void>;
+            readonly sessions: Map<string, unknown>;
+          };
+        }
+      ).backend;
+      const settleNext = async (
+        operation: 'session.open' | 'turn.start' | 'session.inspect',
+        body: Readonly<Record<string, unknown>>
+      ) => {
+        let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+          const integration = coreDb.sqlite
+            .prepare(
+              `SELECT sandbox_integration_binding_ref AS integrationRef
+               FROM sandbox_runtime_records ORDER BY created_at LIMIT 1`
+            )
+            .get() as { readonly integrationRef: string } | undefined;
+          if (integration) {
+            command = dispatchNanoHostHarnessOperation(coreDb, {
+              sandboxIntegrationBindingRef: integration.integrationRef,
+            });
+          }
+          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        if (!command || command.operation !== operation) {
+          throw new Error(`Expected queued ${operation} Harness command.`);
+        }
+        firstRuntime.acceptNanoHostHarnessCommand(command);
+        const result = {
+          body,
+          disposition: 'succeeded' as const,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          schemaVersion: 2 as const,
+          sequence: command.sequence,
+        };
+        settleNanoHostHarnessOperation(coreDb, {
+          result,
+          sandboxIntegrationBindingRef: (
+            coreDb.sqlite
+              .prepare(
+                `SELECT sandbox_integration_binding_ref AS integrationRef
+                 FROM sandbox_runtime_records ORDER BY created_at LIMIT 1`
+              )
+              .get() as { readonly integrationRef: string }
+          ).integrationRef,
+          timestamp: '2026-09-06T00:00:01.000Z',
+        });
+        firstRuntime.acceptNanoHostHarnessResult(result);
+      };
+      anchorNanoHostMaterialization(coreDb, firstBackend, environmentPackage);
+      const materialization = await firstBackend.materialize(environmentPackage, {
+        workerStorageChoice: {
+          expectedRevision: idleStorage.revision,
+          goalId: null,
+          kind: 'selected',
+          purpose: 'work',
+          reuseWorkSlotRef: retainedWorkSlotRef,
+          storageRef: idleStorage.storageRef,
+          taskId: null,
+        },
+        workspaceRoots: [],
+      });
+      const launch = firstBackend.launch(materialization);
+      await settleNext('session.open', {
+        maxActiveTurns: 1,
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'open',
+      });
+      await settleNext('turn.start', {
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'started',
+      });
+      await launch;
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-09-06T00:00:01.000Z',
+        lineage: {
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          packageSnapshotId: environmentPackage.snapshotId,
+          requestId: environmentPackage.scope.requestId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        },
+        operation: 'final_status',
+        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+        recordKey: '1',
+        sequence: 1,
+      });
+      const terminalInspection = firstBackend.inspectTerminalHarnessSession(
+        firstBackend.sessions.get(environmentPackage.snapshotId)
+      );
+      await settleNext('session.inspect', {
+        childState: 'absent',
+        cleanupState: 'clean',
+        nativeHandleDigest: 'a'.repeat(64),
+        nativeHandleState: 'ready',
+        state: 'open',
+      });
+      await terminalInspection;
+      await firstRuntime.cleanupBackendSession(firstBackend.planSession(environmentPackage));
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases SET status = 'released'
+           WHERE lease_id = ?`
+        )
+        .run(`lease-${environmentPackage.snapshotId}`);
+      const sandboxBindingRef = (
+        coreDb.sqlite
+          .prepare('SELECT sandbox_binding_ref AS sandboxBindingRef FROM sandbox_runtime_records')
+          .get() as { readonly sandboxBindingRef: string }
+      ).sandboxBindingRef;
+      const storageBinding = getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef });
+      if (!storageBinding) throw new Error('Expected attached retained storage.');
+      const sandboxCount = (
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get() as {
+          count: number;
+        }
+      ).count;
+      const storageCount = (
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get() as {
+          count: number;
+        }
+      ).count;
+      expect(sandboxCount).toBe(1);
+      expect(storageCount).toBe(1);
+      const settledEffectCount = effects.length;
+      const idleBinding = coreDb.sqlite
+        .prepare(
+          `SELECT b.agent_session_compatibility_key AS agentSessionCompatibilityKey,
+                  b.cleanup_state AS cleanupState, b.current_lease_id AS currentLeaseId,
+                  b.current_turn_id AS currentTurnId, b.lifecycle_state AS lifecycleState,
+                  b.native_handle_digest AS nativeHandleDigest,
+                  b.native_handle_state AS nativeHandleState,
+                  h.adapter_id AS adapterId, h.adapter_version AS adapterVersion,
+                  h.harness_compatibility_key AS harnessCompatibilityKey,
+                  s.sandbox_compatibility_key AS sandboxCompatibilityKey
+           FROM agent_session_runtime_bindings b
+           JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+           JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+           WHERE b.agent_session_id = ?`
+        )
+        .get(environmentPackage.scope.agentSessionId) as {
+        readonly adapterId: string;
+        readonly adapterVersion: string;
+        readonly agentSessionCompatibilityKey: string;
+        readonly cleanupState: string;
+        readonly currentLeaseId: string | null;
+        readonly currentTurnId: string | null;
+        readonly harnessCompatibilityKey: string;
+        readonly lifecycleState: string;
+        readonly nativeHandleDigest: string | null;
+        readonly nativeHandleState: string;
+        readonly sandboxCompatibilityKey: string;
+      };
+      const sessionCompatibilityKey = planSessionWorkspaceMaterialization({
+        environmentPackage,
+      }).compatibilityKey.digest;
+      expect(idleBinding.sandboxCompatibilityKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(idleBinding.harnessCompatibilityKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(idleBinding).toMatchObject({
+        agentSessionCompatibilityKey: deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: idleBinding.adapterId,
+          adapterVersion: idleBinding.adapterVersion,
+          harnessCompatibilityKey: idleBinding.harnessCompatibilityKey,
+          sessionCompatibilityKey,
+          threadId: environmentPackage.scope.threadId,
+        }),
+        cleanupState: 'clean',
+        currentLeaseId: null,
+        currentTurnId: null,
+        lifecycleState: 'open',
+        nativeHandleDigest: 'a'.repeat(64),
+        nativeHandleState: 'ready',
+      });
+      const slotBackend = (
+        createConfiguredWorkerLifecycleRuntime({
+          coreDb,
+          env: {},
+          nanoHostSessionDispatch: sessionDispatch,
+          workerControlGateway: new WorkerControlGateway(),
+        }).turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            resolveResidentWorkerStorageWorkSlotRef(
+              environmentPackage: AgentEnvironmentPackage
+            ): string | null;
+          };
+        }
+      ).backend;
+      const coldLookupEffects = effects.length;
+      expect(slotBackend.resolveResidentWorkerStorageWorkSlotRef(plannedPackage)).toBe(
+        retainedWorkSlotRef
+      );
+      expect(effects.slice(coldLookupEffects)).toEqual([]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+      ).toEqual({ count: 1 });
+      expect(getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef })).toEqual(
+        storageBinding
+      );
+      const prepareBackend = (
+        createConfiguredWorkerLifecycleRuntime({
+          coreDb,
+          env: {},
+          nanoHostSessionDispatch: sessionDispatch,
+          workerControlGateway: new WorkerControlGateway(),
+        }).turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
+      ).backend;
+
+      await expect(
+        prepareBackend.prepareAgentSessionContinuity?.({
+          agentSessionCompatibilityKey: sessionCompatibilityKey,
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          environmentPackage,
+          reuseAllowed: true,
+          threadId: environmentPackage.scope.threadId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        })
+      ).resolves.toBe('reusable');
+      expect(getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef })).toEqual(
+        storageBinding
+      );
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+      ).toEqual({ count: 1 });
+      expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
+      expect(effects.some((effect) => effect.kind === 'sandbox.delete')).toBe(false);
+      expect(effects.slice(settledEffectCount)).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('returns null from a cold resident work-slot lookup without a durable Sandbox', () => {
+    const coreDb = createFactoryCoreDb();
+    try {
+      const environmentPackage = completeNanoHostPackage({
+        scope: {
+          agentSessionId: 'as_cold_slot_absent',
+          threadId: 'thread_cold_slot_absent',
+          turnId: 'turn_cold_slot_absent',
+          workspaceId: 'workspace_cold_slot_absent',
+        },
+        snapshotId: 'snapshot_cold_slot_absent',
+      });
+      const backend = (
+        createConfiguredWorkerLifecycleRuntime({
+          coreDb,
+          env: {},
+          workerControlGateway: new WorkerControlGateway(),
+        }).turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            resolveResidentWorkerStorageWorkSlotRef(
+              environmentPackage: AgentEnvironmentPackage
+            ): string | null;
+          };
+        }
+      ).backend;
+      expect(backend.resolveResidentWorkerStorageWorkSlotRef(environmentPackage)).toBeNull();
     } finally {
       coreDb.sqlite.close();
     }

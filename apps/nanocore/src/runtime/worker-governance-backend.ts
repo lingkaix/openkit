@@ -89,7 +89,7 @@ export interface WorkerGovernanceStorageRevisionAdvance {
 export type WorkerGovernanceAgentSessionContinuityDisposition =
   | 'reusable'
   | 'replacement-required'
-  /** The durable binding lacks process-local proof and requires whole-Sandbox retirement. */
+  /** Desired sandbox/harness identity or physical Epoch does not match the surviving idle row. */
   | 'sandbox-replacement-required'
   | 'closed'
   | {

@@ -998,6 +998,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!inspection) {
       return 'absent';
     }
+    if (
+      !this.hasProcessLocalAgentSession(inspection) &&
+      input.reuseAllowed &&
+      input.environmentPackage !== undefined
+    ) {
+      this.restoreSameEpochIdleHarness(input.environmentPackage);
+    }
     if (!this.hasProcessLocalAgentSession(inspection)) {
       if (input.reuseAllowed) {
         return 'sandbox-replacement-required';
@@ -1075,13 +1082,51 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return 'closed';
   }
 
+  /**
+   * Rehydrates the exact same-Epoch idle Harness using current package keys and the ready target Epoch.
+   *
+   * @param environmentPackage Current package whose sandbox and harness keys must match the surviving row.
+   * @throws When a matching same-Epoch row exists but cannot restore its attachment or Harness.
+   */
+  private restoreSameEpochIdleHarness(environmentPackage: AgentEnvironmentPackage): void {
+    const sandboxCompatibilityKey = nanoHostSandboxCompatibilityKey(environmentPackage);
+    const row = this.coreDb.sqlite
+      .prepare(
+        `SELECT origin_physical_epoch AS originPhysicalEpoch,
+                runtime_target_id AS runtimeTargetId
+         FROM sandbox_runtime_records WHERE sandbox_compatibility_key = ?`
+      )
+      .get(sandboxCompatibilityKey) as
+      | { readonly originPhysicalEpoch: string; readonly runtimeTargetId: string }
+      | undefined;
+    if (!row) {
+      return;
+    }
+    const currentPhysicalEpoch = this.readCurrentPhysicalEpoch(row.runtimeTargetId);
+    if (
+      currentPhysicalEpoch === null ||
+      requireStoredNanoHostPhysicalEpoch(row.originPhysicalEpoch) !== currentPhysicalEpoch
+    ) {
+      return;
+    }
+    this.restoreSharedHarness(
+      sandboxCompatibilityKey,
+      nanoHostHarnessCompatibilityKey(environmentPackage),
+      row.runtimeTargetId,
+      nanoHostAdapterId(environmentPackage),
+      environmentPackage.agent.runtimeVersion
+    );
+  }
+
   /** Resolves a retained work slot only from one compatible resident Sandbox attachment. */
   public resolveResidentWorkerStorageWorkSlotRef(
     environmentPackage: AgentEnvironmentPackage
   ): string | null {
     const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
     if (!responsibleUserId) return null;
-    const sandbox = this.sharedSandboxes.get(nanoHostSandboxCompatibilityKey(environmentPackage));
+    const sandboxCompatibilityKey = nanoHostSandboxCompatibilityKey(environmentPackage);
+    this.restoreSameEpochIdleHarness(environmentPackage);
+    const sandbox = this.sharedSandboxes.get(sandboxCompatibilityKey);
     return (
       sandbox?.workerStorageBinding.contributors.findLast(
         (contributor) =>
