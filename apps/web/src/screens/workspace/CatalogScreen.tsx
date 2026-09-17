@@ -32,11 +32,13 @@ import {
 /**
  * Workspace Skill, MCP, and Agent Plugin catalog (product workflow, not an API console).
  *
- * Live reads use `catalog.get`. Skill import uploads a SKILL.md tree. Owners can
- * pin, select, and review candidates. Fresh create/import fields stay empty and
- * show examples only as native placeholders. MCP create stays inactive until enabled;
- * stdio enablement remains a deployment-admin authority on the server. Plugin
- * import takes a package directory. Writes stay disabled while disconnected.
+ * Live reads use `catalog.get`. Skill import uploads a SKILL.md file or a Skill
+ * folder of regular files. Browser File API uploads cannot preserve executable
+ * flags or empty directories. Owners can pin, select, and review candidates.
+ * Fresh create/import fields stay empty and show examples only as native placeholders.
+ * MCP create stays inactive until enabled; stdio enablement remains a
+ * deployment-admin authority on the server. Plugin import takes a package
+ * directory. Writes stay disabled while disconnected.
  */
 export function CatalogScreen() {
   const workspaceId = useCurrentWorkspaceId();
@@ -62,8 +64,11 @@ export function CatalogScreen() {
   const [mcpEndpoint, setMcpEndpoint] = useState('');
   const [mcpTools, setMcpTools] = useState('');
   const skillFile = useRef<HTMLInputElement>(null);
+  const skillFolder = useRef<HTMLInputElement>(null);
   const candidateFile = useRef<HTMLInputElement>(null);
+  const candidateFolder = useRef<HTMLInputElement>(null);
   const [candidateSkillId, setCandidateSkillId] = useState<string | null>(null);
+  const [skillTreeError, setSkillTreeError] = useState<string | null>(null);
   const pluginFiles = useRef<HTMLInputElement>(null);
 
   if (workspaces.isLoading || catalog.isLoading) {
@@ -125,13 +130,14 @@ export function CatalogScreen() {
           <Card>
             <h2 className="text-sm font-bold text-fg">Skills</h2>
             <p className="text-xs text-fg-muted">
-              Import a SKILL.md file. Pinning keeps workers on that exact version. Proposed updates
-              stay off the current pointer until promoted.
+              Import a SKILL.md file or a Skill folder. Browser uploads include regular files only;
+              they cannot preserve executable flags or empty directories. Pinning keeps workers on
+              that exact version. Proposed updates stay off the current pointer until promoted.
             </p>
             {summary?.skills.length ? (
               summary.skills.map((skill) => (
                 <div key={skill.id} className="flex flex-col gap-2">
-                  <ListRow>
+                  <ListRow className="flex-wrap">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-bold text-fg-strong">{skill.displayName}</p>
                       <p className="text-xs text-fg-muted">
@@ -140,7 +146,7 @@ export function CatalogScreen() {
                           : (skill.currentDigest ?? 'No current version')}
                       </p>
                     </div>
-                    <div className="flex shrink-0 gap-2">
+                    <div className="flex min-w-0 shrink-0 flex-wrap gap-2">
                       <Button
                         size="sm"
                         isDisabled={writeBlocked || setPin.isPending || !skill.currentDigest}
@@ -165,6 +171,18 @@ export function CatalogScreen() {
                         }}
                       >
                         Propose update
+                      </Button>
+                      <Button
+                        size="sm"
+                        isDisabled={writeBlocked || submitCandidate.isPending}
+                        onPress={() => {
+                          setCandidateSkillId(skill.id);
+                          candidateFolder.current?.setAttribute('webkitdirectory', '');
+                          candidateFolder.current?.setAttribute('directory', '');
+                          candidateFolder.current?.click();
+                        }}
+                      >
+                        Propose folder update
                       </Button>
                     </div>
                   </ListRow>
@@ -273,24 +291,61 @@ export function CatalogScreen() {
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   event.target.value = '';
+                  setSkillTreeError(null);
                   if (!file || !workspaceId || writeBlocked || !skillName.trim()) return;
-                  void file.arrayBuffer().then((buffer) =>
-                    importSkill.mutateAsync({
-                      workspaceId,
-                      input: {
-                        activate: true,
-                        displayName: skillName.trim(),
-                        expectedRevision: revision,
-                        requestId: createRequestId(),
-                        tree: [
-                          {
-                            contentBase64: arrayBufferToBase64(buffer),
-                            kind: 'file',
-                            path: 'SKILL.md',
-                          },
-                        ],
-                      },
-                    })
+                  void file.arrayBuffer().then(
+                    (buffer) => {
+                      importSkill.mutate({
+                        workspaceId,
+                        input: {
+                          activate: true,
+                          displayName: skillName.trim(),
+                          expectedRevision: revision,
+                          requestId: createRequestId(),
+                          tree: [
+                            {
+                              contentBase64: arrayBufferToBase64(buffer),
+                              kind: 'file',
+                              path: 'SKILL.md',
+                            },
+                          ],
+                        },
+                      });
+                    },
+                    () => {
+                      setSkillTreeError("Couldn't read that Skill file.");
+                    }
+                  );
+                }}
+              />
+              <input
+                ref={skillFolder}
+                type="file"
+                multiple
+                className="sr-only"
+                aria-label="Skill folder files"
+                disabled={writeBlocked || importSkill.isPending || !skillName.trim()}
+                onChange={(event) => {
+                  const files = event.target.files;
+                  event.target.value = '';
+                  setSkillTreeError(null);
+                  if (!files?.length || !workspaceId || writeBlocked || !skillName.trim()) return;
+                  void filesToCatalogTree(files).then(
+                    (tree) => {
+                      importSkill.mutate({
+                        workspaceId,
+                        input: {
+                          activate: true,
+                          displayName: skillName.trim(),
+                          expectedRevision: revision,
+                          requestId: createRequestId(),
+                          tree,
+                        },
+                      });
+                    },
+                    () => {
+                      setSkillTreeError("Couldn't read that Skill folder.");
+                    }
                   );
                 }}
               />
@@ -305,36 +360,90 @@ export function CatalogScreen() {
                   const skillId = candidateSkillId;
                   event.target.value = '';
                   setCandidateSkillId(null);
+                  setSkillTreeError(null);
                   if (!file || !workspaceId || writeBlocked || !skillId) return;
                   const skill = summary?.skills.find((entry) => entry.id === skillId);
-                  void file.arrayBuffer().then((buffer) =>
-                    submitCandidate.mutateAsync({
-                      skillId,
-                      workspaceId,
-                      input: {
-                        baseDigest: skill?.currentDigest ?? null,
-                        expectedRevision: revision,
-                        requestId: createRequestId(),
-                        summary: candidateSummary.trim() || 'Proposed Skill update',
-                        tree: [
-                          {
-                            contentBase64: arrayBufferToBase64(buffer),
-                            kind: 'file',
-                            path: 'SKILL.md',
-                          },
-                        ],
-                      },
-                    })
+                  void file.arrayBuffer().then(
+                    (buffer) => {
+                      submitCandidate.mutate({
+                        skillId,
+                        workspaceId,
+                        input: {
+                          baseDigest: skill?.currentDigest ?? null,
+                          expectedRevision: revision,
+                          requestId: createRequestId(),
+                          summary: candidateSummary.trim() || 'Proposed Skill update',
+                          tree: [
+                            {
+                              contentBase64: arrayBufferToBase64(buffer),
+                              kind: 'file',
+                              path: 'SKILL.md',
+                            },
+                          ],
+                        },
+                      });
+                    },
+                    () => {
+                      setSkillTreeError("Couldn't read that Skill update.");
+                    }
                   );
                 }}
               />
-              <Button
-                size="sm"
-                isDisabled={writeBlocked || importSkill.isPending || !skillName.trim()}
-                onPress={() => skillFile.current?.click()}
-              >
-                Import SKILL.md
-              </Button>
+              <input
+                ref={candidateFolder}
+                type="file"
+                multiple
+                className="sr-only"
+                aria-label="Skill candidate folder files"
+                onChange={(event) => {
+                  const files = event.target.files;
+                  const skillId = candidateSkillId;
+                  event.target.value = '';
+                  setCandidateSkillId(null);
+                  setSkillTreeError(null);
+                  if (!files?.length || !workspaceId || writeBlocked || !skillId) return;
+                  const skill = summary?.skills.find((entry) => entry.id === skillId);
+                  void filesToCatalogTree(files).then(
+                    (tree) => {
+                      submitCandidate.mutate({
+                        skillId,
+                        workspaceId,
+                        input: {
+                          baseDigest: skill?.currentDigest ?? null,
+                          expectedRevision: revision,
+                          requestId: createRequestId(),
+                          summary: candidateSummary.trim() || 'Proposed Skill update',
+                          tree,
+                        },
+                      });
+                    },
+                    () => {
+                      setSkillTreeError("Couldn't read that Skill folder.");
+                    }
+                  );
+                }}
+              />
+              <div className="flex min-w-0 flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  isDisabled={writeBlocked || importSkill.isPending || !skillName.trim()}
+                  onPress={() => skillFile.current?.click()}
+                >
+                  Import SKILL.md
+                </Button>
+                <Button
+                  size="sm"
+                  isDisabled={writeBlocked || importSkill.isPending || !skillName.trim()}
+                  onPress={() => {
+                    skillFolder.current?.setAttribute('webkitdirectory', '');
+                    skillFolder.current?.setAttribute('directory', '');
+                    skillFolder.current?.click();
+                  }}
+                >
+                  Import Skill folder
+                </Button>
+              </div>
+              {skillTreeError ? <ErrorBanner message={skillTreeError} /> : null}
               {importSkill.isError ? (
                 <ErrorBanner
                   message={mutationMessage(importSkill.error, "Couldn't import that Skill.")}
@@ -567,8 +676,8 @@ export function CatalogScreen() {
                 const files = event.target.files;
                 event.target.value = '';
                 if (!files?.length || !workspaceId || writeBlocked) return;
-                void filesToCatalogTree(files).then((tree) =>
-                  importPlugin.mutateAsync({
+                void filesToCatalogTree(files).then((tree) => {
+                  importPlugin.mutate({
                     workspaceId,
                     input: {
                       expectedRevision: revision,
@@ -576,8 +685,8 @@ export function CatalogScreen() {
                       requestId: createRequestId(),
                       tree,
                     },
-                  })
-                );
+                  });
+                });
               }}
             />
             <Button
@@ -626,7 +735,7 @@ function mutationMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-/** Converts a selected plugin file list into a catalog tree, stripping the top folder. */
+/** Converts a selected folder file list into a catalog tree, stripping the top folder. Browser File API listings omit empty directories and executable bits; this projection does not invent them. */
 async function filesToCatalogTree(
   files: FileList
 ): Promise<Array<{ contentBase64?: string; kind: 'directory' | 'file'; path: string }>> {
@@ -653,7 +762,7 @@ async function filesToCatalogTree(
     });
   }
   if (tree.length === 0) {
-    throw new Error('Plugin package did not contain any files.');
+    throw new Error('Upload did not contain any files.');
   }
   return tree;
 }

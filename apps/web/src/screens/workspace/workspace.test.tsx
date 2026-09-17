@@ -1883,6 +1883,15 @@ describe('Agents (board 08)', () => {
   });
 });
 
+/** Builds one browser directory-picker file with a nested relative path. */
+function catalogRelativeFile(content: string, relativePath: string) {
+  const file = new File([content], relativePath.split('/').pop() ?? relativePath, {
+    type: 'text/markdown',
+  });
+  Object.defineProperty(file, 'webkitRelativePath', { value: relativePath });
+  return file;
+}
+
 describe('Catalog', () => {
   it('lists Skill, MCP, and plugin empty states from the selected Workspace catalog', async () => {
     const get = vi
@@ -1917,6 +1926,15 @@ describe('Catalog', () => {
     await act(async () => {
       fireEvent.change(skillFile, { target: { files: [skippedImport] } });
       await skippedImport.arrayBuffer();
+    });
+    expect(importSkill).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Import Skill folder' })).toBeDisabled();
+    const skillFolder = screen.getByLabelText('Skill folder files');
+    expect(skillFolder).toBeDisabled();
+    const skippedFolder = catalogRelativeFile('# Hello\n', 'repo-guidelines/SKILL.md');
+    await act(async () => {
+      fireEvent.change(skillFolder, { target: { files: [skippedFolder] } });
+      await skippedFolder.arrayBuffer();
     });
     expect(importSkill).not.toHaveBeenCalled();
 
@@ -2059,6 +2077,141 @@ describe('Catalog', () => {
     });
   });
 
+  it('keeps nested Skill folder bytes and relative paths on import and candidate update', async () => {
+    const user = userEvent.setup();
+    const digest = 'sha256:' + 'a'.repeat(64);
+    const importSkill = vi.fn().mockResolvedValue({
+      entry: {
+        availability: 'available',
+        currentDigest: digest,
+        description: null,
+        displayName: 'Repo guidelines',
+        id: 'repo-guidelines',
+      },
+      revision: 3,
+      version: {
+        createdAt: TIMESTAMP_NEW,
+        digest,
+        digestFormat: 'openkit-tree-v1',
+        entryId: 'repo-guidelines',
+        inventory: [],
+        publisherVersion: null,
+      },
+    });
+    const submitSkillCandidate = vi.fn().mockResolvedValue({
+      candidate: {
+        baseDigest: digest,
+        candidateDigest: 'sha256:' + 'b'.repeat(64),
+        createdAt: TIMESTAMP_NEW,
+        disposition: 'proposed',
+        entryId: 'repo-guidelines',
+        id: 'cand_demo',
+        summary: 'Clarify the rollback section.',
+      },
+      revision: 4,
+    });
+    const skillEntry = {
+      availability: 'available',
+      currentDigest: digest,
+      description: null,
+      displayName: 'Repo guidelines',
+      id: 'repo-guidelines',
+      pinDigest: null,
+      versions: [{ createdAt: TIMESTAMP_NEW, digest }],
+    };
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({ revision: 2, candidates: [], skills: [], mcp: [], plugins: [] })
+      .mockResolvedValue({
+        revision: 3,
+        candidates: [],
+        skills: [skillEntry],
+        mcp: [],
+        plugins: [],
+      });
+    const selectSkillDefault = vi.fn();
+    const decideSkillCandidate = vi.fn();
+    renderApp(
+      '/catalog',
+      makeClient({
+        catalog: {
+          get,
+          importSkill,
+          submitSkillCandidate,
+          selectSkillDefault,
+          decideSkillCandidate,
+        },
+      })
+    );
+    expect(await screen.findByLabelText('Skill folder files')).toBeInTheDocument();
+    await user.type(
+      screen.getAllByRole('textbox', { name: 'Display name' })[0]!,
+      'Repo guidelines'
+    );
+    await user.upload(screen.getByLabelText('Skill folder files'), [
+      catalogRelativeFile('# Hello\n', 'repo-guidelines/SKILL.md'),
+      catalogRelativeFile('Do not skip rollback.\n', 'repo-guidelines/references/rollback.md'),
+    ]);
+    await waitFor(() => expect(importSkill).toHaveBeenCalled());
+    expect(importSkill.mock.calls[0]?.[1]).toMatchObject({
+      activate: true,
+      displayName: 'Repo guidelines',
+      expectedRevision: 2,
+    });
+    expect(importSkill.mock.calls[0]?.[1].tree).toEqual([
+      {
+        contentBase64: btoa('# Hello\n'),
+        kind: 'file',
+        path: 'SKILL.md',
+      },
+      {
+        kind: 'directory',
+        path: 'references',
+      },
+      {
+        contentBase64: btoa('Do not skip rollback.\n'),
+        kind: 'file',
+        path: 'references/rollback.md',
+      },
+    ]);
+
+    await user.type(
+      screen.getByRole('textbox', { name: 'Candidate summary' }),
+      'Clarify the rollback section.'
+    );
+    await user.click(await screen.findByRole('button', { name: 'Propose folder update' }));
+    await user.upload(screen.getByLabelText('Skill candidate folder files'), [
+      catalogRelativeFile('# v2\n', 'repo-guidelines/SKILL.md'),
+      catalogRelativeFile('Clarify rollback.\n', 'repo-guidelines/references/rollback.md'),
+    ]);
+    await waitFor(() => expect(submitSkillCandidate).toHaveBeenCalled());
+    expect(submitSkillCandidate.mock.calls[0]?.[1]).toBe('repo-guidelines');
+    expect(submitSkillCandidate.mock.calls[0]?.[2]).toMatchObject({
+      baseDigest: digest,
+      expectedRevision: 3,
+      summary: 'Clarify the rollback section.',
+    });
+    expect(submitSkillCandidate.mock.calls[0]?.[2]).not.toHaveProperty('activate');
+    expect(submitSkillCandidate.mock.calls[0]?.[2].tree).toEqual([
+      {
+        contentBase64: btoa('# v2\n'),
+        kind: 'file',
+        path: 'SKILL.md',
+      },
+      {
+        kind: 'directory',
+        path: 'references',
+      },
+      {
+        contentBase64: btoa('Clarify rollback.\n'),
+        kind: 'file',
+        path: 'references/rollback.md',
+      },
+    ]);
+    expect(selectSkillDefault).not.toHaveBeenCalled();
+    expect(decideSkillCandidate).not.toHaveBeenCalled();
+  });
+
   it('disables catalog writes while disconnected', async () => {
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
@@ -2066,6 +2219,7 @@ describe('Catalog', () => {
     renderApp('/catalog', client);
     expect(await screen.findByRole('button', { name: 'Import SKILL.md' })).toBeDisabled();
     expect(await screen.findByText('Catalog may be stale')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import Skill folder' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Add inactive configuration' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Import plugin package' })).toBeDisabled();
   });
