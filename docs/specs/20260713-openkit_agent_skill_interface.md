@@ -251,6 +251,8 @@ The existing checked App API OpenAPI operation catalog is the `app-api` coverage
 
 The coverage guard must fail when a new public user/operator operation is added without an Agent Skill Interface decision.
 
+`worker.list` maps the read-only App operation `listWorkspaceWorkers` through `client.app.listWorkspaceWorkers` for one required Workspace id. It exposes the same viewer-filtered current Worker projection used by Web Agents, distinct from configured `agent.list` supply. The operation preserves existing `workspace.read` access, the additional `audit.read` requirement for last-used usage fields, private Thread visibility, explicit missing or restricted details, and the prohibition on ordinary AgentSession/native runtime identifiers. It creates or controls no work; the CLI neither joins runtime evidence nor infers assignment or model identity. The existing public response redactor remains in force.
+
 Valid exclusions include Web-only presentation reads, internal service callbacks, worker-authenticated routes, provider-compatible gateway routes, and operations that would expose unsafe private state.
 
 An exclusion cannot be justified only by implementation effort or because the capability is rarely used.
