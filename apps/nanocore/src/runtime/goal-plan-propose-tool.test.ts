@@ -1,4 +1,11 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
+} from '../capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   type RuntimeConfigSnapshot,
@@ -9,6 +16,8 @@ import type {
 } from '../internal-agents/internal-agent-loop.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDeterministicGoalPlanFallback, type GoalPlanOutput } from './goal-plan.js';
 import {
   createGoalPlanProposeTool,
@@ -42,6 +51,7 @@ const PREVIOUS_PLAN = createDeterministicGoalPlanFallback({
 });
 
 const REVISION = 'Split this into two bounded worker tasks.';
+const REVISION_ACTOR = { kind: 'user', id: 'user_demo' } as const;
 
 const MODEL = {
   logicalModelId: 'openai/gpt-5.2',
@@ -54,6 +64,91 @@ const CONTEXT = {
   compactThreshold: 8_000,
   authority: 'openkit' as const,
 };
+
+/**
+ * Opens isolated Core and Workspace databases for revision usage regressions.
+ *
+ * @returns Migrated Core and Workspace database handles.
+ */
+function openRevisionUsageStorage(): { coreDb: CoreDb; workspaceDb: WorkspaceDb } {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-plan-revision-usage-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const workspaceDb = openWorkspaceDb(dataRoot, GOAL.workspaceId);
+  applyScopedMigrations(workspaceDb);
+  return { coreDb, workspaceDb };
+}
+
+/**
+ * Builds the admitted Goal Orchestrator snapshot used by planner factory tests.
+ *
+ * @returns Snapshot and Gateway provider resolver for the test provider.
+ */
+function admittedOrchestratorBindings(): {
+  snapshot: ReturnType<typeof createInMemoryRuntimeConfigSnapshot>;
+  resolveGatewayProvider: () => ResolvedLLMProviderConfig;
+} {
+  const providerProfile = {
+    baseUrl: 'https://provider.invalid/v1',
+    displayName: 'Provider',
+    id: 'provider',
+    kind: 'custom' as const,
+    modelMetadata: {
+      model: {
+        family: 'test',
+        limit: { context: 200_000, output: 8_000 },
+        modalities: { input: ['text'], output: ['text'] },
+        tool_call: true,
+      },
+    },
+    models: ['model'],
+  };
+  return {
+    snapshot: createInMemoryRuntimeConfigSnapshot({
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'reasoning',
+        requiredFeatures: [],
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 50_000 }],
+            routes: [
+              { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
+            ],
+          },
+        ],
+      },
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        defaultLogicalModelId: 'reasoning',
+        profiles: [
+          {
+            id: 'goal-orchestrator-default',
+            roleId: GOAL_ORCHESTRATOR_ROLE_ID,
+            preferredLogicalModelId: 'reasoning',
+            compatibleLogicalModelIds: [],
+            requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
+          },
+        ],
+      },
+      providerRegistry: new ProviderRegistry([providerProfile]),
+    }),
+    resolveGatewayProvider: () =>
+      ({
+        adapterId: 'provider',
+        apiKey: 'unused',
+        baseUrl: providerProfile.baseUrl,
+        displayName: providerProfile.displayName,
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+        id: providerProfile.id,
+        models: providerProfile.models,
+        requiresApiKey: true,
+      }) satisfies ResolvedLLMProviderConfig,
+  };
+}
 
 /**
  * Builds one two-task Plan that consumes the prior draft and revision text.
@@ -424,53 +519,8 @@ describe('pre-approval Goal Plan revision Turn', () => {
 describe('pre-approval Goal Plan revision planner factory', () => {
   it('resolves the Goal Orchestrator model and returns a revised Plan through the Gateway dispatcher', async () => {
     const proposed = twoTaskPlan(PREVIOUS_PLAN);
-    const providerProfile = {
-      baseUrl: 'https://provider.invalid/v1',
-      displayName: 'Provider',
-      id: 'provider',
-      kind: 'custom' as const,
-      modelMetadata: {
-        model: {
-          family: 'test',
-          limit: { context: 200_000, output: 8_000 },
-          modalities: { input: ['text'], output: ['text'] },
-          tool_call: true,
-        },
-      },
-      models: ['model'],
-    };
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      gatewayConfig: {
-        schemaVersion: 1,
-        enabled: true,
-        defaultLogicalModelId: 'reasoning',
-        requiredFeatures: [],
-        logicalModels: [
-          {
-            id: 'reasoning',
-            displayName: 'Reasoning',
-            contextManagement: [{ type: 'compaction', compactThreshold: 50_000 }],
-            routes: [
-              { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
-            ],
-          },
-        ],
-      },
-      internalRoleProfiles: {
-        schemaVersion: 1,
-        defaultLogicalModelId: 'reasoning',
-        profiles: [
-          {
-            id: 'goal-orchestrator-default',
-            roleId: GOAL_ORCHESTRATOR_ROLE_ID,
-            preferredLogicalModelId: 'reasoning',
-            compatibleLogicalModelIds: [],
-            requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
-          },
-        ],
-      },
-      providerRegistry: new ProviderRegistry([providerProfile]),
-    });
+    const { snapshot, resolveGatewayProvider } = admittedOrchestratorBindings();
+    const { coreDb, workspaceDb } = openRevisionUsageStorage();
     const createResponses = vi
       .fn()
       .mockResolvedValueOnce({
@@ -499,99 +549,222 @@ describe('pre-approval Goal Plan revision planner factory', () => {
           },
         ],
       });
-    const planner = createPreApprovalGoalPlanRevisionPlanner({
-      runtimeConfig: () => snapshot,
-      llmGatewayDispatcher: { createResponses },
-      resolveGatewayProvider: () =>
-        ({
-          adapterId: 'provider',
-          apiKey: 'unused',
-          baseUrl: providerProfile.baseUrl,
-          displayName: providerProfile.displayName,
-          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-          id: providerProfile.id,
-          models: providerProfile.models,
-          requiresApiKey: true,
-        }) satisfies ResolvedLLMProviderConfig,
-      workspaceId: 'ws_demo',
-      userId: 'user_demo',
-      signal: new AbortController().signal,
-    });
+    try {
+      const planner = createPreApprovalGoalPlanRevisionPlanner({
+        runtimeConfig: () => snapshot,
+        llmGatewayDispatcher: { createResponses },
+        resolveGatewayProvider,
+        workspaceId: GOAL.workspaceId,
+        userId: REVISION_ACTOR.id,
+        authorityActor: REVISION_ACTOR,
+        coreDb,
+        signal: new AbortController().signal,
+      });
 
-    const plan = await planner({
-      goal: GOAL,
-      previousPlan: PREVIOUS_PLAN,
-      previousPlanItemId: 'it_goal_plan_prior',
-      revisionText: REVISION,
-    });
+      const plan = await planner({
+        goal: GOAL,
+        previousPlan: PREVIOUS_PLAN,
+        previousPlanItemId: 'it_goal_plan_prior',
+        revisionText: REVISION,
+      });
 
-    expect(plan).toEqual(proposed);
-    expect(createResponses).toHaveBeenCalled();
-    const firstRequest = createResponses.mock.calls[0]?.[1] as {
-      input?: Array<{
-        role?: string;
-        content?: Array<{ type?: string; text?: string }>;
-      }>;
-      metadata?: { openkit?: { sessionId?: string; workspaceId?: string } };
-      tools?: Array<{ name: string }>;
+      expect(plan).toEqual(proposed);
+      expect(createResponses).toHaveBeenCalled();
+      const firstRequest = createResponses.mock.calls[0]?.[1] as {
+        input?: Array<{
+          role?: string;
+          content?: Array<{ type?: string; text?: string }>;
+        }>;
+        metadata?: { openkit?: { sessionId?: string; workspaceId?: string } };
+        tools?: Array<{ name: string }>;
+      };
+      expect(firstRequest?.tools?.map((tool) => tool.name)).toEqual([GOAL_PLAN_PROPOSE_TOOL_NAME]);
+      expect(firstRequest?.metadata).toEqual({
+        openkit: {
+          sessionId: `${GOAL_ORCHESTRATOR_ROLE_ID}:${GOAL.goalId}`,
+          workspaceId: GOAL.workspaceId,
+        },
+      });
+      const userText = firstRequest?.input?.[0]?.content?.find(
+        (part) => part.type === 'input_text'
+      )?.text;
+      expect(typeof userText).toBe('string');
+      expect(JSON.parse(userText ?? '')).toMatchObject({
+        previousPlanItemId: 'it_goal_plan_prior',
+        previousPlan: PREVIOUS_PLAN,
+        revision: REVISION,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('records Workspace-attributed LLM usage for successful dispatches including a later rejected proposal', async () => {
+    const questioned = {
+      ...twoTaskPlan(PREVIOUS_PLAN),
+      questions: ['Who should own the second task?'],
     };
-    expect(firstRequest?.tools?.map((tool) => tool.name)).toEqual([GOAL_PLAN_PROPOSE_TOOL_NAME]);
-    expect(firstRequest?.metadata).toEqual({
-      openkit: {
-        sessionId: `${GOAL_ORCHESTRATOR_ROLE_ID}:${GOAL.goalId}`,
-        workspaceId: 'ws_demo',
-      },
-    });
-    const userText = firstRequest?.input?.[0]?.content?.find(
-      (part) => part.type === 'input_text'
-    )?.text;
-    expect(typeof userText).toBe('string');
-    expect(JSON.parse(userText ?? '')).toMatchObject({
-      previousPlanItemId: 'it_goal_plan_prior',
-      previousPlan: PREVIOUS_PLAN,
-      revision: REVISION,
-    });
+    const proposed = twoTaskPlan(PREVIOUS_PLAN);
+    const { snapshot, resolveGatewayProvider } = admittedOrchestratorBindings();
+    const { coreDb, workspaceDb } = openRevisionUsageStorage();
+    const createResponses = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 'resp_goal_plan_questions',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'call_questions',
+            name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+            arguments: JSON.stringify(questioned),
+          },
+        ],
+        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+      })
+      .mockResolvedValueOnce({
+        id: 'resp_goal_plan_corrected',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'call_corrected',
+            name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+            arguments: JSON.stringify(proposed),
+          },
+        ],
+        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+      })
+      .mockResolvedValueOnce({
+        id: 'resp_goal_plan_proposed',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'Proposed.' }],
+          },
+        ],
+        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+      });
+    try {
+      const planner = createPreApprovalGoalPlanRevisionPlanner({
+        runtimeConfig: () => snapshot,
+        llmGatewayDispatcher: { createResponses },
+        resolveGatewayProvider,
+        workspaceId: GOAL.workspaceId,
+        userId: REVISION_ACTOR.id,
+        authorityActor: REVISION_ACTOR,
+        coreDb,
+        signal: new AbortController().signal,
+      });
+
+      const plan = await planner({
+        goal: GOAL,
+        previousPlan: PREVIOUS_PLAN,
+        previousPlanItemId: 'it_goal_plan_prior',
+        revisionText: REVISION,
+      });
+
+      expect(plan).toEqual(proposed);
+      expect(createResponses).toHaveBeenCalledTimes(3);
+      const records = listWorkspaceUsageRecords(workspaceDb, GOAL.workspaceId);
+      const calls = listWorkspaceCapabilityCalls(workspaceDb, GOAL.workspaceId);
+      expect(records).toHaveLength(3);
+      expect(calls).toHaveLength(3);
+      expect(new Set(records.map((record) => record.capabilityCallId)).size).toBe(3);
+      for (const record of records) {
+        expect(record).toMatchObject({
+          workspaceId: GOAL.workspaceId,
+          threadId: GOAL.threadId,
+          turnId: null,
+          requestId: null,
+          responsibleUserId: REVISION_ACTOR.id,
+          category: 'llm',
+          unit: 'tokens',
+          quantity: 18,
+          modelId: 'reasoning',
+          providerRef: 'provider',
+          source: 'gateway-reported',
+          agentId: GOAL_ORCHESTRATOR_ROLE_ID,
+        });
+      }
+      for (const call of calls) {
+        expect(call).toMatchObject({
+          workspaceId: GOAL.workspaceId,
+          threadId: GOAL.threadId,
+          turnId: null,
+          requestId: null,
+          capabilityId: 'inference.local.goal_orchestrator',
+          family: 'llm',
+          operation: 'goal.plan',
+          status: 'succeeded',
+          providerRef: 'provider',
+        });
+      }
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('throws a typed unavailable error when Goal Orchestrator has no admitted model', async () => {
-    const planner = createPreApprovalGoalPlanRevisionPlanner({
-      runtimeConfig: () =>
-        ({
-          gatewayConfig: {
-            schemaVersion: 1,
-            enabled: true,
-            requiredFeatures: [],
-            logicalModels: [],
-          },
-          internalRoleProfiles: { schemaVersion: 1, profiles: [] },
-          providerRegistry: new ProviderRegistry([]),
-          userConfigs: [],
-          workspaceConfigs: [],
-        }) as RuntimeConfigSnapshot,
-      llmGatewayDispatcher: { createResponses: vi.fn() },
-      resolveGatewayProvider: () => {
-        throw new Error('unused');
-      },
-      workspaceId: 'ws_demo',
-      userId: 'user_demo',
-      signal: new AbortController().signal,
-    });
+    const { coreDb, workspaceDb } = openRevisionUsageStorage();
+    try {
+      const planner = createPreApprovalGoalPlanRevisionPlanner({
+        runtimeConfig: () =>
+          ({
+            gatewayConfig: {
+              schemaVersion: 1,
+              enabled: true,
+              requiredFeatures: [],
+              logicalModels: [],
+            },
+            internalRoleProfiles: { schemaVersion: 1, profiles: [] },
+            providerRegistry: new ProviderRegistry([]),
+            userConfigs: [],
+            workspaceConfigs: [],
+          }) as RuntimeConfigSnapshot,
+        llmGatewayDispatcher: { createResponses: vi.fn() },
+        resolveGatewayProvider: () => {
+          throw new Error('unused');
+        },
+        workspaceId: GOAL.workspaceId,
+        userId: REVISION_ACTOR.id,
+        authorityActor: REVISION_ACTOR,
+        coreDb,
+        signal: new AbortController().signal,
+      });
 
-    await expect(
-      planner({
-        goal: GOAL,
-        previousPlan: PREVIOUS_PLAN,
-        previousPlanItemId: 'it_goal_plan_prior',
-        revisionText: REVISION,
-      })
-    ).rejects.toBeInstanceOf(GoalPlanRevisionError);
-    await expect(
-      planner({
-        goal: GOAL,
-        previousPlan: PREVIOUS_PLAN,
-        previousPlanItemId: 'it_goal_plan_prior',
-        revisionText: REVISION,
-      })
-    ).rejects.toMatchObject({ code: 'goal_plan_revision_unavailable' });
+      await expect(
+        planner({
+          goal: GOAL,
+          previousPlan: PREVIOUS_PLAN,
+          previousPlanItemId: 'it_goal_plan_prior',
+          revisionText: REVISION,
+        })
+      ).rejects.toBeInstanceOf(GoalPlanRevisionError);
+      await expect(
+        planner({
+          goal: GOAL,
+          previousPlan: PREVIOUS_PLAN,
+          previousPlanItemId: 'it_goal_plan_prior',
+          revisionText: REVISION,
+        })
+      ).rejects.toMatchObject({ code: 'goal_plan_revision_unavailable' });
+      expect(listWorkspaceUsageRecords(workspaceDb, GOAL.workspaceId)).toEqual([]);
+      expect(listWorkspaceCapabilityCalls(workspaceDb, GOAL.workspaceId)).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
   });
 });

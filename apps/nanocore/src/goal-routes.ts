@@ -3173,13 +3173,19 @@ export function registerGoalRoutes({
                   threadId,
                   goalId: goal.goalId,
                 });
+                const authorityActor = {
+                  kind: 'user',
+                  id: c.get('actor').userId,
+                } as const satisfies ActorRef;
                 const planner = revision
                   ? createPreApprovalGoalPlanRevisionPlanner({
                       runtimeConfig,
                       llmGatewayDispatcher,
                       resolveGatewayProvider,
                       workspaceId,
-                      userId: c.get('actor').userId,
+                      userId: authorityActor.id,
+                      authorityActor,
+                      coreDb,
                       signal: c.req.raw.signal,
                       ...(providerSubscriptionAccountManager
                         ? { providerSubscriptionAccountManager }
@@ -3194,7 +3200,7 @@ export function registerGoalRoutes({
                         objective: goal.objective,
                       }).plan;
                 const result = await createGoalPlan({
-                  triggerActor: { kind: 'user', id: c.get('actor').userId },
+                  triggerActor: authorityActor,
                   workspaceDb,
                   store,
                   workspaceId,

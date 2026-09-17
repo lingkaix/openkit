@@ -1,5 +1,12 @@
+import { randomUUID } from 'node:crypto';
+import type { ActorRef } from '@openkit/protocol';
 import { z } from 'zod';
 
+import {
+  finishCapabilityCall,
+  recordUsage,
+  startCapabilityCall,
+} from '../capability/usage-ledger.js';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
 import {
@@ -9,9 +16,12 @@ import {
   runInternalAgentLoop,
 } from '../internal-agents/internal-agent-loop.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
+import { parseUsage } from '../llm/gateway-usage.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   assertValidGoalPlanGraph,
   type GoalPlanOutput,
@@ -60,6 +70,10 @@ export interface PreApprovalGoalPlanRevisionPlannerOptions {
   readonly workspaceId: string;
   /** Authenticated user whose internal-role preference is consulted. */
   readonly userId: string;
+  /** Request actor already resolved by the Goal route. */
+  readonly authorityActor: ActorRef;
+  /** Core database used to open the Workspace usage ledger. */
+  readonly coreDb: CoreDb;
   /** Caller abort signal for the planning request. */
   readonly signal: AbortSignal;
 }
@@ -275,10 +289,80 @@ export function createPreApprovalGoalPlanRevisionPlanner(
           workspaceId: options.workspaceId,
         },
         usageEndpoint: 'responses',
+        onDispatch: ({ providerId, usage }) => {
+          recordGoalPlanRevisionLlmUsage({
+            authorityActor: options.authorityActor,
+            coreDb: options.coreDb,
+            logicalModelId: selection.logicalModel.id,
+            providerId,
+            threadId: input.goal.threadId,
+            usage,
+            workspaceId: options.workspaceId,
+          });
+        },
       }),
       signal: options.signal,
     });
   };
+}
+
+/**
+ * Records one Workspace-attributed LLM usage row after a successful pre-approval revision dispatch.
+ *
+ * @param input Existing ledger bindings, Goal Thread lineage, and Gateway-reported usage.
+ */
+function recordGoalPlanRevisionLlmUsage(input: {
+  readonly authorityActor: ActorRef;
+  readonly coreDb: CoreDb;
+  readonly logicalModelId: string;
+  readonly providerId: string;
+  readonly threadId: string;
+  readonly usage?: unknown;
+  readonly workspaceId: string;
+}): void {
+  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, input.workspaceId);
+  try {
+    applyScopedMigrations(workspaceDb);
+    const call = startCapabilityCall({
+      authorityActor: input.authorityActor,
+      agentId: GOAL_ORCHESTRATOR_ROLE_ID,
+      agentSessionId: null,
+      capabilityId: 'inference.local.goal_orchestrator',
+      family: 'llm',
+      operation: 'goal.plan',
+      providerRef: input.providerId,
+      redactionClass: 'metadata-only',
+      // Each model dispatch is a distinct call; the outer command ID would merge iterations.
+      callId: `cap_${randomUUID()}`,
+      requestId: null,
+      serviceRef: 'llm-gateway',
+      summary: 'Goal Orchestrator pre-approval Plan revision LLM call.',
+      threadId: input.threadId,
+      turnId: null,
+      itemId: null,
+      workspaceDb,
+      workspaceId: input.workspaceId,
+    });
+    const parsed = parseUsage(input.usage);
+    const tokens = parsed.totalTokens || parsed.inputTokens + parsed.completionTokens;
+    recordUsage({
+      call,
+      records: [
+        {
+          category: 'llm',
+          modelId: input.logicalModelId,
+          providerRef: input.providerId,
+          quantity: tokens > 0 ? tokens : 1,
+          source: tokens > 0 ? 'gateway-reported' : 'gateway-observed',
+          unit: tokens > 0 ? 'tokens' : 'requests',
+        },
+      ],
+      workspaceDb,
+    });
+    finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
 }
 
 /**
