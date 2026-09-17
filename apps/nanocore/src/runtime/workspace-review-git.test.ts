@@ -6,11 +6,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { WorkspaceSyncReviewItemSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
@@ -177,6 +179,47 @@ function createFixture(
   return { baseCommit, initialBranch, repository, repositoryPath, review, store };
 }
 
+/**
+ * Runs one callback with Git's ownership-check test knob on PATH.
+ *
+ * This uses `GIT_TEST_ASSUME_DIFFERENT_OWNER`, not privileged chown and not a real App-root
+ * versus UID-1001 checkout. Same-UID Git against the fixture does not prove that mismatch;
+ * A2 UID mismatch remains a primary host check. The knob also flags the operation-owned
+ * detached worktree, so command-scoped trust includes that exact created path as well as
+ * the canonical linked root. It does not trust `*`, `/*`, parent directories, or global config.
+ *
+ * @param operation Work that must see the wrapped `git` first on PATH.
+ * @param untrustedRepository Optional sibling that must remain untrusted in each child environment.
+ */
+async function withAssumedDifferentOwnerGit(
+  operation: () => Promise<void>,
+  untrustedRepository?: string
+): Promise<void> {
+  const gitBinary = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const wrapperDirectory = mkdtempSync(join(tmpdir(), 'openkit-review-git-owner-wrapper-'));
+  const shellGitBinary = `'${gitBinary.replaceAll("'", "'\\''")}'`;
+  const ownershipProbe = untrustedRepository
+    ? `if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 ${shellGitBinary} -C '${untrustedRepository.replaceAll("'", "'\\''")}' rev-parse HEAD >/dev/null 2>&1; then echo 'Unexpected trust of sibling repository' >&2; exit 70; fi\n`
+    : '';
+  const savedPath = process.env.PATH;
+  writeFileSync(
+    join(wrapperDirectory, 'git'),
+    `#!/bin/sh\n${ownershipProbe}GIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec ${shellGitBinary} "$@"\n`,
+    { mode: 0o755 }
+  );
+  process.env.PATH = `${wrapperDirectory}${delimiter}${savedPath ?? ''}`;
+  try {
+    await operation();
+  } finally {
+    if (savedPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = savedPath;
+    }
+    rmSync(wrapperDirectory, { recursive: true, force: true });
+  }
+}
+
 describe('workspace review Git operations', () => {
   it('stages a review branch without switching or dirtying the linked worktree', async () => {
     const fixture = createFixture();
@@ -200,6 +243,73 @@ describe('workspace review Git operations', () => {
     expect(git(fixture.repositoryPath, ['show', '--pretty=', '--name-only', stagedCommit])).toBe(
       'README.md'
     );
+    expect(
+      git(fixture.repositoryPath, ['worktree', 'list', '--porcelain'])
+        .split('\n')
+        .filter((line) => line.startsWith('worktree '))
+    ).toHaveLength(1);
+  });
+
+  it('stages through Git ownership mismatch using exact canonical path trust', async () => {
+    const fixture = createFixture();
+    const sibling = createFixture();
+    const ownerBefore = statSync(fixture.repositoryPath).uid;
+    const gitDirBefore = statSync(join(fixture.repositoryPath, '.git')).uid;
+    const hostileConfig = join(
+      mkdtempSync(join(tmpdir(), 'openkit-review-git-global-config-')),
+      'config'
+    );
+    const savedHome = process.env.HOME;
+    const savedGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
+    let persistedHead: string | null = null;
+
+    try {
+      await withAssumedDifferentOwnerGit(async () => {
+        expect(() =>
+          execFileSync('git', ['rev-parse', 'HEAD'], {
+            cwd: fixture.repositoryPath,
+            env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: '/dev/null', HOME: '' },
+            stdio: 'pipe',
+          })
+        ).toThrow(/dubious ownership/);
+
+        delete process.env.HOME;
+        writeFileSync(hostileConfig, '[safe]\n\tdirectory = *\n');
+        process.env.GIT_CONFIG_GLOBAL = hostileConfig;
+
+        const stagedCommit = await stageGitWorkspaceReview({
+          persistHead: (commitId) => {
+            persistedHead = commitId;
+          },
+          repository: fixture.repository,
+          review: fixture.review,
+          store: fixture.store,
+        });
+
+        expect(persistedHead).toBe(stagedCommit);
+        expect(statSync(fixture.repositoryPath).uid).toBe(ownerBefore);
+        expect(statSync(join(fixture.repositoryPath, '.git')).uid).toBe(gitDirBefore);
+      }, sibling.repositoryPath);
+    } finally {
+      if (savedHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = savedHome;
+      }
+      if (savedGlobalConfig === undefined) {
+        delete process.env.GIT_CONFIG_GLOBAL;
+      } else {
+        process.env.GIT_CONFIG_GLOBAL = savedGlobalConfig;
+      }
+      rmSync(join(hostileConfig, '..'), { recursive: true, force: true });
+    }
+
+    expect(git(fixture.repositoryPath, ['config', '--local', '--list'])).not.toMatch(
+      /safe\.directory/
+    );
+    expect(
+      git(fixture.repositoryPath, ['rev-parse', 'refs/heads/openkit/review/swr_git_review_1'])
+    ).toBe(persistedHead);
     expect(
       git(fixture.repositoryPath, ['worktree', 'list', '--porcelain'])
         .split('\n')

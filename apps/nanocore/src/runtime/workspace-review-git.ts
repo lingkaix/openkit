@@ -631,10 +631,10 @@ async function withLockedRepository<Result>(
   repositoryPath: string,
   operation: (context: GitOperationContext) => Promise<Result>
 ): Promise<Result> {
-  const context = await createGitOperationContext();
+  const linkedRoot = await realpath(repositoryPath);
+  const context = await createGitOperationContext(linkedRoot);
   return withCleanup(
     async () => {
-      const linkedRoot = await realpath(repositoryPath);
       const topLevel = await realpath(
         (await runGit(context, repositoryPath, ['rev-parse', '--show-toplevel'])).trim()
       );
@@ -692,10 +692,15 @@ async function serializeRepositoryOperation<Result>(
 /**
  * Creates one scrubbed Git execution context.
  *
+ * Command-scoped `safe.directory` trusts the canonical authorized linked root and the
+ * exact detached worktree this operation creates under `rootPath`. It is not a wildcard,
+ * parent prefix, or host Git configuration change.
+ *
+ * @param trustedDirectory Canonical authorized linked-root path trusted for this operation only.
  * @returns Operation context with empty config and hooks roots.
  */
-async function createGitOperationContext(): Promise<GitOperationContext> {
-  const rootPath = await mkdtemp(join(tmpdir(), 'openkit-workspace-review-git-'));
+async function createGitOperationContext(trustedDirectory: string): Promise<GitOperationContext> {
+  const rootPath = await realpath(await mkdtemp(join(tmpdir(), 'openkit-workspace-review-git-')));
   const hooksPath = join(rootPath, 'hooks');
   const configPath = join(rootPath, 'empty.gitconfig');
 
@@ -723,18 +728,22 @@ async function createGitOperationContext(): Promise<GitOperationContext> {
   }
   Object.assign(env, {
     GIT_ATTR_NOSYSTEM: '1',
-    GIT_CONFIG_COUNT: '4',
+    GIT_CONFIG_COUNT: '6',
     GIT_CONFIG_GLOBAL: configPath,
     GIT_CONFIG_KEY_0: 'core.hooksPath',
     GIT_CONFIG_KEY_1: 'core.fsmonitor',
     GIT_CONFIG_KEY_2: 'commit.gpgSign',
     GIT_CONFIG_KEY_3: 'core.sparseCheckout',
+    GIT_CONFIG_KEY_4: 'safe.directory',
+    GIT_CONFIG_KEY_5: 'safe.directory',
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_SYSTEM: configPath,
     GIT_CONFIG_VALUE_0: hooksPath,
     GIT_CONFIG_VALUE_1: 'false',
     GIT_CONFIG_VALUE_2: 'false',
     GIT_CONFIG_VALUE_3: 'false',
+    GIT_CONFIG_VALUE_4: trustedDirectory,
+    GIT_CONFIG_VALUE_5: join(rootPath, 'worktree'),
     GIT_LITERAL_PATHSPECS: '1',
     GIT_NO_REPLACE_OBJECTS: '1',
     GIT_OPTIONAL_LOCKS: '0',
