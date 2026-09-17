@@ -30,5 +30,6 @@ export * from './vault-admin.js';
 export * from './vault-injection.js';
 export * from './vault-use.js';
 export * from './worker-environment.js';
+export * from './workers.js';
 export * from './workspace-sharing.js';
 export * from './workspace-sync.js';
