@@ -31,6 +31,7 @@ import { recordProductPermissionDecision } from './policy/permission-decisions.j
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
+import * as goalPlanPropose from './runtime/goal-plan-propose-tool.js';
 import {
   createGoalReviewRecord,
   listGoalReviewRecordsForTask,
@@ -2787,6 +2788,27 @@ describe('thread goal summary app API', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal plan revision thread');
     const app = createApp({ coreDb, store });
+    const revisionPlanner = vi
+      .spyOn(goalPlanPropose, 'createPreApprovalGoalPlanRevisionPlanner')
+      .mockReturnValue(async (input) => {
+        expect(input.previousPlanItemId).toBeTruthy();
+        expect(input.revisionText).toBeTruthy();
+        const previous = input.previousPlan!;
+        return {
+          ...previous,
+          goalSummary: `${previous.goalSummary} ${input.revisionText}`,
+          tasks: [
+            ...previous.tasks,
+            {
+              ...previous.tasks[0]!,
+              taskId: `task_${previous.tasks.length + 1}`,
+              title: 'Review the requested revision',
+              objective: input.revisionText!,
+              dependsOnTaskIds: [previous.tasks[0]!.taskId],
+            },
+          ],
+        };
+      });
 
     try {
       await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/goal`, {
@@ -2948,6 +2970,10 @@ describe('thread goal summary app API', () => {
         }
       );
       expect(revisedPlanRes.status).toBe(200);
+      const revisedPlan = await revisedPlanRes.json();
+      expect(revisedPlan.plan.tasks).toHaveLength(2);
+      expect(revisedPlan.plan.tasks[1].objective).toBe(revisionRequest.revision);
+      expect(revisedPlan.planItemId).not.toBe(planPayload.planItemId);
 
       const receiptGapRequest = {
         requestId: '00000000-0000-4000-8000-000000000303',
@@ -3056,6 +3082,7 @@ describe('thread goal summary app API', () => {
         store.listCommandRequests().find((record) => record.requestId === partialRequest.requestId)
       ).toBeUndefined();
     } finally {
+      revisionPlanner.mockRestore();
       coreDb.sqlite.close();
     }
   });
