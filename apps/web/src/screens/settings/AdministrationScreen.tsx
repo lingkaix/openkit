@@ -1106,10 +1106,18 @@ function PurgeResult({ outcome }: { outcome: 'purged' | 'retained' | 'unknown' }
 function EnvironmentStatus({ status }: { status: GetWorkerEnvironmentStatusResponse }) {
   return (
     <Card className="flex flex-col gap-2">
+      <h3 className="font-bold text-fg-strong">
+        Environment {shortRef(status.environment.storageRef)}
+      </h3>
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="font-bold text-fg-strong">
-          Environment {shortRef(status.environment.storageRef)}
-        </h3>
+        <span className="text-sm text-fg">Core association</span>
+        <StatusChip tone={environmentTone(status.environment.state)}>
+          {status.environment.state}
+        </StatusChip>
+        <span className="text-xs text-fg-muted">revision {status.environment.revision}</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-fg">Host storage</span>
         <StatusChip tone={environmentTone(status.storage.state)}>{status.storage.state}</StatusChip>
       </div>
       <p className="text-sm text-fg">
@@ -1121,6 +1129,7 @@ function EnvironmentStatus({ status }: { status: GetWorkerEnvironmentStatusRespo
         Available capacity {formatBytes(status.storage.capacity.availableBytes)} of{' '}
         {formatBytes(status.storage.capacity.totalBytes)}.
       </p>
+      <p className="text-xs text-fg-muted">Host availability alone does not authorize reuse.</p>
       {status.storage.state === 'unknown' ? (
         <p className="text-sm font-bold text-negative-fg">
           The host result is unknown. Inspect again before requesting another effect.

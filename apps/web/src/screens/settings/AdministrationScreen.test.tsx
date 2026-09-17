@@ -440,6 +440,54 @@ describe('Administration', () => {
     expect(getWorkerEnvironmentStatus).toHaveBeenCalledTimes(1);
   });
 
+  it('labels Core association and Host storage separately when they differ', async () => {
+    const user = userEvent.setup();
+    const listed = { ...ENVIRONMENT, revision: 4, state: 'idle' as const };
+    const purgeWorkerEnvironment = vi.fn();
+    const activateWorkerEnvironment = vi.fn();
+    const getWorkerEnvironmentStatus = vi.fn().mockResolvedValue({
+      environment: { ...listed, revision: 5, state: 'attached' },
+      storage: {
+        attachment: null,
+        capacity: { availableBytes: 4_000, totalBytes: 8_000 },
+        layoutDigest: ENVIRONMENT.layoutDigest,
+        scopeDigest: `sha256:${'c'.repeat(64)}`,
+        state: 'available',
+        storageRef: STORAGE_REF,
+        targets: ENVIRONMENT.layout.targets.map(({ target }, index) => ({
+          initialized: true,
+          target,
+          volumeRef: `volume_${index}`,
+        })),
+      },
+    });
+    const client = makeClient({
+      activateWorkerEnvironment,
+      getWorkerEnvironmentStatus,
+      listWorkerEnvironments: vi.fn().mockResolvedValue({ items: [listed], nextCursor: null }),
+      purgeWorkerEnvironment,
+    });
+    renderScreen(client);
+
+    expect(await screen.findByText('idle')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+
+    expect(await screen.findByText('Core association')).toBeInTheDocument();
+    expect(screen.getByText('revision 5')).toBeInTheDocument();
+    expect(screen.getByText('attached')).toBeInTheDocument();
+    expect(screen.getByText('idle')).toBeInTheDocument();
+    expect(screen.getByText('Host storage')).toBeInTheDocument();
+    expect(screen.getByText('available')).toBeInTheDocument();
+    expect(screen.getByText('No current attachment.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Host availability alone does not authorize reuse.')
+    ).toBeInTheDocument();
+    expect(getWorkerEnvironmentStatus).toHaveBeenCalledTimes(1);
+    expect(getWorkerEnvironmentStatus).toHaveBeenCalledWith(PROJECT.id, STORAGE_REF);
+    expect(purgeWorkerEnvironment).not.toHaveBeenCalled();
+    expect(activateWorkerEnvironment).not.toHaveBeenCalled();
+  });
+
   it('binds explicit deletion to the displayed revision and fences an unknown result', async () => {
     const user = userEvent.setup();
     const purgeWorkerEnvironment = vi.fn().mockResolvedValue({
