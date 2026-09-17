@@ -332,7 +332,6 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
                 ...(input.providerSubscriptionAccountManager
                   ? { providerSubscriptionAccountManager: input.providerSubscriptionAccountManager }
                   : {}),
-                metadata: { openkit: { sessionId: `administration:${thread.id}`, workspaceId } },
                 promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
                 usageEndpoint: 'responses',
                 onDispatch: ({ providerId, usage }) => {

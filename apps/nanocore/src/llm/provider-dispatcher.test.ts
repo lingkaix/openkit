@@ -4,6 +4,7 @@ import {
   fauxProvider,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { GatewayUsageTracker } from './gateway-usage.js';
@@ -627,5 +628,97 @@ describe('LLMGatewayProviderDispatcher cancellation', () => {
     );
 
     expect(seenSignals).toEqual([abortController.signal, abortController.signal]);
+  });
+});
+
+describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
+  function codexPair() {
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-5.6-sol' }],
+    });
+    const pairModels = createModels();
+    pairModels.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
+    faux.setResponses([fauxAssistantMessage('Codex admitted.')]);
+    return { faux, pairModels };
+  }
+
+  function codexProvider() {
+    return piProviderConfig({
+      accountSlotId: 'work',
+      adapterId: 'openai-codex',
+      apiKey: null,
+      displayName: 'OpenAI Codex',
+      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+      id: 'codex-work',
+      models: ['openai-codex/gpt-5.6-sol'],
+      requiresApiKey: false,
+      subscriptionProviderId: 'openai-codex',
+    } as Partial<ResolvedLLMProviderConfig>);
+  }
+
+  it('rejects authored metadata on the Codex Chat Completions bridge before the adapter', async () => {
+    const { faux, pairModels } = codexPair();
+    const dispatcher = new LLMGatewayProviderDispatcher({
+      piAiClient: new PiAiGatewayClient(),
+    });
+
+    await expect(
+      dispatcher.createChatCompletion(
+        codexProvider(),
+        {
+          model: 'openai-codex/gpt-5.6-sol',
+          messages: [
+            { role: 'system', content: 'You are the OpenKit Assistant.' },
+            { role: 'user', content: 'Hello' },
+          ],
+          metadata: {
+            openkit: { sessionId: 'chat-mode:ws_probe:th_probe', workspaceId: 'ws_probe' },
+          },
+        },
+        {
+          models: pairModels,
+          promptCacheScope: {
+            sessionId: 'chat-mode:ws_probe:th_probe',
+            workspaceId: 'ws_probe',
+          },
+          usageEndpoint: 'quick_chat',
+        }
+      )
+    ).rejects.toMatchObject({
+      code: 'unsupported_gateway_feature',
+      feature: 'pi-ai Responses metadata',
+    });
+    expect(faux.state.callCount).toBe(0);
+  });
+
+  it('admits a scope-only Codex Chat Completions bridge through real Responses admission', async () => {
+    const { faux, pairModels } = codexPair();
+    const dispatcher = new LLMGatewayProviderDispatcher({
+      piAiClient: new PiAiGatewayClient(),
+    });
+
+    const response = await dispatcher.createChatCompletion(
+      codexProvider(),
+      {
+        model: 'openai-codex/gpt-5.6-sol',
+        messages: [
+          { role: 'system', content: 'You are the OpenKit Assistant.' },
+          { role: 'user', content: 'Hello' },
+        ],
+      },
+      {
+        models: pairModels,
+        promptCacheScope: {
+          sessionId: 'chat-mode:ws_probe:th_probe',
+          workspaceId: 'ws_probe',
+        },
+        usageEndpoint: 'quick_chat',
+      }
+    );
+
+    expect(response.choices[0]?.message.content).toBe('Codex admitted.');
+    expect(faux.state.callCount).toBe(1);
   });
 });

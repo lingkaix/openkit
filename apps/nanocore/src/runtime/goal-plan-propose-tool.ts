@@ -278,12 +278,6 @@ export function createPreApprovalGoalPlanRevisionPlanner(
         ...(options.providerSubscriptionAccountManager
           ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
           : {}),
-        metadata: {
-          openkit: {
-            sessionId: `${GOAL_ORCHESTRATOR_ROLE_ID}:${input.goal.goalId}`,
-            workspaceId: options.workspaceId,
-          },
-        },
         promptCacheScope: {
           sessionId: `${GOAL_ORCHESTRATOR_ROLE_ID}:${input.goal.goalId}`,
           workspaceId: options.workspaceId,

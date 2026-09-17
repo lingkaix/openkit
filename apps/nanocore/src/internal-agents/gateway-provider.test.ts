@@ -1,4 +1,5 @@
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
@@ -67,7 +68,6 @@ describe('internal Agent Gateway provider', () => {
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
       resolveGatewayProvider: () =>
         ({ id: 'provider', models: ['model'], gatewayCapabilities: {} }) as never,
-      metadata: { openkit: { workspaceId: 'ws_private' } },
       promptCacheScope: { sessionId: 'admin:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
       onDispatch,
@@ -91,6 +91,7 @@ describe('internal Agent Gateway provider', () => {
       }),
       expect.objectContaining({ transport: { signal: expect.any(AbortSignal) } })
     );
+    expect(createResponses.mock.calls[0]?.[1]).not.toHaveProperty('metadata');
     expect(response.message).toEqual({
       role: 'assistant',
       truncated: false,
@@ -113,7 +114,6 @@ describe('internal Agent Gateway provider', () => {
       logicalModel,
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
       resolveGatewayProvider: () => ({}) as never,
-      metadata: {},
       promptCacheScope: { sessionId: 'admin:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
     });
@@ -147,7 +147,6 @@ describe('internal Agent Gateway provider', () => {
         models: ['model'],
         requiresApiKey: true,
       }),
-      metadata: {},
       promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
     });
@@ -158,13 +157,61 @@ describe('internal Agent Gateway provider', () => {
     expect(faux.state.callCount).toBe(1);
   });
 
+  it('admits a Codex subscription Responses turn without internal metadata', async () => {
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-5.6-sol' }],
+    });
+    const pairModels = createModels();
+    pairModels.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
+    pairModels.checkAuth = async () => ({}) as never;
+    faux.setResponses([fauxAssistantMessage('Codex admitted.')]);
+    const provider = createInternalAgentGatewayProvider({
+      logicalModel: {
+        ...logicalModel,
+        routes: [
+          {
+            id: 'primary',
+            providerProfileId: 'codex-work',
+            providerModel: 'openai-codex/gpt-5.6-sol',
+          },
+        ],
+      },
+      dispatcher: new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient(),
+      }),
+      resolveGatewayProvider: () => ({
+        accountSlotId: 'work',
+        adapterId: 'openai-codex',
+        apiKey: null,
+        baseUrl: null,
+        displayName: 'OpenAI Codex',
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+        id: 'codex-work',
+        models: ['openai-codex/gpt-5.6-sol'],
+        requiresApiKey: false,
+        subscriptionProviderId: 'openai-codex',
+      }),
+      providerSubscriptionAccountManager: {
+        getPairHandle: async () => ({ models: pairModels }),
+      } as never,
+      promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
+      usageEndpoint: 'responses',
+    });
+
+    const response = await provider(request());
+
+    expect(response.message.content).toEqual([{ type: 'text', text: 'Codex admitted.' }]);
+    expect(faux.state.callCount).toBe(1);
+  });
+
   it('fails before provider contact when Tool image content cannot be preserved', async () => {
     const createResponses = vi.fn();
     const provider = createInternalAgentGatewayProvider({
       logicalModel,
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
       resolveGatewayProvider: () => ({}) as never,
-      metadata: {},
       promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
     });

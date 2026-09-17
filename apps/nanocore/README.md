@@ -18,6 +18,8 @@ Current Workers are a separate selected-Workspace read at `GET /api/app/workspac
 
 Chat Mode distinguishes explicit external search or browsing requests from ordinary topic mentions and questions about supplied Artifact content. The shared conversation admission path retains external-search refusal without treating words such as Web or internet alone as a request to browse. Explicit Artifact references use their immutable version and remain separate from permission to perform external work. Chat and selected Worker submissions use the canonical Artifact reference identity so persisted attachments remain readable after restart. Assistant submissions with admitted Artifacts skip the Knowledge-only answer shortcut so the supplied content reaches the answering provider; the explicitly selected Knowledge Manager retains its own path. Knowledge Manager `answer` treats a selected page as sufficient only when two distinct query terms appear in that page title or body, or a one-term query matches the page title; weaker one-token overlap is `insufficient-evidence` and Assistant Chat falls through to the accepted provider.
 
+Internal Chat, administration and Goal planning calls keep private cache scope and usage attribution in Gateway dispatch context. They do not send duplicate internal metadata fields to provider-native endpoints; unsupported external request fields still fail admission.
+
 ## Scope
 
 - local-mode implicit single-user operation

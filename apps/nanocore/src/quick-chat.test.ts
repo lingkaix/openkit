@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createModels } from '@earendil-works/pi-ai';
+import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import {
   ConversationTargetCatalogSchema,
   SubmitConversationResponseSchema,
@@ -11,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
 import { FsStore } from './lib/store.js';
-import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
+import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { ProviderRegistry } from './providers/registry.js';
 import type { TurnExecutor } from './runtime/types.js';
@@ -336,14 +337,9 @@ describe('quick chat app API', () => {
           { role: 'system', content: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT },
           { role: 'user', content: 'What is OpenKit?' },
         ],
-        metadata: {
-          openkit: {
-            sessionId: 'chat-mode:ws_demo:th_demo',
-            workspaceId: 'ws_demo',
-          },
-        },
       },
     });
+    expect(calls[0]?.request).not.toHaveProperty('metadata');
     const replayRes = await app.request(
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
@@ -1049,14 +1045,9 @@ describe('quick chat app API', () => {
           { role: 'system', content: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT },
           { role: 'user', content: 'Route this.' },
         ],
-        metadata: {
-          openkit: {
-            sessionId: 'quick-chat:ws_quick_chat',
-            workspaceId: 'ws_quick_chat',
-          },
-        },
       },
     });
+    expect(calls[0]?.request).not.toHaveProperty('metadata');
   });
 
   it.each([
@@ -1235,12 +1226,7 @@ describe('quick chat app API', () => {
       modelId: 'quick-chat',
       content: 'It is sunny.',
     });
-    expect(seenRequests[0]?.metadata).toEqual({
-      openkit: {
-        sessionId: 'quick-chat:ws_quick_chat',
-        workspaceId: 'ws_quick_chat',
-      },
-    });
+    expect(seenRequests[0]).not.toHaveProperty('metadata');
     expect(seenRequests[0]?.prompt_cache_key).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
   });
 
@@ -1449,11 +1435,19 @@ describe('quick chat app API', () => {
     });
   });
 
-  it('adds stable OpenKit prompt cache metadata for Codex-backed quick chat', async () => {
-    const seenRequests: Array<{ metadata?: unknown; prompt_cache_key?: unknown }> = [];
-    const models = createModels();
-    vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
-    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
+  it('admits Codex-backed quick chat through the real Chat Completions bridge without internal metadata', async () => {
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-5.6-sol' }],
+    });
+    const pairModels = createModels();
+    pairModels.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
+    vi.spyOn(pairModels, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
+    faux.setResponses([fauxAssistantMessage('Quick response')]);
+    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models: pairModels }));
+    const piAiClient = new PiAiGatewayClient();
+    const createResponses = vi.spyOn(piAiClient, 'createResponses');
     const app = createApp({
       gatewayConfig: {
         schemaVersion: 1,
@@ -1468,7 +1462,7 @@ describe('quick chat app API', () => {
               {
                 id: 'primary',
                 providerProfileId: 'openai_codex',
-                providerModel: 'openai-codex/gpt-5.1-codex',
+                providerModel: 'openai-codex/gpt-5.6-sol',
               },
             ],
           },
@@ -1482,7 +1476,7 @@ describe('quick chat app API', () => {
       },
       providerRegistry: new ProviderRegistry([
         {
-          defaultModel: 'openai-codex/gpt-5.1-codex',
+          defaultModel: 'openai-codex/gpt-5.6-sol',
           displayName: 'OpenAI Codex',
           extensions: {
             openkit: {
@@ -1493,34 +1487,12 @@ describe('quick chat app API', () => {
           },
           id: 'openai_codex',
           kind: 'oauth',
-          modelMetadata: {
-            'openai-codex/gpt-5.1-codex': {
-              limit: { context: 400_000, output: 128_000 },
-            },
-          },
-          models: ['openai-codex/gpt-5.1-codex'],
+          models: ['openai-codex/gpt-5.6-sol'],
           vendor: 'openai_codex',
         },
       ]),
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
-        createResponses: async (_provider, request) => {
-          seenRequests.push(request);
-          return {
-            id: 'resp_quick',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'Quick response' }],
-              },
-            ],
-          };
-        },
-      } as unknown as PiAiGatewayClient,
+      llmPiAiClient: piAiClient,
       providerSubscriptionAccountManager: {
         getPairHandle,
       } as unknown as ProviderSubscriptionAccountManager,
@@ -1532,17 +1504,20 @@ describe('quick chat app API', () => {
       headers: { 'content-type': 'application/json' },
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(200);
     expect(getPairHandle).toHaveBeenCalledWith({
       accountSlotId: 'default',
       subscriptionProviderId: 'openai-codex',
     });
-    expect(seenRequests[0]?.metadata).toEqual({
-      openkit: {
-        sessionId: 'quick-chat:ws_quick_chat',
-        workspaceId: 'ws_quick_chat',
-      },
+    expect(createResponses.mock.calls[0]?.[1]).not.toHaveProperty('metadata');
+    expect(createResponses.mock.calls[0]?.[1]?.prompt_cache_key).toMatch(
+      /^openkit:responses:[a-f0-9]{32}$/
+    );
+    expect(faux.state.callCount).toBe(1);
+    await expect(res.json()).resolves.toMatchObject({
+      status: 'completed',
+      modelId: 'codex-fast',
+      content: 'Quick response',
     });
-    expect(seenRequests[0]?.prompt_cache_key).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
   });
 });

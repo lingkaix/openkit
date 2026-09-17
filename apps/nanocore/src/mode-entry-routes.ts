@@ -2361,12 +2361,6 @@ export function registerQuickAndChatModeRoutes({
                   { role: 'system', content: QUICK_CHAT_SYSTEM_PROMPT },
                   { role: 'user', content: input.prompt },
                 ],
-                metadata: {
-                  openkit: {
-                    sessionId: input.sessionId,
-                    workspaceId: input.workspaceId,
-                  },
-                },
               },
               {
                 ...(subscriptionModels ? { subscriptionModels } : {}),

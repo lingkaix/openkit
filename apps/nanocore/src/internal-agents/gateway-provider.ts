@@ -19,7 +19,6 @@ export interface InternalAgentGatewayProviderOptions {
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
-  readonly metadata: Readonly<Record<string, unknown>>;
   readonly promptCacheScope: {
     readonly sessionId: string;
     readonly workspaceId: string;
@@ -31,7 +30,7 @@ export interface InternalAgentGatewayProviderOptions {
 /**
  * Creates the private Gateway projection used by one pinned internal Agent run.
  *
- * Current Gateway adapters do not yet produce an OpenKit Compaction Item. This projection runs only while the complete serialized request is conservatively below the selected threshold and otherwise returns the stable unsupported-compaction failure.
+ * Current Gateway adapters do not yet produce an OpenKit Compaction Item. This projection runs only while the complete serialized request is conservatively below the selected threshold and otherwise returns the stable unsupported-compaction failure. Internal cache and usage lineage stay on `promptCacheScope` and `usageEndpoint`; they are not authored onto the provider payload.
  *
  * @param options Existing logical-model routing, provider, cache, and usage context.
  * @returns Effect injected into the role-agnostic loop.
@@ -83,7 +82,6 @@ export function createInternalAgentGatewayProvider(
             model: providerModel,
             instructions: request.systemPrompt,
             input: providerInput,
-            metadata: options.metadata,
             parallel_tool_calls: false,
             tools: providerTools,
           },

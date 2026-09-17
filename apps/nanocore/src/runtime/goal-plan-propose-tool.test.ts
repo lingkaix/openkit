@@ -575,12 +575,12 @@ describe('pre-approval Goal Plan revision planner factory', () => {
           role?: string;
           content?: Array<{ type?: string; text?: string }>;
         }>;
-        metadata?: { openkit?: { sessionId?: string; workspaceId?: string } };
         tools?: Array<{ name: string }>;
       };
       expect(firstRequest?.tools?.map((tool) => tool.name)).toEqual([GOAL_PLAN_PROPOSE_TOOL_NAME]);
-      expect(firstRequest?.metadata).toEqual({
-        openkit: {
+      expect(firstRequest).not.toHaveProperty('metadata');
+      expect(createResponses.mock.calls[0]?.[2]).toMatchObject({
+        promptCacheScope: {
           sessionId: `${GOAL_ORCHESTRATOR_ROLE_ID}:${GOAL.goalId}`,
           workspaceId: GOAL.workspaceId,
         },
