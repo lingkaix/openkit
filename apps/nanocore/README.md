@@ -1,5 +1,7 @@
 # nanocore
 
+Harness result acknowledgement retries retain the exact prior receipt while a successor operation is queued. An identical replay only returns the acknowledgement; it neither mutates the successor nor notifies its producer. Dispatching the successor clears the prior receipt, after which stale or changed results remain conflicts.
+
 The authorized Thread dashboard derives taskInputs objective summaries through the existing full Context Package verifier and exact request Item. Invalid or missing provenance omits only that summary; stored messages and runtime identity remain unchanged.
 
 The authorized Thread dashboard projects the authenticated viewer and only recorded Item actors and assigned Turn Agents with current User or Agent display names. It exposes no email or unrelated user directory; absent names retain stable actor ids.

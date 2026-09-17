@@ -636,7 +636,7 @@ export function openNanoHostAgentSessionBinding(
   }
 }
 
-/** Queues one fixed typed operation without raw route credentials. */
+/** Queues one fixed typed operation without raw route credentials or clearing a prior result receipt. */
 export function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: QueueNanoHostHarnessOperationInput
@@ -661,8 +661,7 @@ export function queueNanoHostHarnessOperation(
         `UPDATE harness_instance_records
          SET operation_state = 'queued', operation_id = NULL,
              operation_sequence = next_sequence, operation = ?, command_body_json = ?,
-             command_fingerprint = ?, result_json = NULL, result_fingerprint = NULL,
-             updated_at = ?
+             command_fingerprint = ?, updated_at = ?
          WHERE harness_instance_id = ? AND operation_state IN ('idle', 'settled')`
       )
       .run(
@@ -679,7 +678,7 @@ export function queueNanoHostHarnessOperation(
   }
 }
 
-/** Dispatches one exact operation once and binds Turn route-token hashes in the same transaction. */
+/** Dispatches one exact operation once, drops the prior result receipt, and binds Turn route-token hashes in the same transaction. */
 export function dispatchNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: DispatchNanoHostHarnessOperationInput
@@ -775,7 +774,8 @@ export function dispatchNanoHostHarnessOperation(
       .prepare(
         `UPDATE harness_instance_records
          SET operation_state = 'dispatched', operation_id = ?, command_body_json = ?,
-             command_fingerprint = ?, updated_at = ?
+             command_fingerprint = ?, result_json = NULL, result_fingerprint = NULL,
+             updated_at = ?
          WHERE harness_instance_id = ? AND operation_state = 'queued'
            AND operation_sequence = ? AND next_sequence = ?`
       )
@@ -826,11 +826,17 @@ export function expireNanoHostHarnessQueuedOperation(
   }
 }
 
-/** Settles one exact operation result or accepts an identical immediate replay. */
+/**
+ * Settles one exact dispatched result, or acknowledges the identical prior result
+ * while that receipt is still retained in settled or queued state.
+ *
+ * @returns `settled` on the first durable settlement, `replayed` when the exact
+ *   prior result is acknowledged without mutation.
+ */
 export function settleNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: SettleNanoHostHarnessOperationInput
-): void {
+): 'settled' | 'replayed' {
   const resultJson = canonicalJson(input.result as unknown as Record<string, unknown>);
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
@@ -839,15 +845,14 @@ export function settleNanoHostHarnessOperation(
       input.sandboxIntegrationBindingRef,
       input.result.harnessInstanceId
     );
+    if (
+      (harness.operation_state === 'settled' || harness.operation_state === 'queued') &&
+      harness.result_json === resultJson
+    ) {
+      coreDb.sqlite.exec('COMMIT');
+      return 'replayed';
+    }
     if (harness.operation_state === 'settled') {
-      if (
-        harness.operation_id === input.result.operationId &&
-        harness.operation_sequence === input.result.sequence &&
-        harness.result_json === resultJson
-      ) {
-        coreDb.sqlite.exec('COMMIT');
-        return;
-      }
       throw new Error('NanoHost Harness result replay conflicts with the settled result.');
     }
     if (
@@ -862,7 +867,7 @@ export function settleNanoHostHarnessOperation(
     if (input.result.disposition === 'unknown') {
       setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp);
       coreDb.sqlite.exec('COMMIT');
-      return;
+      return 'settled';
     }
     if (input.result.disposition === 'succeeded') {
       projectSuccessfulResult(coreDb, harness, input.result.body, input.timestamp);
@@ -887,6 +892,7 @@ export function settleNanoHostHarnessOperation(
       throw new Error('NanoHost Harness result settlement changed concurrently.');
     }
     coreDb.sqlite.exec('COMMIT');
+    return 'settled';
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
     throw error;

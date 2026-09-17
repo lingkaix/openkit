@@ -4,21 +4,170 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getRequestListener } from '@hono/node-server';
+import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  createNanoHostHarnessRuntime,
+  queueNanoHostHarnessOperation,
+} from './nanohost-harness-records.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
   NANO_HOST_EFFECT_OPERATIONS,
+  registerNanoHostSessionSemanticRoutes,
 } from './nanohost-session-dispatch.js';
 
 describe('authoritative NanoHost session dispatch', () => {
+  it('acknowledges a prior Harness result without notifying the queued successor producer', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-result-ack-')));
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = { deploymentId: 'deployment-ack', identityId: 'host-ack' };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      targetId: target.identityId,
+      observedAt: new Date().toISOString(),
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    const notify = vi.fn(() => {
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {},
+        harnessInstanceId: 'harness-ack',
+        operation: 'harness.drain',
+        timestamp: '2098-08-21T00:00:01.000Z',
+      });
+    });
+    registerNanoHostSessionSemanticRoutes({
+      app,
+      coreDb,
+      dispatch,
+      harnessResultSettled: notify,
+      nanoHostConfig: target,
+    });
+    const listener = getRequestListener(app.fetch);
+    let admitted = false;
+    const server = createHttp2Server((request, response) => {
+      if (!admitted) {
+        authority.admit({
+          connectionGeneration: 1,
+          identityId: target.identityId,
+          physicalConnection: readNanoHostPhysicalConnectionContext(request)!,
+        });
+        admitted = true;
+      }
+      void listener(request, response);
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      /** Sends the real private request over the admitted native HTTP/2 connection. */
+      const post = async (path: string, body: unknown) => {
+        const stream = client!.request({
+          ':method': 'POST',
+          ':path': path,
+          'content-type': 'application/json',
+          'x-openkit-integration-binding': 'integration-ack',
+        });
+        const headers = once(stream, 'response');
+        stream.end(JSON.stringify(body));
+        const [responseHeaders] = await headers;
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        return { status: responseHeaders[':status'], body: Buffer.concat(chunks).toString() };
+      };
+      expect(
+        await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'e'.repeat(64) })
+      ).toEqual({ status: 204, body: '' });
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-ack',
+        harnessCompatibilityKey: 'b'.repeat(64),
+        harnessInstanceId: 'harness-ack',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: 'e'.repeat(64),
+        sandboxBindingRef: 'sandbox-binding-ack',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-ack',
+        sandboxRuntimeId: 'sandbox-runtime-ack',
+        runtimeTargetId: target.identityId,
+        timestamp: '2098-08-21T00:00:00.000Z',
+      });
+      notify();
+      notify.mockClear();
+      const dispatched = await post('/worker-control/harness/poll', { schemaVersion: 2 });
+      expect(dispatched.status).toBe(200);
+      const command = JSON.parse(dispatched.body);
+      const result = {
+        schemaVersion: 2,
+        harnessInstanceId: command.harnessInstanceId,
+        operationId: command.operationId,
+        sequence: command.sequence,
+        disposition: 'succeeded',
+        body: { state: 'draining', activeTurns: 0, openSessions: 0 },
+      };
+      expect(await post('/worker-control/harness/result', result)).toEqual({
+        status: 204,
+        body: '',
+      });
+      const queued = coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
+      expect(queued).toMatchObject({ operation_state: 'queued', operation_sequence: 1 });
+      expect(await post('/worker-control/harness/result', result)).toEqual({
+        status: 204,
+        body: '',
+      });
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(queued);
+      expect(
+        (
+          await post('/worker-control/harness/result', {
+            ...result,
+            body: { ...result.body, activeTurns: 1 },
+          })
+        ).status
+      ).toBe(409);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(queued);
+      const next = await post('/worker-control/harness/poll', { schemaVersion: 2 });
+      expect(next.status).toBe(200);
+      const nextCommand = JSON.parse(next.body);
+      expect(nextCommand.sequence).toBe(1);
+      const successor = coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
+      expect(successor).toMatchObject({ result_json: null, result_fingerprint: null });
+      expect((await post('/worker-control/harness/result', result)).status).toBe(409);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(
+        successor
+      );
+      expect(
+        await post('/worker-control/harness/result', {
+          ...result,
+          operationId: nextCommand.operationId,
+          sequence: nextCommand.sequence,
+        })
+      ).toEqual({ status: 204, body: '' });
+      expect(notify).toHaveBeenCalledTimes(2);
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+    }
+  });
+
   it('defers image settlement on storage failure and acknowledges only durable outcomes', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-settlement-')));
     applyMigrations(coreDb);

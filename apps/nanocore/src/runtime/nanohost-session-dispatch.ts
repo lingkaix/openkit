@@ -1044,12 +1044,14 @@ export function registerNanoHostSessionSemanticRoutes(
           return command ? context.json(command, 200) : context.body(null, 204);
         }
         const result = value as unknown as NanoHostHarnessResult;
-        settleNanoHostHarnessOperation(input.coreDb, {
+        const settlement = settleNanoHostHarnessOperation(input.coreDb, {
           sandboxIntegrationBindingRef,
           result,
           timestamp: new Date().toISOString(),
         });
-        input.harnessResultSettled?.(result);
+        if (settlement === 'settled') {
+          input.harnessResultSettled?.(result);
+        }
         return context.body(null, 204);
       }
       await input.dispatch.route(requirePhysicalConnection(context.env), {

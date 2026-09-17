@@ -734,6 +734,115 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
+  it('accepts identical session.close result replay after the next session.open is queued', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-close-replay-queued-')));
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-1',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-1',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          agentSessionId: 'agent-session-1',
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.close',
+        timestamp: now,
+      });
+      const command = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+      });
+      const closeResult = {
+        body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+        disposition: 'succeeded' as const,
+        harnessInstanceId: 'harness-1',
+        operationId: command!.operationId,
+        schemaVersion: 2 as const,
+        sequence: 0,
+      };
+      settleNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result: closeResult,
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'c'.repeat(64),
+        agentSessionId: 'agent-session-2',
+        agentSessionRuntimeBindingId: 'agent-session-binding-2',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-2',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          adapterId: 'codex',
+          agentSessionCompatibilityKey: 'c'.repeat(64),
+          agentSessionId: 'agent-session-2',
+          agentSessionRuntimeBindingId: 'agent-session-binding-2',
+          effectiveSetupGeneration: 1,
+          storageRef: 'storage-1',
+          threadId: 'thread-2',
+          workSlotRef: 'work-slot-2',
+          workspaceId: 'workspace-1',
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.open',
+        timestamp: now,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT operation AS operation, operation_id AS operationId,
+                    operation_state AS operationState FROM harness_instance_records
+             WHERE harness_instance_id = ?`
+          )
+          .get('harness-1')
+      ).toEqual({ operation: 'session.open', operationId: null, operationState: 'queued' });
+      settleNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result: closeResult,
+        timestamp: now,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT operation AS operation, operation_id AS operationId,
+                    operation_state AS operationState FROM harness_instance_records
+             WHERE harness_instance_id = ?`
+          )
+          .get('harness-1')
+      ).toEqual({ operation: 'session.open', operationId: null, operationState: 'queued' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('records unknown session.close without inferring binding removal', () => {
     const coreDb = openCoreDb(
       mkdtempSync(join(tmpdir(), 'openkit-harness-session-close-unknown-'))
