@@ -703,6 +703,10 @@ describe('primitive tier — behavior', () => {
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
   });
 
+  function workerEnvironmentOptionName(sourceLabel: string, occupancy: string, createdAt: string) {
+    return `${sourceLabel} · ${occupancy} · Created ${new Date(createdAt).toLocaleString(undefined, { timeZoneName: 'short' })}`;
+  }
+
   it('keeps Advanced Worker environment settings closed inside + and omits a new-environment choice', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
@@ -783,6 +787,7 @@ describe('primitive tier — behavior', () => {
     const onCheck = vi.fn();
     const storageRef = `wst_${'a'.repeat(32)}`;
     const retained = {
+      createdAt: '2026-09-16T14:24:10.746Z',
       expectedRevision: 4,
       layoutDigest: `sha256:${'b'.repeat(64)}`,
       lineage: 'Independent review from Goal closeout',
@@ -843,7 +848,7 @@ describe('primitive tier — behavior', () => {
     );
     expect(onCheck).toHaveBeenCalledWith(retained);
     expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
-      'Goal closeout · Idle'
+      workerEnvironmentOptionName('Goal closeout', 'Idle', retained.createdAt)
     );
     expect(screen.getByText('Independent review from Goal closeout')).toBeInTheDocument();
     expect(screen.getByText('Idle')).toBeInTheDocument();
@@ -890,6 +895,7 @@ describe('primitive tier — behavior', () => {
     const user = userEvent.setup();
     const storageRef = `wst_${'c'.repeat(32)}`;
     const retained = {
+      createdAt: '2026-09-16T14:24:10.746Z',
       expectedRevision: 4,
       layoutDigest: `sha256:${'d'.repeat(64)}`,
       lineage: 'Work from Competitive teardown',
@@ -939,7 +945,11 @@ describe('primitive tier — behavior', () => {
       screen.getByRole('combobox', { name: 'Worker environment' }),
       storageRef
     );
-    expect(screen.getByRole('option', { name: 'Competitive teardown · Idle' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', {
+        name: workerEnvironmentOptionName('Competitive teardown', 'Idle', retained.createdAt),
+      })
+    ).toBeInTheDocument();
     expect(
       screen.getByText('Current deployment administrator authority is required.')
     ).toBeInTheDocument();
@@ -983,6 +993,7 @@ describe('primitive tier — behavior', () => {
     const storageRef = `wst_${'e'.repeat(32)}`;
     const otherRef = `wst_${'f'.repeat(32)}`;
     const retained = {
+      createdAt: '2026-09-16T14:24:10.746Z',
       expectedRevision: 4,
       layoutDigest: `sha256:${'b'.repeat(64)}`,
       lineage: 'Work from Competitive teardown',
@@ -1037,13 +1048,89 @@ describe('primitive tier — behavior', () => {
     );
     const combobox = screen.getByRole('combobox', { name: 'Worker environment' });
     expect(combobox).toHaveValue(storageRef);
-    expect(combobox).toHaveDisplayValue('Competitive teardown · Idle');
-    expect(screen.getByRole('option', { name: 'Goal closeout · Idle' })).toBeInTheDocument();
+    expect(combobox).toHaveDisplayValue(
+      workerEnvironmentOptionName('Competitive teardown', 'Idle', retained.createdAt)
+    );
+    expect(
+      screen.getByRole('option', {
+        name: workerEnvironmentOptionName('Goal closeout', 'Idle', replacement.createdAt),
+      })
+    ).toBeInTheDocument();
     await user.selectOptions(combobox, 'new');
     expect(combobox).toHaveValue('new');
     expect(
-      screen.queryByRole('option', { name: 'Competitive teardown · Idle' })
+      screen.queryByRole('option', {
+        name: workerEnvironmentOptionName('Competitive teardown', 'Idle', retained.createdAt),
+      })
     ).not.toBeInTheDocument();
+  });
+
+  it('distinguishes same-source retained environments by recorded creation time', async () => {
+    const user = userEvent.setup();
+    const earlierAt = '2026-09-16T14:24:10.746Z';
+    const laterAt = '2026-09-16T16:40:22.100Z';
+    const earlierRef = `wst_${'a'.repeat(32)}`;
+    const laterRef = `wst_${'b'.repeat(32)}`;
+    const earlier = {
+      createdAt: earlierAt,
+      expectedRevision: 4,
+      layoutDigest: `sha256:${'c'.repeat(64)}`,
+      lineage: 'Work from Fresh-server Worker verification',
+      occupancy: 'Idle',
+      purpose: 'work' as const,
+      sourceLabel: 'Fresh-server Worker verification',
+      storageRef: earlierRef,
+    };
+    const later = { ...earlier, createdAt: laterAt, storageRef: laterRef };
+    render(
+      <Composer
+        workerEnvironments={{ items: [earlier, later], onBrowse: vi.fn(), status: 'ready' }}
+        targetCatalog={{
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          defaultTargetRef: 'new-task-worker',
+          targets: [
+            {
+              targetRef: 'new-task-worker',
+              kind: 'new-task-worker',
+              label: 'New task worker',
+              description: null,
+              availability: 'available',
+              unavailableReason: null,
+              threadId: null,
+              profileId: null,
+              logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+              defaultLogicalModelId: 'default',
+            },
+          ],
+        }}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    const earlierName = workerEnvironmentOptionName(
+      'Fresh-server Worker verification',
+      'Idle',
+      earlierAt
+    );
+    const laterName = workerEnvironmentOptionName(
+      'Fresh-server Worker verification',
+      'Idle',
+      laterAt
+    );
+    expect(screen.getByRole('option', { name: earlierName })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: laterName })).toBeInTheDocument();
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Worker environment' }),
+      laterRef
+    );
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
+      laterName
+    );
+    expect(document.querySelector('time')).toHaveAttribute('datetime', laterAt);
+    expect(document.body).not.toHaveTextContent(earlierRef);
+    expect(document.body).not.toHaveTextContent(laterRef);
   });
 
   it('NavRow marks the active destination and fires onPress', async () => {

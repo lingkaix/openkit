@@ -44,6 +44,7 @@ export interface ComposerDraft {
 
 /** Product-safe retained-environment option for Composer Advanced settings. */
 export interface ComposerWorkerEnvironmentOption {
+  createdAt: string;
   expectedRevision: number;
   layoutDigest: string;
   lineage: string;
@@ -422,7 +423,7 @@ function WorkerEnvironmentPicker({
           <option value="new">New environment</option>
           {options.map((item) => (
             <option key={item.storageRef} value={item.storageRef}>
-              {item.sourceLabel} · {item.occupancy}
+              {item.sourceLabel} · {item.occupancy} · Created {formatRecordedTime(item.createdAt)}
             </option>
           ))}
         </select>
@@ -434,6 +435,12 @@ function WorkerEnvironmentPicker({
           <>
             <p className="text-xs text-fg-muted">{selectedItem.lineage}</p>
             <p className="text-xs text-fg-muted">{selectedItem.occupancy}</p>
+            <p className="text-xs text-fg-muted">
+              Created{' '}
+              <time dateTime={selectedItem.createdAt}>
+                {formatRecordedTime(selectedItem.createdAt)}
+              </time>
+            </p>
             {check ? <p className="text-xs text-fg-muted">{check.message}</p> : null}
           </>
         ) : null}
@@ -451,6 +458,11 @@ function retainedEnvironmentOptions(
     return items;
   }
   return [...items, selected];
+}
+
+/** Formats recorded environment time with the shared locale date-time projection. */
+function formatRecordedTime(value: string): string {
+  return new Date(value).toLocaleString(undefined, { timeZoneName: 'short' });
 }
 
 function InlineSelect({

@@ -63,6 +63,7 @@ export function projectWorkerEnvironmentOptions(
   return environments.map((environment) => {
     const labels = contributorLabels(environment.contributors, threads);
     return {
+      createdAt: environment.createdAt,
       expectedRevision: environment.revision,
       layoutDigest: environment.layoutDigest,
       lineage: contributorLineage(environment.contributors, labels),

@@ -3536,9 +3536,17 @@ function workerSelectRequest(
   };
 }
 
+function workerEnvironmentOptionName(sourceLabel: string, occupancy: string, createdAt: string) {
+  return `${sourceLabel} · ${occupancy} · Created ${new Date(createdAt).toLocaleString(undefined, { timeZoneName: 'short' })}`;
+}
+
 async function chooseRetainedEnvironment(
   user: ReturnType<typeof userEvent.setup>,
-  optionName = 'Competitive teardown · Idle',
+  optionName = workerEnvironmentOptionName(
+    'Competitive teardown',
+    'Idle',
+    WORKER_ENVIRONMENT.createdAt
+  ),
   storageRef = WORKER_STORAGE_REF
 ) {
   await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
@@ -3627,9 +3635,19 @@ describe('Worker environment Advanced choice', () => {
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
     expect(
-      await screen.findByRole('option', { name: 'Competitive teardown · Idle' })
+      await screen.findByRole('option', {
+        name: workerEnvironmentOptionName(
+          'Competitive teardown',
+          'Idle',
+          WORKER_ENVIRONMENT.createdAt
+        ),
+      })
     ).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Goal closeout · Attached' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', {
+        name: workerEnvironmentOptionName('Goal closeout', 'Attached', attached.createdAt),
+      })
+    ).toBeInTheDocument();
     await user.selectOptions(
       screen.getByRole('combobox', { name: 'Worker environment' }),
       attachedRef
@@ -3673,7 +3691,7 @@ describe('Worker environment Advanced choice', () => {
       expect(selectWorkerEnvironment).toHaveBeenCalledWith('ws1', workerSelectRequest('th1'))
     );
     expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
-      'Competitive teardown · Idle'
+      workerEnvironmentOptionName('Competitive teardown', 'Idle', WORKER_ENVIRONMENT.createdAt)
     );
     expect(screen.getByText('Idle')).toBeInTheDocument();
     expect(
@@ -3728,7 +3746,13 @@ describe('Worker environment Advanced choice', () => {
     await user.click(screen.getByText('Advanced settings'));
     await waitFor(() =>
       expect(
-        screen.getByRole('option', { name: 'Competitive teardown · Idle' })
+        screen.getByRole('option', {
+          name: workerEnvironmentOptionName(
+            'Competitive teardown',
+            'Idle',
+            WORKER_ENVIRONMENT.createdAt
+          ),
+        })
       ).toBeInTheDocument()
     );
     await user.selectOptions(
@@ -3882,15 +3906,77 @@ describe('Worker environment Advanced choice', () => {
     );
     await user.click(screen.getByText('Advanced settings'));
     await waitFor(() => expect(listWorkerEnvironments).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole('option', { name: 'Goal closeout · Idle' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Competitive teardown · Idle' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', {
+        name: workerEnvironmentOptionName('Goal closeout', 'Idle', other.createdAt),
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', {
+        name: workerEnvironmentOptionName(
+          'Competitive teardown',
+          'Idle',
+          WORKER_ENVIRONMENT.createdAt
+        ),
+      })
+    ).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveValue(
       WORKER_STORAGE_REF
     );
     expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
-      'Competitive teardown · Idle'
+      workerEnvironmentOptionName('Competitive teardown', 'Idle', WORKER_ENVIRONMENT.createdAt)
     );
     expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes same-source retained environments by recorded creation time', async () => {
+    const user = userEvent.setup();
+    const laterAt = '2026-09-16T16:40:22.100Z';
+    const laterRef = 'wst_164a606d43e246a1a1c9a952dffcb39f';
+    const later = {
+      ...WORKER_ENVIRONMENT,
+      createdAt: laterAt,
+      storageRef: laterRef,
+      updatedAt: laterAt,
+    };
+    const listWorkerEnvironments = vi.fn().mockResolvedValue({
+      items: [WORKER_ENVIRONMENT, later],
+      nextCursor: null,
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+        },
+        { listWorkerEnvironments }
+      )
+    );
+    await chooseNewTaskWorker(user);
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(screen.getByText('Advanced settings'));
+    const earlierName = workerEnvironmentOptionName(
+      'Competitive teardown',
+      'Idle',
+      WORKER_ENVIRONMENT.createdAt
+    );
+    const laterName = workerEnvironmentOptionName('Competitive teardown', 'Idle', laterAt);
+    expect(await screen.findByRole('option', { name: earlierName })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: laterName })).toBeInTheDocument();
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Worker environment' }),
+      laterRef
+    );
+    expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
+      laterName
+    );
+    expect(
+      screen.getByRole('dialog', { name: 'Attachments' }).querySelector('time')
+    ).toHaveAttribute('datetime', laterAt);
+    expect(document.body).not.toHaveTextContent(WORKER_STORAGE_REF);
+    expect(document.body).not.toHaveTextContent(laterRef);
+    expect(document.body).not.toHaveTextContent(WORKER_LAYOUT_DIGEST);
   });
 
   it('shows list denial without widening authority', async () => {
