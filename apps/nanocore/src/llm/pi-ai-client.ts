@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type AssistantMessage,
@@ -2184,13 +2184,15 @@ function readResponsesReasoningText(record: Record<string, unknown>): string {
  * @param requestModel Model id authored by the caller.
  * @param additionalTools Native tool declarations for output validation.
  * @param bridgeNames Exact inverse of provider-private names.
+ * @param itemNamespace Response-local namespace for synthetic output identities.
  * @returns OpenAI-compatible Responses payload.
  */
 function toResponsesResponse(
   message: AssistantMessage,
   requestModel: string,
   additionalTools?: ResponsesAdditionalTools,
-  bridgeNames?: ResponsesBridgeNames
+  bridgeNames?: ResponsesBridgeNames,
+  itemNamespace: string = randomUUID()
 ): OpenAICompatibleResponsesResponse {
   return {
     id: message.responseId ?? `resp_pi_${message.timestamp}`,
@@ -2200,12 +2202,12 @@ function toResponsesResponse(
     created_at: Math.floor(message.timestamp / 1000),
     output: message.content.map((block, index): Record<string, unknown> => {
       if (block.type === 'thinking') {
-        return responsesReasoningItem(block, `reasoning_${index}`);
+        return responsesReasoningItem(block, `reasoning_${itemNamespace}_${index}`);
       }
       if (block.type === 'toolCall') {
         return responsesToolCallItem(block, additionalTools, 'completed', false, bridgeNames);
       }
-      return responsesTextItem(block, `message_${index}`);
+      return responsesTextItem(block, `message_${itemNamespace}_${index}`);
     }),
     usage: toResponsesUsage(message.usage),
   };
@@ -2429,6 +2431,7 @@ function toResponsesSseStream(
   bridgeNames?: ResponsesBridgeNames
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
+  const itemNamespace = randomUUID();
   let pending: IteratorResult<AssistantMessageEvent> | undefined = first;
   let cancelled = false;
   let sequenceNumber = 0;
@@ -2488,7 +2491,13 @@ function toResponsesSseStream(
               encodeEvent({
                 type: 'response.created',
                 response: {
-                  ...toResponsesResponse(event.partial, requestModel, additionalTools, bridgeNames),
+                  ...toResponsesResponse(
+                    event.partial,
+                    requestModel,
+                    additionalTools,
+                    bridgeNames,
+                    itemNamespace
+                  ),
                   output: [],
                   status: 'in_progress',
                 },
@@ -2501,7 +2510,7 @@ function toResponsesSseStream(
               continue;
             }
             enqueueTextStart(controller, event.contentIndex, {
-              id: `message_${event.contentIndex}`,
+              id: `message_${itemNamespace}_${event.contentIndex}`,
             });
             return;
           }
@@ -2513,7 +2522,7 @@ function toResponsesSseStream(
               encodeEvent({
                 type: 'response.output_text.delta',
                 delta: event.delta,
-                item_id: `message_${event.contentIndex}`,
+                item_id: `message_${itemNamespace}_${event.contentIndex}`,
                 output_index: event.contentIndex,
                 content_index: 0,
               })
@@ -2525,7 +2534,7 @@ function toResponsesSseStream(
             if (!block || block.type !== 'text') {
               throw new GatewayUnsupportedFeatureError('pi-ai Responses text stream');
             }
-            const item = responsesTextItem(block, `message_${event.contentIndex}`);
+            const item = responsesTextItem(block, `message_${itemNamespace}_${event.contentIndex}`);
             const itemId = item.id;
             if (preserveNativeTextIdentity) {
               // The stock parser exposes native id and phase only at text_end.
@@ -2585,7 +2594,10 @@ function toResponsesSseStream(
             if (!block || block.type !== 'thinking') {
               throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning stream');
             }
-            const item = responsesReasoningItem(block, `reasoning_${event.contentIndex}`);
+            const item = responsesReasoningItem(
+              block,
+              `reasoning_${itemNamespace}_${event.contentIndex}`
+            );
             const itemId = item.id as string;
             const part = { type: 'summary_text', text: event.content };
             // pi-ai exposes the opaque reasoning id only at thinking_end.
@@ -2804,7 +2816,10 @@ function toResponsesSseStream(
               if (!block || block.type !== 'thinking') {
                 throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning stream');
               }
-              const item = responsesReasoningItem(block, `reasoning_${contentIndex}`);
+              const item = responsesReasoningItem(
+                block,
+                `reasoning_${itemNamespace}_${contentIndex}`
+              );
               if (typeof item.encrypted_content !== 'string') {
                 throw new GatewayUnsupportedFeatureError(
                   'pi-ai Responses reasoning encrypted content'
@@ -2826,7 +2841,8 @@ function toResponsesSseStream(
                   event.message,
                   requestModel,
                   additionalTools,
-                  bridgeNames
+                  bridgeNames,
+                  itemNamespace
                 ),
               })
             );

@@ -81,6 +81,60 @@ function expectedAdapterCostTotal(
 }
 
 describe('PiAiGatewayClient', () => {
+  it.each([
+    false,
+    true,
+  ])('keeps synthetic Responses item identities unique across requests (stream=%s)', async (stream) => {
+    const faux = fauxProvider({
+      api: 'openai-completions',
+      provider: 'openrouter',
+      models: [{ id: 'stealth/ox-alpha', reasoning: true }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses(
+      [0, 1].map(() =>
+        fauxAssistantMessage([fauxThinking('Checking.'), fauxText('Final answer.')], {
+          timestamp: 1783260591000,
+        })
+      )
+    );
+    const client = new PiAiGatewayClient({ models });
+    const provider = providerConfig({
+      adapterId: 'openrouter',
+      models: ['stealth/ox-alpha'],
+      subscriptionProviderId: 'openrouter',
+    });
+    const request = {
+      model: 'stealth/ox-alpha',
+      input: 'Check the answer.',
+      tools: [{ type: 'function', name: 'check', parameters: { type: 'object', properties: {} } }],
+    };
+    const identities: unknown[][] = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!stream) {
+        const response = await client.createResponses(provider, request);
+        identities.push(response.output.map((item) => item.id));
+        continue;
+      }
+      const body = await new Response(await client.createResponsesStream(provider, request)).text();
+      const events = body
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice(6)));
+      const output = events.find((event) => event.type === 'response.completed').response.output;
+      expect(output.map((item: { type: string }) => item.type)).toEqual(['reasoning', 'message']);
+      for (const event of events) {
+        if (event.item) expect(event.item.id).toBe(output[event.output_index].id);
+        if (event.item_id) expect(event.item_id).toBe(output[event.output_index].id);
+      }
+      identities.push(output.map((item: { id: string }) => item.id));
+    }
+    expect(identities[0]).toHaveLength(2);
+    expect(identities[1]).toHaveLength(2);
+    expect(new Set(identities.flat()).size).toBe(4);
+  });
+
   it('accepts the empty include list and null reasoning emitted by Codex', () => {
     expect(() =>
       assertCodexResponsesRequestAdmission(
@@ -2304,8 +2358,14 @@ describe('PiAiGatewayClient', () => {
     expect(events.map((event) => event.sequence_number)).toEqual(
       events.map((_event, index) => index)
     );
-    expect(events[3]).toMatchObject({ item_id: 'reasoning_0', summary_index: 0 });
-    expect(events[9]).toMatchObject({ content_index: 0, item_id: 'message_1' });
+    expect(events[3]).toMatchObject({
+      item_id: expect.stringMatching(/^reasoning_[0-9a-f-]+_0$/),
+      summary_index: 0,
+    });
+    expect(events[9]).toMatchObject({
+      content_index: 0,
+      item_id: expect.stringMatching(/^message_[0-9a-f-]+_1$/),
+    });
     expect(events[14]).toMatchObject({ item_id: 'call_exec' });
     expect(events[15]).toMatchObject({
       arguments: '{"input":"text(true);"}',
