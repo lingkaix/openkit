@@ -238,9 +238,14 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
         </h1>
         <p className="text-sm text-fg-muted whitespace-pre-wrap">{goal.objective}</p>
         {goal.pendingHumanAttention.required && goal.pendingHumanAttention.reason ? (
-          <StatusChip tone="notice" dot>
-            {goal.pendingHumanAttention.reason}
-          </StatusChip>
+          <div>
+            <StatusChip tone="notice" dot>
+              Needs you
+            </StatusChip>
+            <p className="mt-1.5 whitespace-pre-wrap text-sm text-fg-muted">
+              {goal.pendingHumanAttention.reason}
+            </p>
+          </div>
         ) : null}
       </header>
 

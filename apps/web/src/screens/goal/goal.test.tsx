@@ -773,10 +773,13 @@ describe('goal surfaces (WP-5)', () => {
   it('shows a short heading and the full objective once when title equals objective', async () => {
     const objective =
       'Deliver a complete reviewable Goal plan for the live Plan lens heading defect by keeping the entire operator-authored objective available as body text without repeating it as a page title or truncating durable Goal records while the supervisor still approves the actual plan below the fold after the duplicated heading is corrected in projection only.';
+    const attentionReason =
+      'Review the complete plan and confirm the proposed verification steps before any Worker starts executing this Goal.';
     const planGoal = {
       ...goalSummary('awaiting_plan_approval').goal,
       title: objective,
       objective,
+      pendingHumanAttention: { required: true, reason: attentionReason },
     };
     const completedGoal = { ...goalSummary('completed').goal, title: objective, objective };
 
@@ -797,6 +800,7 @@ describe('goal surfaces (WP-5)', () => {
     expect(planObjective.tagName).toBe('P');
     expect(planObjective).toHaveClass('whitespace-pre-wrap');
     expect(screen.getAllByText(objective)).toHaveLength(1);
+    expect(screen.getByText(attentionReason).tagName).toBe('P');
     cleanup();
 
     const completedClient = makeClient({

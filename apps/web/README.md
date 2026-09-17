@@ -2,7 +2,7 @@
 
 The conversation stream uses the authorized dashboard taskInputs summaries for verified Worker request objectives. View request details retains the exact original message; absent summaries and ordinary human JSON remain verbatim.
 
-Status chips retain their full single-line label under flex pressure; surrounding descriptions wrap instead.
+Status chips retain their full single-line label under flex pressure; surrounding descriptions wrap instead. Goal attention explanations appear as full body text below the short status label.
 
 Conversation messages resolve authorized participant names from the Thread dashboard. Only the authenticated human aligns right with a You marker; other humans use left-aligned circular avatars and bubbles, while agents use square avatars and unboxed content. Missing profiles retain recorded ids, and messages without exact agent provenance show Agent. Account transitions discard viewer-bearing dashboard caches.
 
