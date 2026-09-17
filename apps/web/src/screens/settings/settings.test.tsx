@@ -945,11 +945,73 @@ describe('provider subscription projection', () => {
         id: 'primary',
         usedPercent: 40.4,
         remainingPercent: 59.6,
+        periodType: null,
+        startsAt: null,
         resetsAt: TIMESTAMP,
       },
-      { id: 'secondary', usedPercent: 99.6, remainingPercent: null, resetsAt: null },
+      {
+        id: 'secondary',
+        usedPercent: 99.6,
+        remainingPercent: null,
+        periodType: null,
+        startsAt: null,
+        resetsAt: null,
+      },
     ]);
     expect(projected.accounts[0]).not.toHaveProperty('quotaRemainingPercents');
+  });
+
+  it('projects omitted percents and periods as unknown and keeps same-call account metadata', () => {
+    const omitted = projectConnectedApps(PROVIDERS.providers[1], { accounts: [XAI_ACCOUNT] }, [
+      {
+        subscriptionProviderId: 'xai',
+        accountSlotId: 'primary',
+        availability: 'available',
+        observedAt: TIMESTAMP,
+        planType: 'SuperGrok',
+        subscriptionActive: true,
+        accountObservedAt: TIMESTAMP,
+        windows: [{ id: 'included', periodType: 'weekly', resetsAt: TIMESTAMP }],
+        billing: { currency: 'USD', prepaidBalanceCents: 0, sharedAllowance: true },
+      },
+    ]);
+    expect(omitted.accounts[0]?.quotaWindows).toEqual([
+      {
+        id: 'included',
+        usedPercent: null,
+        remainingPercent: null,
+        periodType: 'weekly',
+        startsAt: null,
+        resetsAt: TIMESTAMP,
+      },
+    ]);
+    expect(omitted.accounts[0]?.quotaBilling).toEqual({
+      currency: 'USD',
+      prepaidBalanceCents: 0,
+      onDemandUsedCents: null,
+      onDemandCapCents: null,
+      sharedAllowance: true,
+    });
+    const failedBilling = projectConnectedApps(
+      PROVIDERS.providers[1],
+      { accounts: [XAI_ACCOUNT] },
+      [
+        {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'primary',
+          availability: 'temporarily_unavailable',
+          observedAt: TIMESTAMP,
+          planType: 'SuperGrok',
+          subscriptionActive: true,
+          accountObservedAt: TIMESTAMP,
+        },
+      ]
+    );
+    expect(failedBilling.accounts[0]?.quotaPlanType).toBe('SuperGrok');
+    expect(failedBilling.accounts[0]?.quotaSubscriptionActive).toBe(true);
+    expect(failedBilling.accounts[0]?.quotaAccountObservedAt).toBe(TIMESTAMP);
+    expect(failedBilling.accounts[0]?.quotaWindows).toEqual([]);
+    expect(failedBilling.accounts[0]?.quotaBilling).toBeNull();
   });
 
   it('overlays a newer matching quota and ignores stale or mismatched pairs', () => {
@@ -965,7 +1027,14 @@ describe('provider subscription projection', () => {
     });
     expect(newer[0]?.accounts[0]?.quotaObservedAt).toBe(newerAt);
     expect(newer[0]?.accounts[0]?.quotaWindows).toEqual([
-      { id: 'primary', usedPercent: 10, remainingPercent: 90, resetsAt: newerAt },
+      {
+        id: 'primary',
+        usedPercent: 10,
+        remainingPercent: 90,
+        periodType: null,
+        startsAt: null,
+        resetsAt: newerAt,
+      },
     ]);
     expect(newer[1]?.accounts[0]?.quotaWindows[0]?.id).toBe('included');
 
@@ -1853,7 +1922,7 @@ describe('AI interface (board 20)', () => {
       )
     );
     renderApp('/settings/ai-interface', makeClient({ providerSubscriptions: { getAccountQuota } }));
-    expect(await screen.findByText('Quota temporarily unavailable')).toBeInTheDocument();
+    expect(await screen.findByText('Quota query failed')).toBeInTheDocument();
     expect(screen.getAllByText('Connected')).toHaveLength(2);
   });
 

@@ -4,6 +4,7 @@ import {
   type ProviderSubscriptionAccount,
   ProviderSubscriptionAccountSchema,
   ProviderSubscriptionAccountsResponseSchema,
+  ProviderSubscriptionAutoTopupSchema,
   ProviderSubscriptionQuotaSchema,
   ProviderSubscriptionsResponseSchema,
   StartProviderSubscriptionAccountLoginRequestSchema,
@@ -27,7 +28,7 @@ import {
   type ProviderSubscriptionAccountManager,
   type ProviderSubscriptionAccountPair,
 } from './provider-subscription-accounts.js';
-import { readXaiQuota } from './xai-quota.js';
+import { readXaiAutoTopup, readXaiQuota } from './xai-quota.js';
 
 const PROVIDERS = ProviderSubscriptionsResponseSchema.parse({
   providers: [
@@ -73,7 +74,7 @@ const ERROR_RESPONSES = {
 
 /** Dependencies for the provider-subscription App API route family. */
 export interface RegisterProviderSubscriptionRoutesInput {
-  /** NanoCore Hono app receiving the ten exact routes. */
+  /** NanoCore Hono app receiving the eleven exact routes. */
   readonly app: Hono<{ Variables: AuthVariables }>;
   /** Existing account, Vault, and pair-scoped pi-ai owner. */
   readonly accountManager: ProviderSubscriptionAccountManager | null;
@@ -98,7 +99,7 @@ function requireProviderSubscriptionAdminActor(
 }
 
 /**
- * Registers the ten exact provider-subscription App API routes.
+ * Registers the eleven exact provider-subscription App API routes.
  *
  * @param input Existing app, account manager, binding resolver, and optional clock.
  */
@@ -286,16 +287,47 @@ export function registerProviderSubscriptionRoutes(
     return runAccountOperation(c, async () => {
       await manager().reconcileAccount(pair);
       const handle = await manager().getPairHandle(pair);
-      const quota =
-        pair.subscriptionProviderId === 'xai'
-          ? await readXaiQuota(handle.models)
-          : await readCodexQuota(handle.credentials);
+      if (pair.subscriptionProviderId === 'xai') {
+        const quota = await readXaiQuota(handle.models, now);
+        return ProviderSubscriptionQuotaSchema.parse({
+          accountSlotId: pair.accountSlotId,
+          observedAt: now(),
+          subscriptionProviderId: pair.subscriptionProviderId,
+          ...(quota ?? { availability: 'temporarily_unavailable' }),
+        });
+      }
+      const quota = await readCodexQuota(handle.credentials);
       return ProviderSubscriptionQuotaSchema.parse({
         accountSlotId: pair.accountSlotId,
         availability: quota ? 'available' : 'temporarily_unavailable',
         observedAt: now(),
         ...(quota ?? {}),
         subscriptionProviderId: pair.subscriptionProviderId,
+      });
+    });
+  });
+
+  registerAppApiRoute(app, 'getProviderSubscriptionAccountAutoTopup', async (c) => {
+    const adminError = requireProviderSubscriptionAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+    const pair = requirePair(c);
+    if (pair instanceof Response) {
+      return pair;
+    }
+    if (pair.subscriptionProviderId !== 'xai') {
+      return invalidRequest();
+    }
+    return runAccountOperation(c, async () => {
+      await manager().reconcileAccount(pair);
+      const handle = await manager().getPairHandle(pair);
+      const observation = await readXaiAutoTopup(handle.models);
+      return ProviderSubscriptionAutoTopupSchema.parse({
+        accountSlotId: pair.accountSlotId,
+        observedAt: now(),
+        subscriptionProviderId: 'xai',
+        ...(observation ?? { availability: 'temporarily_unavailable' }),
       });
     });
   });

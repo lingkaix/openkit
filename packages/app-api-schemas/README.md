@@ -12,7 +12,7 @@ The private administration configuration candidate Artifact schema is shared by 
 
 The current Goal plan response projects the durable Goal and its exact plan reference for reload and reconnect. It adds no durable plan owner or approval authority.
 
-Provider-subscription payload schemas consume the browser-safe `@openkit/config-schema/provider-subscription` entry point so Web bundles do not traverse the config package's server-only root graph. Codex and xAI quota responses share the provider-neutral `available` and `temporarily_unavailable` union, preserving observation time, optional plan type and bounded quota-window percentages/reset times without exposing upstream account identity or raw billing data.
+Provider-subscription payload schemas consume the browser-safe `@openkit/config-schema/provider-subscription` entry point so Web bundles do not traverse the config package's server-only root graph. Codex and xAI quota responses share the provider-neutral `available` and `temporarily_unavailable` union, preserving observation time, optional same-call account metadata, bounded quota-window percentages, weekly/monthly period fields, and optional USD billing without exposing upstream account identity or raw billing data. Omitted percentages remain omitted so consumers can label Provider did not report usage; they are not inferred as zero used or exhausted. xAI auto-top-up uses the separate `ProviderSubscriptionAutoTopup` observation, locked to `subscriptionProviderId: "xai"`.
 
 Vault administration schemas keep provider API keys in strict request-only payloads and expose only redacted configuration status responses. `ProviderApiKeyProfileIdSchema` is the shared file-, Vault-reference-, and response-safe id boundary used by NanoCore and Web.
 

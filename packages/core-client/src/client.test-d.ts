@@ -3,6 +3,7 @@ import type {
   CreateProviderSubscriptionAccountRequest,
   ProviderSubscriptionAccount,
   ProviderSubscriptionAccountsResponse,
+  ProviderSubscriptionAutoTopup,
   ProviderSubscriptionQuota,
   ProviderSubscriptionsResponse,
   StartProviderSubscriptionAccountLoginRequest,
@@ -61,6 +62,11 @@ interface ExpectedProviderSubscriptionsClient {
     subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
     accountSlotId: string
   ): Promise<ProviderSubscriptionQuota>;
+  /** Returns the bounded xAI auto-top-up observation for one provider-scoped account slot. */
+  getAccountAutoTopup(
+    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
+    accountSlotId: string
+  ): Promise<ProviderSubscriptionAutoTopup>;
 }
 
 /** Resolves to true only when both types have identical assignability. */

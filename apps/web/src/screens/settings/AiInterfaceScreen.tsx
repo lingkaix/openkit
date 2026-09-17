@@ -369,6 +369,7 @@ function AccountControls({
 }) {
   const queryClient = useQueryClient();
   const [displayName, setDisplayName] = useState(account.displayName);
+  const [costsOpen, setCostsOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<ProviderSubscriptionAccount | undefined>(undefined);
   const statusKey = [
     ...settingsKeys.aiInterface,
@@ -462,6 +463,16 @@ function AccountControls({
     },
     onError: (error) => {
       if (isAdminDenied(error)) onAccessDenied();
+      queryClient.setQueryData<ConnectedAppProviderRow[]>(
+        [...settingsKeys.aiInterface, 'accounts'],
+        (current) =>
+          current
+            ? overlayConnectedAppQuota(current, {
+                subscriptionProviderId: providerId,
+                accountSlotId: account.accountSlotId,
+              })
+            : current
+      );
     },
     onSuccess: (result) => {
       queryClient.setQueryData<ConnectedAppProviderRow[]>(
@@ -471,17 +482,39 @@ function AccountControls({
     },
   });
 
+  const autoTopup = useMutation({
+    mutationFn: async () => {
+      const result = await client.providerSubscriptions.getAccountAutoTopup(
+        providerId,
+        account.accountSlotId
+      );
+      if (
+        result.subscriptionProviderId !== providerId ||
+        result.accountSlotId !== account.accountSlotId
+      ) {
+        throw new Error('Provider subscription projection failed.');
+      }
+      return result;
+    },
+    onError: (error) => {
+      if (isAdminDenied(error)) onAccessDenied();
+    },
+  });
+  const rule =
+    !autoTopup.isError && autoTopup.data?.availability === 'available' ? autoTopup.data : null;
+  const refresh = () => {
+    quota.mutate();
+    if (costsOpen) autoTopup.mutate();
+  };
+
   return (
     <Card className="flex min-w-0 w-full flex-col gap-3">
       <div className="flex min-w-0 w-full flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <p className="text-wrap text-sm font-bold text-fg-strong">{live.displayName}</p>
           <p className="text-wrap text-xs text-fg-muted">
-            {live.accountLabel ?? `Slot ${live.accountSlotId}`}
-            {live.planLabel ? ` · ${live.planLabel}` : ''}
-            {live.boundProviderCount > 0
-              ? ` · ${live.boundProviderCount} provider binding${live.boundProviderCount === 1 ? '' : 's'}`
-              : ''}
+            {live.quotaPlanType ?? live.planLabel ?? 'Plan not reported'}
+            {live.quotaBilling?.sharedAllowance === true ? ' · Shared allowance' : ''}
           </p>
         </div>
         <StatusChip tone={disconnected ? 'notice' : statusLabel.tone} dot>
@@ -510,9 +543,7 @@ function AccountControls({
       {cancel.isError ? (
         <ErrorBanner message="Couldn't cancel login." onRetry={() => cancel.mutate()} />
       ) : null}
-      {quota.isError ? (
-        <ErrorBanner message="Couldn't refresh quota." onRetry={() => quota.mutate()} />
-      ) : null}
+      {quota.isError ? <ErrorBanner message="Couldn't refresh quota." onRetry={refresh} /> : null}
       {status.isError ? (
         <ErrorBanner
           message="Couldn't refresh login status."
@@ -520,11 +551,7 @@ function AccountControls({
         />
       ) : null}
       <div className="flex min-w-0 w-full flex-wrap gap-2">
-        <Button
-          size="sm"
-          isDisabled={disconnected || quota.isPending}
-          onPress={() => quota.mutate()}
-        >
+        <Button size="sm" isDisabled={disconnected || quota.isPending} onPress={refresh}>
           Refresh quota
         </Button>
         {live.status === 'pending' ? (
@@ -548,9 +575,78 @@ function AccountControls({
           </Button>
         ) : null}
       </div>
-      <details className="min-w-0 w-full">
+      {providerId === 'xai' ? (
+        <details
+          className="min-w-0 w-full border-t border-border pt-3"
+          onToggle={(event) => {
+            const open = event.currentTarget.open;
+            setCostsOpen(open);
+            if (
+              open &&
+              !autoTopup.data &&
+              !autoTopup.isPending &&
+              !autoTopup.isError &&
+              !disconnected
+            )
+              autoTopup.mutate();
+          }}
+        >
+          <summary className="cursor-pointer text-sm font-medium text-fg">
+            Balance and costs
+          </summary>
+          <div className="mt-3 flex min-w-0 w-full flex-col gap-2">
+            <BillingAmount label="Prepaid" cents={live.quotaBilling?.prepaidBalanceCents} />
+            <BillingAmount label="Extra spend" cents={live.quotaBilling?.onDemandUsedCents} />
+            <BillingAmount label="Spend cap" cents={live.quotaBilling?.onDemandCapCents} />
+            {autoTopup.isPending ? (
+              <p className="text-xs text-fg-muted">Checking auto top-up…</p>
+            ) : autoTopup.isError || autoTopup.data?.availability === 'temporarily_unavailable' ? (
+              <ErrorBanner message="Auto top-up query failed." onRetry={() => autoTopup.mutate()} />
+            ) : (
+              <>
+                <p className="text-xs text-fg">
+                  Auto top-up{' '}
+                  {rule?.enabled === true
+                    ? 'enabled'
+                    : rule?.enabled === false
+                      ? 'disabled'
+                      : 'not reported'}
+                </p>
+                {rule?.thresholdCents !== undefined ? (
+                  <BillingAmount label="Top-up threshold" cents={rule.thresholdCents} />
+                ) : null}
+                {rule?.amountCents !== undefined ? (
+                  <BillingAmount label="Top-up amount" cents={rule.amountCents} />
+                ) : null}
+                {rule?.monthlyCapCents !== undefined ? (
+                  <BillingAmount label="Monthly top-up cap" cents={rule.monthlyCapCents} />
+                ) : null}
+              </>
+            )}
+            {autoTopup.data && !autoTopup.isError ? (
+              <QuotaInstant label="Auto top-up checked" value={autoTopup.data.observedAt} />
+            ) : null}
+          </div>
+        </details>
+      ) : null}
+      <details className="min-w-0 w-full border-t border-border pt-3">
         <summary className="cursor-pointer text-sm font-medium text-fg">Account settings</summary>
         <div className="mt-3 flex min-w-0 w-full flex-col gap-3">
+          <p className="text-wrap text-xs text-fg-muted">
+            Slot {live.accountSlotId} · {live.boundProviderCount} provider bindings
+          </p>
+          {live.accountLabel ? (
+            <p className="text-wrap text-xs text-fg-muted">{live.accountLabel}</p>
+          ) : null}
+          {live.quotaSubscriptionActive !== null ? (
+            <p className="text-xs text-fg-muted">
+              Build subscription eligibility:{' '}
+              {live.quotaSubscriptionActive ? 'eligible' : 'not eligible'}
+            </p>
+          ) : null}
+          {live.quotaAccountObservedAt ? (
+            <QuotaInstant label="Account checked" value={live.quotaAccountObservedAt} />
+          ) : null}
           <TextField
             className="min-w-0 w-full"
             label="Account display name"
@@ -606,6 +702,20 @@ function AccountControls({
   );
 }
 
+/** Formats observed USD cents; absent amounts remain unknown, including a missing cap. */
+function BillingAmount({ label, cents }: { label: string; cents: number | null | undefined }) {
+  return (
+    <p className="text-wrap text-xs text-fg">
+      {label}{' '}
+      {cents == null
+        ? 'not reported'
+        : new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(
+            cents / 100
+          )}
+    </p>
+  );
+}
+
 /** Merges a polled account snapshot onto the safe list row without dropping quota. */
 function overlayAccount(
   account: ConnectedAppRow,
@@ -656,7 +766,10 @@ function QuotaInstant({ label, value }: { label: string; value: string | null })
   return (
     <p className="text-wrap text-xs text-fg-muted">
       {label}{' '}
-      <time dateTime={value} title={value}>
+      <time
+        dateTime={value}
+        title={`${new Date(value).toLocaleString(undefined, { timeZoneName: 'long' })} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) · ${value}`}
+      >
         {new Date(value).toLocaleString(undefined, { timeZoneName: 'short' })}
       </time>
     </p>
@@ -705,6 +818,12 @@ function QuotaWindow({ window }: { window: ConnectedAppQuotaWindow }) {
       {window.usedPercent !== null ? (
         <p className="text-xs text-fg-muted">{formatQuotaPercent(window.usedPercent)} used</p>
       ) : null}
+      {window.periodType ? (
+        <p className="text-xs text-fg-muted">
+          {window.periodType === 'weekly' ? 'Weekly' : 'Monthly'}
+        </p>
+      ) : null}
+      {window.startsAt ? <QuotaInstant label="Period starts" value={window.startsAt} /> : null}
       <QuotaInstant label="Resets" value={window.resetsAt} />
     </li>
   );
@@ -713,13 +832,13 @@ function QuotaWindow({ window }: { window: ConnectedAppQuotaWindow }) {
 /** Renders the bounded quota posture for one provider-subscription account. */
 function QuotaStatus({ account }: { account: ConnectedAppRow }) {
   if (account.quotaAvailability === null) {
-    return <p className="text-wrap text-xs text-fg-muted">Could not read quota</p>;
+    return <p className="text-wrap text-xs text-fg-muted">Quota query failed</p>;
   }
   const lastChecked = <QuotaInstant label="Last checked" value={account.quotaObservedAt} />;
   if (account.quotaAvailability === 'temporarily_unavailable') {
     return (
       <div className="flex min-w-0 w-full flex-col gap-1">
-        <p className="text-wrap text-xs text-fg-muted">Quota temporarily unavailable</p>
+        <p className="text-wrap text-xs text-fg-muted">Quota query failed</p>
         {account.quotaRetryAfter ? (
           <QuotaInstant label="Retry after" value={account.quotaRetryAfter} />
         ) : null}
@@ -729,11 +848,8 @@ function QuotaStatus({ account }: { account: ConnectedAppRow }) {
   }
   return (
     <div className="flex min-w-0 w-full flex-col gap-1">
-      {account.quotaPlanType ? (
-        <p className="text-wrap text-xs text-fg-muted">Quota plan {account.quotaPlanType}</p>
-      ) : null}
       {account.quotaWindows.length === 0 ? (
-        <p className="text-wrap text-xs text-fg-muted">Quota available</p>
+        <p className="text-wrap text-xs text-fg-muted">Provider did not report usage</p>
       ) : (
         <ul className="flex min-w-0 w-full flex-col gap-2">
           {account.quotaWindows.map((window) => (

@@ -7,6 +7,8 @@ import {
   ProviderSubscriptionAccountSchema,
   type ProviderSubscriptionAccountsResponse,
   ProviderSubscriptionAccountsResponseSchema,
+  type ProviderSubscriptionAutoTopup,
+  ProviderSubscriptionAutoTopupSchema,
   type ProviderSubscriptionQuota,
   ProviderSubscriptionQuotaSchema,
   type ProviderSubscriptionsResponse,
@@ -32,7 +34,7 @@ function encodePathSegment(value: string): string {
   return encodeURIComponent(usvString);
 }
 
-/** Provider-subscription inventory, account, login, and quota client. */
+/** Provider-subscription inventory, account, login, quota, and auto-top-up client. */
 export interface ProviderSubscriptionsClient {
   /** Returns the fixed supported provider-subscription inventory. */
   listProviders(): Promise<ProviderSubscriptionsResponse>;
@@ -83,10 +85,15 @@ export interface ProviderSubscriptionsClient {
     subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
     accountSlotId: string
   ): Promise<ProviderSubscriptionQuota>;
+  /** Returns the bounded xAI auto-top-up observation for one provider-scoped account slot. */
+  getAccountAutoTopup(
+    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
+    accountSlotId: string
+  ): Promise<ProviderSubscriptionAutoTopup>;
 }
 
 /**
- * Creates the provider-subscription inventory, account, login, and quota client.
+ * Creates the provider-subscription inventory, account, login, quota, and auto-top-up client.
  *
  * @param transport Shared Core Client HTTP transport.
  * @returns Provider-subscription client bound to the transport.
@@ -161,6 +168,11 @@ export function createProviderSubscriptionsClient(
       transport.getJson(
         `${accountPath(subscriptionProviderId, accountSlotId)}/quota`,
         ProviderSubscriptionQuotaSchema
+      ),
+    getAccountAutoTopup: (subscriptionProviderId, accountSlotId) =>
+      transport.getJson(
+        `${accountPath(subscriptionProviderId, accountSlotId)}/auto-topup`,
+        ProviderSubscriptionAutoTopupSchema
       ),
   };
 }

@@ -46,12 +46,26 @@ export type ProviderSubscriptionAccountsPayload = Awaited<
 export type ProviderSubscriptionQuotaPayload = Awaited<
   ReturnType<CoreClient['providerSubscriptions']['getAccountQuota']>
 >;
+type AvailableQuotaPayload = Extract<
+  ProviderSubscriptionQuotaPayload,
+  { availability: 'available' }
+>;
 /** Safe quota window copied from the public available payload. */
 export interface ConnectedAppQuotaWindow {
   id: string;
   usedPercent: number | null;
   remainingPercent: number | null;
+  periodType: 'weekly' | 'monthly' | null;
+  startsAt: string | null;
   resetsAt: string | null;
+}
+/** Safe billing amounts copied from an available quota payload. */
+export interface ConnectedAppBilling {
+  currency: 'USD';
+  prepaidBalanceCents: number | null;
+  onDemandUsedCents: number | null;
+  onDemandCapCents: number | null;
+  sharedAllowance: boolean | null;
 }
 
 /** Safe connected-app row for the AI interface surface. */
@@ -65,9 +79,12 @@ export interface ConnectedAppRow {
   boundProviderCount: number;
   quotaAvailability: ProviderSubscriptionQuotaPayload['availability'] | null;
   quotaPlanType: string | null;
+  quotaSubscriptionActive: boolean | null;
+  quotaAccountObservedAt: string | null;
   quotaObservedAt: string | null;
   quotaRetryAfter: string | null;
   quotaWindows: ConnectedAppQuotaWindow[];
+  quotaBilling: ConnectedAppBilling | null;
   verificationUrl: string | null;
   userCode: string | null;
   interactionId: string | null;
@@ -458,47 +475,106 @@ export function projectWorkspace(workspace: WorkspaceRecord): WorkspaceRecord {
  * Copies the public quota envelope into the display whitelist without collapsing windows.
  *
  * @param quota Bounded quota result, or null when no server observation was read.
- * @returns Availability, optional plan type, observation times, and full windows.
+ * @returns Availability, same-call account metadata, observation times, windows, and billing.
  */
 function projectQuotaObservation(
   quota: ProviderSubscriptionQuotaPayload | null
 ): Pick<
   ConnectedAppRow,
-  'quotaAvailability' | 'quotaPlanType' | 'quotaObservedAt' | 'quotaRetryAfter' | 'quotaWindows'
+  | 'quotaAvailability'
+  | 'quotaPlanType'
+  | 'quotaSubscriptionActive'
+  | 'quotaAccountObservedAt'
+  | 'quotaObservedAt'
+  | 'quotaRetryAfter'
+  | 'quotaWindows'
+  | 'quotaBilling'
 > {
   if (quota === null) {
-    return {
-      quotaAvailability: null,
-      quotaPlanType: null,
-      quotaObservedAt: null,
-      quotaRetryAfter: null,
-      quotaWindows: [],
-    };
+    return absentQuotaObservation();
   }
   const observedAt =
     typeof quota.observedAt === 'string' && quota.observedAt !== ''
       ? (projectSafeValue(quota.observedAt) as string)
       : null;
+  const metadata = {
+    quotaPlanType: quota.planType ? (projectSafeValue(quota.planType) as string) : null,
+    quotaSubscriptionActive:
+      typeof quota.subscriptionActive === 'boolean' ? quota.subscriptionActive : null,
+    quotaAccountObservedAt:
+      typeof quota.accountObservedAt === 'string' && quota.accountObservedAt !== ''
+        ? (projectSafeValue(quota.accountObservedAt) as string)
+        : null,
+  };
   if (quota.availability === 'available') {
     return {
       quotaAvailability: quota.availability,
-      quotaPlanType: quota.planType ? (projectSafeValue(quota.planType) as string) : null,
+      ...metadata,
       quotaObservedAt: observedAt,
       quotaRetryAfter: null,
-      quotaWindows: quota.windows.map((window) => ({
-        id: projectSafeValue(window.id) as string,
-        usedPercent: window.usedPercent ?? null,
-        remainingPercent: window.remainingPercent ?? null,
-        resetsAt: window.resetsAt ? (projectSafeValue(window.resetsAt) as string) : null,
-      })),
+      quotaWindows: quota.windows.map(projectQuotaWindow),
+      quotaBilling: projectQuotaBilling(quota.billing),
     };
   }
   return {
     quotaAvailability: quota.availability,
-    quotaPlanType: null,
+    ...metadata,
     quotaObservedAt: observedAt,
     quotaRetryAfter: quota.retryAfter ? (projectSafeValue(quota.retryAfter) as string) : null,
     quotaWindows: [],
+    quotaBilling: null,
+  };
+}
+
+/** Quota fields when a read produced no server observation. */
+function absentQuotaObservation(): Pick<
+  ConnectedAppRow,
+  | 'quotaAvailability'
+  | 'quotaPlanType'
+  | 'quotaSubscriptionActive'
+  | 'quotaAccountObservedAt'
+  | 'quotaObservedAt'
+  | 'quotaRetryAfter'
+  | 'quotaWindows'
+  | 'quotaBilling'
+> {
+  return {
+    quotaAvailability: null,
+    quotaPlanType: null,
+    quotaSubscriptionActive: null,
+    quotaAccountObservedAt: null,
+    quotaObservedAt: null,
+    quotaRetryAfter: null,
+    quotaWindows: [],
+    quotaBilling: null,
+  };
+}
+
+/** Copies one window, omitting missing percents and unsupplied period fields. */
+function projectQuotaWindow(
+  window: AvailableQuotaPayload['windows'][number]
+): ConnectedAppQuotaWindow {
+  return {
+    id: projectSafeValue(window.id) as string,
+    usedPercent: window.usedPercent ?? null,
+    remainingPercent: window.remainingPercent ?? null,
+    periodType: window.periodType ?? null,
+    startsAt: window.startsAt ? (projectSafeValue(window.startsAt) as string) : null,
+    resetsAt: window.resetsAt ? (projectSafeValue(window.resetsAt) as string) : null,
+  };
+}
+
+/** Copies supplied billing amounts without turning absence into zero. */
+function projectQuotaBilling(
+  billing: AvailableQuotaPayload['billing']
+): ConnectedAppBilling | null {
+  if (!billing) return null;
+  return {
+    currency: billing.currency,
+    prepaidBalanceCents: billing.prepaidBalanceCents ?? null,
+    onDemandUsedCents: billing.onDemandUsedCents ?? null,
+    onDemandCapCents: billing.onDemandCapCents ?? null,
+    sharedAllowance: billing.sharedAllowance ?? null,
   };
 }
 
@@ -514,14 +590,16 @@ function observationMillis(value: string | null): number | null {
  * observation is not older than the cached value.
  *
  * @param providers Current AI interface account cache.
- * @param quota Typed quota payload for one provider-slot pair.
+ * @param quota Typed quota payload, or identity alone to clear a failed account observation.
  * @returns Updated provider rows; unmatched or stale payloads leave cache unchanged.
  */
 export function overlayConnectedAppQuota(
   providers: readonly ConnectedAppProviderRow[],
-  quota: ProviderSubscriptionQuotaPayload
+  quota:
+    | ProviderSubscriptionQuotaPayload
+    | Pick<ProviderSubscriptionQuotaPayload, 'subscriptionProviderId' | 'accountSlotId'>
 ): ConnectedAppProviderRow[] {
-  const observation = projectQuotaObservation(quota);
+  const observation = projectQuotaObservation('availability' in quota ? quota : null);
   const identity = `${quota.subscriptionProviderId}:${quota.accountSlotId}`;
   return providers.map((provider) => {
     if (provider.subscriptionProviderId !== quota.subscriptionProviderId) {
@@ -534,11 +612,11 @@ export function overlayConnectedAppQuota(
           return row;
         }
         const nextObserved = observationMillis(observation.quotaObservedAt);
-        if (nextObserved === null) {
+        if (nextObserved === null && 'availability' in quota) {
           return row;
         }
         const currentObserved = observationMillis(row.quotaObservedAt);
-        if (currentObserved !== null && nextObserved < currentObserved) {
+        if (currentObserved !== null && nextObserved !== null && nextObserved < currentObserved) {
           return row;
         }
         return { ...row, ...observation };

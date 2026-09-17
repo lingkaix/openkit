@@ -1756,6 +1756,7 @@ describe('createCoreClient', () => {
       'cancelAccountLogin',
       'logoutAccount',
       'getAccountQuota',
+      'getAccountAutoTopup',
     ]) {
       expect(alias in client).toBe(false);
     }
@@ -1772,6 +1773,7 @@ describe('createCoreClient', () => {
         'cancelAccountLogin',
         'logoutAccount',
         'getAccountQuota',
+        'getAccountAutoTopup',
       ]);
     }
 
@@ -4633,6 +4635,17 @@ describe('createCoreClient', () => {
         },
       ],
     };
+    const autoTopup = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'team_slot',
+      observedAt: timestamp,
+      availability: 'available',
+      currency: 'USD',
+      enabled: false,
+      thresholdCents: 100,
+      amountCents: 2500,
+      monthlyCapCents: 10_000,
+    };
     const encodedStatusPath =
       '/api/app/provider-subscriptions/xai%2Fpreview/accounts/slot%20%EF%BF%BD%2Fa/status';
     const leadingBomDeletePath =
@@ -4718,6 +4731,14 @@ describe('createCoreClient', () => {
         response: quota,
         route: { body: quota },
       },
+      {
+        args: ['xai', 'team_slot'],
+        body: null,
+        method: 'getAccountAutoTopup',
+        request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/auto-topup',
+        response: autoTopup,
+        route: { body: autoTopup },
+      },
     ] as const;
     const routes = Object.fromEntries(
       operations.map((operation) => [operation.request, operation.route])
@@ -4736,7 +4757,8 @@ describe('createCoreClient', () => {
           | 'startAccountLogin'
           | 'cancelAccountLogin'
           | 'logoutAccount'
-          | 'getAccountQuota',
+          | 'getAccountQuota'
+          | 'getAccountAutoTopup',
           (...args: unknown[]) => Promise<unknown>
         >
       | undefined;
@@ -4836,6 +4858,12 @@ describe('createCoreClient', () => {
         method: 'getAccountQuota',
         request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/quota',
         route: { body: { ...quota, rawQuota: {} } },
+      },
+      {
+        args: ['xai', 'team_slot'],
+        method: 'getAccountAutoTopup',
+        request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/auto-topup',
+        route: { body: { ...autoTopup, savedPaymentMethod: true } },
       },
     ] as const;
     const { client: malformedClient } = createFakeClient(

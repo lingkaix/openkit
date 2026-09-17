@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   ProviderSubscriptionAccountSchema,
   ProviderSubscriptionAccountsResponseSchema,
+  ProviderSubscriptionAutoTopupSchema,
   ProviderSubscriptionQuotaSchema,
   ProviderSubscriptionsResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -56,11 +57,17 @@ const XAI_BILLING = {
   onDemandEnabled: true,
   provider_private: 'raw-xai-quota-canary',
 } as const;
+const OBSERVED_AT = expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
 const INCLUDED_QUOTA_WINDOW = {
   id: 'included',
   remainingPercent: 57.5,
   resetsAt: '2026-09-01T00:00:00.000Z',
   usedPercent: 42.5,
+} as const;
+const XAI_DISCOVERY = {
+  accountObservedAt: OBSERVED_AT,
+  planType: 'SuperGrok',
+  subscriptionActive: true,
 } as const;
 const CODEX_CREDENTIAL = {
   access: CODEX_ACCESS_CANARY,
@@ -185,6 +192,11 @@ const OPERATION_ROUTES = [
     operationId: 'getProviderSubscriptionAccountQuota',
     path: '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/quota',
   },
+  {
+    method: 'GET',
+    operationId: 'getProviderSubscriptionAccountAutoTopup',
+    path: '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/auto-topup',
+  },
 ] as const;
 const LEGACY_CODEX_OPERATION_IDS = [
   'listOpenAICodexOAuthAccounts',
@@ -224,6 +236,7 @@ function jsonBodyAtUtf8ByteLength(
 
 const XAI_USER_URL = 'https://cli-chat-proxy.grok.com/v1/user?include=subscription';
 const XAI_BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits';
+const XAI_AUTO_TOPUP_URL = 'https://cli-chat-proxy.grok.com/v1/auto-topup-rule';
 const XAI_QUOTA_HEADERS = {
   Authorization: `Bearer ${XAI_API_KEY_CANARY}`,
   'X-XAI-Token-Auth': 'xai-grok-cli',
@@ -239,6 +252,7 @@ const XAI_QUOTA_HEADERS = {
  */
 function mockXaiQuotaFetch(
   responses: {
+    autoTopup?: (init?: RequestInit) => Response | Promise<Response>;
     billing?: (init?: RequestInit) => Response | Promise<Response>;
     user?: (init?: RequestInit) => Response | Promise<Response>;
   } = {}
@@ -252,6 +266,11 @@ function mockXaiQuotaFetch(
       return await (responses.billing ?? (async () => new Response(JSON.stringify(XAI_BILLING))))(
         init
       );
+    }
+    if (url === XAI_AUTO_TOPUP_URL) {
+      return await (
+        responses.autoTopup ?? (async () => new Response(JSON.stringify({ rule: null })))
+      )(init);
     }
     throw new Error(`unexpected provider url ${url}`);
   });
@@ -352,7 +371,7 @@ function unavailableXaiQuota() {
   return {
     accountSlotId: 'default',
     availability: 'temporarily_unavailable',
-    observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
+    observedAt: OBSERVED_AT,
     subscriptionProviderId: 'xai',
   };
 }
@@ -512,7 +531,7 @@ function expectNoProviderStateIo(fixture: ReturnType<typeof createFixture>): voi
 }
 
 describe('provider-subscription app API', () => {
-  it('registers the ten provider-neutral operations and returns fixed inventory without state I/O', async () => {
+  it('registers the eleven provider-neutral operations and returns fixed inventory without state I/O', async () => {
     const fixture = createFixture();
 
     try {
@@ -1088,6 +1107,10 @@ describe('provider-subscription app API', () => {
         method: 'GET',
         path: '/api/app/provider-subscriptions/xai/accounts/default/quota',
       },
+      {
+        method: 'GET',
+        path: '/api/app/provider-subscriptions/xai/accounts/default/auto-topup',
+      },
     ] as const;
 
     try {
@@ -1390,10 +1413,17 @@ describe('provider-subscription app API', () => {
       expect(quota).toEqual({
         accountSlotId: 'default',
         availability: 'available',
-        observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
-        planType: 'SuperGrok',
+        billing: { currency: 'USD', prepaidBalanceCents: 12 },
+        observedAt: OBSERVED_AT,
         subscriptionProviderId: 'xai',
-        windows: [INCLUDED_QUOTA_WINDOW],
+        windows: [
+          {
+            ...INCLUDED_QUOTA_WINDOW,
+            periodType: 'monthly',
+            startsAt: '2026-08-01T00:00:00.000Z',
+          },
+        ],
+        ...XAI_DISCOVERY,
       });
       expect(fixture.spies.reconcileAccount).toHaveBeenCalledTimes(1);
       expect(fixture.spies.getPairHandle).toHaveBeenCalledTimes(1);
@@ -1417,6 +1447,75 @@ describe('provider-subscription app API', () => {
       expect(JSON.stringify(quota)).not.toMatch(
         /xai-access-canary|xai-user-canary|quota-user-canary|raw-xai-quota-canary/i
       );
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it('reads xAI auto-topup through a fresh discovery without a billing request', async () => {
+    const fixture = createFixture();
+    const fetchSpy = mockXaiQuotaFetch({
+      autoTopup: async () =>
+        new Response(
+          JSON.stringify({
+            rule: { enabled: true, minBeforeHittingSl: { val: 5 }, topupAmount: { val: 20 } },
+          })
+        ),
+      billing: async () => {
+        throw new Error('xAI auto-topup must not fetch billing.');
+      },
+    });
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/auto-topup'
+      );
+      const body = ProviderSubscriptionAutoTopupSchema.parse(await response.json());
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({
+        accountSlotId: 'default',
+        amountCents: 20,
+        availability: 'available',
+        currency: 'USD',
+        enabled: true,
+        observedAt: OBSERVED_AT,
+        subscriptionProviderId: 'xai',
+        thresholdCents: 5,
+      });
+      expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
+        XAI_USER_URL,
+        XAI_AUTO_TOPUP_URL,
+      ]);
+      expect(JSON.stringify(body)).not.toMatch(/xai-access-canary|xai-user-canary/i);
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it('rejects non-xAI auto-topup before account or credential access', async () => {
+    const fixture = createFixture();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('auto-topup must not perform a network request.'));
+
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/openai-codex/accounts/default/auto-topup'
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body).toEqual({
+        code: 'invalid_request',
+        message: 'Invalid provider subscription request.',
+        protocolVersion: PROTOCOL_VERSION,
+      });
+      expect(fixture.spies.reconcileAccount).not.toHaveBeenCalled();
+      expect(fixture.spies.getPairHandle).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
       fixture.close();
@@ -1484,7 +1583,7 @@ describe('provider-subscription app API', () => {
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
       expect(response.status).toBe(200);
-      expect(quota).toEqual(unavailableXaiQuota());
+      expect(quota).toEqual({ ...unavailableXaiQuota(), ...XAI_DISCOVERY });
       expect(fetchSpy).toHaveBeenCalledTimes(2);
     } finally {
       fetchSpy.mockRestore();
@@ -1575,7 +1674,11 @@ describe('provider-subscription app API', () => {
       billing: {
         config: { creditUsagePercent: null, currentPeriod: { end: '2026-09-01T00:00:00Z' } },
       },
-      name: 'null percentage with known reset',
+      name: 'null percentage with known reset (Option unknown, not invalid)',
+      quota: {
+        availability: 'available' as const,
+        windows: [{ id: 'included', resetsAt: '2026-09-01T00:00:00.000Z' }],
+      },
     },
     {
       billing: { config: { creditUsagePercent: -0.1 } },
@@ -1591,7 +1694,11 @@ describe('provider-subscription app API', () => {
     },
     {
       billing: { config: { creditUsagePercent: 10, currentPeriod: null } },
-      name: 'null period',
+      name: 'null period (Option unknown, not invalid)',
+      quota: {
+        availability: 'available' as const,
+        windows: [{ id: 'included', remainingPercent: 90, usedPercent: 10 }],
+      },
     },
     {
       billing: {
@@ -1624,9 +1731,18 @@ describe('provider-subscription app API', () => {
     },
     {
       name: 'absent subscription tier',
+      omitPlanType: true,
       quota: {
         availability: 'available' as const,
-        windows: [INCLUDED_QUOTA_WINDOW],
+        billing: { currency: 'USD' as const, prepaidBalanceCents: 12 },
+        subscriptionActive: false,
+        windows: [
+          {
+            ...INCLUDED_QUOTA_WINDOW,
+            periodType: 'monthly' as const,
+            startsAt: '2026-08-01T00:00:00.000Z',
+          },
+        ],
       },
       user: { userId: XAI_USER_ID_CANARY },
     },
@@ -1668,6 +1784,9 @@ describe('provider-subscription app API', () => {
       expect(response.status).toBe(200);
       expect(quota).toEqual({
         ...unavailableXaiQuota(),
+        accountObservedAt: OBSERVED_AT,
+        subscriptionActive: true,
+        ...(testCase.omitPlanType === true ? {} : { planType: 'SuperGrok' }),
         ...testCase.quota,
       });
       expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -1722,7 +1841,11 @@ describe('provider-subscription app API', () => {
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
       expect(response.status).toBe(200);
-      expect(quota).toEqual(unavailableXaiQuota());
+      expect(quota).toEqual(
+        testCase.expectedFetches === 2
+          ? { ...unavailableXaiQuota(), ...XAI_DISCOVERY }
+          : unavailableXaiQuota()
+      );
       expect(overflow.pulls).toHaveBeenCalledTimes(2);
       expect(fetchSpy).toHaveBeenCalledTimes(testCase.expectedFetches);
       expect(JSON.stringify(quota)).not.toContain('forbidden-extra-pull-canary');
@@ -1761,7 +1884,11 @@ describe('provider-subscription app API', () => {
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
       expect(response.status).toBe(200);
-      expect(quota).toEqual(unavailableXaiQuota());
+      expect(quota).toEqual(
+        testCase.expectedFetches === 2
+          ? { ...unavailableXaiQuota(), ...XAI_DISCOVERY }
+          : unavailableXaiQuota()
+      );
       expect(fetchSpy).toHaveBeenCalledTimes(testCase.expectedFetches);
       expect(JSON.stringify(quota)).not.toContain('invalid-utf8-marker');
     } finally {
@@ -1821,7 +1948,11 @@ describe('provider-subscription app API', () => {
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
       expect(response.status).toBe(200);
-      expect(quota).toEqual(unavailableXaiQuota());
+      expect(quota).toEqual(
+        testCase.expectedFetches === 2
+          ? { ...unavailableXaiQuota(), ...XAI_DISCOVERY }
+          : unavailableXaiQuota()
+      );
       expect(fetchSpy).toHaveBeenCalledTimes(testCase.expectedFetches);
     } finally {
       vi.useRealTimers();

@@ -621,6 +621,13 @@ describe('app api openapi projection', () => {
         null,
         'ProviderSubscriptionQuota',
       ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/auto-topup',
+        'get',
+        'getProviderSubscriptionAccountAutoTopup',
+        null,
+        'ProviderSubscriptionAutoTopup',
+      ],
     ] as const) {
       const operation = jsonObject(document.paths[path]?.[method]);
       const expectedParameterNames = [...path.matchAll(/\{([^}]+)\}/g)].map(([, name]) => name);
@@ -3540,6 +3547,7 @@ describe('app api openapi projection', () => {
       'cancelProviderSubscriptionAccountLogin',
       'logoutProviderSubscriptionAccount',
       'getProviderSubscriptionAccountQuota',
+      'getProviderSubscriptionAccountAutoTopup',
       'getAppDiagnostics',
       'getSetupDiagnostics',
       'getStorageLayoutReport',

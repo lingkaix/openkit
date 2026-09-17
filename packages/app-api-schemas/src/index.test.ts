@@ -372,6 +372,12 @@ describe('app api schema package boundary', () => {
         .soft(branch.shape.accountSlotId, `quota ${branch.shape.availability.value}`)
         .toBe(ProviderSubscriptionAccountSlotIdSchema);
     }
+    for (const branch of appApiSchemas.ProviderSubscriptionAutoTopupSchema.options) {
+      expect.soft(branch.shape.subscriptionProviderId.value, 'auto-topup provider').toBe('xai');
+      expect
+        .soft(branch.shape.accountSlotId, `auto-topup ${branch.shape.availability.value}`)
+        .toBe(ProviderSubscriptionAccountSlotIdSchema);
+    }
   });
 });
 
@@ -4632,11 +4638,38 @@ describe('app api schemas', () => {
       availability: 'available',
       observedAt: timestamp,
       planType: 'SuperGrok',
+      subscriptionActive: true,
+      accountObservedAt: timestamp,
       windows: [
         {
           id: 'included',
           usedPercent: 42.5,
           remainingPercent: 57.5,
+          periodType: 'weekly',
+          startsAt: timestamp,
+          resetsAt: timestamp,
+        },
+      ],
+      billing: {
+        currency: 'USD',
+        prepaidBalanceCents: 0,
+        onDemandUsedCents: 125,
+        onDemandCapCents: 5000,
+        sharedAllowance: true,
+      },
+    };
+    const availableXaiOmittedUsage = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'work',
+      availability: 'available',
+      observedAt: timestamp,
+      subscriptionActive: false,
+      accountObservedAt: timestamp,
+      windows: [
+        {
+          id: 'included',
+          periodType: 'monthly',
+          startsAt: timestamp,
           resetsAt: timestamp,
         },
       ],
@@ -4653,6 +4686,9 @@ describe('app api schemas', () => {
       accountSlotId: 'work',
       availability: 'temporarily_unavailable',
       observedAt: timestamp,
+      planType: 'SuperGrok',
+      subscriptionActive: true,
+      accountObservedAt: timestamp,
     };
     const unsupported = {
       subscriptionProviderId: 'xai',
@@ -4663,6 +4699,7 @@ describe('app api schemas', () => {
 
     expect(quotaSchema.parse(available)).toEqual(available);
     expect(quotaSchema.parse(availableXai)).toEqual(availableXai);
+    expect(quotaSchema.parse(availableXaiOmittedUsage)).toEqual(availableXaiOmittedUsage);
     expect(quotaSchema.parse(unavailable)).toEqual(unavailable);
     expect(quotaSchema.parse(unavailableXai)).toEqual(unavailableXai);
     for (const quota of [
@@ -4672,6 +4709,15 @@ describe('app api schemas', () => {
         ...available,
         windows: [{ ...available.windows[0], usedPercent: 101 }],
       },
+      {
+        ...availableXai,
+        windows: [{ ...availableXai.windows[0], usedPercent: null }],
+      },
+      {
+        ...availableXai,
+        windows: [{ ...availableXai.windows[0], periodType: 'daily' }],
+      },
+      { ...availableXai, billing: { ...availableXai.billing, prepaidBalanceCents: 1.5 } },
       { ...available, accountSlotId: '../work' },
       { ...available, accessToken: 'secret' },
       { ...available, rawProviderResponse: {} },
@@ -4689,6 +4735,56 @@ describe('app api schemas', () => {
       { ...unavailableXai, observedAt: 'not-a-datetime' },
     ]) {
       expect.soft(quotaSchema.safeParse(quota).success).toBe(false);
+    }
+  });
+
+  it('accepts only the xAI auto-top-up observation', () => {
+    const autoTopupSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionAutoTopupSchema') as
+      | typeof AppDiagnosticsResponseSchema
+      | undefined;
+
+    expect(autoTopupSchema).toBeDefined();
+    if (!autoTopupSchema) {
+      return;
+    }
+
+    const available = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'work',
+      observedAt: timestamp,
+      availability: 'available',
+      currency: 'USD',
+      enabled: false,
+      thresholdCents: 100,
+      amountCents: 2500,
+      monthlyCapCents: 10_000,
+    };
+    const availableUnknownEnabled = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'work',
+      observedAt: timestamp,
+      availability: 'available',
+      currency: 'USD',
+    };
+    const unavailable = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'work',
+      observedAt: timestamp,
+      availability: 'temporarily_unavailable',
+    };
+
+    expect(autoTopupSchema.parse(available)).toEqual(available);
+    expect(autoTopupSchema.parse(availableUnknownEnabled)).toEqual(availableUnknownEnabled);
+    expect(autoTopupSchema.parse(unavailable)).toEqual(unavailable);
+    for (const observation of [
+      { ...available, subscriptionProviderId: 'openai-codex' },
+      { ...available, enabled: null },
+      { ...available, thresholdCents: 1.5 },
+      { ...available, savedPaymentMethod: true },
+      { ...unavailable, currency: 'USD' },
+      { ...unavailable, retryAfter: timestamp },
+    ]) {
+      expect(autoTopupSchema.safeParse(observation).success).toBe(false);
     }
   });
 

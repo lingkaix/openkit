@@ -532,6 +532,13 @@ test('one catalog covers the checked App API and public Core projection', async 
         false,
         ['accountSlotId', 'subscriptionProviderId'],
       ],
+      [
+        'provider-subscription.account-auto-topup',
+        'getProviderSubscriptionAccountAutoTopup',
+        'providerSubscriptions.getAccountAutoTopup',
+        false,
+        ['accountSlotId', 'subscriptionProviderId'],
+      ],
     ]
   );
   assert.equal(operationCatalog.filter((entry) => entry.id.startsWith('oauth.')).length, 0);
@@ -664,6 +671,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       'nanohost.token-rotate',
       'nanohost.token-rotation-abort',
       'permission.server-list',
+      'provider-subscription.account-auto-topup',
       'provider-subscription.account-create',
       'provider-subscription.account-delete',
       'provider-subscription.account-list',

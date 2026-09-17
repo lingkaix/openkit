@@ -159,6 +159,7 @@ import {
   PrepareWorkerEnvironmentResponseSchema,
   ProviderSubscriptionAccountSchema,
   ProviderSubscriptionAccountsResponseSchema,
+  ProviderSubscriptionAutoTopupSchema,
   ProviderSubscriptionQuotaSchema,
   ProviderSubscriptionsResponseSchema,
   PublishGenerativePresentationRequestSchema,
@@ -1974,6 +1975,19 @@ export function createAppOpenApiDocument() {
           responseDescription: 'Bounded provider-subscription quota projection.',
         }),
       },
+      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/auto-topup':
+        {
+          get: appJsonOperation({
+            operationId: 'getProviderSubscriptionAccountAutoTopup',
+            tag: 'provider-subscriptions',
+            summary: 'Read bounded xAI auto-top-up observation.',
+            security: DEPLOYMENT_ADMIN_SECURITY,
+            parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
+            responseStatus: '200',
+            responseSchema: 'ProviderSubscriptionAutoTopup',
+            responseDescription: 'Bounded xAI auto-top-up observation.',
+          }),
+        },
       '/api/app/quick-chat': {
         post: {
           operationId: 'quickChat',
@@ -6571,6 +6585,7 @@ export function createAppOpenApiDocument() {
         ProviderSubscriptionAccountsResponse: toJsonSchema(
           ProviderSubscriptionAccountsResponseSchema
         ),
+        ProviderSubscriptionAutoTopup: toJsonSchema(ProviderSubscriptionAutoTopupSchema),
         ProviderSubscriptionQuota: toJsonSchema(ProviderSubscriptionQuotaSchema),
         ProviderSubscriptionsResponse: toJsonSchema(ProviderSubscriptionsResponseSchema),
         ReviseThreadGoalPlanRequest: toJsonSchema(ReviseThreadGoalPlanRequestSchema),

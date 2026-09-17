@@ -3023,6 +3023,68 @@
         }
       }
     },
+    "/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/auto-topup": {
+      "get": {
+        "operationId": "getProviderSubscriptionAccountAutoTopup",
+        "tags": [
+          "provider-subscriptions"
+        ],
+        "summary": "Read bounded xAI auto-top-up observation.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "subscriptionProviderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "openai-codex",
+                "xai"
+              ]
+            }
+          },
+          {
+            "name": "accountSlotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded xAI auto-top-up observation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSubscriptionAutoTopup"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/quick-chat": {
       "post": {
         "operationId": "quickChat",
@@ -43331,6 +43393,92 @@
         ],
         "additionalProperties": false
       },
+      "ProviderSubscriptionAutoTopup": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "subscriptionProviderId": {
+                "type": "string",
+                "const": "xai"
+              },
+              "accountSlotId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "observedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+              },
+              "availability": {
+                "type": "string",
+                "const": "available"
+              },
+              "currency": {
+                "type": "string",
+                "const": "USD"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "thresholdCents": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "amountCents": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "monthlyCapCents": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "subscriptionProviderId",
+              "accountSlotId",
+              "observedAt",
+              "availability",
+              "currency"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subscriptionProviderId": {
+                "type": "string",
+                "const": "xai"
+              },
+              "accountSlotId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "observedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+              },
+              "availability": {
+                "type": "string",
+                "const": "temporarily_unavailable"
+              }
+            },
+            "required": [
+              "subscriptionProviderId",
+              "accountSlotId",
+              "observedAt",
+              "availability"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "ProviderSubscriptionQuota": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -43361,6 +43509,14 @@
                 "type": "string",
                 "minLength": 1
               },
+              "subscriptionActive": {
+                "type": "boolean"
+              },
+              "accountObservedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+              },
               "windows": {
                 "type": "array",
                 "items": {
@@ -43380,6 +43536,18 @@
                       "minimum": 0,
                       "maximum": 100
                     },
+                    "periodType": {
+                      "type": "string",
+                      "enum": [
+                        "weekly",
+                        "monthly"
+                      ]
+                    },
+                    "startsAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                    },
                     "resetsAt": {
                       "type": "string",
                       "format": "date-time",
@@ -43391,6 +43559,37 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "billing": {
+                "type": "object",
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "const": "USD"
+                  },
+                  "prepaidBalanceCents": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "onDemandUsedCents": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "onDemandCapCents": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "sharedAllowance": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "currency"
+                ],
+                "additionalProperties": false
               }
             },
             "required": [
@@ -43421,6 +43620,18 @@
                 "const": "temporarily_unavailable"
               },
               "observedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+              },
+              "planType": {
+                "type": "string",
+                "minLength": 1
+              },
+              "subscriptionActive": {
+                "type": "boolean"
+              },
+              "accountObservedAt": {
                 "type": "string",
                 "format": "date-time",
                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
@@ -117863,5 +118074,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:2f82e4a463e6f2f0ee3923c4f27409ae61dea4efdce47d2582de6d93c07aefc4"
+  "x-openkit-source-digest": "sha256:e771ad9c8767322632cb90af47d2132d01a81dd7943c6cd3974fceaf0c6a1c77"
 }

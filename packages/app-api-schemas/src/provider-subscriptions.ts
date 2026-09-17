@@ -148,12 +148,29 @@ export const ProviderSubscriptionAccountsResponseSchema = z
   })
   .strict();
 
+const UsdCentsSchema = z.number().int().min(Number.MIN_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER);
+const SubscriptionAccountObservationShape = {
+  planType: z.string().min(1).optional(),
+  subscriptionActive: z.boolean().optional(),
+  accountObservedAt: TimestampSchema.optional(),
+};
 const QuotaWindowSchema = z
   .object({
     id: z.string().min(1),
     usedPercent: z.number().finite().min(0).max(100).optional(),
     remainingPercent: z.number().finite().min(0).max(100).optional(),
+    periodType: z.enum(['weekly', 'monthly']).optional(),
+    startsAt: TimestampSchema.optional(),
     resetsAt: TimestampSchema.optional(),
+  })
+  .strict();
+const QuotaBillingSchema = z
+  .object({
+    currency: z.literal('USD'),
+    prepaidBalanceCents: UsdCentsSchema.optional(),
+    onDemandUsedCents: UsdCentsSchema.optional(),
+    onDemandCapCents: UsdCentsSchema.optional(),
+    sharedAllowance: z.boolean().optional(),
   })
   .strict();
 
@@ -165,8 +182,9 @@ export const ProviderSubscriptionQuotaSchema = z.discriminatedUnion('availabilit
       accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
       availability: z.literal('available'),
       observedAt: TimestampSchema,
-      planType: z.string().min(1).optional(),
+      ...SubscriptionAccountObservationShape,
       windows: z.array(QuotaWindowSchema),
+      billing: QuotaBillingSchema.optional(),
     })
     .strict(),
   z
@@ -175,7 +193,33 @@ export const ProviderSubscriptionQuotaSchema = z.discriminatedUnion('availabilit
       accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
       availability: z.literal('temporarily_unavailable'),
       observedAt: TimestampSchema,
+      ...SubscriptionAccountObservationShape,
       retryAfter: TimestampSchema.optional(),
+    })
+    .strict(),
+]);
+
+/** Strict xAI-only auto-top-up observation. */
+export const ProviderSubscriptionAutoTopupSchema = z.discriminatedUnion('availability', [
+  z
+    .object({
+      subscriptionProviderId: z.literal('xai'),
+      accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
+      observedAt: TimestampSchema,
+      availability: z.literal('available'),
+      currency: z.literal('USD'),
+      enabled: z.boolean().optional(),
+      thresholdCents: UsdCentsSchema.optional(),
+      amountCents: UsdCentsSchema.optional(),
+      monthlyCapCents: UsdCentsSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      subscriptionProviderId: z.literal('xai'),
+      accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
+      observedAt: TimestampSchema,
+      availability: z.literal('temporarily_unavailable'),
     })
     .strict(),
 ]);
@@ -206,3 +250,5 @@ export type ProviderSubscriptionAccountsResponse = z.infer<
 >;
 /** Bounded provider-subscription quota projection. */
 export type ProviderSubscriptionQuota = z.infer<typeof ProviderSubscriptionQuotaSchema>;
+/** Bounded xAI auto-top-up observation. */
+export type ProviderSubscriptionAutoTopup = z.infer<typeof ProviderSubscriptionAutoTopupSchema>;

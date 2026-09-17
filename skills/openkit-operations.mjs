@@ -928,6 +928,23 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'provider-subscription.account-auto-topup',
+    source: 'app-api',
+    appOperationId: 'getProviderSubscriptionAccountAutoTopup',
+    clientMethod: 'providerSubscriptions.getAccountAutoTopup',
+    group: 'provider-subscription',
+    summary: 'Read one xAI provider-subscription auto-top-up observation.',
+    mutating: false,
+    inputSchema: strictScope(providerSubscriptionAccountScope),
+    handler: ({ client }, input) =>
+      client.providerSubscriptions.getAccountAutoTopup(
+        input.subscriptionProviderId,
+        input.accountSlotId
+      ),
+  },
+  {
+    ...STANDARD,
     id: 'chat.quick',
     source: 'app-api',
     appOperationId: 'quickChat',

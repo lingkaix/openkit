@@ -36,3 +36,34 @@ test('public redaction preserves standalone slash punctuation while redacting pa
     }
   );
 });
+
+test('public redaction preserves nested zero and signed cents, false enabled, and omitted fields through the JSON envelope', () => {
+  const envelope = {
+    ok: true,
+    data: {
+      billing: {
+        currency: 'USD',
+        prepaidBalanceCents: 0,
+        onDemandUsedCents: -1,
+      },
+      enabled: false,
+      token: 'okt_live_token',
+    },
+  };
+  assert.deepEqual(redactPublicValue(envelope), {
+    ok: true,
+    data: {
+      billing: {
+        currency: 'USD',
+        prepaidBalanceCents: 0,
+        onDemandUsedCents: -1,
+      },
+      enabled: false,
+      token: '[redacted]',
+    },
+  });
+  assert.equal(
+    JSON.stringify(redactPublicValue(envelope)),
+    '{"ok":true,"data":{"billing":{"currency":"USD","prepaidBalanceCents":0,"onDemandUsedCents":-1},"enabled":false,"token":"[redacted]"}}'
+  );
+});

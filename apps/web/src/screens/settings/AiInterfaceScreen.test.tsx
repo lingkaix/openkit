@@ -306,7 +306,7 @@ describe('AI interface deployment-admin workflow', () => {
     });
     renderScreen(client);
     const xai = await screen.findByRole('region', { name: 'xAI' });
-    expect(within(xai).getByText('Could not read quota')).toBeInTheDocument();
+    expect(within(xai).getByText('Quota query failed')).toBeInTheDocument();
     expect(within(xai).queryByRole('time')).not.toBeInTheDocument();
     expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
     expect(screen.queryByText(/private-quota-error-canary/)).not.toBeInTheDocument();
@@ -810,7 +810,7 @@ describe('AI interface deployment-admin workflow', () => {
                   accountSlotId: 'primary',
                   availability: 'available' as const,
                   observedAt: TIMESTAMP,
-                  windows: [{ id: 'included', resetsAt: TIMESTAMP }],
+                  windows: [{ id: 'included', periodType: 'weekly', resetsAt: TIMESTAMP }],
                 }
               : CODEX_QUOTA
           )
@@ -822,6 +822,7 @@ describe('AI interface deployment-admin workflow', () => {
     const xai = await screen.findByRole('region', { name: 'xAI' });
     expect(within(xai).getByText('Provider did not report usage')).toBeInTheDocument();
     expect(within(xai).getByText('Included')).toBeInTheDocument();
+    expect(within(xai).getByText('Weekly')).toBeInTheDocument();
     expect(within(xai).queryByRole('meter')).not.toBeInTheDocument();
     expect(within(xai).queryByText(/0%/)).not.toBeInTheDocument();
     expect(within(xai).queryByText(/remaining/)).not.toBeInTheDocument();
@@ -834,5 +835,99 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(xai).getByText('Resets', { exact: false })).toBeInTheDocument();
     expect(within(xai).getByText('Last checked', { exact: false })).toBeInTheDocument();
     expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
+  });
+
+  it('loads auto-top-up only from costs expand and clears stale usage after a failed refresh', async () => {
+    const user = userEvent.setup();
+    const getAccountAutoTopup = vi.fn().mockResolvedValue({
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'primary',
+      observedAt: TIMESTAMP,
+      availability: 'available',
+      currency: 'USD',
+    });
+    const getAccountQuota = vi.fn().mockImplementation((providerId: string) =>
+      providerId === 'xai'
+        ? Promise.resolve({
+            subscriptionProviderId: 'xai' as const,
+            accountSlotId: 'primary',
+            availability: 'available' as const,
+            observedAt: TIMESTAMP,
+            planType: 'SuperGrok',
+            subscriptionActive: true,
+            accountObservedAt: TIMESTAMP,
+            windows: [
+              {
+                id: 'included',
+                usedPercent: 0,
+                remainingPercent: 100,
+                periodType: 'weekly',
+                resetsAt: TIMESTAMP,
+              },
+            ],
+            billing: { currency: 'USD' as const, prepaidBalanceCents: 0, sharedAllowance: true },
+          })
+        : Promise.resolve(CODEX_QUOTA)
+    );
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts: vi.fn().mockImplementation((providerId: string) =>
+          Promise.resolve({
+            accounts:
+              providerId === 'openai-codex'
+                ? [CODEX_ACCOUNT]
+                : [
+                    {
+                      ...CODEX_ACCOUNT,
+                      subscriptionProviderId: 'xai' as const,
+                      displayName: 'xAI primary',
+                    },
+                  ],
+          })
+        ),
+        getAccountQuota,
+        getAccountAutoTopup,
+      },
+    });
+    renderScreen(client);
+
+    const xai = await screen.findByRole('region', { name: 'xAI' });
+    expect(within(xai).getByText('Build subscription eligibility: eligible')).toBeInTheDocument();
+    expect(within(xai).getByText(/Shared allowance/)).toBeInTheDocument();
+    expect(within(xai).getByText('Included 100% remaining')).toBeInTheDocument();
+    expect(within(xai).getByText('0% used')).toBeInTheDocument();
+    expect(getAccountAutoTopup).not.toHaveBeenCalled();
+    expect(getAccountQuota).toHaveBeenCalledTimes(2);
+
+    await user.click(within(xai).getByText('Balance and costs'));
+    expect(await within(xai).findByText('Prepaid $0.00')).toBeInTheDocument();
+    expect(within(xai).getByText('Extra spend not reported')).toBeInTheDocument();
+    expect(within(xai).getByText('Spend cap not reported')).toBeInTheDocument();
+    expect(within(xai).getByText('Auto top-up not reported')).toBeInTheDocument();
+    expect(within(xai).queryByText(/exhaust/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(getAccountAutoTopup).toHaveBeenCalledTimes(1));
+    expect(getAccountAutoTopup).toHaveBeenCalledWith('xai', 'primary');
+
+    getAccountQuota.mockImplementation((providerId: string) =>
+      providerId === 'xai'
+        ? Promise.reject(new ApiCallError(500, 'private-refresh-canary'))
+        : Promise.resolve(CODEX_QUOTA)
+    );
+    await user.click(within(xai).getByRole('button', { name: 'Refresh quota' }));
+    expect(await within(xai).findByText('Quota query failed')).toBeInTheDocument();
+    expect(within(xai).queryByText('Included 100% remaining')).not.toBeInTheDocument();
+    expect(within(xai).queryByRole('meter')).not.toBeInTheDocument();
+    expect(within(xai).queryByText(/private-refresh-canary/)).not.toBeInTheDocument();
+    await waitFor(() => expect(getAccountAutoTopup).toHaveBeenCalledTimes(2));
+    expect(
+      getAccountQuota.mock.calls.filter(([provider]) => provider === 'openai-codex')
+    ).toHaveLength(1);
+    expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
+
+    getAccountAutoTopup.mockRejectedValue(new ApiCallError(500, 'private-rule-canary'));
+    await user.click(within(xai).getByRole('button', { name: 'Refresh quota' }));
+    expect(await within(xai).findByText('Auto top-up query failed.')).toBeInTheDocument();
+    expect(within(xai).queryByText('Auto top-up not reported')).not.toBeInTheDocument();
+    expect(within(xai).queryByText(/private-rule-canary/)).not.toBeInTheDocument();
   });
 });

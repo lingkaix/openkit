@@ -123,6 +123,7 @@ registerOperations(
     'listProviderSubscriptionAccounts',
     'getProviderSubscriptionAccountStatus',
     'getProviderSubscriptionAccountQuota',
+    'getProviderSubscriptionAccountAutoTopup',
     'listServerAuditEvents',
     'listServerPermissionDecisions',
     'verifyDataRootBackup',
