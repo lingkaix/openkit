@@ -367,7 +367,7 @@ export function useThread(workspaceId: string | null, threadId: string) {
  * @param workspaceId Current Workspace identity, or null before selection resolves.
  * @param threadId Current Thread identity.
  * @param enabled Whether this observer may fetch instead of only following cached state.
- * @param poll When true, refresh this observer every 5s in the foreground unless a Turn is running.
+ * @param poll When true, refresh this observer every 5s in the foreground, including running Turns.
  */
 export function useThreadDashboard(
   workspaceId: string | null,
@@ -380,11 +380,7 @@ export function useThreadDashboard(
     queryKey: chatKeys.dashboard(workspaceId ?? '', threadId),
     queryFn: () => client.app.getThreadDashboard(workspaceId as string, threadId),
     enabled: Boolean(workspaceId) && enabled,
-    refetchInterval: (query) => {
-      if (!poll) return false;
-      if (query.state.data?.turns.some((turn) => turn.status === 'running')) return false;
-      return 5_000;
-    },
+    refetchInterval: poll ? 5_000 : false,
     refetchIntervalInBackground: false,
   });
 }
@@ -452,7 +448,7 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
 /**
  * Subscribes once to the authoritative running Turn, folds item events into the
  * item cache, and projects its matching updated or terminal Turn into the dashboard cache.
- * Idle Chat/Task foreground refresh stays on the existing item and dashboard query observers.
+ * Chat/Task dashboards refresh in the foreground; Item observers refresh only while idle.
  * Latest dashboard Turn id/status changes invalidate this Thread's conversation-target catalog.
  * Returns the dashboard query for message attribution and authoritative action readiness.
  *

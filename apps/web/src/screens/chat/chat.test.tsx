@@ -2858,6 +2858,78 @@ describe('open thread external activity', () => {
     expect(listThreadItems.mock.calls.length).toBeGreaterThan(itemCallsAfterItems);
   });
 
+  it('refreshes verified request summaries while running without polling streamed items', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const requestText = '{"schemaVersion":1,"objective":"raw-input"}';
+    const objective = 'Verified maintenance request';
+    const item = ItemSchema.parse({ ...ITEMS[0], text: requestText });
+    let verified = false;
+    const getThreadDashboard = vi.fn(async (_workspaceId: string, _threadId: string) => ({
+      turns: [ACTIVE_TURN],
+      taskInputs: verified ? [{ itemId: item.id, objective }] : [],
+    }));
+    const listThreadItems = vi.fn(async () => ({ items: [item], nextCursor: null }));
+    const completed = createDeferred<void>();
+    async function* stream() {
+      await completed.promise;
+      yield turnStreamEvent(1, 'turn.completed', {
+        type: 'turn-completed',
+        stopReason: 'completed',
+        turn: COMPLETED_TURN,
+      });
+    }
+    const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
+    const queryClient = renderApp(
+      '/tasks/ws1/th1',
+      makeClient({ listThreadItems, subscribeTurnEvents }, { getThreadDashboard })
+    );
+    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    expect(screen.getByText(requestText)).toBeVisible();
+    const itemCalls = listThreadItems.mock.calls.length;
+    await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
+
+    verified = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(await screen.findByText(objective)).toBeVisible();
+    const details = screen.getByText('View request details').closest('details')!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector('pre')?.textContent).toBe(requestText);
+    expect(listThreadItems.mock.calls.length).toBe(itemCalls);
+    expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
+    expect(
+      getThreadDashboard.mock.calls.every(
+        ([workspaceId, threadId]) => workspaceId === 'ws1' && threadId === 'th1'
+      )
+    ).toBe(true);
+    expect(screen.getByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+
+    const late = createDeferred<Awaited<ReturnType<typeof getThreadDashboard>>>();
+    getThreadDashboard.mockImplementationOnce(() => late.promise);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(queryClient.getQueryState(chatKeys.dashboard('ws1', 'th1'))?.fetchStatus).toBe(
+      'fetching'
+    );
+    await act(async () => {
+      completed.resolve();
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Stop turn' })).not.toBeInTheDocument()
+    );
+    await act(async () => {
+      late.resolve({ turns: [ACTIVE_TURN], taskInputs: [] });
+    });
+    expect(
+      queryClient.getQueryData<{ turns: Array<{ status: string }> }>(
+        chatKeys.dashboard('ws1', 'th1')
+      )?.turns[0]?.status
+    ).toBe('completed');
+  });
+
   it('does not poll items while a Turn is running', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const listThreadItems = vi.fn(async () => ({ items: ITEMS, nextCursor: null }));
