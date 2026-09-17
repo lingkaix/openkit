@@ -88,6 +88,12 @@ export interface StartTurnInput {
   workerStorageChoice?: TurnStartRuntimeContext['workerStorageChoice'];
   /** Workspace id that owns the thread. */
   workspaceId: string;
+  /**
+   * Optional callback after Turn and resolved setup are durable and before executor start.
+   *
+   * Callers that need a bounded acceptance signal must filter to the exact requested Turn.
+   */
+  onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
 }
 
 /**
@@ -333,6 +339,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
         }).id
       : null;
 
+  input.onTurnCreated?.(input.store.getTurnById(turn.id));
   await input.turnExecutor.startTurn(input.store, turn.id, input.input, {
     ...(input.agentSessionId ? { agentSessionId: input.agentSessionId } : {}),
     ...(agentSetupResult.setup ? { agentSetup: agentSetupResult.setup } : {}),

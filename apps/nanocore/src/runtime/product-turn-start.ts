@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { ActorRef, SubmitTurnInputRequestSchema } from '@openkit/protocol';
+import type { ActorRef, SubmitTurnInputRequestSchema, TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import { selectAgent } from '../agents/selector.js';
 import type { Actor } from '../auth/identity.js';
@@ -53,6 +53,12 @@ interface StartProductTurnInput {
   readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   /** Whether a synchronous caller should cancel its admission when dispatch is deferred. */
   readonly cancelDeferredAdmission?: boolean;
+  /**
+   * Optional callback after this admission's Turn and resolved setup are durable and before executor start.
+   *
+   * The dispatch loop invokes this only for the exact reserved Turn of this admission.
+   */
+  readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
 }
 
 /**
@@ -182,6 +188,20 @@ export async function startProductTurn(input: StartProductTurnInput) {
       store: input.store,
       turnExecutor: input.turnExecutor,
       configVersion: input.snapshot.version,
+      ...(input.onTurnCreated
+        ? {
+            onTurnCreated: (created) => {
+              if (
+                created.id !== turnId ||
+                created.workspaceId !== input.input.workspaceId ||
+                created.threadId !== input.input.threadId
+              ) {
+                return;
+              }
+              input.onTurnCreated?.(created);
+            },
+          }
+        : {}),
       workspaceDataSourceCatalogs: input.snapshot.workspaceDataSourceCatalogs,
       workspaceMcpServerCatalogs: input.snapshot.workspaceMcpServerCatalogs,
     });

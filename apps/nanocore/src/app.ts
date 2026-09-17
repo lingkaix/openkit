@@ -1154,6 +1154,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
   }): Promise<z.infer<typeof TurnSchema>> {
     const snapshot = runtimeConfig();
     const handle = await startProductTurn({
@@ -1178,6 +1179,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       turnExecutor,
       workerPlacement,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+      ...(input.onTurnCreated ? { onTurnCreated: input.onTurnCreated } : {}),
     });
 
     completeSchedulerLeaseForTerminalTurn(options.coreDb, handle.turn);

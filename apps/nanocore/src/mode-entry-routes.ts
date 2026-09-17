@@ -216,6 +216,71 @@ function conversationWorkerTurnPresentation(
 }
 
 /**
+ * Creates or updates the durable selected-Worker conversation status Item from the current Turn.
+ *
+ * The Item identity and createdAt stay fixed after the first write. Closeout and the immediate
+ * failure race only refresh product-safe presentation fields through `FsStore.updateItem` when
+ * those fields changed. A same-id Item with a different type or lineage is left unchanged and
+ * reported as contradictory.
+ *
+ * @param store Store that owns the Worker Turn.
+ * @param workspaceId Workspace that owns the Turn.
+ * @param threadId Thread that owns the Turn.
+ * @param turnId Worker Turn id.
+ * @param agentId Selected Worker identity used by the successful continuation summary.
+ * @returns Current status Item after create or presentation update.
+ * @throws Error when an existing Item id has a contradictory type or lineage.
+ */
+function persistConversationWorkerResultItem(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  turnId: string,
+  agentId: string
+) {
+  const turn = store.getTurn(workspaceId, threadId, turnId);
+  const presentation = conversationWorkerTurnPresentation(turn, agentId);
+  const itemId = `it_worker_result_${turn.id}`;
+  const existing = turn.items.find((item) => item.id === itemId);
+  if (!existing) {
+    const createdAt = new Date().toISOString();
+    return store.createItem({
+      id: itemId,
+      workspaceId,
+      threadId,
+      turnId,
+      type: 'status',
+      status: 'completed',
+      level: presentation.level,
+      title: presentation.title,
+      summary: presentation.summary,
+      createdAt,
+      completedAt: createdAt,
+    });
+  }
+  if (
+    existing.type !== 'status' ||
+    existing.workspaceId !== workspaceId ||
+    existing.threadId !== threadId ||
+    existing.turnId !== turnId
+  ) {
+    throw new Error('Conversation Worker result is contradictory.');
+  }
+  if (
+    existing.level === presentation.level &&
+    existing.title === presentation.title &&
+    existing.summary === presentation.summary
+  ) {
+    return existing;
+  }
+  return store.updateItem(itemId, {
+    level: presentation.level,
+    title: presentation.title,
+    summary: presentation.summary,
+  });
+}
+
+/**
  * Rebuilds one accepted Chat Mode response from its command receipt and durable Turn owners.
  *
  * @param store Store that owns the original Chat Turn and Item.
@@ -232,7 +297,8 @@ function replayConversationCommand(
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb,
   workspaceId: string,
   threadId: string,
-  record: CommandRequestRecord
+  record: CommandRequestRecord,
+  coreDb?: CoreDb
 ): ConversationCommandResult {
   try {
     const metadata = record.response.conversationMetadata;
@@ -248,6 +314,46 @@ function replayConversationCommand(
       throw new Error('Conversation receiving lineage is contradictory.');
     }
     if (metadata.resultKind === 'worker-turn') {
+      if (currentTurn.status === 'pending' || currentTurn.status === 'running') {
+        if (!coreDb) throw new Error('Conversation Worker runtime owners are unavailable.');
+        const workspaceDb = repositoryWorkspaceDb(currentTurn.workspaceId);
+        try {
+          const checkpoint = getWorkerCheckpoint(
+            workspaceDb,
+            currentTurn.workspaceId,
+            currentTurn.threadId,
+            currentTurn.id
+          );
+          const leases = listSchedulerSessionLeasesForTurn(coreDb, {
+            workspaceId: currentTurn.workspaceId,
+            threadId: currentTurn.threadId,
+            turnId: currentTurn.id,
+          });
+          const lease = leases[0];
+          if (
+            !checkpoint ||
+            checkpoint.requestId !== record.requestId ||
+            checkpoint.requestInputHash !== record.inputHash ||
+            isTerminalWorkerTurnStage(checkpoint.stage) ||
+            leases.length !== 1 ||
+            !lease ||
+            !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
+            lease.recoveryState !== null
+          ) {
+            throw new Error('Conversation Worker execution requires recovery.');
+          }
+          const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+          if (
+            admission.requestId !== record.requestId ||
+            admission.triggerActor.kind !== 'user' ||
+            admission.triggerActor.id !== actorId
+          ) {
+            throw new Error('Conversation Worker admission is contradictory.');
+          }
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
       const resultItem = currentTurn.items.find(
         (item) => item.id === `it_worker_result_${currentTurn.id}`
       );
@@ -2061,6 +2167,7 @@ export function registerQuickAndChatModeRoutes({
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
@@ -2966,144 +3073,173 @@ export function registerQuickAndChatModeRoutes({
           );
         }
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
-        let started: z.infer<typeof TurnSchema>;
-        try {
-          await runWorkerTurnLoop({
-            coreDb: coreDb!,
-            triggerActor,
-            requestActor: c.get('actor'),
-            workspaceDb,
-            workspaceId,
-            threadId: receivingThreadId,
-            requestId: chatInput.requestId,
-            requestInputHash: commandInputHash(conversationCommandInput(chatInput)),
-            reviewRequired: false,
-            remainingWorkerIterations: 0,
-            prepare: () => {
-              const dataRoot = store.getDataRoot();
-              if (!dataRoot) {
-                throw directTaskModeRecoveryError(
-                  'Task Knowledge retrieval requires a file-backed data root.'
-                );
-              }
-              let knowledgeSelectionInput: { readonly retrievalTraceId: string };
-              try {
-                knowledgeSelectionInput = prepareTaskKnowledgeContext({
-                  dataRoot,
-                  workspaceId,
-                  query: chatInput.input,
-                  referenceProofs: resolveWorkspaceKnowledgeReferenceProofs({
-                    coreDb: coreDb!,
-                    store,
-                    workspaceDb,
-                    workspaceId,
-                  }),
-                  traceId: directTaskKnowledgeRetrievalTraceId(
-                    actorId,
-                    workspaceId,
-                    receivingThreadId,
-                    chatInput.requestId
-                  ),
-                });
-              } catch (error) {
-                throw directTaskModeRecoveryError(
-                  error instanceof Error &&
-                    error.message === 'Duplicate Knowledge retrieval trace id.'
-                    ? 'Task Knowledge retrieval exists without a provable worker owner.'
-                    : 'Task Knowledge retrieval could not establish one coherent selection.'
-                );
-              }
-              return {
-                delegationRequest: workerRequest,
-                contextPackageDigest: commandInputHash(workerRequest),
-                knowledgeSelectionInput,
-              };
-            },
-            reserveTurn: () => ({ turnId: reservedTurnId }),
-            startWorker: async ({ turnId, prepared }) => {
-              const workerStorageChoice = directTaskWorkerStorageChoice(
-                chatInput.workerStorageChoice
-              );
-              const turn = await startModeWorkerTurn({
-                triggerActor,
-                requestActor: c.get('actor'),
-                store,
-                workspaceId,
-                threadId: receivingThreadId,
-                prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
-                ...(logicalModelId ? { modelId: logicalModelId } : {}),
-                ...(acceptedTarget.profileId ? { profileId: acceptedTarget.profileId } : {}),
-                requestId: chatInput.requestId,
-                requestedAgentId: agentId!,
-                reservedTurnId: turnId,
-                ...(workerStorageChoice ? { workerStorageChoice } : {}),
-              });
-              return { workerSessionId: turn.agentSessionId ?? null };
-            },
-            awaitWorker: ({ turnId }) => {
-              const turn = store.getTurn(workspaceId, receivingThreadId, turnId);
-              const stopReason = taskModeTerminalStopReason(store, turnId);
-              if (!stopReason) {
-                throw new Error('Selected Worker Turn has no unique terminal outcome.');
-              }
-              const evidence = taskModeEvidenceForTurn(
-                store,
-                workspaceDb,
-                workspaceId,
-                receivingThreadId,
-                turn
-              );
-              return {
-                stopReason,
-                itemIds: evidence.itemIds,
-                artifactIds: evidence.artifactIds,
-                diagnosticsSummary:
-                  turn.error?.message ??
-                  (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
-              };
-            },
-          });
-          started = store.getTurn(workspaceId, receivingThreadId, reservedTurnId);
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-        const completedAt = new Date().toISOString();
-        for (const artifact of artifacts) {
-          store.createItem({
-            id: artifactReferenceItemId(artifact.id, started.id),
-            workspaceId,
-            threadId: receivingThreadId,
-            turnId: started.id,
-            type: 'artifact-reference',
-            status: 'completed',
-            artifactId: artifact.id,
-            artifactVersion: artifact.version,
-            title: artifact.title,
-            summary: artifact.summary,
-            lastMutationRequestId: chatInput.requestId,
-            createdAt: started.startedAt ?? completedAt,
-            completedAt,
-          });
-        }
-        const presentation = conversationWorkerTurnPresentation(started, agentId);
-        const item = store.createItem({
-          id: `it_worker_result_${started.id}`,
-          workspaceId,
-          threadId: receivingThreadId,
-          turnId: started.id,
-          type: 'status',
-          status: 'completed',
-          level: presentation.level,
-          title: presentation.title,
-          summary: presentation.summary,
-          createdAt: completedAt,
-          completedAt,
+        let resolveAccepted!: () => void;
+        const accepted = new Promise<void>((resolve) => {
+          resolveAccepted = resolve;
         });
+        let acceptSignalled = false;
+        const persistWorkerResult = () =>
+          persistConversationWorkerResultItem(
+            store,
+            workspaceId,
+            receivingThreadId,
+            reservedTurnId,
+            agentId
+          );
+        const workerLoop = (async () => {
+          try {
+            await runWorkerTurnLoop({
+              coreDb: coreDb!,
+              triggerActor,
+              requestActor: c.get('actor'),
+              workspaceDb,
+              workspaceId,
+              threadId: receivingThreadId,
+              requestId: chatInput.requestId,
+              requestInputHash: commandInputHash(conversationCommandInput(chatInput)),
+              reviewRequired: false,
+              remainingWorkerIterations: 0,
+              prepare: () => {
+                const dataRoot = store.getDataRoot();
+                if (!dataRoot) {
+                  throw directTaskModeRecoveryError(
+                    'Task Knowledge retrieval requires a file-backed data root.'
+                  );
+                }
+                let knowledgeSelectionInput: { readonly retrievalTraceId: string };
+                try {
+                  knowledgeSelectionInput = prepareTaskKnowledgeContext({
+                    dataRoot,
+                    workspaceId,
+                    query: chatInput.input,
+                    referenceProofs: resolveWorkspaceKnowledgeReferenceProofs({
+                      coreDb: coreDb!,
+                      store,
+                      workspaceDb,
+                      workspaceId,
+                    }),
+                    traceId: directTaskKnowledgeRetrievalTraceId(
+                      actorId,
+                      workspaceId,
+                      receivingThreadId,
+                      chatInput.requestId
+                    ),
+                  });
+                } catch (error) {
+                  throw directTaskModeRecoveryError(
+                    error instanceof Error &&
+                      error.message === 'Duplicate Knowledge retrieval trace id.'
+                      ? 'Task Knowledge retrieval exists without a provable worker owner.'
+                      : 'Task Knowledge retrieval could not establish one coherent selection.'
+                  );
+                }
+                return {
+                  delegationRequest: workerRequest,
+                  contextPackageDigest: commandInputHash(workerRequest),
+                  knowledgeSelectionInput,
+                };
+              },
+              reserveTurn: () => ({ turnId: reservedTurnId }),
+              startWorker: async ({ turnId, prepared }) => {
+                const workerStorageChoice = directTaskWorkerStorageChoice(
+                  chatInput.workerStorageChoice
+                );
+                const turn = await startModeWorkerTurn({
+                  triggerActor,
+                  requestActor: c.get('actor'),
+                  store,
+                  workspaceId,
+                  threadId: receivingThreadId,
+                  prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+                  ...(logicalModelId ? { modelId: logicalModelId } : {}),
+                  ...(acceptedTarget.profileId ? { profileId: acceptedTarget.profileId } : {}),
+                  requestId: chatInput.requestId,
+                  requestedAgentId: agentId!,
+                  reservedTurnId: turnId,
+                  ...(workerStorageChoice ? { workerStorageChoice } : {}),
+                  onTurnCreated: (created) => {
+                    if (created.id !== turnId) {
+                      return;
+                    }
+                    const createdAt = created.startedAt ?? new Date().toISOString();
+                    for (const artifact of artifacts) {
+                      store.createItem({
+                        id: artifactReferenceItemId(artifact.id, created.id),
+                        workspaceId,
+                        threadId: receivingThreadId,
+                        turnId: created.id,
+                        type: 'artifact-reference',
+                        status: 'completed',
+                        artifactId: artifact.id,
+                        artifactVersion: artifact.version,
+                        title: artifact.title,
+                        summary: artifact.summary,
+                        lastMutationRequestId: chatInput.requestId,
+                        createdAt,
+                        completedAt: createdAt,
+                      });
+                    }
+                    persistWorkerResult();
+                    acceptSignalled = true;
+                    resolveAccepted();
+                  },
+                });
+                return { workerSessionId: turn.agentSessionId ?? null };
+              },
+              awaitWorker: ({ turnId }) => {
+                const turn = store.getTurn(workspaceId, receivingThreadId, turnId);
+                const stopReason = taskModeTerminalStopReason(store, turnId);
+                if (!stopReason) {
+                  throw new Error('Selected Worker Turn has no unique terminal outcome.');
+                }
+                const evidence = taskModeEvidenceForTurn(
+                  store,
+                  workspaceDb,
+                  workspaceId,
+                  receivingThreadId,
+                  turn
+                );
+                return {
+                  stopReason,
+                  itemIds: evidence.itemIds,
+                  artifactIds: evidence.artifactIds,
+                  diagnosticsSummary:
+                    turn.error?.message ??
+                    (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
+                };
+              },
+            });
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        })();
+        const observedLoop = workerLoop.then(
+          () => persistWorkerResult(),
+          (error: unknown) => {
+            if (!acceptSignalled) {
+              throw error;
+            }
+            persistWorkerResult();
+            throw error;
+          }
+        );
+        void observedLoop.catch(() => {
+          if (acceptSignalled) {
+            console.error('selected_worker_closeout_failed_after_acceptance');
+          }
+        });
+        await Promise.race([accepted, observedLoop]);
+        if (!acceptSignalled) {
+          throw new Error('Selected Worker Turn completed without an acceptance signal.');
+        }
+        const item = persistWorkerResult();
+        const started = store.getTurn(workspaceId, receivingThreadId, reservedTurnId);
+        const presentation = conversationWorkerTurnPresentation(started, agentId);
         return {
           body: ConversationCommandBodySchema.parse({
             outcome: 'accepted',
             explanation: presentation.explanation,
-            turn: store.getTurn(workspaceId, receivingThreadId, started.id),
+            turn: started,
             item,
             handoff: null,
           }),
@@ -3562,7 +3698,8 @@ export function registerQuickAndChatModeRoutes({
             repositoryWorkspaceDb,
             workspaceId,
             threadId,
-            record
+            record,
+            coreDb
           ),
         requestId: chatInput.requestId,
         responseId: ({ body }) => body.turn.id,

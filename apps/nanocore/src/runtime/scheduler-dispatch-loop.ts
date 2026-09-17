@@ -7,6 +7,7 @@ import type {
   WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import { TurnSchema } from '@openkit/protocol';
+import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
@@ -100,6 +101,12 @@ export interface RunSchedulerDispatchLoopInput {
     readonly workspaceId: string;
     readonly catalog: WorkspaceMcpServerCatalog;
   }[];
+  /**
+   * Optional callback after Turn and resolved setup are durable and before executor start.
+   *
+   * Product callers must filter this to the exact requested admission Turn.
+   */
+  onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
 }
 
 /** One turn started by a scheduler dispatch loop run. */
@@ -351,6 +358,7 @@ export async function runSchedulerDispatchLoop(
           ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
           ...(input.configVersion !== undefined ? { configVersion: input.configVersion } : {}),
           ...(input.dependencies ? { dependencies: input.dependencies } : {}),
+          ...(input.onTurnCreated ? { onTurnCreated: input.onTurnCreated } : {}),
         });
         startedTurns.push({ dispatch, handle });
       } finally {
