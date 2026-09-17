@@ -12,14 +12,13 @@ export interface StatusChipProps {
 /**
  * Status chip (`ok-chip`, DESIGN.md §9.3).
  *
- * A 20px pill that states a point-in-time status as text + semantic color, with
- * an optional leading dot. The word MUST come from the family's vocabulary
- * (§4.2) — status is never color alone.
+ * A single-line, non-shrinking 20px pill states a point-in-time status as text + semantic color, with an optional leading dot.
+ * The word MUST come from the family's vocabulary (§4.2) — status is never color alone.
  */
 export function StatusChip({ tone, dot = false, children }: StatusChipProps) {
   return (
     <span
-      className={`inline-flex h-5 items-center gap-1.5 rounded-full px-2.5 text-xs font-bold ${STATUS_CLASS[tone]}`}
+      className={`inline-flex h-5 shrink-0 items-center whitespace-nowrap gap-1.5 rounded-full px-2.5 text-xs font-bold ${STATUS_CLASS[tone]}`}
     >
       {dot ? <span className="size-1.5 rounded-full bg-current" aria-hidden /> : null}
       {children}
