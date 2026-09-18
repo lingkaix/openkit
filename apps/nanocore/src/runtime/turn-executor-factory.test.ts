@@ -4794,8 +4794,9 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it.each([
-    false,
-    true,
+    null,
+    'retained_baseline_unavailable',
+    'retained_baseline_conflict',
   ])('reattaches selected storage or surfaces startup failure: %s', async (startupRefused) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
@@ -4984,8 +4985,14 @@ describe('createConfiguredTurnExecutor', () => {
         state: 'open',
       });
       if (startupRefused) {
+        const explanation =
+          startupRefused === 'retained_baseline_conflict'
+            ? ' The retained checkout and requested commit differ; choose a fresh work environment for the requested commit, or restore the source configuration to the retained checkout’s original commit before reusing it.'
+            : '';
         const rejected = expect(launch).rejects.toThrow(
-          'NanoHost Harness turn.start refused: dependency_failed (workspace_materialization: retained_baseline_unavailable).'
+          new Error(
+            `NanoHost Harness turn.start refused: dependency_failed (workspace_materialization: ${startupRefused}).${explanation}`
+          )
         );
         await settleNext(
           'turn.start',
@@ -4993,7 +5000,7 @@ describe('createConfiguredTurnExecutor', () => {
             reasonCode: 'dependency_failed',
             startupFailure: {
               stage: 'workspace_materialization',
-              reason: 'retained_baseline_unavailable',
+              reason: startupRefused,
             },
           },
           'refused'
