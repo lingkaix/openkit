@@ -572,9 +572,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const reason = result.body.reasonCode;
     const startup = WorkerStartupFailureSchema.safeParse(result.body.startupFailure);
     const detail = startup.success ? ` (${startup.data.stage}: ${startup.data.reason})` : '';
+    const explanation =
+      pending.operation === 'turn.start' &&
+      result.disposition === 'refused' &&
+      reason === 'dependency_failed' &&
+      startup.success &&
+      startup.data.stage === 'workspace_materialization' &&
+      startup.data.reason === 'retained_baseline_conflict'
+        ? ' The retained checkout and requested commit differ; choose a fresh work environment for the requested commit, or restore the source configuration to the retained checkout’s original commit before reusing it.'
+        : '';
     pending.reject(
       new Error(
-        `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.`
+        `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.${explanation}`
       )
     );
   }
