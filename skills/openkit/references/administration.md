@@ -60,6 +60,8 @@ A host helper can remain reachable while its separate `adminTokenFile` is stale 
 
 If the configured NanoHost reports `ready: false`, App update refuses before acquiring the candidate or stopping the current App. Inspect `nanohost.runtime-target` and arrange separately authorized execution-host recovery before preparing another update. A healthy App or reachable helper does not establish NanoHost readiness. A deployment with no configured NanoHost remains supported; do not remove a configured target to bypass its readiness check.
 
+For remote-commit updates, the host helper initializes its configured source cache when missing or empty. A nonempty non-Git directory or a symbolic link at the cache or its `.git` entry is refused before fetch and before stopping the App. Inspect the saved update receipt and ask an authorized host operator to correct that cache configuration; do not delete existing contents or retry an unknown update. Operator-staged source archives remain a separate path.
+
 An accepted administration command can still return `outcome: refused` and a failed Turn. `administration_execution_failed` may identify missing admitted model selection or responses/tool-calling support; inspect the explanation and authoritative model metadata. `context_compaction_unavailable` identifies a missing context policy after capability admission. Neither refusal proves an inference ran.
 
 ## Diagnose a missing repository or stale Worker source

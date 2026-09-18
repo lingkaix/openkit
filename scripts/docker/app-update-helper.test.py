@@ -385,6 +385,12 @@ class RecordingEffects:
         if "archive" in argv:
             return self._write_git_archive(argv)
         if "fetch" in argv:
+            try:
+                workdir = argv[argv.index("-C") + 1]
+            except (IndexError, ValueError):
+                return 1, "", "git fetch requires -C"
+            if not os.path.isdir(workdir):
+                return 128, "", "fatal: cannot change to '%s': No such file or directory" % workdir
             return 0, "", ""
         if "merge-base" in argv:
             return (0, "", "") if self.ancestor_ok else (1, "", "not ancestor")
@@ -1677,6 +1683,127 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertRegex(body["error"] or "", r"attribution|source-revision|sha-")
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
+    def test_missing_source_workdir_initializes_before_fetch(self) -> None:
+        module = load_helper()
+        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            missing = root / "source-cache"
+            effects = RecordingEffects()
+            _config_path, effects, _prepared, body = _start_apply(
+                module,
+                root,
+                source=commit_source,
+                effects=effects,
+                sourceWorkDir=str(missing),
+            )
+            self.assertEqual(body["stage"], "succeeded", body)
+            self.assertTrue(missing.is_dir())
+            self.assertFalse(missing.is_symlink())
+            self.assertTrue(
+                any(call[:2] == ["git", "init"] and call[-1] == str(missing) for call in effects.calls)
+            )
+            self.assertTrue(
+                any(call[:1] == ["git"] and "-C" in call and "fetch" in call for call in effects.calls)
+            )
+            self.assertTrue(
+                any(call[:1] == ["git"] and "merge-base" in call for call in effects.calls)
+            )
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            git_cmds = [call for call in effects.calls if call[:1] == ["git"]]
+            init_at = next(i for i, call in enumerate(git_cmds) if call[:2] == ["git", "init"])
+            fetch_at = next(i for i, call in enumerate(git_cmds) if "fetch" in call)
+            ancestor_at = next(i for i, call in enumerate(git_cmds) if "merge-base" in call)
+            self.assertLess(init_at, fetch_at)
+            self.assertLess(fetch_at, ancestor_at)
+
+    def test_nonempty_nongit_source_workdir_refuses_before_git_effects(self) -> None:
+        module = load_helper()
+        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            occupied = root / "source-cache"
+            occupied.mkdir()
+            kept = occupied / "keep-me.txt"
+            kept.write_text("operator-data\n", encoding="utf-8")
+            before = kept.read_bytes()
+            listing = sorted(path.name for path in occupied.iterdir())
+            effects = RecordingEffects()
+            _config_path, effects, _prepared, body = _start_apply(
+                module,
+                root,
+                source=commit_source,
+                effects=effects,
+                sourceWorkDir=str(occupied),
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"non-Git")
+            self.assertFalse(any(call[:2] == ["git", "init"] for call in effects.calls))
+            self.assertFalse(any(call[:1] == ["git"] and "fetch" in call for call in effects.calls))
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            self.assertTrue(occupied.is_dir())
+            self.assertFalse(occupied.is_symlink())
+            self.assertEqual(kept.read_bytes(), before)
+            self.assertEqual(sorted(path.name for path in occupied.iterdir()), listing)
+
+    def test_source_workdir_symlinks_refuse_before_git_effects(self) -> None:
+        module = load_helper()
+        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            target = root / "real-source"
+            target.mkdir()
+            kept = target / "keep-me.txt"
+            kept.write_text("linked-data\n", encoding="utf-8")
+            before = kept.read_bytes()
+            link = root / "source-link"
+            link.symlink_to(target)
+            effects = RecordingEffects()
+            _config_path, effects, _prepared, body = _start_apply(
+                module,
+                root,
+                source=commit_source,
+                effects=effects,
+                sourceWorkDir=str(link),
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"non-linked directory")
+            self.assertFalse(any(call[:2] == ["git", "init"] for call in effects.calls))
+            self.assertFalse(any(call[:1] == ["git"] and "fetch" in call for call in effects.calls))
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(kept.read_bytes(), before)
+            self.assertFalse((target / ".git").exists())
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            cache = root / "source-cache"
+            cache.mkdir()
+            git_target = root / "git-target"
+            git_target.mkdir()
+            (git_target / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+            git_link = cache / ".git"
+            git_link.symlink_to(git_target)
+            kept = cache / "keep-me.txt"
+            kept.write_text("cache-data\n", encoding="utf-8")
+            before = kept.read_bytes()
+            effects = RecordingEffects()
+            _config_path, effects, _prepared, body = _start_apply(
+                module,
+                root,
+                source=commit_source,
+                effects=effects,
+                sourceWorkDir=str(cache),
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"symbolic link")
+            self.assertFalse(any(call[:2] == ["git", "init"] for call in effects.calls))
+            self.assertFalse(any(call[:1] == ["git"] and "fetch" in call for call in effects.calls))
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            self.assertTrue(git_link.is_symlink())
+            self.assertEqual(kept.read_bytes(), before)
+            self.assertEqual((git_target / "HEAD").read_text(encoding="utf-8"), "ref: refs/heads/main\n")
+
     def test_fetch_builds_clean_archive_not_dirty_source_workdir(self) -> None:
         module = load_helper()
         commit_source = {"kind": "commit", "sourceCommit": COMMIT}
@@ -1684,6 +1811,7 @@ class ContractCorrectionTests(unittest.TestCase):
             root = Path(tmp)
             dirty = root / "src" / "dirty-uncommitted.txt"
             config_path, effects, _code, prepared = _prepare(module, root, source=commit_source)
+            (root / "src" / ".git").mkdir()
             dirty.write_text("not part of the commit\n", encoding="utf-8")
             invoke(
                 module,

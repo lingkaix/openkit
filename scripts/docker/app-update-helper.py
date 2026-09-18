@@ -871,7 +871,7 @@ class AppUpdateHelper:
                     "Staged source must not be the configured source workdir.",
                 )
             return {"context": staged, "scratch": None, "source_commit": commit}
-        workdir = self.config["sourceWorkDir"]
+        workdir = self._ensure_source_work_dir()
         code, _, stderr = self.effects.run(
             [
                 "git",
@@ -925,6 +925,55 @@ class AppUpdateHelper:
         except Exception:
             _rmtree(parent)
             raise
+
+    def _ensure_source_work_dir(self) -> str:
+        """Initializes the configured Git source cache when that path is still missing."""
+        workdir = self.config["sourceWorkDir"]
+        try:
+            os.lstat(workdir)
+        except FileNotFoundError:
+            try:
+                os.makedirs(workdir, mode=0o700)
+            except OSError as error:
+                raise HelperError(
+                    "app_update_unavailable",
+                    "Configured source workdir could not be initialized.",
+                ) from error
+        except OSError as error:
+            raise HelperError(
+                "app_update_unavailable",
+                "Configured source workdir could not be inspected.",
+            ) from error
+        try:
+            meta = os.lstat(workdir)
+        except OSError as error:
+            raise HelperError(
+                "app_update_unavailable",
+                "Configured source workdir could not be inspected.",
+            ) from error
+        if stat.S_ISLNK(meta.st_mode) or not stat.S_ISDIR(meta.st_mode):
+            raise HelperError(
+                "app_update_invalid_request",
+                "Configured source workdir must be a non-linked directory.",
+            )
+        git_dir = os.path.join(workdir, ".git")
+        if os.path.islink(git_dir):
+            raise HelperError(
+                "app_update_recovery_required",
+                "Configured source workdir Git metadata must not be a symbolic link.",
+            )
+        if os.path.lexists(git_dir):
+            return workdir
+        if os.listdir(workdir):
+            raise HelperError(
+                "app_update_recovery_required",
+                "Configured source workdir contains non-Git data.",
+            )
+        self._run_required(
+            ["git", "init", "--", workdir],
+            "Configured source workdir could not be initialized.",
+        )
+        return workdir
 
     def _image_identity(self, reference: str) -> Dict[str, Any]:
         code, stdout, stderr = self.effects.run(
