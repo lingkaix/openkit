@@ -17,7 +17,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 ## Boundaries
 
 - `fs-layout.ts` owns safe paths and accepted directory placement.
-- `db.ts` and `migrate.ts` own database opening, integrity validation, and the committed fresh-database setup.
+- `db.ts` and `migrate.ts` own database opening, integrity validation, and native per-scope Drizzle journals under `drizzle/{core,user,workspace,app}`.
 - Authoritative SQLite integrity failure stops boot and leaves the original database file unchanged; only derived indexes may rebuild automatically.
 - `workspace-file-records.ts` owns canonical workspace record serialization and boot loading.
 - `workspace-file-records.ts` also ensures the OKF v0.2 bundle-root `knowledge/pages/index.md` once, preserves valid authored index bytes, and writes the same final Knowledge Page candidate bytes that direct-edit validation accepted.

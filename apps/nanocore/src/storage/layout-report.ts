@@ -3,6 +3,7 @@ import { join, relative, sep } from 'node:path';
 import Database from 'better-sqlite3';
 
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
+import { listAppliedNativeMigrationIds, type StorageMigrationScope } from './migrate.js';
 
 /**
  * Storage database migration status.
@@ -96,7 +97,7 @@ export function createStorageLayoutReport(dataRoot: string): StorageLayoutReport
 
   return {
     dataRoot,
-    serverDb: createDatabaseReport(dataRoot, coreDbPath(dataRoot)),
+    serverDb: createDatabaseReport(dataRoot, coreDbPath(dataRoot), 'core'),
     users,
     workspaces,
     quarantineEntries: createQuarantineEntries(dataRoot, users, workspaces),
@@ -113,7 +114,7 @@ export function createStorageLayoutReport(dataRoot: string): StorageLayoutReport
 function createUserReport(dataRoot: string, userId: string): StorageUserReport {
   return {
     userId,
-    userDb: createDatabaseReport(dataRoot, userDbPath(dataRoot, userId)),
+    userDb: createDatabaseReport(dataRoot, userDbPath(dataRoot, userId), 'user'),
   };
 }
 
@@ -129,7 +130,11 @@ function createWorkspaceReport(dataRoot: string, workspaceId: string): StorageWo
 
   return {
     workspaceId,
-    workspaceDb: createDatabaseReport(dataRoot, workspaceDbPath(dataRoot, workspaceId)),
+    workspaceDb: createDatabaseReport(
+      dataRoot,
+      workspaceDbPath(dataRoot, workspaceId),
+      'workspace'
+    ),
     indexesDir: createDirectoryReport(dataRoot, indexesPath),
   };
 }
@@ -139,9 +144,14 @@ function createWorkspaceReport(dataRoot: string, workspaceId: string): StorageWo
  *
  * @param dataRoot Data root used for relative output paths.
  * @param dbPath SQLite file path.
+ * @param scope Native journal scope used to name exact matched applied ids.
  * @returns Database status and applied migration ids.
  */
-function createDatabaseReport(dataRoot: string, dbPath: string): StorageDatabaseReport {
+function createDatabaseReport(
+  dataRoot: string,
+  dbPath: string,
+  scope: StorageMigrationScope
+): StorageDatabaseReport {
   if (!existsSync(dbPath)) {
     return { path: toReportPath(dataRoot, dbPath), exists: false, appliedMigrations: [] };
   }
@@ -149,22 +159,10 @@ function createDatabaseReport(dataRoot: string, dbPath: string): StorageDatabase
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 
   try {
-    const hasMigrationTable = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get('schema_migrations');
-
-    if (!hasMigrationTable) {
-      return { path: toReportPath(dataRoot, dbPath), exists: true, appliedMigrations: [] };
-    }
-
-    const rows = db.prepare('SELECT id FROM schema_migrations ORDER BY id').all() as Array<{
-      id: string;
-    }>;
-
     return {
       path: toReportPath(dataRoot, dbPath),
       exists: true,
-      appliedMigrations: rows.map((row) => row.id),
+      appliedMigrations: listAppliedNativeMigrationIds(db, scope),
     };
   } finally {
     db.close();

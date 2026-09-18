@@ -1,14 +1,30 @@
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-
+import { BootConfigError } from '../config/mode';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db';
 import { coreDbPath, workspaceDbPath } from './fs-layout';
-import { applyMigrations, applyScopedMigrations } from './migrate';
+import {
+  applyMigrations,
+  applyNativeScopeMigrations,
+  applyScopedMigrations,
+  listAppliedMigrationIds,
+  listAppliedNativeMigrationIds,
+  type StorageMigrationScope,
+} from './migrate';
 
 const CORE_TABLES = [
+  '__drizzle_migrations',
   'account',
   'agent_session_runtime_bindings',
   'audit_events',
@@ -29,7 +45,6 @@ const CORE_TABLES = [
   'scheduler_supply_refresh_declarations',
   'scheduler_target_health_records',
   'scheduler_worker_pools',
-  'schema_migrations',
   'server_settings',
   'session',
   'users',
@@ -54,6 +69,7 @@ const CORE_TABLES = [
 ];
 
 const WORKSPACE_TABLES = [
+  '__drizzle_migrations',
   'artifact_reviews',
   'audit_events',
   'backend_workspace_handles',
@@ -72,7 +88,6 @@ const WORKSPACE_TABLES = [
   'permission_decisions',
   'resolved_agent_setups',
   'runtime_evidence',
-  'schema_migrations',
   'staged_workspace_reviews',
   'steering_terminal_outcomes',
   'thread_material_bindings',
@@ -143,16 +158,19 @@ function listTableNames(db: { sqlite: { prepare: (sql: string) => { all: () => u
 }
 
 /**
- * Lists applied setup ids in stable order.
+ * Lists applied native migration ids for one scope.
  *
  * @param db Database wrapper with a raw SQLite connection.
+ * @param scope Journal scope.
+ * @param migrationsFolder Optional explicit journal folder.
  * @returns Applied setup ids.
  */
-function listMigrationIds(db: { sqlite: { prepare: (sql: string) => { all: () => unknown[] } } }) {
-  return db.sqlite
-    .prepare('SELECT id FROM schema_migrations ORDER BY id')
-    .all()
-    .map((row) => (row as { id: string }).id);
+function listMigrationIds(
+  db: { sqlite: Database.Database },
+  scope: StorageMigrationScope,
+  migrationsFolder?: string
+) {
+  return listAppliedNativeMigrationIds(db.sqlite, scope, migrationsFolder);
 }
 
 /**
@@ -182,9 +200,14 @@ describe('database setup', () => {
       applyMigrations(coreDb);
 
       expect(
-        readdirSync(join(process.cwd(), 'drizzle')).filter((name) => name.endsWith('.sql'))
+        readdirSync(join(process.cwd(), 'drizzle', 'core')).filter((name) => name.endsWith('.sql'))
       ).toEqual(['0000_setup.sql']);
-      expect(listMigrationIds(coreDb)).toEqual(['core_0000_setup']);
+      expect(
+        ['app', 'core', 'user', 'workspace'].every((scope) =>
+          existsSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'))
+        )
+      ).toBe(true);
+      expect(listAppliedMigrationIds(coreDb)).toEqual(['core_0000_setup']);
       expect(listTableNames(coreDb)).toEqual(CORE_TABLES);
       expect(listColumnNames(coreDb, 'users')).toEqual([
         'id',
@@ -548,9 +571,9 @@ describe('database setup', () => {
       applyScopedMigrations(workspaceDb);
       applyScopedMigrations(workspaceDb);
 
-      expect(listMigrationIds(userDb)).toEqual(['user_0000_setup']);
-      expect(listTableNames(userDb)).toEqual(['idempotency_requests', 'schema_migrations']);
-      expect(listMigrationIds(workspaceDb)).toEqual(['workspace_0000_setup']);
+      expect(listMigrationIds(userDb, 'user')).toEqual(['user_0000_setup']);
+      expect(listTableNames(userDb)).toEqual(['__drizzle_migrations', 'idempotency_requests']);
+      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual(['workspace_0000_setup']);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
         'request_key',
@@ -820,7 +843,9 @@ describe('database setup', () => {
 
       expect(() => applyMigrations(coreDb)).toThrow(/schema_migrations.*already exists/);
       expect(listTableNames(coreDb)).toEqual(['schema_migrations']);
-      expect(listMigrationIds(coreDb)).toEqual(['core_predecessor_setup']);
+      expect(
+        coreDb.sqlite.prepare('SELECT id FROM schema_migrations ORDER BY id').pluck().all()
+      ).toEqual(['core_predecessor_setup']);
     } finally {
       coreDb.sqlite.close();
     }
@@ -843,3 +868,281 @@ describe('database setup', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe('native Drizzle migrate', () => {
+  it('applies a second pending SQL file exactly once', () => {
+    const folder = createNativeJournalFolder([
+      {
+        tag: '0000_setup',
+        when: 1000,
+        sql: 'CREATE TABLE t0 (id text PRIMARY KEY NOT NULL);',
+      },
+    ]);
+    const dbPath = join(folder, 'db.sqlite');
+    const first = new Database(dbPath);
+    applyNativeScopeMigrations(first, 'core', folder);
+    first.prepare('INSERT INTO t0 (id) VALUES (?)').run('retained');
+    first.close();
+
+    appendNativeJournalEntry(folder, {
+      tag: '0001_pending',
+      when: 2000,
+      sql: 'CREATE TABLE t1 (id text PRIMARY KEY NOT NULL);',
+    });
+    const sqlite = new Database(dbPath);
+
+    try {
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+
+      expect(listAppliedNativeMigrationIds(sqlite, 'core', folder)).toEqual([
+        'core_0000_setup',
+        'core_0001_pending',
+      ]);
+      expect(countNativeLedgerRows(sqlite)).toBe(2);
+      expect(listTableNames({ sqlite })).toEqual(['__drizzle_migrations', 't0', 't1']);
+      expect(sqlite.prepare('SELECT id FROM t0 ORDER BY id').pluck().all()).toEqual(['retained']);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('rolls back an atomic pending batch when a later SQL file fails', () => {
+    const folder = createNativeJournalFolder([
+      {
+        tag: '0000_setup',
+        when: 1000,
+        sql: 'CREATE TABLE t0 (id text PRIMARY KEY NOT NULL);',
+      },
+      {
+        tag: '0001_pending',
+        when: 2000,
+        sql: 'CREATE TABLE t1 (id text PRIMARY KEY NOT NULL);\n--> statement-breakpoint\nCREATE TABLE t1 (id text PRIMARY KEY NOT NULL);',
+      },
+    ]);
+    const sqlite = new Database(join(folder, 'db.sqlite'));
+
+    try {
+      expect(() => applyNativeScopeMigrations(sqlite, 'core', folder)).toThrow(BootConfigError);
+      expect(listAppliedNativeMigrationIds(sqlite, 'core', folder)).toEqual([]);
+      expect(countNativeLedgerRows(sqlite)).toBe(0);
+      expect(listTableNames({ sqlite })).toEqual(['__drizzle_migrations']);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('keeps earlier exact native rows when a later pending SQL file fails', () => {
+    const folder = createNativeJournalFolder([
+      {
+        tag: '0000_setup',
+        when: 1000,
+        sql: 'CREATE TABLE t0 (id text PRIMARY KEY NOT NULL);',
+      },
+    ]);
+    const sqlite = new Database(join(folder, 'db.sqlite'));
+
+    try {
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+      appendNativeJournalEntry(folder, {
+        tag: '0001_pending',
+        when: 2000,
+        sql: 'CREATE TABLE t1 (id text PRIMARY KEY NOT NULL);\n--> statement-breakpoint\nCREATE TABLE t1 (id text PRIMARY KEY NOT NULL);',
+      });
+
+      expect(() => applyNativeScopeMigrations(sqlite, 'core', folder)).toThrow(BootConfigError);
+      expect(listAppliedNativeMigrationIds(sqlite, 'core', folder)).toEqual(['core_0000_setup']);
+      expect(countNativeLedgerRows(sqlite)).toBe(1);
+      expect(listTableNames({ sqlite })).toEqual(['__drizzle_migrations', 't0']);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('applies each scope journal only to that scope database', () => {
+    const coreFolder = createNativeJournalFolder([
+      {
+        tag: '0000_setup',
+        when: 1000,
+        sql: 'CREATE TABLE core_only (id text PRIMARY KEY NOT NULL);',
+      },
+    ]);
+    const userFolder = createNativeJournalFolder([
+      {
+        tag: '0000_setup',
+        when: 1000,
+        sql: 'CREATE TABLE user_only (id text PRIMARY KEY NOT NULL);',
+      },
+    ]);
+    const coreSqlite = new Database(join(coreFolder, 'db.sqlite'));
+    const userSqlite = new Database(join(userFolder, 'db.sqlite'));
+
+    try {
+      applyNativeScopeMigrations(coreSqlite, 'core', coreFolder);
+      applyNativeScopeMigrations(userSqlite, 'user', userFolder);
+
+      expect(listTableNames({ sqlite: coreSqlite })).toEqual(['__drizzle_migrations', 'core_only']);
+      expect(listTableNames({ sqlite: userSqlite })).toEqual(['__drizzle_migrations', 'user_only']);
+      expect(listAppliedNativeMigrationIds(coreSqlite, 'core', coreFolder)).toEqual([
+        'core_0000_setup',
+      ]);
+      expect(listAppliedNativeMigrationIds(userSqlite, 'user', userFolder)).toEqual([
+        'user_0000_setup',
+      ]);
+    } finally {
+      userSqlite.close();
+      coreSqlite.close();
+    }
+  });
+
+  it('fails closed when a journal entry has no SQL file', () => {
+    const folder = createNativeJournalFolder([
+      {
+        tag: '0000_setup',
+        when: 1000,
+      },
+    ]);
+    const sqlite = new Database(join(folder, 'db.sqlite'));
+
+    try {
+      expect(() => applyNativeScopeMigrations(sqlite, 'core', folder)).toThrow(
+        /Missing core native Drizzle SQL/
+      );
+      expect(listAppliedNativeMigrationIds(sqlite, 'core', folder)).toEqual([]);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('fails closed when native journal metadata is corrupt', () => {
+    const folder = createNativeJournalFolder([
+      {
+        tag: '0000_setup',
+        when: 1000,
+        sql: 'CREATE TABLE t0 (id text PRIMARY KEY NOT NULL);',
+      },
+    ]);
+    writeFileSync(join(folder, 'meta', '_journal.json'), '{"version":"7","dialect":"sqlite"}\n');
+    const sqlite = new Database(join(folder, 'db.sqlite'));
+
+    try {
+      expect(() => listAppliedNativeMigrationIds(sqlite, 'core', folder)).toThrow(
+        /Corrupt native Drizzle journal/
+      );
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('does not infer applied native ids from the maximum ledger timestamp', () => {
+    const folder = createNativeJournalFolder([
+      {
+        tag: '0000_setup',
+        when: 1000,
+        sql: 'CREATE TABLE t0 (id text PRIMARY KEY NOT NULL);',
+      },
+    ]);
+    const sqlite = new Database(join(folder, 'db.sqlite'));
+
+    try {
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+      appendNativeJournalEntry(folder, {
+        tag: '0001_pending',
+        when: 2000,
+        sql: 'CREATE TABLE t1 (id text PRIMARY KEY NOT NULL);',
+      });
+      sqlite
+        .prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)')
+        .run('unmatched-native-row', 999999);
+
+      expect(listAppliedNativeMigrationIds(sqlite, 'core', folder)).toEqual(['core_0000_setup']);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
+/**
+ * Creates one native Drizzle journal folder for migrate tests.
+ *
+ * @param entries Journal entries. Omit `sql` to leave the referenced file missing.
+ * @returns Absolute journal folder path.
+ */
+function createNativeJournalFolder(
+  entries: ReadonlyArray<{ readonly tag: string; readonly when: number; readonly sql?: string }>
+): string {
+  const dir = mkdtempSync(join(tmpdir(), 'openkit-native-migrate-'));
+  mkdirSync(join(dir, 'meta'));
+  writeNativeJournal(dir, entries);
+  for (const entry of entries) {
+    if (entry.sql !== undefined) {
+      writeFileSync(join(dir, `${entry.tag}.sql`), entry.sql);
+    }
+  }
+  return dir;
+}
+
+/**
+ * Appends one journal entry and optional SQL file to an existing native folder.
+ *
+ * @param folder Native journal folder.
+ * @param entry Journal entry to append.
+ */
+function appendNativeJournalEntry(
+  folder: string,
+  entry: { readonly tag: string; readonly when: number; readonly sql?: string }
+): void {
+  const journalPath = join(folder, 'meta', '_journal.json');
+  const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as {
+    entries: Array<{ idx: number; tag: string; when: number }>;
+  };
+  writeNativeJournal(folder, [
+    ...journal.entries.map((existing) => ({ tag: existing.tag, when: existing.when })),
+    entry,
+  ]);
+  if (entry.sql !== undefined) {
+    writeFileSync(join(folder, `${entry.tag}.sql`), entry.sql);
+  }
+}
+
+/**
+ * Writes `_journal.json` for the supplied entries.
+ *
+ * @param folder Native journal folder.
+ * @param entries Journal entries.
+ */
+function writeNativeJournal(
+  folder: string,
+  entries: ReadonlyArray<{ readonly tag: string; readonly when: number }>
+): void {
+  writeFileSync(
+    join(folder, 'meta', '_journal.json'),
+    `${JSON.stringify({
+      dialect: 'sqlite',
+      entries: entries.map((entry, idx) => ({
+        breakpoints: true,
+        idx,
+        tag: entry.tag,
+        version: '6',
+        when: entry.when,
+      })),
+      version: '7',
+    })}\n`
+  );
+}
+
+/**
+ * Counts native Drizzle ledger rows.
+ *
+ * @param sqlite Open SQLite connection.
+ * @returns Ledger row count, or 0 when the table is absent.
+ */
+function countNativeLedgerRows(sqlite: Database.Database): number {
+  const table = sqlite
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get('__drizzle_migrations');
+  if (!table) {
+    return 0;
+  }
+  return Number(sqlite.prepare('SELECT COUNT(*) FROM __drizzle_migrations').pluck().get());
+}

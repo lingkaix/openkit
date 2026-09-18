@@ -20,6 +20,12 @@ The builder enables pnpm 10 through Corepack, installs native build tooling for 
 
 Worker runtimes are packaged separately under `containers/worker-*`.
 
+## Database Changes
+
+Package the complete `apps/nanocore/drizzle/` tree, including each database scope's SQL and Drizzle journal. NanoCore applies pending migrations through Drizzle before admitting dependent product work; build and tool-version smoke checks do not exercise an existing deployment's schema. Follow the [storage migration lifecycle](../specs/20260703-storage_layout_record_ownership.md#release-scoped-sqlite-migrations) and the scope-specific authoring commands in the [NanoCore storage guide](../../apps/nanocore/src/storage/README.md).
+
+Before first release, consolidating `0000` can leave an already deployed test database on an older baseline. Handle that explicitly while NanoCore is stopped; do not stamp a new baseline solely because its migration name matches. A baseline adoption requires comparing the actual schema against the candidate and preserving the existing data through the authorized operator procedure. Ordinary startup performs neither adoption nor reset. After release, append release SQL instead of rewriting previously applied migrations. Committed data changes require an assessed recovery route; restarting the previous image does not undo them, and the initial App update helper still admits only established migration-free candidates.
+
 ## Run
 
 For the standard local dogfooding setup, use the repo-level helper:

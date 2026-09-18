@@ -65,7 +65,6 @@ export type { SchedulerPlacementPlanStatus } from './scheduler-placement-plans.j
 export { schedulerPlacementPlans } from './scheduler-placement-plans.js';
 export type { SchedulerSessionLeaseStatus } from './scheduler-session-leases.js';
 export { schedulerSessionLeases } from './scheduler-session-leases.js';
-export { schemaMigrations } from './schema-migrations.js';
 export { serverSettings } from './server-settings.js';
 export type {
   VaultAdminAuditOutcome,

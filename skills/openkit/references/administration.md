@@ -38,6 +38,12 @@ Ask for explicit deployment-administrator direction before enrolling, issuing, r
 
 Use vault status, bootstrap, unlock, lock, grant, injection-record, use-record, and rebind capabilities only through their public operations. Treat a successful local schema check as neither vault authorization nor evidence that a secret was injected or used.
 
+## Inspect database migrations
+
+Use the public `storage.layout-report` operation to inspect applied migrations for Core, User, and Workspace databases; Web and Skill/API report the same scope-owned facts. NanoCore executes pending packaged SQL through Drizzle during the owning database startup/open path. Missing SQL or journals and failed pending migrations are failures, not an empty or successfully upgraded database. Drizzle does not validate historical SQL hashes; its ledger is not proof that a rewritten unpublished baseline matches existing tables. Do not infer rollback safety from a healthy fresh database or from an unchanged initial migration name.
+
+Before the first release, developers may consolidate schema changes into `0000`; an older deployed test baseline may therefore need an explicitly authorized stopped-process cutover or recreation. Startup never resets it automatically. After release, schema-changing releases append migrations instead of rewriting applied SQL. A previous App image does not undo committed database changes. Respect the App update helper's current compatibility assessment and supported recovery boundary; this Skill does not perform host-side database edits, service stops, or automatic restores.
+
 ## Operate runtime and scheduled work
 
 Read current runtime configuration and stale-session state before changing it. Report any restart, stale-session, or reconnect consequence returned by NanoCore without inventing a compatibility or hot-reload guarantee.

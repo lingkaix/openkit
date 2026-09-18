@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
+import { listAppliedNativeMigrationIds } from '../src/storage/migrate.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
@@ -32,15 +33,19 @@ describe('nanocore e2e migration idempotency', () => {
     harness = null;
 
     const sqlite = new Database(join(dataRoot, 'server', 'db', 'core.sqlite'), { readonly: true });
-    const migrations = sqlite
-      .prepare('select id, count(*) as count from schema_migrations group by id')
-      .all() as Array<{ id: string; count: number }>;
+    const ledgerRows = sqlite
+      .prepare(
+        'select created_at as createdAt, count(*) as count from __drizzle_migrations group by created_at'
+      )
+      .all() as Array<{ count: number; createdAt: number }>;
+    const applied = listAppliedNativeMigrationIds(sqlite, 'core');
     const localUsers = sqlite
       .prepare("select count(*) as count from users where id = 'user_local'")
       .get() as { count: number };
     sqlite.close();
 
-    expect(migrations).toEqual([{ id: 'core_0000_setup', count: 1 }]);
+    expect(applied).toEqual(['core_0000_setup']);
+    expect(ledgerRows).toEqual([expect.objectContaining({ count: 1 })]);
     expect(localUsers.count).toBe(1);
   });
 });

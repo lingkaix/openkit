@@ -21,7 +21,11 @@ import {
   verifyAndMigrateExistingScopedDatabases,
 } from './db.js';
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
-import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import {
+  applyMigrations,
+  applyScopedMigrations,
+  listAppliedNativeMigrationIds,
+} from './migrate.js';
 
 /**
  * Creates an isolated data root for scoped database tests.
@@ -44,8 +48,8 @@ describe('scoped storage databases', () => {
       const tables = listTables(userDb.sqlite);
 
       expect(statSync(userDbPath(dataRoot, 'user_1')).isFile()).toBe(true);
-      expect(tables).toEqual(['idempotency_requests', 'schema_migrations']);
-      expect(listMigrationIds(userDb.sqlite)).toEqual(['user_0000_setup']);
+      expect(tables).toEqual(['__drizzle_migrations', 'idempotency_requests']);
+      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual(['user_0000_setup']);
     } finally {
       userDb.sqlite.close();
     }
@@ -71,6 +75,7 @@ describe('scoped storage databases', () => {
         )
       ).toBe(false);
       expect(tables).toEqual([
+        '__drizzle_migrations',
         'artifact_reviews',
         'audit_events',
         'backend_workspace_handles',
@@ -89,7 +94,6 @@ describe('scoped storage databases', () => {
         'permission_decisions',
         'resolved_agent_setups',
         'runtime_evidence',
-        'schema_migrations',
         'staged_workspace_reviews',
         'steering_terminal_outcomes',
         'thread_material_bindings',
@@ -109,7 +113,7 @@ describe('scoped storage databases', () => {
         'workspace_reconciliation_records',
         'workspace_repository_resources',
       ]);
-      expect(listMigrationIds(workspaceDb.sqlite)).toEqual(['workspace_0000_setup']);
+      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -359,10 +363,10 @@ describe('scoped storage databases', () => {
     const dbPath = coreDbPath(dataRoot);
     const initialized = openCoreDb(dataRoot);
     applyMigrations(initialized);
-    const originalAppliedAt = initialized.sqlite
-      .prepare('SELECT applied_at FROM schema_migrations WHERE id = ?')
+    const originalHash = initialized.sqlite
+      .prepare('SELECT hash FROM __drizzle_migrations')
       .pluck()
-      .get('core_0000_setup');
+      .get();
     initialized.sqlite.close();
     const crashed = spawnSync(
       process.execPath,
@@ -372,10 +376,7 @@ describe('scoped storage databases', () => {
         `import Database from 'better-sqlite3';
 const sqlite = new Database(process.argv[1]);
 sqlite.exec('BEGIN IMMEDIATE');
-sqlite.prepare('UPDATE schema_migrations SET applied_at = ? WHERE id = ?').run(
-  'uncommitted-crash-write',
-  'core_0000_setup'
-);
+sqlite.prepare('UPDATE __drizzle_migrations SET hash = ?').run('uncommitted-crash-write');
 process.kill(process.pid, 'SIGKILL');`,
         dbPath,
       ],
@@ -387,12 +388,9 @@ process.kill(process.pid, 'SIGKILL');`,
 
     const coreDb = openCoreDbWithIntegrityCheck(dataRoot);
     try {
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT applied_at FROM schema_migrations WHERE id = ?')
-          .pluck()
-          .get('core_0000_setup')
-      ).toBe(originalAppliedAt);
+      expect(coreDb.sqlite.prepare('SELECT hash FROM __drizzle_migrations').pluck().get()).toBe(
+        originalHash
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -409,8 +407,8 @@ process.kill(process.pid, 'SIGKILL');`,
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
 
     try {
-      expect(listMigrationIds(userDb.sqlite)).toEqual(['user_0000_setup']);
-      expect(listMigrationIds(workspaceDb.sqlite)).toEqual(['workspace_0000_setup']);
+      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual(['user_0000_setup']);
+      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
     } finally {
       userDb.sqlite.close();
       workspaceDb.sqlite.close();
@@ -489,17 +487,15 @@ function tableColumns(
 }
 
 /**
- * Lists recorded migration ids in stable order.
+ * Lists recorded native migration ids in stable order.
  *
  * @param sqlite Open SQLite database.
+ * @param scope Journal scope.
  * @returns Migration ids sorted by id.
  */
-function listMigrationIds(sqlite: {
-  prepare: (sql: string) => { all: () => unknown[] };
-}): string[] {
-  const rows = sqlite.prepare('SELECT id FROM schema_migrations ORDER BY id').all() as Array<{
-    id: string;
-  }>;
-
-  return rows.map((row) => row.id);
+function listMigrationIds(
+  sqlite: import('better-sqlite3').Database,
+  scope: 'core' | 'user' | 'workspace'
+): string[] {
+  return listAppliedNativeMigrationIds(sqlite, scope);
 }

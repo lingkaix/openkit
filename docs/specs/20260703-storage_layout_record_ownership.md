@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-09
+updated: 2026-09-18
 ---
 # Storage Layout And Record Ownership
 
@@ -19,7 +19,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 - Source-of-truth decisions for file-backed records, SQLite source-of-truth ledgers, and derived SQLite records.
 - Storage ownership for worker runtime outputs, OpenShell evidence, staged reviews, apply results, audit, usage, capability calls, permission decisions, vault metadata, and recovery checkpoints.
 - The Workspace SQLite transaction boundary for Workspace Material identity, immutable inline revisions, Thread bindings, their command receipts, and version-keyed Artifact Review history.
-- Migration posture from the current single-database implementation to ownership-scoped storage.
+- Migration posture from the current single-database implementation to ownership-scoped storage, and release-scoped SQLite schema evolution.
 - Record lineage requirements for importing runtime-produced evidence into canonical product history.
 - Storage structure extension rules for future record families and derived directories.
 
@@ -212,6 +212,16 @@ SQLite-derived records:
 
 Derived records must be rebuildable from file-backed records or authoritative SQLite ledgers.
 
+## Release-Scoped SQLite Migrations
+
+Each Core, User, Workspace, and Light App database owns its applied-migration ledger independently. Packaged, ordered SQL migrations define changes to that scope; they do not migrate another scope, canonical file formats, external Vaults, or Worker storage. The implementation uses Drizzle migration execution and its native ledger rather than a second setup-only ledger. Diagnostics and the public storage layout report project actually recorded migrations as scope-qualified migration names; they do not create migration authority or infer an applied migration from a later timestamp alone.
+
+Before the first release, schema changes may be consolidated into each scope's initial `0000` baseline. Once released, an applied migration is immutable: each release with schema changes adds a new SQL migration in each affected scope. Deploying an unpublished baseline for testing does not freeze that baseline or require a migration for every development commit. An existing test database built from a different unpublished baseline needs an explicit operator cutover or recreation; ordinary startup neither adopts an old setup ledger nor resets data automatically.
+
+After integrity validation, startup executes pending Core migrations and scans existing User and Workspace databases through the same scoped migration path before product admission. Newly created scoped databases execute their complete journal. Light App databases execute their own migrations through their existing open lifecycle and retain their separately owned failure boundary. Only one process may own the writable Data Root. Pending SQL and ledger publication are transactional within each database; there is no cross-database transaction or automatic rollback of previously committed scopes. Failure leaves the failing database's pending migration batch unapplied, prevents admission dependent on that database, and requires correction or explicit stopped-process recovery before retry. Missing migration files or journals are failures, not an empty migration set. Restart skips already applied migrations and retries unapplied work; it does not silently repair a contradictory database history.
+
+Acceptance observes fresh initialization, a later migration applied exactly once to an existing database with retained rows, repeat startup without duplication, isolation between scopes, rollback of a failing pending batch, and missing-file failure. A code-image rollback does not reverse committed database migrations. App update and recovery admission remain owned by the App update delivery specification; a successful fresh-database check alone never establishes that existing data can safely return to the previous image.
+
 ## Authoritative SQLite Integrity Failure
 
 The Core, User, and shared Workspace SQLite stores are process-critical. If an existing database in one of these scopes fails `PRAGMA quick_check` or cannot be opened for the integrity check, NanoCore MUST fail process boot during the critical storage phase and MUST leave the original database file at its canonical path with its bytes unchanged.
@@ -288,8 +298,8 @@ The owner-independent V2 Workspace root and most scoped record-family ownership 
 - V2 normal boot has no owner-nested compatibility reader: `ensureLayout` fails closed on a predecessor marker, root-level `core.sqlite`, owner-nested Workspace trees, and legacy workspace `memory/` directories. The dedicated stopped-process migration CLI is the only implemented V1-to-V2 cutover path; it verifies an external full-data-root backup, publishes one staged top-level Workspace root, removes predecessor trees, records evidence, and leaves subsequent boot to validate V2 normally.
 - `ensureLayout` verifies canonical SQLite database filename ownership and fails closed when `core.sqlite`, `user.sqlite`, or `workspace.sqlite` appears outside its owning scope.
 - `ensureLayout` scans JSON records that carry the common canonical record envelope, accepts only currently implemented canonical record families (`workspace-export` and `data-root-backup`), and fails closed when an envelope names an unknown family or non-empty `requiredFeatures` that the reader does not support.
-- `openUserDb` opens `users/<userId>/db/user.sqlite`, and `applyScopedMigrations` initializes only the user scoped `schema_migrations` ledger.
-- `openWorkspaceDb` opens `workspaces/<workspaceId>/db/workspace.sqlite`, and `applyScopedMigrations` initializes the workspace-scoped `schema_migrations` ledger.
+- `openUserDb` opens `users/<userId>/db/user.sqlite`, and `applyScopedMigrations` applies the user migration journal to its own database.
+- `openWorkspaceDb` opens `workspaces/<workspaceId>/db/workspace.sqlite`, and `applyScopedMigrations` applies the Workspace migration journal to its own database.
 - `createStorageLayoutReport` produces a read-only baseline report for the current data root, including server/user/workspace database presence, applied migration ledgers, workspace `indexes/` status, and quarantined storage file inventory.
 - `GET /api/app/storage/layout-report` exposes the same report through the public App API with `@openkit/app-api-schemas` validation, `@openkit/core-client` exposes `client.app.getStorageLayoutReport()` for first-party consumers, and the unified `openkit` Skill exposes the `storage.layout-report` bundled-CLI operation for AI-native operator inspection. Because the report covers deployment-wide storage topology and quarantine inventory, this is a deployment-wide administration route governed by `docs/specs/20260704-remote_auth_credential_bootstrap.md`, not a workspace diagnostic.
 - A verified full-data-root backup preserves same-deployment Core identity, membership, invitation, session, token, and Workspace authority for restore. Portable Workspace export/import deliberately excludes those deployment-local authorities; target import creates one target registry owner and membership for the importing user, while source users and access relationships do not authorize the imported Workspace.

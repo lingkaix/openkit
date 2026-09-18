@@ -1912,7 +1912,7 @@ describe('workspace export verifier', () => {
         workspaceDb.sqlite
           .prepare(
             `SELECT name FROM sqlite_schema
-             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '__drizzle_migrations'
              ORDER BY name ASC`
           )
           .all() as Array<{ name: string }>
