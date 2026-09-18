@@ -439,6 +439,8 @@ Deployment administrators can manage workspace secrets through `POST /api/app/wo
 
 Deployment admins may configure `server.jsonc.policy.workspaceApprovalModes[workspaceId]["repo.push"]` as `auto_allow` for a trusted Workspace and restart the App. Missing entries require human approval. Both modes retain target-bound Approval, permission audit, and command receipt records; automatic mode returns a granted Approval without pending attention. Execution remains separate and enforces repository, Vault, and imported-authority restrictions. See the [trusted Workspace recipe](../../skills/openkit-ops/references/nanocore-data-root-config.en.md#auto-allow-host-push-on-a-trusted-workspace).
 
+Host Git push requests naming a completed Worker Turn create a fresh publication Turn to own approval, while preserving the source Turn and its review lineage. The Thread must be idle; exact command replay reuses the recorded approval, and incomplete publication ownership requires recovery. Worker-originated requests retain their live Turn ownership.
+
 On boot, NanoCore durably denies an undecided approval on an already terminal Turn with a system-authored decision Item, preserves the terminal status, and clears any stale approval Gate. The Item remains in the Turn history for inspection; no manual `items.jsonl` repair is needed for this case.
 
 ## Per-Turn Vault Runtime Environment

@@ -625,6 +625,25 @@ describe('selected repository MCP', () => {
         environmentPackageSnapshotId: f.active().environmentPackage.snapshotId,
       });
       expect(isExactWorkerApprovalSourceDecision(input)).toBe(true);
+      const context = source.contextSummary;
+      expect(context).toMatchObject({
+        commandTurnId: f.active().turn.id,
+        turnId: f.active().turn.id,
+      });
+      expect(
+        isExactWorkerApprovalSourceDecision({
+          ...input,
+          source: {
+            ...source,
+            contextSummary:
+              context && typeof context === 'object' && !Array.isArray(context)
+                ? Object.fromEntries(
+                    Object.entries(context).filter(([key]) => key !== 'commandTurnId')
+                  )
+                : context,
+          },
+        })
+      ).toBe(false);
       expect(
         isExactWorkerApprovalSourceDecision({
           ...input,

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,14 +7,16 @@ import {
   requireCredentialFreeHttpsGitLocator,
   resolveWorkspaceDataSourceReference,
 } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { createDemoWorkspaceForUser, FsStore } from './lib/store.js';
+import * as gitPushExecutor from './runtime/git-push-executor.js';
 import {
   getGitPushRecord,
   listGitPushRecords,
   recordGitPushRecord,
 } from './runtime/git-push-records.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -72,6 +75,46 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
   }
 
   return createNanoCoreApp({ ...options, store });
+}
+
+/** Creates one linked GitHub-remote repository with a single host commit. */
+function createLinkedPushRepository(cwd: string): string {
+  execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
+    cwd,
+    stdio: 'ignore',
+  });
+  execFileSync('git', ['config', 'user.name', 'Repository Local'], {
+    cwd,
+    stdio: 'ignore',
+  });
+  writeFileSync(join(cwd, 'README.md'), '# Approval\n');
+  execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'approvable change'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/openkit.git'], {
+    cwd,
+    stdio: 'ignore',
+  });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+}
+
+/** Deterministic host publication Turn id for one git_push.approval.request. */
+function publicationTurnId(input: {
+  readonly requestId: string;
+  readonly resourceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly workspaceId: string;
+}): string {
+  return `tu_repo_push_${commandInputHash({
+    actorId: LOCAL_USER_ID,
+    command: 'git_push.approval.request',
+    repositoryResourceId: input.resourceId,
+    requestId: input.requestId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    workspaceId: input.workspaceId,
+  }).slice('sha256:'.length)}`;
 }
 
 describe('workspace repository app API', () => {
@@ -759,6 +802,715 @@ describe('workspace repository app API', () => {
       } finally {
         workspaceDb.sqlite.close();
       }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('opens one publication Turn for host push approval when the source Worker Turn is terminal', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({ coreDb, store });
+    const thread = store.createThread('ws_demo', 'Publish accepted worker work');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Accepted apply', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    store.updateTurn(sourceTurn.id, {
+      completedAt: '2026-07-19T00:00:00.000Z',
+      status: 'completed',
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-terminal-source-'));
+    const commitId = createLinkedPushRepository(repositoryPath);
+    const requestId = '00000000-0000-4000-8000-000000000201';
+    const body = {
+      commitIds: [commitId],
+      requestId,
+      sourceRef: 'HEAD',
+      targetBranch: 'main',
+      threadId: thread.id,
+      turnId: sourceTurn.id,
+    };
+
+    try {
+      const repositoryRes = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        body: JSON.stringify({
+          displayName: 'Publish repository',
+          git: {
+            allowedPushTargets: ['main'],
+            authorEmail: null,
+            authorName: null,
+            commitOnApply: true,
+          },
+          localPath: repositoryPath,
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'PUT',
+      });
+      expect(repositoryRes.status).toBe(200);
+
+      const approvalRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify(body),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(approvalRes.status).toBe(200);
+      const expectedPublicationTurnId = publicationTurnId({
+        requestId,
+        resourceId: 'repo_default',
+        threadId: thread.id,
+        turnId: sourceTurn.id,
+        workspaceId: 'ws_demo',
+      });
+      const approvalPayload = await approvalRes.json();
+      expect(approvalPayload).toMatchObject({
+        approval: {
+          kind: 'permission',
+          status: 'pending',
+          threadId: thread.id,
+          turnId: expectedPublicationTurnId,
+        },
+      });
+      expect(store.getTurn('ws_demo', thread.id, sourceTurn.id).status).toBe('completed');
+      expect(store.getTurn('ws_demo', thread.id, expectedPublicationTurnId).status).toBe(
+        'awaiting_human'
+      );
+
+      const replayRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify(body),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(replayRes.status).toBe(200);
+      expect(
+        store
+          .listThreadTurns('ws_demo', thread.id)
+          .filter((turn) => turn.id !== sourceTurn.id)
+          .map((turn) => turn.id)
+      ).toEqual([expectedPublicationTurnId]);
+
+      const conflictRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({ ...body, targetBranch: 'other' }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(conflictRes.status).toBe(409);
+      await expect(conflictRes.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(2);
+
+      const grantRes = await app.request(`/api/approvals/${approvalPayload.approval.id}/respond`, {
+        body: JSON.stringify({
+          decision: 'granted',
+          requestId: '00000000-0000-4000-8000-000000000206',
+          threadId: thread.id,
+          turnId: expectedPublicationTurnId,
+          workspaceId: 'ws_demo',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      expect(grantRes.status).toBe(200);
+      expect(store.getTurn('ws_demo', thread.id, sourceTurn.id)).toMatchObject({
+        completedAt: '2026-07-19T00:00:00.000Z',
+        status: 'completed',
+      });
+      expect(store.getTurn('ws_demo', thread.id, expectedPublicationTurnId)).toMatchObject({
+        humanGate: null,
+        status: 'completed',
+      });
+
+      const executeRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push',
+        {
+          body: JSON.stringify({
+            approvalRequestId: approvalPayload.approval.id,
+            requestId: '00000000-0000-4000-8000-000000000207',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(executeRes.status).toBe(200);
+      await expect(executeRes.json()).resolves.toMatchObject({
+        commitIds: [commitId],
+        repositoryResourceId: 'repo_default',
+        targetBranch: 'main',
+        workspaceId: 'ws_demo',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('terminalizes only the publication Turn when the host push approval is denied', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({ coreDb, store });
+    const thread = store.createThread('ws_demo', 'Deny publication of accepted work');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Accepted apply', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    store.updateTurn(sourceTurn.id, {
+      completedAt: '2026-07-19T00:00:00.000Z',
+      status: 'completed',
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-terminal-deny-'));
+    const commitId = createLinkedPushRepository(repositoryPath);
+    const requestId = '00000000-0000-4000-8000-000000000208';
+
+    try {
+      expect(
+        (
+          await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+            body: JSON.stringify({
+              displayName: 'Publish repository',
+              git: {
+                allowedPushTargets: ['main'],
+                authorEmail: null,
+                authorName: null,
+                commitOnApply: true,
+              },
+              localPath: repositoryPath,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'PUT',
+          })
+        ).status
+      ).toBe(200);
+
+      const approvalRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({
+            commitIds: [commitId],
+            requestId,
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            threadId: thread.id,
+            turnId: sourceTurn.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(approvalRes.status).toBe(200);
+      const approvalPayload = await approvalRes.json();
+      const expectedPublicationTurnId = publicationTurnId({
+        requestId,
+        resourceId: 'repo_default',
+        threadId: thread.id,
+        turnId: sourceTurn.id,
+        workspaceId: 'ws_demo',
+      });
+      const denyRes = await app.request(`/api/approvals/${approvalPayload.approval.id}/respond`, {
+        body: JSON.stringify({
+          decision: 'denied',
+          requestId: '00000000-0000-4000-8000-000000000209',
+          threadId: thread.id,
+          turnId: expectedPublicationTurnId,
+          workspaceId: 'ws_demo',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      expect(denyRes.status).toBe(200);
+      expect(store.getTurn('ws_demo', thread.id, sourceTurn.id)).toMatchObject({
+        completedAt: '2026-07-19T00:00:00.000Z',
+        status: 'completed',
+      });
+      expect(store.getTurn('ws_demo', thread.id, expectedPublicationTurnId)).toMatchObject({
+        humanGate: null,
+        status: 'cancelled',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a running host Turn as the Git push approval owner', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({ coreDb, store });
+    const thread = store.createThread('ws_demo', 'Publish from a live host Turn');
+    const turn = store.createTurn('ws_demo', thread.id, 'Publish accepted work', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-running-host-'));
+    const commitId = createLinkedPushRepository(repositoryPath);
+
+    try {
+      expect(
+        (
+          await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+            body: JSON.stringify({
+              displayName: 'Publish repository',
+              git: {
+                allowedPushTargets: ['main'],
+                authorEmail: null,
+                authorName: null,
+                commitOnApply: true,
+              },
+              localPath: repositoryPath,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'PUT',
+          })
+        ).status
+      ).toBe(200);
+
+      const approvalRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({
+            commitIds: [commitId],
+            requestId: '00000000-0000-4000-8000-000000000202',
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            threadId: thread.id,
+            turnId: turn.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(approvalRes.status).toBe(200);
+      await expect(approvalRes.json()).resolves.toMatchObject({
+        approval: { threadId: thread.id, turnId: turn.id },
+      });
+      expect(store.getTurn('ws_demo', thread.id, turn.id).status).toBe('awaiting_human');
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('executes a terminal-source auto_allow host push using the source command Turn receipt', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({
+      coreDb,
+      openKitConfig: {
+        policy: { workspaceApprovalModes: { ws_demo: { 'repo.push': 'auto_allow' } } },
+      },
+      store,
+    });
+    const thread = store.createThread('ws_demo', 'Trusted workspace publication');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Accepted apply', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    store.updateTurn(sourceTurn.id, {
+      completedAt: '2026-07-19T00:00:00.000Z',
+      status: 'completed',
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-auto-allow-terminal-'));
+    const commitId = createLinkedPushRepository(repositoryPath);
+    const requestId = '00000000-0000-4000-8000-000000000211';
+    const runner = vi.spyOn(gitPushExecutor, 'runGitPushCommand').mockResolvedValue({
+      exitCode: 1,
+      stderr: 'mocked Git push effect',
+      stdout: '',
+    });
+
+    try {
+      expect(
+        (
+          await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+            body: JSON.stringify({
+              displayName: 'Publish repository',
+              git: {
+                allowedPushTargets: ['main'],
+                authorEmail: null,
+                authorName: null,
+                commitOnApply: true,
+              },
+              localPath: repositoryPath,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'PUT',
+          })
+        ).status
+      ).toBe(200);
+
+      const approvalRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({
+            commitIds: [commitId],
+            requestId,
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            threadId: thread.id,
+            turnId: sourceTurn.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(approvalRes.status).toBe(200);
+      const expectedPublicationTurnId = publicationTurnId({
+        requestId,
+        resourceId: 'repo_default',
+        threadId: thread.id,
+        turnId: sourceTurn.id,
+        workspaceId: 'ws_demo',
+      });
+      const approvalPayload = await approvalRes.json();
+      expect(approvalPayload).toMatchObject({
+        approval: {
+          status: 'granted',
+          threadId: thread.id,
+          turnId: expectedPublicationTurnId,
+        },
+      });
+      expect(store.getTurn('ws_demo', thread.id, sourceTurn.id).status).toBe('completed');
+      expect(store.getTurn('ws_demo', thread.id, expectedPublicationTurnId).status).toBe(
+        'completed'
+      );
+
+      const executeRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push',
+        {
+          body: JSON.stringify({
+            approvalRequestId: approvalPayload.approval.id,
+            requestId: '00000000-0000-4000-8000-000000000212',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(executeRes.status).toBe(200);
+      await expect(executeRes.json()).resolves.toMatchObject({
+        commitIds: [commitId],
+        repositoryResourceId: 'repo_default',
+        targetBranch: 'main',
+        workspaceId: 'ws_demo',
+      });
+      expect(store.getTurn('ws_demo', thread.id, sourceTurn.id)).toMatchObject({
+        completedAt: '2026-07-19T00:00:00.000Z',
+        status: 'completed',
+      });
+      expect(store.getTurn('ws_demo', thread.id, expectedPublicationTurnId).status).toBe(
+        'completed'
+      );
+    } finally {
+      runner.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses a terminal-source Git push approval while the Thread is busy', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({ coreDb, store });
+    const thread = store.createThread('ws_demo', 'Busy publication Thread');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Accepted apply', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    store.updateTurn(sourceTurn.id, {
+      completedAt: '2026-07-19T00:00:00.000Z',
+      status: 'completed',
+    });
+    const competing = store.createTurn('ws_demo', thread.id, 'Other active work', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-busy-thread-'));
+    const commitId = createLinkedPushRepository(repositoryPath);
+
+    try {
+      expect(
+        (
+          await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+            body: JSON.stringify({
+              displayName: 'Publish repository',
+              git: {
+                allowedPushTargets: ['main'],
+                authorEmail: null,
+                authorName: null,
+                commitOnApply: true,
+              },
+              localPath: repositoryPath,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'PUT',
+          })
+        ).status
+      ).toBe(200);
+
+      const approvalRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({
+            commitIds: [commitId],
+            requestId: '00000000-0000-4000-8000-000000000203',
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            threadId: thread.id,
+            turnId: sourceTurn.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(approvalRes.status).toBe(409);
+      await expect(approvalRes.json()).resolves.toMatchObject({ code: 'thread_busy' });
+      expect(store.getTurn('ws_demo', thread.id, sourceTurn.id).status).toBe('completed');
+      expect(store.getTurn('ws_demo', thread.id, competing.id).status).toBe('running');
+      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(2);
+      expect(store.listCommandRequests()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses a wrong-scope Git push approval before creating a Gate', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({ coreDb, store });
+    const sourceThread = store.createThread('ws_demo', 'Source worker thread');
+    const otherThread = store.createThread('ws_demo', 'Other thread');
+    const sourceTurn = store.createTurn('ws_demo', sourceThread.id, 'Accepted apply', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    store.updateTurn(sourceTurn.id, {
+      completedAt: '2026-07-19T00:00:00.000Z',
+      status: 'completed',
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-wrong-scope-'));
+    const commitId = createLinkedPushRepository(repositoryPath);
+
+    try {
+      expect(
+        (
+          await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+            body: JSON.stringify({
+              displayName: 'Publish repository',
+              git: {
+                allowedPushTargets: ['main'],
+                authorEmail: null,
+                authorName: null,
+                commitOnApply: true,
+              },
+              localPath: repositoryPath,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'PUT',
+          })
+        ).status
+      ).toBe(200);
+
+      const approvalRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({
+            commitIds: [commitId],
+            requestId: '00000000-0000-4000-8000-000000000204',
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            threadId: otherThread.id,
+            turnId: sourceTurn.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(approvalRes.status).toBe(404);
+      await expect(approvalRes.json()).resolves.toMatchObject({ code: 'not_found' });
+      expect(store.getTurn('ws_demo', sourceThread.id, sourceTurn.id).status).toBe('completed');
+      expect(store.listThreadTurns('ws_demo', otherThread.id)).toEqual([]);
+      expect(store.listCommandRequests()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('returns recovery_required for an orphan running publication Turn without a Gate or receipt', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({ coreDb, store });
+    const thread = store.createThread('ws_demo', 'Publish with an orphan publication Turn');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Accepted apply', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    store.updateTurn(sourceTurn.id, {
+      completedAt: '2026-07-19T00:00:00.000Z',
+      status: 'completed',
+    });
+    const requestId = '00000000-0000-4000-8000-000000000210';
+    const publicationTurn = store.createTurn(
+      'ws_demo',
+      thread.id,
+      'Orphan publication Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      {
+        turnId: publicationTurnId({
+          requestId,
+          resourceId: 'repo_default',
+          threadId: thread.id,
+          turnId: sourceTurn.id,
+          workspaceId: 'ws_demo',
+        }),
+      }
+    );
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-orphan-publication-'));
+    const commitId = createLinkedPushRepository(repositoryPath);
+    const body = {
+      commitIds: [commitId],
+      requestId,
+      sourceRef: 'HEAD',
+      targetBranch: 'main',
+      threadId: thread.id,
+      turnId: sourceTurn.id,
+    };
+
+    try {
+      expect(
+        (
+          await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+            body: JSON.stringify({
+              displayName: 'Publish repository',
+              git: {
+                allowedPushTargets: ['main'],
+                authorEmail: null,
+                authorName: null,
+                commitOnApply: true,
+              },
+              localPath: repositoryPath,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'PUT',
+          })
+        ).status
+      ).toBe(200);
+
+      const approvalRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify(body),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(approvalRes.status).toBe(409);
+      await expect(approvalRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+
+      const changedRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({ ...body, targetBranch: 'other' }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(changedRes.status).toBe(409);
+      await expect(changedRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(store.getTurn('ws_demo', thread.id, sourceTurn.id).status).toBe('completed');
+      expect(store.getTurn('ws_demo', thread.id, publicationTurn.id)).toEqual(publicationTurn);
+      expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual([
+        sourceTurn.id,
+        publicationTurn.id,
+      ]);
+      expect(store.listThreadItems('ws_demo', thread.id)).toEqual([]);
+      expect(store.listCommandRequests()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('returns recovery_required when a terminal-source Gate exists without its receipt', async () => {
+    const coreDb = createCoreDb();
+    const store = new FsStore();
+    const app = createApp({ coreDb, store });
+    const thread = store.createThread('ws_demo', 'Publish with a missing receipt');
+    const sourceTurn = store.createTurn('ws_demo', thread.id, 'Accepted apply', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    store.updateTurn(sourceTurn.id, {
+      completedAt: '2026-07-19T00:00:00.000Z',
+      status: 'completed',
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-receipt-gap-'));
+    const commitId = createLinkedPushRepository(repositoryPath);
+    const requestId = '00000000-0000-4000-8000-000000000205';
+
+    try {
+      expect(
+        (
+          await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+            body: JSON.stringify({
+              displayName: 'Publish repository',
+              git: {
+                allowedPushTargets: ['main'],
+                authorEmail: null,
+                authorName: null,
+                commitOnApply: true,
+              },
+              localPath: repositoryPath,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'PUT',
+          })
+        ).status
+      ).toBe(200);
+
+      const recordSpy = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('Injected Git push approval receipt failure.');
+      });
+      const approvalRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({
+            commitIds: [commitId],
+            requestId,
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            threadId: thread.id,
+            turnId: sourceTurn.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      recordSpy.mockRestore();
+      expect(approvalRes.status).toBe(409);
+      await expect(approvalRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+
+      const retryRes = await app.request(
+        '/api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
+        {
+          body: JSON.stringify({
+            commitIds: [commitId],
+            requestId,
+            sourceRef: 'HEAD',
+            targetBranch: 'main',
+            threadId: thread.id,
+            turnId: sourceTurn.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      expect(retryRes.status).toBe(409);
+      await expect(retryRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(store.getTurn('ws_demo', thread.id, sourceTurn.id).status).toBe('completed');
+      expect(store.listCommandRequests()).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }

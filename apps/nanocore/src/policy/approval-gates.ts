@@ -391,7 +391,14 @@ export function isExactWorkerApprovalSourceDecision(
     !isRecord(resource) ||
     !isRecord(subject) ||
     !isRecord(context.worker) ||
-    !hasExactKeys(context, ['requestId', 'workspaceId', 'threadId', 'turnId', 'worker']) ||
+    !hasExactKeys(context, [
+      'commandTurnId',
+      'requestId',
+      'threadId',
+      'turnId',
+      'worker',
+      'workspaceId',
+    ]) ||
     !hasExactKeys(context.worker, [
       'agentId',
       'agentSessionId',
@@ -416,6 +423,8 @@ export function isExactWorkerApprovalSourceDecision(
     context.workspaceId !== input.workspaceId ||
     context.threadId !== input.threadId ||
     context.turnId !== input.turnId ||
+    typeof context.commandTurnId !== 'string' ||
+    context.commandTurnId !== input.turnId ||
     resource.kind !== 'git-push-target' ||
     resource.workspaceId !== input.workspaceId ||
     resource.remoteName !== 'origin' ||
@@ -434,7 +443,7 @@ export function isExactWorkerApprovalSourceDecision(
     workspaceId: input.workspaceId,
     repositoryResourceId: resource.repositoryResourceId,
     threadId: input.threadId,
-    turnId: input.turnId,
+    turnId: context.commandTurnId,
   };
   const digest = commandInputHash({
     command: 'git_push.approval.request',
@@ -483,7 +492,7 @@ export function isExactWorkerApprovalSourceDecision(
       commandInputHash({
         requestId: context.requestId,
         threadId: input.threadId,
-        turnId: input.turnId,
+        turnId: context.commandTurnId,
         sourceRef: resource.sourceRef,
         targetBranch: resource.targetBranch,
         commitIds: resource.commitIds,

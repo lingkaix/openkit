@@ -90,6 +90,7 @@ const RepoPushApprovalDecisionSchema = z
           .optional(),
         threadId: z.string().min(1),
         turnId: z.string().min(1),
+        commandTurnId: z.string().min(1),
         workspaceId: z.string().min(1),
       })
       .strict(),
@@ -689,6 +690,43 @@ export async function requestRepositoryPushApproval(
             409
           );
         }
+        let gateTurnId = input.turnId;
+        if (!worker) {
+          let sourceTurn: ReturnType<FsStore['getTurn']>;
+          try {
+            sourceTurn = store.getTurn(workspaceId, input.threadId, input.turnId);
+          } catch (error) {
+            if (error instanceof Error && error.message === `Turn not found: ${input.turnId}`) {
+              throw new TurnStartValidationError('not_found', 'Thread not found.', 404);
+            }
+            throw error;
+          }
+          if (
+            sourceTurn.status === 'completed' ||
+            sourceTurn.status === 'failed' ||
+            sourceTurn.status === 'interrupted'
+          ) {
+            const publicationTurnId = `tu_repo_push_${ownerDigest}`;
+            if (
+              store
+                .listThreadTurns(workspaceId, input.threadId)
+                .some(
+                  (turn) =>
+                    turn.id !== publicationTurnId &&
+                    (turn.status === 'awaiting_human' ||
+                      turn.status === 'pending' ||
+                      turn.status === 'running')
+                )
+            ) {
+              throw new TurnStartValidationError(
+                'thread_busy',
+                'The Thread already has a non-terminal Turn.',
+                409
+              );
+            }
+            gateTurnId = publicationTurnId;
+          }
+        }
         let inspection: ReturnType<typeof inspectGitPushRepository>;
         try {
           inspection = inspectGitPushRepository(repository.localPath, input.sourceRef);
@@ -709,6 +747,30 @@ export async function requestRepositoryPushApproval(
           );
         }
 
+        if (!worker && gateTurnId !== input.turnId) {
+          try {
+            store.getTurnById(gateTurnId);
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The Git push approval exists without its command receipt.',
+              409
+            );
+          } catch (error) {
+            if (error instanceof TurnStartValidationError) throw error;
+            if (!(error instanceof Error && error.message === `Turn not found: ${gateTurnId}`)) {
+              throw error;
+            }
+          }
+          store.createTurn(
+            workspaceId,
+            input.threadId,
+            `Approve Git push to ${input.targetBranch}`,
+            { kind: 'user', id: actorId },
+            null,
+            { turnId: gateTurnId }
+          );
+        }
+
         const gate = createPolicyApprovalGate({
           action: 'repo.push',
           autoAllowTurn: worker ? 'continue' : 'complete',
@@ -718,7 +780,7 @@ export async function requestRepositoryPushApproval(
           workspaceDb,
           store,
           workspaceId,
-          turnId: input.turnId,
+          turnId: gateTurnId,
           ...owner,
           reasonCode: 'repo_push_requires_human_approval',
           title: `Approve Git push to ${input.targetBranch}`,
@@ -738,10 +800,11 @@ export async function requestRepositoryPushApproval(
           },
           contextSummary: {
             requestId: input.requestId,
+            commandTurnId: input.turnId,
             ...(worker ? { worker } : {}),
             workspaceId,
             threadId: input.threadId,
-            turnId: input.turnId,
+            turnId: gateTurnId,
           },
         });
         const approval = store.getApproval(gate.approvalId);
@@ -921,7 +984,7 @@ export async function executeRepositoryPush(
             workspaceId,
             repositoryResourceId: resourceId,
             threadId: approval.threadId,
-            turnId: approval.turnId,
+            turnId: originalRequest.contextSummary.commandTurnId,
           }
         );
         if (receipt?.response.kind !== 'approval' || receipt.response.id !== approval.id) {
