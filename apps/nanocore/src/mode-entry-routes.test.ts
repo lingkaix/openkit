@@ -280,6 +280,88 @@ async function waitForSelectedWorkerLoopCloseout(input: {
 }
 
 describe('conversation.submit worker storage choice', () => {
+  it('rejects oversized objectives before worker effects and starts the exact 2000-character boundary', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-conversation-objective-limit-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const executor = new CompletingTurnExecutor();
+    const workerSetup = createTestAgentSetup();
+    const app = createApp({
+      agentManifests: [workerSetup.manifest],
+      coreDb,
+      openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
+      store,
+      turnExecutor: executor,
+    });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const threadsBefore = store.listThreads('ws_demo');
+    const createThread = vi.spyOn(store, 'createThread');
+    const createTurn = vi.spyOn(store, 'createTurn');
+    let accepted: ReturnType<typeof SubmitConversationResponseSchema.parse> | undefined;
+    const submit = (input: string, requestId: string) =>
+      app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
+        body: conversationBody({ input, requestId, targetRef: 'new-task-worker' }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+
+    try {
+      const rejected = await submit('x'.repeat(2073), '0190f4c8-0000-7000-8000-000000000601');
+      expect(rejected.status).toBe(400);
+      await expect(rejected.json()).resolves.toMatchObject({
+        code: 'invalid_request',
+        message: 'Too big: expected string to have <=2000 characters',
+      });
+      expect(createThread).not.toHaveBeenCalled();
+      expect(createTurn).not.toHaveBeenCalled();
+      expect(store.listThreads('ws_demo')).toEqual(threadsBefore);
+      for (const thread of threadsBefore) {
+        expect(store.listThreadTurns('ws_demo', thread.id)).toEqual([]);
+      }
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          workspaceId: 'ws_demo',
+        })
+      ).toEqual([]);
+      expect(executor.startContexts).toEqual([]);
+
+      const input = 'x'.repeat(2000);
+      const response = await submit(input, '0190f4c8-0000-7000-8000-000000000602');
+      expect(response.status, await response.clone().text()).toBe(202);
+      accepted = SubmitConversationResponseSchema.parse(await response.json());
+      await waitForSelectedWorkerLoopCloseout({
+        coreDb,
+        dataRoot,
+        workspaceId: 'ws_demo',
+        threadId: accepted.turn.threadId,
+        turnId: accepted.turn.id,
+      });
+      expect(createThread).toHaveBeenCalledTimes(1);
+      expect(createTurn).toHaveBeenCalledTimes(1);
+      expect(executor.startContexts).toHaveLength(1);
+      const delivered = store
+        .getTurnById(accepted.turn.id)
+        .items.find((item) => item.type === 'assistant-message');
+      expect(JSON.parse(delivered?.text ?? '{}')).toMatchObject({ objective: input });
+    } finally {
+      if (accepted) {
+        await waitForSelectedWorkerLoopCloseout({
+          coreDb,
+          dataRoot,
+          workspaceId: 'ws_demo',
+          threadId: accepted.turn.threadId,
+          turnId: accepted.turn.id,
+        });
+      }
+      vi.restoreAllMocks();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('rejects a supplied choice on an inapplicable target before effects', async () => {
     const store = createDemoStore();
     const workerSetup = createTestAgentSetup();

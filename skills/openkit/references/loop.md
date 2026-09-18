@@ -64,3 +64,5 @@ For repository Tasks and Goals using a plan+patch handoff, missing GitHub creden
 If state is interrupted, unknown, stale, or contradictory, stop normal execution and load [recovery.md](recovery.md). If the user asks for operator-only changes, load [administration.md](administration.md).
 
 A bounded Task may begin with an explicit implementation instruction and include later review or handoff constraints without becoming a review-only request. A request to review or retry previous work retains that intent. Keep the objective within the structured delegation limit of 2,000 characters; preserve required constraints when shortening it.
+
+For selected-Worker `conversation.submit`, that limit applies to the assembled prompt, including attached Artifact text. Oversized input returns HTTP 400 `invalid_request` with the schema issue text before a receiving Thread, Turn, Worker admission, or executor start is created. NanoCore does not truncate the objective; shorten it without losing required constraints before submitting a corrected request under a new request identity.
