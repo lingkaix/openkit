@@ -78,6 +78,7 @@ import {
   createWorkerStorageBinding,
   getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
+  markWorkerStorageAttachmentUnknown,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
   workerStorageDefaultWorkSlotRef,
@@ -2782,6 +2783,261 @@ describe('createConfiguredTurnExecutor', () => {
         }
       }
       expect(operations).toEqual(['bridge.close', 'sandbox.delete']);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    ...(['reserved', 'unknown'] as const).flatMap((state) =>
+      (['proved', 'failed', 'unknown', 'ambiguous', 'stale'] as const).map((outcome) => ({
+        bindingRef: null,
+        outcome,
+        state,
+      }))
+    ),
+    ...(['attached', 'unknown'] as const).flatMap((state) =>
+      (['proved', 'contradictory'] as const).map((outcome) => ({
+        bindingRef:
+          outcome === 'proved' ? 'lease-binding:pending-cleanup' : 'lease-binding:other-sandbox',
+        outcome,
+        state,
+      }))
+    ),
+  ])('releases no-Sandbox cleanup-pending $state storage only with current exact proof: $outcome ($bindingRef)', async ({
+    bindingRef,
+    state,
+    outcome,
+  }) => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    let beforeCleanupResult = () => {};
+    const expectResultOnly = vi.fn(async () => {
+      beforeCleanupResult();
+      if (outcome === 'failed' || outcome === 'unknown') {
+        throw new Error(`Sandbox cleanup ${outcome}.`);
+      }
+      return { kind: 'sandbox.delete' as const, result: {} };
+    });
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection, carriedRequest) {
+        effects.push(carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest));
+        return {};
+      },
+      expectResultOnly,
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      const timestamp = '2026-08-21T00:00:00.000Z';
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+               target_id, identity_id, deployment_id, connection_generation,
+               predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+             ) VALUES ('target_pending_cleanup', 'identity_pending_cleanup',
+                       'deployment_pending_cleanup', 1, 1, 1, 1, ?, ?, 1)`
+        )
+        .run('a'.repeat(64), timestamp);
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = () => 'lease_pending_cleanup';
+      const environmentPackage = completeNanoHostPackage({
+        scope: {
+          agentSessionId: 'as_pending_cleanup',
+          threadId: 'thread_pending_cleanup',
+          turnId: 'turn_pending_cleanup',
+          workspaceId: 'workspace_pending_cleanup',
+        },
+        snapshotId: 'aepsnap_pending_cleanup',
+      });
+      const identity = backend.planSession(environmentPackage);
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO worker_backend_sessions (
+               lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+               package_snapshot_id, backend_kind, deployment_id, backend_session_id,
+               runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
+               staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
+             ) VALUES (
+               'lease_pending_cleanup', ?, ?, ?, ?, ?, 'openshell', ?, ?, ?, ?, ?,
+               'lease-binding:pending-cleanup', ?, 'pending', 'cleanup-pending', ?, ?
+             )`
+        )
+        .run(
+          environmentPackage.scope.workspaceId,
+          environmentPackage.scope.threadId,
+          environmentPackage.scope.turnId,
+          identity.agentSessionId,
+          identity.packageSnapshotId,
+          identity.deploymentId,
+          identity.backendSessionId,
+          identity.runtimeTargetId,
+          'a'.repeat(64),
+          JSON.stringify({ imageRef: 'openkit/worker-codex:dev' }),
+          identity.stagingDirectoryRef,
+          timestamp,
+          timestamp
+        );
+      const layout = {
+        family: 'openkit-worker',
+        gid: 1000,
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+        uid: 1000,
+        version: '1',
+        workingDirectory: '/tmp/openkit-bootstrap',
+      };
+      const created = createWorkerStorageBinding(coreDb, {
+        deploymentId: identity.deploymentId,
+        layout,
+        runtimeTargetId: identity.runtimeTargetId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+      const reservationInput = {
+        agentSessionId: identity.agentSessionId,
+        authorizeContributor: () => true,
+        expectedRevision: created.revision,
+        layout,
+        purpose: 'work' as const,
+        responsibleUserId: 'user-factory',
+        runtimeTargetId: identity.runtimeTargetId,
+        storageRef: created.storageRef,
+        threadId: environmentPackage.scope.threadId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      };
+      const reserved = reserveWorkerStorageAttachment(coreDb, reservationInput);
+      const attached = bindingRef
+        ? activateWorkerStorageAttachment(coreDb, {
+            attachmentGeneration: reserved.attachmentGeneration,
+            expectedRevision: reserved.revision,
+            sandboxBindingRef: bindingRef,
+            storageRef: reserved.storageRef,
+            targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+          })
+        : reserved;
+      if (state === 'unknown') {
+        markWorkerStorageAttachmentUnknown(coreDb, {
+          attachmentGeneration: reserved.attachmentGeneration,
+          expectedRevision: attached.revision,
+          storageRef: reserved.storageRef,
+        });
+      }
+      const before = getWorkerStorageBinding(coreDb, { storageRef: reserved.storageRef })!;
+      const siblingCreated = createWorkerStorageBinding(coreDb, {
+        deploymentId: identity.deploymentId,
+        layout,
+        runtimeTargetId: identity.runtimeTargetId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+      const sibling = reserveWorkerStorageAttachment(coreDb, {
+        ...reservationInput,
+        agentSessionId: 'as_sibling_cleanup',
+        expectedRevision: siblingCreated.revision,
+        storageRef: siblingCreated.storageRef,
+        threadId: 'thread_sibling_cleanup',
+      });
+      let expectedAfterFailure = before;
+      let duplicate: typeof before | null = null;
+      if (outcome === 'ambiguous') {
+        const duplicateCreated = createWorkerStorageBinding(coreDb, {
+          deploymentId: identity.deploymentId,
+          layout,
+          runtimeTargetId: identity.runtimeTargetId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        });
+        duplicate = reserveWorkerStorageAttachment(coreDb, {
+          ...reservationInput,
+          expectedRevision: duplicateCreated.revision,
+          storageRef: duplicateCreated.storageRef,
+        });
+      }
+      if (outcome === 'stale') {
+        beforeCleanupResult = () => {
+          const released = releaseWorkerStorageAttachment(coreDb, {
+            attachmentGeneration: before.attachmentGeneration,
+            cleanupProved: true,
+            expectedRevision: before.revision,
+            storageRef: before.storageRef,
+          });
+          expectedAfterFailure = reserveWorkerStorageAttachment(coreDb, {
+            ...reservationInput,
+            expectedRevision: released.revision,
+          });
+        };
+      }
+
+      if (outcome === 'proved') {
+        await expect(runtime.cleanupBackendSession(identity)).resolves.toBeUndefined();
+      } else {
+        await expect(runtime.cleanupBackendSession(identity)).rejects.toThrow(
+          outcome === 'ambiguous'
+            ? /matches more than one Worker storage binding/
+            : outcome === 'contradictory'
+              ? /Worker storage Sandbox binding contradicts cleanup ownership/
+              : outcome === 'stale'
+                ? /Worker storage revision changed/
+                : `Sandbox cleanup ${outcome}.`
+        );
+        expect(getWorkerStorageBinding(coreDb, { storageRef: before.storageRef })).toEqual(
+          expectedAfterFailure
+        );
+        expect(getWorkerStorageBinding(coreDb, { storageRef: sibling.storageRef })).toEqual(
+          sibling
+        );
+        if (outcome === 'contradictory') {
+          expect(expectResultOnly).not.toHaveBeenCalled();
+        }
+        if (duplicate) {
+          expect(getWorkerStorageBinding(coreDb, { storageRef: duplicate.storageRef })).toEqual(
+            duplicate
+          );
+          expect(expectResultOnly).not.toHaveBeenCalled();
+        }
+        expect(effects).toEqual([]);
+        return;
+      }
+
+      expect(expectResultOnly).toHaveBeenCalledExactlyOnceWith([
+        {
+          kind: 'bridge.close',
+          originPhysicalEpoch: 'a'.repeat(64),
+          requestId: expect.any(String),
+        },
+        {
+          kind: 'sandbox.delete',
+          originPhysicalEpoch: 'a'.repeat(64),
+          requestId: expect.any(String),
+        },
+      ]);
+      expect(getWorkerStorageBinding(coreDb, { storageRef: reserved.storageRef })).toEqual({
+        ...before,
+        currentAgentSessionId: null,
+        currentSandboxBindingRef: null,
+        currentThreadId: null,
+        currentWorkSlotRef: null,
+        revision: before.revision + 1,
+        state: 'idle',
+        updatedAt: expect.any(String),
+      });
+      expect(getWorkerStorageBinding(coreDb, { storageRef: sibling.storageRef })).toEqual(sibling);
+      expect(effects).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }

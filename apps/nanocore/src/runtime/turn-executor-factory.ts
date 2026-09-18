@@ -1203,8 +1203,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const leaseId = this.requireLeaseId(identity.packageSnapshotId);
     const session = this.sessions.get(identity.packageSnapshotId);
     const durableSandbox = session ? null : this.findDurableSandboxBinding(identity);
+    const durableBackend =
+      session || durableSandbox ? null : this.findDurableBackendSession(identity);
     const durableCleanupFailure =
-      session || durableSandbox ? null : this.findDurableBackendCleanupFailure(identity);
+      durableBackend?.state === 'cleanup-failed' ? durableBackend : null;
+    const pendingStorage =
+      durableBackend?.state === 'cleanup-pending'
+        ? this.findWorkerStorageForFailedMaterialization(durableBackend)
+        : null;
     try {
       if (this.failedPreSandboxPreparations.has(identity.packageSnapshotId)) {
         return;
@@ -1232,7 +1238,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           durableCleanupFailure.originPhysicalEpoch,
           identity.deploymentId
         );
-        this.releaseWorkerStorageForFailedMaterialization(durableCleanupFailure);
+        this.releaseWorkerStorageForFailedMaterialization(
+          this.findWorkerStorageForFailedMaterialization(durableCleanupFailure)
+        );
         return;
       }
       if (session?.turnStarted && session.terminalInspectionComplete) {
@@ -1331,6 +1339,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         } else if (durableSandbox) {
           this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
           removeNanoHostSandboxRuntimeByBinding(this.coreDb, durableSandbox.sandboxBindingRef);
+        } else {
+          this.releaseWorkerStorageForFailedMaterialization(pendingStorage);
         }
       }
     } finally {
@@ -1371,8 +1381,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     });
   }
 
-  /** Releases the sole active reservation owned by one failed materialization lineage. */
-  private releaseWorkerStorageForFailedMaterialization(
+  /** Snapshots the sole active reservation, requiring exact Sandbox ownership for pending cleanup. */
+  private findWorkerStorageForFailedMaterialization(
     session: WorkerBackendSessionRecord
   ): WorkerStorageBinding | null {
     const bindings = listWorkerStorageBindings(this.coreDb, {
@@ -1393,7 +1403,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         'NanoHost failed materialization matches more than one Worker storage binding.'
       );
     }
-    const binding = bindings[0];
+    const binding = bindings[0] ?? null;
+    if (
+      session.state === 'cleanup-pending' &&
+      binding?.currentSandboxBindingRef != null &&
+      binding.currentSandboxBindingRef !== session.sandboxBindingRef
+    ) {
+      throw new Error('Worker storage Sandbox binding contradicts cleanup ownership.');
+    }
+    return binding;
+  }
+
+  /** Releases only the captured attachment generation and revision after writer cleanup proof. */
+  private releaseWorkerStorageForFailedMaterialization(
+    binding: WorkerStorageBinding | null
+  ): WorkerStorageBinding | null {
     if (!binding) return null;
     return releaseWorkerStorageAttachment(this.coreDb, {
       attachmentGeneration: binding.attachmentGeneration,
