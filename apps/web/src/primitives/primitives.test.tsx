@@ -1143,6 +1143,47 @@ describe('primitive tier — behavior', () => {
     expect(onPress).toHaveBeenCalledOnce();
   });
 
+  it('NavRow tooltip keeps hover, focus, and the next-row click with a huge title', async () => {
+    const user = userEvent.setup();
+    const onAdjacent = vi.fn();
+    const title = 'Huge conversation title that would spill the viewport '.repeat(8).trim();
+    const description = 'Assistant chat · Working';
+    render(
+      <>
+        <NavRow icon="chat" label={title} description={description} />
+        <NavRow icon="chat" label="Next conversation" onPress={onAdjacent} />
+      </>
+    );
+    const row = screen.getByRole('button', { name: title });
+    const next = screen.getByRole('button', { name: 'Next conversation' });
+    expect(row).toHaveAccessibleName(title);
+    expect(row).toHaveAccessibleDescription(description);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    await user.hover(document.body);
+    await user.hover(row);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toBeVisible();
+    expect(tooltip).toHaveClass('pointer-events-none');
+    expect(tooltip).toHaveAttribute('data-placement', 'right');
+    expect(tooltip.textContent).not.toContain(`${title} — ${description}`);
+    expect(tooltip.querySelector('.line-clamp-3')).toHaveTextContent(title);
+    expect(tooltip).toHaveTextContent(description);
+    expect(row).toHaveAccessibleName(title);
+    expect(row).toHaveAccessibleDescription(description);
+
+    await user.click(next);
+    expect(onAdjacent).toHaveBeenCalledOnce();
+
+    await user.unhover(row);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    await user.tab({ shift: true });
+    expect(row).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toBeVisible();
+    expect(row).toHaveAccessibleName(title);
+    expect(row).toHaveAccessibleDescription(description);
+  });
+
   it('CountBadge renders a positive count and nothing at zero', () => {
     const { rerender } = render(<CountBadge count={3} label="need you" />);
     expect(screen.getByText('3')).toBeInTheDocument();

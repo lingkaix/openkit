@@ -428,6 +428,8 @@ Nav items, workspace rows, thread rows, and workspace sub-items share one quiet 
 grammar (hover = `overlay-hover`, active = `selected` tint + accent text + bold).
 **Count badges** (`ok-nav-count`) mark required work outside the rail.
 
+Conversation hover/focus hints are compact, non-interactive previews: show at most three title lines with contained overflow and keep the activity/state description separate. Prefer placement beside the rail, constrain the hint to the viewport, and let pointer input pass through so adjacent navigation rows remain clickable. Keep the complete title in the row's accessible name and the conversation itself.
+
 ### 9.5 Goal phase stepper (`ok-phases`) — D-009
 Replaces the lone status chip in the goal header: **Draft › Plan › Execute ›
 Review**, current phase lit (informative, or notice if it's a gate). Blocked /

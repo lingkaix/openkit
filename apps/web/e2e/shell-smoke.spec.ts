@@ -3,6 +3,64 @@ import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js'
 
 let stack: IsolatedWebStack | null = null;
 
+/** Oversized conversation hints must fit the viewport without intercepting adjacent rows. */
+test('contains long conversation previews and keeps the next row clickable', async ({ page }) => {
+  stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
+  const title = `Improve the observed retained_baseline_conflict ${'VeryLongUnbrokenTaskIdentifier'.repeat(80)}`;
+  await page.route('**/api/app/workspaces/*/conversations', async (route) => {
+    const workspaceId = new URL(route.request().url()).pathname.split('/')[4]!;
+    await route.fulfill({
+      json: {
+        items: [title, 'Next conversation'].map((name, index) => ({
+          thread: {
+            id: `th_preview_${index}`,
+            workspaceId,
+            name,
+            preview: 'Conversation preview',
+            status: 'active',
+            entryPath: 'conversation',
+            visibility: 'workspace',
+            createdAt: '2026-09-18T00:00:00.000Z',
+            updatedAt: '2026-09-18T00:00:00.000Z',
+          },
+          activity: 'chat',
+          state: 'idle',
+          lastActivityAt: '2026-09-18T00:00:00.000Z',
+        })),
+      },
+    });
+  });
+  await page.setViewportSize({ width: 824, height: 803 });
+  await page.goto(stack.webUrl);
+  const row = page.getByRole('button', { name: title, exact: true });
+  const next = page.getByRole('button', { name: 'Next conversation', exact: true });
+  for (const width of [824, 600]) {
+    await page.setViewportSize({ width, height: 803 });
+    if (width < 800) await page.getByRole('button', { name: 'Navigation', exact: true }).click();
+    await expect(row).toBeVisible();
+    await page.mouse.move(width - 20, 100);
+    await row.hover();
+    const tooltip = page.getByRole('tooltip');
+    await expect(tooltip).toBeVisible();
+    const bounds = await tooltip.boundingBox();
+    expect(bounds!.height).toBeLessThan(160);
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    expect(bounds!.y).toBeGreaterThanOrEqual(0);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(803);
+    await expect(tooltip).toHaveCSS('pointer-events', 'none');
+    const hit = await next.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return element.contains(
+        document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+      );
+    });
+    expect(hit).toBe(true);
+    await next.click({ timeout: 2000 });
+    await expect(page).toHaveURL(/\/chat\/[^/]+\/th_preview_1$/);
+  }
+});
+
 test.afterEach(async () => {
   const current = stack;
   stack = null;
