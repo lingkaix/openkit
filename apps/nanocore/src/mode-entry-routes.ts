@@ -2965,8 +2965,17 @@ export function registerQuickAndChatModeRoutes({
         };
       };
 
-      /** Starts one selected Worker through the existing product Turn owner. */
+      /** Validates the objective before creating receiving work through the existing product Turn owner. */
       const startSelectedWorker = async (): Promise<ConversationCommandResult> => {
+        const objective =
+          StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(conversationPrompt);
+        if (!objective.success) {
+          throw new TurnStartValidationError(
+            'invalid_request',
+            objective.error.issues.map((issue) => issue.message).join('; '),
+            400
+          );
+        }
         const snapshot = runtimeConfig();
         let receivingThreadId = threadId;
         let agentId: string | null = null;
