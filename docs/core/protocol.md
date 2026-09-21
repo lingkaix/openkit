@@ -192,6 +192,7 @@ The complete Turn terminal-state set is:
 
 - `completed`
 - `interrupted`
+- `cancelled`
 - `failed`
 
 Non-terminal states may include:
@@ -202,7 +203,7 @@ Non-terminal states may include:
 
 The core protocol does not define a `cancelling` turn state.
 
-Interrupt and cancellation commands asynchronously request interruption; cancellation does not create a distinct terminal state. Clients MAY show a local in-flight UI state while waiting for the next authoritative Turn event, but Core emits only the stable Turn states listed above.
+Interrupt and cancellation commands asynchronously request interruption. A Turn whose authorization is withdrawn before completion MAY terminate as `cancelled`; the withdrawing actor is the holder of that Turn's authorization, which includes the owning workflow when it determines the work is superseded, and the specific reason is recorded in an Item rather than encoded as another terminal status; which path produces which terminal state is decided by the owning accepted specification, and multiple existing owners map authorized stops to `interrupted` with `stopReason=aborted`. Clients MAY show a local in-flight UI state while waiting for the next authoritative Turn event, but Core emits only the stable Turn states listed above.
 
 New input should use the same core input semantics across web UI, desktop UI, chat channels, and future transports.
 
@@ -214,7 +215,7 @@ A Turn is created after its command, Thread, trigger, and required dependencies 
 
 ### Turn Interruption
 
-Interruption is append-only. Every finalized Item remains unchanged, the Turn becomes terminal `interrupted`, and no Item or effect is rolled back, rewritten, or deleted. The Item in flight is finalized from content already accumulated by Core and marked truncated rather than discarded.
+Interruption is append-only. Every finalized Item remains unchanged, the Turn is terminalized per its owning specification as `interrupted` or, when that owner maps withdrawn authorization to `cancelled`, as `cancelled`, and no Item or effect is rolled back, rewritten, or deleted. The Item in flight is finalized from content already accumulated by Core and marked truncated rather than discarded.
 
 For a media channel, truncation records what Core generated, not what the user heard, saw, or otherwise perceived. The durable record MUST NOT assert delivery beyond the channel's own authoritative evidence.
 
@@ -427,7 +428,7 @@ When a turn waits on a question or elicitation, `Turn.humanGate` MUST be `{ kind
 
 `awaiting_human` is the only core turn state for human-gated pauses. Clients MUST choose approval UI or user-input UI from `humanGate.kind` and the referenced item type, not from the turn status string alone.
 
-When Core receives user input for a Turn that is paused on `user-input-request`, Core MUST attach that input to the same Turn instead of creating a new Turn. The owning accepted contract then decides whether that Turn continues `running` or closes as `completed`, `interrupted`, or `failed`.
+When Core receives user input for a Turn that is paused on `user-input-request`, Core MUST attach that input to the same Turn instead of creating a new Turn. The owning accepted contract then decides whether that Turn continues `running` or closes as `completed`, `interrupted`, `cancelled`, or `failed`.
 
 Implementations MAY support only a subset of approval statuses, but clients should tolerate the full status family once advertised by protocol version or capability flag.
 
@@ -520,7 +521,7 @@ A turn-stream envelope is terminal-affiliated when either its event marker is `t
 
 Terminal affiliation and its disposition MUST NOT create a protocol schema, protocol record, durable state, or independent creation, update, recovery, or termination lifecycle; the existing Turn lifecycle remains authoritative, and this rule classifies only validation, cursor, delivery, and stream-processing behavior.
 
-A terminal-affiliated envelope is the canonical exact-owner terminal only when both markers are present, its embedded `Turn` passes the applicable protocol schema with status `completed`, `interrupted`, or `failed`, and both the envelope and embedded `Turn` match the subscribed Workspace, Thread, and Turn exactly. A canonical exact-owner terminal is authoritative proof that the turn stream is complete.
+A terminal-affiliated envelope is the canonical exact-owner terminal only when both markers are present, its embedded `Turn` passes the applicable protocol schema with status `completed`, `interrupted`, `cancelled`, or `failed`, and both the envelope and embedded `Turn` match the subscribed Workspace, Thread, and Turn exactly. A canonical exact-owner terminal is authoritative proof that the turn stream is complete.
 
 A terminal-affiliated envelope is valid but semantically noncanonical when it passes the forward-compatible outer-envelope schema and every applicable embedded-record schema but does not satisfy every canonical exact-owner terminal condition. A client MUST validate the outer envelope and every applicable embedded record before advancing the cursor or deciding delivery.
 
@@ -706,7 +707,7 @@ Secret values and provider-native sensitive payloads must not appear in protocol
 - Mutating and asynchronous commands MUST carry a caller-provided `requestId`.
 - Command replay MUST use the central receipt-and-current-owner policy; without a completed receipt, Core MUST NOT repeat completed effects or infer or synthesize success, and only an explicit accepted in-progress owner may resume its exact request. Every other incomplete or contradictory state MUST fail as `recovery_required`.
 - A Thread MUST NOT have more than one non-terminal Turn.
-- A Turn MUST terminate only as `completed`, `interrupted`, or `failed`, and a terminal Turn MUST NOT be reopened or rewritten.
+- A Turn MUST terminate only as `completed`, `interrupted`, `cancelled`, or `failed`, and a terminal Turn MUST NOT be reopened or rewritten.
 - Interruption MUST preserve finalized Items and finalize server-accumulated in-flight content as truncated without claiming unsupported media delivery.
 - Protocol errors MUST use stable machine-readable codes and MUST NOT leak secret values or provider-native sensitive payloads.
 
@@ -763,6 +764,7 @@ running
 awaiting_human
 completed
 interrupted
+cancelled
 failed
 ```
 

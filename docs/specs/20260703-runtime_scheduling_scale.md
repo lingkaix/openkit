@@ -37,7 +37,7 @@ The accepted V1 profile is deliberately small, and this specification is its can
 
 Another document that needs this profile cites this section instead of restating the counts, and uses `RuntimeTarget` for the configured target rather than a local synonym. The profile is a design and verification target, not an authorization limit: no admission, policy, membership, or licensing decision derives a user or team count from it, and the single-instance data-root lock that enforces one process is owned by `docs/specs/20260704-nanocore_bootstrap_readiness.md`.
 
-The scheduler must prevent untracked or duplicate worker execution and preserve enough identity for one bounded same-worker reconnect after NanoCore restart. It does not promise transparent recovery from every crash point. A healthy NanoHost and its already-authorized worker continue while NanoCore restarts or is briefly unavailable. If the exact worker or terminal outcome cannot be proved after predecessor-fenced NanoHost reconnect, the prior attempt remains interrupted, unknown, or `recovery_required`, and any later execution requires a new authorized request.
+The scheduler must prevent untracked or duplicate worker execution and preserve enough identity for one bounded same-worker reconnect after NanoCore restart. It does not promise transparent recovery from every crash point. A healthy NanoHost and its already-authorized worker continue while NanoCore restarts or is briefly unavailable. If the exact worker or terminal outcome cannot be proved after predecessor-fenced NanoHost reconnect, the prior Turn retains the truthful result its lifecycle owner determined, effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, interruption MUST NOT infer that an effect did not happen, and any later execution requires a new authorized request.
 
 ## Goals / Non-goals
 
@@ -101,7 +101,7 @@ For the first slice, persisted AgentSession runtime bindings plus exact Harness 
 - Opening or retaining an idle AgentSession consumes open-session capacity but grants no active-Turn capacity, lease time, inference, capability, provider, Vault, or execution authority.
 - Local SQLite transactions own NanoCore coordination state only. They do not make sandbox, provider, repository, or remote worker effects atomic with Core truth.
 - A pre-launch failure with proof that no worker effect occurred MAY release or requeue the same accepted intent through the existing admission owner.
-- A post-launch failure with uncertain external effect MUST NOT launch a replacement automatically. NanoCore first attempts exact same-worker continuity when the NanoHost remains healthy; failure then preserves an explicit interrupted, unknown, or `recovery_required` outcome and delegates sandbox or epoch cleanup to the NanoHost lifecycle owner.
+- A post-launch failure with uncertain external effect MUST NOT launch a replacement automatically. NanoCore first attempts exact same-worker continuity when the NanoHost remains healthy; failure then preserves the Turn's truthful lifecycle result, with effect uncertainty and any recovery requirement expressed by those owners, and delegates sandbox or epoch cleanup to the NanoHost lifecycle owner.
 - A user or workflow retry after interruption is a new authorized attempt and preserves the original Turn and evidence.
 
 ## Lease And Reconnect Baseline
@@ -119,7 +119,7 @@ These values are deployment defaults, not a general scale policy. Same-snapshot 
 
 NanoCore restart performs one lease scan before normal serving. A reconnect-eligible lease must have the bound hash of the worker's random memory-only process key and proof that child execution began. The exact worker may adopt only with that process key, the same durable lineage, the exact next sequence, and the unexpired reconnect deadline.
 
-Successful adoption continues the same lease, AgentSession, Turn, checkpoint, Sandbox, backend session, package snapshot, process key, and exact next sequence. It neither creates a Runtime Epoch nor recreates the Sandbox. A wrong key, conflicting lineage, invalid sequence, expired deadline, missing launch proof, or unfenced predecessor NanoHost session never authorizes a compatible replacement. After the bounded window, the owning workflow exposes interruption, unknown outcome, or `recovery_required`; the NanoHost owns any required Sandbox cleanup or epoch invalidation, and no settlement or replacement workflow is created.
+Successful adoption continues the same lease, AgentSession, Turn, checkpoint, Sandbox, backend session, package snapshot, process key, and exact next sequence. It neither creates a Runtime Epoch nor recreates the Sandbox. A wrong key, conflicting lineage, invalid sequence, expired deadline, missing launch proof, or unfenced predecessor NanoHost session never authorizes a compatible replacement. After the bounded window, the Turn retains the truthful result its lifecycle owner determined, and effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively; the NanoHost owns any required Sandbox cleanup or epoch invalidation, and no settlement or replacement workflow is created.
 
 ## NanoHost Boundary
 

@@ -84,7 +84,7 @@ Core creates a successor AgentSession only after the predecessor is terminal and
 
 Replacement may follow continuity loss, incompatible runtime requirements, explicit close, or recovery that cannot prove exact continuity. The successor reconstructs user-visible context from Core-owned Thread history and MUST NOT inherit unproved native state.
 
-An active Turn is never moved, resumed, or replayed through a successor AgentSession. If continuity is lost during an active Turn, that Turn remains interrupted, failed, unknown, or `recovery_required` under its existing owner. Only a new authorized Turn may run on the successor.
+An active Turn is never moved, resumed, or replayed through a successor AgentSession. If continuity is lost during an active Turn, that Turn retains the truthful result its lifecycle owner determined. Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen. Only a new authorized Turn may run on the successor.
 
 ### Termination
 

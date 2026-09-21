@@ -120,7 +120,7 @@ An image rollback changes software only; it does not reverse changes the new ima
 
 ## NanoCore Updates And Failure
 
-Routine NanoCore/Web updates do not restart NanoHost or erase retained roots. A healthy epoch survives bounded Core disconnects under the existing lease/reconnect owner. A local process may continue; inference, tool and control requests needing Core may pause or fail. Exact live continuation requires actual lease/identity/sequence proof. Longer outage or failed proof preserves interrupted/unknown outcomes without inventing completion or replay. Retained files survive independently of whether an active process can resume. NanoHost upgrade/failure may replace the whole epoch but cannot delete retained work as part of that effect fence.
+Routine NanoCore/Web updates do not restart NanoHost or erase retained roots. A healthy epoch survives bounded Core disconnects under the existing lease/reconnect owner. A local process may continue; inference, tool and control requests needing Core may pause or fail. Exact live continuation requires actual lease/identity/sequence proof. Longer outage or failed proof preserves the Turn's truthful lifecycle result, with effect uncertainty and any recovery requirement expressed by those owners, without inventing completion or replay. Retained files survive independently of whether an active process can resume. NanoHost upgrade/failure may replace the whole epoch but cannot delete retained work as part of that effect fence.
 
 ## Observable Acceptance
 
