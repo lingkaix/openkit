@@ -100,6 +100,7 @@ Workflow, human attention, and verification:
 - [`20260902-agent_runtime_context_compaction.md`](./20260902-agent_runtime_context_compaction.md)
 - [`20260531-worker_turn_reliability_envelope.md`](./20260531-worker_turn_reliability_envelope.md)
 - [`20260531-human_attention_intervention_model.md`](./20260531-human_attention_intervention_model.md)
+- [`20260921-delayed_user_input.md`](./20260921-delayed_user_input.md) — Draft; problem statement, gathered evidence, and the open design question only.
 - [`20260713-work_resource_interaction_model.md`](./20260713-work_resource_interaction_model.md)
 - [`20260529-test_strategy.md`](./20260529-test_strategy.md)
 - [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)
@@ -138,6 +139,7 @@ Worker runtime, supply, and synchronization:
 Storage, knowledge, policy, vault, audit, and metering:
 
 - [`20260703-storage_layout_record_ownership.md`](./20260703-storage_layout_record_ownership.md)
+- [`20260921-work_data_retention_format.md`](./20260921-work_data_retention_format.md)
 - [`20260715-multi_user_workspace_system.md`](./20260715-multi_user_workspace_system.md)
 - [`20260703-schema_evolution_record_envelope.md`](./20260703-schema_evolution_record_envelope.md)
 - [`20260702-knowledge_store_governance_rules.md`](./20260702-knowledge_store_governance_rules.md)
