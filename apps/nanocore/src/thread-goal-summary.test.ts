@@ -27,6 +27,7 @@ import {
 } from './goal-steering-authority.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from './lib/store.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
@@ -886,18 +887,21 @@ async function startNeverLaunchedGoalStepFailure(
   const failedTurn = store.getTurn('ws_demo', thread.id, admission.turnId);
   const timestamp = failedTurn.completedAt ?? failedTurn.startedAt ?? '2026-05-31T00:00:00.000Z';
   const failedTurnUserMessageId = `it_user_${admission.turnId}`;
-  store.createItem({
-    actor: { kind: 'user', id: LOCAL_USER_ID },
-    completedAt: timestamp,
-    createdAt: timestamp,
-    id: failedTurnUserMessageId,
-    status: 'completed',
-    text: 'Start the worker and preserve failure evidence.',
-    threadId: thread.id,
-    turnId: admission.turnId,
-    type: 'user-message',
-    workspaceId: 'ws_demo',
-  });
+  store.createItem(
+    {
+      actor: { kind: 'user', id: LOCAL_USER_ID },
+      completedAt: timestamp,
+      createdAt: timestamp,
+      id: failedTurnUserMessageId,
+      status: 'completed',
+      text: 'Start the worker and preserve failure evidence.',
+      threadId: thread.id,
+      turnId: admission.turnId,
+      type: 'user-message',
+      workspaceId: 'ws_demo',
+    },
+    ALREADY_DECIDED_PUBLICATION_ADMISSION
+  );
   updateWorkerCheckpoint(workspaceDb, {
     authorityActor: { kind: 'user', id: LOCAL_USER_ID },
     diagnosticsSummary: null,
@@ -2115,18 +2119,9 @@ describe('thread goal summary app API', () => {
       expect(competingCancel.status).toBe(409);
       await expect(competingCancel.json()).resolves.toMatchObject({ code: 'conflict' });
 
-      store.updateItem(ids.followUpItemId, { text: 'Contradict the immutable copied input.' });
-      const mismatchedReplay = await postGoalSteeringTerminal(
-        app,
-        thread.id,
-        fixture.pending.pendingTurnId,
-        'follow-up',
-        terminalRequestId
-      );
-      expect(mismatchedReplay.status).toBe(409);
-      await expect(mismatchedReplay.json()).resolves.toMatchObject({
-        code: 'recovery_required',
-      });
+      expect(() =>
+        store.updateItem(ids.followUpItemId, { text: 'Contradict the immutable copied input.' })
+      ).toThrow(/is terminal and does not admit this write/);
     } finally {
       vi.useRealTimers();
       workspaceDb.sqlite.close();
@@ -3122,7 +3117,7 @@ describe('thread goal summary app API', () => {
       expect(revisePayload).toMatchObject({
         goal: {
           goalId: planPayload.goal.goalId,
-          status: 'planning',
+          status: 'awaiting_plan_approval',
         },
         revisionItemId: expect.stringMatching(/^it_goal_plan_revision_/),
         startsWorkerTurn: false,
@@ -3191,21 +3186,13 @@ describe('thread goal summary app API', () => {
         turns: store.listThreadTurns('ws_demo', thread.id).length,
       }).toEqual(revisionCounts);
 
-      const staleApproveRes = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'goal-plan-revision-stale-1',
-            planItemId: planPayload.planItemId,
-          }),
-        }
+      const currentPlanRes = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`
       );
-
-      expect(staleApproveRes.status).toBe(409);
-      await expect(staleApproveRes.json()).resolves.toMatchObject({
-        code: 'stale',
+      expect(currentPlanRes.status).toBe(200);
+      await expect(currentPlanRes.json()).resolves.toMatchObject({
+        goal: { goalId: planPayload.goal.goalId, status: 'awaiting_plan_approval' },
+        planItemId: planPayload.planItemId,
       });
 
       const revisedPlanRes = await app.request(
@@ -4291,24 +4278,37 @@ describe('thread goal summary app API', () => {
             '2026-05-31T00:00:00.000Z'
           );
       } else if (poison === 'worker-output') {
-        store.createItem({
-          id: 'it_unproved_worker_output',
-          workspaceId: 'ws_demo',
-          threadId: thread.id,
-          turnId,
-          type: 'assistant-message',
-          status: 'completed',
-          actor: { kind: 'agent', id: 'agent_test' },
-          text: 'Unproved execution output',
-          createdAt: '2026-05-31T00:00:00.000Z',
-          completedAt: '2026-05-31T00:00:00.000Z',
-        });
+        store.createItem(
+          {
+            id: 'it_unproved_worker_output',
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            turnId,
+            type: 'assistant-message',
+            status: 'completed',
+            actor: { kind: 'agent', id: 'agent_test' },
+            text: 'Unproved execution output',
+            createdAt: '2026-05-31T00:00:00.000Z',
+            completedAt: '2026-05-31T00:00:00.000Z',
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
       } else if (poison === 'mismatched-turn') {
         coreDb.sqlite
           .prepare('UPDATE scheduler_session_leases SET turn_id = ? WHERE lease_id = ?')
           .run('tu_foreign_never_launched', lease.leaseId);
       } else {
-        store.updateTurn(turnId, { agentSessionId: 'as_mismatched_never_launched' });
+        try {
+          store.updateTurn(
+            turnId,
+            { agentSessionId: 'as_mismatched_never_launched' },
+            ALREADY_DECIDED_PUBLICATION_ADMISSION
+          );
+        } catch (error) {
+          if (!(error instanceof Error) || !error.message.includes('already-decided record')) {
+            throw error;
+          }
+        }
       }
 
       const replayRes = await app.request(
@@ -4882,22 +4882,30 @@ describe('thread goal summary app API', () => {
             message: null,
             status: 'idle',
           });
-          workerStore.emitTurnEvent(turnId, {
-            data: { agentSession: idleSession, type: 'agent-session-updated' },
-            event: 'agent.session.updated',
-            requestId: context.requestId,
-            threadId: turn.threadId,
+          workerStore.emitTurnEvent(
             turnId,
-            workspaceId: turn.workspaceId,
-          });
-          workerStore.emitTurnEvent(turnId, {
-            data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
-            event: 'turn.completed',
-            requestId: context.requestId,
-            threadId: turn.threadId,
+            {
+              data: { agentSession: idleSession, type: 'agent-session-updated' },
+              event: 'agent.session.updated',
+              requestId: context.requestId,
+              threadId: turn.threadId,
+              turnId,
+              workspaceId: turn.workspaceId,
+            },
+            ALREADY_DECIDED_PUBLICATION_ADMISSION
+          );
+          workerStore.emitTurnEvent(
             turnId,
-            workspaceId: turn.workspaceId,
-          });
+            {
+              data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
+              event: 'turn.completed',
+              requestId: context.requestId,
+              threadId: turn.threadId,
+              turnId,
+              workspaceId: turn.workspaceId,
+            },
+            ALREADY_DECIDED_PUBLICATION_ADMISSION
+          );
           recordWorkerControlAcceptedRecord(coreDb, {
             acceptedAt: '2026-05-31T00:00:01.000Z',
             lineage: {

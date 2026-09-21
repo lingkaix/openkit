@@ -22564,6 +22564,10 @@
                     }
                   ]
                 },
+                "systemPromptDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
                 "family": {
                   "type": "string",
                   "enum": [
@@ -118074,5 +118078,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e771ad9c8767322632cb90af47d2132d01a81dd7943c6cd3974fceaf0c6a1c77"
+  "x-openkit-source-digest": "sha256:99ab3b9ea708c5e1476c2c49a978228974a69ac42bd405fb7abbd922bda7eb5b"
 }

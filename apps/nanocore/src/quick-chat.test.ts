@@ -354,6 +354,75 @@ describe('quick chat app API', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('answers a Chat Mode handoff summary from current input despite incidental review nouns', async () => {
+    const store = createDemoStore();
+    const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
+    const calls: Array<{
+      request: Parameters<PiAiGatewayClient['createChatCompletion']>[1];
+    }> = [];
+    const input =
+      'Current handoff evidence includes the last review notes and the audit write. For this turn only, do not call tools, start workers, change configuration, approve anything, publish, or deploy. Summarize this handoff from the current input only.';
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      store,
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async (_provider, request) => {
+          calls.push({ request });
+          return {
+            id: 'chatcmpl_handoff_summary',
+            object: 'chat.completion',
+            created: 1,
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Handoff summary from current input.' },
+                finish_reason: 'stop',
+              },
+            ],
+          };
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    try {
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: JSON.stringify(conversationRequest(input, 'req_chat_handoff_summary')),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+
+      expect(res.status, await res.clone().text()).toBe(200);
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
+
+      expect(parsed).toMatchObject({
+        outcome: 'answered',
+        explanation: 'The Assistant answered directly.',
+        handoff: null,
+        item: {
+          type: 'assistant-message',
+          text: 'Handoff summary from current input.',
+          status: 'completed',
+        },
+      });
+      expect(listKnowledgeProposals).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.request).toMatchObject({
+        messages: [
+          { role: 'system', content: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT },
+          { role: 'user', content: input },
+        ],
+      });
+      expect(calls[0]?.request).not.toHaveProperty('metadata');
+    } finally {
+      listKnowledgeProposals.mockRestore();
+    }
+  });
+
   it('records Chat Mode provider fallback usage with request, thread, and turn lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-usage-'));
     const coreDb = openCoreDb(dataRoot);
@@ -869,7 +938,8 @@ describe('quick chat app API', () => {
       code: 'recovery_required',
     });
     userItem.actor = accepted.turn.triggerActor;
-    store.updateTurn(accepted.turn.id, { status: 'failed' });
+    const storedTurn = store.getTurnById(accepted.turn.id);
+    storedTurn.status = 'failed';
     const contradictedTurnReplay = await app.request(
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
@@ -883,7 +953,7 @@ describe('quick chat app API', () => {
     await expect(contradictedTurnReplay.json()).resolves.toMatchObject({
       code: 'recovery_required',
     });
-    store.updateTurn(accepted.turn.id, { status: 'completed' });
+    storedTurn.status = 'completed';
     const receipt = store.getCommandRequest('conversation.submit', requestId, scope);
     expect(receipt).not.toBeNull();
     store.recordCommandRequest({
@@ -974,7 +1044,8 @@ describe('quick chat app API', () => {
         throw new Error('Expected the Goal creation Item.');
       }
 
-      store.updateItem(creationItem.id, { status: 'in_progress', completedAt: null });
+      creationItem.status = 'in_progress';
+      creationItem.completedAt = null;
       const contradictedReplayRes = await app.request(
         '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
         {

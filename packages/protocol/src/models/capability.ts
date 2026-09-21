@@ -27,6 +27,21 @@ export const CapabilityCallStatusSchema = z.enum([
   'unknown',
 ]);
 
+/**
+ * Lowercase SHA-256 digest of the pre-adapter system prompt Core intended for one family llm call.
+ */
+export const SystemPromptDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+
+/**
+ * Returns whether a CapabilityCall capability id identifies an LLM Gateway entry opened above the provider split.
+ *
+ * @param capabilityId Product capability id stored on the CapabilityCall.
+ * @returns True for public Gateway and worker-inference chat_completions and responses calls.
+ */
+export function isGatewayEntryLlmCapabilityId(capabilityId: string): boolean {
+  return capabilityId === 'llm.chat_completions' || capabilityId === 'llm.responses';
+}
+
 const capabilityCallLifecycleProjection = {
   allOf: [
     {
@@ -64,7 +79,7 @@ const capabilityCallLifecycleProjection = {
 };
 
 /**
- * Product-visible capability call attribution and summary.
+ * Product-visible capability call attribution and summary. `systemPromptDigest` is valid only on CapabilityCall records opened above the provider split (`llm.chat_completions` and `llm.responses`); other families and other family-llm usage rows omit it.
  */
 export const CapabilityCallSchema = z
   .object({
@@ -95,8 +110,20 @@ export const CapabilityCallSchema = z
     errorCode: z.string().min(1).nullable(),
     startedAt: TimestampSchema.nullable(),
     completedAt: TimestampSchema.nullable(),
+    systemPromptDigest: SystemPromptDigestSchema.optional(),
   })
   .superRefine((call, context) => {
+    if (
+      call.systemPromptDigest !== undefined &&
+      !isGatewayEntryLlmCapabilityId(call.capabilityId)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'System-prompt digest is carried only on CapabilityCall records opened above the provider split.',
+        path: ['systemPromptDigest'],
+      });
+    }
     const startedAt = call.startedAt === null ? null : Date.parse(call.startedAt);
     const completedAt = call.completedAt === null ? null : Date.parse(call.completedAt);
     if (call.status === 'queued') {

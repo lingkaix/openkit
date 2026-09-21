@@ -203,7 +203,7 @@ export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanRes
 }
 
 /**
- * Records one plan revision request and returns the goal to planning.
+ * Records one plan revision request against the intact active Plan pointer.
  *
  * @param input Plan revision input.
  * @returns Revision result and durable user-message item.
@@ -217,6 +217,19 @@ export function reviseGoalPlan(input: ReviseGoalPlanInput): ReviseGoalPlanResult
     throw new GoalPlanApprovalError(
       'recovery_required',
       'Goal Plan revision state is complete or contradictory without this command receipt.'
+    );
+  }
+  if (
+    hasInFlightGoalPlanRevisionRequest(
+      input.store,
+      input.workspaceId,
+      input.threadId,
+      input.planItemId
+    )
+  ) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'A revision-request Item already exists for the active Plan.'
     );
   }
   let plan: ReturnType<typeof getGoalPlanRecord>;
@@ -286,19 +299,7 @@ export function reviseGoalPlan(input: ReviseGoalPlanInput): ReviseGoalPlanResult
       input.threadId,
       input.goalId
     );
-    if (current?.status !== 'awaiting_plan_approval' || current.planItemId !== input.planItemId) {
-      return false;
-    }
-    updateGoalStatus(input.workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      goalId: input.goalId,
-      status: 'planning',
-      planItemId: null,
-      currentTaskId: null,
-      terminalStopReason: null,
-    });
-    return true;
+    return current?.status === 'awaiting_plan_approval' && current.planItemId === input.planItemId;
   });
   let transitioned = false;
   try {
@@ -380,14 +381,7 @@ export function readGoalPlanRevision(
     ? getGoalRecord(input.workspaceDb, input.workspaceId, input.threadId, plan.goalId)
     : null;
   const planItem = threadItems.find((candidate) => candidate.id === revisionItem.parentItemId);
-  if (
-    !plan ||
-    !goal ||
-    goal.planItemId === plan.planItemId ||
-    !planItem ||
-    planItem.type !== 'plan' ||
-    planItem.status !== 'completed'
-  ) {
+  if (!plan || !goal || !planItem || planItem.type !== 'plan' || planItem.status !== 'completed') {
     throw new GoalPlanApprovalError(
       'recovery_required',
       'Goal Plan revision lineage is missing or its Goal transition is incomplete.'
@@ -397,6 +391,33 @@ export function readGoalPlanRevision(
     goalId: goal.goalId,
     revisionItem,
   };
+}
+
+/**
+ * Returns whether a completed revision-request Item already names this Plan pointer.
+ *
+ * @param store App-local durable store.
+ * @param workspaceId Workspace that owns the Thread.
+ * @param threadId Thread that owns the Goal.
+ * @param planItemId Active Plan Item the revision would replace.
+ * @returns True when an in-flight revision-request Item exists for that pointer.
+ */
+function hasInFlightGoalPlanRevisionRequest(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  planItemId: string
+): boolean {
+  return store
+    .listThreadItems(workspaceId, threadId)
+    .some(
+      (item) =>
+        item.type === 'user-message' &&
+        item.status === 'completed' &&
+        item.parentItemId === planItemId &&
+        typeof item.text === 'string' &&
+        item.text.trim().length > 0
+    );
 }
 
 /**

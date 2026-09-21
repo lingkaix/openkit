@@ -383,6 +383,7 @@ function convertPhysicalEpochSchemas(
       rebuildNanoHostRuntimeTargets(sqlite);
       rebuildSandboxRuntimeRecords(sqlite);
       rebuildWorkerBackendSessions(sqlite);
+      carryMeasuredHarnessIdentity(sqlite, appliedAt);
 
       assertTableSql(sqlite, 'nanohost_runtime_targets', SUCCESSOR_TARGET_SQL);
       assertTableSql(sqlite, 'sandbox_runtime_records', SUCCESSOR_SANDBOX_SQL);
@@ -562,6 +563,70 @@ function rebuildWorkerBackendSessions(sqlite: Database.Database): void {
       ON worker_backend_sessions (backend_kind, gateway_endpoint, transient_provider_instance_id)
       WHERE gateway_endpoint IS NOT NULL AND transient_provider_instance_id IS NOT NULL;
   `);
+}
+
+/**
+ * Copies sandbox image digest onto each AgentSession binding and the surviving copy table.
+ *
+ * Pre-witness bindings have no `image_digest` column and no extra table. A present binding
+ * copy is left unchanged so cutover does not replace measured identity with a live sandbox
+ * reference.
+ *
+ * @param sqlite Open Core connection inside the cutover transaction.
+ * @param copiedAt Timestamp recorded on newly inserted surviving copies.
+ */
+function carryMeasuredHarnessIdentity(sqlite: Database.Database, copiedAt: string): void {
+  const bindingColumns = sqlite
+    .prepare('PRAGMA table_info(agent_session_runtime_bindings)')
+    .all() as Array<{
+    readonly name: string;
+  }>;
+  if (!bindingColumns.some((column) => column.name === 'image_digest')) {
+    sqlite.exec('ALTER TABLE agent_session_runtime_bindings ADD COLUMN image_digest text');
+    sqlite.exec(`
+      UPDATE agent_session_runtime_bindings AS binding
+      SET image_digest = (
+        SELECT sandbox.image_digest
+        FROM harness_instance_records AS harness
+        JOIN sandbox_runtime_records AS sandbox
+          ON sandbox.sandbox_runtime_id = harness.sandbox_runtime_id
+        WHERE harness.harness_instance_id = binding.harness_instance_id
+      )
+    `);
+    const missing = Number(
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) FROM agent_session_runtime_bindings
+           WHERE image_digest IS NULL OR image_digest = ''`
+        )
+        .pluck()
+        .get()
+    );
+    if (missing > 0) {
+      throw new Error(
+        'Physical Epoch cutover could not copy measured harness identity onto every binding.'
+      );
+    }
+  }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS agent_session_runtime_binding_image_digests (
+      agent_session_runtime_binding_id text NOT NULL,
+      image_digest text NOT NULL,
+      copied_at text NOT NULL,
+      PRIMARY KEY (agent_session_runtime_binding_id, image_digest)
+    )
+  `);
+  sqlite
+    .prepare(
+      `INSERT OR IGNORE INTO agent_session_runtime_binding_image_digests (
+         agent_session_runtime_binding_id, image_digest, copied_at
+       )
+       SELECT agent_session_runtime_binding_id, image_digest, ?
+       FROM agent_session_runtime_bindings
+       WHERE image_digest IS NOT NULL AND image_digest <> ''`
+    )
+    .run(copiedAt);
 }
 
 /** Confirms every converted origin and cleared target witness after the transaction writes. */

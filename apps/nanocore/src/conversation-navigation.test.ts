@@ -34,22 +34,7 @@ describe('conversation navigation', () => {
       null,
       { startedAt: '2026-09-15T00:00:00.000Z' }
     );
-    store.updateTurn(olderTurn.id, {
-      status: 'completed',
-      completedAt: '2026-09-15T01:00:00.000Z',
-    });
-    const newerTurn = store.createTurn(
-      'ws_demo',
-      newer.id,
-      'Newer input',
-      { kind: 'user', id: 'user_local' },
-      null,
-      { startedAt: '2026-09-15T02:00:00.000Z' }
-    );
-    store.updateTurn(newerTurn.id, {
-      status: 'completed',
-      completedAt: '2026-09-15T03:00:00.000Z',
-    });
+    store.updateTurn(olderTurn.id, { agentId: 'quick-chat' });
     store.createItem({
       id: 'it_late_reply',
       workspaceId: 'ws_demo',
@@ -62,9 +47,24 @@ describe('conversation navigation', () => {
       createdAt: '2026-09-15T04:00:00.000Z',
       completedAt: '2026-09-15T04:00:00.000Z',
     });
-    store.createTurn('ws_demo', working.id, 'Unassigned work', { kind: 'user', id: 'user_local' });
-    store.updateTurn(olderTurn.id, { agentId: 'quick-chat' });
+    store.updateTurn(olderTurn.id, {
+      status: 'completed',
+      completedAt: '2026-09-15T01:00:00.000Z',
+    });
+    const newerTurn = store.createTurn(
+      'ws_demo',
+      newer.id,
+      'Newer input',
+      { kind: 'user', id: 'user_local' },
+      null,
+      { startedAt: '2026-09-15T02:00:00.000Z' }
+    );
     store.updateTurn(newerTurn.id, { agentId: 'agent_codex_host' });
+    store.updateTurn(newerTurn.id, {
+      status: 'completed',
+      completedAt: '2026-09-15T03:00:00.000Z',
+    });
+    store.createTurn('ws_demo', working.id, 'Unassigned work', { kind: 'user', id: 'user_local' });
     const app = createApp({
       store,
       agentManifests: [createTestAgentSetup().manifest],

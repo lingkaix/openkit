@@ -33,6 +33,7 @@ import type { VaultBackend } from '../vault/vault-backend.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
+  copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
   expireNanoHostHarnessQueuedOperation,
@@ -2156,6 +2157,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       this.sharedSandboxes.set(sandboxCompatibilityKey, sharedSandbox);
       this.sharedHarnesses.set(harnessMapKey, sharedHarness);
     }
+    if (existingBinding) {
+      copyNanoHostMeasuredHarnessIdentity(this.coreDb, {
+        agentSessionRuntimeBindingId: existingBinding.agentSessionRuntimeBindingId,
+        imageDigest: sharedSandbox.imageDigest,
+        timestamp: environmentPackage.createdAt,
+      });
+    }
     return {
       backendKind: 'openshell',
       command: {
@@ -2242,6 +2250,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (session.sharedHarness.adapterId !== 'codex') {
         throw new Error('NanoHost bounded-turn AgentSession bindings are not reusable.');
       }
+      copyNanoHostMeasuredHarnessIdentity(this.coreDb, {
+        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+        imageDigest: session.sharedHarness.sandbox.imageDigest,
+        timestamp: new Date().toISOString(),
+      });
       const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,

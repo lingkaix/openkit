@@ -32,7 +32,7 @@ import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-p
 import { type AgentMessage, runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
-import type { FsStore } from '../lib/store.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
 import { parseUsage } from '../llm/gateway-usage.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
@@ -540,24 +540,31 @@ function failedAdministrationTurn(
   const turn = store.getTurnById(turnId);
   const completedAt = new Date().toISOString();
   try {
-    const item = store.createItem({
-      id: `it_administration_refused_${turn.id}`,
-      workspaceId: turn.workspaceId,
-      threadId: turn.threadId,
-      turnId: turn.id,
-      type: 'status',
-      status: 'completed',
-      level: 'warning',
-      title: 'Administration request did not complete',
-      summary: explanation,
-      createdAt: completedAt,
-      completedAt,
-    });
-    const completedTurn = store.updateTurn(turn.id, {
-      status: 'failed',
-      completedAt,
-      error: { code, message: explanation },
-    });
+    const item = store.createItem(
+      {
+        id: `it_administration_refused_${turn.id}`,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        type: 'status',
+        status: 'completed',
+        level: 'warning',
+        title: 'Administration request did not complete',
+        summary: explanation,
+        createdAt: completedAt,
+        completedAt,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    const completedTurn = store.updateTurn(
+      turn.id,
+      {
+        status: 'failed',
+        completedAt,
+        error: { code, message: explanation },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
     return {
       body: administrationResponse(completedTurn, item, null, 'refused', explanation),
       resultKind: 'refused',

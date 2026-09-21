@@ -1235,6 +1235,163 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
+  it('persists a pre-adapter system-prompt digest on attributed family llm CapabilityCall rows', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-system-prompt-digest-'));
+    const coreDb = openCoreDb(dataRoot);
+    const store = createDemoStore({ dataRoot });
+    const workspace = store.createWorkspace('Gateway system-prompt digest');
+    const defaultLiteral = 'You are a helpful assistant.';
+
+    try {
+      applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, workspace.id);
+
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        store,
+        ...createAnthropicProviderOptions(),
+        llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
+          piAiClient: {
+            createChatCompletion: async (_provider, request, onUsage) => {
+              onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
+              return {
+                choices: [
+                  {
+                    finish_reason: 'stop',
+                    index: 0,
+                    message: { content: 'digest ok', role: 'assistant' },
+                  },
+                ],
+                created: 1,
+                id: 'chatcmpl_system_prompt_digest',
+                model: request.model,
+                object: 'chat.completion',
+              };
+            },
+          } as unknown as PiAiGatewayClient,
+        }),
+      });
+
+      const absentRes = await app.request('/v1/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5',
+          messages: [{ role: 'user', content: 'Hello' }],
+          metadata: {
+            openkit: {
+              requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              workspaceId: workspace.id,
+            },
+          },
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(absentRes.status, await absentRes.text()).toBe(200);
+
+      const explicitRes = await app.request('/v1/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5',
+          messages: [
+            { role: 'system', content: defaultLiteral },
+            { role: 'user', content: 'Hello' },
+          ],
+          metadata: {
+            openkit: {
+              requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              workspaceId: workspace.id,
+            },
+          },
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(explicitRes.status, await explicitRes.text()).toBe(200);
+
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        const calls = workspaceDb.sqlite
+          .prepare(
+            `SELECT request_id AS requestId, family, system_prompt_digest AS systemPromptDigest
+             FROM capability_calls
+             ORDER BY request_id`
+          )
+          .all() as Array<{ family: string; requestId: string; systemPromptDigest: string }>;
+
+        expect(calls).toHaveLength(2);
+        expect(calls.every((call) => call.family === 'llm')).toBe(true);
+        expect(calls[0]?.systemPromptDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+        expect(calls[1]?.systemPromptDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+        expect(calls[0]?.systemPromptDigest).not.toBe(calls[1]?.systemPromptDigest);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('opens no CapabilityCall for a public Gateway request that has a workspace database but no lineage', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-unattributed-'));
+    const coreDb = openCoreDb(dataRoot);
+    const store = createDemoStore({ dataRoot });
+    const workspace = store.createWorkspace('Unattributed gateway');
+
+    try {
+      applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, workspace.id);
+
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        store,
+        ...createAnthropicProviderOptions(),
+        llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
+          piAiClient: {
+            createChatCompletion: async (_provider, request, onUsage) => {
+              onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
+              return {
+                choices: [
+                  {
+                    finish_reason: 'stop',
+                    index: 0,
+                    message: { content: 'unattributed ok', role: 'assistant' },
+                  },
+                ],
+                created: 1,
+                id: 'chatcmpl_unattributed',
+                model: request.model,
+                object: 'chat.completion',
+              };
+            },
+          } as unknown as PiAiGatewayClient,
+        }),
+      });
+
+      const res = await app.request('/v1/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5',
+          messages: [{ role: 'user', content: 'Hello' }],
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status, await res.text()).toBe(200);
+
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        applyScopedMigrations(workspaceDb);
+        expect(
+          workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get()
+        ).toEqual({ count: 0 });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('records durable usage for attributed native OpenAI-compatible Chat Completions', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-openai-compatible-usage-'));
     const coreDb = openCoreDb(dataRoot);

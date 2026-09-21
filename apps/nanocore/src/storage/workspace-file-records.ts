@@ -15,6 +15,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   KnowledgeManagerDraftedProposalSchema,
   KnowledgeProposalPageIdSchema,
@@ -61,6 +62,29 @@ type Turn = import('zod').infer<typeof TurnSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
+
+/** Capture coverage value fixed at Turn admission. */
+export const CaptureCoverageValueSchema = z.enum(['off', 'on']);
+
+/** Scope that won when the admission-time capture pair was resolved. */
+export const CaptureCoverageScopeSchema = z.enum(['server', 'workspace', 'task']);
+
+/** Admission-time resolved capture pair stored on turn.json. */
+export const CaptureCoverageBindingSchema = z
+  .object({
+    scope: CaptureCoverageScopeSchema,
+    value: CaptureCoverageValueSchema,
+  })
+  .strict();
+
+/** Capture coverage value fixed at Turn admission. */
+export type CaptureCoverageValue = z.infer<typeof CaptureCoverageValueSchema>;
+
+/** Scope that won when the admission-time capture pair was resolved. */
+export type CaptureCoverageScope = z.infer<typeof CaptureCoverageScopeSchema>;
+
+/** Admission-time resolved capture pair stored on turn.json. */
+export type CaptureCoverageBinding = z.infer<typeof CaptureCoverageBindingSchema>;
 
 const THREAD_ENTRY_REQUIRED_FEATURE = 'openkit.thread-entry.v1' as const;
 const THREAD_VISIBILITY_REQUIRED_FEATURE = 'openkit.thread-visibility.v1' as const;
@@ -755,6 +779,8 @@ export interface WorkspaceFileRecords {
   readonly agentSessions: readonly AgentSession[];
   /** Retained turn event windows keyed by turn id. */
   readonly streamEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[];
+  /** Admission-time capture pairs keyed by Turn id; omitted Turns were never recorded. */
+  readonly turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
 }
 
 /**
@@ -954,6 +980,7 @@ function loadWorkspace(
   const turns: Turn[] = [];
   const itemRevisions: Item[] = [];
   const streamEvents: Array<readonly [string, readonly SseEventEnvelope[]]> = [];
+  const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   const threadsRoot = join(workspaceRoot, 'threads');
 
   for (const threadId of listDirectoryNames(threadsRoot)) {
@@ -996,6 +1023,15 @@ function loadWorkspace(
         (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)
       ) {
         throw new Error(`Canonical turn metadata must not embed items: ${turnId}.`);
+      }
+      if (rawTurn.captureCoverage !== undefined) {
+        const parsedCoverage = CaptureCoverageBindingSchema.safeParse(rawTurn.captureCoverage);
+        if (!parsedCoverage.success) {
+          throw new Error(
+            `Canonical turn metadata has an invalid capture coverage binding: ${turnId}.`
+          );
+        }
+        turnCaptureCoverage.set(turnId, parsedCoverage.data);
       }
       const turnWithoutItems = TurnSchema.parse({ ...rawTurn, items: [] });
 
@@ -1075,6 +1111,7 @@ function loadWorkspace(
       turnId,
       events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
     ]),
+    turnCaptureCoverage,
   };
 }
 
@@ -2020,7 +2057,28 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
       const runtimeRoot = dirname(eventsPath);
 
       ensureCanonicalDirectory(turnRoot);
-      writeJsonAtomic(join(turnRoot, 'turn.json'), { ...turn, items: [] });
+      const turnPath = join(turnRoot, 'turn.json');
+      const previousRaw = existsSync(turnPath)
+        ? (readJson(turnPath) as Record<string, unknown>)
+        : undefined;
+      const previousCoverage =
+        previousRaw?.captureCoverage === undefined
+          ? undefined
+          : CaptureCoverageBindingSchema.parse(previousRaw.captureCoverage);
+      const nextCoverage = records.turnCaptureCoverage?.get(turn.id);
+      if (
+        previousCoverage !== undefined &&
+        nextCoverage !== undefined &&
+        !isDeepStrictEqual(previousCoverage, nextCoverage)
+      ) {
+        throw new Error(`Turn ${turn.id} capture coverage binding is recovery_required.`);
+      }
+      const captureCoverage = nextCoverage ?? previousCoverage;
+      writeJsonAtomic(turnPath, {
+        ...turn,
+        items: [],
+        ...(captureCoverage ? { captureCoverage } : {}),
+      });
       const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
       const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
       if (!itemLogMetadata) {

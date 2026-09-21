@@ -265,9 +265,21 @@ describe('physical Epoch cutover', () => {
       expect(sqlite.prepare('SELECT * FROM harness_instance_records').all()).toEqual(
         predecessor.prepare('SELECT * FROM harness_instance_records').all()
       );
+      const predecessorBindings = predecessor
+        .prepare('SELECT * FROM agent_session_runtime_bindings')
+        .all() as Array<Record<string, unknown>>;
       expect(sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all()).toEqual(
-        predecessor.prepare('SELECT * FROM agent_session_runtime_bindings').all()
+        predecessorBindings.map((row) => ({ ...row, image_digest: 'sha256:image' }))
       );
+      expect(
+        sqlite.prepare('SELECT * FROM agent_session_runtime_binding_image_digests').all()
+      ).toEqual([
+        {
+          agent_session_runtime_binding_id: 'binding_1',
+          copied_at: timestamp,
+          image_digest: 'sha256:image',
+        },
+      ]);
 
       const predecessorBackend = predecessor
         .prepare('SELECT * FROM worker_backend_sessions WHERE lease_id = ?')
@@ -318,6 +330,47 @@ describe('physical Epoch cutover', () => {
     expect(
       existsSync(join(fixture.dataRoot, 'server', 'migrations', 'physical-epoch-cutover.json'))
     ).toBe(true);
+  });
+
+  it('keeps a binding measured digest across a physical Epoch cutover', () => {
+    const fixture = createPhysicalEpochFixture();
+    const backupRoot = join(
+      mkdtempSync(join(tmpdir(), 'openkit-physical-epoch-backup-')),
+      'backup'
+    );
+    const measuredDigest = 'sha256:image';
+
+    migratePhysicalEpochs({
+      backupRoot,
+      dataRoot: fixture.dataRoot,
+      now: () => timestamp,
+    });
+
+    const sqlite = new Database(fixture.databasePath, { fileMustExist: true, readonly: true });
+    try {
+      expect(
+        sqlite
+          .prepare(
+            'SELECT image_digest AS imageDigest FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+          )
+          .get('binding_1')
+      ).toEqual({ imageDigest: measuredDigest });
+      expect(
+        sqlite
+          .prepare(
+            `SELECT agent_session_runtime_binding_id AS bindingId, image_digest AS imageDigest, copied_at AS copiedAt
+             FROM agent_session_runtime_binding_image_digests
+             WHERE agent_session_runtime_binding_id = ?`
+          )
+          .get('binding_1')
+      ).toEqual({
+        bindingId: 'binding_1',
+        copiedAt: timestamp,
+        imageDigest: measuredDigest,
+      });
+    } finally {
+      sqlite.close();
+    }
   });
 
   it('holds the existing data-root lock through backup and database conversion', () => {
@@ -387,6 +440,16 @@ describe('physical Epoch cutover', () => {
       expect(verify.prepare('SELECT id FROM schema_migrations ORDER BY id').pluck().all()).toEqual([
         'core_0000_setup',
       ]);
+      expect(
+        columnInfo(fixture.databasePath, 'agent_session_runtime_bindings').map(({ name }) => name)
+      ).not.toContain('image_digest');
+      expect(
+        verify
+          .prepare(
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'agent_session_runtime_binding_image_digests'"
+          )
+          .get()
+      ).toEqual({ count: 0 });
     } finally {
       verify.close();
     }

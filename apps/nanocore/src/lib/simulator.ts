@@ -59,7 +59,7 @@ import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
-import type { FsStore } from './store.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './store.js';
 
 type RuntimeItem = z.infer<typeof ItemSchema>;
 
@@ -838,22 +838,30 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       completedAt,
     });
 
-    store.emitTurnEvent(turnId, {
-      event: 'agent.session.updated',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
+    store.emitTurnEvent(
       turnId,
-      data: { type: 'agent-session-updated', agentSession },
-    });
-    store.emitTurnEvent(turnId, {
-      event: 'turn.completed',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
+      {
+        event: 'agent.session.updated',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId,
+        data: { type: 'agent-session-updated', agentSession },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    store.emitTurnEvent(
       turnId,
-      data: { type: 'turn-completed', stopReason: 'aborted', turn },
-    });
+      {
+        event: 'turn.completed',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId,
+        data: { type: 'turn-completed', stopReason: 'aborted', turn },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
     this.pendingByTurnId.delete(turnId);
   }
 
@@ -1309,14 +1317,18 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       completedAt,
     });
 
-    store.emitTurnEvent(state.turnId, {
-      event: 'artifact.created',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      data: { type: 'artifact-created', artifact },
-    });
+    store.emitTurnEvent(
+      state.turnId,
+      {
+        event: 'artifact.created',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId: state.turnId,
+        data: { type: 'artifact-created', artifact },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
     this.emitItemCreated(store, state, artifactItem);
     this.emitItemDelta(
       store,
@@ -1328,14 +1340,18 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     );
     this.emitItemCompleted(store, state, artifactItem);
     this.emitAgentSessionUpdated(store, state, agentSession);
-    store.emitTurnEvent(state.turnId, {
-      event: 'turn.completed',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      data: { type: 'turn-completed', stopReason: 'completed', turn },
-    });
+    store.emitTurnEvent(
+      state.turnId,
+      {
+        event: 'turn.completed',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId: state.turnId,
+        data: { type: 'turn-completed', stopReason: 'completed', turn },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**
@@ -1346,14 +1362,18 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     state: SimulatedTurnState,
     item: ReturnType<FsStore['createItem']>
   ): void {
-    store.emitTurnEvent(state.turnId, {
-      event: 'item.created',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      data: { type: 'item-created', item },
-    });
+    store.emitTurnEvent(
+      state.turnId,
+      {
+        event: 'item.created',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId: state.turnId,
+        data: { type: 'item-created', item },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**
@@ -1385,28 +1405,36 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           : { ...base, deltaKind, delta }
     );
 
-    store.emitTurnEvent(state.turnId, {
-      event: 'item.delta',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      data,
-    });
+    store.emitTurnEvent(
+      state.turnId,
+      {
+        event: 'item.delta',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId: state.turnId,
+        data,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**
    * Emits one item completion event.
    */
   private emitItemCompleted(store: FsStore, state: SimulatedTurnState, item: RuntimeItem): void {
-    store.emitTurnEvent(state.turnId, {
-      event: 'item.completed',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      data: { type: 'item-completed', itemId: item.id, item },
-    });
+    store.emitTurnEvent(
+      state.turnId,
+      {
+        event: 'item.completed',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId: state.turnId,
+        data: { type: 'item-completed', itemId: item.id, item },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**
@@ -1417,14 +1445,18 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     state: SimulatedTurnState,
     turn: ReturnType<FsStore['updateTurn']>
   ): void {
-    store.emitTurnEvent(state.turnId, {
-      event: 'turn.updated',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      data: { type: 'turn-updated', turn },
-    });
+    store.emitTurnEvent(
+      state.turnId,
+      {
+        event: 'turn.updated',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId: state.turnId,
+        data: { type: 'turn-updated', turn },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**
@@ -1435,13 +1467,17 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     state: SimulatedTurnState,
     agentSession: ReturnType<FsStore['updateAgentSession']>
   ): void {
-    store.emitTurnEvent(state.turnId, {
-      event: 'agent.session.updated',
-      requestId: state.requestId,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      data: { type: 'agent-session-updated', agentSession },
-    });
+    store.emitTurnEvent(
+      state.turnId,
+      {
+        event: 'agent.session.updated',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId: state.turnId,
+        data: { type: 'agent-session-updated', agentSession },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 }

@@ -120,7 +120,6 @@ describe('workspace dashboard app API', () => {
         itemId: attentionItem.id,
       },
     });
-    store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
     store.createArtifact({
       id: 'ar_workspace_completion',
       workspaceId: 'ws_demo',
@@ -143,6 +142,7 @@ describe('workspace dashboard app API', () => {
       createdAt: completedAt,
       updatedAt: completedAt,
     });
+    store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
     store.createAgentSession({
       id: `session_${activeThread.id}`,
       agentId: 'agent_codex_host',

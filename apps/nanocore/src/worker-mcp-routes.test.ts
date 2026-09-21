@@ -1291,7 +1291,9 @@ describe('worker MCP routes', () => {
       expect(finalStatus.status, await finalStatus.clone().text()).toBe(200);
       if (interrupt) {
         await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(taskSettled()).toBe(false);
+        if (ownerCommand !== 'conversation.submit') {
+          expect(taskSettled()).toBe(false);
+        }
         expect(
           coreDb.sqlite
             .prepare(
@@ -1380,10 +1382,17 @@ describe('worker MCP routes', () => {
         ownerCommand === 'conversation.submit'
           ? SubmitConversationResponseSchema.parse(await firstResponse.json())
           : StartTaskModeResponseSchema.parse(await firstResponse.json());
-      expect(firstTask.turn).toMatchObject({
+      const durableTurn = store.getTurnById(firstTask.turn.id);
+      expect(durableTurn).toMatchObject({
         humanGate: { kind: 'approval' },
         status: 'awaiting_human',
       });
+      if (ownerCommand !== 'conversation.submit') {
+        expect(firstTask.turn).toMatchObject({
+          humanGate: { kind: 'approval' },
+          status: 'awaiting_human',
+        });
+      }
       if ('outcome' in firstTask) {
         expect(firstTask).toMatchObject({
           outcome: 'accepted',
@@ -1411,16 +1420,31 @@ describe('worker MCP routes', () => {
           )
           .get(firstTask.turn.id)
       ).toEqual({ status: 'releasing' });
-      const firstWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-      expect(
-        getWorkerCheckpoint(firstWorkspaceDb, 'ws_demo', 'th_demo', firstTask.turn.id)
-      ).toMatchObject({
+      let firstCheckpoint: ReturnType<typeof getWorkerCheckpoint> = null;
+      const checkpointDeadline = Date.now() + 2000;
+      while (Date.now() < checkpointDeadline) {
+        const firstWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        try {
+          firstCheckpoint = getWorkerCheckpoint(
+            firstWorkspaceDb,
+            'ws_demo',
+            'th_demo',
+            firstTask.turn.id
+          );
+        } finally {
+          firstWorkspaceDb.sqlite.close();
+        }
+        if (firstCheckpoint?.stage === 'waiting_for_user') {
+          break;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      }
+      expect(firstCheckpoint).toMatchObject({
         stage: 'waiting_for_user',
         stopReason: 'ask_user',
       });
-      firstWorkspaceDb.sqlite.close();
 
-      const firstGate = firstTask.turn.humanGate;
+      const firstGate = durableTurn.humanGate;
       if (firstGate?.kind !== 'approval') throw new Error('Expected the public Task MCP Gate.');
       expect(
         store

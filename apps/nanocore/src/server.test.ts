@@ -889,15 +889,6 @@ class FakeTurnExecutor implements TurnExecutor {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       completedAt: new Date().toISOString(),
     });
-    const completedTurn = store.updateTurn(turnId, {
-      status: 'completed',
-      completedAt: assistantItem.completedAt,
-    });
-    store.updateAgentSession(agentSession.id, {
-      status: 'idle',
-      updatedAt: assistantItem.completedAt ?? timestamp,
-    });
-
     store.emitTurnEvent(turnId, {
       event: 'turn.started',
       requestId,
@@ -945,6 +936,14 @@ class FakeTurnExecutor implements TurnExecutor {
       threadId: turn.threadId,
       turnId,
       data: { type: 'item-completed', itemId: assistantItem.id, item: assistantItem },
+    });
+    const completedTurn = store.updateTurn(turnId, {
+      status: 'completed',
+      completedAt: assistantItem.completedAt,
+    });
+    store.updateAgentSession(agentSession.id, {
+      status: 'idle',
+      updatedAt: assistantItem.completedAt ?? timestamp,
     });
     store.emitTurnEvent(turnId, {
       event: 'turn.completed',
@@ -5468,20 +5467,9 @@ describe('nanocore server', () => {
           retrievalTrace.traceId
         )
       ).toEqual(retrievalTrace);
-      store.updateTurn(parsed.turn.id, { status: 'cancelled' });
-      const cancelledReplayRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/task',
-        {
-          method: 'POST',
-          body: JSON.stringify({ requestId, input, workerStorageChoice }),
-          headers: { 'content-type': 'application/json' },
-        }
+      expect(() => store.updateTurn(parsed.turn.id, { status: 'cancelled' })).toThrow(
+        /is terminal and does not admit this write/
       );
-
-      expect(cancelledReplayRes.status).toBe(409);
-      await expect(cancelledReplayRes.json()).resolves.toMatchObject({
-        code: 'recovery_required',
-      });
       expect(conflictRes.status).toBe(409);
       await expect(conflictRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
@@ -5905,20 +5893,9 @@ describe('nanocore server', () => {
       expect(replay.status, await replay.clone().text()).toBe(202);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(result);
       expect(executor.startContexts).toHaveLength(1);
-      store.updateItem(result.item.id, { title: 'Worker Turn accepted' });
-      const contradictedReplay = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          body: requestBody,
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+      expect(() => store.updateItem(result.item.id, { title: 'Worker Turn accepted' })).toThrow(
+        /is terminal and does not admit this write/
       );
-      expect(contradictedReplay.status).toBe(409);
-      await expect(contradictedReplay.json()).resolves.toMatchObject({
-        code: 'recovery_required',
-      });
-      expect(executor.startContexts).toHaveLength(1);
     } finally {
       vi.restoreAllMocks();
       coreDb.sqlite.close();
@@ -6729,16 +6706,14 @@ describe('nanocore server', () => {
         input: string,
         context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
       ): Promise<void> {
-        await super.startTurn(store, turnId, input, context);
-
-        const turn = store.getTurnById(turnId);
-        const timestamp = turn.completedAt ?? new Date().toISOString();
+        const runningTurn = store.getTurnById(turnId);
+        const timestamp = runningTurn.startedAt ?? new Date().toISOString();
         const patchText = 'diff --git a/docs/task.md b/docs/task.md\n';
         const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
         const artifact = store.createArtifact({
           id: `ar_task_review_${turnId}`,
-          workspaceId: turn.workspaceId,
-          threadId: turn.threadId,
+          workspaceId: runningTurn.workspaceId,
+          threadId: runningTurn.threadId,
           turnId,
           kind: 'diff',
           title: 'Task Mode workspace changes',
@@ -6750,15 +6725,16 @@ describe('nanocore server', () => {
           lastMutationRequestId: context.requestId!,
           origin: {
             kind: 'turn-output',
-            threadId: turn.threadId,
+            threadId: runningTurn.threadId,
             turnId,
             requestId: context.requestId!,
           },
           createdAt: timestamp,
           updatedAt: timestamp,
         });
+        await super.startTurn(store, turnId, input, context);
         const reviewId = `swr_task_${turnId}`;
-        const workspaceDb = openTestWorkspaceDb(coreDb, turn.workspaceId);
+        const workspaceDb = openTestWorkspaceDb(coreDb, runningTurn.workspaceId);
         const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
           artifactId: artifact.id,
           changeSet: {
@@ -6780,7 +6756,7 @@ describe('nanocore server', () => {
             redaction: { notes: [], status: 'redacted' },
             resourceId: 'repo_default',
             strategy: 'git',
-            workspaceId: turn.workspaceId,
+            workspaceId: runningTurn.workspaceId,
           },
           patchPayload: {
             bytes: Buffer.byteLength(patchText, 'utf8'),
@@ -6803,7 +6779,7 @@ describe('nanocore server', () => {
             status: 'pending',
             updatedAt: timestamp,
             validation: [],
-            workspaceId: turn.workspaceId,
+            workspaceId: runningTurn.workspaceId,
           },
         };
 
@@ -8991,20 +8967,9 @@ describe('nanocore server', () => {
         throw new Error('Expected the Goal creation Item.');
       }
 
-      store.updateItem(creationItem.id, { status: 'in_progress', completedAt: null });
-      const contradictedReplayRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/task',
-        {
-          method: 'POST',
-          body: JSON.stringify({ requestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-
-      expect(contradictedReplayRes.status).toBe(409);
-      await expect(contradictedReplayRes.json()).resolves.toMatchObject({
-        code: 'recovery_required',
-      });
+      expect(() =>
+        store.updateItem(creationItem.id, { status: 'in_progress', completedAt: null })
+      ).toThrow(/is terminal and does not admit this write/);
     } finally {
       coreDb.sqlite.close();
     }

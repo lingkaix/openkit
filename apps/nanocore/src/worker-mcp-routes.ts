@@ -11,7 +11,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
-import { responsibleUserIdForActor } from '@openkit/protocol';
+import { ItemSchema, responsibleUserIdForActor } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Hono } from 'hono';
 
@@ -27,7 +27,7 @@ import {
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
-import type { FsStore } from './lib/store.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
 import {
   createPolicyApprovalGate,
   isExactMcpApprovalSourceDecision,
@@ -455,6 +455,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     extra.requestId
                   ),
                   serverId,
+                  workspaceDb: activeWorkspaceDb,
                   status: outcome.pendingApproval
                     ? 'declined'
                     : outcome.result.isError
@@ -765,9 +766,41 @@ async function serializeMcpToolCall<T>(
   }
 }
 
+/**
+ * Returns whether one stored MCP Item matches the ledger-owned decided publication.
+ * `parentItemId` is deliberately excluded: `capability_calls` does not store parent, so boot cannot reconstruct it.
+ *
+ * @param existing Stored Item.
+ * @param candidate Ledger reconstruction.
+ * @returns True when identity, timestamps, status, tool, server, arguments, result, error, and causation match.
+ */
+function mcpBootDecidedPublicationEqual(
+  existing: ReturnType<FsStore['listAllItems']>[number],
+  candidate: ReturnType<FsStore['listAllItems']>[number]
+): boolean {
+  const recorded = existing as unknown as Record<string, unknown>;
+  const reconstructed = candidate as unknown as Record<string, unknown>;
+  return (
+    existing.id === candidate.id &&
+    existing.workspaceId === candidate.workspaceId &&
+    existing.threadId === candidate.threadId &&
+    existing.turnId === candidate.turnId &&
+    existing.type === candidate.type &&
+    existing.status === candidate.status &&
+    existing.causationId === candidate.causationId &&
+    existing.createdAt === candidate.createdAt &&
+    existing.completedAt === candidate.completedAt &&
+    recorded.durationMs === reconstructed.durationMs &&
+    recorded.tool === reconstructed.tool &&
+    recorded.server === reconstructed.server &&
+    isDeepStrictEqual(recorded.arguments, reconstructed.arguments) &&
+    recorded.result === reconstructed.result &&
+    recorded.error === reconstructed.error
+  );
+}
+
 /** Recreates missing product-safe MCP Items from terminal durable CapabilityCalls at boot. */
 export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): number {
-  const existingItemIds = new Set(store.listAllItems().map((item) => item.id));
   let recovered = 0;
   for (const { workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
     const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
@@ -810,8 +843,7 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
         turn_id: string;
       }>;
       for (const row of rows) {
-        if (existingItemIds.has(row.item_id)) continue;
-        store.createItem({
+        const candidate = {
           arguments: null,
           causationId: row.call_id,
           completedAt: row.completed_at,
@@ -832,10 +864,20 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
           threadId: row.thread_id,
           tool: row.service_ref.slice('mcp-tool:'.length),
           turnId: row.turn_id,
-          type: 'tool-call',
+          type: 'tool-call' as const,
           workspaceId,
-        });
-        existingItemIds.add(row.item_id);
+        };
+        const parsed = ItemSchema.parse(candidate);
+        const existing = store.listAllItems().find((item) => item.id === row.item_id);
+        if (existing) {
+          if (!mcpBootDecidedPublicationEqual(existing, parsed)) {
+            throw new Error(
+              `MCP boot backfill conflicts with already-decided Item: ${row.item_id}`
+            );
+          }
+          continue;
+        }
+        store.createItem(parsed, ALREADY_DECIDED_PUBLICATION_ADMISSION);
         recovered += 1;
       }
     } finally {
@@ -1208,6 +1250,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           status,
           store: input.input.store,
           toolName: input.toolName,
+          workspaceDb: input.workspaceDb,
         });
       } catch {}
     }
@@ -1896,7 +1939,10 @@ function startMcpCapabilityCall(input: {
   });
 }
 
-/** Publishes one terminal product-safe tool-call Item after the ledger winner. */
+/**
+ * Publishes one terminal product-safe tool-call Item after the ledger winner.
+ * Timestamps and duration are copied from the capability_calls row so boot reconstruction can compare them.
+ */
 function publishWorkerMcpItem(input: {
   readonly call: StartedCapabilityCall;
   readonly durationMs: number;
@@ -1907,28 +1953,38 @@ function publishWorkerMcpItem(input: {
   readonly status: 'completed' | 'declined' | 'failed';
   readonly store: FsStore;
   readonly toolName: string;
+  readonly workspaceDb: WorkspaceDb;
 }): void {
-  const completedAt = new Date().toISOString();
-  input.store.createItem({
-    arguments: null,
-    causationId: input.call.id,
-    completedAt,
-    createdAt: completedAt,
-    durationMs: input.durationMs,
-    error: input.errorCode,
-    id: input.itemId,
-    ...(input.environmentPackage.scope.itemId
-      ? { parentItemId: input.environmentPackage.scope.itemId }
-      : {}),
-    result: null,
-    server: input.serverId,
-    status: input.status,
-    threadId: input.environmentPackage.scope.threadId,
-    tool: input.toolName,
-    turnId: input.environmentPackage.scope.turnId,
-    type: 'tool-call',
-    workspaceId: input.environmentPackage.scope.workspaceId,
-  });
+  const ledger = input.workspaceDb.sqlite
+    .prepare(`SELECT started_at, completed_at FROM capability_calls WHERE call_id = ?`)
+    .get(input.call.id) as { completed_at: string | null; started_at: string | null } | undefined;
+  const completedAt = ledger?.completed_at ?? new Date().toISOString();
+  const durationMs = ledger?.started_at
+    ? Math.max(0, Date.parse(completedAt) - Date.parse(ledger.started_at))
+    : input.durationMs;
+  input.store.createItem(
+    {
+      arguments: null,
+      causationId: input.call.id,
+      completedAt,
+      createdAt: completedAt,
+      durationMs,
+      error: input.errorCode,
+      id: input.itemId,
+      ...(input.environmentPackage.scope.itemId
+        ? { parentItemId: input.environmentPackage.scope.itemId }
+        : {}),
+      result: null,
+      server: input.serverId,
+      status: input.status,
+      threadId: input.environmentPackage.scope.threadId,
+      tool: input.toolName,
+      turnId: input.environmentPackage.scope.turnId,
+      type: 'tool-call',
+      workspaceId: input.environmentPackage.scope.workspaceId,
+    },
+    ALREADY_DECIDED_PUBLICATION_ADMISSION
+  );
 }
 
 /** Resolves the exact AEP-selected server without caller-supplied topology. */

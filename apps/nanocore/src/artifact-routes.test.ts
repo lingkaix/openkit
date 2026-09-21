@@ -97,7 +97,7 @@ function createReviewFixture(
   sourceTurnId: string
 ): ReturnType<typeof createArtifactReview> {
   const sourceTurn = store.getTurnById(sourceTurnId);
-  const createdAt = sourceTurn.completedAt ?? sourceTurn.startedAt;
+  const createdAt = sourceTurn.startedAt ?? sourceTurn.completedAt;
   if (!createdAt) {
     throw new Error('Artifact Review fixture requires a started source Turn.');
   }
@@ -432,11 +432,7 @@ describe('Core artifact routes', () => {
       id: 'user_local',
     });
     const completedAt = new Date().toISOString();
-    store.updateTurn(turn.id, {
-      status: 'completed',
-      completedAt,
-      agentId: 'agent_codex_host',
-    });
+    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
     const reviews = (
@@ -447,6 +443,12 @@ describe('Core artifact routes', () => {
     ).map(([artifactId, content]) =>
       createReviewFixture(store, workspaceDb, artifactId, content, turn.id)
     );
+    const backing = store.getArtifact('ws_demo', 'ar_review_first');
+    store.createArtifact({ ...backing, id: 'ar_deliverable_same_title' });
+    store.updateTurn(turn.id, {
+      status: 'completed',
+      completedAt,
+    });
     const firstReview = reviews[0]!;
     workspaceDb.sqlite.close();
     const app = createApp({ coreDb, dataRoot, store });
@@ -515,11 +517,9 @@ describe('Core artifact routes', () => {
       });
       secondArtifact.content.body = secondContent;
 
-      store.updateTurn(turn.id, { agentId: 'agent_other_runtime' });
-      const invalidSourceRes = await postJson(app, secondDecisionPath, secondRequest);
-      expect(invalidSourceRes.status).toBe(409);
-      await expect(invalidSourceRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+      expect(() => store.updateTurn(turn.id, { agentId: 'agent_other_runtime' })).toThrow(
+        /is terminal and does not admit this write/
+      );
 
       const syncDb = openWorkspaceDb(dataRoot, 'ws_demo');
       try {
@@ -577,8 +577,6 @@ describe('Core artifact routes', () => {
         }
 
         // An explicitly submitted output with the same presentation remains a deliverable.
-        const backing = store.getArtifact('ws_demo', 'ar_review_first');
-        store.createArtifact({ ...backing, id: 'ar_deliverable_same_title' });
         const catalog = await app.request('/api/workspaces/ws_demo/artifacts');
         expect(catalog.status).toBe(200);
         expect(
@@ -682,11 +680,7 @@ describe('Core artifact routes', () => {
       id: 'user_local',
     });
     const completedAt = new Date().toISOString();
-    store.updateTurn(turn.id, {
-      status: 'completed',
-      completedAt,
-      agentId: 'agent_codex_host',
-    });
+    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
     createReviewFixture(
@@ -696,6 +690,10 @@ describe('Core artifact routes', () => {
       'Keep this Review pending after receipt failure.',
       turn.id
     );
+    store.updateTurn(turn.id, {
+      status: 'completed',
+      completedAt,
+    });
     workspaceDb.sqlite.exec(`CREATE TRIGGER reject_artifact_review_receipt
       BEFORE INSERT ON idempotency_requests
       WHEN NEW.command_name = 'artifact.review.decide'
@@ -761,11 +759,7 @@ describe('Core artifact routes', () => {
       id: 'user_local',
     });
     const completedAt = new Date().toISOString();
-    store.updateTurn(sourceTurn.id, {
-      status: 'completed',
-      completedAt,
-      agentId: setup.manifest.id,
-    });
+    store.updateTurn(sourceTurn.id, { agentId: setup.manifest.id });
     createReviewFixture(
       store,
       workspaceDb,
@@ -773,6 +767,10 @@ describe('Core artifact routes', () => {
       'Redo this exact output.',
       sourceTurn.id
     );
+    store.updateTurn(sourceTurn.id, {
+      status: 'completed',
+      completedAt,
+    });
     const partialThread = store.createThread('ws_demo', 'Artifact Review partial thread');
     const partialSourceTurn = store.createTurn(
       'ws_demo',
@@ -780,11 +778,7 @@ describe('Core artifact routes', () => {
       'Produce partial Artifact',
       { kind: 'user', id: 'user_local' }
     );
-    store.updateTurn(partialSourceTurn.id, {
-      status: 'completed',
-      completedAt,
-      agentId: setup.manifest.id,
-    });
+    store.updateTurn(partialSourceTurn.id, { agentId: setup.manifest.id });
     createReviewFixture(
       store,
       workspaceDb,
@@ -792,6 +786,10 @@ describe('Core artifact routes', () => {
       'Do not resume partial proof.',
       partialSourceTurn.id
     );
+    store.updateTurn(partialSourceTurn.id, {
+      status: 'completed',
+      completedAt,
+    });
     const partialRequestId = 'artifact-review-partial-1';
     const partialFollowUpTurnId = deriveArtifactReviewFollowUpTurnId(
       'ws_demo',

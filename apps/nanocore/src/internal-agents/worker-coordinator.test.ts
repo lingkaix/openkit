@@ -517,6 +517,295 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
   });
 
   it.each([
+    {
+      prompt:
+        'Current handoff evidence includes the last review notes and the audit write. For this turn only, do not call tools, start workers, change configuration, approve anything, publish, or deploy. Summarize this handoff from the current input only.',
+      decision: 'quick_chat',
+      requiredUserAction: 'none',
+    },
+    {
+      prompt:
+        'The attached review notes and audit log are context only. Summarize the supplied evidence from the current input.',
+      decision: 'quick_chat',
+      requiredUserAction: 'none',
+    },
+    {
+      prompt:
+        'The attached review notes and audit log are context only. Review the previous worker output.',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'The last review failed the audit. Implement the focused fix.',
+      decision: 'worker_turn',
+      requiredUserAction: 'none',
+    },
+  ] as const)('routes from the governing request rather than incidental nouns: $prompt', ({
+    decision,
+    prompt,
+    requiredUserAction,
+  }) => {
+    const routing = createWorkerCoordinatorDecision({
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(routing).toMatchObject({
+      decision,
+      requiredUserAction,
+    });
+    if (decision === 'worker_turn') {
+      expect(routing.selectedWorkerCandidate).toEqual(READY_CODEX);
+      expect(routing.workerRequest?.objective).toBe(prompt);
+      return;
+    }
+    expect(routing.selectedWorkerCandidate).toBeNull();
+    expect(routing.workerRequest).toBeNull();
+  });
+
+  it.each([
+    {
+      prompt: 'Can you review the previous worker output?',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'Would you review the previous worker output?',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'Could you please review the previous worker output?',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'I need you to review the previous worker output.',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'Then review the previous worker output.',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'The attached notes are context only. Then review the previous worker output.',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'The attached review notes are context only, review the previous worker output.',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'Can you hand off this work to another worker?',
+      decision: 'handoff',
+      requiredUserAction: 'choose_worker',
+    },
+    {
+      prompt: 'Can you retry the previous worker turn?',
+      decision: 'retry',
+      requiredUserAction: 'confirm_worker_turn',
+    },
+    {
+      prompt: 'Can you refine the previous result?',
+      decision: 'refinement',
+      requiredUserAction: 'confirm_worker_turn',
+    },
+    {
+      prompt: 'Summarize the review findings.',
+      decision: 'quick_chat',
+      requiredUserAction: 'none',
+    },
+    {
+      prompt:
+        'The attached review notes and audit log are context only Review the previous worker output',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+    {
+      prompt: 'The last review failed the audit Implement the focused fix',
+      decision: 'review',
+      requiredUserAction: 'review_ready',
+    },
+  ] as const)('keeps whole-text kind scans after dropping only unambiguous context: $prompt', ({
+    decision,
+    prompt,
+    requiredUserAction,
+  }) => {
+    const routing = createWorkerCoordinatorDecision({
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(routing).toMatchObject({
+      decision,
+      requiredUserAction,
+    });
+    expect(routing.selectedWorkerCandidate).toBeNull();
+    expect(routing.workerRequest).toBeNull();
+  });
+
+  it.each([
+    {
+      prompt:
+        'The attached review notes and audit log are context only. Review the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt: 'Can you review the previous worker output?',
+      decision: 'review',
+    },
+    {
+      prompt: 'Would you review the previous worker output?',
+      decision: 'review',
+    },
+    {
+      prompt: 'Please review the previous worker output?',
+      decision: 'review',
+    },
+    {
+      prompt: 'Could you please review the previous worker output?',
+      decision: 'review',
+    },
+    {
+      prompt: 'The previous worker asked to summarize the logs. Implement the focused fix.',
+      decision: 'worker_turn',
+    },
+    {
+      prompt:
+        'The attached review notes and audit log are context only Review the previous worker output',
+      decision: 'review',
+    },
+    {
+      prompt: 'The last review failed the audit Implement the focused fix',
+      decision: 'review',
+    },
+    {
+      prompt:
+        'Current handoff evidence includes the last review notes Summarize this handoff from the current input only',
+      decision: 'review',
+    },
+    {
+      prompt: 'Please review the previous output and implement the focused fix',
+      decision: 'review',
+    },
+    {
+      prompt: 'Implement the focused fix and review the tests',
+      decision: 'worker_turn',
+    },
+    {
+      prompt: 'Do not review and do not implement.',
+      decision: 'review',
+    },
+    {
+      prompt: 'Review the previous worker output. The attached notes are context.',
+      decision: 'review',
+    },
+    {
+      prompt: 'Implement the focused fix. The last review failed the audit.',
+      decision: 'worker_turn',
+    },
+    {
+      prompt: '',
+      decision: 'quick_chat',
+    },
+    {
+      prompt: '   \n\t  ',
+      decision: 'quick_chat',
+    },
+    {
+      // Deliberate: leading summarize after dropped context/negation beats incidental review/handoff nouns.
+      prompt:
+        'Current handoff evidence includes the last review notes and the audit write. For this turn only, do not call tools, start workers, change configuration, approve anything, publish, or deploy. Summarize this handoff from the current input only.',
+      decision: 'quick_chat',
+    },
+    {
+      prompt: 'Review the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt: 'Audit the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt:
+        'The attached review notes and audit log are context only.\nReview the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt: 'The attached review notes are context only, review the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt: 'The last review failed the audit, implement the focused fix.',
+      decision: 'review',
+    },
+    {
+      prompt: 'The attached review notes are context only: Review the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt: 'I need you to review the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt: 'The attached notes are context only. Then review the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt: 'Then review the previous worker output.',
+      decision: 'review',
+    },
+    {
+      prompt: 'Can you hand off this work to another worker?',
+      decision: 'handoff',
+    },
+    {
+      prompt: 'Can you retry the previous worker turn?',
+      decision: 'retry',
+    },
+    {
+      prompt: 'Can you refine the previous result?',
+      decision: 'refinement',
+    },
+    {
+      // Deliberate: leading summarize after dropped context beats incidental review/audit nouns.
+      prompt:
+        'The attached review notes and audit log are context only. Summarize the supplied evidence from the current input.',
+      decision: 'quick_chat',
+    },
+    {
+      // Deliberate: period-separated context is dropped so the remaining implement ask is worker execution.
+      prompt: 'The last review failed the audit. Implement the focused fix.',
+      decision: 'worker_turn',
+    },
+    {
+      // Deliberate: leading summarize beats a later review noun in the same clause.
+      prompt: 'Summarize the review findings.',
+      decision: 'quick_chat',
+    },
+  ] as const)('never worse than HEAD unless a commented improvement: $prompt', ({
+    decision,
+    prompt,
+  }) => {
+    const routing = createWorkerCoordinatorDecision({
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(routing.decision).toBe(decision);
+  });
+
+  it.each([
     'Review and merge pull request #85',
     'Please review PR https://github.com/lingkaix/openkit/pull/85 and merge it',
     'Approve and merge the pull request #71',

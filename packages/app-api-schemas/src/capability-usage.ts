@@ -1,4 +1,8 @@
-import { CapabilityCallSchema, UsageRecordSchema } from '@openkit/protocol';
+import {
+  CapabilityCallSchema,
+  isGatewayEntryLlmCapabilityId,
+  UsageRecordSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Read-only capability call evidence with ledger routing metadata. */
@@ -8,7 +12,21 @@ export const CapabilityUsageCallSchema = CapabilityCallSchema.extend({
   providerRef: z.string().min(1).nullable().default(null),
   serviceRef: z.string().min(1).nullable().default(null),
   redactionClass: z.string().min(1),
-}).meta({ ...CapabilityCallSchema.meta() });
+})
+  .superRefine((call, context) => {
+    if (
+      call.systemPromptDigest !== undefined &&
+      (call.family !== 'llm' || !isGatewayEntryLlmCapabilityId(call.capabilityId))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'System-prompt digest is carried only on gateway-entry family llm CapabilityCall records.',
+        path: ['systemPromptDigest'],
+      });
+    }
+  })
+  .meta({ ...CapabilityCallSchema.meta() });
 
 /** Read-only capability usage evidence for one workspace. */
 export const CapabilityUsageResponseSchema = z

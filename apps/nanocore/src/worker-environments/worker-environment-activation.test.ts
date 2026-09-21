@@ -540,10 +540,11 @@ function createResidentFixture(): ResidentFixture {
          agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
          workspace_id, thread_id, agent_session_compatibility_key,
          effective_setup_generation, native_handle_state, lifecycle_state,
-         next_turn_sequence, cleanup_state, created_at, updated_at
+         next_turn_sequence, cleanup_state, created_at, updated_at, image_digest
        ) VALUES (
          'binding_activation', 'harness_activation', 'agent_session_activation',
-         ?, ?, 'session_compatibility_activation', 1, 'ready', 'open', 0, 'clean', ?, ?
+         ?, ?, 'session_compatibility_activation', 1, 'ready', 'open', 0, 'clean', ?, ?,
+         'sha256:${'a'.repeat(64)}'
        )`
     )
     .run(workspace.id, thread.id, NOW, NOW);

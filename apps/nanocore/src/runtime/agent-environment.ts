@@ -442,6 +442,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       profileId: agent.profileId,
       displayName: agent.displayName,
       runtimeKind: manifest.runtime.kind,
+      // Unverified author label; measured harness identity is the binding-time image digest.
       runtimeVersion: manifest.runtime.version ?? 'unversioned',
       profileKind: null,
       instructions: [],

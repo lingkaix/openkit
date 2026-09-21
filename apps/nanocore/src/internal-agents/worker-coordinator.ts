@@ -572,19 +572,121 @@ function isConcretePrWorkerPrompt(prompt: string): boolean {
 
 const AFFIRMATIVE_LEADING_EXECUTION =
   /^(please\s+)?(?!run\s+it\s+again\b)(implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug)\b/;
+const AFFIRMATIVE_LEADING_QUICK_CHAT =
+  /^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(summarize|explain|describe)\b/;
+const REQUEST_CLAUSE_SPLIT = /(?<=[.!?])(?:\s+|$)|(?:\n+)/;
+const ROUTING_VERB =
+  /(?:review|audit|check\s+the\s+work|refine|iterate|make\s+it\s+better|update\s+the\s+previous|retry|rerun|try\s+again|run\s+it\s+again|handoff|hand\s+off|pass\s+to|implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug|approve|merge|summarize|explain|describe)\b/;
+const LEADING_REQUEST = new RegExp(
+  `^(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)?(?:(?:i|we)\\s+need\\s+(?:you\\s+to\\s+)?)?${ROUTING_VERB.source}`
+);
+const INTERIOR_REQUEST = new RegExp(
+  `[,:]\\s+(?:please\\s+|then\\s+|but\\s+|and\\s+|or\\s+)*(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)?${ROUTING_VERB.source}`
+);
+const INFINITIVE_REQUEST =
+  /\bto\s+(?:implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug|merge|approve)\b/;
 
 /**
- * True when the prompt starts with an affirmative worker-execution verb.
+ * Splits a lowercase prompt into clauses on sentence punctuation and newlines.
  *
- * Later review, refine, retry, or handoff wording is then a constraint. Negated
- * leading execution such as "do not implement" and the explicit retry phrase
- * "run it again" are not this seam.
+ * @param prompt Lowercase trimmed prompt.
+ * @returns Clauses in prompt order.
+ */
+function splitRequestClauses(prompt: string): string[] {
+  return prompt
+    .split(REQUEST_CLAUSE_SPLIT)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length > 0);
+}
+
+/**
+ * Strips leading please/then so later kind scans see the request verb.
+ *
+ * @param text Lowercase clause or joined request text.
+ * @returns Text without a leading please/then prefix.
+ */
+function stripRoutingPrefix(text: string): string {
+  return text.replace(/^(?:please\s+|then\s+)+/, '');
+}
+
+/**
+ * True when a clause is an unambiguous negated constraint.
+ *
+ * @param clause Lowercase clause.
+ * @returns True when the clause only forbids work.
+ */
+function isNegatedConstraintClause(clause: string): boolean {
+  const text = stripRoutingPrefix(clause);
+  if (/^(?:do\s+not|don't)\b/.test(text)) {
+    return true;
+  }
+  const adverbial = /^([^,]{1,60}),\s+((?:please\s+|then\s+)?(?:do\s+not|don't)\b[\s\S]*)$/.exec(
+    text
+  );
+  const lead = adverbial?.[1]?.trim();
+  return Boolean(lead) && !LEADING_REQUEST.test(stripRoutingPrefix(lead ?? ''));
+}
+
+/**
+ * True when a clause contains a request construction rather than only supplied material.
+ *
+ * When in doubt the clause is kept.
+ *
+ * @param clause Lowercase clause.
+ * @returns True when the clause asks for work.
+ */
+function clauseHasRequest(clause: string): boolean {
+  const text = stripRoutingPrefix(clause);
+  return (
+    LEADING_REQUEST.test(text) ||
+    INTERIOR_REQUEST.test(text) ||
+    INFINITIVE_REQUEST.test(text) ||
+    /^use\s+the\s+(?!.*\?[.!]*$)\S/.test(text) ||
+    isConcretePrWorkerPrompt(text)
+  );
+}
+
+/**
+ * Prompt text after dropping unambiguous supplied-context and negated-constraint clauses.
+ *
+ * Kind matchers still scan this text for their keywords anywhere.
+ *
+ * The filter applies only when at least one clause is recognised as an ask; otherwise the original prompt is scanned so an unrecognised clause cannot hide a HEAD match.
+ *
+ * @param prompt Lowercase trimmed prompt.
+ * @returns Remaining request text, or the original prompt when no clause is recognised as an ask.
+ */
+function requestText(prompt: string): string {
+  const kept = splitRequestClauses(prompt).filter(
+    (clause) => !isNegatedConstraintClause(clause) && clauseHasRequest(clause)
+  );
+  return kept.length > 0 ? kept.join(' ') : prompt;
+}
+
+/**
+ * True when the remaining request starts with an affirmative worker-execution verb.
+ *
+ * Later review, refine, retry, or handoff wording is then a constraint.
+ *
+ * Negated leading execution such as "do not implement" and "run it again" are not this seam.
  *
  * @param prompt Lowercase trimmed prompt.
  * @returns True when leading intent is worker execution.
  */
 function hasAffirmativeLeadingExecution(prompt: string): boolean {
-  return AFFIRMATIVE_LEADING_EXECUTION.test(prompt);
+  return AFFIRMATIVE_LEADING_EXECUTION.test(stripRoutingPrefix(requestText(prompt)));
+}
+
+/**
+ * True when the remaining request starts with a quick-chat verb such as summarize.
+ *
+ * A later review or handoff noun in the same clause does not override that kind.
+ *
+ * @param prompt Lowercase trimmed prompt.
+ * @returns True when leading intent is a direct Assistant answer.
+ */
+function hasAffirmativeLeadingQuickChat(prompt: string): boolean {
+  return AFFIRMATIVE_LEADING_QUICK_CHAT.test(stripRoutingPrefix(requestText(prompt)));
 }
 
 /**
@@ -594,11 +696,19 @@ function hasAffirmativeLeadingExecution(prompt: string): boolean {
  * @returns True when review is the routing kind.
  */
 function isReviewPrompt(prompt: string): boolean {
-  // Concrete PR review/approve/merge Tasks are worker execution, not human review-mode.
-  if (isConcretePrWorkerPrompt(prompt) || hasAffirmativeLeadingExecution(prompt)) {
+  const text = requestText(prompt);
+  if (!text) {
     return false;
   }
-  return /\breview\b|\baudit\b|\bcheck\s+the\s+work\b/.test(prompt);
+  // Concrete PR review/approve/merge Tasks are worker execution, not human review-mode.
+  if (
+    isConcretePrWorkerPrompt(text) ||
+    hasAffirmativeLeadingExecution(prompt) ||
+    hasAffirmativeLeadingQuickChat(prompt)
+  ) {
+    return false;
+  }
+  return /\breview\b|\baudit\b|\bcheck\s+the\s+work\b/.test(text);
 }
 
 /**
@@ -608,9 +718,12 @@ function isReviewPrompt(prompt: string): boolean {
  * @returns True when refinement is the routing kind.
  */
 function isRefinementPrompt(prompt: string): boolean {
+  const text = requestText(prompt);
   return (
+    Boolean(text) &&
     !hasAffirmativeLeadingExecution(prompt) &&
-    /\brefine\b|\biterate\b|\bmake\s+it\s+better\b|\bupdate\s+the\s+previous\b/.test(prompt)
+    !hasAffirmativeLeadingQuickChat(prompt) &&
+    /\brefine\b|\biterate\b|\bmake\s+it\s+better\b|\bupdate\s+the\s+previous\b/.test(text)
   );
 }
 
@@ -621,9 +734,12 @@ function isRefinementPrompt(prompt: string): boolean {
  * @returns True when retry is the routing kind.
  */
 function isRetryPrompt(prompt: string): boolean {
+  const text = requestText(prompt);
   return (
+    Boolean(text) &&
     !hasAffirmativeLeadingExecution(prompt) &&
-    /\bretry\b|\brerun\b|\btry\s+again\b|\brun\s+it\s+again\b/.test(prompt)
+    !hasAffirmativeLeadingQuickChat(prompt) &&
+    /\bretry\b|\brerun\b|\btry\s+again\b|\brun\s+it\s+again\b/.test(text)
   );
 }
 
@@ -634,9 +750,12 @@ function isRetryPrompt(prompt: string): boolean {
  * @returns True when handoff is the routing kind.
  */
 function isHandoffPrompt(prompt: string): boolean {
+  const text = requestText(prompt);
   return (
+    Boolean(text) &&
     !hasAffirmativeLeadingExecution(prompt) &&
-    /\bhandoff\b|\bhand\s+off\b|\bpass\s+to\b/.test(prompt)
+    !hasAffirmativeLeadingQuickChat(prompt) &&
+    /\bhandoff\b|\bhand\s+off\b|\bpass\s+to\b/.test(text)
   );
 }
 
@@ -662,12 +781,16 @@ function isQuickChatPrompt(prompt: string): boolean {
  * @returns True when the prompt has execution intent.
  */
 function requiresWorker(prompt: string): boolean {
+  const text = requestText(prompt);
+  if (!text) {
+    return false;
+  }
   return (
     /\b(implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug|merge|approve)\b/.test(
-      prompt
+      text
     ) ||
-    isConcretePrWorkerPrompt(prompt) ||
-    /^use\s+the\s+(?!.*\?[.!]*$)\S/.test(prompt)
+    isConcretePrWorkerPrompt(text) ||
+    /^use\s+the\s+(?!.*\?[.!]*$)\S/.test(text)
   );
 }
 

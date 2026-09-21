@@ -1,5 +1,12 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 
 /** Private NanoHost Sandbox placement and cleanup projection. */
 export const sandboxRuntimeRecords = sqliteTable(
@@ -153,6 +160,8 @@ export const agentSessionRuntimeBindings = sqliteTable(
     createdAt: text('created_at').notNull(),
     /** Last transition timestamp. */
     updatedAt: text('updated_at').notNull(),
+    /** Measured sandbox image digest copied as a value at binding time. */
+    imageDigest: text('image_digest').notNull(),
   },
   (table) => [
     uniqueIndex('agent_session_runtime_bindings_session_idx').on(table.agentSessionId),
@@ -164,4 +173,18 @@ export const agentSessionRuntimeBindings = sqliteTable(
       table.lifecycleState
     ),
   ]
+);
+
+/** Binding-time copy of measured harness identity that survives Sandbox projection deletion. */
+export const agentSessionRuntimeBindingImageDigests = sqliteTable(
+  'agent_session_runtime_binding_image_digests',
+  {
+    /** Exact AgentSession runtime binding whose digest was copied. */
+    agentSessionRuntimeBindingId: text('agent_session_runtime_binding_id').notNull(),
+    /** Measured sandbox image digest copied as a value at binding time. */
+    imageDigest: text('image_digest').notNull(),
+    /** Timestamp of the immutable copy. */
+    copiedAt: text('copied_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.agentSessionRuntimeBindingId, table.imageDigest] })]
 );

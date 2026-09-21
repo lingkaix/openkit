@@ -432,6 +432,7 @@ const schedulerProviderCredentialResolver = createVaultProviderCredentialResolve
 });
 
 const runtimeConfigManager = createRuntimeConfigManager({
+  captureCoverage: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
   dataRoot,
   initialSnapshot: runtimeConfigSnapshot,
 });

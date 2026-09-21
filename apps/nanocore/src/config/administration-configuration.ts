@@ -20,7 +20,11 @@ import { z } from 'zod';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
-import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import {
+  CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION,
+  type FsStore,
+  quickChatWorkspaceIdForUser,
+} from '../lib/store.js';
 import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -285,19 +289,22 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           )
             fail('configuration_candidate_conflict');
           const timestamp = new Date().toISOString();
-          store.createItem({
-            id: markerId,
-            workspaceId,
-            threadId,
-            turnId,
-            type: 'status',
-            status: 'completed',
-            level: 'info',
-            title: 'Configuration application started',
-            summary: `Request ${request.requestId} confirmed candidate ${request.candidate.contentDigest}.`,
-            createdAt: timestamp,
-            completedAt: timestamp,
-          });
+          store.createItem(
+            {
+              id: markerId,
+              workspaceId,
+              threadId,
+              turnId,
+              type: 'status',
+              status: 'completed',
+              level: 'info',
+              title: 'Configuration application started',
+              summary: `Request ${request.requestId} confirmed candidate ${request.candidate.contentDigest}.`,
+              createdAt: timestamp,
+              completedAt: timestamp,
+            },
+            CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
+          );
           let persisted = false;
           let revision: string | null = null;
           let reload: ApplyAdministrationConfigurationResponse['reload'] = 'not-attempted';

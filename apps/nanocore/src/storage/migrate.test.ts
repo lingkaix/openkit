@@ -26,6 +26,7 @@ import {
 const CORE_TABLES = [
   '__drizzle_migrations',
   'account',
+  'agent_session_runtime_binding_image_digests',
   'agent_session_runtime_bindings',
   'audit_events',
   'boot_audit_events',
@@ -421,6 +422,12 @@ describe('database setup', () => {
         'cleanup_state',
         'created_at',
         'updated_at',
+        'image_digest',
+      ]);
+      expect(listColumnNames(coreDb, 'agent_session_runtime_binding_image_digests')).toEqual([
+        'agent_session_runtime_binding_id',
+        'image_digest',
+        'copied_at',
       ]);
       const leaseTokenColumns = coreDb.sqlite
         .prepare('PRAGMA table_info(scheduler_session_leases)')
@@ -616,6 +623,7 @@ describe('database setup', () => {
         'schema_snapshot_id',
         'runtime_origin_ref',
         'runtime_cache_lineage_ref',
+        'system_prompt_digest',
       ]);
       expect(listColumnNames(workspaceDb, 'usage_records')).toEqual([
         'usage_id',

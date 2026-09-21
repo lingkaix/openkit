@@ -62,10 +62,12 @@ import {
   prepareTaskKnowledgeContext,
   resolveWorkspaceKnowledgeReferenceProofs,
 } from './knowledge-manager.js';
-import type {
-  CommandRequestRecord,
-  ConversationCommandReceiptMetadata,
-  FsStore,
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  type CommandRequestRecord,
+  type ConversationCommandReceiptMetadata,
+  DISPLAY_PROJECTION_REFRESH_ADMISSION,
+  type FsStore,
 } from './lib/store.js';
 import { dispatchLogicalModel, LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
 import { parseUsage } from './llm/gateway-usage.js';
@@ -244,19 +246,22 @@ function persistConversationWorkerResultItem(
   const existing = turn.items.find((item) => item.id === itemId);
   if (!existing) {
     const createdAt = new Date().toISOString();
-    return store.createItem({
-      id: itemId,
-      workspaceId,
-      threadId,
-      turnId,
-      type: 'status',
-      status: 'completed',
-      level: presentation.level,
-      title: presentation.title,
-      summary: presentation.summary,
-      createdAt,
-      completedAt: createdAt,
-    });
+    return store.createItem(
+      {
+        id: itemId,
+        workspaceId,
+        threadId,
+        turnId,
+        type: 'status',
+        status: 'completed',
+        level: presentation.level,
+        title: presentation.title,
+        summary: presentation.summary,
+        createdAt,
+        completedAt: createdAt,
+      },
+      DISPLAY_PROJECTION_REFRESH_ADMISSION
+    );
   }
   if (
     existing.type !== 'status' ||
@@ -273,11 +278,15 @@ function persistConversationWorkerResultItem(
   ) {
     return existing;
   }
-  return store.updateItem(itemId, {
-    level: presentation.level,
-    title: presentation.title,
-    summary: presentation.summary,
-  });
+  return store.updateItem(
+    itemId,
+    {
+      level: presentation.level,
+      title: presentation.title,
+      summary: presentation.summary,
+    },
+    DISPLAY_PROJECTION_REFRESH_ADMISSION
+  );
 }
 
 /**
@@ -3947,19 +3956,22 @@ export function registerTaskModeRoute({
         });
         const reason = delegation.coordinator.explanation;
         const timestamp = new Date().toISOString();
-        store.createItem({
-          id: `it_task_goal_${goalStart.response.goal.goalId}_${goalStart.turn.id}`,
-          workspaceId,
-          threadId,
-          turnId: goalStart.turn.id,
-          type: 'status',
-          status: 'completed',
-          level: 'info',
-          title: 'Task Mode escalated to Goal Mode',
-          summary: reason,
-          createdAt: timestamp,
-          completedAt: timestamp,
-        });
+        store.createItem(
+          {
+            id: `it_task_goal_${goalStart.response.goal.goalId}_${goalStart.turn.id}`,
+            workspaceId,
+            threadId,
+            turnId: goalStart.turn.id,
+            type: 'status',
+            status: 'completed',
+            level: 'info',
+            title: 'Task Mode escalated to Goal Mode',
+            summary: reason,
+            createdAt: timestamp,
+            completedAt: timestamp,
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
 
         return StartTaskModeResponseSchema.parse({
           state: 'escalated-to-goal',

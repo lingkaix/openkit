@@ -12,7 +12,11 @@ import {
 import { z } from 'zod';
 import { createArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
-import { ArtifactAuthorityError, type FsStore } from '../lib/store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  ArtifactAuthorityError,
+  type FsStore,
+} from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { artifactReferenceItemId } from '../storage/workspace-file-records.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from '../workspace-materials.js';
@@ -251,7 +255,7 @@ function importItemRecords(
       throw new Error(`Worker transcript item replay conflict: ${item.id}`);
     }
     if (!existing) {
-      store.createItem(item);
+      store.createItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION);
     }
 
     result.itemIds.push(item.id);

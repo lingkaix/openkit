@@ -51,8 +51,18 @@ CREATE TABLE `agent_session_runtime_bindings` (
 	`cleanup_state` text NOT NULL,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
+	`image_digest` text NOT NULL,
 	CONSTRAINT `agent_session_runtime_bindings_setup_generation_check` CHECK (`effective_setup_generation` >= 1),
 	CONSTRAINT `agent_session_runtime_bindings_turn_sequence_check` CHECK (`next_turn_sequence` >= 0)
+);
+
+--> statement-breakpoint
+
+CREATE TABLE `agent_session_runtime_binding_image_digests` (
+	`agent_session_runtime_binding_id` text NOT NULL,
+	`image_digest` text NOT NULL,
+	`copied_at` text NOT NULL,
+	PRIMARY KEY (`agent_session_runtime_binding_id`, `image_digest`)
 );
 
 --> statement-breakpoint

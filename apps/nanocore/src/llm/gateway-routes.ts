@@ -53,6 +53,10 @@ import {
 } from './provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
 import {
+  digestLlmSystemPrompt,
+  persistLlmCapabilityCallSystemPromptDigest,
+} from './system-prompt-digest.js';
+import {
   readWorkerInferenceRuntimeHint,
   type WorkerInferenceRuntimeHint,
 } from './worker-inference-runtime-hint.js';
@@ -133,6 +137,8 @@ function startPublicLlmGatewayCall(input: {
   endpoint: 'chat_completions' | 'responses';
   /** OpenAI-compatible request metadata. */
   metadata: unknown;
+  /** Pre-adapter Chat Completions or Responses request. */
+  request: unknown;
 }): DurableLlmGatewayCall | null {
   if (!input.coreDb) {
     return null;
@@ -149,26 +155,36 @@ function startPublicLlmGatewayCall(input: {
   try {
     applyScopedMigrations(workspaceDb);
 
-    return {
-      call: startCapabilityCall({
-        agentId: lineage.agentId ?? null,
-        agentSessionId: lineage.agentSessionId ?? null,
-        authorityActor: input.authorityActor,
-        capabilityId: `llm.${input.endpoint}`,
-        family: 'llm',
-        itemId: lineage.itemId ?? null,
-        operation: input.endpoint,
-        providerRef: input.provider.id,
-        redactionClass: 'metadata-only',
-        requestId: lineage.requestId ?? randomUUID(),
-        serviceRef: 'llm-gateway',
-        sourceIds: lineage.sourceIds ?? [],
-        summary: `Public ${input.endpoint} LLM gateway call.`,
-        threadId: lineage.threadId ?? null,
-        turnId: lineage.turnId ?? null,
-        workspaceDb,
-        workspaceId: lineage.workspaceId,
+    const call = startCapabilityCall({
+      agentId: lineage.agentId ?? null,
+      agentSessionId: lineage.agentSessionId ?? null,
+      authorityActor: input.authorityActor,
+      capabilityId: `llm.${input.endpoint}`,
+      family: 'llm',
+      itemId: lineage.itemId ?? null,
+      operation: input.endpoint,
+      providerRef: input.provider.id,
+      redactionClass: 'metadata-only',
+      requestId: lineage.requestId ?? randomUUID(),
+      serviceRef: 'llm-gateway',
+      sourceIds: lineage.sourceIds ?? [],
+      summary: `Public ${input.endpoint} LLM gateway call.`,
+      threadId: lineage.threadId ?? null,
+      turnId: lineage.turnId ?? null,
+      workspaceDb,
+      workspaceId: lineage.workspaceId,
+    });
+    persistLlmCapabilityCallSystemPromptDigest({
+      callId: call.id,
+      systemPromptDigest: digestLlmSystemPrompt({
+        endpoint: input.endpoint,
+        request: input.request,
       }),
+      workspaceDb,
+    });
+
+    return {
+      call,
       finished: false,
       workspaceDb,
     };
@@ -633,6 +649,8 @@ function startWorkerInferenceCall(input: {
   readonly runtimeCacheLineageRef: string | null;
   /** Whether this request used request-scoped cache isolation. */
   readonly cacheDegraded: boolean;
+  /** Pre-adapter Chat Completions or Responses request. */
+  readonly request: unknown;
 }): DurableLlmGatewayCall {
   if (!input.coreDb) {
     throw new WorkerInferenceRouteError(
@@ -651,31 +669,41 @@ function startWorkerInferenceCall(input: {
     workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, scope.workspaceId);
     applyScopedMigrations(workspaceDb);
 
-    return {
-      call: startCapabilityCall({
-        agentId: environmentPackage.agent.agentId,
-        agentSessionId: scope.agentSessionId,
-        authorityActor: scope.triggerActor,
-        capabilityId: `llm.${input.endpoint}`,
-        family: 'llm',
-        itemId: scope.itemId ?? null,
-        operation: input.endpoint,
-        packageSnapshotId: environmentPackage.snapshotId,
-        providerRef: input.providerRef,
-        redactionClass: 'metadata-only',
-        requestId: randomUUID(),
-        runtimeCacheLineageRef: input.runtimeCacheLineageRef,
-        runtimeOriginRef: input.runtimeOriginRef,
-        serviceRef: 'worker-inference-gateway',
-        sourceIds: [],
-        summary: input.cacheDegraded
-          ? `Worker ${input.endpoint} inference gateway call with request-scoped cache isolation.`
-          : `Worker ${input.endpoint} inference gateway call.`,
-        threadId: scope.threadId,
-        turnId: scope.turnId,
-        workspaceDb,
-        workspaceId: scope.workspaceId,
+    const call = startCapabilityCall({
+      agentId: environmentPackage.agent.agentId,
+      agentSessionId: scope.agentSessionId,
+      authorityActor: scope.triggerActor,
+      capabilityId: `llm.${input.endpoint}`,
+      family: 'llm',
+      itemId: scope.itemId ?? null,
+      operation: input.endpoint,
+      packageSnapshotId: environmentPackage.snapshotId,
+      providerRef: input.providerRef,
+      redactionClass: 'metadata-only',
+      requestId: randomUUID(),
+      runtimeCacheLineageRef: input.runtimeCacheLineageRef,
+      runtimeOriginRef: input.runtimeOriginRef,
+      serviceRef: 'worker-inference-gateway',
+      sourceIds: [],
+      summary: input.cacheDegraded
+        ? `Worker ${input.endpoint} inference gateway call with request-scoped cache isolation.`
+        : `Worker ${input.endpoint} inference gateway call.`,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      workspaceDb,
+      workspaceId: scope.workspaceId,
+    });
+    persistLlmCapabilityCallSystemPromptDigest({
+      callId: call.id,
+      systemPromptDigest: digestLlmSystemPrompt({
+        endpoint: input.endpoint,
+        request: input.request,
       }),
+      workspaceDb,
+    });
+
+    return {
+      call,
       finished: false,
       workspaceDb,
     };
@@ -1527,6 +1555,7 @@ export function registerWorkerInferenceRoutes({
           endpoint,
           environmentPackage,
           providerRef: route.model,
+          request: input,
           runtimeCacheLineageRef: null,
           runtimeOriginRef,
         });
@@ -1568,6 +1597,7 @@ export function registerWorkerInferenceRoutes({
               endpoint,
               environmentPackage,
               providerRef: provider.id,
+              request: sanitized,
               runtimeCacheLineageRef: cache.runtimeCacheLineageRef,
               runtimeOriginRef,
             });
@@ -2077,6 +2107,7 @@ export function registerLlmGatewayRoutes({
             endpoint: 'chat_completions',
             metadata: (request as { metadata?: unknown }).metadata,
             provider,
+            request,
           });
           try {
             if (input.stream) {
@@ -2209,6 +2240,7 @@ export function registerLlmGatewayRoutes({
             endpoint: 'responses',
             metadata: (request as { metadata?: unknown }).metadata,
             provider,
+            request,
           });
           try {
             if (input.stream) {

@@ -272,7 +272,25 @@ describe('turn event routes', () => {
   it('returns cursor_expired when since is older than the retained event window', async () => {
     const store = createDemoStore();
     const app = createApp({ store });
-    const { workspaceId, threadId, turnId } = createReplayTurn(store);
+    const thread = store.createThread('ws_demo', 'Overflow replay thread');
+    const turn = store.createTurn('ws_demo', thread.id, 'Fill the retained window', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const workspaceId = 'ws_demo';
+    const threadId = thread.id;
+    const turnId = turn.id;
+    store.createItem({
+      id: `it_assistant_${turnId}`,
+      workspaceId,
+      threadId,
+      turnId,
+      type: 'assistant-message',
+      status: 'in_progress',
+      text: '',
+      createdAt: turn.startedAt ?? new Date().toISOString(),
+      completedAt: null,
+    });
 
     for (let index = 0; index < 105; index += 1) {
       store.emitTurnEvent(turnId, {

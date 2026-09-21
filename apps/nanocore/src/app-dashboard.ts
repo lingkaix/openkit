@@ -9,7 +9,14 @@ import {
   type WorkspaceDashboardResponse,
   WorkspaceDashboardResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { ArtifactSchema, ItemSchema, ThreadSchema, TurnSchema } from '@openkit/protocol';
+import {
+  type ArtifactSchema,
+  type ItemSchema,
+  isRecoveryRewritableTurnStatus,
+  isSealedTurnTerminal,
+  type ThreadSchema,
+  type TurnSchema,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { goalRows } from './action-center.js';
@@ -35,27 +42,28 @@ type Item = import('zod').infer<typeof ItemSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
 
-const ACTIVE_WORK_STATUSES = new Set<Turn['status']>(['pending', 'running']);
-const ATTENTION_TURN_STATUSES = new Set<Turn['status']>(['failed', 'interrupted', 'cancelled']);
-
 /**
  * Returns true when a turn should appear as active work.
  *
  * @param status Turn status to test.
- * @returns True when the status is pending or running.
+ * @returns True when the status is recovery rewritable.
  */
 function isActiveWorkStatus(status: Turn['status']): boolean {
-  return ACTIVE_WORK_STATUSES.has(status);
+  return isRecoveryRewritableTurnStatus(status);
 }
 
 /**
  * Returns true when a turn needs user attention on the workspace dashboard.
  *
+ * Product projection that differs from sealed terminals by omitting completed.
+ *
+ * Members: failed, interrupted, cancelled.
+ *
  * @param status Turn status to test.
- * @returns True when the status is blocked or terminal with attention value.
+ * @returns True when the status is a sealed terminal other than completed.
  */
 function isAttentionTurnStatus(status: Turn['status']): boolean {
-  return ATTENTION_TURN_STATUSES.has(status);
+  return isSealedTurnTerminal(status) && status !== 'completed';
 }
 
 /**
@@ -249,10 +257,14 @@ function threadTitle(thread: Thread): string {
 }
 
 /**
- * Converts failed terminal turn statuses to workspace attention kinds.
+ * Converts dashboard attention Turn statuses to workspace attention kinds.
+ *
+ * Product projection that differs from sealed terminals by omitting completed.
+ *
+ * Members: failed, interrupted, cancelled.
  *
  * @param status Turn status to convert.
- * @returns Attention kind for failed terminal statuses.
+ * @returns Attention kind for failed, interrupted, and cancelled statuses.
  */
 function terminalAttentionKind(
   status: Turn['status']
@@ -262,8 +274,15 @@ function terminalAttentionKind(
     case 'interrupted':
     case 'cancelled':
       return status;
-    default:
+    case 'completed':
+    case 'pending':
+    case 'running':
+    case 'awaiting_human':
       return null;
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
   }
 }
 
@@ -294,9 +313,7 @@ function buildThreadWorkStatus(input: {
   responsibleUserId: string | null;
 }): ThreadWorkStatus {
   const turns = sortTurns(input.turns);
-  const activeTurn = [...turns]
-    .reverse()
-    .find((turn) => !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status));
+  const activeTurn = [...turns].reverse().find((turn) => !isSealedTurnTerminal(turn.status));
   const latestArtifact = sortArtifactsNewestFirst(input.artifacts)[0] ?? null;
   const pendingApprovals = pendingApprovalItems(
     input.store,
@@ -370,6 +387,7 @@ function buildWorkspaceWorkSections(
     }
 
     for (const turn of turns) {
+      // Product projection that differs from sealed terminals: recent completions include completed only.
       if (turn.status === 'completed' && turn.completedAt) {
         const turnArtifacts = threadArtifacts.filter((artifact) => artifact.turnId === turn.id);
         const latestTurnArtifact = sortArtifactsNewestFirst(turnArtifacts)[0] ?? newestArtifact;
@@ -502,9 +520,7 @@ export function registerDashboardRoutes({
         .map((thread) => {
           const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
           const items = store.listThreadItems(workspaceId, thread.id);
-          const activeTurn = turns.findLast((turn) =>
-            ['pending', 'running', 'awaiting_human'].includes(turn.status)
-          );
+          const activeTurn = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
           const latestTurn = activeTurn ?? turns.at(-1);
           const goals = workspaceDb
             ? listGoalRecordsForThread(workspaceDb, { workspaceId, threadId: thread.id })

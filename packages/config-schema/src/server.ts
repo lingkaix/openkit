@@ -231,6 +231,12 @@ export const OpenKitConfigSchema = z
     mode: CoreModeSchema.optional(),
     policy: z
       .object({
+        workDataCapture: z
+          .object({
+            value: z.enum(['off', 'on']).default('off'),
+          })
+          .strict()
+          .optional(),
         workspaceApprovalModes: z
           .record(
             z.string().min(1),

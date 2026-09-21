@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   IntroduceWorkspaceArtifactResponse,
   KnowledgeClaim,
@@ -34,14 +35,18 @@ import {
   ApprovalRequestSchema,
   ArtifactSchema,
   ItemSchema,
+  isSealedTurnTerminal,
   PROTOCOL_VERSION,
   RequestIdSchema,
   responsibleUserIdForActor,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
+  type TurnStatus,
 } from '@openkit/protocol';
 import { resolveDataRoot } from '../config/data-root.js';
+import { loadOpenKitConfig } from '../config/openkit-config.js';
+import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import {
   type KnowledgePageReferenceProof,
@@ -78,6 +83,7 @@ import {
   assertImmutableItemAttribution,
   assertSafeWorkspacePathSegment,
   assertTurnEventPayloadLineage,
+  type CaptureCoverageBinding,
   deleteWorkspaceKnowledgeRecord,
   isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
@@ -515,11 +521,244 @@ interface TurnStreamState {
   timers: Set<NodeJS.Timeout>;
 }
 
+/** Default admission-time capture pair when no authored switch is on. */
+export const DEFAULT_CAPTURE_COVERAGE_BINDING: CaptureCoverageBinding = {
+  scope: 'server',
+  value: 'off',
+};
+
 interface CreateTurnOptions {
   /** Scheduler-owned turn id when external coordination already reserved lineage. */
   turnId?: string;
   /** Command-owned start time when a Core-local Turn must share one accepted timestamp. */
   startedAt?: string;
+  /** Admission-time capture pair when the caller already resolved the effective setting. */
+  captureCoverage?: CaptureCoverageBinding;
+}
+
+/** Completes an already-decided publication against a sealed-terminal Turn. */
+export const ALREADY_DECIDED_PUBLICATION_ADMISSION = {
+  category: 'already-decided-publication',
+} as const;
+
+/** Named field-limited display-projection refresh; this is not already-decided publication. */
+export const DISPLAY_PROJECTION_REFRESH_ADMISSION = {
+  category: 'display-projection-refresh',
+} as const;
+
+/**
+ * Configuration-apply marker Item on the Turn that executes the apply.
+ * Pending docs/specs/20260921-delayed_user_input.md; this category stays admitted.
+ */
+export const CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION = {
+  category: 'configuration-apply-pending-delayed-user-input',
+} as const;
+
+/** Admission for completing an already-decided publication after terminal. */
+export type AlreadyDecidedPublicationAdmission = typeof ALREADY_DECIDED_PUBLICATION_ADMISSION;
+
+/** Admission for a named field-limited display-projection refresh after terminal. */
+export type DisplayProjectionRefreshAdmission = typeof DISPLAY_PROJECTION_REFRESH_ADMISSION;
+
+/** Admission for the configuration-apply marker pending delayed-user-input ownership. */
+export type ConfigurationApplyPendingDelayedUserInputAdmission =
+  typeof CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION;
+
+/** Declared post-terminal write category; the two equality rules stay separate types. */
+export type TerminalTurnWriteAdmission =
+  | AlreadyDecidedPublicationAdmission
+  | DisplayProjectionRefreshAdmission
+  | ConfigurationApplyPendingDelayedUserInputAdmission;
+
+/**
+ * Returns whether already-recorded bytes equal a candidate publication.
+ *
+ * @param recorded Already-recorded value.
+ * @param candidate Candidate publication.
+ * @returns True when the values are deeply equal.
+ */
+function alreadyDecidedPublicationBytesEqual(recorded: unknown, candidate: unknown): boolean {
+  return isDeepStrictEqual(recorded, candidate);
+}
+
+/**
+ * Returns whether one Item's display fields match a named projection.
+ *
+ * @param item Recorded Item.
+ * @param projection Candidate level, title, and summary.
+ * @returns True when those three display fields already match.
+ */
+function displayProjectionFieldsEqual(
+  item: Item,
+  projection: { readonly level: unknown; readonly title: unknown; readonly summary: unknown }
+): boolean {
+  const recorded = item as unknown as Record<string, unknown>;
+  return (
+    recorded.level === projection.level &&
+    recorded.title === projection.title &&
+    recorded.summary === projection.summary
+  );
+}
+
+/**
+ * Returns whether a terminal completion stopReason matches a sealed Turn status.
+ *
+ * @param stopReason Event stopReason.
+ * @param status Sealed Turn status.
+ * @returns True when the pair is the already-decided terminal mapping.
+ */
+function stopReasonMatchesSealedStatus(stopReason: unknown, status: TurnStatus): boolean {
+  if (status === 'completed') {
+    return (
+      stopReason === 'completed' || stopReason === 'length' || stopReason === 'budget_exhausted'
+    );
+  }
+  if (status === 'failed') {
+    return stopReason === 'error';
+  }
+  if (status === 'cancelled' || status === 'interrupted') {
+    return stopReason === 'aborted';
+  }
+  return false;
+}
+
+/**
+ * Returns whether an event payload is the sealed Turn's missing terminal publication.
+ *
+ * @param turn Sealed Turn.
+ * @param event Candidate event input.
+ * @returns True when the event publishes that Turn's sealed outcome, not merely names it.
+ */
+function eventAgreesWithSealedTurnOutcome(turn: Turn, event: TurnEventInput): boolean {
+  const data = event.data as {
+    type?: unknown;
+    stopReason?: unknown;
+    turn?: {
+      id?: unknown;
+      workspaceId?: unknown;
+      threadId?: unknown;
+      status?: unknown;
+      error?: unknown;
+    };
+  };
+  if (data.type !== 'turn-completed' && data.type !== 'turn-updated') {
+    return false;
+  }
+  const carried = data.turn;
+  if (!carried || typeof carried !== 'object') {
+    return false;
+  }
+  if (
+    carried.id !== turn.id ||
+    carried.workspaceId !== turn.workspaceId ||
+    carried.threadId !== turn.threadId ||
+    carried.status !== turn.status
+  ) {
+    return false;
+  }
+  if (
+    carried.error !== undefined &&
+    !alreadyDecidedPublicationBytesEqual(carried.error ?? null, turn.error ?? null)
+  ) {
+    return false;
+  }
+  if (
+    data.stopReason !== undefined &&
+    !stopReasonMatchesSealedStatus(data.stopReason, turn.status)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Returns whether an event payload names this Turn but disagrees with its decided outcome.
+ *
+ * @param turn Sealed Turn.
+ * @param event Candidate event input.
+ * @returns True when the event identifies this Turn and contradicts its sealed status, error, or stopReason.
+ */
+function eventConflictsWithSealedTurnOutcome(turn: Turn, event: TurnEventInput): boolean {
+  const data = event.data as {
+    stopReason?: unknown;
+    turn?: { id?: unknown; status?: unknown; error?: unknown };
+  };
+  const carried = data.turn;
+  if (!carried || typeof carried !== 'object' || carried.id !== turn.id) {
+    return false;
+  }
+  if (carried.status !== undefined && carried.status !== turn.status) {
+    return true;
+  }
+  if (
+    carried.error !== undefined &&
+    !alreadyDecidedPublicationBytesEqual(carried.error ?? null, turn.error ?? null)
+  ) {
+    return true;
+  }
+  if (
+    data.stopReason !== undefined &&
+    !stopReasonMatchesSealedStatus(data.stopReason, turn.status)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Returns whether a parsed Turn rewrite would change already-set decided fields.
+ *
+ * @param current Recorded terminal Turn.
+ * @param next Candidate merged Turn.
+ * @returns True when an already-set decided field would change.
+ */
+function decidedTurnFieldsConflict(current: Turn, next: Turn): boolean {
+  if (next.status !== current.status) {
+    return true;
+  }
+  const keys = [
+    'error',
+    'completedAt',
+    'humanGate',
+    'agentId',
+    'agentProfileId',
+    'agentSessionId',
+    'triggerSource',
+    'configVersion',
+  ] as const;
+  for (const key of keys) {
+    const recorded = current[key];
+    if (
+      recorded !== undefined &&
+      recorded !== null &&
+      !alreadyDecidedPublicationBytesEqual(recorded, next[key])
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Creates the rejection for a new write against a sealed-terminal Turn.
+ *
+ * @param turnId Terminal Turn id.
+ * @returns Error for a write that is not an admitted post-terminal publication.
+ */
+function terminalTurnWriteRejected(turnId: string): Error {
+  return new Error(`Turn ${turnId} is terminal and does not admit this write.`);
+}
+
+/**
+ * Creates the rejection for a conflicting publication against a sealed-terminal Turn.
+ *
+ * @param turnId Terminal Turn id.
+ * @returns Error for a publication that disagrees with already-decided bytes.
+ */
+function terminalTurnPublicationConflict(turnId: string): Error {
+  return new Error(
+    `Turn ${turnId} is terminal and the publication conflicts with the already-decided record.`
+  );
 }
 
 /** Accepted store input for one workspace-only Artifact introduction. */
@@ -886,6 +1125,8 @@ export class FsStore {
   private knowledgeSources = new Map<string, KnowledgeSourceRecord>();
   private commandRequests = new Map<string, CommandRequestRecord>();
   private streams = new Map<string, TurnStreamState>();
+  private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
+  private turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   private readonly dataRoot: string | null;
 
   public constructor(options: FsStoreOptions = {}) {
@@ -893,6 +1134,9 @@ export class FsStore {
       options.dataRoot ?? (process.env.OPENKIT_DATA_ROOT ? resolveDataRoot(process.env) : null);
 
     if (this.dataRoot) {
+      this.liveCaptureCoverage = captureCoverageBindingFromOpenKitConfig(
+        loadOpenKitConfig(this.dataRoot)
+      );
       const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot);
 
       if (workspaceRecords.length > 0) {
@@ -928,6 +1172,11 @@ export class FsStore {
         this.turns.set(turn.id, turn);
         for (const item of turn.items) {
           this.items.set(item.id, item);
+        }
+      }
+      if (records.turnCaptureCoverage) {
+        for (const [turnId, binding] of records.turnCaptureCoverage) {
+          this.turnCaptureCoverage.set(turnId, binding);
         }
       }
       this.itemRevisions.push(...records.itemRevisions);
@@ -1187,6 +1436,9 @@ export class FsStore {
         streamEvents: [...this.streams.entries()]
           .filter(([turnId]) => turnIds.has(turnId))
           .map(([turnId, stream]) => [turnId, stream.events]),
+        turnCaptureCoverage: new Map(
+          [...this.turnCaptureCoverage.entries()].filter(([turnId]) => turnIds.has(turnId))
+        ),
       },
       updateWorkspaceConfigName,
       exactKnowledgePageBytes
@@ -2320,7 +2572,7 @@ export class FsStore {
    * @param input User or scheduler input used for the thread preview.
    * @param triggerActor Exact actor whose accepted action created the Turn.
    * @param configVersion Runtime config version captured for the turn.
-   * @param options Optional turn creation controls.
+   * @param options Optional turn creation controls, including the admission-time capture pair.
    * @returns Created turn.
    * @throws Error when the requested turn id already exists.
    */
@@ -2366,8 +2618,37 @@ export class FsStore {
       listeners: new Set(),
       timers: new Set(),
     });
+    this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
     this.persist(workspaceId);
     return turn;
+  }
+
+  /**
+   * Sets the live capture-coverage policy used by later Turn admission.
+   *
+   * @param binding Resolved pair to snapshot onto the next admitted Turn.
+   */
+  public setLiveCaptureCoverage(binding: CaptureCoverageBinding): void {
+    this.liveCaptureCoverage = binding;
+  }
+
+  /**
+   * Returns the live capture-coverage policy used by later Turn admission.
+   *
+   * @returns Current live pair.
+   */
+  public getLiveCaptureCoverage(): CaptureCoverageBinding {
+    return this.liveCaptureCoverage;
+  }
+
+  /**
+   * Returns the admission-time capture pair recorded for one Turn.
+   *
+   * @param turnId Turn whose historical pair should be read.
+   * @returns Recorded pair, or null when that Turn was never recorded.
+   */
+  public getTurnCaptureCoverage(turnId: string): CaptureCoverageBinding | null {
+    return this.turnCaptureCoverage.get(turnId) ?? null;
   }
 
   public getTurn(workspaceId: string, threadId: string, turnId: string): Turn {
@@ -2409,8 +2690,9 @@ export class FsStore {
    *
    * @param turnId Turn identifier to update.
    * @param input Partial turn fields to merge onto the stored turn.
+   * @param admission Declared post-terminal category when the Turn is already sealed.
    * @returns Updated turn after protocol validation.
-   * @throws Error when the turn does not exist or the merged turn violates the protocol schema.
+   * @throws Error when the turn does not exist, the merged turn violates the protocol schema, or a post-terminal write is not admitted.
    */
   public updateTurn(
     turnId: string,
@@ -2428,7 +2710,8 @@ export class FsStore {
         | 'status'
         | 'triggerSource'
       >
-    >
+    >,
+    admission?: TerminalTurnWriteAdmission
   ): Turn {
     const turn = this.turns.get(turnId);
 
@@ -2474,6 +2757,21 @@ export class FsStore {
             )
           : (input.durationMs ?? turn.durationMs),
     });
+    if (isSealedTurnTerminal(turn.status)) {
+      if (alreadyDecidedPublicationBytesEqual(turn, updated)) {
+        return turn;
+      }
+      if (
+        admission?.category === 'already-decided-publication' &&
+        !decidedTurnFieldsConflict(turn, updated)
+      ) {
+        // Fill-only completion of an already-decided terminal Turn.
+      } else if (admission?.category === 'already-decided-publication') {
+        throw terminalTurnPublicationConflict(turnId);
+      } else {
+        throw terminalTurnWriteRejected(turnId);
+      }
+    }
     this.turns.set(turnId, updated);
     this.persist(turn.workspaceId);
     if (updated.status === 'completed' && !turn.completedAt && updated.completedAt) {
@@ -2491,7 +2789,15 @@ export class FsStore {
     return this.dataRoot;
   }
 
-  public createItem(input: Item): Item {
+  /**
+   * Creates or returns one Item, admitting post-terminal completion or display-projection create when declared.
+   *
+   * @param input Item to persist.
+   * @param admission Declared post-terminal category when the owning Turn is already sealed.
+   * @returns Stored Item.
+   * @throws Error when lineage is invalid or a post-terminal write is not admitted.
+   */
+  public createItem(input: Item, admission?: TerminalTurnWriteAdmission): Item {
     const item = ItemSchema.parse(input);
     const existing = this.items.get(item.id);
     const turn = this.getTurnById(item.turnId);
@@ -2512,6 +2818,26 @@ export class FsStore {
       );
       if (request?.type !== 'user-input-request' || request.responsibleUserId !== item.actor.id) {
         throw new Error(`User-input response has invalid responsible user: ${item.id}`);
+      }
+    }
+    if (isSealedTurnTerminal(turn.status)) {
+      if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) {
+        return existing;
+      }
+      const pendingConfigurationApply =
+        admission?.category === 'configuration-apply-pending-delayed-user-input' && !existing;
+      const missingAlreadyDecided =
+        admission?.category === 'already-decided-publication' && !existing;
+      const missingDisplayProjection =
+        admission?.category === 'display-projection-refresh' && !existing && item.type === 'status';
+      if (pendingConfigurationApply) {
+        // Pending docs/specs/20260921-delayed_user_input.md: configuration apply is a new authorized command, not post-terminal repair.
+      } else if (missingAlreadyDecided || missingDisplayProjection) {
+        // Complete a missing publication of an already-decided outcome, or create a missing display projection.
+      } else if (existing) {
+        throw terminalTurnPublicationConflict(turn.id);
+      } else {
+        throw terminalTurnWriteRejected(turn.id);
       }
     }
     if (
@@ -2542,14 +2868,63 @@ export class FsStore {
     return item;
   }
 
-  public updateItem(itemId: string, input: Partial<Item>): Item {
+  /**
+   * Updates one Item, admitting a named display-projection refresh after the owning Turn is sealed.
+   *
+   * @param itemId Item identifier to update.
+   * @param input Partial Item fields to merge.
+   * @param admission Declared post-terminal category when the owning Turn is already sealed.
+   * @returns Updated Item.
+   * @throws Error when the Item does not exist, identity would change, or a post-terminal write is not admitted.
+   */
+  public updateItem(
+    itemId: string,
+    input: Partial<Item>,
+    admission?: TerminalTurnWriteAdmission
+  ): Item {
     const item = this.items.get(itemId);
 
     if (!item) {
       throw new Error(`Item not found: ${itemId}`);
     }
 
-    const updated = ItemSchema.parse({ ...item, ...input });
+    const turn = this.getTurnById(item.turnId);
+    let patch: Partial<Item> = input;
+    if (isSealedTurnTerminal(turn.status)) {
+      if (admission?.category === 'display-projection-refresh') {
+        const unsupportedField = Object.keys(input).find(
+          (field) => !['level', 'title', 'summary'].includes(field)
+        );
+        if (unsupportedField) {
+          throw terminalTurnWriteRejected(turn.id);
+        }
+        const recorded = item as unknown as Record<string, unknown>;
+        const patchFields = input as unknown as Record<string, unknown>;
+        const projection = {
+          level: patchFields.level !== undefined ? patchFields.level : recorded.level,
+          title: patchFields.title !== undefined ? patchFields.title : recorded.title,
+          summary: patchFields.summary !== undefined ? patchFields.summary : recorded.summary,
+        };
+        if (displayProjectionFieldsEqual(item, projection)) {
+          return item;
+        }
+        patch = {
+          level: projection.level,
+          title: projection.title,
+          summary: projection.summary,
+        } as Partial<Item>;
+      } else if (admission?.category === 'already-decided-publication') {
+        const candidate = ItemSchema.parse({ ...item, ...input });
+        if (alreadyDecidedPublicationBytesEqual(item, candidate)) {
+          return item;
+        }
+        throw terminalTurnPublicationConflict(turn.id);
+      } else {
+        throw terminalTurnWriteRejected(turn.id);
+      }
+    }
+
+    const updated = ItemSchema.parse({ ...item, ...patch });
     if (
       updated.id !== item.id ||
       updated.workspaceId !== item.workspaceId ||
@@ -2561,7 +2936,6 @@ export class FsStore {
       throw new Error(`Item immutable identity cannot change: ${itemId}`);
     }
     assertImmutableItemAttribution(item, updated);
-    const turn = this.getTurnById(item.turnId);
     const updatedTurn = {
       ...turn,
       items: turn.items.map((candidate) => (candidate.id === itemId ? updated : candidate)),
@@ -4007,21 +4381,63 @@ export class FsStore {
     return join(this.workspaceRootPath(workspaceId), 'sources', 'derived', sourceId, 'text.json');
   }
 
-  public emitTurnEvent(turnId: string, event: TurnEventInput): SseEventEnvelope {
+  /**
+   * Emits one Turn event, admitting completion of an already-decided terminal event after the Turn is sealed.
+   *
+   * @param turnId Turn whose stream receives the event.
+   * @param event Event payload without protocol envelope fields.
+   * @param admission Declared post-terminal category when the Turn is already sealed.
+   * @returns Stored envelope.
+   * @throws Error when the stream is missing, lineage is invalid, or a post-terminal write is not admitted.
+   */
+  public emitTurnEvent(
+    turnId: string,
+    event: TurnEventInput,
+    admission?: TerminalTurnWriteAdmission
+  ): SseEventEnvelope {
     const stream = this.streams.get(turnId);
 
     if (!stream) {
       throw new Error(`Turn stream not found: ${turnId}`);
     }
 
+    const turn = this.getTurnById(turnId);
+    const projectedRequestId = projectTurnEventRequestId(
+      event.requestId,
+      event.workspaceId,
+      event.threadId
+    );
+    if (isSealedTurnTerminal(turn.status)) {
+      const existingIdentical = stream.events.find(
+        (candidate) =>
+          candidate.event === event.event &&
+          candidate.workspaceId === event.workspaceId &&
+          candidate.threadId === event.threadId &&
+          candidate.turnId === event.turnId &&
+          candidate.requestId === projectedRequestId &&
+          alreadyDecidedPublicationBytesEqual(candidate.data, event.data)
+      );
+      if (existingIdentical) {
+        return existingIdentical;
+      }
+      if (eventConflictsWithSealedTurnOutcome(turn, event)) {
+        throw terminalTurnPublicationConflict(turn.id);
+      }
+      if (
+        admission?.category !== 'already-decided-publication' &&
+        !eventAgreesWithSealedTurnOutcome(turn, event)
+      ) {
+        throw terminalTurnWriteRejected(turn.id);
+      }
+    }
+
     const envelope = SseEventEnvelopeSchema.parse({
       ...event,
       protocolVersion: PROTOCOL_VERSION,
-      requestId: projectTurnEventRequestId(event.requestId, event.workspaceId, event.threadId),
+      requestId: projectedRequestId,
       sequence: stream.sequence + 1,
       timestamp: now(),
     });
-    const turn = this.getTurnById(turnId);
 
     if (
       envelope.workspaceId !== turn.workspaceId ||

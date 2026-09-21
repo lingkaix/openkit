@@ -8,7 +8,9 @@ import { describe, expect, it } from 'vitest';
 import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
 import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
 
+import { createDemoStore } from '../test-support/demo-store.js';
 import {
+  captureCoverageBindingFromOpenKitConfig,
   createRuntimeConfigManager,
   diffRuntimeConfig,
   loadRuntimeConfig,
@@ -463,7 +465,7 @@ describe('runtime config loading and reload planning', () => {
     expect(plan.applied).toEqual([]);
     expect(plan.requiresRestart).toEqual([
       expect.objectContaining({
-        path: 'policy',
+        path: 'policy.workspaceApprovalModes',
         category: 'restart-required',
         action: 'requires-restart',
       }),
@@ -754,5 +756,42 @@ describe('runtime config loading and reload planning', () => {
     expect(snapshot.providerRegistry.get('openrouter')?.models).toEqual(['openai/gpt-5.1']);
     expect(snapshot.providerRegistry.get('xai')?.models).toEqual(['grok-4.3']);
     expect(snapshot.providerRegistry.get('google')?.models).toEqual(['gemini-2.5-pro']);
+  });
+
+  it('applies server.jsonc workDataCapture to later Turns without interrupting a running Turn', () => {
+    const dataRoot = createDataRoot();
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    const store = createDemoStore({ dataRoot });
+    const manager = createRuntimeConfigManager({ captureCoverage: store, dataRoot });
+    const thread = store.createThread('ws_demo', 'Capture reload');
+    const running = store.createTurn('ws_demo', thread.id, 'Keep historical pair', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
+    expect(captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)).toEqual({
+      scope: 'server',
+      value: 'off',
+    });
+
+    writeConfiguredServer(
+      dataRoot,
+      'openai/gpt-5.1',
+      ', "policy": { "workDataCapture": { "value": "on" } }'
+    );
+    const reloaded = manager.reload({ dryRun: false, mode: 'safe' });
+    expect(reloaded.status).toBe('applied');
+    expect(reloaded.plan.applied).toEqual([
+      expect.objectContaining({ path: 'policy.workDataCapture', action: 'applied' }),
+    ]);
+    expect(reloaded.plan.requiresRestart).toEqual([]);
+    expect(store.getTurnById(running.id).status).toBe('running');
+    expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
+
+    const next = store.createTurn('ws_demo', thread.id, 'Next turn sees on', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    expect(store.getTurnCaptureCoverage(next.id)).toEqual({ scope: 'server', value: 'on' });
   });
 });

@@ -168,16 +168,13 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     input.threadId,
     input.goalId
   );
-  const revision =
-    goal.status === 'planning' && goal.planItemId === null
-      ? readPreApprovalGoalPlanRevision({
-          store: input.store,
-          workspaceDb: input.workspaceDb,
-          workspaceId: input.workspaceId,
-          threadId: input.threadId,
-          goalId: input.goalId,
-        })
-      : null;
+  const revision = readPreApprovalGoalPlanRevision({
+    store: input.store,
+    workspaceDb: input.workspaceDb,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    goalId: input.goalId,
+  });
   const plannerInput: GoalPlannerInput = revision
     ? {
         goal,
@@ -250,7 +247,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
 
       return { status: 'failed', errorMessage, errorItem };
     }
-    return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan);
+    return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan, null);
   }
 
   const turn = input.store.createTurn(
@@ -262,7 +259,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     { turnId: ids.turnId }
   );
   const timestamp = turn.startedAt ?? new Date().toISOString();
-  return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan);
+  return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan, revision);
 }
 
 /**
@@ -345,6 +342,7 @@ export function assertApprovableGoalPlanRevision(
  * @param turn Created planning Turn.
  * @param timestamp Turn start timestamp.
  * @param plan Validated planner output.
+ * @param revision Admitted pre-approval revision, or null for initial planning.
  * @returns Planning result with durable owners.
  */
 function persistGoalPlanResult(
@@ -353,7 +351,8 @@ function persistGoalPlanResult(
   ids: ReturnType<typeof goalPlanCreationIds>,
   turn: ReturnType<FsStore['createTurn']>,
   timestamp: string,
-  plan: GoalPlanOutput
+  plan: GoalPlanOutput,
+  revision: PreApprovalGoalPlanRevision | null
 ): GoalPlanResult {
   if (plan.questions.length > 0) {
     const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
@@ -435,7 +434,12 @@ function persistGoalPlanResult(
       input.threadId,
       input.goalId
     );
-    if (current?.status !== 'planning' || current.planItemId !== null) {
+    const admittedInitialPlanning = current?.status === 'planning' && current.planItemId === null;
+    const admittedRevision =
+      revision !== null &&
+      current?.status === 'awaiting_plan_approval' &&
+      current.planItemId === revision.previousPlanItemId;
+    if (!admittedInitialPlanning && !admittedRevision) {
       throw new GoalPlanApprovalError(
         'recovery_required',
         'Goal Plan creation lost the planning transition fence.'
@@ -545,10 +549,10 @@ export function readGoalPlanCreation(
 }
 
 /**
- * Reads the latest recorded pre-approval Plan revision for one Goal.
+ * Reads the in-flight pre-approval Plan revision admitted against the intact active pointer.
  *
  * @param input Goal scope and owner stores.
- * @returns Exact previous Plan and revision instruction, or null when none exists.
+ * @returns Exact previous Plan and revision instruction, or null when none is admitted.
  * @throws GoalPlanRevisionError when revision lineage fails its durable digest check.
  */
 export function readPreApprovalGoalPlanRevision(input: {
@@ -558,6 +562,10 @@ export function readPreApprovalGoalPlanRevision(input: {
   readonly threadId: string;
   readonly goalId: string;
 }): PreApprovalGoalPlanRevision | null {
+  const goal = getGoalRecord(input.workspaceDb, input.workspaceId, input.threadId, input.goalId);
+  if (!goal || goal.status !== 'awaiting_plan_approval' || !goal.planItemId) {
+    return null;
+  }
   const items = input.store.listThreadItems(input.workspaceId, input.threadId);
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
@@ -565,7 +573,7 @@ export function readPreApprovalGoalPlanRevision(input: {
       !item ||
       item.type !== 'user-message' ||
       item.status !== 'completed' ||
-      !item.parentItemId ||
+      item.parentItemId !== goal.planItemId ||
       typeof item.text !== 'string' ||
       item.text.trim().length === 0
     ) {

@@ -4,7 +4,7 @@ This directory contains NanoCore's existing app-local product-state aggregate an
 
 ## Boundaries
 
-- `store.ts` presents one request-facing API over workspace, thread, turn, item, artifact, session, knowledge, and event state while canonical record placement and validation remain under `../storage/`.
+- `store.ts` presents one request-facing API over workspace, thread, turn, item, artifact, session, knowledge, and event state while canonical record placement and validation remain under `../storage/`. After a Turn is a sealed terminal, `updateTurn`, `createItem`, `emitTurnEvent`, and `updateItem` admit only completion of an already-decided publication or a named field-limited display-projection refresh, judged by identity and content.
 - `store.ts` is still a broad aggregate; do not add a new record family or workflow here by default. New behavior belongs with its concrete route, runtime, policy, provider, Vault, or storage owner.
 - Process-local turn-event listeners and timers are runtime projections, not durable authorities. Canonical event history remains workspace-owned file state.
 - Event envelopes project non-UUID App command ids to stable Workspace/Thread-scoped protocol UUIDs using the existing UUID helper; command receipts, checkpoints, and Worker packages retain the original command identity.

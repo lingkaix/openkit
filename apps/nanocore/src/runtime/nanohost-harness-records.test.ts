@@ -15,10 +15,13 @@ import { applyMigrations } from '../storage/migrate.js';
 import {
   createNanoHostHarnessRuntime,
   dispatchNanoHostHarnessOperation,
+  listNanoHostMeasuredHarnessIdentities,
   markNanoHostHarnessOperationUnknown,
   openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
+  readNanoHostMeasuredHarnessIdentity,
   readNanoHostThreadAgentSessionBinding,
+  removeNanoHostSandboxRuntimeForHarness,
   settleNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
 import {
@@ -427,11 +430,18 @@ describe('private NanoHost Harness records', () => {
                workspace_id, thread_id, agent_session_compatibility_key,
                effective_setup_generation, native_handle_state, native_handle_digest,
                lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence, cleanup_state,
-               created_at, updated_at
+               created_at, updated_at, image_digest
              ) VALUES (?, 'harness-1', ?, 'workspace-1', 'thread-1', ?, 1, 'pending', NULL,
-                       'opening', NULL, NULL, 0, 'clean', ?, ?)`
+                       'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
         )
-        .run('agent-session-binding-2', 'agent-session-2', 'c'.repeat(64), now, now);
+        .run(
+          'agent-session-binding-2',
+          'agent-session-2',
+          'c'.repeat(64),
+          now,
+          now,
+          `sha256:${'f'.repeat(64)}`
+        );
       expect(() =>
         readNanoHostThreadAgentSessionBinding(coreDb, {
           threadId: 'thread-1',
@@ -1175,6 +1185,267 @@ describe('private NanoHost Harness records', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
       ).toEqual({ count: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('copies measured image digest onto a new binding and retains it after sandbox_runtime_records deletion', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-measured-identity-')));
+    const imageDigest = `sha256:${'f'.repeat(64)}`;
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-1',
+        imageDigest,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-1',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT image_digest AS imageDigest FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+          )
+          .get('agent-session-binding-1')
+      ).toEqual({ imageDigest });
+      removeNanoHostSandboxRuntimeForHarness(coreDb, 'harness-1');
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
+      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(
+        imageDigest
+      );
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('copies measured image digest onto a binding that reuses an existing Harness', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-measured-reuse-')));
+    const imageDigest = `sha256:${'f'.repeat(64)}`;
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-1',
+        imageDigest,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-1',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'c'.repeat(64),
+        agentSessionId: 'agent-session-2',
+        agentSessionRuntimeBindingId: 'agent-session-binding-2',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-2',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT agent_session_runtime_binding_id AS bindingId, image_digest AS imageDigest
+             FROM agent_session_runtime_bindings ORDER BY agent_session_runtime_binding_id`
+          )
+          .all()
+      ).toEqual([
+        { bindingId: 'agent-session-binding-1', imageDigest },
+        { bindingId: 'agent-session-binding-2', imageDigest },
+      ]);
+      removeNanoHostSandboxRuntimeForHarness(coreDb, 'harness-1');
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
+      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(
+        imageDigest
+      );
+      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-2')).toBe(
+        imageDigest
+      );
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('records a new measured digest for a rebound derived binding id so grouping false-splits', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-measured-split-')));
+    const digestA = `sha256:${'a'.repeat(64)}`;
+    const digestB = `sha256:${'b'.repeat(64)}`;
+    const bindingInput = {
+      agentSessionCompatibilityKey: 'b'.repeat(64),
+      agentSessionId: 'agent-session-1',
+      agentSessionRuntimeBindingId: 'agent-session-binding-1',
+      effectiveSetupGeneration: 1,
+      harnessInstanceId: 'harness-1',
+      threadId: 'thread-1',
+      workspaceId: 'workspace-1',
+    } as const;
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-1',
+        imageDigest: digestA,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, { ...bindingInput, timestamp: now });
+      removeNanoHostSandboxRuntimeForHarness(coreDb, 'harness-1');
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-1',
+        imageDigest: digestB,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: '2098-08-21T00:00:01.000Z',
+      });
+      expect(() =>
+        openNanoHostAgentSessionBinding(coreDb, {
+          ...bindingInput,
+          timestamp: '2098-08-21T00:00:01.000Z',
+        })
+      ).not.toThrow();
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+      ).toEqual({ count: 1 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT image_digest AS imageDigest FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+          )
+          .get('agent-session-binding-1')
+      ).toEqual({ imageDigest: digestB });
+      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(digestB);
+      expect(listNanoHostMeasuredHarnessIdentities(coreDb, 'agent-session-binding-1')).toEqual([
+        digestA,
+        digestB,
+      ]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not collapse two binaries that share an author label into one measured identity', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-measured-no-merge-')));
+    const digestA = `sha256:${'a'.repeat(64)}`;
+    const digestB = `sha256:${'b'.repeat(64)}`;
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-1',
+        imageDigest: digestA,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-2',
+        harnessCompatibilityKey: 'e'.repeat(64),
+        harnessInstanceId: 'harness-2',
+        imageDigest: digestB,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-2',
+        sandboxCompatibilityKey: 'c'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-2',
+        sandboxRuntimeId: 'sandbox-runtime-2',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-1',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'f'.repeat(64),
+        agentSessionId: 'agent-session-2',
+        agentSessionRuntimeBindingId: 'agent-session-binding-2',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-2',
+        threadId: 'thread-2',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(digestA);
+      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-2')).toBe(digestB);
+      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).not.toBe(
+        readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-2')
+      );
     } finally {
       coreDb.sqlite.close();
     }

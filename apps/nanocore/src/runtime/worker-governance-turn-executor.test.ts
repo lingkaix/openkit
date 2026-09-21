@@ -4362,10 +4362,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const setupDb = openWorkspaceDb(dataRoot, 'ws_demo');
     const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
       exec: typeof setupDb.sqlite.exec;
+      prepare: typeof setupDb.sqlite.prepare;
     };
     setupDb.sqlite.close();
-    const execSpy = vi.spyOn(sqlitePrototype, 'exec').mockImplementationOnce(() => {
-      throw new Error('injected workspace migration failure');
+    const originalPrepare = sqlitePrototype.prepare;
+    // Drizzle apply uses Database.prepare, not exec. Poison the workspace file's artifact_reviews statement only.
+    const prepareSpy = vi.spyOn(sqlitePrototype, 'prepare').mockImplementation(function (
+      this: { name?: string },
+      sql: string,
+      ...rest: unknown[]
+    ) {
+      const filename = typeof this.name === 'string' ? this.name : '';
+      if (filename.endsWith('workspace.sqlite') && sql.includes('artifact_reviews')) {
+        throw new Error('injected workspace migration failure');
+      }
+      return originalPrepare.call(this, sql, ...rest);
     });
 
     const store = createDemoStore();
@@ -4392,7 +4403,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
           triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
-      ).rejects.toThrow('Failed to apply database setup workspace_0000_setup');
+      ).rejects.toThrow(
+        /Failed to apply workspace native Drizzle migrations:[\s\S]*artifact_reviews/
+      );
 
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
       expect(
@@ -4403,7 +4416,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }),
       ]);
     } finally {
-      execSpy.mockRestore();
+      prepareSpy.mockRestore();
       coreDb.sqlite.close();
     }
   });

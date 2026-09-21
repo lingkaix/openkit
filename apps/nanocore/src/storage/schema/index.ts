@@ -26,6 +26,7 @@ export { goalVerificationRecords } from './goal-verification-records.js';
 export type { McpToolSchemaSnapshotSource } from './mcp-tool-schema-snapshots.js';
 export { mcpToolSchemaSnapshots } from './mcp-tool-schema-snapshots.js';
 export {
+  agentSessionRuntimeBindingImageDigests,
   agentSessionRuntimeBindings,
   harnessInstanceRecords,
   sandboxRuntimeRecords,

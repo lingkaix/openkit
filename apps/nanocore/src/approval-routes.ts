@@ -10,7 +10,7 @@ import type { Context, Hono } from 'hono';
 import { apiErrorPayload, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
-import type { FsStore } from './lib/store.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
 import { isExactWorkerApprovalSourceDecision } from './policy/approval-gates.js';
 import {
   listPolicyApprovalSourceDecisions,
@@ -572,20 +572,23 @@ function finishPolicyApprovalProjection(
       throw taskGateRecoveryError('The policy approval decision Item contradicts its winner.');
     }
   } else {
-    store.createItem({
-      id: decisionItemId,
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      turnId: input.turnId,
-      type: 'approval-decision',
-      status: 'completed',
-      actor: winner.actor,
-      causationId: winner.requestId,
-      approvalRequestId: input.approvalRequestId,
-      decision: input.decision,
-      createdAt: winner.decidedAt,
-      completedAt: winner.decidedAt,
-    });
+    store.createItem(
+      {
+        id: decisionItemId,
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        type: 'approval-decision',
+        status: 'completed',
+        actor: winner.actor,
+        causationId: winner.requestId,
+        approvalRequestId: input.approvalRequestId,
+        decision: input.decision,
+        createdAt: winner.decidedAt,
+        completedAt: winner.decidedAt,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   if (approval.status === 'pending' && approval.resolvedAt === null) {
@@ -612,11 +615,15 @@ function finishPolicyApprovalProjection(
     if (!exactActiveGate) {
       throw taskGateRecoveryError('The policy Approval Turn contradicts its winner.');
     }
-    turn = store.updateTurn(input.turnId, {
-      status: terminalStatus,
-      humanGate: null,
-      completedAt: winner.decidedAt,
-    });
+    turn = store.updateTurn(
+      input.turnId,
+      {
+        status: terminalStatus,
+        humanGate: null,
+        completedAt: winner.decidedAt,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   const completedEvents = store
@@ -636,14 +643,18 @@ function finishPolicyApprovalProjection(
       throw taskGateRecoveryError('The policy Approval completion event contradicts its winner.');
     }
   } else {
-    store.emitTurnEvent(input.turnId, {
-      event: 'turn.completed',
-      requestId: winner.requestId,
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      turnId: input.turnId,
-      data: { type: 'turn-completed', stopReason, turn },
-    });
+    store.emitTurnEvent(
+      input.turnId,
+      {
+        event: 'turn.completed',
+        requestId: winner.requestId,
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        data: { type: 'turn-completed', stopReason, turn },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   return ApprovalRequestSchema.parse(approval);

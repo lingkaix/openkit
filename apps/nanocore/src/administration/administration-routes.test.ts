@@ -569,16 +569,9 @@ describe('administration conversation route', () => {
     expect(missingUserReplay.status).toBe(409);
     await expect(missingUserReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
 
-    store.updateTurn(firstBody.turn.id, { status: 'running', completedAt: null, error: null });
-    const contradictoryReplay = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-    expect(contradictoryReplay.status).toBe(409);
-    await expect(contradictoryReplay.json()).resolves.toMatchObject({
-      code: 'recovery_required',
-    });
+    expect(() =>
+      store.updateTurn(firstBody.turn.id, { status: 'running', completedAt: null, error: null })
+    ).toThrow(/is terminal and does not admit this write/);
 
     vi.spyOn(store, 'updateTurn').mockImplementationOnce(() => {
       throw new Error('completion persistence failed');

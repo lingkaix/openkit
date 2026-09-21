@@ -10,7 +10,7 @@ import {
   type GoalPlanOutput,
   selectGoalPlanPayload,
 } from './goal-plan.js';
-import { reviseGoalPlan } from './goal-plan-approval.js';
+import { approveGoalPlan, reviseGoalPlan } from './goal-plan-approval.js';
 import {
   createGoalPlan,
   readGoalPlanCreation,
@@ -341,6 +341,67 @@ describe('goal planning path', () => {
     }
   });
 
+  it('keeps the Goal at awaiting_plan_approval with its Plan pointer after a revision request', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Revise preserve scene thread');
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_revise_preserve',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Ship v0.0.6',
+        objective: 'Make v0.0.6 ready to publish.',
+      });
+      const initial = await createGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_preserve',
+        requestId: 'req_goal_plan_preserve_initial',
+      });
+      if (initial.status !== 'awaiting_plan_approval') {
+        throw new Error(`expected initial plan approval, received ${initial.status}`);
+      }
+      const revised = reviseGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_preserve',
+        planItemId: initial.planItem.id,
+        requestId: 'req_goal_plan_preserve_revise',
+        revision: REVISION_INSTRUCTION,
+      });
+
+      expect(
+        getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_preserve')
+      ).toMatchObject({
+        status: 'awaiting_plan_approval',
+        planItemId: initial.planItem.id,
+        currentTaskId: null,
+        terminalStopReason: null,
+      });
+      expect(revised.revisionItem).toMatchObject({
+        type: 'user-message',
+        status: 'completed',
+        parentItemId: initial.planItem.id,
+        causationId: 'req_goal_plan_preserve_revise',
+        text: REVISION_INSTRUCTION,
+      });
+      expect(
+        getGoalPlanRecord(workspaceDb, 'ws_demo', thread.id, initial.planItem.id)
+      ).not.toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('does not regenerate the unchanged initial draft after a recorded revision', async () => {
     const workspaceDb = createWorkspaceDb();
     const store = createDemoStore();
@@ -483,8 +544,8 @@ describe('goal planning path', () => {
       });
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_omitted')).toMatchObject(
         {
-          status: 'planning',
-          planItemId: null,
+          status: 'awaiting_plan_approval',
+          planItemId: initialPlanItemId,
           terminalStopReason: null,
         }
       );
@@ -684,8 +745,8 @@ describe('goal planning path', () => {
         code: 'goal_plan_revision_unavailable',
       });
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_fail')).toMatchObject({
-        status: 'planning',
-        planItemId: null,
+        status: 'awaiting_plan_approval',
+        planItemId: initial.planItem.id,
         terminalStopReason: null,
       });
       expect(getGoalPlanRecord(workspaceDb, 'ws_demo', thread.id, initial.planItem.id)).not.toBe(
@@ -694,6 +755,14 @@ describe('goal planning path', () => {
       expect(
         store.listThreadItems('ws_demo', thread.id).filter((item) => item.type === 'status')
       ).toEqual([]);
+      expect(
+        store.listThreadItems('ws_demo', thread.id).find((item) => item.type === 'user-message')
+      ).toMatchObject({
+        parentItemId: initial.planItem.id,
+        causationId: 'req_goal_plan_fail_revise',
+        text: REVISION_INSTRUCTION,
+        status: 'completed',
+      });
       expect(() =>
         readGoalPlanCreation({
           triggerActor: USER_ACTOR,
@@ -714,6 +783,218 @@ describe('goal planning path', () => {
           requestId: 'req_goal_plan_fail_create',
         })
       ).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('lets the user approve the previous Plan after a revision planner failure', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Revise fail then approve thread');
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_revise_fail_approve',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Ship v0.0.6',
+        objective: 'Make v0.0.6 ready to publish.',
+      });
+      const initial = await createGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_fail_approve',
+        requestId: 'req_goal_plan_fail_approve_initial',
+      });
+      if (initial.status !== 'awaiting_plan_approval') {
+        throw new Error(`expected initial plan approval, received ${initial.status}`);
+      }
+      reviseGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_fail_approve',
+        planItemId: initial.planItem.id,
+        requestId: 'req_goal_plan_fail_approve_revise',
+        revision: REVISION_INSTRUCTION,
+      });
+      await expect(
+        createGoalPlan({
+          triggerActor: USER_ACTOR,
+          workspaceDb,
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_revise_fail_approve',
+          requestId: 'req_goal_plan_fail_approve_create',
+          planner: () => {
+            throw new Error('model unavailable');
+          },
+        })
+      ).rejects.toMatchObject({ code: 'goal_plan_revision_unavailable' });
+
+      const approved = approveGoalPlan({
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_fail_approve',
+        planItemId: initial.planItem.id,
+      });
+
+      expect(approved.status).toBe('approved');
+      expect(
+        getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_fail_approve')
+      ).toMatchObject({
+        status: 'running',
+        planItemId: initial.planItem.id,
+        currentTaskId: null,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('retries the recorded revision instruction after a planner failure', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Revise fail then retry thread');
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_revise_fail_retry',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Ship v0.0.6',
+        objective: 'Make v0.0.6 ready to publish.',
+      });
+      const initial = await createGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_fail_retry',
+        requestId: 'req_goal_plan_fail_retry_initial',
+      });
+      if (initial.status !== 'awaiting_plan_approval') {
+        throw new Error(`expected initial plan approval, received ${initial.status}`);
+      }
+      reviseGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_fail_retry',
+        planItemId: initial.planItem.id,
+        requestId: 'req_goal_plan_fail_retry_revise',
+        revision: REVISION_INSTRUCTION,
+      });
+      await expect(
+        createGoalPlan({
+          triggerActor: USER_ACTOR,
+          workspaceDb,
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_revise_fail_retry',
+          requestId: 'req_goal_plan_fail_retry_create',
+          planner: () => {
+            throw new Error('model unavailable');
+          },
+        })
+      ).rejects.toMatchObject({ code: 'goal_plan_revision_unavailable' });
+
+      const retried = await createGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_fail_retry',
+        requestId: 'req_goal_plan_fail_retry_again',
+        planner: (input) => revisedTwoTaskPlan(input.previousPlan!, input.revisionText ?? ''),
+      });
+
+      expect(retried.status).toBe('awaiting_plan_approval');
+      expect(retried.planItem.id).not.toBe(initial.planItem.id);
+      expect(
+        getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_fail_retry')
+      ).toMatchObject({
+        status: 'awaiting_plan_approval',
+        planItemId: retried.planItem.id,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('fails closed when a second reviseGoalPlan runs before a successor Plan lands', async () => {
+    const workspaceDb = createWorkspaceDb();
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Revise concurrent thread');
+
+    try {
+      createGoalRecord(workspaceDb, {
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        goalId: 'goal_revise_concurrent',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        title: 'Ship v0.0.6',
+        objective: 'Make v0.0.6 ready to publish.',
+      });
+      const initial = await createGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_concurrent',
+        requestId: 'req_goal_plan_concurrent_initial',
+      });
+      if (initial.status !== 'awaiting_plan_approval') {
+        throw new Error(`expected initial plan approval, received ${initial.status}`);
+      }
+      reviseGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_concurrent',
+        planItemId: initial.planItem.id,
+        requestId: 'req_goal_plan_concurrent_revise',
+        revision: REVISION_INSTRUCTION,
+      });
+
+      expect(() =>
+        reviseGoalPlan({
+          triggerActor: USER_ACTOR,
+          workspaceDb,
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          goalId: 'goal_revise_concurrent',
+          planItemId: initial.planItem.id,
+          requestId: 'req_goal_plan_concurrent_second',
+          revision: 'Use a different revision instruction.',
+        })
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      expect(
+        getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_concurrent')
+      ).toMatchObject({
+        status: 'awaiting_plan_approval',
+        planItemId: initial.planItem.id,
+      });
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -854,8 +1135,8 @@ describe('goal planning path', () => {
       expect(
         getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_questions')
       ).toMatchObject({
-        status: 'planning',
-        planItemId: null,
+        status: 'awaiting_plan_approval',
+        planItemId: initial.planItem.id,
         terminalStopReason: null,
       });
       expect(
@@ -924,8 +1205,8 @@ describe('goal planning path', () => {
       expect(
         getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_identical')
       ).toMatchObject({
-        status: 'planning',
-        planItemId: null,
+        status: 'awaiting_plan_approval',
+        planItemId: initial.planItem.id,
       });
       expect(
         store.listThreadItems('ws_demo', thread.id).filter((item) => item.type === 'plan')

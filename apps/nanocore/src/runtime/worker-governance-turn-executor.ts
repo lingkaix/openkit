@@ -38,7 +38,11 @@ import {
   type PendingUserTurnRecord,
 } from '../goal-steering-authority.js';
 import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-manager.js';
-import { ArtifactAuthorityError, type FsStore } from '../lib/store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  ArtifactAuthorityError,
+  type FsStore,
+} from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -2619,22 +2623,30 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     requestId: string | null,
     item: ReturnType<FsStore['createItem']>
   ): void {
-    store.emitTurnEvent(environmentPackage.scope.turnId, {
-      data: { item, type: 'item-created' },
-      event: 'item.created',
-      requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    });
-    store.emitTurnEvent(environmentPackage.scope.turnId, {
-      data: { item, itemId: item.id, type: 'item-completed' },
-      event: 'item.completed',
-      requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    });
+    store.emitTurnEvent(
+      environmentPackage.scope.turnId,
+      {
+        data: { item, type: 'item-created' },
+        event: 'item.created',
+        requestId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    store.emitTurnEvent(
+      environmentPackage.scope.turnId,
+      {
+        data: { item, itemId: item.id, type: 'item-completed' },
+        event: 'item.completed',
+        requestId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**
@@ -2651,14 +2663,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     requestId: string | null,
     agentSession: ReturnType<FsStore['createAgentSession']>
   ): void {
-    store.emitTurnEvent(environmentPackage.scope.turnId, {
-      data: { agentSession, type: 'agent-session-updated' },
-      event: 'agent.session.updated',
-      requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    });
+    store.emitTurnEvent(
+      environmentPackage.scope.turnId,
+      {
+        data: { agentSession, type: 'agent-session-updated' },
+        event: 'agent.session.updated',
+        requestId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**
@@ -2690,14 +2706,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
 
     for (const artifactId of importResult.artifactIds) {
       const artifact = store.getArtifact(environmentPackage.scope.workspaceId, artifactId);
-      store.emitTurnEvent(environmentPackage.scope.turnId, {
-        data: { artifact, type: 'artifact-created' },
-        event: 'artifact.created',
-        requestId,
-        threadId: environmentPackage.scope.threadId,
-        turnId: environmentPackage.scope.turnId,
-        workspaceId: environmentPackage.scope.workspaceId,
-      });
+      store.emitTurnEvent(
+        environmentPackage.scope.turnId,
+        {
+          data: { artifact, type: 'artifact-created' },
+          event: 'artifact.created',
+          requestId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
     }
   }
 
@@ -2837,22 +2857,30 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       status: 'completed',
     });
 
-    store.emitTurnEvent(turnScope.id, {
-      data: { agentSession, type: 'agent-session-updated' },
-      event: 'agent.session.updated',
-      requestId,
-      threadId: turnScope.threadId,
-      turnId: turnScope.id,
-      workspaceId: turnScope.workspaceId,
-    });
-    store.emitTurnEvent(turnScope.id, {
-      data: { stopReason, turn, type: 'turn-completed' },
-      event: 'turn.completed',
-      requestId,
-      threadId: turnScope.threadId,
-      turnId: turnScope.id,
-      workspaceId: turnScope.workspaceId,
-    });
+    store.emitTurnEvent(
+      turnScope.id,
+      {
+        data: { agentSession, type: 'agent-session-updated' },
+        event: 'agent.session.updated',
+        requestId,
+        threadId: turnScope.threadId,
+        turnId: turnScope.id,
+        workspaceId: turnScope.workspaceId,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    store.emitTurnEvent(
+      turnScope.id,
+      {
+        data: { stopReason, turn, type: 'turn-completed' },
+        event: 'turn.completed',
+        requestId,
+        threadId: turnScope.threadId,
+        turnId: turnScope.id,
+        workspaceId: turnScope.workspaceId,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**

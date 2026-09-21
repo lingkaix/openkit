@@ -25,3 +25,5 @@ Run the focused loader, precedence, runtime snapshot, reload, file, and route te
 `model-catalog.ts` loads strict `config/model-catalog.jsonc` and projects its exact vendor/native-ID entries beneath profile overlays, leaving both authored files unchanged. The runtime snapshot tracks the complete catalog, including unused entries, and retains active catalog and Provider metadata until restart. Generic file operations expose the `model-catalog` kind under the existing deployment-admin boundary.
 
 `server.jsonc.policy.workspaceApprovalModes` is startup-owned deployment policy keyed by exact Workspace ID and action. Changes require restart; Workspace files and request data cannot override it.
+
+`server.jsonc.policy.workDataCapture` is the default-off work-data capture switch. Its resolved value is fixed at Turn admission, so a change is applied at the next Turn and never interrupts a running Turn; unlike `workspaceApprovalModes`, it does not require restart.

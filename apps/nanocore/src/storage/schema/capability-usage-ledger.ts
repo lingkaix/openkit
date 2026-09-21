@@ -1,4 +1,5 @@
-import { index, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { check, index, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Durable capability call status stored by the shared usage ledger. */
 export type CapabilityCallLedgerStatus =
@@ -74,6 +75,8 @@ export const capabilityCalls = sqliteTable(
     startedAt: text('started_at'),
     /** Terminal timestamp. */
     completedAt: text('completed_at'),
+    /** Pre-adapter system-prompt digest; present only on gateway-entry llm rows. */
+    systemPromptDigest: text('system_prompt_digest'),
   },
   (table) => [
     uniqueIndex('capability_calls_idempotency_idx').on(
@@ -83,6 +86,10 @@ export const capabilityCalls = sqliteTable(
       table.operation
     ),
     index('capability_calls_workspace_idx').on(table.workspaceId, table.status, table.startedAt),
+    check(
+      'capability_calls_system_prompt_digest_check',
+      sql`${table.systemPromptDigest} IS NULL OR (${table.family} = 'llm' AND ${table.capabilityId} IN ('llm.chat_completions', 'llm.responses'))`
+    ),
   ]
 );
 

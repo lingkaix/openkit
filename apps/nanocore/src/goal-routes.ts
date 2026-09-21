@@ -34,7 +34,13 @@ import {
   ThreadGoalSummaryResponseSchema,
   type WorkerEnvironmentStorageChoice,
 } from '@openkit/app-api-schemas';
-import type { ActorRef, StopReason, TurnSchema } from '@openkit/protocol';
+import {
+  type ActorRef,
+  isSealedTurnTerminal,
+  isSettledForWaitersTurnStatus,
+  type StopReason,
+  type TurnSchema,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
@@ -921,10 +927,10 @@ async function runSteeringTerminalCommand(
  * Checks whether a Turn still owns non-terminal thread work.
  *
  * @param turn Turn read model to classify.
- * @returns True for pending, running, or human-gated Turns.
+ * @returns True when the Turn status is not a sealed terminal.
  */
 function isNonTerminalTurn(turn: TurnReadModel): boolean {
-  return turn.status === 'pending' || turn.status === 'running' || turn.status === 'awaiting_human';
+  return !isSealedTurnTerminal(turn.status);
 }
 
 /**
@@ -2259,11 +2265,11 @@ function selectNextGoalWorkerTask(tasks: readonly GoalTaskRecord[]): GoalTaskRec
 const WORKER_TURN_AWAIT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
- * Waits until a worker turn reaches a terminal stored state.
+ * Waits until a worker turn reaches a settled-for-waiters stored state.
  *
  * @param store Durable turn store.
  * @param turnId Worker turn id to observe.
- * @returns Terminal turn read model.
+ * @returns Turn read model in a settled-for-waiters status.
  * @throws Error when the worker turn does not finish within the bounded wait window.
  */
 export async function waitForWorkerTurnTerminalState(
@@ -2272,7 +2278,7 @@ export async function waitForWorkerTurnTerminalState(
 ): Promise<TurnReadModel> {
   const initialTurn = store.getTurnById(turnId);
 
-  if (isTerminalTurnStatus(initialTurn.status)) {
+  if (isSettledForWaitersTurnStatus(initialTurn.status)) {
     return initialTurn;
   }
 
@@ -2296,7 +2302,7 @@ export async function waitForWorkerTurnTerminalState(
 
       const turn = store.getTurnById(turnId);
 
-      if (!isTerminalTurnStatus(turn.status) || settled) {
+      if (!isSettledForWaitersTurnStatus(turn.status) || settled) {
         return;
       }
 
@@ -2308,29 +2314,13 @@ export async function waitForWorkerTurnTerminalState(
 
     const currentTurn = store.getTurnById(turnId);
 
-    if (isTerminalTurnStatus(currentTurn.status) && !settled) {
+    if (isSettledForWaitersTurnStatus(currentTurn.status) && !settled) {
       settled = true;
       clearTimeout(timeout);
       unsubscribe();
       resolve(currentTurn);
     }
   });
-}
-
-/**
- * Checks whether a stored turn status can be used as a worker terminal outcome.
- *
- * @param status Stored turn status.
- * @returns True when the turn will not continue without a new human/API action.
- */
-function isTerminalTurnStatus(status: TurnReadModel['status']): boolean {
-  return (
-    status === 'completed' ||
-    status === 'failed' ||
-    status === 'interrupted' ||
-    status === 'cancelled' ||
-    status === 'awaiting_human'
-  );
 }
 
 /**
@@ -3160,13 +3150,6 @@ export function registerGoalRoutes({
                 }
 
                 const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-                if (goal.status !== 'planning' || goal.planItemId !== null) {
-                  throw new TurnStartValidationError(
-                    'goal_not_planning',
-                    'Goal is not ready for planning.',
-                    409
-                  );
-                }
                 const revision = readPreApprovalGoalPlanRevision({
                   store,
                   workspaceDb,
@@ -3174,6 +3157,14 @@ export function registerGoalRoutes({
                   threadId,
                   goalId: goal.goalId,
                 });
+                const initialPlanning = goal.status === 'planning' && goal.planItemId === null;
+                if (!initialPlanning && !revision) {
+                  throw new TurnStartValidationError(
+                    'goal_not_planning',
+                    'Goal is not ready for planning.',
+                    409
+                  );
+                }
                 const authorityActor = {
                   kind: 'user',
                   id: c.get('actor').userId,

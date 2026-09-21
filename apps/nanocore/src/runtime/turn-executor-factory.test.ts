@@ -48,6 +48,7 @@ import {
   markNanoHostHarnessOperationUnknown,
   openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
+  readNanoHostMeasuredHarnessIdentity,
   settleNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
 import {
@@ -5049,6 +5050,324 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it('copies measured identity onto a restored existing binding during materialize', async () => {
+    const coreDb = createFactoryCoreDb();
+    const imageDigest = `sha256:${'f'.repeat(64)}`;
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch = createFactoryNanoHostDispatch(effects);
+    sessionDispatch.effect = async (requestOrConnection, carriedRequest) => {
+      const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+      effects.push(request);
+      if (request.kind === 'image.acquire') return { digest: imageDigest };
+      if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+      if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
+      if (request.kind === 'bridge.open') {
+        return { accepted: true, integrationReady: true, state: 'open' };
+      }
+      if (request.kind === 'reference.import') return { state: 'imported' };
+      throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_measured_restore', 'identity_measured_restore', 'deployment_measured_restore', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
+        )
+        .run('2026-08-21T00:00:00.000Z');
+      const firstRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const firstBackend = (
+        firstRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      firstBackend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      const triggerActor = { id: 'user-measured-restore', kind: 'user' as const };
+      const environmentPackage = resolveAgentEnvironmentPackage({
+        agentSessionId: 'agent-session-measured-restore',
+        agentSetup: createTestAgentSetup({
+          adapter: 'codex',
+          agentId: 'agent-codex',
+          imageRef: imageDigest,
+        }),
+        backend: { kind: 'openshell' },
+        requestId: 'request-measured-restore',
+        triggerActor,
+        turn: {
+          completedAt: null,
+          configVersion: null,
+          durationMs: null,
+          error: null,
+          humanGate: null,
+          id: 'turn-measured-restore',
+          items: [],
+          startedAt: '2026-08-21T00:00:00.000Z',
+          status: 'running',
+          threadId: 'thread-measured-restore',
+          triggerActor,
+          workspaceId: 'workspace-measured-restore',
+        },
+        turnInput: 'Restore existing binding copy',
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      });
+      authorizeNanoHostPackage(coreDb, environmentPackage);
+      anchorNanoHostMaterialization(coreDb, firstBackend, environmentPackage);
+      await firstBackend.materialize(environmentPackage, { workspaceRoots: [] });
+      const harness = coreDb.sqlite
+        .prepare(
+          `SELECT harness_instance_id AS harnessInstanceId,
+                  harness_compatibility_key AS harnessCompatibilityKey,
+                  adapter_version AS adapterVersion
+           FROM harness_instance_records`
+        )
+        .get() as {
+        readonly adapterVersion: string;
+        readonly harnessCompatibilityKey: string;
+        readonly harnessInstanceId: string;
+      };
+      const bindingId = `session-binding-${createHash('sha256')
+        .update(`${harness.harnessInstanceId}\0${environmentPackage.scope.agentSessionId}`)
+        .digest('hex')
+        .slice(0, 24)}`;
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: 'codex',
+          adapterVersion: harness.adapterVersion,
+          harnessCompatibilityKey: harness.harnessCompatibilityKey,
+          sessionCompatibilityKey: planSessionWorkspaceMaterialization({
+            environmentPackage,
+          }).compatibilityKey.digest,
+          threadId: environmentPackage.scope.threadId,
+        }),
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: bindingId,
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: harness.harnessInstanceId,
+        threadId: environmentPackage.scope.threadId,
+        timestamp: environmentPackage.createdAt,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', native_handle_state = 'ready',
+               native_handle_digest = ?
+           WHERE agent_session_runtime_binding_id = ?`
+        )
+        .run('9'.repeat(64), bindingId);
+      coreDb.sqlite.exec(
+        "UPDATE scheduler_session_leases SET status = 'released' WHERE status NOT IN ('released', 'lost', 'failed')"
+      );
+      coreDb.sqlite
+        .prepare(
+          'DELETE FROM agent_session_runtime_binding_image_digests WHERE agent_session_runtime_binding_id = ?'
+        )
+        .run(bindingId);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT COUNT(*) AS count FROM agent_session_runtime_binding_image_digests WHERE agent_session_runtime_binding_id = ?'
+          )
+          .get(bindingId)
+      ).toEqual({ count: 0 });
+      const restoredRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const restoredBackend = (
+        restoredRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      restoredBackend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      anchorNanoHostMaterialization(coreDb, restoredBackend, environmentPackage);
+      await restoredBackend.materialize(environmentPackage, { workspaceRoots: [] });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT image_digest AS imageDigest FROM agent_session_runtime_binding_image_digests
+             WHERE agent_session_runtime_binding_id = ?`
+          )
+          .get(bindingId)
+      ).toEqual({ imageDigest });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('copies measured identity onto a restored binding launched through session.inspect', async () => {
+    const coreDb = createFactoryCoreDb();
+    const imageDigest = `sha256:${'f'.repeat(64)}`;
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch = createFactoryNanoHostDispatch(effects);
+    sessionDispatch.effect = async (requestOrConnection, carriedRequest) => {
+      const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+      effects.push(request);
+      if (request.kind === 'image.acquire') return { digest: imageDigest };
+      if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+      if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
+      if (request.kind === 'bridge.open') {
+        return { accepted: true, integrationReady: true, state: 'open' };
+      }
+      if (request.kind === 'reference.import') return { state: 'imported' };
+      throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_measured_inspect', 'identity_measured_inspect', 'deployment_measured_inspect', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
+        )
+        .run('2026-08-21T00:00:00.000Z');
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      const triggerActor = { id: 'user-measured-inspect', kind: 'user' as const };
+      const firstPackage = resolveAgentEnvironmentPackage({
+        agentSessionId: 'agent-session-measured-inspect',
+        agentSetup: createTestAgentSetup({
+          adapter: 'codex',
+          agentId: 'agent-codex',
+          imageRef: imageDigest,
+        }),
+        backend: { kind: 'openshell' },
+        requestId: 'request-measured-inspect',
+        triggerActor,
+        turn: {
+          completedAt: null,
+          configVersion: null,
+          durationMs: null,
+          error: null,
+          humanGate: null,
+          id: 'turn-measured-inspect',
+          items: [],
+          startedAt: '2026-08-21T00:00:00.000Z',
+          status: 'running',
+          threadId: 'thread-measured-inspect',
+          triggerActor,
+          workspaceId: 'workspace-measured-inspect',
+        },
+        turnInput: 'Inspect restored binding copy',
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      });
+      authorizeNanoHostPackage(coreDb, firstPackage);
+      anchorNanoHostMaterialization(coreDb, backend, firstPackage);
+      const firstMaterialization = await backend.materialize(firstPackage, { workspaceRoots: [] });
+      const harness = coreDb.sqlite
+        .prepare(
+          `SELECT harness_instance_id AS harnessInstanceId,
+                  harness_compatibility_key AS harnessCompatibilityKey,
+                  adapter_version AS adapterVersion
+           FROM harness_instance_records`
+        )
+        .get() as {
+        readonly adapterVersion: string;
+        readonly harnessCompatibilityKey: string;
+        readonly harnessInstanceId: string;
+      };
+      const bindingId = `session-binding-${createHash('sha256')
+        .update(`${harness.harnessInstanceId}\0${firstPackage.scope.agentSessionId}`)
+        .digest('hex')
+        .slice(0, 24)}`;
+      const handleDigest = 'd'.repeat(64);
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: 'codex',
+          adapterVersion: harness.adapterVersion,
+          harnessCompatibilityKey: harness.harnessCompatibilityKey,
+          sessionCompatibilityKey: planSessionWorkspaceMaterialization({
+            environmentPackage: firstPackage,
+          }).compatibilityKey.digest,
+          threadId: firstPackage.scope.threadId,
+        }),
+        agentSessionId: firstPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: bindingId,
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: harness.harnessInstanceId,
+        threadId: firstPackage.scope.threadId,
+        timestamp: firstPackage.createdAt,
+        workspaceId: firstPackage.scope.workspaceId,
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', native_handle_state = 'ready',
+               native_handle_digest = ?
+           WHERE agent_session_runtime_binding_id = ?`
+        )
+        .run(handleDigest, bindingId);
+      coreDb.sqlite
+        .prepare(
+          'DELETE FROM agent_session_runtime_binding_image_digests WHERE agent_session_runtime_binding_id = ?'
+        )
+        .run(bindingId);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT COUNT(*) AS count FROM agent_session_runtime_binding_image_digests WHERE agent_session_runtime_binding_id = ?'
+          )
+          .get(bindingId)
+      ).toEqual({ count: 0 });
+      const restoredRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const restoredBackend = (
+        restoredRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+            restoreSession(environmentPackage: AgentEnvironmentPackage, leaseId: string): void;
+          };
+        }
+      ).backend;
+      restoredBackend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      restoredBackend.restoreSession(firstPackage, `lease-${firstPackage.snapshotId}`);
+      const inspectLaunch = restoredBackend.launch(firstMaterialization);
+      void inspectLaunch.catch(() => undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT image_digest AS imageDigest FROM agent_session_runtime_binding_image_digests
+             WHERE agent_session_runtime_binding_id = ?`
+          )
+          .get(bindingId)
+      ).toEqual({ imageDigest });
+      expect(readNanoHostMeasuredHarnessIdentity(coreDb, bindingId)).toBe(imageDigest);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     null,
     'retained_baseline_unavailable',
@@ -5350,17 +5669,18 @@ describe('createConfiguredTurnExecutor', () => {
              workspace_id, thread_id, agent_session_compatibility_key,
              effective_setup_generation, native_handle_state, native_handle_digest,
              lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence,
-             cleanup_state, created_at, updated_at
+             cleanup_state, created_at, updated_at, image_digest
            ) SELECT 'binding_closed_history', harness_instance_id, 'as_closed_history',
                     'workspace_closed_history', 'thread_closed_history', ?, 1, 'ready', ?,
-                    'closed', NULL, NULL, 1, 'clean', ?, ?
+                    'closed', NULL, NULL, 1, 'clean', ?, ?, ?
              FROM harness_instance_records LIMIT 1`
         )
         .run(
           'f'.repeat(64),
           'e'.repeat(64),
           '2026-09-06T00:00:00.000Z',
-          '2026-09-06T00:00:00.000Z'
+          '2026-09-06T00:00:00.000Z',
+          `sha256:${'f'.repeat(64)}`
         );
 
       const selectedChoice = {

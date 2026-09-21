@@ -418,10 +418,10 @@ function attachResidentStorage(input: {
          workspace_id, thread_id, agent_session_compatibility_key,
          effective_setup_generation, native_handle_state, lifecycle_state,
          current_turn_id, current_lease_id, next_turn_sequence, cleanup_state,
-         created_at, updated_at
+         created_at, updated_at, image_digest
        ) VALUES (
          'binding_worker_environment', ?, ?, ?, ?, 'session_compatibility_worker_environment',
-         1, 'ready', 'active', ?, ?, 1, 'clean', ?, ?
+         1, 'ready', 'active', ?, ?, 1, 'clean', ?, ?, 'sha256:${'a'.repeat(64)}'
        )`
     )
     .run(

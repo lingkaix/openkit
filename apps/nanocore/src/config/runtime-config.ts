@@ -204,6 +204,13 @@ interface RuntimeConfigManagerOptions {
   dataRoot: string | null;
   /** Optional initial snapshot for tests or already-loaded startup state. */
   initialSnapshot?: RuntimeConfigSnapshot;
+  /** Live capture-coverage sink updated on load and applied reload. */
+  captureCoverage?: {
+    setLiveCaptureCoverage(binding: {
+      readonly scope: 'server' | 'workspace' | 'task';
+      readonly value: 'off' | 'on';
+    }): void;
+  };
 }
 
 /**
@@ -254,8 +261,24 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
   'server',
   'vault',
   'appUpdate',
-  'policy',
+  'policy.workspaceApprovalModes',
 ] as const;
+
+/**
+ * Resolves the server-scope work-data capture pair from authored OpenKit config.
+ *
+ * @param config Parsed server.jsonc OpenKit config.
+ * @returns Admission-time pair; omitted policy is off.
+ */
+export function captureCoverageBindingFromOpenKitConfig(config: OpenKitConfig): {
+  readonly scope: 'server';
+  readonly value: 'off' | 'on';
+} {
+  return {
+    scope: 'server',
+    value: config.policy?.workDataCapture?.value ?? 'off',
+  };
+}
 
 /**
  * Loads one runtime config snapshot from a data root.
@@ -402,6 +425,17 @@ export function createRuntimeConfigManager(
   let lastReload: RuntimeConfigReloadSummary | null = null;
   let lastFailedReload: RuntimeConfigReloadSummary | null = null;
   let pendingRestart: RuntimeConfigChange[] = [];
+  /**
+   * Pushes the snapshot's capture pair onto the optional live store sink.
+   *
+   * @param snapshot Active or newly applied runtime snapshot.
+   */
+  const applyCaptureCoverage = (snapshot: RuntimeConfigSnapshot): void => {
+    options.captureCoverage?.setLiveCaptureCoverage(
+      captureCoverageBindingFromOpenKitConfig(snapshot.openKitConfig)
+    );
+  };
+  applyCaptureCoverage(current);
 
   return {
     current: () => current,
@@ -452,6 +486,7 @@ export function createRuntimeConfigManager(
         }
 
         current = applySafeRuntimeConfigReload(current, next, plan);
+        applyCaptureCoverage(current);
         pendingRestart = plan.requiresRestart;
         lastReload = reloadSummary(
           startedAt,
@@ -756,6 +791,21 @@ export function diffRuntimeConfig(
   }
   if (!equalSemantic(previous.openKitConfig.defaults ?? {}, next.openKitConfig.defaults ?? {})) {
     applied.push(change('defaults', 'hot-swappable', 'applied', 'Runtime defaults changed.'));
+  }
+  if (
+    !equalSemantic(
+      previous.openKitConfig.policy?.workDataCapture,
+      next.openKitConfig.policy?.workDataCapture
+    )
+  ) {
+    applied.push(
+      change(
+        'policy.workDataCapture',
+        'hot-swappable',
+        'applied',
+        'Work-data capture switch changed for later Turns.'
+      )
+    );
   }
   if (!equalSemantic(previous.gatewayConfig, next.gatewayConfig)) {
     applied.push(

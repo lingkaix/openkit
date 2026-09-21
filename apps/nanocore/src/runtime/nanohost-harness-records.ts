@@ -564,7 +564,7 @@ export function readNanoHostThreadAgentSessionBinding(
   return rows[0] ?? null;
 }
 
-/** Opens one pending native-conversation binding and consumes only open-session capacity. */
+/** Opens one pending native-conversation binding, copies measured image digest, and consumes only open-session capacity. */
 export function openNanoHostAgentSessionBinding(
   coreDb: CoreDb,
   input: OpenNanoHostAgentSessionBindingInput
@@ -589,6 +589,7 @@ export function openNanoHostAgentSessionBinding(
     ) {
       throw new Error('NanoHost Harness cannot admit another AgentSession.');
     }
+    const measuredImageDigest = readSandboxMeasuredImageDigest(coreDb, input.harnessInstanceId);
     const threadBinding = coreDb.sqlite
       .prepare(
         `SELECT 1 FROM agent_session_runtime_bindings
@@ -605,8 +606,8 @@ export function openNanoHostAgentSessionBinding(
            workspace_id, thread_id, agent_session_compatibility_key,
            effective_setup_generation, native_handle_state, native_handle_digest,
            lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence, cleanup_state,
-           created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 'opening', NULL, NULL, 0, 'clean', ?, ?)`
+           created_at, updated_at, image_digest
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
       )
       .run(
         input.agentSessionRuntimeBindingId,
@@ -617,8 +618,15 @@ export function openNanoHostAgentSessionBinding(
         input.agentSessionCompatibilityKey,
         input.effectiveSetupGeneration,
         input.timestamp,
-        input.timestamp
+        input.timestamp,
+        measuredImageDigest
       );
+    persistCopiedMeasuredHarnessIdentity(
+      coreDb,
+      input.agentSessionRuntimeBindingId,
+      measuredImageDigest,
+      input.timestamp
+    );
     const updated = coreDb.sqlite
       .prepare(
         `UPDATE harness_instance_records
@@ -634,6 +642,116 @@ export function openNanoHostAgentSessionBinding(
     coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
+}
+
+/**
+ * Copies the measured image digest onto an existing AgentSession binding.
+ *
+ * @param coreDb Durable Core database.
+ * @param input Binding identity, digest value, and timestamp.
+ */
+export function copyNanoHostMeasuredHarnessIdentity(
+  coreDb: CoreDb,
+  input: {
+    readonly agentSessionRuntimeBindingId: string;
+    readonly imageDigest: string;
+    readonly timestamp: string;
+  }
+): void {
+  requireIdentity(input.agentSessionRuntimeBindingId, 'AgentSession runtime binding');
+  if (!/^sha256:[0-9a-f]{64}$/.test(input.imageDigest)) {
+    throw new Error('NanoHost image digest is invalid.');
+  }
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT image_digest AS imageDigest
+       FROM agent_session_runtime_bindings
+       WHERE agent_session_runtime_binding_id = ?`
+    )
+    .get(input.agentSessionRuntimeBindingId) as { readonly imageDigest: string | null } | undefined;
+  if (!row) {
+    throw new Error('NanoHost AgentSession binding is missing.');
+  }
+  if (!row.imageDigest) {
+    const updated = coreDb.sqlite
+      .prepare(
+        `UPDATE agent_session_runtime_bindings
+         SET image_digest = ?, updated_at = ?
+         WHERE agent_session_runtime_binding_id = ?
+           AND image_digest IS NULL`
+      )
+      .run(input.imageDigest, input.timestamp, input.agentSessionRuntimeBindingId);
+    if (updated.changes !== 1) {
+      throw new Error('NanoHost measured harness identity changed concurrently.');
+    }
+  }
+  persistCopiedMeasuredHarnessIdentity(
+    coreDb,
+    input.agentSessionRuntimeBindingId,
+    input.imageDigest,
+    input.timestamp
+  );
+}
+
+/**
+ * Reads the current measured image digest copied for one AgentSession binding.
+ *
+ * @param coreDb Durable Core database.
+ * @param agentSessionRuntimeBindingId Exact binding identity.
+ * @returns Live binding copy, else the latest surviving copy, or null when none exist.
+ */
+export function readNanoHostMeasuredHarnessIdentity(
+  coreDb: CoreDb,
+  agentSessionRuntimeBindingId: string
+): string | null {
+  requireIdentity(agentSessionRuntimeBindingId, 'AgentSession runtime binding');
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT image_digest AS imageDigest
+       FROM agent_session_runtime_bindings
+       WHERE agent_session_runtime_binding_id = ?`
+    )
+    .get(agentSessionRuntimeBindingId) as { readonly imageDigest: string | null } | undefined;
+  if (typeof row?.imageDigest === 'string' && /^sha256:[0-9a-f]{64}$/.test(row.imageDigest)) {
+    return row.imageDigest;
+  }
+  const copied = coreDb.sqlite
+    .prepare(
+      `SELECT image_digest AS imageDigest
+       FROM agent_session_runtime_binding_image_digests
+       WHERE agent_session_runtime_binding_id = ?
+       ORDER BY copied_at DESC, image_digest DESC`
+    )
+    .get(agentSessionRuntimeBindingId) as { readonly imageDigest: string } | undefined;
+  if (copied && /^sha256:[0-9a-f]{64}$/.test(copied.imageDigest)) {
+    return copied.imageDigest;
+  }
+  return null;
+}
+
+/**
+ * Lists every surviving measured image digest copied for one derived binding identity.
+ *
+ * @param coreDb Durable Core database.
+ * @param agentSessionRuntimeBindingId Exact binding identity.
+ * @returns Distinct copied digests in stable order so a new base image can false-split.
+ */
+export function listNanoHostMeasuredHarnessIdentities(
+  coreDb: CoreDb,
+  agentSessionRuntimeBindingId: string
+): readonly string[] {
+  requireIdentity(agentSessionRuntimeBindingId, 'AgentSession runtime binding');
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT image_digest AS imageDigest
+       FROM agent_session_runtime_binding_image_digests
+       WHERE agent_session_runtime_binding_id = ?
+       ORDER BY image_digest`
+    )
+    .all(agentSessionRuntimeBindingId) as Array<{ readonly imageDigest: string }>;
+  return rows
+    .map((row) => row.imageDigest)
+    .filter((digest) => /^sha256:[0-9a-f]{64}$/.test(digest));
 }
 
 /** Queues one fixed typed operation without raw route credentials or clearing a prior result receipt. */
@@ -1546,6 +1664,38 @@ function canonicalJson(value: Readonly<Record<string, unknown>>): string {
 /** Returns a lowercase SHA-256 identity. */
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+/** Writes one immutable binding-time digest copy that survives Sandbox deletion. */
+function persistCopiedMeasuredHarnessIdentity(
+  coreDb: CoreDb,
+  agentSessionRuntimeBindingId: string,
+  imageDigest: string,
+  timestamp: string
+): void {
+  coreDb.sqlite
+    .prepare(
+      `INSERT OR IGNORE INTO agent_session_runtime_binding_image_digests (
+         agent_session_runtime_binding_id, image_digest, copied_at
+       ) VALUES (?, ?, ?)`
+    )
+    .run(agentSessionRuntimeBindingId, imageDigest, timestamp);
+}
+
+/** Reads the live Sandbox digest so the binding can copy it as a value. */
+function readSandboxMeasuredImageDigest(coreDb: CoreDb, harnessInstanceId: string): string {
+  const sandbox = coreDb.sqlite
+    .prepare(
+      `SELECT s.image_digest AS imageDigest
+       FROM harness_instance_records h
+       JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+       WHERE h.harness_instance_id = ?`
+    )
+    .get(harnessInstanceId) as { readonly imageDigest: string } | undefined;
+  if (!sandbox || !/^sha256:[0-9a-f]{64}$/.test(sandbox.imageDigest)) {
+    throw new Error('NanoHost measured harness identity is missing at binding time.');
+  }
+  return sandbox.imageDigest;
 }
 
 /** Requires a non-empty bounded opaque identity. */

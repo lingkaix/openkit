@@ -915,6 +915,18 @@ describe('FsStore persistence', () => {
     );
     const commandId = 'human-approved-readonly-goal-step-20260917-th7';
     const expectedRequestId = scopedProtocolTurnEventRequestId('ws_demo', thread.id, commandId);
+    const repeated = store.emitTurnEvent(completionTurn.id, {
+      data: {
+        code: 'worker_governance_turn_failed',
+        message: 'Worker execution failed.',
+        type: 'error',
+      },
+      event: 'error',
+      requestId: commandId,
+      threadId: thread.id,
+      turnId: completionTurn.id,
+      workspaceId: 'ws_demo',
+    });
     const completedTurn = store.updateTurn(completionTurn.id, {
       completedAt: completionTurn.startedAt ?? new Date().toISOString(),
       status: 'completed',
@@ -941,18 +953,6 @@ describe('FsStore persistence', () => {
       turnId: failureTurn.id,
       workspaceId: 'ws_demo',
     });
-    const repeated = store.emitTurnEvent(failureTurn.id, {
-      data: {
-        code: 'worker_governance_turn_failed',
-        message: 'Worker execution failed.',
-        type: 'error',
-      },
-      event: 'error',
-      requestId: commandId,
-      threadId: thread.id,
-      turnId: failureTurn.id,
-      workspaceId: 'ws_demo',
-    });
     const otherScope = store.emitTurnEvent(otherTurn.id, {
       data: { stopReason: 'error', turn: otherTurn, type: 'turn-completed' },
       event: 'turn.completed',
@@ -970,11 +970,11 @@ describe('FsStore persistence', () => {
     );
     expect(otherScope.requestId).not.toBe(expectedRequestId);
     expect(store.getTurnEvents(completionTurn.id).map((event) => event.event)).toEqual([
+      'error',
       'turn.completed',
     ]);
     expect(store.getTurnEvents(failureTurn.id).map((event) => event.event)).toEqual([
       'turn.completed',
-      'error',
     ]);
   });
 

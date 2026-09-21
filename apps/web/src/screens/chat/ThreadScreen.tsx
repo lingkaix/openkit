@@ -131,6 +131,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const thread = useThread(workspaceId, threadId);
   const dashboard = useThreadDashboard(workspaceId, threadId, true, true);
+  // Product projection that differs from recovery rewritable: composer liveness follows running only, not pending.
   const activeTurn = dashboard.data?.turns.findLast((turn) => turn.status === 'running');
   const items = useThreadItems(workspaceId, threadId, !activeTurn);
   const targets = useConversationTargets(workspaceId, threadId);
@@ -177,6 +178,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   );
   const feedbackTurn = dashboard.data?.turns.findLast(
     (turn) =>
+      // Product projection that differs from sealed terminals: feedback is offered for completed Turns only.
       turn.status === 'completed' &&
       items.data?.some(
         (item) =>
@@ -204,6 +206,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   );
   const latestTurn = dashboard.data?.turns.at(-1);
   /** Header chip and banner stay on the latest Turn, including when it has no Items. */
+  // Product projection that differs from sealed terminals: the failed header chip is failed-only.
   const failedTurn = latestTurn?.status === 'failed' ? latestTurn : undefined;
   const failedTurnMessage =
     failedTurn?.error?.message ??
@@ -331,6 +334,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               <StatusChip tone="neutral">Archived</StatusChip>
             ) : null}
             {latestTurn?.status === 'interrupted' ? (
+              // Product projection that differs from sealed terminals: the interrupted header chip is interrupted-only.
               <StatusChip tone="neutral">Interrupted</StatusChip>
             ) : null}
             {failedTurn ? <StatusChip tone="negative">Failed</StatusChip> : null}

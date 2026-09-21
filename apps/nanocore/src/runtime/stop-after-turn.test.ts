@@ -101,12 +101,15 @@ describe('shouldStopAfterTurn', () => {
     });
   });
 
-  it('maps terminal turn read-model statuses to protocol stop reasons', () => {
+  it('maps every turn read-model status to a protocol stop reason', () => {
     const mappings: Array<[TurnStatus, ReturnType<typeof stopReasonForTurnStatus>]> = [
       ['completed', 'completed'],
       ['interrupted', 'aborted'],
       ['awaiting_human', 'ask_user'],
       ['failed', 'error'],
+      ['cancelled', 'error'],
+      ['pending', 'error'],
+      ['running', 'error'],
     ];
 
     for (const [status, stopReason] of mappings) {

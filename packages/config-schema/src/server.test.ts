@@ -3,6 +3,20 @@ import { describe, expect, it } from 'vitest';
 import { getConfigPolicyCatalog, getConfigSchemaCatalog, OpenKitConfigSchema } from './index.js';
 
 describe('server config schema', () => {
+  it('defaults work-data capture to off on the server policy switch', () => {
+    expect(OpenKitConfigSchema.parse({}).policy).toBeUndefined();
+    expect(
+      OpenKitConfigSchema.parse({ policy: { workDataCapture: {} } }).policy?.workDataCapture
+    ).toEqual({ value: 'off' });
+    expect(
+      OpenKitConfigSchema.parse({ policy: { workDataCapture: { value: 'on' } } }).policy
+        ?.workDataCapture
+    ).toEqual({ value: 'on' });
+    expect(
+      OpenKitConfigSchema.safeParse({ policy: { workDataCapture: { value: 'maybe' } } }).success
+    ).toBe(false);
+  });
+
   it('accepts deployment-owned approval modes for exact Workspaces', () => {
     const policy = {
       workspaceApprovalModes: {

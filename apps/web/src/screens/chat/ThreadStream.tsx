@@ -1,4 +1,5 @@
 import { createRequestId } from '@openkit/core-client';
+import { isSealedTurnTerminal } from '@openkit/protocol';
 import { useEffect, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import { EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
@@ -24,6 +25,7 @@ function streamGroupsByTurn(
   const orderedTurns = turns ?? [];
   const turnOrder = new Map(orderedTurns.map((turn, index) => [turn.id, index]));
   for (const [index, turn] of orderedTurns.entries()) {
+    // Product projection that differs from sealed terminals: historical error groups insert failed Turns only.
     if (
       turn.status !== 'failed' ||
       turn.id === latestTurnId ||
@@ -135,7 +137,7 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
     if (!dashboard) return 'Checking approval status…';
     const turn = dashboard.turns.find((candidate) => candidate.id === item.turnId);
     if (!turn) return 'Task status is unavailable. Reload this conversation to check again.';
-    if (['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status))
+    if (isSealedTurnTerminal(turn.status))
       return 'This task has ended. This approval can no longer be answered.';
     if (
       item.status !== 'completed' ||

@@ -63,23 +63,29 @@ export function shouldStopAfterTurn(input: ShouldStopAfterTurnInput): StopAfterT
 /**
  * Maps a stored turn read-model status to the protocol stop reason vocabulary.
  *
+ * Product projection that differs from sealed terminals: awaiting_human maps to ask_user, cancelled maps to error, and pending and running also map to error.
+ *
  * @param status Stored turn status after worker execution.
  * @returns Stop reason for the worker envelope.
  */
 export function stopReasonForTurnStatus(status: TurnStatus): StopReason {
-  if (status === 'completed') {
-    return 'completed';
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'interrupted':
+      return 'aborted';
+    case 'awaiting_human':
+      return 'ask_user';
+    case 'failed':
+    case 'cancelled':
+    case 'pending':
+    case 'running':
+      return 'error';
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
   }
-
-  if (status === 'interrupted') {
-    return 'aborted';
-  }
-
-  if (status === 'awaiting_human') {
-    return 'ask_user';
-  }
-
-  return 'error';
 }
 
 /**

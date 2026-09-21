@@ -1,4 +1,6 @@
-import type { FsStore } from '../lib/store.js';
+import { isSealedTurnTerminal } from '@openkit/protocol';
+
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
 
 /** Input for idempotently projecting one governed-worker terminal outcome. */
 export interface TerminalizeGovernedWorkerTurnInput {
@@ -62,7 +64,7 @@ export function terminalizeGovernedWorkerTurn(
       typeof initialTurn.error.code === 'string' &&
       isGovernedWorkerTerminalCode(initialTurn.error.code)
   );
-  if (isTerminalTurnStatus(initialTurn.status) && !recoveryOwnsOutcome) {
+  if (isSealedTurnTerminal(initialTurn.status) && !recoveryOwnsOutcome) {
     return initialTurn;
   }
 
@@ -84,7 +86,11 @@ export function terminalizeGovernedWorkerTurn(
 
   if (!turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message)) {
     try {
-      terminalTurn = input.store.updateTurn(input.turnId, turnPatch);
+      terminalTurn = input.store.updateTurn(
+        input.turnId,
+        turnPatch,
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
     } catch (error) {
       errors.push(error);
       terminalTurn = input.store.getTurnById(input.turnId);
@@ -126,14 +132,18 @@ export function terminalizeGovernedWorkerTurn(
   );
   if (terminalSession?.status === terminalSessionStatus && !sessionEventExists) {
     try {
-      input.store.emitTurnEvent(input.turnId, {
-        data: { agentSession: terminalSession, type: 'agent-session-updated' },
-        event: 'agent.session.updated',
-        requestId: input.requestId,
-        threadId: terminalTurn.threadId,
-        turnId: terminalTurn.id,
-        workspaceId: terminalTurn.workspaceId,
-      });
+      input.store.emitTurnEvent(
+        input.turnId,
+        {
+          data: { agentSession: terminalSession, type: 'agent-session-updated' },
+          event: 'agent.session.updated',
+          requestId: input.requestId,
+          threadId: terminalTurn.threadId,
+          turnId: terminalTurn.id,
+          workspaceId: terminalTurn.workspaceId,
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
     } catch (error) {
       errors.push(error);
     }
@@ -144,18 +154,22 @@ export function terminalizeGovernedWorkerTurn(
     .some((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
   if (turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message) && !terminalEventExists) {
     try {
-      input.store.emitTurnEvent(input.turnId, {
-        data: {
-          stopReason: input.outcome === 'failed' ? 'error' : 'aborted',
-          turn: terminalTurn,
-          type: 'turn-completed',
+      input.store.emitTurnEvent(
+        input.turnId,
+        {
+          data: {
+            stopReason: input.outcome === 'failed' ? 'error' : 'aborted',
+            turn: terminalTurn,
+            type: 'turn-completed',
+          },
+          event: 'turn.completed',
+          requestId: input.requestId,
+          threadId: terminalTurn.threadId,
+          turnId: terminalTurn.id,
+          workspaceId: terminalTurn.workspaceId,
         },
-        event: 'turn.completed',
-        requestId: input.requestId,
-        threadId: terminalTurn.threadId,
-        turnId: terminalTurn.id,
-        workspaceId: terminalTurn.workspaceId,
-      });
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
     } catch (error) {
       errors.push(error);
     }
@@ -192,11 +206,15 @@ function reconcileCompletedTurn(
     currentTurn.error !== null
   ) {
     try {
-      completedTurn = input.store.updateTurn(input.turnId, {
-        completedAt: authoritativeTurn.completedAt,
-        error: null,
-        status: 'completed',
-      });
+      completedTurn = input.store.updateTurn(
+        input.turnId,
+        {
+          completedAt: authoritativeTurn.completedAt,
+          error: null,
+          status: 'completed',
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
     } catch (error) {
       errors.push(error);
       completedTurn = input.store.getTurnById(input.turnId);
@@ -231,14 +249,18 @@ function reconcileCompletedTurn(
     )
   ) {
     try {
-      input.store.emitTurnEvent(input.turnId, {
-        data: { agentSession: idleSession, type: 'agent-session-updated' },
-        event: 'agent.session.updated',
-        requestId: input.requestId,
-        threadId: completedTurn.threadId,
-        turnId: completedTurn.id,
-        workspaceId: completedTurn.workspaceId,
-      });
+      input.store.emitTurnEvent(
+        input.turnId,
+        {
+          data: { agentSession: idleSession, type: 'agent-session-updated' },
+          event: 'agent.session.updated',
+          requestId: input.requestId,
+          threadId: completedTurn.threadId,
+          turnId: completedTurn.id,
+          workspaceId: completedTurn.workspaceId,
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
     } catch (error) {
       errors.push(error);
     }
@@ -254,14 +276,18 @@ function reconcileCompletedTurn(
       )
   ) {
     try {
-      input.store.emitTurnEvent(input.turnId, {
-        data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
-        event: 'turn.completed',
-        requestId: input.requestId,
-        threadId: completedTurn.threadId,
-        turnId: completedTurn.id,
-        workspaceId: completedTurn.workspaceId,
-      });
+      input.store.emitTurnEvent(
+        input.turnId,
+        {
+          data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
+          event: 'turn.completed',
+          requestId: input.requestId,
+          threadId: completedTurn.threadId,
+          turnId: completedTurn.id,
+          workspaceId: completedTurn.workspaceId,
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
     } catch (error) {
       errors.push(error);
     }
@@ -313,11 +339,6 @@ function turnMatchesOutcome(
   return (
     turn.status === outcome && turn.error?.code === errorCode && turn.error.message === message
   );
-}
-
-/** Returns whether a product turn outcome is already authoritative and terminal. */
-function isTerminalTurnStatus(status: ReturnType<FsStore['getTurnById']>['status']): boolean {
-  return ['completed', 'failed', 'interrupted', 'cancelled'].includes(status);
 }
 
 /** Returns whether an existing terminal outcome belongs to governed-worker lifecycle projection. */

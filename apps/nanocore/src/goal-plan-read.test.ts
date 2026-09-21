@@ -486,9 +486,9 @@ describe('GET current Goal plan', () => {
       );
       expect(currentRes.status).toBe(200);
       await expect(currentRes.json()).resolves.toMatchObject({
-        goal: { status: 'planning' },
-        planItemId: null,
-        plan: null,
+        goal: { status: 'awaiting_plan_approval' },
+        planItemId: created.planItemId,
+        plan: { tasks: created.plan.tasks },
       });
     } finally {
       coreDb.sqlite.close();

@@ -68,6 +68,7 @@ import { registerResourceCatalogRoutes } from './catalog/catalog-routes.js';
 import type { CoreMode } from './config/mode.js';
 import { loadOpenKitConfig, type OpenKitConfig } from './config/openkit-config.js';
 import {
+  captureCoverageBindingFromOpenKitConfig,
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
   type RuntimeConfigManager,
@@ -613,6 +614,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.runtimeConfigManager?.current().openKitConfig ??
     options.openKitConfig ??
     (dataRoot ? loadOpenKitConfig(dataRoot) : {});
+  sharedStore.setLiveCaptureCoverage(captureCoverageBindingFromOpenKitConfig(startupOpenKitConfig));
   const publicBaseUrl = startupOpenKitConfig.server?.publicBaseUrl;
   const browserCors = createBrowserCors(mode, [
     ...(startupOpenKitConfig.server?.cors?.origins ?? []),
@@ -738,6 +740,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.runtimeConfigManager ??
     createRuntimeConfigManager({
       dataRoot,
+      captureCoverage: sharedStore,
       ...(!dataRoot || hasInlineRuntimeConfigInput
         ? {
             initialSnapshot: createInMemoryRuntimeConfigSnapshot({
