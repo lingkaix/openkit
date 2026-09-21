@@ -201,6 +201,15 @@ Non-terminal states may include:
 - `running`
 - `awaiting_human`
 
+The four named derived sets, not one undifferentiated finished predicate, are:
+
+- Sealed terminals: `completed`, `interrupted`, `cancelled`, and `failed`.
+- Settled for waiters: the sealed terminals plus `awaiting_human`, because that state does not advance on its own but can still be moved by an outside actor and therefore MUST NOT be read as a guarantee that the system will write nothing further.
+- Checkpoint collectable: the sealed terminals minus `interrupted`, because the recovery path may still own those Turns.
+- Recovery rewritable: `pending` and `running` only.
+
+Those sets classify the statuses above; they are not a second Turn state machine. Authority for the sets lives in this section. Derived predicates MUST be written so that adding a Turn status value fails compilation. A product projection that is allowed to differ from the sealed set MUST either import that set or declare the difference and list the difference explicitly. The inventory of projections that still need reconciling belongs to the change record. Where a constant physically lives is an implementation choice and is not owned here.
+
 The core protocol does not define a `cancelling` turn state.
 
 Interrupt and cancellation commands asynchronously request interruption. A Turn whose authorization is withdrawn before completion MAY terminate as `cancelled`; the withdrawing actor is the holder of that Turn's authorization, which includes the owning workflow when it determines the work is superseded, and the specific reason is recorded in an Item rather than encoded as another terminal status; which path produces which terminal state is decided by the owning accepted specification, and multiple existing owners map authorized stops to `interrupted` with `stopReason=aborted`. Clients MAY show a local in-flight UI state while waiting for the next authoritative Turn event, but Core emits only the stable Turn states listed above.
@@ -211,7 +220,13 @@ If a Thread has an active non-terminal Turn, follow-up user input is accepted on
 
 If a thread has no active turn, new user input starts a new turn.
 
-A Turn is created after its command, Thread, trigger, and required dependencies are accepted. Item appends and lifecycle transitions update it until exactly one terminal state is recorded. A terminal Turn is never reopened or rewritten; retry or recovery creates a new Turn under fresh admission and preserves the earlier terminal record. Missing dependencies fail before creation, and stale, replayed, conflicting, or wrong-owner commands MUST NOT create, retarget, duplicate, or terminalize a Turn. After restart, Core reconstructs current status and single-flight admission from durable Turn and Item records; runtime memory or a transport close is not authority.
+A Turn is created after its command, Thread, trigger, and required dependencies are accepted. Item appends and lifecycle transitions update it until exactly one terminal state is recorded. A terminal Turn is never reopened; retry or recovery creates a new Turn under fresh admission and preserves the earlier terminal record. Two categories of write are admitted against a terminal Turn, both judged by identity and content and never by elapsed time: completion of an already-decided publication, and a named field-limited refresh of a display projection that changes no decided content. Missing dependencies fail before creation, and stale, replayed, conflicting, or wrong-owner commands MUST NOT create, retarget, duplicate, or terminalize a Turn. After restart, Core reconstructs current status and single-flight admission from durable Turn and Item records; runtime memory or a transport close is not authority.
+
+Those two categories are not a general license to write after terminal, and same identity alone does not make content overwritable. A publication whose rebinding belongs to another owner remains unresolved here; neither category admits it.
+
+The two categories have deliberately different equality rules and MUST NOT be merged into one predicate. Exact repair of an already-decided publication requires deep equality of the already-recorded bytes. A named field-limited refresh of a display projection returns the Item unchanged when its display fields already match and updates only those display fields when they differ. Each admitting path declares its own equality rule; a single shared predicate would be wrong. Completion of an already-decided publication covers Turn events as well as Items; completing a missing terminal event of an already-decided outcome is that category, not a second one.
+
+The resolved effective capture setting is fixed at Turn admission, before any work governed by that setting starts. A later change of the setting takes effect at the next Turn. An already-started Turn is never interrupted for an ordinary capture-setting change, and no mid-Turn interrupt path for that change exists or may be introduced. The switch defaults to off. This section owns when that resolved setting is fixed. It does not own the meaning or values of the setting. The admission-time pair is stored on the Turn directory record the storage owner already rewrites.
 
 ### Turn Interruption
 
@@ -707,7 +722,7 @@ Secret values and provider-native sensitive payloads must not appear in protocol
 - Mutating and asynchronous commands MUST carry a caller-provided `requestId`.
 - Command replay MUST use the central receipt-and-current-owner policy; without a completed receipt, Core MUST NOT repeat completed effects or infer or synthesize success, and only an explicit accepted in-progress owner may resume its exact request. Every other incomplete or contradictory state MUST fail as `recovery_required`.
 - A Thread MUST NOT have more than one non-terminal Turn.
-- A Turn MUST terminate only as `completed`, `interrupted`, `cancelled`, or `failed`, and a terminal Turn MUST NOT be reopened or rewritten.
+- A Turn MUST terminate only as `completed`, `interrupted`, `cancelled`, or `failed`, and a terminal Turn MUST NOT be reopened; the admitted writes against it are completion of an already-decided publication and a named field-limited refresh of a display projection that changes no decided content, both judged by identity and content and never by elapsed time.
 - Interruption MUST preserve finalized Items and finalize server-accumulated in-flight content as truncated without claiming unsupported media delivery.
 - Protocol errors MUST use stable machine-readable codes and MUST NOT leak secret values or provider-native sensitive payloads.
 

@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-08
+updated: 2026-09-21
 ---
 # Agent Environment Package And Worker Governance Backends
 
@@ -15,7 +15,7 @@ It owns the two forms a resolved runtime image may take inside the package — a
 
 ## Does Not Own
 
-This specification does not own the user-authored `AgentManifest`, provider or Vault lifecycle, workspace synchronization, worker-control protocol, capability routing, scheduling, NanoHost identity or transport, Runtime Epoch lifecycle, backend-native policy or lifecycle artifacts, runtime-native adapter behavior, product records, public UI behavior, or a cross-stage error taxonomy.
+This specification does not own the user-authored `AgentManifest`, provider or Vault lifecycle, workspace synchronization, worker-control protocol, capability routing, scheduling, NanoHost identity or transport, Runtime Epoch lifecycle, backend-native policy or lifecycle artifacts, runtime-native adapter behavior, product records, public UI behavior, a cross-stage error taxonomy, or measured harness identity. Measured harness identity is the sandbox image digest copied as a value at binding time and is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 Those contracts remain with their narrow Core and specification owners. An AEP carries their resolved inputs and lineage without redefining them.
 
@@ -139,7 +139,7 @@ The top-level sections have these responsibilities:
 | Section | Package responsibility |
 | --- | --- |
 | `scope` | Binds Workspace, Thread, Turn, AgentSession, request, and initiating `ActorRef` lineage. |
-| `agent` | Identifies the selected Agent and descriptive runtime/profile projection. |
+| `agent` | Identifies the selected Agent and descriptive runtime/profile projection. `runtimeVersion` is an unverified author label from the authored AgentManifest and MUST NOT be treated as a measured harness version. |
 | `runtime` | Carries the governed image selection defined below, declared absolute worker binaries, fixed generic shim command, and process/session inputs. |
 | `workspace` | Carries the worker-visible root, declared inputs, generated material, and output declarations. |
 | `supply` | Carries exact scoped Skill versions and their bounded resource inventories, original plugin/member lineage, and selected MCP configuration/binding lineage with effective catalog digests. MCP entries enable only the separately governed fixed MCP capability routes; upstream configuration and credentials stay outside the package. |
@@ -153,6 +153,8 @@ The top-level sections have these responsibilities:
 | `observability` | Carries required audit and evidence expectations. |
 | `backend` | Carries the preferred backend, allowed kinds, and required capability set. |
 | `extensions` | Carries bounded owner-defined data that grants no independent authority. |
+
+`agent.runtimeVersion` is created from the authored AgentManifest at package resolution (`apps/nanocore/src/runtime/agent-environment.ts:445`, `manifest.runtime.version ?? 'unversioned'`). It is not updated in place, reminted, or recovered as a measured digest; a later Turn receives a new package. A missing authored version remains the label `unversioned`. Treating `runtimeVersion` or authored `runtime.image` as measured identity is a false merge and is forbidden. This specification does not own sandbox-row deletion or the binding-time copy of the image digest.
 
 Nested field shapes and lifecycle rules remain with the narrow owners linked above. This specification requires their resolved projections to agree in one strict envelope rather than duplicating their tables.
 
@@ -174,7 +176,7 @@ The package preserves three distinct non-secret worker-control, inference, and c
 
 The image-form change originally moved the package to version 3. Replacing the concrete Provider route with the logical-model contract and removing the `providers` section now moves the package directly to `schemaVersion: 4`. `docs/specs/20260703-schema_evolution_record_envelope.md` permits a version change, and a required feature is appropriate only when old and new readers must coexist. Under this repository's internal-development rule they do not: NanoCore, Sandbox Integration, and the execution runtime are released together, restart recovery reads a snapshot written by the same version, and an incompatible historical data root is replaced rather than migrated. There is one accepted shape, and version 2 or version 3 packages are invalid.
 
-**Image reference.** A published image reference with its pull policy, exactly as authored and resolved today. Which reference forms an author may use, and how a tag is treated, remain owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260708-container_image_packaging.md`, and `docs/specs/20260721-worker_execution_environment_images.md`. This specification adds no new restriction on that form; resolving a reference to the exact content digest a sandbox consumes happens at the execution runtime's acquisition boundary and is owned there.
+**Image reference.** A published image reference with its pull policy, exactly as authored and resolved today. Which reference forms an author may use, and how a tag is treated, remain owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260708-container_image_packaging.md`, and `docs/specs/20260721-worker_execution_environment_images.md`. This specification adds no new restriction on that form; resolving a reference to the exact content digest a sandbox consumes happens at the execution runtime's acquisition boundary and is owned there. Authored `runtime.image` references are not image identity and MUST NOT be treated as the measured harness grouping key.
 
 **Build definition.** A bounded description from which the execution runtime produces one image for this attempt, consisting of the exact V1 build-context singleton reference `build-context://empty/v1`, its exact content digest `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, one build input document, declared build arguments, a declared build egress grant set, and exact positive-integer `timeLimitSeconds`, `outputLimitBytes`, and `layerLimit` values. The singleton denotes a zero-entry canonical context whose byte sequence is exactly empty bytes. The V1 build input document is a Dockerfile whose value encodes nonempty UTF-8 bytes with length from 1 through 268,435,456 inclusive. Those exact bytes remain inline immutable AEP content, participate in the build-input and package digests, and are carried independently from the context; they MUST NOT enter or alter the build-context digest. The existing `input.digest` is lowercase SHA-256 over exactly those UTF-8 bytes. No BOM removal, newline normalization, compression, locator, fetch, path, alternate spelling, or context mutation is inferred. Resolving the build input grants no host, shell, lifecycle, capability, host-path, build-root, socket, context-transfer, or context-variant authority, and NanoCore MUST NOT interpret it as anything other than package content bound by its independent digest.
 

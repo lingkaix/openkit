@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-18
+updated: 2026-09-21
 ---
 # Storage Layout And Record Ownership
 
@@ -196,6 +196,17 @@ SQLite source-of-truth records:
 
 Audit-family rows home in the database of their `ownerScope` per the Storage Scope Homing decision in `docs/specs/20260703-audit_usage_evidence_records.md`: workspace-lineage rows in `workspace.sqlite`, server control-plane rows in `core.sqlite`, user-identity rows in `user.sqlite`. Workspace deletion produces a sealed server-owned audit closure export under `server/exports/` before removal.
 
+The canonical writers `FsStore.updateTurn`, `createItem`, `emitTurnEvent`, and `updateItem` are the storage-entry guards after a Turn is terminal. `docs/core/protocol.md` owns the two admitted conceptual categories, completion of an already-decided publication and a named field-limited refresh of a display projection: identity and content, never elapsed time; same identity alone does not make content overwritable; each path declares its own equality rule; events as well as Items. This spec owns the per-path admission table those guards must implement. Present writers do not yet enforce a terminal branch: `updateTurn` (`apps/nanocore/src/lib/store.ts:2415-2483`) admits `status` through a field allowlist with no terminal check; `createItem` (`:2494-2542`) does not look at Turn status; `emitTurnEvent` (`:4010-4052`) checks lineage only; `updateItem` (`:2545-2574`) rewrites presentation fields without looking at Turn status.
+
+| Path | Identical already-decided publication | Missing publication of that decided outcome | Conflicting publication | Events |
+| --- | --- | --- | --- | --- |
+| `terminalizeGovernedWorkerTurn` emitting its own terminal event and presence-keyed idempotent repair (`apps/nanocore/src/runtime/worker-turn-failure.ts:115-152`, `terminalizeGovernedWorkerTurn`) | Admit; same outcome, no rewrite of decided bytes | Complete that already-decided terminal event and repair | Do not retarget the terminal | Covers the helper's own terminal events |
+| MCP boot backfill of missing Items (`reconcileWorkerMcpItems` at `apps/nanocore/src/worker-mcp-routes.ts:769-839`; `publishWorkerMcpItem` at `:1900-1931`) | Admit only if full decided values match, including `createdAt` | Fill the missing Item of the already-decided publication | Desired contract: same-id different `createdAt` or body is rejected. Present boot skips existing ids at `:813` and does not compare body | Item/Artifact created and completed events that accompany the fill are the same repair, not a second exception |
+| Approval-projection repair (`apps/nanocore/src/approval-routes.ts:552-646`, `finishPolicyApprovalProjection`; missing-completion `emitTurnEvent` at `:639-646`) | Admit when decision Item, completion event, actor, request, timestamps, and Turn bytes match the durable winner | Write the missing projection of that winner | `recovery_required`; no silent skip | Completion events as well as the decision Item |
+| Task-to-Goal explanation Item (`apps/nanocore/src/mode-entry-routes.ts:3950-3962`) | Admit if the decided Item is byte-identical | Create the already-decided explanation Item | Reject body replacement of an existing Item | Events for that Item follow the Item rule |
+
+Those four paths are completion of an already-decided publication. Two equality behaviours MUST NOT be merged into one predicate and MUST NOT sit on that grid: exact repair of an already-decided publication requires deep equality (`importWorkerTranscript` at `apps/nanocore/src/runtime/worker-transcript.ts:247-254`); a named field-limited display refresh is a live display mutation, not completion of an already-decided publication. `persistConversationWorkerResultItem` (`apps/nanocore/src/mode-entry-routes.ts:234-280`) creates the Item when missing (`createItem` at `:245-259`); when the Item exists and `level`, `title`, and `summary` already match, it returns the Item unchanged (`:269-274`); when they differ, it updates only those three fields through `updateItem` (`:276-280`). Lineage or type mismatch throws (`:261-268`). Configuration apply is not a post-terminal repair of an old publication; it is a new authorized command whose marker Item belongs on the Turn that executes the apply. Admission of any guard that would reject its present behaviour waits on `docs/specs/20260921-delayed_user_input.md` and is not granted here.
+
 ### Turn Event Replay Retention
 
 The current Turn-event transport replay window retains exactly the latest 100 events per Turn in the active store. Live append drops the oldest retained event when the window exceeds 100, and Workspace reload reads the canonical event log but restores only its final 100 events into the replay store. If the first retained sequence is `F`, a non-initial reconnect cursor `since=N` expires only when `N < F - 1`; `since=F-1` is valid and replays `F` onward. The initial `since=0` request asks for the current retained window and is not expired by that reconnect comparison. An expired cursor fails with `core.stream.cursor_expired`; storage must not imply that the complete file-backed event log is still transport-replayable. Protocol owns the abstract cursor, expiry, and terminal-proof semantics, while Communication owns their HTTP/SSE projection.
@@ -385,6 +396,8 @@ logs/
   worker/
 indexes/
 ```
+
+`turn.json` is already rewritten on every persist of the Turn directory (`writeJsonAtomic` of `{ ...turn, items: [] }` in `apps/nanocore/src/storage/workspace-file-records.ts:2023`). It carries the admission-time resolved capture pair `{scope, value}` as immutable historical content on that existing file; this adds no new file. `docs/core/protocol.md` owns when that pair is fixed. `docs/specs/20260921-work_data_retention_format.md` owns the meaning and values of the setting and the missing, conflict, and restart rules.
 
 The workspace may keep raw source material or references depending on source type and policy. External systems remain systems of record for their own domain data.
 
