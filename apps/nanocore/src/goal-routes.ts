@@ -2328,6 +2328,7 @@ function isTerminalTurnStatus(status: TurnReadModel['status']): boolean {
     status === 'completed' ||
     status === 'failed' ||
     status === 'interrupted' ||
+    status === 'cancelled' ||
     status === 'awaiting_human'
   );
 }
