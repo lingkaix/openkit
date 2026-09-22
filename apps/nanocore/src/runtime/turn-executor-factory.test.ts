@@ -640,6 +640,15 @@ async function failLivePartialSandboxActivation(
   };
 }
 
+/** Reports whether this process still holds live partial-create proof for one package snapshot. */
+function retainsLivePartialMaterialization(backend: object, packageSnapshotId: string): boolean {
+  return (
+    backend as unknown as {
+      readonly livePartialMaterializations: ReadonlyMap<string, unknown>;
+    }
+  ).livePartialMaterializations.has(packageSnapshotId);
+}
+
 /** Builds one nonmember server-admin AEP with live admission, plan, and lease records. */
 function prepareNonmemberAdminWorkerStorage(label: string) {
   const coreDb = createFactoryCoreDb();
@@ -4843,6 +4852,33 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
       ).toMatchObject({ state: 'reserved' });
+      expect(
+        retainsLivePartialMaterialization(fixture.backend, fixture.environmentPackage.snapshotId)
+      ).toBe(true);
+
+      transitionWorkerBackendSessionState(fixture.coreDb, {
+        fromState: 'cleanup-pending',
+        leaseId: fixture.leaseId,
+        now: () => '2026-08-21T00:00:02.000Z',
+        toState: 'cleanup-failed',
+      });
+      fixture.coreDb.sqlite
+        .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ? WHERE target_id = ?')
+        .run('b'.repeat(64), fixture.identity.runtimeTargetId);
+      await expect(
+        fixture.runtime.cleanupBackendSession(fixture.identity)
+      ).resolves.toBeUndefined();
+      expect(fixture.effects.filter((effect) => effect.kind === 'sandbox.delete')).toHaveLength(1);
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
+      ).toMatchObject({
+        currentAgentSessionId: null,
+        currentSandboxBindingRef: null,
+        state: 'idle',
+      });
+      expect(
+        retainsLivePartialMaterialization(fixture.backend, fixture.environmentPackage.snapshotId)
+      ).toBe(false);
     } finally {
       fixture.coreDb.sqlite.close();
     }
@@ -4899,6 +4935,30 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
       ).toMatchObject({ state: 'reserved' });
+      expect(
+        retainsLivePartialMaterialization(fixture.backend, fixture.environmentPackage.snapshotId)
+      ).toBe(true);
+
+      transitionWorkerBackendSessionState(fixture.coreDb, {
+        fromState: 'cleanup-pending',
+        leaseId: fixture.leaseId,
+        now: () => '2026-08-21T00:00:02.000Z',
+        toState: 'cleanup-failed',
+      });
+      await expect(
+        fixture.runtime.cleanupBackendSession(fixture.identity)
+      ).resolves.toBeUndefined();
+      expect(fixture.effects.map((effect) => effect.kind)).not.toContain('sandbox.delete');
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
+      ).toMatchObject({
+        currentAgentSessionId: null,
+        currentSandboxBindingRef: null,
+        state: 'idle',
+      });
+      expect(
+        retainsLivePartialMaterialization(fixture.backend, fixture.environmentPackage.snapshotId)
+      ).toBe(false);
     } finally {
       fixture.coreDb.sqlite.close();
     }

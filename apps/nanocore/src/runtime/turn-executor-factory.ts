@@ -1258,6 +1258,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         this.releaseWorkerStorageForFailedMaterialization(
           this.findWorkerStorageForFailedMaterialization(durableCleanupFailure)
         );
+        this.livePartialMaterializations.delete(identity.packageSnapshotId);
         return;
       }
       const livePartial = this.livePartialMaterializations.get(identity.packageSnapshotId);
