@@ -380,6 +380,63 @@ describe('worker recovery materialization', () => {
     }
   });
 
+  it('refuses to clear a matching session when required provenance was never retained', async () => {
+    const workspaceDb = createWorkspaceDb();
+
+    try {
+      const store = createDemoStore();
+      const turn = store.createTurn('ws_demo', 'th_demo', 'Missing retained runtime provenance', {
+        kind: 'user',
+        id: 'user_local',
+      });
+      const environmentPackage = AgentEnvironmentPackageSchema.parse(
+        resolveAgentEnvironmentPackage({
+          agentSetup: createTestAgentSetup({
+            requiredCapabilities: [
+              'trusted-worker-inference-relay',
+              'worker.runtime-provenance.v1',
+            ],
+          }),
+          agentSessionId: 'as_recovery_provenance_missing',
+          backend: { kind: 'openshell' },
+          createdAt: '2026-07-13T00:00:00.000Z',
+          requestId: 'req_recovery_provenance_missing',
+          triggerActor: { kind: 'user', id: 'user_demo' },
+          turn,
+          turnInput: 'Missing retained runtime provenance',
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        })
+      );
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: '2026-07-13T00:00:01.000Z',
+        environmentPackage,
+      });
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 1,
+        now: () => '2026-07-13T00:00:03.000Z',
+        requestId: `req_${turn.id}`,
+        requestInputHash: `sha256:${turn.id}`,
+        stage: 'completed',
+        threadId: 'th_demo',
+        turnId: turn.id,
+        workerSessionId: environmentPackage.scope.agentSessionId,
+        workspaceId: 'ws_demo',
+      });
+
+      await expect(
+        clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+          threadId: 'th_demo',
+          turnId: turn.id,
+          workspaceId: 'ws_demo',
+        })
+      ).rejects.toThrow('Required retained runtime provenance is missing.');
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', turn.id)).toEqual(checkpoint);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('re-verifies retained required provenance before clearing a terminal checkpoint', async () => {
     const workspaceDb = createWorkspaceDb();
 

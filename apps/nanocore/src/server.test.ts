@@ -282,7 +282,7 @@ function recordWorkerRetryLease(
   coreDb: CoreDb,
   input: {
     readonly agentSessionId: string;
-    readonly recoveryState: 'awaiting-reconnect' | null;
+    readonly recoveryState: 'awaiting-reconnect' | 'needs-evidence' | null;
     readonly releaseReason: string | null;
     readonly status: 'active' | 'released' | 'failed';
     readonly threadId: string;
@@ -339,6 +339,43 @@ function recordWorkerRetryLease(
       input.recoveryState === 'awaiting-reconnect' ? '2099-01-01T00:05:00.000Z' : null,
       `lease_${input.turnId}`
     );
+}
+
+/**
+ * Records a provenance-required package for one Turn and no raw provenance bundle.
+ *
+ * @param store Store that owns the Turn.
+ * @param workspaceDb Workspace database that stores the package snapshot.
+ * @param turnId Turn the package must match.
+ * @param agentSessionId AgentSession id stored on the package.
+ */
+function recordProvenanceRequiredStaleBootPackage(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  turnId: string,
+  agentSessionId: string
+): void {
+  const turn = store.getTurnById(turnId);
+  const environmentPackage = AgentEnvironmentPackageSchema.parse(
+    resolveAgentEnvironmentPackage({
+      agentSetup: createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
+      }),
+      agentSessionId,
+      backend: { kind: 'openshell' },
+      createdAt: '2026-09-15T13:38:00.000Z',
+      requestId: `req_${turnId}`,
+      triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+      turn,
+      turnInput: 'Stale boot provenance fixture',
+      workspaceCwd: '/workspace/repo',
+      workspaceRoots: [],
+    })
+  );
+  recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+    createdAt: '2026-09-15T13:38:01.000Z',
+    environmentPackage,
+  });
 }
 
 /**
@@ -6310,6 +6347,147 @@ describe('nanocore server', () => {
         })
       ).resolves.toBe('complete');
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'failed',
+    'completed',
+    'cancelled',
+  ] as const)('clears a null-session turn-start-failed needs-evidence checkpoint without retained provenance when the Turn is %s', async (status) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const threadId = `th_task_provenance_skip_${status}`;
+    const turnId = `turn_provenance_skip_${status}`;
+    const requestId = `0190f4c8-0000-7000-8000-0000000004c${status === 'failed' ? '1' : status === 'completed' ? '2' : '3'}`;
+    const agentSessionId = `as_provenance_skip_${status}`;
+    const completedAt = '2026-09-15T13:38:10.000Z';
+    store.createThread('ws_demo', 'Provenance skip Task thread', threadId);
+    const turn = store.createTurn(
+      'ws_demo',
+      threadId,
+      'Provenance skip Task Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { turnId }
+    );
+    store.updateTurn(turn.id, {
+      completedAt,
+      ...(status === 'failed'
+        ? { error: { code: 'turn_start_failed', message: 'Worker start failed.' } }
+        : {}),
+      status,
+    });
+    recordWorkerRetryLease(coreDb, {
+      agentSessionId,
+      recoveryState: 'needs-evidence',
+      releaseReason: 'turn-start-failed',
+      status: 'failed',
+      threadId,
+      turnId: turn.id,
+    });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash: `sha256:provenance-skip-${status}`,
+        stage: status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'failed',
+        stopReason:
+          status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'error',
+        threadId,
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      });
+      expect(checkpoint.workerSessionId).toBeNull();
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        })
+      ).resolves.toBe('complete');
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      label: 'another release reason',
+      recoveryState: 'needs-evidence' as const,
+      releaseReason: 'turn-failed',
+      suffix: 'release',
+    },
+    {
+      label: 'another recovery state',
+      recoveryState: null,
+      releaseReason: 'turn-start-failed',
+      suffix: 'recovery',
+    },
+  ])('keeps required provenance for a null-session leftover with $label', async ({
+    recoveryState,
+    releaseReason,
+    suffix,
+  }) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const threadId = `th_task_provenance_keep_${suffix}`;
+    const turnId = `turn_provenance_keep_${suffix}`;
+    const requestId = `0190f4c8-0000-7000-8000-0000000004c${suffix === 'release' ? '4' : '5'}`;
+    const agentSessionId = `as_provenance_keep_${suffix}`;
+    const completedAt = '2026-09-15T13:38:10.000Z';
+    store.createThread('ws_demo', 'Provenance keep Task thread', threadId);
+    const turn = store.createTurn(
+      'ws_demo',
+      threadId,
+      'Provenance keep Task Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { turnId }
+    );
+    store.updateTurn(turn.id, {
+      completedAt,
+      error: { code: 'turn_start_failed', message: 'Worker start failed.' },
+      status: 'failed',
+    });
+    recordWorkerRetryLease(coreDb, {
+      agentSessionId,
+      recoveryState,
+      releaseReason,
+      status: 'failed',
+      threadId,
+      turnId: turn.id,
+    });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash: `sha256:provenance-keep-${suffix}`,
+        stage: 'failed',
+        stopReason: 'error',
+        threadId,
+        turnId: turn.id,
+        workspaceId: 'ws_demo',
+      });
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        })
+      ).rejects.toThrow('Required retained runtime provenance is missing.');
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
