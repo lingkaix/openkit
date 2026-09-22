@@ -15,7 +15,7 @@ import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { FsStore } from '../lib/store.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type {
   NanoHostSessionDispatch,
@@ -145,8 +145,14 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
     this.residentCleanup = input;
   }
 
-  /** Emits the terminal interrupt and proves the old attachment cleanup before continuations run. */
-  public async finishInterrupt(): Promise<void> {
+  /**
+   * Emits the terminal outcome and proves the old attachment cleanup before continuations run.
+   *
+   * @param terminalStatus Sealed terminal the predecessor reaches; a concurrent cancel seals `cancelled`.
+   */
+  public async finishInterrupt(
+    terminalStatus: 'cancelled' | 'interrupted' = 'interrupted'
+  ): Promise<void> {
     const pending = this.pendingInterrupt;
     const cleanup = this.residentCleanup;
     if (!pending || !cleanup) throw new Error('Resident interrupt fixture is incomplete.');
@@ -171,6 +177,41 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
       storageRef: cleanup.storageRef,
     });
     this.releasedStorageRevision = released.revision;
+    if (terminalStatus === 'cancelled') {
+      const running = pending.store.getTurnById(pending.turnId);
+      if (running.agentSessionId) {
+        const agentSession = pending.store.updateAgentSession(running.agentSessionId, {
+          message: 'The simulator turn was cancelled.',
+          status: 'failed',
+          updatedAt: new Date().toISOString(),
+        });
+        pending.store.emitTurnEvent(pending.turnId, {
+          data: { type: 'agent-session-updated', agentSession },
+          event: 'agent.session.updated',
+          requestId: pending.context.requestId,
+          threadId: running.threadId,
+          turnId: pending.turnId,
+          workspaceId: running.workspaceId,
+        });
+      }
+      const cancelled = pending.store.updateTurn(pending.turnId, {
+        completedAt: new Date().toISOString(),
+        status: 'cancelled',
+      });
+      pending.store.emitTurnEvent(
+        pending.turnId,
+        {
+          data: { type: 'turn-completed', stopReason: 'aborted', turn: cancelled },
+          event: 'turn.completed',
+          requestId: pending.context.requestId,
+          threadId: cancelled.threadId,
+          turnId: pending.turnId,
+          workspaceId: cancelled.workspaceId,
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
+      return;
+    }
     await super.interruptTurn(pending.store, pending.turnId, pending.context);
   }
 }
@@ -592,7 +633,10 @@ describe('Worker environment App composition', () => {
     }
   });
 
-  it('waits for resident terminal cleanup before admitting a same-storage successor', async () => {
+  it.each([
+    ['interrupted', 'turn-interrupted'],
+    ['cancelled', 'turn-cancelled'],
+  ] as const)('waits for resident %s cleanup before admitting a same-storage successor', async (terminalStatus, releaseReason) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-replacement-app-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -759,7 +803,7 @@ describe('Worker environment App composition', () => {
         .listThreadTurns(productWorkspace.id, productThread.id)
         .map((turn) => turn.id);
 
-      await executor.finishInterrupt();
+      await executor.finishInterrupt(terminalStatus);
       const activationResponse = await activationResponsePromise;
       const activation = (await activationResponse.json()) as ActivateWorkerEnvironmentResponse;
       await vi.waitFor(() => expect(executor.startedTurnIds).toHaveLength(2));
@@ -782,14 +826,14 @@ describe('Worker environment App composition', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: IMAGE_DIGEST },
         },
       });
-      expect(store.getTurnById(predecessor.id).status).toBe('interrupted');
+      expect(store.getTurnById(predecessor.id).status).toBe(terminalStatus);
       if (!successor) throw new Error('Same-storage successor Turn is absent.');
       await vi.waitFor(() =>
         expect(store.getTurnById(successor.id)).toMatchObject({ status: 'awaiting_human' })
       );
       expect(executor.startedTurnIds).toEqual([predecessor.id, successor.id]);
       expect(requireSchedulerSessionLease(coreDb, predecessorLease.leaseId)).toMatchObject({
-        releaseReason: 'turn-interrupted',
+        releaseReason,
         status: 'released',
       });
       const successorAdmission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {

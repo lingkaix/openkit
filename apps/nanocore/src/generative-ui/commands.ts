@@ -16,7 +16,12 @@ import {
   GENERATIVE_UI_PROTOCOL_VERSION,
   GenerativeUiSourceSchema,
 } from '@openkit/app-api-schemas';
-import { type ActorRef, type Item, responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  type ActorRef,
+  type Item,
+  isSealedTurnTerminal,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { isThreadIdVisible, isThreadVisible } from '../auth/thread-visibility.js';
 import {
@@ -38,7 +43,6 @@ import {
 
 const ACCEPTED_MESSAGE_BYTE_LIMIT = 2 * 1024 * 1024;
 const ACTION_MESSAGE_BYTE_LIMIT = 64 * 1024;
-const WRITABLE_TURN_STATUSES = new Set(['pending', 'running', 'awaiting_human']);
 
 /** Command context for Generative UI mutations and reads. */
 export interface GenerativeUiCommandContext extends KernelCommandContext {
@@ -801,7 +805,7 @@ function assertWritableTurn(
   } catch {
     throw new KernelCommandError('not_found', 'Thread not found.');
   }
-  if (!WRITABLE_TURN_STATUSES.has(turn.status)) {
+  if (isSealedTurnTerminal(turn.status)) {
     throw new KernelCommandError('access_denied', 'Turn is not writable for publication.');
   }
 }

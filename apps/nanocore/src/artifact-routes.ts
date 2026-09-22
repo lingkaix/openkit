@@ -9,7 +9,11 @@ import {
   SubmitArtifactReviewDecisionRequestSchema,
   type SubmitArtifactReviewDecisionResponse,
 } from '@openkit/app-api-schemas';
-import { type ActorRef, ListArtifactsResponseSchema } from '@openkit/protocol';
+import {
+  type ActorRef,
+  isSealedTurnTerminal,
+  ListArtifactsResponseSchema,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
@@ -325,7 +329,7 @@ export function registerArtifactRoutes({
             if (
               store
                 .listThreadTurns(workspaceId, review.sourceThreadId)
-                .some((turn) => ['pending', 'running', 'awaiting_human'].includes(turn.status))
+                .some((turn) => !isSealedTurnTerminal(turn.status))
             ) {
               throw new ArtifactAuthorityError(
                 'thread_busy',

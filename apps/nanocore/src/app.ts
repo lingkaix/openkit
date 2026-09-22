@@ -13,6 +13,7 @@ import {
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
 import type { ActorRef, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
+import { isSealedTurnTerminal } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
@@ -894,7 +895,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 member.threadId,
                 member.turnId
               );
-              if (!['pending', 'running', 'awaiting_human'].includes(turn.status)) continue;
+              if (isSealedTurnTerminal(turn.status)) continue;
               await interruptProductTurn({
                 store: sharedStore,
                 coreDb,
@@ -909,7 +910,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             for (const member of residentMembers) {
               if (!member.turnId) continue;
               const terminal = await waitForWorkerTurnTerminalState(sharedStore, member.turnId);
-              if (!['completed', 'failed', 'interrupted'].includes(terminal.status))
+              if (!isSealedTurnTerminal(terminal.status))
                 throw new Error('Worker still requires human intervention.');
               completeSchedulerLeaseForTerminalTurn(coreDb, terminal);
             }

@@ -5,7 +5,11 @@ import type {
   SessionWorkspaceMaterializationPlan,
 } from '@openkit/config-schema';
 import type { ApprovalRequestSchema, ItemSchema, ItemType } from '@openkit/protocol';
-import { ItemDeltaEventSchema, responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  ItemDeltaEventSchema,
+  isSealedTurnTerminal,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
@@ -211,9 +215,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
           .filter((turn) => turn.agentSessionId === current.id)
       : [];
-    const hasActiveTurn = currentTurns.some(
-      (turn) => !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status)
-    );
+    const hasActiveTurn = currentTurns.some((turn) => !isSealedTurnTerminal(turn.status));
     const hasActiveLease = this.coreDb
       ? Boolean(
           this.coreDb.sqlite
@@ -355,11 +357,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     }
     const hasActiveTurn = store
       .listThreadTurns(preparation.turn.workspaceId, preparation.turn.threadId)
-      .some(
-        (turn) =>
-          turn.agentSessionId === current.id &&
-          !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status)
-      );
+      .some((turn) => turn.agentSessionId === current.id && !isSealedTurnTerminal(turn.status));
     const hasConflictingLease = this.coreDb
       ? Boolean(
           this.coreDb.sqlite
@@ -894,9 +892,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     const sessions = store.listThreadAgentSessions(workspaceId, threadId);
     const turns = store.listThreadTurns(workspaceId, threadId);
     const activeSessionId = turns.findLast(
-      (turn) =>
-        !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status) &&
-        turn.agentSessionId
+      (turn) => !isSealedTurnTerminal(turn.status) && turn.agentSessionId
     )?.agentSessionId;
     const latestSessionId = turns.findLast((turn) => turn.agentSessionId)?.agentSessionId;
     const storedSession =

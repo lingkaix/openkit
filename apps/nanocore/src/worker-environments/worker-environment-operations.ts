@@ -16,6 +16,7 @@ import {
   WorkerEnvironmentSummarySchema,
 } from '@openkit/app-api-schemas';
 
+import { isSealedTurnTerminal } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import {
   isWorkspaceOperationAuthorized,
@@ -301,9 +302,7 @@ function hasSurvivingWork(
         return false;
       if (entry.status !== 'admitted') return true;
       try {
-        return ['pending', 'running', 'awaiting_human'].includes(
-          dependencies.store.getTurnById(entry.turnId).status
-        );
+        return !isSealedTurnTerminal(dependencies.store.getTurnById(entry.turnId).status);
       } catch {
         return true;
       }

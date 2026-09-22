@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ThreadMaterialActiveDelivery, ThreadTaskInput } from '@openkit/app-api-schemas';
+import { isSealedTurnTerminal } from '@openkit/protocol';
 
 import {
   GoalSteeringAuthorityError,
@@ -359,10 +360,7 @@ export function projectThreadMaterialContext(
   const verifiedTraces = readVerifiedThreadWorkerContextTraces(input);
   const nonTerminalTurns = input.store
     .listThreadTurns(input.workspaceDb.workspaceId, input.threadId)
-    .filter(
-      (turn) =>
-        turn.status === 'pending' || turn.status === 'running' || turn.status === 'awaiting_human'
-    );
+    .filter((turn) => !isSealedTurnTerminal(turn.status));
   if (nonTerminalTurns.length > 1) {
     throw recoveryRequired('The Thread has ambiguous non-terminal Turn authority.');
   }

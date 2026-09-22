@@ -3315,7 +3315,7 @@ export class FsStore {
         (turn) =>
           turn.workspaceId === input.workspaceId &&
           turn.threadId === input.threadId &&
-          ['pending', 'running', 'awaiting_human'].includes(turn.status)
+          !isSealedTurnTerminal(turn.status)
       )
     ) {
       throw new ArtifactAuthorityError(
@@ -4566,7 +4566,7 @@ function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Tu
     if (!turn || turn.workspaceId !== request.workspaceId || turn.threadId !== request.threadId) {
       throw new Error(`Approval request has invalid turn lineage: ${request.approvalRequestId}.`);
     }
-    if (!decision && ['completed', 'interrupted', 'cancelled', 'failed'].includes(turn.status)) {
+    if (!decision && isSealedTurnTerminal(turn.status)) {
       decision = ItemSchema.parse({
         id: `it_approval_terminal_denial_${request.approvalRequestId}`,
         workspaceId: request.workspaceId,
@@ -4655,9 +4655,7 @@ function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Tu
       repaired = true;
       return TurnSchema.parse({
         ...turn,
-        status: ['completed', 'interrupted', 'cancelled', 'failed'].includes(turn.status)
-          ? turn.status
-          : 'running',
+        status: isSealedTurnTerminal(turn.status) ? turn.status : 'running',
         humanGate: null,
         items: [...turn.items, ...repairItems.filter((item) => item.turnId === turn.id)],
       });

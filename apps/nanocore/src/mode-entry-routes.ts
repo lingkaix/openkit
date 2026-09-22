@@ -14,7 +14,12 @@ import {
   type TaskModeEvidence,
   type WorkerEnvironmentStorageChoice,
 } from '@openkit/app-api-schemas';
-import { type ActorRef, type StopReason, TurnSchema, type TurnStatus } from '@openkit/protocol';
+import {
+  type ActorRef,
+  isCheckpointCollectableTurnStatus,
+  type StopReason,
+  TurnSchema,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
@@ -1206,7 +1211,8 @@ async function clearStaleDirectTaskCheckpointWithoutExactLease(
   } catch {
     throw directTaskModeRecoveryError('The Task checkpoint is missing its worker Turn.');
   }
-  if (!isClosedProductTurnStatusForStaleCheckpoint(turn.status)) {
+  // Interrupted Turns stay fail-closed here because restart recovery may still own them.
+  if (!isCheckpointCollectableTurnStatus(turn.status)) {
     throw directTaskModeRecoveryError('The boot Task checkpoint still has a live product Turn.');
   }
   if (
@@ -1227,18 +1233,6 @@ async function clearStaleDirectTaskCheckpointWithoutExactLease(
     throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
   }
   return 'complete';
-}
-
-/**
- * Checks whether a product Turn is already closed enough to discard a leftover checkpoint.
- *
- * Interrupted Turns remain fail-closed because restart recovery may still own them.
- *
- * @param status Product Turn status.
- * @returns True for completed, failed, or cancelled Turns.
- */
-function isClosedProductTurnStatusForStaleCheckpoint(status: TurnStatus): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
 /**

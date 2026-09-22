@@ -12,6 +12,7 @@ import {
   type WorkerEnvironmentTarget,
 } from '@openkit/app-api-schemas';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
+import { isSealedTurnTerminal } from '@openkit/protocol';
 import { applyEdits, modify, type ParseError, parse } from 'jsonc-parser';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
@@ -708,11 +709,7 @@ function requireNoUnrelatedRunningTurn(
 ): void {
   const busy = store
     .listThreadTurns(home.workspaceId, home.threadId)
-    .some(
-      (turn) =>
-        turn.id !== activationTurnId &&
-        !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status)
-    );
+    .some((turn) => turn.id !== activationTurnId && !isSealedTurnTerminal(turn.status));
   if (busy) {
     throw new WorkerEnvironmentOperationError(
       'thread_busy',

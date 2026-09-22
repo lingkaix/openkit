@@ -21,6 +21,7 @@ import {
   AuthoredAgentConfigSchema,
   AuthoredAgentRuntimeSchema,
 } from '@openkit/config-schema';
+import { isSealedTurnTerminal } from '@openkit/protocol';
 import { type ParseError, parse } from 'jsonc-parser';
 import type { z } from 'zod';
 
@@ -651,10 +652,7 @@ export function createWorkerEnvironmentPreparation(
     );
     const sourceIsCurrentInternalTurn =
       context.administrationTurnId === sourceTurn.id && sourceTurn.status === 'running';
-    if (
-      !sourceIsCurrentInternalTurn &&
-      !['completed', 'failed', 'interrupted', 'cancelled'].includes(sourceTurn.status)
-    ) {
+    if (!sourceIsCurrentInternalTurn && !isSealedTurnTerminal(sourceTurn.status)) {
       throw new WorkerEnvironmentOperationError(
         'thread_busy',
         'The authored candidate Turn must be terminal before recovery on another Turn.'
@@ -734,7 +732,7 @@ function requireRunningAdministrationTurn(
 function requireNoRunningTurn(store: FsStore, workspaceId: string, threadId: string): void {
   const busy = store
     .listThreadTurns(workspaceId, threadId)
-    .some((turn) => !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status));
+    .some((turn) => !isSealedTurnTerminal(turn.status));
   if (busy) {
     throw new WorkerEnvironmentOperationError(
       'thread_busy',

@@ -11,7 +11,11 @@ import type {
   SessionWorkspaceMaterializationPlan,
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { responsibleUserIdForActor, type StopReason } from '@openkit/protocol';
+import {
+  isSealedTurnTerminal,
+  responsibleUserIdForActor,
+  type StopReason,
+} from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
@@ -784,11 +788,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const currentTurns = store
       .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
       .filter((turn) => turn.agentSessionId === current.id);
-    if (
-      currentTurns.some(
-        (turn) => !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status)
-      )
-    ) {
+    if (currentTurns.some((turn) => !isSealedTurnTerminal(turn.status))) {
       throw new TurnStartValidationError(
         'recovery_required',
         'The current AgentSession still owns an active Turn.',
@@ -989,11 +989,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
     const hasActiveTurn = store
       .listThreadTurns(preparation.turn.workspaceId, preparation.turn.threadId)
-      .some(
-        (turn) =>
-          turn.agentSessionId === current.id &&
-          !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status)
-      );
+      .some((turn) => turn.agentSessionId === current.id && !isSealedTurnTerminal(turn.status));
     if (hasActiveTurn) {
       throw new TurnStartValidationError(
         'recovery_required',
