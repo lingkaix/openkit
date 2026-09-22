@@ -234,7 +234,72 @@ describe('thread dashboard app API', () => {
     const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
 
     expect(res.status).toBe(200);
-    expect(await res.json()).not.toHaveProperty('activeSession');
+    const body = await res.json();
+    expect(body).not.toHaveProperty('activeSession');
+    expect(body.artifacts).toEqual([]);
+    expect(body.workStatus.latestArtifact).toBeNull();
+  });
+
+  it('selects the first equally newest Thread Artifact without reordering the inventory', async () => {
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Artifact selection');
+    const turn = store.createTurn('ws_demo', thread.id, 'Select newest output', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const foreignThread = store.createThread('ws_demo', 'Other Thread');
+    const foreignTurn = store.createTurn('ws_demo', foreignThread.id, 'Unrelated output', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const artifacts = [
+      ['ar_old', '2026-07-19T00:00:00.000Z', turn],
+      ['ar_first_newest', '2026-07-19T00:02:00.000Z', turn],
+      ['ar_second_newest', '2026-07-19T00:02:00.000Z', turn],
+      ['ar_foreign', '2026-07-19T00:03:00.000Z', foreignTurn],
+    ] as const;
+    for (const [id, updatedAt, owner] of artifacts) {
+      store.createArtifact({
+        id,
+        workspaceId: 'ws_demo',
+        threadId: owner.threadId,
+        turnId: owner.id,
+        kind: 'summary',
+        title: id,
+        status: 'ready',
+        summary: `Summary for ${id}`,
+        version: 1,
+        content: { format: 'markdown', body: id },
+        contentDigest: `sha256:${createHash('sha256').update(id, 'utf8').digest('hex')}`,
+        lastMutationRequestId: id,
+        origin: { kind: 'turn-output', threadId: owner.threadId, turnId: owner.id, requestId: id },
+        createdAt: '2026-07-19T00:00:00.000Z',
+        updatedAt,
+      });
+    }
+    const inventory = store.listArtifacts('ws_demo');
+    const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
+    const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.workStatus.latestArtifact).toEqual({
+      id: 'ar_first_newest',
+      title: 'ar_first_newest',
+      status: 'ready',
+      summary: 'Summary for ar_first_newest',
+      updatedAt: '2026-07-19T00:02:00.000Z',
+    });
+    expect(body.artifacts.map((artifact: { id: string }) => artifact.id)).toEqual([
+      'ar_old',
+      'ar_first_newest',
+      'ar_second_newest',
+    ]);
+    const after = store.listArtifacts('ws_demo');
+    expect(after).toEqual(inventory);
+    after.forEach((artifact, index) => {
+      expect(artifact).toBe(inventory[index]);
+    });
   });
 
   it('hides pending decision affordances from a readonly actor while preserving shared status', async () => {

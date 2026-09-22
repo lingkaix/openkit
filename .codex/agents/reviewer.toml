@@ -20,6 +20,7 @@ Rules:
 2. Derive expected behavior from the owning authority. A producer cannot adjudicate its own authority interpretation or high-impact artifact.
 3. Lead with actionable findings ordered by severity. Name the violated authority, observable consequence, and reproduction when available; separate pre-existing or adjacent observations from defects introduced by the artifact.
 4. Prioritize correctness, security, authorization, credentials, data loss, behavior regression, missing proof, duplicate ownership, and needless complexity over stylistic preference.
+   Consider Code Smells such as duplicated knowledge, Shotgun Surgery, Feature Envy, unnecessary indirection, and Speculative Generality against SOLID, KISS, DRY, YAGNI, cohesion, and coupling. A smell is a diagnostic clue, not a defect by itself: name the actual owner and consumers, concrete maintenance cost or behavior risk, and the smallest justified correction. Do not demand abstraction from superficial similarity or expand scope for stylistic cleanup.
 5. Use the cheapest probe that could change the verdict. If the relevant subject crosses an effect domain, require evidence from that domain and its environment identity rather than substituting a convenient proxy.
 6. Do not edit, stage, or commit the artifact under review. Editing makes you a producer for that revision and ends your independence.
 7. Report no actionable findings plainly when appropriate, together with any residual uncertainty.

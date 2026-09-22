@@ -23,6 +23,14 @@ Existing patterns are useful defaults because they encode experience. They becom
 
 The practical unit of progress is a changed artifact, belief, or decision. Activity, role transitions, status updates, and polished explanations are coordination cost. Predicting the intended change before a material action exposes empty motion more reliably than counting actions after the fact.
 
+## Discovery And Reuse
+
+Repository entrypoints, names, types, and filesystem grouping provide an agent's working map. A useful module hides decisions that callers would otherwise reconstruct; a guide points to that owner and its real consumers without maintaining a second API catalog. Reuse becomes cheaper when the code carries this structure, not merely when instructions ask agents to search harder.
+
+Local consolidation of transport policy, Composer imports, and conversation destinations removed independently maintained rules under existing owners. Keeping authored and resolved schema differences showed the other side of DRY: similar syntax can express different contracts. SOLID, KISS, YAGNI, cohesion, and coupling help judge those boundaries without prescribing classes or layers. Code Smells focus investigation on concrete maintenance costs and risks.
+
+Concrete behavior examples can guide existing tests without a new Gherkin stack; shared domain language need not introduce a Service hierarchy. The pilot's two fresh discovery samples both found valid entrypoints, while the consolidated caller needed fewer steps. That supports local interface simplification, not a general claim of better agent discovery or a mandate for full DDD adoption. Root governance and verification owners continue to decide execution and evidence requirements.
+
 ## Documents And Reality
 
 Engineers own user intent; intent documents preserve durable direction, change records preserve sourced task intent, and accepted authorities preserve design decisions. Neither a well-written document nor an accepted design proves faithful capture of the source intent. Git, artifacts, running code, and external systems establish implementation facts without authorizing a different design. Fidelity therefore has two gaps to examine: source intent to recorded decisions, and accepted decisions to implementation. Change records and reports provide evidence, not design authority or substitutes for reading the artifact.

@@ -16,12 +16,11 @@ import {
   Skeleton,
   StatusChip,
 } from '../../primitives';
-import { taskThreadPath, useConversationNavigation } from '../chat/data';
+import { conversationThreadPath, useConversationNavigation } from '../chat/data';
 import {
   type AttentionRow,
   attentionDecisionErrorMessage,
   canDecideInline,
-  chatThreadPath,
   inlineAttentionActionLabel,
   isStaleAttentionDecision,
   openHrefForRow,
@@ -263,7 +262,7 @@ function AttentionListRow({
 
 /** Displays one current Task or Goal with its mode-specific destination. */
 function ConversationWorkRow({ item }: { item: ConversationItem }) {
-  const href = conversationHref(item);
+  const href = conversationThreadPath(item.thread.workspaceId, item.thread.id, item.activity);
   const title = item.thread.name ?? ACTIVITY_LABEL[item.activity];
 
   return (
@@ -291,17 +290,6 @@ function ConversationWorkRow({ item }: { item: ConversationItem }) {
       </div>
     </ListRow>
   );
-}
-
-/** Resolves the existing route owned by the conversation activity. */
-function conversationHref(item: ConversationItem): string {
-  if (item.activity === 'goal') {
-    return `/goals/${encodeURIComponent(item.thread.workspaceId)}/${encodeURIComponent(item.thread.id)}`;
-  }
-  if (item.activity === 'task') {
-    return taskThreadPath(item.thread.workspaceId, item.thread.id);
-  }
-  return chatThreadPath(item.thread.workspaceId, item.thread.id);
 }
 
 /** Labels the current navigation state. */

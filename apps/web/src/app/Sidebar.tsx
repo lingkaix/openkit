@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Button, Icon, type IconName, Menu, NavRow } from '../primitives';
 import {
   chatKeys,
+  conversationThreadPath,
   useConversationNavigation,
   useCurrentWorkspaceId,
   useWorkspaces,
@@ -271,8 +272,6 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                       : state === 'needs-you'
                         ? 'Needs your attention'
                         : 'Idle';
-                  const prefix =
-                    activity === 'goal' ? 'goals' : activity === 'task' ? 'tasks' : 'chat';
                   const suffix = `/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`;
                   return (
                     <NavRow
@@ -293,7 +292,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                           pathname === `/${route}${suffix}` ||
                           pathname.startsWith(`/${route}${suffix}/`)
                       )}
-                      onPress={() => go(`/${prefix}${suffix}`)}
+                      onPress={() => go(conversationThreadPath(workspace.id, thread.id, activity))}
                     />
                   );
                 })}

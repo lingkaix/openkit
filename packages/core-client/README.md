@@ -16,6 +16,12 @@ Core protocol payloads come from `@openkit/protocol`.
 
 NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
+## Implementation Entry Points
+
+[`src/transport.ts`](src/transport.ts) owns HTTP request construction, configured headers, cookie credentials, and response validation through [`src/http.ts`](src/http.ts). JSON POST, PUT, and PATCH operations share that wire policy; stream and empty-response operations retain their distinct semantics. [`src/transport.test.ts`](src/transport.test.ts) checks the wire boundary and failure propagation without a live server.
+
+[`src/request-id.ts`](src/request-id.ts) owns missing request identity insertion. Sub-clients use `withRequestId` for body-carried command identities; explicit header-carried identities remain at the routes that own that contract.
+
 ## Client Shape
 
 - `client.core`: Core protocol routes and turn SSE.

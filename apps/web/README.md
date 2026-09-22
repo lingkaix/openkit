@@ -79,6 +79,12 @@ Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/202607
 
 The isolated simulator-backed Web stack seeds a visibly synthetic local NanoHost Epoch after Core startup and after a Core restart in its disposable data root, matching the simulator unit-test precondition. Non-simulator stacks receive no synthetic readiness. Production backend-session validation stays enabled. These checks prove Web and Core interaction against the simulator; they do not prove real NanoHost readiness or Worker execution on a deployed server. The Material self-check exercises Artifact review and acceptance at 800×600 without page-level horizontal overflow. shell-smoke verifies Settings and Chat at 600 and 742 without page-level horizontal overflow, and persistent left navigation at 800.
 
+Use `useConnection` in `src/app/core-client.tsx` for the shared `core.meta()` connection probe; General Settings reads its Workspace through `useSettingsWorkspace` in `src/screens/settings/data.ts`.
+
+Starter and Thread Composer uploads share `importComposerFile` in `src/screens/artifacts/data.ts` over the existing Artifact mutation; each screen retains its own non-awaited Artifact-list refresh after import.
+
+Sidebar, starter Recent, and Overview activity destinations share `conversationThreadPath` in `src/screens/chat/data.ts`, preserving encoded owner identifiers and unknown activity opening Chat; Sidebar active matching remains cross-mode and includes nested Thread routes.
+
 ## Commands
 
 ```bash

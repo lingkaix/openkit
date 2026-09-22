@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { validateReleasePreflight } from '../scripts/release-preflight.mjs';
+import { parseOpenShellRelease, validateReleasePreflight } from '../scripts/release-preflight.mjs';
 
 const preflightScript = join(process.cwd(), 'scripts', 'release-preflight.mjs');
 
@@ -246,6 +246,51 @@ test('release preflight rejects OpenShell release drift from Cargo and its lockf
     );
   }
 });
+
+for (const [field, mutate] of [
+  [
+    'archive name',
+    (release) => {
+      release.gateway.archive.name = 'other-gateway.tar.gz';
+      release.gateway.executable.derivedFrom = release.gateway.archive.name;
+    },
+  ],
+  [
+    'executable name',
+    (release) => {
+      release.gateway.executable.name = 'other-gateway';
+    },
+  ],
+  [
+    'archive derivation',
+    (release) => {
+      release.gateway.executable.derivedFrom = 'other-gateway.tar.gz';
+    },
+  ],
+  [
+    'license source',
+    (release) => {
+      release.redistribution.license.sourcePath = 'OTHER-LICENSE';
+    },
+  ],
+  [
+    'notices source',
+    (release) => {
+      release.redistribution.notices.sourcePath = 'OTHER-NOTICES';
+    },
+  ],
+]) {
+  test(`OpenShell release parser rejects substituted ${field}`, () => {
+    const release = makeOpenShellRelease();
+    assert.deepEqual(parseOpenShellRelease(JSON.stringify(release)), release);
+    mutate(release);
+
+    assert.throws(() => parseOpenShellRelease(JSON.stringify(release)), {
+      name: 'Error',
+      message: 'OpenShell release metadata is invalid.',
+    });
+  });
+}
 
 test('release preflight requires one coherent promoted host manifest', () => {
   const missing = makeReleaseFixture({ omitHostManifest: true });

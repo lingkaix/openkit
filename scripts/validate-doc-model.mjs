@@ -206,12 +206,13 @@ export function validateDocModel(repoRoot) {
     }
 
     const content = readFileSync(join(repoRoot, path), 'utf8');
+    const links = resolveRepositoryDocLinks(repoRoot, path, content);
 
-    validateDocumentationLinkExistence(repoRoot, path, content, errors);
+    validateDocumentationLinkExistence(repoRoot, path, links, errors);
 
     if (type === 'spec' || type === 'spec-terminal') {
       validateSpecificationCoreReferences(repoRoot, path, content, errors);
-      validateAuthorityChangeRecordLinks(repoRoot, path, content, errors);
+      validateAuthorityChangeRecordLinks(path, links, errors);
       continue;
     }
 
@@ -224,12 +225,12 @@ export function validateDocModel(repoRoot) {
     }
 
     if (type === 'core') {
-      validateCoreDependencies(repoRoot, path, content, errors);
-      validateAuthorityChangeRecordLinks(repoRoot, path, content, errors);
+      validateCoreDependencies(path, links, errors);
+      validateAuthorityChangeRecordLinks(path, links, errors);
     }
 
     if (type === 'change') {
-      validateChangeRecord(repoRoot, path, content, metadata.fields, errors);
+      validateChangeRecord(path, content, metadata.fields, links, errors);
     }
 
     if (type === 'change-findings' && path.endsWith(`/${BUNDLE_FINDINGS_NAME}`)) {
@@ -237,7 +238,7 @@ export function validateDocModel(repoRoot) {
     }
 
     if (type === 'audit') {
-      validateAuditRecord(repoRoot, path, errors);
+      validateAuditRecord(path, links, errors);
     }
 
     if (type === 'manual') {
@@ -465,13 +466,12 @@ function validateChangeBundles(repoRoot, errors) {
 /**
  * Rejects Core links that resolve into the implementation-facing specification tree.
  *
- * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative Core document path.
- * @param {string} content Markdown document content.
+ * @param {string[]} links Resolved whole-document links in source order, including repeats.
  * @param {string[]} errors Mutable validation error list.
  */
-function validateCoreDependencies(repoRoot, path, content, errors) {
-  for (const resolvedPath of resolveRepositoryDocLinks(repoRoot, path, content)) {
+function validateCoreDependencies(path, links, errors) {
+  for (const resolvedPath of links) {
     if (resolvedPath.startsWith('docs/specs/')) {
       errors.push(
         `${path}: Core document has a downward dependency on specification \`${resolvedPath}\`.`
@@ -483,13 +483,12 @@ function validateCoreDependencies(repoRoot, path, content, errors) {
 /**
  * Rejects authority documents that link into change-record execution evidence.
  *
- * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative documentation path.
- * @param {string} content Markdown document content.
+ * @param {string[]} links Resolved whole-document links in source order, including repeats.
  * @param {string[]} errors Mutable validation error list.
  */
-function validateAuthorityChangeRecordLinks(repoRoot, path, content, errors) {
-  for (const resolvedPath of resolveRepositoryDocLinks(repoRoot, path, content)) {
+function validateAuthorityChangeRecordLinks(path, links, errors) {
+  for (const resolvedPath of links) {
     if (resolvedPath.startsWith(CHANGE_RECORD_PATH_PREFIX)) {
       errors.push(
         `${path}: authority document ${AUTHORITY_CHANGE_RECORD_ERROR} \`${resolvedPath}\`.`
@@ -503,11 +502,11 @@ function validateAuthorityChangeRecordLinks(repoRoot, path, content, errors) {
  *
  * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative documentation path.
- * @param {string} content Markdown document content.
+ * @param {string[]} links Resolved whole-document links in source order, including repeats.
  * @param {string[]} errors Mutable validation error list.
  */
-function validateDocumentationLinkExistence(repoRoot, path, content, errors) {
-  for (const resolvedPath of resolveRepositoryDocLinks(repoRoot, path, content)) {
+function validateDocumentationLinkExistence(repoRoot, path, links, errors) {
+  for (const resolvedPath of links) {
     if (resolvedPath.startsWith('../')) {
       errors.push(
         `${path}: documentation link target resolves outside repository: \`${resolvedPath}\`.`
@@ -943,13 +942,13 @@ function validateManualPage(repoRoot, path, errors) {
  * `scripts/lib/doc-fields.mjs`; the section rules below are change-record
  * content rules this validator owns.
  *
- * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative change record path.
  * @param {string} content Markdown document content.
  * @param {Record<string, unknown>} fields Parsed metadata fields.
+ * @param {string[]} links Resolved whole-document links in source order, including repeats.
  * @param {string[]} errors Mutable validation error list.
  */
-function validateChangeRecord(repoRoot, path, content, fields, errors) {
+function validateChangeRecord(path, content, fields, links, errors) {
   const name = path.split('/').at(-1) ?? '';
   const segments = path.split('/');
   const bundled =
@@ -987,7 +986,7 @@ function validateChangeRecord(repoRoot, path, content, fields, errors) {
     .filter((section) => section.body.length > 0)
     .map((section) => section.name);
 
-  if (resolveRepositoryDocLinks(repoRoot, path, content).length === 0) {
+  if (links.length === 0) {
     errors.push(`${path}: change records must link at least one repository document.`);
   }
 
@@ -1012,11 +1011,11 @@ function validateChangeRecord(repoRoot, path, content, fields, errors) {
 /**
  * Validates one audit record's filename and generating-specification link.
  *
- * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative audit record path.
+ * @param {string[]} links Resolved whole-document links in source order, including repeats.
  * @param {string[]} errors Mutable validation error list.
  */
-function validateAuditRecord(repoRoot, path, errors) {
+function validateAuditRecord(path, links, errors) {
   const name = path.split('/').at(-1) ?? '';
 
   if (!AUDIT_FILE_PATTERN.test(name)) {
@@ -1024,11 +1023,7 @@ function validateAuditRecord(repoRoot, path, errors) {
     return;
   }
 
-  const hasOwnerLink = resolveRepositoryDocLinks(
-    repoRoot,
-    path,
-    readFileSync(join(repoRoot, path), 'utf8')
-  ).some((resolvedPath) => {
+  const hasOwnerLink = links.some((resolvedPath) => {
     const type = classifyPath(resolvedPath);
     return type === 'spec' || type === 'spec-terminal' || GOVERNANCE_FILES.has(resolvedPath);
   });

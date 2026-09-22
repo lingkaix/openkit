@@ -186,6 +186,111 @@ describe('workspace dashboard app API', () => {
     });
   });
 
+  it.each([
+    {
+      name: 'first newest exact-Turn output ahead of a newer Thread output',
+      artifacts: [
+        ['ar_exact_old', 'exact', 0, 'Old exact summary'],
+        ['ar_exact_first', 'exact', 2, 'First newest exact summary'],
+        ['ar_exact_tie', 'exact', 2, 'Second newest exact summary'],
+        ['ar_other_newer', 'other', 3, 'Newer Thread summary'],
+      ],
+      summary: 'First newest exact summary',
+      count: 3,
+    },
+    {
+      name: 'first newest Thread output when the completed Turn has none',
+      artifacts: [
+        ['ar_other_old', 'other', 0, 'Old Thread summary'],
+        ['ar_other_first', 'other', 2, 'First newest Thread summary'],
+        ['ar_other_tie', 'other', 2, 'Second newest Thread summary'],
+      ],
+      summary: 'First newest Thread summary',
+      count: 0,
+    },
+    {
+      name: 'Thread preview for an empty inventory',
+      artifacts: [],
+      summary: 'Thread preview',
+      count: 0,
+    },
+    {
+      name: 'Thread preview for a null exact summary rather than another Artifact',
+      artifacts: [
+        ['ar_exact_null', 'exact', 0, null],
+        ['ar_other_summary', 'other', 3, 'Do not use this summary'],
+      ],
+      summary: 'Thread preview',
+      count: 1,
+    },
+    {
+      name: 'empty exact summary without falling back to Thread output or preview',
+      artifacts: [
+        ['ar_exact_empty', 'exact', 0, ''],
+        ['ar_other_summary', 'other', 3, 'Do not use this summary'],
+      ],
+      summary: '',
+      count: 1,
+    },
+    {
+      name: 'Thread preview for the newest null Thread summary rather than older output',
+      artifacts: [
+        ['ar_other_old', 'other', 0, 'Do not use this summary'],
+        ['ar_other_null', 'other', 3, null],
+      ],
+      summary: 'Thread preview',
+      count: 0,
+    },
+  ] as const)('preserves completion selection: $name', async ({ artifacts, summary, count }) => {
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Completion selection');
+    const completedTurn = store.createTurn('ws_demo', thread.id, 'Thread preview', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const otherTurn = store.createTurn('ws_demo', thread.id, 'Thread preview', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    for (const [id, scope, minute, artifactSummary] of artifacts) {
+      const turnId = scope === 'exact' ? completedTurn.id : otherTurn.id;
+      store.createArtifact({
+        id,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId,
+        kind: 'summary',
+        title: id,
+        status: 'ready',
+        summary: artifactSummary,
+        version: 1,
+        content: { format: 'markdown', body: id },
+        contentDigest: `sha256:${createHash('sha256').update(id, 'utf8').digest('hex')}`,
+        lastMutationRequestId: id,
+        origin: { kind: 'turn-output', threadId: thread.id, turnId, requestId: id },
+        createdAt: '2026-07-19T00:00:00.000Z',
+        updatedAt: `2026-07-19T00:0${minute}:00.000Z`,
+      });
+    }
+    const completedAt = '2026-07-19T00:04:00.000Z';
+    store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
+    const app = createApp({ store });
+    const res = await app.request('/api/app/workspaces/ws_demo/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recentCompletions).toEqual([
+      {
+        threadId: thread.id,
+        title: 'Completion selection',
+        turnId: completedTurn.id,
+        completedAt,
+        artifactCount: count,
+        summary,
+      },
+    ]);
+  });
+
   it('does not surface secret pending decision items as actionable', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Invalid dashboard attention');

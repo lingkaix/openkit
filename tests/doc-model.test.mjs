@@ -244,6 +244,26 @@ describe('documentation model validator', () => {
     );
   });
 
+  it('preserves repeated link diagnostics across whole-document rules', () => {
+    const root = createFixture();
+    writeFileSync(
+      join(root, 'docs/core/model.md'),
+      '---\nstatus: Accepted\n---\n# Model\n\n' +
+        '[missing spec](../specs/20260101-missing.md)\n'.repeat(2) +
+        '[missing change](../changes/202601010000000001-missing.md)\n'.repeat(2)
+    );
+
+    assert.deepEqual(
+      validateDocModel(root),
+      [
+        'docs/core/model.md: Core document has a downward dependency on specification `docs/specs/20260101-missing.md`.',
+        'docs/core/model.md: authority document must not link to change record `docs/changes/202601010000000001-missing.md`.',
+        'docs/core/model.md: documentation link target does not exist: `docs/changes/202601010000000001-missing.md`.',
+        'docs/core/model.md: documentation link target does not exist: `docs/specs/20260101-missing.md`.',
+      ].flatMap((message) => [message, message])
+    );
+  });
+
   it('rejects filesystem documentation targets outside the repository', () => {
     const container = mkdtempSync(join(tmpdir(), 'doc-model-containment-'));
     const root = createFixture(join(container, 'repository'));

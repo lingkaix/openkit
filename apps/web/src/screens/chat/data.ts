@@ -1,4 +1,7 @@
-import type { WorkerEnvironmentSummary } from '@openkit/app-api-schemas';
+import type {
+  ConversationNavigationResponse,
+  WorkerEnvironmentSummary,
+} from '@openkit/app-api-schemas';
 import {
   ApiCallError,
   type CoreClient,
@@ -244,6 +247,26 @@ export function chatThreadPath(workspaceId: string, threadId: string): string {
 /** Builds a Task deep link that retains the Thread's owning Workspace. */
 export function taskThreadPath(workspaceId: string, threadId: string): string {
   return `/tasks/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
+}
+
+/**
+ * Builds the existing destination for server-projected conversation activity.
+ *
+ * @param workspaceId Workspace that owns the Thread.
+ * @param threadId Thread to open, encoded as one route segment.
+ * @param activity Current/latest navigation activity; unknown opens Chat without reclassifying it.
+ * @returns A Chat, Task, or Goal route, not a rule for matching the active sidebar row.
+ */
+export function conversationThreadPath(
+  workspaceId: string,
+  threadId: string,
+  activity: ConversationNavigationResponse['items'][number]['activity']
+): string {
+  if (activity === 'goal') {
+    return `/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
+  }
+  if (activity === 'task') return taskThreadPath(workspaceId, threadId);
+  return chatThreadPath(workspaceId, threadId);
 }
 
 /** List the workspaces the user can act in. */

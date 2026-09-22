@@ -6,6 +6,8 @@ The authorized Thread dashboard derives taskInputs objective summaries through t
 
 The authorized Thread dashboard projects the authenticated viewer and only recorded Item actors and assigned Turn Agents with current User or Agent display names. It exposes no email or unrelated user directory; absent names retain stable actor ids.
 
+Dashboard newest-Artifact selection stays in `src/app-dashboard.ts`, preserving inventory order and the first equal-timestamp candidate. Completion summaries select the newest exact-Turn Artifact before the Thread fallback, then use its summary or the Thread preview; empty summaries remain empty.
+
 `nanocore` is the tiny real demo core server for the UI-first protocol slice.
 
 NanoCore derives private AEP and Context input paths from the admitted AgentSession, opens or inspects that exact session before importing its complete Turn inputs, and starts the Worker only after all imports succeed. Turn-specific paths and payloads do not partition otherwise compatible shared Sandbox or Harness identities.

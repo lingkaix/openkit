@@ -1861,7 +1861,7 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       );
     },
     startTaskMode: (workspaceId, threadId, input) => {
-      const request = { ...input, requestId: input.requestId ?? createRequestId() };
+      const request = withRequestId(input);
 
       return transport.postJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/task`,
@@ -1870,7 +1870,7 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       );
     },
     submitConversation: (workspaceId, threadId, input) => {
-      const request = { ...input, requestId: input.requestId ?? createRequestId() };
+      const request = withRequestId(input);
 
       return transport.postJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/conversation-turns`,
@@ -2007,7 +2007,7 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       );
     },
     submitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId, input) => {
-      const request = { ...input, requestId: input.requestId ?? createRequestId() };
+      const request = withRequestId(input);
 
       return transport.postJson(
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goals/${goalId}/reviews/${reviewId}/decision`,
@@ -2038,7 +2038,7 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         GetWorkspaceSyncReviewResponseSchema
       ),
     submitWorkspaceSyncReviewDecision: (workspaceId, reviewId, input) => {
-      const request = { ...input, requestId: input.requestId ?? createRequestId() };
+      const request = withRequestId(input);
 
       return transport.postJson(
         `/api/app/workspaces/${workspaceId}/workspace-sync/reviews/${reviewId}/decision`,
@@ -2047,7 +2047,7 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       );
     },
     submitWorkspaceRecoveryDecision: (workspaceId, reconciliationRecordId, input) => {
-      const request = { ...input, requestId: input.requestId ?? createRequestId() };
+      const request = withRequestId(input);
 
       return transport.postJson(
         `/api/app/workspaces/${workspaceId}/workspace-sync/reconciliation-records/${reconciliationRecordId}/decision`,

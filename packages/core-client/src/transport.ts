@@ -120,10 +120,17 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return response.body;
   };
 
-  const postJson: ClientTransport['postJson'] = async (path, input, schema, extraHeaders) => {
+  /** Applies the shared wire policy for JSON mutations; each public method keeps its HTTP verb. */
+  const sendJson = async <TSchema extends z.ZodType>(
+    method: 'POST' | 'PUT' | 'PATCH',
+    path: string,
+    input: unknown,
+    schema: TSchema,
+    extraHeaders?: HeadersInit
+  ): Promise<z.infer<TSchema>> => {
     const response = await fetcher(url(path), {
       credentials: 'include',
-      method: 'POST',
+      method,
       headers: jsonHeaders(extraHeaders),
       body: JSON.stringify(input),
     });
@@ -139,28 +146,6 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
       headers: mergeHeaders(headers),
       method: 'POST',
     } as RequestInit & { duplex: 'half' });
-    return parseJsonResponse(response, schema);
-  };
-
-  const putJson: ClientTransport['putJson'] = async (path, input, schema, extraHeaders) => {
-    const response = await fetcher(url(path), {
-      credentials: 'include',
-      method: 'PUT',
-      headers: jsonHeaders(extraHeaders),
-      body: JSON.stringify(input),
-    });
-
-    return parseJsonResponse(response, schema);
-  };
-
-  const patchJson: ClientTransport['patchJson'] = async (path, input, schema, extraHeaders) => {
-    const response = await fetcher(url(path), {
-      credentials: 'include',
-      method: 'PATCH',
-      headers: jsonHeaders(extraHeaders),
-      body: JSON.stringify(input),
-    });
-
     return parseJsonResponse(response, schema);
   };
 
@@ -201,10 +186,10 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     getJson,
     getStream,
     headers: options.headers,
-    patchJson,
-    postJson,
+    patchJson: (path, input, schema, headers) => sendJson('PATCH', path, input, schema, headers),
+    postJson: (path, input, schema, headers) => sendJson('POST', path, input, schema, headers),
     postStream,
-    putJson,
+    putJson: (path, input, schema, headers) => sendJson('PUT', path, input, schema, headers),
     url,
   };
 }

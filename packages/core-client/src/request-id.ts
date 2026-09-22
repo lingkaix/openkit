@@ -10,7 +10,7 @@ export function createRequestId(): string {
 }
 
 /** Adds a request id to a mutating command if the caller did not provide one. */
-export function withRequestId<T extends { requestId?: string }>(
+export function withRequestId<T extends { requestId?: string | undefined }>(
   input: T
 ): T & { requestId: string } {
   return { ...input, requestId: input.requestId ?? createRequestId() };
