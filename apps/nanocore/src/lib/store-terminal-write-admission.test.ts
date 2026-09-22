@@ -85,6 +85,7 @@ function seedMcpBootItem(input: {
   createdAt: string;
   itemId: string;
   parentItemId?: string;
+  nullSnapshotLineage?: boolean;
   scopeItemId?: string;
   skipExistingItem?: boolean;
   skipSnapshot?: boolean;
@@ -139,6 +140,13 @@ function seedMcpBootItem(input: {
       status: 'succeeded',
       workspaceDb,
     });
+    if (input.nullSnapshotLineage) {
+      workspaceDb.sqlite
+        .prepare(
+          'UPDATE capability_calls SET agent_session_id = NULL, package_snapshot_id = NULL WHERE call_id = ?'
+        )
+        .run(call.id);
+    }
   } finally {
     workspaceDb.sqlite.close();
   }
@@ -620,6 +628,31 @@ describe('post-terminal write admission', () => {
     });
     verifyAndMigrateExistingScopedDatabases(present.dataRoot);
     expect(reconcileWorkerMcpItems(present.dataRoot, present.store)).toBe(0);
+  });
+
+  it('admits a stored Item whose parent its own earlier parentless fill could not carry', () => {
+    // An earlier boot filled this Item without a parent because the snapshot was unreadable.
+    // Once the snapshot is readable this reader must not fail boot on a record it wrote itself.
+    const { dataRoot, store } = seedMcpBootItem({
+      callId: 'cap_mcp_parent_backfilled',
+      createdAt: COMPLETED_AT,
+      itemId: 'it_mcp_parent_backfilled',
+      scopeItemId: 'it_decided_parent',
+    });
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+  });
+
+  it('still fills a row whose stored snapshot lineage is absent', () => {
+    const { dataRoot, store } = seedMcpBootItem({
+      callId: 'cap_mcp_null_lineage',
+      createdAt: COMPLETED_AT,
+      itemId: 'it_mcp_null_lineage',
+      nullSnapshotLineage: true,
+      skipExistingItem: true,
+    });
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
   });
 
   it('leaves a generative MCP call row alone because it published no tool-call Item', () => {

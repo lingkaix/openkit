@@ -790,8 +790,11 @@ function mcpBootDecidedPublicationEqual(
     existing.type === candidate.type &&
     existing.status === candidate.status &&
     existing.causationId === candidate.causationId &&
-    (!parentComparable ||
-      (recorded.parentItemId ?? null) === (reconstructed.parentItemId ?? null)) &&
+    mcpBootParentAgrees(
+      parentComparable,
+      recorded.parentItemId ?? null,
+      reconstructed.parentItemId ?? null
+    ) &&
     existing.createdAt === candidate.createdAt &&
     existing.completedAt === candidate.completedAt &&
     recorded.durationMs === reconstructed.durationMs &&
@@ -801,6 +804,29 @@ function mcpBootDecidedPublicationEqual(
     recorded.result === reconstructed.result &&
     recorded.error === reconstructed.error
   );
+}
+
+/**
+ * Returns whether a stored parent agrees with the decided publication.
+ *
+ * A stored Item with no parent is admitted against a decided parent because only one writer
+ * produces that pair: an earlier boot of this same path that could not read the snapshot and
+ * filled the Item without its parent. Rejecting it would let this reader fail boot on a record
+ * it wrote itself. A stored parent that disagrees with the decided one is still a conflict.
+ *
+ * @param parentComparable Whether the AEP snapshot supplied the decided parent.
+ * @param recorded Stored parent, or null.
+ * @param decided Reconstructed parent, or null.
+ * @returns True when the pair is admissible.
+ */
+function mcpBootParentAgrees(
+  parentComparable: boolean,
+  recorded: unknown,
+  decided: unknown
+): boolean {
+  if (!parentComparable) return true;
+  if (recorded === null && decided !== null) return true;
+  return recorded === decided;
 }
 
 /**
@@ -821,17 +847,38 @@ function mcpBootDecidedPublicationEqual(
 function decidedMcpParentItemId(
   workspaceDb: WorkspaceDb,
   workspaceId: string,
-  row: { readonly agent_session_id: string; readonly package_snapshot_id: string }
+  row: { readonly agent_session_id: string | null; readonly package_snapshot_id: string | null }
 ): { readonly known: true; readonly parentItemId: string | null } | { readonly known: false } {
-  const snapshot = findNamedAgentEnvironmentPackageSnapshot(
-    workspaceDb,
-    workspaceId,
-    row.agent_session_id,
-    row.package_snapshot_id
-  );
+  if (!row.agent_session_id || !row.package_snapshot_id) {
+    return { known: false };
+  }
+  const snapshot = isReadableSnapshotLineage(row.agent_session_id, row.package_snapshot_id)
+    ? findNamedAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        workspaceId,
+        row.agent_session_id,
+        row.package_snapshot_id
+      )
+    : null;
   return snapshot
     ? { known: true, parentItemId: snapshot.snapshot.scope.itemId ?? null }
     : { known: false };
+}
+
+/**
+ * Returns whether a stored lineage pair can address a snapshot file at all.
+ *
+ * A row whose lineage is not a usable path segment leaves the parent unknown rather than failing
+ * boot, because the reader it replaced filled that row without consulting a snapshot.
+ *
+ * @param agentSessionId Stored AgentSession lineage.
+ * @param snapshotId Stored AEP snapshot lineage.
+ * @returns True when both values are single path segments.
+ */
+function isReadableSnapshotLineage(agentSessionId: string, snapshotId: string): boolean {
+  const addressable = (value: string): boolean =>
+    value !== '.' && value !== '..' && !/[/\\\0]/.test(value);
+  return addressable(agentSessionId) && addressable(snapshotId);
 }
 
 /** Recreates missing product-safe MCP Items from terminal durable CapabilityCalls at boot. */
@@ -860,9 +907,7 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
              AND capability_id = 'mcp.call_tool'
              AND operation = 'mcp.call_tool'
              AND status NOT IN ('queued', 'running')
-             AND agent_session_id IS NOT NULL
              AND item_id IS NOT NULL
-             AND package_snapshot_id IS NOT NULL
              AND provider_ref IS NOT NULL
              AND service_ref LIKE 'mcp-tool:%'
              AND thread_id IS NOT NULL
@@ -871,12 +916,12 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
            ORDER BY completed_at, call_id`
         )
         .all() as Array<{
-        agent_session_id: string;
+        agent_session_id: string | null;
         call_id: string;
         completed_at: string;
         error_code: string | null;
         item_id: string;
-        package_snapshot_id: string;
+        package_snapshot_id: string | null;
         provider_ref: string;
         service_ref: string;
         started_at: string | null;

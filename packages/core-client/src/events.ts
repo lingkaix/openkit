@@ -1,5 +1,6 @@
 import {
   ForwardCompatibleSseEventEnvelopeSchema,
+  isSealedTurnTerminal,
   ProductSseEventEnvelopeSchema,
   ProductTurnSchema,
 } from '@openkit/protocol';
@@ -113,11 +114,7 @@ function classifyTurnEventDelivery(
   }
 
   const turn = ProductTurnSchema.parse(envelope.data.turn);
-  const terminal =
-    turn.status === 'completed' ||
-    turn.status === 'interrupted' ||
-    turn.status === 'cancelled' ||
-    turn.status === 'failed';
+  const terminal = isSealedTurnTerminal(turn.status);
 
   return terminal &&
     envelope.workspaceId === options.workspaceId &&

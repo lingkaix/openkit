@@ -181,8 +181,9 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
       const running = pending.store.getTurnById(pending.turnId);
       if (running.agentSessionId) {
         const agentSession = pending.store.updateAgentSession(running.agentSessionId, {
-          message: 'The simulator turn was cancelled.',
-          status: 'failed',
+          // terminalizeGovernedWorkerTurn maps a cancelled outcome to an interrupted AgentSession.
+          message: 'The worker turn was cancelled.',
+          status: 'interrupted',
           updatedAt: new Date().toISOString(),
         });
         pending.store.emitTurnEvent(pending.turnId, {

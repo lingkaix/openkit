@@ -15,6 +15,7 @@ import {
   WorkspaceRepositoryResourceSchema,
 } from '@openkit/app-api-schemas';
 import type { OpenKitConfig } from '@openkit/config-schema';
+import { isSealedTurnTerminal } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
@@ -701,22 +702,12 @@ export async function requestRepositoryPushApproval(
             }
             throw error;
           }
-          if (
-            sourceTurn.status === 'completed' ||
-            sourceTurn.status === 'failed' ||
-            sourceTurn.status === 'interrupted'
-          ) {
+          if (isSealedTurnTerminal(sourceTurn.status)) {
             const publicationTurnId = `tu_repo_push_${ownerDigest}`;
             if (
               store
                 .listThreadTurns(workspaceId, input.threadId)
-                .some(
-                  (turn) =>
-                    turn.id !== publicationTurnId &&
-                    (turn.status === 'awaiting_human' ||
-                      turn.status === 'pending' ||
-                      turn.status === 'running')
-                )
+                .some((turn) => turn.id !== publicationTurnId && !isSealedTurnTerminal(turn.status))
             ) {
               throw new TurnStartValidationError(
                 'thread_busy',

@@ -1,5 +1,6 @@
 import {
   InterruptTurnRequestSchema,
+  isSealedTurnTerminal,
   ProductTurnSchema,
   SubmitTurnInputRequestSchema,
   TurnReadProjectionSchema,
@@ -327,12 +328,7 @@ export function registerTurnRoutes({
         execute: async () => {
           const threadBusy = store
             .listThreadTurns(input.workspaceId, input.threadId)
-            .some(
-              (turn) =>
-                turn.status === 'pending' ||
-                turn.status === 'running' ||
-                turn.status === 'awaiting_human'
-            );
+            .some((turn) => !isSealedTurnTerminal(turn.status));
           if (threadBusy) {
             throw new TurnStartValidationError(
               'thread_busy',
@@ -517,12 +513,7 @@ export async function interruptProductTurn(input: {
     execute: async () => {
       const currentTurn = store.getTurn(workspaceId, threadId, turnId);
 
-      if (
-        currentTurn.status === 'completed' ||
-        currentTurn.status === 'interrupted' ||
-        currentTurn.status === 'cancelled' ||
-        currentTurn.status === 'failed'
-      ) {
+      if (isSealedTurnTerminal(currentTurn.status)) {
         throw new TurnStartValidationError(
           'turn_not_interruptible',
           `Turn is already terminal: ${turnId}.`,

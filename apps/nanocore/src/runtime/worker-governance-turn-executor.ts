@@ -1960,13 +1960,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
 
     const turn = store.getTurnById(turnId);
-    if (
-      !turn.agentSessionId ||
-      turn.status === 'completed' ||
-      turn.status === 'interrupted' ||
-      turn.status === 'cancelled' ||
-      turn.status === 'failed'
-    ) {
+    if (!turn.agentSessionId || isSealedTurnTerminal(turn.status)) {
       throw new Error(`Turn has no live worker attempt: ${turnId}`);
     }
 
