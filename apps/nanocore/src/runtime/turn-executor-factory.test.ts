@@ -5725,6 +5725,8 @@ describe('createConfiguredTurnExecutor', () => {
     'retained_baseline_unavailable',
     'retained_baseline_conflict',
     'git_fetch_commit_unavailable',
+    'git_fetch_tls_failed',
+    'git_fetch_transport_failed',
   ])('reattaches selected storage or surfaces startup failure: %s', async (startupRefused) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
@@ -5918,7 +5920,11 @@ describe('createConfiguredTurnExecutor', () => {
             ? ' The retained checkout and requested commit differ; choose a fresh work environment for the requested commit, or restore the source configuration to the retained checkout’s original commit before reusing it.'
             : startupRefused === 'git_fetch_commit_unavailable'
               ? ' The configured Git remote does not serve the requested commit; publish that commit or select one the remote serves, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
-              : '';
+              : startupRefused === 'git_fetch_tls_failed'
+                ? ' The worker could not trust the configured Git remote during fetch. Repair the sandbox trust bundle, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
+                : startupRefused === 'git_fetch_transport_failed'
+                  ? ' The worker could not complete the Git fetch transport. This is a sandbox network or HTTP failure, not proof that the remote lacks the commit. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
+                  : '';
         const rejected = expect(launch).rejects.toThrow(
           new Error(
             `NanoHost Harness turn.start refused: dependency_failed (workspace_materialization: ${startupRefused}).${explanation}`

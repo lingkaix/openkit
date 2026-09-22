@@ -957,34 +957,38 @@ interface GitInvocation {
 /**
  * Fetches one exact commit into an empty slot.
  *
- * A depth-1 raw object id is the fast path. Any completed nonzero fetch tries advertised branch tips and tags once. A timeout, signal, or spawn failure does not. Checkout continues only when the object type is exactly `commit`. A completed check that reports the object is absent is a distinct refusal. Every other object-check failure stays an ordinary fetch failure.
+ * A depth-1 raw object id is the fast path, and both that fetch and the advertised-ref fallback use HTTP/1.1. Any completed nonzero fetch tries advertised branch tips and tags once. A timeout, signal, or spawn failure does not. Checkout continues only when the object type is exactly `commit`. A completed check that reports the object is absent is a distinct refusal. The terminal fetch failure is a certificate failure, a transport failure, or an ordinary fetch failure. Every other object-check failure stays an ordinary fetch failure.
  *
  * @param cwd Empty Git workspace root.
  * @param sessionDir Worker session directory used for the scrubbed Git environment.
  * @param commit Exact declared commit.
  */
 async function fetchDeclaredCommit(cwd: string, sessionDir: string, commit: string): Promise<void> {
-  const direct = await gitInvocation(cwd, sessionDir, [
-    'fetch',
-    '--no-tags',
-    '--depth=1',
-    'origin',
-    commit,
-  ]);
+  const fetchConfig = ['http.version=HTTP/1.1'];
+  const direct = await gitInvocation(
+    cwd,
+    sessionDir,
+    ['fetch', '--no-tags', '--depth=1', 'origin', commit],
+    {},
+    undefined,
+    fetchConfig
+  );
   if (direct.ok) {
     return;
   }
   if (direct.failure !== 'exit') {
-    throw new Error('Remote Git commit fetch failed.');
+    throwTerminalFetchFailure(direct);
   }
-  const advertised = await gitInvocation(cwd, sessionDir, [
-    'fetch',
-    'origin',
-    '+refs/heads/*:refs/remotes/origin/*',
-    '+refs/tags/*:refs/tags/*',
-  ]);
+  const advertised = await gitInvocation(
+    cwd,
+    sessionDir,
+    ['fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*'],
+    {},
+    undefined,
+    fetchConfig
+  );
   if (!advertised.ok) {
-    throw new Error('Remote Git commit fetch failed.');
+    throwTerminalFetchFailure(advertised);
   }
   const object = await gitInvocation(cwd, sessionDir, ['cat-file', '-t', commit]);
   if (object.ok) {
@@ -998,6 +1002,51 @@ async function fetchDeclaredCommit(cwd: string, sessionDir: string, commit: stri
     object.stderr.toLowerCase().includes('could not get object info')
   ) {
     throw new Error('Remote Git commit is not available from the configured remote.');
+  }
+  throw new Error('Remote Git commit fetch failed.');
+}
+
+/** Private stderr phrases that identify a certificate failure without leaving the process. */
+const FETCH_TLS_MARKERS = [
+  'ssl certificate',
+  'certificate problem',
+  'self-signed',
+  'unable to get local issuer',
+  'tls certificate',
+] as const;
+
+/** Private stderr phrases that identify a transport failure without leaving the process. */
+const FETCH_TRANSPORT_MARKERS = [
+  'http/2',
+  'http2 framing',
+  'framing layer',
+  'could not resolve host',
+  'failed to connect',
+  'connection refused',
+  'connection reset',
+  'connection timed out',
+  'early eof',
+  'proxy connect',
+  'recv failure',
+] as const;
+
+/**
+ * Refuses the terminal fetch with a closed product message.
+ *
+ * Timeout, signal, and spawn are transport failures. A completed failure is a certificate failure or a transport failure only when its private stderr matches a fixed phrase. Every other completed failure stays ordinary.
+ *
+ * @param invocation Failed fetch invocation.
+ */
+function throwTerminalFetchFailure(invocation: GitInvocation): never {
+  if (invocation.failure !== 'exit') {
+    throw new Error('Remote Git commit fetch transport failed.');
+  }
+  const stderr = invocation.stderr.toLowerCase();
+  if (FETCH_TLS_MARKERS.some((marker) => stderr.includes(marker))) {
+    throw new Error('Remote Git commit fetch TLS failed.');
+  }
+  if (FETCH_TRANSPORT_MARKERS.some((marker) => stderr.includes(marker))) {
+    throw new Error('Remote Git commit fetch transport failed.');
   }
   throw new Error('Remote Git commit fetch failed.');
 }
@@ -1031,6 +1080,7 @@ async function gitBytes(
  * @param argv Git argument vector.
  * @param environment Explicit command-local Git environment overrides.
  * @param stdin Optional exact stdin bytes.
+ * @param config Git config assignments inserted before the subcommand.
  * @returns Success, exact stdout, a bounded stderr prefix, and the failure kind.
  */
 async function gitInvocation(
@@ -1038,12 +1088,21 @@ async function gitInvocation(
   sessionDir: string,
   argv: readonly string[],
   environment: NodeJS.ProcessEnv = {},
-  stdin?: Buffer
+  stdin?: Buffer,
+  config: readonly string[] = []
 ): Promise<GitInvocation> {
   return new Promise((resolveOutput) => {
     const child = spawn(
       'git',
-      ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...argv],
+      [
+        '--no-pager',
+        '-c',
+        'core.fsmonitor=false',
+        '-c',
+        'core.untrackedCache=false',
+        ...config.flatMap((entry) => ['-c', entry]),
+        ...argv,
+      ],
       {
         cwd,
         env: gitEnvironment(sessionDir, environment),
@@ -1126,7 +1185,7 @@ function gitTimeoutMs(): number {
 }
 
 /**
- * Builds the allowlisted Git subprocess environment and explicit safety controls.
+ * Builds the allowlisted Git subprocess environment and explicit safety controls. A nonempty `SSL_CERT_FILE` is copied to both `GIT_SSL_CAINFO` and `CURL_CA_BUNDLE`. Ambient CA paths do not win.
  *
  * @param sessionDir Worker session directory reserved for snapshot state.
  * @param overrides Command-local Git environment overrides.
@@ -1151,6 +1210,7 @@ function gitEnvironment(sessionDir: string, overrides: NodeJS.ProcessEnv): NodeJ
     XDG_CONFIG_HOME: sessionDir,
   };
   if (process.env.SSL_CERT_FILE) {
+    environment.CURL_CA_BUNDLE = process.env.SSL_CERT_FILE;
     environment.GIT_SSL_CAINFO = process.env.SSL_CERT_FILE;
   }
 

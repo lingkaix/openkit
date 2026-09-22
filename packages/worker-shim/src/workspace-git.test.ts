@@ -238,9 +238,10 @@ describe('workspace Git materialization', () => {
         ) as Record<string, string>;
         expect(observedEnvironment).toEqual({
           ...proxyEnvironment,
+          CURL_CA_BUNDLE: environmentCanaries.SSL_CERT_FILE,
           GIT_SSL_CAINFO: environmentCanaries.SSL_CERT_FILE,
         });
-        expect(observedEnvironment).not.toHaveProperty('CURL_CA_BUNDLE');
+        expect(observedEnvironment.CURL_CA_BUNDLE).not.toBe(environmentCanaries.CURL_CA_BUNDLE);
         expect(observedEnvironment).not.toHaveProperty('DENO_CERT');
         expect(observedEnvironment).not.toHaveProperty('GITHUB_TOKEN');
         expect(observedEnvironment).not.toHaveProperty('NODE_EXTRA_CA_CERTS');
@@ -436,6 +437,16 @@ describe('workspace Git materialization', () => {
     expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
     expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Unrecognized refusal\n');
     expect(readFileSync(logPath, 'utf8')).toContain('refs/heads/*');
+    const fetches = readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[])
+      .filter((args) => args.includes('fetch'));
+    expect(fetches).toHaveLength(2);
+    for (const args of fetches) {
+      expect(args.indexOf('http.version=HTTP/1.1')).toBeGreaterThanOrEqual(0);
+      expect(args.indexOf('http.version=HTTP/1.1')).toBeLessThan(args.indexOf('fetch'));
+    }
   });
 
   it('does not fetch advertised refs after a direct fetch timeout', async () => {
@@ -458,7 +469,7 @@ describe('workspace Git materialization', () => {
             sessionDir
           )
         )
-      ).rejects.toThrow('Remote Git commit fetch failed.');
+      ).rejects.toThrow('Remote Git commit fetch transport failed.');
     } finally {
       if (previousTimeout === undefined) {
         delete process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;
@@ -493,6 +504,78 @@ describe('workspace Git materialization', () => {
           )
       )
     ).rejects.toThrow('Remote Git commit fetch failed.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('checks out after a certificate failure when the advertised fallback succeeds', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# TLS then advertised\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-tls-fallback-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await withScriptedGit(root, join(root, 'git-invocations.log'), { shaFetch: 'tls' }, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# TLS then advertised\n');
+  });
+
+  it('classifies a terminal certificate failure and keeps the partial slot', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# TLS failure\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-tls-terminal-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { advertisedFetch: 'tls', shaFetch: 'tls' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow('Remote Git commit fetch TLS failed.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('classifies a terminal transport failure after the advertised fallback', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Transport failure\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-transport-terminal-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { advertisedFetch: 'early-eof', shaFetch: 'unrecognized' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow('Remote Git commit fetch transport failed.');
 
     expect(existsSync(join(target, '.git'))).toBe(true);
     expect(existsSync(join(target, 'README.md'))).toBe(false);
@@ -928,8 +1011,9 @@ async function withScriptedGit(
   root: string,
   logPath: string,
   behavior: {
+    advertisedFetch?: 'early-eof' | 'tls';
     catFile?: 'fail';
-    shaFetch: 'hang-after-refusal' | 'unrecognized' | 'missing-ref';
+    shaFetch: 'hang-after-refusal' | 'tls' | 'unrecognized' | 'missing-ref';
   },
   body: () => Promise<void>
 ): Promise<void> {
@@ -951,6 +1035,18 @@ if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'hang-after-refusal') {
   return;
 }
 if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'unrecognized') {
+  process.stderr.write('fatal: early EOF\\n');
+  process.exit(128);
+}
+if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'tls') {
+  process.stderr.write('fatal: SSL certificate problem: unable to get local issuer certificate\\n');
+  process.exit(128);
+}
+if (args.includes('fetch') && args.some((arg) => String(arg).includes('refs/')) && ${JSON.stringify(behavior.advertisedFetch ?? '')} === 'tls') {
+  process.stderr.write('fatal: SSL certificate problem: self-signed certificate in certificate chain\\n');
+  process.exit(128);
+}
+if (args.includes('fetch') && args.some((arg) => String(arg).includes('refs/')) && ${JSON.stringify(behavior.advertisedFetch ?? '')} === 'early-eof') {
   process.stderr.write('fatal: early EOF\\n');
   process.exit(128);
 }

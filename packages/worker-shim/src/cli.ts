@@ -490,6 +490,8 @@ function describeWorkerStartupFailure(
     'Remote Git commit fetch failed.': 'git_fetch_failed',
     'Remote Git commit is not available from the configured remote.':
       'git_fetch_commit_unavailable',
+    'Remote Git commit fetch TLS failed.': 'git_fetch_tls_failed',
+    'Remote Git commit fetch transport failed.': 'git_fetch_transport_failed',
     'Remote Git commit checkout failed.': 'git_checkout_failed',
     'Worker control readiness timed out.': 'control_timeout',
   };
