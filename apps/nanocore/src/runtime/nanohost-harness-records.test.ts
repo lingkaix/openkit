@@ -573,7 +573,31 @@ describe('private NanoHost Harness records', () => {
         schemaVersion: 2 as const,
         sequence: 0,
       };
+      const explanation = {
+        code: 'git_fetch_http_refused',
+        stage: 'workspace_materialization',
+        operation: 'git.fetch',
+        dependency: 'git_remote',
+        producer: 'worker-shim',
+        observedAt: '2026-09-22T00:00:00.000Z',
+        basis: 'direct_observation',
+        subprocess: 'exit',
+        httpStatus: 403,
+        enforcement: 'unavailable',
+        evidence: { availability: 'partial', outputTruncated: false },
+      } as const;
       for (const startupFailure of [
+        {
+          stage: 'workspace_materialization',
+          reason: 'git_fetch_http_refused',
+          explanation: { ...explanation, observedAt: `2026-09-22T00:00:00.${'0'.repeat(20000)}Z` },
+        },
+        { stage: 'workspace_materialization', reason: 'git_fetch_tls_failed', explanation },
+        {
+          stage: 'workspace_materialization',
+          reason: 'git_fetch_http_refused',
+          explanation: { ...explanation, stderr: 'secret-canary' },
+        },
         { stage: 'workspace_materialization', reason: 'secret-canary' },
         { stage: 'unknown_stage', reason: 'failed' },
         { stage: 'workspace_materialization', reason: 'failed', message: 'secret-canary' },

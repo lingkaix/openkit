@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ProductTurnSchema, SseEventEnvelopeSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -62,6 +63,50 @@ function projectInterruption(store: FsStore) {
 }
 
 describe('governed worker turn failure projection', () => {
+  it('retains the first normalized explanation in cold reads, lists and terminal events', () => {
+    const { dataRoot, store, turn } = createFixture();
+    const explanation = {
+      code: 'git_fetch_http_refused',
+      stage: 'workspace_materialization',
+      operation: 'git.fetch',
+      dependency: 'git_remote',
+      producer: 'worker-shim',
+      observedAt: '2026-09-22T00:00:00.000Z',
+      basis: 'direct_observation',
+      subprocess: 'exit',
+      httpStatus: 403,
+      enforcement: 'unavailable',
+      evidence: { availability: 'partial', outputTruncated: false },
+    } as const;
+    terminalizeGovernedWorkerTurn({
+      agentSessionId: 'as_worker_failure',
+      completedAt: '2026-09-22T00:00:01.000Z',
+      errorCode: 'worker_governance_turn_failed',
+      message: 'Repository HTTP refusal; attribution unavailable.',
+      explanation,
+      outcome: 'failed',
+      requestId: null,
+      store,
+      turnId: turn.id,
+    });
+    const cold = new FsStore({ dataRoot });
+    // Restart repair cannot replace the original diagnostic with a generic cleanup error.
+    projectFailure(cold);
+    expect(cold.getTurnById(turn.id).error?.explanation).toEqual(explanation);
+    expect(
+      ProductTurnSchema.parse(cold.listThreadTurns(turn.workspaceId, turn.threadId)[0]).error
+        ?.explanation
+    ).toEqual(explanation);
+    const events = cold.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed');
+    expect(events).toHaveLength(1);
+    expect(SseEventEnvelopeSchema.parse(events[0])).toMatchObject({
+      data: { turn: { error: { explanation } } },
+    });
+    expect(JSON.stringify({ turn: cold.getTurnById(turn.id), events })).not.toContain(
+      'canary-secret'
+    );
+  });
+
   it('treats a missing pre-anchor turn as an idempotent no-op', () => {
     const store = createDemoStore();
 
