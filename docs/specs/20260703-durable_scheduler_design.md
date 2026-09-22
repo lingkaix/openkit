@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-09
+updated: 2026-09-22
 ---
 # Durable Scheduler Design
 
@@ -118,6 +118,30 @@ Only facts that affect authorization, duplicate external work, data loss, produc
 
 A complete terminal owner tuple may finish through the existing owner transaction. A partial or contradictory tuple remains `recovery_required`; the scheduler does not infer a winner, synthesize a receipt, repeat an external effect, or create a settlement state.
 
+## Missing-Turn Checkpoint Maintenance
+
+Boot classification stays fail-closed when a Task checkpoint's product Turn cannot be read. `getTurn` reports one error both when that Turn is absent and when the same Turn id belongs to another Workspace or Thread. Restart recovery MUST NOT treat that error, a null `workerSessionId`, a failed checkpoint, or a `turn-start-failed` lease as proof that no Worker ran, and it MUST NOT delete the checkpoint.
+
+A stopped-NanoCore operator command is the only supported deletion path for that leftover. It MUST hold the existing data-root lock, default to dry-run, accept only explicit checkpoint identities, and, on apply, write a consistent backup of each Workspace database it will change to a destination outside the data root before rechecking the selected row. It then MAY delete only that checkpoint through the existing terminal-checkpoint clearer.
+
+The command admits a row only when every predicate holds:
+
+- The checkpoint stage is `failed`, `stopReason` is `error`, `workerSessionId` is null, `goalId` is null, `taskId` is null, and `iteration` is 0.
+- The checkpoint has no context digest, context-assembly diagnostics, item or artifact evidence, runtime-evidence row, evidence bundle, environment package, worker-control record, backend session, or AgentSession for that Turn.
+- Durable Turn files and the global Turn index both show that the Turn id is absent. A Turn present under any Workspace or Thread, including a lineage mismatch, refuses cleanup. Unreadable or corrupt history refuses cleanup for the invocation and deletes nothing.
+- The Workspace and Thread records match the selected identity.
+- No lease for the Turn is live, and the Turn does not have more than one lease.
+- No command receipt, placement plan, package, control record, session, or admission contradicts the single proof below.
+
+Proof is exactly one of these tuples. Anything else, including a missing or ambiguous owner, leaves the row for inspection:
+
+- Exactly one admission for that Workspace, Thread, Turn, and command request has status `cancelled`, and that Turn has no placement plan and no lease.
+- Exactly one lease for that Workspace, Thread, and Turn is `failed` with release reason `turn-start-failed` and recovery state `needs-evidence`, its backend anchor is `unanchored`, and it has no accepted heartbeat, worker sequence, process key, or route-token hash. That lease's admission is the only admission for the request and Turn, its status is `admitted`, and its request id is the checkpoint request id.
+
+The command does not create, update, or synthesize a Turn, receipt, lease, admission, or capacity row. It does not retry work, repair product history, clean runtime state, or release scheduler capacity. Deletion removes only the proved checkpoint. A later apply that no longer finds that checkpoint is a no-op. A row that changes between classification and deletion is left in place. Lock loss, backup failure, or an unreadable dependency refuses the invocation before deletion.
+
+This exception does not apply to Goal checkpoints, nonterminal checkpoints, checkpoints with a durable Turn, or any boot path.
+
 ## Backpressure And Failure Semantics
 
 - A target with no compatible Harness or Sandbox capacity keeps eligible work in the bounded queue or returns the existing typed capacity denial.
@@ -136,6 +160,8 @@ The current admission insert is not request-idempotent, and `startProductTurn` m
 
 The pre-listen restart scan now performs only durable classification, fencing, read-only restoration, and deterministic result-only expectation registration. The existing post-listener single-flight maintenance service resumes exact cleanup and fail-closed accepted-final-status recovery through ordinary transport. Worker-governance preparation consumes the sole configured NanoHost readiness projection before any fresh, reused, or replacement AgentSession can acquire a lease; runtime-binding and Sandbox uncertainty remain non-reusable and preserve the existing capacity fence. Real restart, reconnect, cleanup, and saturation acceptance remains outstanding.
 
+Boot Task checkpoint classification still refuses a missing Turn. The stopped-server `task-checkpoint:clean` command implements the missing-Turn maintenance exception above: dry-run is the default, apply requires explicit checkpoint identities and an external Workspace-database backup, and deletion is limited to one proved failed Task checkpoint.
+
 ## Alternatives Considered
 
 ### Keep The Scaled Profile In The V1 Contract
@@ -153,6 +179,7 @@ Rejected. Durable lease identity and reconnect fencing are necessary to reject s
 ## Testing Strategy / Acceptance Criteria
 
 - L1 covers admission validation, per-Turn, per-Thread, and per-AgentSession uniqueness, Harness and Sandbox capacity bounds, lease-before-launch, heartbeat and renewal bounds, exact reconnect predicates, wrong-key rejection, ordinary terminal unit release without Sandbox deletion, and Harness-, Sandbox-, and Runtime-Epoch-width cleanup fencing.
+- L1 covers the missing-Turn checkpoint command: a proved cancelled admission and a proved pre-persistence `turn-start-failed` lease are reported by dry-run, removed only on explicit apply, and unchanged by a repeated apply. Lineage mismatch, unreadable history, a live or multiple lease, a non-null session, a nonterminal checkpoint, Goal ownership, runtime evidence, and missing provenance preserve the checkpoint. Boot classification of a missing Turn stays fail-closed.
 - L1 covers atomic recurring-occurrence acceptance with the exact deterministic admission row, idempotent exact replay, and conflicting replay rejection.
 - L2 covers the lease-bound worker-control token, lineage, sequence, and final-status boundary.
 - L3 retains one deterministic NanoCore kill/restart scenario: predecessor-fenced exact adoption must continue the same worker without duplicate sandbox creation or launch, while failed proof must reach the documented fallback in which the Turn retains the truthful result its lifecycle owner determined and effect uncertainty and any recovery requirement are expressed by those owners.
@@ -166,6 +193,7 @@ Acceptance requires one working configured `RuntimeTarget` projecting one local 
 - Risk: a stale worker continues after Core restart. Mitigation: exact process-key, lineage, sequence, deadline, epoch, and lease fencing.
 - Risk: post-launch uncertainty duplicates an external effect. Mitigation: no automatic replacement; cleanup and explicit interruption precede any new authorized attempt.
 - Risk: Private scheduler records become a second workflow engine. Mitigation: they own admission and lease safety only and may be deleted when they do not serve that boundary.
+- Risk: a missing-Turn error hides a Turn that belongs to another Workspace or Thread, and deleting that checkpoint discards recovery evidence for a Worker that may have run. Mitigation: boot never deletes on that error, and the operator command deletes only an explicit row whose durable history and global Turn index both prove absence together with exact cancellation or pre-persistence start-failure evidence.
 
 ## Deferred / Future Work
 

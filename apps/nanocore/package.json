@@ -16,6 +16,7 @@
     "physical-epoch:migrate": "tsx scripts/migrate-physical-epochs.ts",
     "workspace-storage:migrate": "tsx scripts/migrate-workspace-storage.ts",
     "thread-visibility:migrate": "tsx scripts/migrate-thread-visibility-cutover.ts",
+    "task-checkpoint:clean": "tsx scripts/clean-cancelled-admission-task-checkpoints.ts",
     "openapi:generate": "tsx scripts/generate-openapi.ts",
     "openapi:validate": "tsx scripts/validate-openapi.ts",
     "openapi:check": "pnpm run openapi:generate && pnpm run openapi:validate && git diff --exit-code -- openapi/app-api.openapi.json",
