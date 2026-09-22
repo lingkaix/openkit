@@ -430,6 +430,38 @@ interface LivePartialSandboxMaterialization {
   deleteDispatched: boolean;
 }
 
+/**
+ * Returns product guidance for a closed workspace-materialization refusal.
+ *
+ * @param operation Harness operation that produced the result.
+ * @param disposition Harness result disposition.
+ * @param reason Harness reason code.
+ * @param startup Validated startup failure, when the refusal carried one.
+ * @returns Guidance appended to the shared Turn error, or an empty string.
+ */
+function workspaceMaterializationRefusalExplanation(
+  operation: string,
+  disposition: string,
+  reason: unknown,
+  startup: { readonly stage: string; readonly reason: string } | null
+): string {
+  if (
+    operation !== 'turn.start' ||
+    disposition !== 'refused' ||
+    reason !== 'dependency_failed' ||
+    startup?.stage !== 'workspace_materialization'
+  ) {
+    return '';
+  }
+  if (startup.reason === 'retained_baseline_conflict') {
+    return ' The retained checkout and requested commit differ; choose a fresh work environment for the requested commit, or restore the source configuration to the retained checkout’s original commit before reusing it.';
+  }
+  if (startup.reason === 'git_fetch_commit_unavailable') {
+    return ' The configured Git remote does not serve the requested commit; publish that commit or select one the remote serves, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
+  }
+  return '';
+}
+
 /** NanoHost-backed effect boundary used by the sole production turn executor. */
 class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private readonly agentSessionCloseOwners = new Map<string, NanoHostAgentSessionCloseOwner>();
@@ -589,15 +621,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const reason = result.body.reasonCode;
     const startup = WorkerStartupFailureSchema.safeParse(result.body.startupFailure);
     const detail = startup.success ? ` (${startup.data.stage}: ${startup.data.reason})` : '';
-    const explanation =
-      pending.operation === 'turn.start' &&
-      result.disposition === 'refused' &&
-      reason === 'dependency_failed' &&
-      startup.success &&
-      startup.data.stage === 'workspace_materialization' &&
-      startup.data.reason === 'retained_baseline_conflict'
-        ? ' The retained checkout and requested commit differ; choose a fresh work environment for the requested commit, or restore the source configuration to the retained checkout’s original commit before reusing it.'
-        : '';
+    const explanation = workspaceMaterializationRefusalExplanation(
+      pending.operation,
+      result.disposition,
+      reason,
+      startup.success ? startup.data : null
+    );
     pending.reject(
       new Error(
         `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.${explanation}`

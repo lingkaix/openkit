@@ -353,6 +353,88 @@ describe('workspace Git materialization', () => {
     expect(existsSync(target)).toBe(true);
     expect(existsSync(join(target, '.git'))).toBe(true);
   });
+
+  it('checks out an advertised commit when the remote refuses a raw object want', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Advertised source\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-advertised-fetch-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await withShaRefusingGit(root, false, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Advertised source\n');
+  });
+
+  it('checks out a tag-only commit when the remote refuses a raw object want', async () => {
+    const remote = createTagOnlyGitRemote();
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-tag-fetch-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await withShaRefusingGit(root, false, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Tag only\n');
+  });
+
+  it('keeps an ordinary fetch failure when the advertised fallback fails', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Present source\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-fallback-failed-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withShaRefusingGit(root, true, () =>
+        materializeWorkspaceGitInputs(
+          [createWorkspaceGitInput(target, remote.commit, remote.path)],
+          workspaceRoot,
+          sessionDir
+        )
+      )
+    ).rejects.toThrow('Remote Git commit fetch failed.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('refuses a commit the configured remote does not serve and keeps the partial slot', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Other commit\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-missing-commit-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, 'a'.repeat(40), remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    ).rejects.toThrow('Remote Git commit is not available from the configured remote.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
 });
 
 describe('workspace Git publication', () => {
@@ -737,6 +819,69 @@ interface PublishedManifest extends Record<string, unknown> {
   base: { commit: string };
   changedPaths: unknown[];
   createdAt: string;
+}
+
+function createTagOnlyGitRemote(): { commit: string; path: string } {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-git-tag-remote-'));
+  const sourceDir = join(root, 'source');
+  const remotePath = join(root, 'remote.git');
+  mkdirSync(sourceDir);
+  git(sourceDir, ['init']);
+  git(sourceDir, ['config', 'user.email', 'worker@example.com']);
+  git(sourceDir, ['config', 'user.name', 'Worker']);
+  writeFixtureFile(sourceDir, 'README.md', '# Branch\n');
+  git(sourceDir, ['add', '.']);
+  git(sourceDir, ['commit', '-m', 'branch']);
+  writeFixtureFile(sourceDir, 'README.md', '# Tag only\n');
+  git(sourceDir, ['add', '.']);
+  git(sourceDir, ['commit', '-m', 'tag']);
+  const commit = gitText(sourceDir, ['rev-parse', 'HEAD']);
+  git(sourceDir, ['tag', 'v1', commit]);
+  git(sourceDir, ['reset', '--hard', 'HEAD~1']);
+  execFileSync('git', ['clone', '--bare', sourceDir, remotePath], { stdio: 'ignore' });
+  return { commit, path: remotePath };
+}
+
+async function withShaRefusingGit(
+  root: string,
+  failAdvertisedFetch: boolean,
+  body: () => Promise<void>
+): Promise<void> {
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const advertisedRefusal = failAdvertisedFetch
+    ? `if (args.includes('fetch') && args.some((arg) => String(arg).includes('refs/'))) {
+  process.stderr.write('fatal: unable to access origin\\n');
+  process.exit(128);
+}
+`
+    : '';
+  writeFileSync(
+    join(bin, 'git'),
+    `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args.includes('fetch') && args.some((arg) => /^[0-9a-f]{40}$/.test(arg))) {
+  process.stderr.write('fatal: remote error: upload-pack: not our ref ' + args.at(-1) + '\\n');
+  process.exit(128);
+}
+${advertisedRefusal}const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
+process.exit(result.status === null ? 1 : result.status);
+`
+  );
+  chmodSync(join(bin, 'git'), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${delimiter}${previousPath ?? ''}`;
+  try {
+    await body();
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  }
 }
 
 function createBareGitRemote(files: Readonly<Record<string, string | Buffer>>): {
