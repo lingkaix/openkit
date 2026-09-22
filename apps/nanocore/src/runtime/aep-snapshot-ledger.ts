@@ -92,6 +92,35 @@ export function requireAgentEnvironmentPackageSnapshot(
 }
 
 /**
+ * Reads the one snapshot a durable record names, or null when it was never recorded.
+ *
+ * Callers that already hold an AgentSession and snapshot id use this instead of the export listing,
+ * so an unrelated malformed snapshot cannot fail their read. A snapshot that exists but does not
+ * validate still throws: only absence is reported as null.
+ *
+ * @param workspaceDb Open workspace database.
+ * @param workspaceId Workspace id.
+ * @param agentSessionId AgentSession that owns the snapshot.
+ * @param snapshotId AEP snapshot id.
+ * @returns Stored AEP snapshot record, or null when no snapshot file exists.
+ */
+export function findNamedAgentEnvironmentPackageSnapshot(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  agentSessionId: string,
+  snapshotId: string
+): AgentEnvironmentPackageSnapshotRecord | null {
+  assertWorkspaceOwner(workspaceDb, workspaceId);
+  const path = snapshotPath(workspaceDb, agentSessionId, snapshotId);
+
+  if (!existsSync(path)) {
+    return null;
+  }
+
+  return readSnapshotRecord(workspaceDb, path, agentSessionId, snapshotId);
+}
+
+/**
  * Lists redacted AEP snapshots for workspace export.
  *
  * @param workspaceDb Open workspace database.

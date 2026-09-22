@@ -38,6 +38,7 @@ import {
   readPolicyApprovalTerminalWinner,
   recordProductPermissionDecision,
 } from './policy/permission-decisions.js';
+import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
   mcpToolArgumentsContentDigest,
@@ -768,15 +769,16 @@ async function serializeMcpToolCall<T>(
 
 /**
  * Returns whether one stored MCP Item matches the ledger-owned decided publication.
- * `parentItemId` is deliberately excluded: `capability_calls` does not store parent, so boot cannot reconstruct it.
  *
  * @param existing Stored Item.
  * @param candidate Ledger reconstruction.
- * @returns True when identity, timestamps, status, tool, server, arguments, result, error, and causation match.
+ * @param parentComparable Whether the AEP snapshot supplied the decided `parentItemId`.
+ * @returns True when identity, lineage, timestamps, status, tool, server, arguments, result, and error match.
  */
 function mcpBootDecidedPublicationEqual(
   existing: ReturnType<FsStore['listAllItems']>[number],
-  candidate: ReturnType<FsStore['listAllItems']>[number]
+  candidate: ReturnType<FsStore['listAllItems']>[number],
+  parentComparable: boolean
 ): boolean {
   const recorded = existing as unknown as Record<string, unknown>;
   const reconstructed = candidate as unknown as Record<string, unknown>;
@@ -788,6 +790,8 @@ function mcpBootDecidedPublicationEqual(
     existing.type === candidate.type &&
     existing.status === candidate.status &&
     existing.causationId === candidate.causationId &&
+    (!parentComparable ||
+      (recorded.parentItemId ?? null) === (reconstructed.parentItemId ?? null)) &&
     existing.createdAt === candidate.createdAt &&
     existing.completedAt === candidate.completedAt &&
     recorded.durationMs === reconstructed.durationMs &&
@@ -799,6 +803,37 @@ function mcpBootDecidedPublicationEqual(
   );
 }
 
+/**
+ * Resolves the `parentItemId` the decided MCP publication carried, from the AEP snapshot the call row names.
+ *
+ * Both production snapshot writers are conditional, so a terminal call row can name a snapshot that was
+ * never recorded. An absent snapshot leaves the parent unknown, and that case keeps the earlier behaviour
+ * exactly: the fill still recovers the Item without a parent and the parent is not compared, so this reader
+ * is never narrower than the one it replaced. Failing boot instead would punish a state production already
+ * produces, and skipping the fill would lose the Item this path exists to recover. A snapshot that exists
+ * but does not validate still fails.
+ *
+ * @param workspaceDb Open workspace database that owns the snapshot.
+ * @param workspaceId Workspace that owns the call row.
+ * @param row Terminal MCP call row with its AgentSession and snapshot lineage.
+ * @returns The decided parent when the snapshot is readable, otherwise an unknown result.
+ */
+function decidedMcpParentItemId(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  row: { readonly agent_session_id: string; readonly package_snapshot_id: string }
+): { readonly known: true; readonly parentItemId: string | null } | { readonly known: false } {
+  const snapshot = findNamedAgentEnvironmentPackageSnapshot(
+    workspaceDb,
+    workspaceId,
+    row.agent_session_id,
+    row.package_snapshot_id
+  );
+  return snapshot
+    ? { known: true, parentItemId: snapshot.snapshot.scope.itemId ?? null }
+    : { known: false };
+}
+
 /** Recreates missing product-safe MCP Items from terminal durable CapabilityCalls at boot. */
 export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): number {
   let recovered = 0;
@@ -808,10 +843,12 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
       const rows = workspaceDb.sqlite
         .prepare(
           `SELECT
+             agent_session_id,
              call_id,
              completed_at,
              error_code,
              item_id,
+             package_snapshot_id,
              provider_ref,
              service_ref,
              started_at,
@@ -820,9 +857,12 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
              turn_id
            FROM capability_calls
            WHERE family = 'mcp'
+             AND capability_id = 'mcp.call_tool'
              AND operation = 'mcp.call_tool'
              AND status NOT IN ('queued', 'running')
+             AND agent_session_id IS NOT NULL
              AND item_id IS NOT NULL
+             AND package_snapshot_id IS NOT NULL
              AND provider_ref IS NOT NULL
              AND service_ref LIKE 'mcp-tool:%'
              AND thread_id IS NOT NULL
@@ -831,10 +871,12 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
            ORDER BY completed_at, call_id`
         )
         .all() as Array<{
+        agent_session_id: string;
         call_id: string;
         completed_at: string;
         error_code: string | null;
         item_id: string;
+        package_snapshot_id: string;
         provider_ref: string;
         service_ref: string;
         started_at: string | null;
@@ -842,7 +884,10 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
         thread_id: string;
         turn_id: string;
       }>;
+      const storedItems = new Map(store.listAllItems().map((item) => [item.id, item]));
       for (const row of rows) {
+        const decidedParent = decidedMcpParentItemId(workspaceDb, workspaceId, row);
+        const parentItemId = decidedParent.known ? decidedParent.parentItemId : null;
         const candidate = {
           arguments: null,
           causationId: row.call_id,
@@ -853,6 +898,7 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
             : 0,
           error: row.status === 'succeeded' ? null : row.error_code,
           id: row.item_id,
+          ...(parentItemId ? { parentItemId } : {}),
           result: null,
           server: row.provider_ref,
           status:
@@ -868,16 +914,16 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
           workspaceId,
         };
         const parsed = ItemSchema.parse(candidate);
-        const existing = store.listAllItems().find((item) => item.id === row.item_id);
+        const existing = storedItems.get(row.item_id);
         if (existing) {
-          if (!mcpBootDecidedPublicationEqual(existing, parsed)) {
+          if (!mcpBootDecidedPublicationEqual(existing, parsed, decidedParent.known)) {
             throw new Error(
               `MCP boot backfill conflicts with already-decided Item: ${row.item_id}`
             );
           }
           continue;
         }
-        store.createItem(parsed, ALREADY_DECIDED_PUBLICATION_ADMISSION);
+        storedItems.set(parsed.id, store.createItem(parsed, ALREADY_DECIDED_PUBLICATION_ADMISSION));
         recovered += 1;
       }
     } finally {

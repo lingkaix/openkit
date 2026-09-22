@@ -75,7 +75,11 @@ import {
 } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+  recordTestAgentEnvironmentPackage,
+} from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
@@ -2723,16 +2727,21 @@ describe('worker MCP routes', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
     try {
+      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+        suffix: 'recovery',
+        triggerActor: turn.triggerActor,
+        workspaceInputIds: [],
+      });
       const call = startCapabilityCall({
         agentId: 'agent_codex',
-        agentSessionId: 'as_recovery',
+        agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: turn.triggerActor,
         callId: 'cap_mcp_recovery',
         capabilityId: 'mcp.call_tool',
         family: 'mcp',
         itemId: 'it_mcp_recovery',
         operation: 'mcp.call_tool',
-        packageSnapshotId: 'aepsnap_recovery',
+        packageSnapshotId: environmentPackage.snapshotId,
         providerRef: 'echo',
         redactionClass: 'metadata-only',
         serviceRef: 'mcp-tool:echo',

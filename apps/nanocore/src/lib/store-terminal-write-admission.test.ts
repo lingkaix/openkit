@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { openWorkspaceDb, verifyAndMigrateExistingScopedDatabases } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import {
@@ -80,9 +81,13 @@ function statusItem(
  */
 function seedMcpBootItem(input: {
   callId: string;
+  capabilityId?: string;
   createdAt: string;
   itemId: string;
   parentItemId?: string;
+  scopeItemId?: string;
+  skipExistingItem?: boolean;
+  skipSnapshot?: boolean;
 }): { dataRoot: string; store: FsStore } {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-boot-'));
   const store = createDemoStore({ dataRoot });
@@ -91,17 +96,35 @@ function seedMcpBootItem(input: {
   applyScopedMigrations(workspaceDb);
   const ledgerNow = new Date(COMPLETED_AT);
   try {
+    const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      suffix: 'mcp_boot',
+      triggerActor: turn.triggerActor,
+      workspaceInputIds: [],
+      ...(input.scopeItemId ? { itemId: input.scopeItemId } : {}),
+    });
+    if (input.skipSnapshot) {
+      rmSync(
+        join(
+          dirname(dirname(workspaceDb.sqlite.name)),
+          'runtime',
+          'agent-sessions',
+          environmentPackage.scope.agentSessionId,
+          'aep-snapshots'
+        ),
+        { force: true, recursive: true }
+      );
+    }
     const call = startCapabilityCall({
       agentId: 'agent_codex',
-      agentSessionId: 'as_mcp_boot',
+      agentSessionId: environmentPackage.scope.agentSessionId,
       authorityActor: turn.triggerActor,
       callId: input.callId,
-      capabilityId: 'mcp.call_tool',
+      capabilityId: input.capabilityId ?? 'mcp.call_tool',
       family: 'mcp',
       itemId: input.itemId,
       now: ledgerNow,
       operation: 'mcp.call_tool',
-      packageSnapshotId: 'aepsnap_boot',
+      packageSnapshotId: environmentPackage.snapshotId,
       providerRef: 'echo',
       redactionClass: 'metadata-only',
       serviceRef: 'mcp-tool:echo',
@@ -118,6 +141,9 @@ function seedMcpBootItem(input: {
     });
   } finally {
     workspaceDb.sqlite.close();
+  }
+  if (input.skipExistingItem) {
+    return { dataRoot, store };
   }
   store.createItem(
     {
@@ -544,19 +570,72 @@ describe('post-terminal write admission', () => {
     );
   });
 
-  it('admits MCP boot when only parentItemId disagrees with the reconstructed publication', () => {
-    // Known PRECEDENCE-002 gap: capability_calls does not store parentItemId, so boot cannot reconstruct it and equality does not compare it.
+  it('rejects MCP boot when parentItemId disagrees with the snapshot-decided publication', () => {
     const { dataRoot, store } = seedMcpBootItem({
       callId: 'cap_mcp_parent',
       createdAt: COMPLETED_AT,
       itemId: 'it_mcp_parent',
       parentItemId: 'it_other_parent',
+      scopeItemId: 'it_decided_parent',
+    });
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
+      /MCP boot backfill conflicts with already-decided Item: it_mcp_parent/
+    );
+  });
+
+  it('fills a missing MCP Item with the parentItemId its AEP snapshot decided', () => {
+    const { dataRoot, store } = seedMcpBootItem({
+      callId: 'cap_mcp_parent_fill',
+      createdAt: COMPLETED_AT,
+      itemId: 'it_mcp_parent_fill',
+      scopeItemId: 'it_decided_parent',
+      skipExistingItem: true,
+    });
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+    expect(store.listAllItems().find((item) => item.id === 'it_mcp_parent_fill')).toMatchObject({
+      parentItemId: 'it_decided_parent',
+    });
+  });
+
+  it('keeps the earlier fill and comparison when no AEP snapshot was ever recorded', () => {
+    // Both production snapshot writers are conditional, so this reader must never be narrower than the one it replaced.
+    const missing = seedMcpBootItem({
+      callId: 'cap_mcp_no_snapshot_fill',
+      createdAt: COMPLETED_AT,
+      itemId: 'it_mcp_no_snapshot_fill',
+      skipExistingItem: true,
+      skipSnapshot: true,
+    });
+    verifyAndMigrateExistingScopedDatabases(missing.dataRoot);
+    expect(reconcileWorkerMcpItems(missing.dataRoot, missing.store)).toBe(1);
+
+    const present = seedMcpBootItem({
+      callId: 'cap_mcp_no_snapshot_parent',
+      createdAt: COMPLETED_AT,
+      itemId: 'it_mcp_no_snapshot_parent',
+      parentItemId: 'it_other_parent',
+      skipSnapshot: true,
+    });
+    verifyAndMigrateExistingScopedDatabases(present.dataRoot);
+    expect(reconcileWorkerMcpItems(present.dataRoot, present.store)).toBe(0);
+  });
+
+  it('leaves a generative MCP call row alone because it published no tool-call Item', () => {
+    // Generative rows carry capability_id 'mcp.call_tool.<name>' and store the parent Item in item_id.
+    const { dataRoot, store } = seedMcpBootItem({
+      callId: 'cap_mcp_generative',
+      capabilityId: 'mcp.call_tool.openkit_generative_present',
+      createdAt: COMPLETED_AT,
+      itemId: 'it_mcp_generative_parent',
+      skipExistingItem: true,
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
-    expect(store.listAllItems().find((item) => item.id === 'it_mcp_parent')).toMatchObject({
-      parentItemId: 'it_other_parent',
-    });
+    expect(store.listAllItems().find((item) => item.id === 'it_mcp_generative_parent')).toBe(
+      undefined
+    );
   });
 
   it('rejects a brand-new turn-output Artifact against a sealed Turn', () => {

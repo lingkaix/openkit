@@ -146,13 +146,15 @@ export interface RecordTestAgentEnvironmentPackageInput {
   readonly triggerActor: ActorRef;
   /** Workspace input ids expected to produce materialization records. */
   readonly workspaceInputIds: readonly string[];
+  /** Optional Item lineage the recorded scope carries. */
+  readonly itemId?: string;
 }
 
 /**
  * Records one deterministic AEP snapshot for scheduler recovery tests.
  *
  * @param workspaceDb Workspace database that owns the package snapshot.
- * @param input Stable lineage suffix and expected workspace input ids.
+ * @param input Stable lineage suffix, expected workspace input ids, and optional Item lineage.
  * @returns Parsed package snapshot with production-shaped workspace input ids.
  */
 export function recordTestAgentEnvironmentPackage(
@@ -196,9 +198,16 @@ export function recordTestAgentEnvironmentPackage(
     })
   );
 
+  const scoped = input.itemId
+    ? AgentEnvironmentPackageSchema.parse({
+        ...environmentPackage,
+        scope: { ...environmentPackage.scope, itemId: input.itemId },
+      })
+    : environmentPackage;
+
   recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     createdAt: '2026-07-05T00:00:01.000Z',
-    environmentPackage,
+    environmentPackage: scoped,
   });
-  return environmentPackage;
+  return scoped;
 }
