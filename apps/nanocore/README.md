@@ -71,7 +71,7 @@ The source commit must already exist in the linked NanoCore repository through t
 - live image acquisition, build and inspection failures, and fully rolled-back storage reservation failures before Sandbox creation, settle cleanup locally; they do not install restart-only cleanup expectations or fence the healthy NanoHost connection on its next idle poll. Process restart discards that local proof and retains the existing conservative recovery behavior
 - restart Phase 8 performs only durable classification, fencing, read-only restoration, and result-only expectation registration; after the ordinary listener is available, the existing single-flight lease-maintenance service drains effect-owning cleanup and fail-closed accepted-final-status recovery
 - a successor polling before retained-result delivery settles prior-connection accepted effects and associated result-only expectations in one unknown-outcome fence; undispatched commands remain queued, known durable image settlements retain their results, and durable cleanup/capacity fences still require the existing later fresh-coordinator proof
-- Task checkpoint classification recognizes the exact `conversation.submit` Worker receipt before the direct `task.start` path; both retain their own command identity, and terminal cleanup uses the existing recovery owner without fabricating a second command receipt. Terminal Task checkpoints with no matching scheduler lease are cleared when the product Turn is already completed, failed, or cancelled and no live lease remains; non-terminal or interrupted leftovers stay fail-closed
+- Task checkpoint classification recognizes the exact `conversation.submit` Worker receipt before the direct `task.start` path; both retain their own command identity, and terminal cleanup uses the existing recovery owner without fabricating a second command receipt. Terminal Task checkpoints with no matching scheduler lease are cleared when the product Turn is already completed, failed, or cancelled and no live lease remains; non-terminal or interrupted leftovers stay fail-closed. A missing Turn stays fail-closed at boot, including when that error would also be raised for a Turn owned by another Workspace or Thread. The stopped-server `task-checkpoint:clean` command can delete an explicit failed direct Task checkpoint only after dry-run review, an external Workspace-database backup, and exact cancelled-admission or pre-persistence `turn-start-failed` proof. It leaves leases, admissions, receipts, capacity, and product history in place
 - current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, registered-user Workspace invitation and membership lifecycle, owner transfer, explicit administrator access recovery, owner-authorized Workspace deletion and verified new-ID recovery, one-way user disable, Artifact inventory, content, direct import, idle-Thread introduction, version-owned Artifact Review decisions, Workspace Material revision, binding, proposal apply, and portable history, durable Workspace Sync Review decisions, workspace configuration, workspace knowledge editing, repository linking, Workspace Skill/MCP/plugin catalog management, per-app Light App SQLite Kernel commands, native Generative UI presentations linked from Thread Items, built-in Worker MCP `openkit-generative`, Goal Mode start and plan approval, actionable Goal Review, stored verification evidence, terminal summaries, unified Human Attention Action Center projection, provider-subscription login coordination, and dual-entry LLM Gateway routing
 - current non-goals: remote agents, full Sustained Mode automation, Task Evaluator loops, and an independent final-verifier completion gate
 
@@ -159,6 +159,20 @@ docker run --rm --entrypoint openkit-restore \
 ```
 
 From a source checkout, `pnpm --filter @openkit/nanocore run data-root:restore -- --backup-root /absolute/path/to/backup --data-root /absolute/path/to/restore-parent/data` still runs the same helper. The target must remain a child of a writable same-filesystem parent.
+
+Stopped missing-Turn Task checkpoint cleanup is separate from restore. Stop NanoCore, then dry-run explicit identities and apply only the proved rows:
+
+```bash
+pnpm --filter @openkit/nanocore run task-checkpoint:clean -- \
+  --data-root /absolute/path/to/openkit-data \
+  --backup-root /absolute/path/to/checkpoint-backup \
+  --checkpoint workspaceId:threadId:turnId
+pnpm --filter @openkit/nanocore run task-checkpoint:clean -- \
+  --data-root /absolute/path/to/openkit-data \
+  --backup-root /absolute/path/to/checkpoint-backup \
+  --checkpoint workspaceId:threadId:turnId \
+  --apply
+```
 
 Locked-out server administrators use the separate stopped-server operator. Keep NanoCore stopped, list active canonical Users, then issue one recovery credential with an exact owner-and-expiry confirmation:
 

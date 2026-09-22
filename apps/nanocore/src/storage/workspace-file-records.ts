@@ -783,6 +783,195 @@ export interface WorkspaceFileRecords {
   readonly turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
 }
 
+/** One published Turn identity read without repairing canonical files. */
+export interface PublishedTurnIdentity {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly workspaceId: string;
+}
+
+/** Read-only result of scanning published Turn files. */
+export type PublishedTurnIdentityRead =
+  | { readonly status: 'readable'; readonly turns: readonly PublishedTurnIdentity[] }
+  | { readonly status: 'unreadable' };
+
+/** Read-only result of scanning published AgentSession ids. */
+export type PublishedAgentSessionIdRead =
+  | { readonly sessionIds: readonly string[]; readonly status: 'readable' }
+  | { readonly status: 'unreadable' };
+
+/**
+ * Reads published Turn identities without creating layout, rewriting Thread envelopes, or repairing history.
+ *
+ * @param dataRoot Data root whose workspace tree should be inspected.
+ * @returns Turn identities whose file lineage matches their directories, or `unreadable` when a Turn file is missing or corrupt.
+ */
+export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIdentityRead {
+  try {
+    const turns: PublishedTurnIdentity[] = [];
+    const workspacesRoot = join(dataRoot, 'workspaces');
+    for (const workspaceId of listDirectoryNames(workspacesRoot)) {
+      if (workspaceId === '.staging') continue;
+      const workspaceRoot = join(workspacesRoot, workspaceId);
+      const workspaceRecord = WorkspaceSystemRecordSchema.parse(
+        readJson(join(workspaceRoot, 'workspace-record.json'))
+      );
+      if (workspaceRecord.id !== workspaceId) {
+        return { status: 'unreadable' };
+      }
+      const threadsRoot = join(workspaceRoot, 'threads');
+      for (const threadId of listDirectoryNames(threadsRoot)) {
+        const threadPath = join(threadsRoot, threadId, 'thread.json');
+        const thread = parseCanonicalThreadRecord(
+          readJson(threadPath),
+          workspaceId,
+          threadId,
+          () => {
+            throw new Error(
+              'Read-only history inspection does not migrate a Thread visibility envelope.'
+            );
+          }
+        );
+        if (thread.id !== threadId || thread.workspaceId !== workspaceId) {
+          return { status: 'unreadable' };
+        }
+        const turnsRoot = join(threadsRoot, threadId, 'turns');
+        for (const turnId of listDirectoryNames(turnsRoot)) {
+          readPublishedTurnRecord(turnsRoot, workspaceId, threadId, turnId);
+          turns.push({ threadId, turnId, workspaceId });
+        }
+      }
+    }
+    return { status: 'readable', turns };
+  } catch {
+    return { status: 'unreadable' };
+  }
+}
+
+/**
+ * Validates one published Turn and its Item log without rewriting canonical files.
+ *
+ * @param turnsRoot Thread turns directory.
+ * @param workspaceId Owning Workspace id.
+ * @param threadId Owning Thread id.
+ * @param turnId Turn directory id.
+ * @throws Error when the Turn schema, lineage, or Item history cannot be read.
+ */
+function readPublishedTurnRecord(
+  turnsRoot: string,
+  workspaceId: string,
+  threadId: string,
+  turnId: string
+): void {
+  const turnPath = join(turnsRoot, turnId, 'turn.json');
+  if (!existsSync(turnPath)) {
+    throw new Error(`Canonical turn directory is missing turn.json: ${turnId}.`);
+  }
+  const rawTurn = readJson(turnPath) as Record<string, unknown>;
+  if (rawTurn.items !== undefined && (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)) {
+    throw new Error(`Canonical turn metadata must not embed items: ${turnId}.`);
+  }
+  if (rawTurn.captureCoverage !== undefined) {
+    const parsedCoverage = CaptureCoverageBindingSchema.safeParse(rawTurn.captureCoverage);
+    if (!parsedCoverage.success) {
+      throw new Error(
+        `Canonical turn metadata has an invalid capture coverage binding: ${turnId}.`
+      );
+    }
+  }
+  const turnWithoutItems = TurnSchema.parse({ ...rawTurn, items: [] });
+  if (
+    turnWithoutItems.id !== turnId ||
+    turnWithoutItems.workspaceId !== workspaceId ||
+    turnWithoutItems.threadId !== threadId
+  ) {
+    throw new Error(`Turn record ${turnWithoutItems.id} has invalid lineage.`);
+  }
+  const itemsPath = join(turnsRoot, turnId, 'items.jsonl');
+  if (!existsSync(itemsPath)) {
+    throw new Error(`Canonical turn directory is missing items.jsonl: ${turnId}.`);
+  }
+  const items = readPublishedItemRevisions(itemsPath, workspaceId, threadId, turnId);
+  TurnSchema.parse({ ...turnWithoutItems, items });
+}
+
+/**
+ * Reads Item revisions with the canonical JSONL rules and does not repair the file.
+ *
+ * An incomplete final fragment is ignored. A completed malformed row is rejected.
+ *
+ * @param path Item JSONL path.
+ * @param workspaceId Owning Workspace id.
+ * @param threadId Owning Thread id.
+ * @param turnId Owning Turn id.
+ * @returns Current Item projection in first-seen order.
+ */
+function readPublishedItemRevisions(
+  path: string,
+  workspaceId: string,
+  threadId: string,
+  turnId: string
+): Item[] {
+  const order: string[] = [];
+  const items = new Map<string, Item>();
+  for (const value of readDurableCanonicalJsonLines(path)) {
+    const item = ItemSchema.parse(value);
+    const previous = items.get(item.id);
+    if (item.workspaceId !== workspaceId || item.threadId !== threadId || item.turnId !== turnId) {
+      throw new Error(`Item record ${item.id} has invalid lineage.`);
+    }
+    if (previous && (item.type !== previous.type || item.createdAt !== previous.createdAt)) {
+      throw new Error(`Item revision changed immutable identity: ${item.id}.`);
+    }
+    if (previous) {
+      assertImmutableItemAttribution(previous, item);
+    }
+    if (!items.has(item.id)) {
+      order.push(item.id);
+    }
+    items.set(item.id, item);
+  }
+  return order.map((itemId) => items.get(itemId) as Item);
+}
+
+/**
+ * Reads published AgentSession ids without repairing session records.
+ *
+ * @param dataRoot Data root that owns the Workspace.
+ * @param workspaceId Workspace whose runtime session directory should be inspected.
+ * @returns Session ids, or `unreadable` when a session directory cannot be proved.
+ */
+export function readPublishedAgentSessionIds(
+  dataRoot: string,
+  workspaceId: string
+): PublishedAgentSessionIdRead {
+  try {
+    const root = join(dataRoot, 'workspaces', workspaceId, 'runtime', 'agent-sessions');
+    const sessionIds: string[] = [];
+    for (const sessionId of listDirectoryNames(root)) {
+      const sessionPath = join(root, sessionId, 'session.json');
+      if (!existsSync(sessionPath)) {
+        return { status: 'unreadable' };
+      }
+      const session = AgentSessionRecordSchema.parse(readJson(sessionPath));
+      if (
+        session.id !== sessionId ||
+        session.workspaceId !== workspaceId ||
+        !session.threadId ||
+        !existsSync(
+          join(dataRoot, 'workspaces', workspaceId, 'threads', session.threadId, 'thread.json')
+        )
+      ) {
+        return { status: 'unreadable' };
+      }
+      sessionIds.push(session.id);
+    }
+    return { sessionIds, status: 'readable' };
+  } catch {
+    return { status: 'unreadable' };
+  }
+}
+
 /**
  * Loads every published workspace from canonical file records.
  *
@@ -2411,6 +2600,38 @@ export function artifactContentFileName(format: Artifact['content']['format']): 
  */
 function readJson(path: string): unknown {
   return JSON.parse(readCanonicalTextFile(path)) as unknown;
+}
+
+/**
+ * Reads canonical JSONL rows without repairing an incomplete tail or appending a newline.
+ *
+ * @param path JSONL file path.
+ * @returns Parsed completed rows.
+ * @throws Error when a newline-terminated row is malformed.
+ */
+function readDurableCanonicalJsonLines(path: string): unknown[] {
+  const content = readCanonicalFile(path);
+  const values: unknown[] = [];
+  let rowStart = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] !== 0x0a) continue;
+    const row = content.subarray(rowStart, index);
+    if (row.length > 0) {
+      values.push(JSON.parse(row.toString('utf8')) as unknown);
+    }
+    rowStart = index + 1;
+  }
+  if (rowStart < content.length) {
+    const finalRowText = content.subarray(rowStart).toString('utf8');
+    try {
+      values.push(JSON.parse(finalRowText) as unknown);
+    } catch (error) {
+      if (!isIncompleteJsonFragment(error, finalRowText)) {
+        throw error;
+      }
+    }
+  }
+  return values;
 }
 
 /**

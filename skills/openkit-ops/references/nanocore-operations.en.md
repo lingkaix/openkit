@@ -154,6 +154,27 @@ pnpm --filter @openkit/nanocore run thread-visibility:migrate -- \
 
 The migrator acquires the ordinary data-root lock, copies each rewritten `thread.json` into the backup root, and writes canonical envelopes with `openkit.thread-visibility.v1`. Without `--ambiguous-default`, ambiguous Threads remain unchanged and the command exits blocked. The only supported ambiguous default is `workspace`. Do not invent private owners for project history. Restore from the external backup only onto a stopped target when rolling back the classification writes.
 
+## Clean Missing-Turn Task Checkpoints
+
+Boot keeps a failed direct Task checkpoint when its product Turn file is missing. That error is also what a Turn owned by another Workspace or Thread produces, so startup must not delete the row. A null Worker session, a failed checkpoint, or `turn-start-failed` by itself is not proof that no Worker ran.
+
+Use this stopped-server command only for an explicit checkpoint you have already tied to one cancelled admission with no lease, or to one unanchored `turn-start-failed` lease with recovery state `needs-evidence` and no execution evidence. Dry-run is the default. `--apply` copies the Workspace database into the external backup root, rechecks the row, and deletes only that checkpoint. Leases, admissions, receipts, scheduler capacity, and product history stay in place. A second apply that no longer finds the row does nothing. Refuse any row whose history is unreadable, whose Turn exists anywhere, or whose cancellation or start-failure proof is incomplete.
+
+```bash
+pnpm --filter @openkit/nanocore run task-checkpoint:clean -- \
+  --data-root /absolute/path/to/openkit-data \
+  --backup-root /absolute/path/to/checkpoint-backup \
+  --checkpoint ws_example:th_example:turn_example
+
+pnpm --filter @openkit/nanocore run task-checkpoint:clean -- \
+  --data-root /absolute/path/to/openkit-data \
+  --backup-root /absolute/path/to/checkpoint-backup \
+  --checkpoint ws_example:th_example:turn_example \
+  --apply
+```
+
+Stop NanoCore and prove the Data Root has no other writer before either command. Choose a backup destination outside the Data Root. Repeat `--checkpoint` for each selected identity. Do not use the command to retry work, invent a Turn, repair a receipt, or release scheduler capacity.
+
 
 ## Sync A2 Dogfood Linked Repositories
 
