@@ -149,4 +149,70 @@ describe('projectOpenShellWorkerPolicy', () => {
       message
     );
   });
+
+  it('projects a Git grant onto the Smart HTTP helper without widening other endpoints', () => {
+    const policy = projectOpenShellWorkerPolicy({
+      additionalNetworkEndpoints: [
+        {
+          binaries: ['/usr/bin/git'],
+          host: 'github.com',
+          name: 'github_git_read',
+          port: 443,
+          rules: [
+            { method: 'GET', path: '/**/info/refs*' },
+            { method: 'POST', path: '/**/git-upload-pack' },
+          ],
+        },
+        {
+          binaries: ['/usr/local/bin/codex'],
+          host: 'api.example.com',
+          name: 'direct_api',
+          port: 443,
+        },
+      ],
+    });
+
+    expect(policy.networkPolicies.github_git_read?.binaries).toEqual([
+      { path: '/usr/bin/git' },
+      { path: '/usr/lib/git-core/git-remote-http' },
+      { path: '/usr/lib/git-core/git-remote-https' },
+    ]);
+    expect(policy.networkPolicies.github_git_read?.endpoints).toEqual([
+      {
+        enforcement: 'enforce',
+        host: 'github.com',
+        port: 443,
+        protocol: 'rest',
+        rules: [
+          { allow: { method: 'GET', path: '/**/info/refs*' } },
+          { allow: { method: 'POST', path: '/**/git-upload-pack' } },
+        ],
+      },
+    ]);
+    expect(JSON.stringify(policy)).not.toContain('git-receive-pack');
+    expect(policy.networkPolicies.direct_api?.binaries).toEqual([{ path: '/usr/local/bin/codex' }]);
+  });
+
+  it('does not duplicate Smart HTTP helpers already named by the Git grant', () => {
+    const policy = projectOpenShellWorkerPolicy({
+      additionalNetworkEndpoints: [
+        {
+          binaries: [
+            '/usr/bin/git',
+            '/usr/lib/git-core/git-remote-http',
+            '/usr/lib/git-core/git-remote-https',
+          ],
+          host: 'github.com',
+          name: 'github_git_read',
+          port: 443,
+        },
+      ],
+    });
+
+    expect(policy.networkPolicies.github_git_read?.binaries).toEqual([
+      { path: '/usr/bin/git' },
+      { path: '/usr/lib/git-core/git-remote-http' },
+      { path: '/usr/lib/git-core/git-remote-https' },
+    ]);
+  });
 });

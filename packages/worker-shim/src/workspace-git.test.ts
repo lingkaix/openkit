@@ -627,6 +627,78 @@ describe('workspace Git materialization', () => {
     expect(existsSync(join(target, 'README.md'))).toBe(false);
   });
 
+  it.each([
+    'http-401',
+    'http-403',
+  ] as const)('classifies a terminal %s status without publishing Git stderr', async (advertisedFetch) => {
+    const remote = createBareGitRemote({ 'README.md': '# HTTP status\n' });
+    const root = mkdtempSync(join(tmpdir(), `openkit-workspace-${advertisedFetch}-`));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { advertisedFetch, shaFetch: 'http-403' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow(/^Remote Git commit fetch transport failed\.$/);
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('checks out after an HTTP 403 when the advertised fallback succeeds', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# HTTP then advertised\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-http-403-fallback-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await withScriptedGit(root, join(root, 'git-invocations.log'), { shaFetch: 'http-403' }, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# HTTP then advertised\n');
+  });
+
+  it('keeps an ordinary fetch failure for an unclassified HTTP status', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# HTTP 500\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-http-500-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { advertisedFetch: 'http-500', shaFetch: 'unrecognized' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow(/^Remote Git commit fetch failed\.$/);
+  });
+
   it('refuses a commit the configured remote does not serve and keeps the partial slot', async () => {
     const remote = createBareGitRemote({ 'README.md': '# Other commit\n' });
     const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-missing-commit-'));
@@ -1057,9 +1129,18 @@ async function withScriptedGit(
   root: string,
   logPath: string,
   behavior: {
-    advertisedFetch?: 'early-eof' | 'gnutls' | 'gnutls-verify' | 'proxy' | 'proxy-resolve' | 'tls';
+    advertisedFetch?:
+      | 'early-eof'
+      | 'gnutls'
+      | 'gnutls-verify'
+      | 'http-401'
+      | 'http-403'
+      | 'http-500'
+      | 'proxy'
+      | 'proxy-resolve'
+      | 'tls';
     catFile?: 'fail';
-    shaFetch: 'hang-after-refusal' | 'tls' | 'unrecognized' | 'missing-ref';
+    shaFetch: 'hang-after-refusal' | 'http-403' | 'tls' | 'unrecognized' | 'missing-ref';
   },
   body: () => Promise<void>
 ): Promise<void> {
@@ -1088,6 +1169,10 @@ if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'tls') {
   process.stderr.write('fatal: SSL certificate problem: unable to get local issuer certificate\\n');
   process.exit(128);
 }
+if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'http-403') {
+  process.stderr.write("fatal: unable to access 'https://example.invalid/repo.git/': The requested URL returned error: 403\\n");
+  process.exit(128);
+}
 const advertisedFailure = ${JSON.stringify(
       behavior.advertisedFetch === 'tls'
         ? 'fatal: SSL certificate problem: self-signed certificate in certificate chain\n'
@@ -1101,7 +1186,13 @@ const advertisedFailure = ${JSON.stringify(
                 ? "fatal: unable to access 'https://example.invalid/repo.git/': Could not resolve proxy: example.invalid\n"
                 : behavior.advertisedFetch === 'early-eof'
                   ? 'fatal: early EOF\n'
-                  : ''
+                  : behavior.advertisedFetch === 'http-401'
+                    ? "fatal: unable to access 'https://example.invalid/repo.git/': The requested URL returned error: 401\n"
+                    : behavior.advertisedFetch === 'http-403'
+                      ? "fatal: unable to access 'https://example.invalid/repo.git/': The requested URL returned error: 403\n"
+                      : behavior.advertisedFetch === 'http-500'
+                        ? "fatal: unable to access 'https://example.invalid/repo.git/': The requested URL returned error: 500\n"
+                        : ''
     )};
 if (advertisedFailure && args.includes('fetch') && args.some((arg) => String(arg).includes('refs/'))) {
   process.stderr.write(advertisedFailure);

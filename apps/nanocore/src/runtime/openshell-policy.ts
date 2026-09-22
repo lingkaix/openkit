@@ -43,6 +43,18 @@ export interface OpenShellNetworkEndpoint {
   }>;
 }
 
+/** Authored Git binary whose Smart HTTP helper OpenShell observes on the connecting process. */
+const GIT_BINARY_PATH = '/usr/bin/git';
+
+/**
+ * Debian Git execs these helpers for HTTPS. OpenShell identifies the socket owner as the helper,
+ * so a grant of `/usr/bin/git` is enforced with both paths and no other binary, host, or method.
+ */
+const GIT_SMART_HTTP_HELPERS = [
+  '/usr/lib/git-core/git-remote-http',
+  '/usr/lib/git-core/git-remote-https',
+] as const;
+
 const FIXED_READ_ONLY_FILESYSTEM_ROOTS = [
   '/usr',
   '/lib',
@@ -56,6 +68,8 @@ const FIXED_READ_ONLY_FILESYSTEM_ROOTS = [
 
 /**
  * Validates OpenKit-authored grants and projects the structured sandbox policy consumed by NanoHost.
+ *
+ * An endpoint that names `/usr/bin/git` also authorizes Git's Smart HTTP helpers. No other binary is added.
  *
  * @param input Resolved filesystem and network grants.
  * @returns Structured policy accepted by the NanoHost carriage boundary.
@@ -120,7 +134,7 @@ export function projectOpenShellWorkerPolicy(input: ProjectOpenShellWorkerPolicy
       return [
         entry.name,
         {
-          binaries: entry.binaries.map((path) => ({ path })),
+          binaries: projectNetworkBinaries(entry.binaries).map((path) => ({ path })),
           endpoints: [
             {
               ...(rules.length > 0
@@ -164,6 +178,28 @@ export function projectOpenShellWorkerPolicy(input: ProjectOpenShellWorkerPolicy
     process: { runAsGroup: 'sandbox', runAsUser: 'sandbox' },
     version: 1,
   };
+}
+
+/**
+ * Projects an authored `/usr/bin/git` grant onto the Smart HTTP helper Git actually execs.
+ *
+ * Authored paths stay first. Helper paths are appended once. Endpoints that do not name Git are unchanged.
+ *
+ * @param binaries Authored executable paths for one network endpoint.
+ * @returns Paths OpenShell should match for that endpoint.
+ */
+function projectNetworkBinaries(binaries: readonly string[]): string[] {
+  if (!binaries.includes(GIT_BINARY_PATH)) {
+    return [...binaries];
+  }
+
+  const projected = [...binaries];
+  for (const helper of GIT_SMART_HTTP_HELPERS) {
+    if (!projected.includes(helper)) {
+      projected.push(helper);
+    }
+  }
+  return projected;
 }
 
 /** Returns whether a path is absolute without aliases, duplicate separators, or trailing separators. */

@@ -38,7 +38,11 @@
       "name": "direct_api"
     },
     "github_git_read": {
-      "binaries": [{ "path": "/usr/bin/git" }],
+      "binaries": [
+        { "path": "/usr/bin/git" },
+        { "path": "/usr/lib/git-core/git-remote-http" },
+        { "path": "/usr/lib/git-core/git-remote-https" }
+      ],
       "endpoints": [
         {
           "enforcement": "enforce",

@@ -1033,12 +1033,14 @@ const FETCH_TRANSPORT_MARKERS = [
   'connect tunnel failed',
   'could not resolve proxy',
   'recv failure',
+  'the requested url returned error: 401',
+  'the requested url returned error: 403',
 ] as const;
 
 /**
  * Refuses the terminal fetch with a closed product message.
  *
- * Timeout, signal, and spawn are transport failures. A completed failure is a certificate failure or a transport failure only when its private stderr matches a fixed phrase. Every other completed failure stays ordinary.
+ * Timeout, signal, and spawn are transport failures. A completed failure is a certificate failure or a transport failure only when its private stderr matches a fixed phrase. HTTP 401 and 403 status lines are transport failures and are not evidence of a particular sandbox denial. Certificate phrases win when both are present. Every other completed failure stays ordinary.
  *
  * @param invocation Failed fetch invocation.
  */

@@ -1489,6 +1489,19 @@ mod tests {
         assert_eq!(direct.binaries[0].path, "/usr/local/bin/codex");
         assert_eq!(direct.endpoints[0].access, "read-only");
         assert_eq!(direct.endpoints[0].enforcement, "enforce");
+        let git_binaries: Vec<&str> = policy.network_policies["github_git_read"]
+            .binaries
+            .iter()
+            .map(|binary| binary.path.as_str())
+            .collect();
+        assert_eq!(
+            git_binaries,
+            vec![
+                "/usr/bin/git",
+                "/usr/lib/git-core/git-remote-http",
+                "/usr/lib/git-core/git-remote-https",
+            ]
+        );
         let git = &policy.network_policies["github_git_read"].endpoints[0];
         assert!(git.access.is_empty());
         assert_eq!(git.rules.len(), 2);
