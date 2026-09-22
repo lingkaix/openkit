@@ -316,16 +316,21 @@ describe('post-terminal write admission', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
     try {
+      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+        suffix: 'mcp_admission',
+        triggerActor: turn.triggerActor,
+        workspaceInputIds: [],
+      });
       const call = startCapabilityCall({
         agentId: 'agent_codex',
-        agentSessionId: 'as_mcp_admission',
+        agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: turn.triggerActor,
         callId: 'cap_mcp_admission',
         capabilityId: 'mcp.call_tool',
         family: 'mcp',
         itemId: 'it_mcp_admission',
         operation: 'mcp.call_tool',
-        packageSnapshotId: 'aepsnap_admission',
+        packageSnapshotId: environmentPackage.snapshotId,
         providerRef: 'echo',
         redactionClass: 'metadata-only',
         serviceRef: 'mcp-tool:echo',
@@ -607,8 +612,9 @@ describe('post-terminal write admission', () => {
     });
   });
 
-  it('keeps the earlier fill and comparison when no AEP snapshot was ever recorded', () => {
-    // Both production snapshot writers are conditional, so this reader must never be narrower than the one it replaced.
+  it('publishes nothing for a row whose named AEP snapshot cannot be read', () => {
+    // The decided publication cannot be rebuilt without its snapshot, and an Item without the parent
+    // it carried is a different record. Leaving the row lets a later boot fill it truthfully.
     const missing = seedMcpBootItem({
       callId: 'cap_mcp_no_snapshot_fill',
       createdAt: COMPLETED_AT,
@@ -617,7 +623,10 @@ describe('post-terminal write admission', () => {
       skipSnapshot: true,
     });
     verifyAndMigrateExistingScopedDatabases(missing.dataRoot);
-    expect(reconcileWorkerMcpItems(missing.dataRoot, missing.store)).toBe(1);
+    expect(reconcileWorkerMcpItems(missing.dataRoot, missing.store)).toBe(0);
+    expect(
+      missing.store.listAllItems().find((item) => item.id === 'it_mcp_no_snapshot_fill')
+    ).toBeUndefined();
 
     const present = seedMcpBootItem({
       callId: 'cap_mcp_no_snapshot_parent',
@@ -630,12 +639,9 @@ describe('post-terminal write admission', () => {
     expect(reconcileWorkerMcpItems(present.dataRoot, present.store)).toBe(0);
   });
 
-  it('admits a stored Item with no parent against a decided parent and leaves it unchanged', () => {
-    // Only two writers can produce this pair. One is an earlier boot of this same path that could
-    // not read the snapshot; the other would be a snapshot whose scope disagrees with the package
-    // the live publish used, which is an integrity fault rather than a competing publication.
-    // Admitting it stops this reader failing boot on a record it wrote itself. It does not repair
-    // the parent, because completing a stored Item is not an admitted post-terminal write.
+  it('rejects a stored Item with no parent against a snapshot-decided parent', () => {
+    // Nothing writes this pair any more: a row whose snapshot is unreadable is left unfilled rather
+    // than published without its parent, so a stored null against a decided parent is a conflict.
     const { dataRoot, store } = seedMcpBootItem({
       callId: 'cap_mcp_parent_backfilled',
       createdAt: COMPLETED_AT,
@@ -643,10 +649,9 @@ describe('post-terminal write admission', () => {
       scopeItemId: 'it_decided_parent',
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
-    const stored = store.listAllItems().find((item) => item.id === 'it_mcp_parent_backfilled');
-    expect(stored).toBeDefined();
-    expect(stored as unknown as { parentItemId?: string }).not.toHaveProperty('parentItemId');
+    expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
+      /MCP boot backfill conflicts with already-decided Item: it_mcp_parent_backfilled/
+    );
   });
 
   it('still fills a row whose stored snapshot lineage is absent, without inventing a parent', () => {

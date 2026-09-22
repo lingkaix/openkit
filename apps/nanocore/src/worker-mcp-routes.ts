@@ -790,11 +790,8 @@ function mcpBootDecidedPublicationEqual(
     existing.type === candidate.type &&
     existing.status === candidate.status &&
     existing.causationId === candidate.causationId &&
-    mcpBootParentAgrees(
-      parentComparable,
-      recorded.parentItemId ?? null,
-      reconstructed.parentItemId ?? null
-    ) &&
+    (!parentComparable ||
+      (recorded.parentItemId ?? null) === (reconstructed.parentItemId ?? null)) &&
     existing.createdAt === candidate.createdAt &&
     existing.completedAt === candidate.completedAt &&
     recorded.durationMs === reconstructed.durationMs &&
@@ -807,80 +804,56 @@ function mcpBootDecidedPublicationEqual(
 }
 
 /**
- * Returns whether a stored parent agrees with the decided publication.
- *
- * Every other decided value must already match, so this only decides the one field. A stored Item
- * with no parent is admitted against a decided parent. A live publication cannot produce that pair,
- * because it omits the parent only when the package scope has no Item and the snapshot written from
- * that same package then has none either. The reachable producer is an earlier boot of this path
- * that could not read the snapshot, and rejecting it would fail boot on a record this path wrote.
- * The remaining producer would be a snapshot whose scope disagrees with the package the publish
- * used, which is an integrity fault rather than a competing publication. A stored parent that
- * disagrees with the decided one is still a conflict, and so is a stored parent against none.
- *
- * @param parentComparable Whether the AEP snapshot supplied the decided parent.
- * @param recorded Stored parent, or null.
- * @param decided Reconstructed parent, or null.
- * @returns True when the pair is admissible.
- */
-function mcpBootParentAgrees(
-  parentComparable: boolean,
-  recorded: unknown,
-  decided: unknown
-): boolean {
-  if (!parentComparable) return true;
-  if (recorded === null && decided !== null) return true;
-  return recorded === decided;
-}
-
-/**
  * Resolves the `parentItemId` the decided MCP publication carried, from the AEP snapshot the call row names.
  *
- * Both production snapshot writers are conditional, so a terminal call row can name a snapshot that was
- * never recorded. An absent snapshot leaves the parent unknown, and that case keeps the earlier behaviour
- * exactly: the fill still recovers the Item without a parent and the parent is not compared, so this reader
- * is never narrower than the one it replaced. Failing boot instead would lose the whole process over one
- * lineage field, and skipping the fill would lose the Item this path exists to recover. A stored lineage
- * that cannot address a snapshot file is unknown for the same reason. A snapshot that exists but does not
- * validate still fails.
+ * Three outcomes, because a row that names no snapshot and a row whose named snapshot is unreadable are
+ * not the same fact. A row with no snapshot lineage has nothing to be faithful to and is filled as the
+ * earlier reader filled it. A row that names a snapshot the reader cannot open is a publication this boot
+ * cannot reconstruct, so the caller leaves it for a later boot rather than publishing an Item that is not
+ * the decided one. A snapshot that exists and does not validate still throws, because that is corruption
+ * rather than absence.
  *
  * @param workspaceDb Open workspace database that owns the snapshot.
  * @param workspaceId Workspace that owns the call row.
  * @param row Terminal MCP call row with its AgentSession and snapshot lineage.
- * @returns The decided parent when the snapshot is readable, otherwise an unknown result.
+ * @returns Decided parent, an unnamed snapshot, or a named snapshot that could not be read.
  */
 function decidedMcpParentItemId(
   workspaceDb: WorkspaceDb,
   workspaceId: string,
   row: { readonly agent_session_id: string | null; readonly package_snapshot_id: string | null }
-): { readonly known: true; readonly parentItemId: string | null } | { readonly known: false } {
+):
+  | { readonly kind: 'decided'; readonly parentItemId: string | null }
+  | { readonly kind: 'no-snapshot-named' }
+  | { readonly kind: 'snapshot-unreadable' } {
   if (!row.agent_session_id || !row.package_snapshot_id) {
-    return { known: false };
+    return { kind: 'no-snapshot-named' };
   }
-  const snapshot = isReadableSnapshotLineage(row.agent_session_id, row.package_snapshot_id)
-    ? findNamedAgentEnvironmentPackageSnapshot(
-        workspaceDb,
-        workspaceId,
-        row.agent_session_id,
-        row.package_snapshot_id
-      )
-    : null;
+  if (!isAddressableSnapshotLineage(row.agent_session_id, row.package_snapshot_id)) {
+    return { kind: 'snapshot-unreadable' };
+  }
+  const snapshot = findNamedAgentEnvironmentPackageSnapshot(
+    workspaceDb,
+    workspaceId,
+    row.agent_session_id,
+    row.package_snapshot_id
+  );
   return snapshot
-    ? { known: true, parentItemId: snapshot.snapshot.scope.itemId ?? null }
-    : { known: false };
+    ? { kind: 'decided', parentItemId: snapshot.snapshot.scope.itemId ?? null }
+    : { kind: 'snapshot-unreadable' };
 }
 
 /**
  * Returns whether a stored lineage pair can address a snapshot file at all.
  *
- * A row whose lineage is not a usable path segment leaves the parent unknown rather than failing
- * boot, because the reader it replaced filled that row without consulting a snapshot.
+ * A lineage that is not a single path segment cannot name a file, so it reads as unreadable rather
+ * than throwing out of the path assertion inside the finder.
  *
  * @param agentSessionId Stored AgentSession lineage.
  * @param snapshotId Stored AEP snapshot lineage.
  * @returns True when both values are single path segments.
  */
-function isReadableSnapshotLineage(agentSessionId: string, snapshotId: string): boolean {
+function isAddressableSnapshotLineage(agentSessionId: string, snapshotId: string): boolean {
   const addressable = (value: string): boolean =>
     value !== '.' && value !== '..' && !/[/\\\0]/.test(value);
   return addressable(agentSessionId) && addressable(snapshotId);
@@ -937,7 +910,7 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
       const storedItems = new Map(store.listAllItems().map((item) => [item.id, item]));
       for (const row of rows) {
         const decidedParent = decidedMcpParentItemId(workspaceDb, workspaceId, row);
-        const parentItemId = decidedParent.known ? decidedParent.parentItemId : null;
+        const parentItemId = decidedParent.kind === 'decided' ? decidedParent.parentItemId : null;
         const candidate = {
           arguments: null,
           causationId: row.call_id,
@@ -966,11 +939,17 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
         const parsed = ItemSchema.parse(candidate);
         const existing = storedItems.get(row.item_id);
         if (existing) {
-          if (!mcpBootDecidedPublicationEqual(existing, parsed, decidedParent.known)) {
+          if (!mcpBootDecidedPublicationEqual(existing, parsed, decidedParent.kind === 'decided')) {
             throw new Error(
               `MCP boot backfill conflicts with already-decided Item: ${row.item_id}`
             );
           }
+          continue;
+        }
+        if (decidedParent.kind === 'snapshot-unreadable') {
+          // This row names a snapshot that cannot be opened, so the decided publication cannot be
+          // rebuilt. Publishing an Item without its parent would substitute a different record for
+          // the one the grid admits filling. Leave the row for a later boot instead.
           continue;
         }
         storedItems.set(parsed.id, store.createItem(parsed, ALREADY_DECIDED_PUBLICATION_ADMISSION));

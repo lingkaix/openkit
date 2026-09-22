@@ -33,7 +33,10 @@ import {
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { requireAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
+import {
+  recordAgentEnvironmentPackageSnapshot,
+  requireAgentEnvironmentPackageSnapshot,
+} from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
   importMcpToolSchemaSnapshots,
@@ -2070,6 +2073,29 @@ describe('worker MCP routes', () => {
     });
     const authorizedEnvironmentPackage = environmentPackage;
     recordMcpWorkerLineage(coreDb, environmentPackage);
+    // Production records the AgentSession and then its AEP snapshot before the worker that reaches
+    // this gateway exists. The snapshot directory is pruned to the AgentSessions the store knows
+    // (`workspace-file-records.ts` removeStaleDirectories), so the record has to exist here too.
+    store.createAgentSession({
+      agentId: environmentPackage.agent.agentId,
+      createdAt: '2026-09-03T00:00:00.000Z',
+      id: environmentPackage.scope.agentSessionId,
+      message: null,
+      status: 'busy',
+      threadId: turn.threadId,
+      updatedAt: '2026-09-03T00:00:00.000Z',
+      workspaceId: turn.workspaceId,
+    });
+    const snapshotDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    applyScopedMigrations(snapshotDb);
+    try {
+      recordAgentEnvironmentPackageSnapshot(snapshotDb, {
+        createdAt: '2026-09-03T00:00:00.000Z',
+        environmentPackage,
+      });
+    } finally {
+      snapshotDb.sqlite.close();
+    }
     const emptyNearLimitResult = { content: [{ text: '', type: 'text' as const }] };
     const nearLimitResult = {
       content: [
