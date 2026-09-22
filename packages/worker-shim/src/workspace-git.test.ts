@@ -416,6 +416,88 @@ describe('workspace Git materialization', () => {
     expect(existsSync(join(target, 'README.md'))).toBe(false);
   });
 
+  it('checks out an advertised commit when the direct fetch fails with an unrecognized error', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Unrecognized refusal\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-unrecognized-fetch-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const logPath = join(root, 'git-invocations.log');
+    mkdirSync(sessionDir);
+
+    await withScriptedGit(root, logPath, { shaFetch: 'unrecognized' }, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Unrecognized refusal\n');
+    expect(readFileSync(logPath, 'utf8')).toContain('refs/heads/*');
+  });
+
+  it('does not fetch advertised refs after a direct fetch timeout', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Timeout source\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-fetch-timeout-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const logPath = join(root, 'git-invocations.log');
+    mkdirSync(sessionDir);
+    const previousTimeout = process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;
+    process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS = '200';
+
+    try {
+      await expect(
+        withScriptedGit(root, logPath, { shaFetch: 'hang-after-refusal' }, () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+        )
+      ).rejects.toThrow('Remote Git commit fetch failed.');
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;
+      } else {
+        process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS = previousTimeout;
+      }
+    }
+
+    expect(readFileSync(logPath, 'utf8')).not.toContain('refs/heads/*');
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('keeps a fetch failure when object verification fails after a successful fallback', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Present source\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-object-check-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { catFile: 'fail', shaFetch: 'unrecognized' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow('Remote Git commit fetch failed.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
   it('refuses a commit the configured remote does not serve and keeps the partial slot', async () => {
     const remote = createBareGitRemote({ 'README.md': '# Other commit\n' });
     const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-missing-commit-'));
@@ -840,6 +922,58 @@ function createTagOnlyGitRemote(): { commit: string; path: string } {
   git(sourceDir, ['reset', '--hard', 'HEAD~1']);
   execFileSync('git', ['clone', '--bare', sourceDir, remotePath], { stdio: 'ignore' });
   return { commit, path: remotePath };
+}
+
+async function withScriptedGit(
+  root: string,
+  logPath: string,
+  behavior: {
+    catFile?: 'fail';
+    shaFetch: 'hang-after-refusal' | 'unrecognized' | 'missing-ref';
+  },
+  body: () => Promise<void>
+): Promise<void> {
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  writeFileSync(
+    join(bin, 'git'),
+    `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const { appendFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + '\\n');
+const shaFetch = args.includes('fetch') && args.some((arg) => /^[0-9a-f]{40}$/.test(arg));
+const catFile = args.includes('cat-file');
+if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'hang-after-refusal') {
+  process.stderr.write('fatal: remote error: upload-pack: not our ref ' + args.at(-1) + '\\n');
+  setInterval(() => {}, 1000);
+  return;
+}
+if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'unrecognized') {
+  process.stderr.write('fatal: early EOF\\n');
+  process.exit(128);
+}
+if (catFile && ${JSON.stringify(behavior.catFile ?? '')} === 'fail') {
+  process.stderr.write('fatal: unable to access object\\n');
+  process.exit(2);
+}
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
+process.exit(result.status === null ? 1 : result.status);
+`
+  );
+  chmodSync(join(bin, 'git'), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${delimiter}${previousPath ?? ''}`;
+  try {
+    await body();
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  }
 }
 
 async function withShaRefusingGit(

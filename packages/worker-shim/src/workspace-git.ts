@@ -943,8 +943,12 @@ async function requireGitText(
 /** Private stderr retained only to classify a failed fetch. It never enters a product error. */
 const GIT_STDERR_LIMIT = 4096;
 
+/** How a failed Git subprocess ended. Successful commands leave this null. */
+type GitFailureKind = 'exit' | 'signal' | 'spawn' | 'timeout';
+
 /** Outcome of one bounded Git subprocess. */
 interface GitInvocation {
+  readonly failure: GitFailureKind | null;
   readonly ok: boolean;
   readonly stderr: string;
   readonly stdout: Buffer;
@@ -953,7 +957,7 @@ interface GitInvocation {
 /**
  * Fetches one exact commit into an empty slot.
  *
- * A depth-1 raw object id is the fast path. When the remote refuses that unadvertised want, one fetch of advertised branch tips and tags may prove the same commit. A commit that is still absent after that fetch succeeds is a distinct refusal. A failed fallback stays an ordinary fetch failure.
+ * A depth-1 raw object id is the fast path. Any completed nonzero fetch tries advertised branch tips and tags once. A timeout, signal, or spawn failure does not. Checkout continues only when the object type is exactly `commit`. A completed check that reports the object is absent is a distinct refusal. Every other object-check failure stays an ordinary fetch failure.
  *
  * @param cwd Empty Git workspace root.
  * @param sessionDir Worker session directory used for the scrubbed Git environment.
@@ -970,7 +974,7 @@ async function fetchDeclaredCommit(cwd: string, sessionDir: string, commit: stri
   if (direct.ok) {
     return;
   }
-  if (!isUnadvertisedCommitRefusal(direct.stderr)) {
+  if (direct.failure !== 'exit') {
     throw new Error('Remote Git commit fetch failed.');
   }
   const advertised = await gitInvocation(cwd, sessionDir, [
@@ -982,26 +986,20 @@ async function fetchDeclaredCommit(cwd: string, sessionDir: string, commit: stri
   if (!advertised.ok) {
     throw new Error('Remote Git commit fetch failed.');
   }
-  const object = await gitInvocation(cwd, sessionDir, ['cat-file', '-e', `${commit}^{commit}`]);
-  if (!object.ok) {
+  const object = await gitInvocation(cwd, sessionDir, ['cat-file', '-t', commit]);
+  if (object.ok) {
+    if (object.stdout.toString('utf8').trim() !== 'commit') {
+      throw new Error('Remote Git commit fetch failed.');
+    }
+    return;
+  }
+  if (
+    object.failure === 'exit' &&
+    object.stderr.toLowerCase().includes('could not get object info')
+  ) {
     throw new Error('Remote Git commit is not available from the configured remote.');
   }
-}
-
-/**
- * Detects a server refusal of an unadvertised commit want.
- *
- * @param stderr Bounded private Git stderr.
- * @returns Whether the failure is a missing advertised object rather than transport loss.
- */
-function isUnadvertisedCommitRefusal(stderr: string): boolean {
-  const text = stderr.toLowerCase();
-  return (
-    text.includes('not our ref') ||
-    text.includes('unadvertised object') ||
-    text.includes("couldn't find remote ref") ||
-    text.includes('could not find remote ref')
-  );
+  throw new Error('Remote Git commit fetch failed.');
 }
 
 /**
@@ -1033,7 +1031,7 @@ async function gitBytes(
  * @param argv Git argument vector.
  * @param environment Explicit command-local Git environment overrides.
  * @param stdin Optional exact stdin bytes.
- * @returns Success, exact stdout, and a bounded stderr prefix.
+ * @returns Success, exact stdout, a bounded stderr prefix, and the failure kind.
  */
 async function gitInvocation(
   cwd: string,
@@ -1055,23 +1053,23 @@ async function gitInvocation(
     const chunks: Buffer[] = [];
     let stderr = '';
     let settled = false;
-    let aborted = false;
+    let failure: GitFailureKind | null = null;
     const finish = (ok: boolean) => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
-      resolveOutput({ ok, stderr, stdout: Buffer.concat(chunks) });
+      resolveOutput({ failure: ok ? null : failure, ok, stderr, stdout: Buffer.concat(chunks) });
     };
     const abort = () => {
       if (settled) {
         return;
       }
-      aborted = true;
+      failure = 'timeout';
       child.kill('SIGKILL');
     };
-    const timeout = setTimeout(abort, GIT_TIMEOUT_MS);
+    const timeout = setTimeout(abort, gitTimeoutMs());
 
     child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -1082,11 +1080,49 @@ async function gitInvocation(
         }
       }
     });
-    child.stdin?.on('error', abort);
-    child.on('error', () => finish(false));
-    child.on('close', (exitCode) => finish(!aborted && exitCode === 0));
+    child.stdin?.on('error', () => {
+      if (settled || failure === 'timeout') {
+        return;
+      }
+      failure = 'spawn';
+      child.kill('SIGKILL');
+    });
+    child.on('error', () => {
+      failure = 'spawn';
+      finish(false);
+    });
+    child.on('close', (exitCode, signal) => {
+      if (failure === 'timeout' || failure === 'spawn') {
+        finish(false);
+        return;
+      }
+      if (exitCode === 0 && !signal) {
+        finish(true);
+        return;
+      }
+      failure = signal ? 'signal' : 'exit';
+      finish(false);
+    });
     child.stdin?.end(stdin);
   });
+}
+
+/**
+ * Returns the Git subprocess budget.
+ *
+ * Tests may shorten it with `OPENKIT_WORKER_GIT_TIMEOUT_MS`. Production ignores that variable.
+ *
+ * @returns Timeout in milliseconds.
+ */
+function gitTimeoutMs(): number {
+  if (process.env.NODE_ENV !== 'test') {
+    return GIT_TIMEOUT_MS;
+  }
+  const override = Number(process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS);
+  if (Number.isSafeInteger(override) && override > 0) {
+    return override;
+  }
+  return GIT_TIMEOUT_MS;
 }
 
 /**
