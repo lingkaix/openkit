@@ -167,6 +167,14 @@ export interface ClearWorkerCheckpointAfterTerminalStateInput {
   readonly threadId: string;
   /** Turn represented by the checkpoint. */
   readonly turnId: string;
+  /**
+   * Skips runtime-provenance re-import for one proved boot leftover.
+   *
+   * Only the stale direct-Task classifier sets this, and only after a null
+   * worker session plus one `failed` / `turn-start-failed` / `needs-evidence`
+   * lease. Skipping does not claim provenance is complete or that no Worker ran.
+   */
+  readonly skipRuntimeProvenance?: boolean;
 }
 
 /**
@@ -724,7 +732,7 @@ export async function clearWorkerCheckpointAfterTerminalState(
       record.turnId === input.turnId &&
       (!checkpoint.workerSessionId || record.agentSessionId === checkpoint.workerSessionId)
   )?.snapshot;
-  if (environmentPackage?.control.transcript?.runtimeProvenance) {
+  if (!input.skipRuntimeProvenance && environmentPackage?.control.transcript?.runtimeProvenance) {
     const rawBundle = workspaceDb.sqlite
       .prepare(
         `SELECT evidence_bundle_id, backend_type, created_at

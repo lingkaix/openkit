@@ -1167,7 +1167,9 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
  * A live or contradictory owner tuple stays fail-closed. Cancelled admissions and
  * turn-start failures persist a failed checkpoint before a lease exists; boot must
  * reclaim those rows so scheduler checkpoint recovery is not degraded by leftovers
- * that have no live worker.
+ * that have no live worker. A null-session checkpoint whose only lease is `failed`
+ * with `turn-start-failed` and `needs-evidence` is cleared without re-importing
+ * runtime provenance. That skip does not apply to any other lease tuple.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
  * @param leases Scheduler leases for the checkpoint Turn, which are already not an exact match.
@@ -1223,11 +1225,17 @@ async function clearStaleDirectTaskCheckpointWithoutExactLease(
     throw directTaskModeRecoveryError('The boot Task checkpoint has no exact AgentSession owner.');
   }
 
+  const provedTurnStartFailureWithoutSession =
+    checkpoint.workerSessionId === null &&
+    leftoverLease?.status === 'failed' &&
+    leftoverLease.releaseReason === 'turn-start-failed' &&
+    leftoverLease.recoveryState === 'needs-evidence';
   if (
     !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
       workspaceId: checkpoint.workspaceId,
       threadId: checkpoint.threadId,
       turnId: checkpoint.turnId,
+      ...(provedTurnStartFailureWithoutSession ? { skipRuntimeProvenance: true } : {}),
     }))
   ) {
     throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
