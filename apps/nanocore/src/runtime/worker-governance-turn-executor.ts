@@ -12,6 +12,7 @@ import type {
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import {
+  GitFailureExplanationSchema,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
   type StopReason,
@@ -1741,7 +1742,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               turnId: turn.id,
             });
           } else {
-            this.failTurn(store, turn, agentSessionId, requestId, error);
+            this.failTurn(store, turn, agentSessionId, requestId, error, primaryError);
           }
         } catch (failureError) {
           throw new AggregateError(
@@ -2880,7 +2881,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param turnScope Turn whose ids scope the terminal records.
    * @param agentSessionId Optional AgentSession created before the failure.
    * @param requestId Request id.
-   * @param error Failure reason.
+   * @param error Failure reason, including cleanup errors.
+   * @param primaryError Original execution failure whose safe observation survives cleanup.
    * @throws AggregateError when one or more terminal writes report a partial failure.
    */
   private failTurn(
@@ -2888,13 +2890,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     turnScope: ReturnType<FsStore['getTurnById']>,
     agentSessionId: string | null,
     requestId: string | null,
-    error: unknown
+    error: unknown,
+    primaryError: unknown = error
   ): void {
+    const explanation = GitFailureExplanationSchema.safeParse(
+      primaryError instanceof Error && 'explanation' in primaryError
+        ? primaryError.explanation
+        : undefined
+    );
     const message = error instanceof Error ? error.message : 'The governed worker turn failed.';
     terminalizeGovernedWorkerTurn({
       agentSessionId,
       completedAt: this.now(),
       errorCode: 'worker_governance_turn_failed',
+      ...(explanation.success ? { explanation: explanation.data } : {}),
       message,
       outcome: 'failed',
       requestId,

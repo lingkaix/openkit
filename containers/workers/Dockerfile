@@ -23,15 +23,18 @@ RUN corepack enable \
   && pnpm --version
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/protocol/package.json packages/protocol/package.json
 COPY packages/worker-protocol/package.json packages/worker-protocol/package.json
 COPY packages/worker-shim/package.json packages/worker-shim/package.json
 
 RUN pnpm install --frozen-lockfile
 
+COPY packages/protocol packages/protocol
 COPY packages/worker-protocol packages/worker-protocol
 COPY packages/worker-shim packages/worker-shim
 
-RUN pnpm --filter @openkit/worker-protocol build \
+RUN pnpm --filter @openkit/protocol build \
+  && pnpm --filter @openkit/worker-protocol build \
   && pnpm --filter @openkit/worker-shim build \
   && rm package.json \
   && pnpm --filter @openkit/worker-shim deploy --prod --legacy /deploy/worker-shim

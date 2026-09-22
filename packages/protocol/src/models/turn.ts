@@ -12,6 +12,7 @@ import {
   WorkspaceIdSchema,
 } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
+import { GitFailureExplanationSchema } from '../errors/failure-explanation.js';
 import { ActorRefSchema, responsibleUserIdForActor } from './actor.js';
 import { ItemSchema } from './item.js';
 
@@ -85,6 +86,7 @@ export type TurnHumanGate = z.infer<typeof TurnHumanGateSchema>;
  * Error payload attached to failed turns.
  */
 export const TurnErrorSchema = z.object({
+  explanation: GitFailureExplanationSchema.optional(),
   code: z.string().min(1).nullable(),
   message: z.string().min(1),
 });

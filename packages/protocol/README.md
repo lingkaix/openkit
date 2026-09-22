@@ -23,3 +23,5 @@ Thread visibility is explicit and immutable. Private Threads require `privateOwn
 Approval-decision Items permit human decisions, boot-reconciliation system denials, and narrowly identified `nanocore-repo-push-policy` system grants. Policy grants preserve automatic worker repository approval across reload without impersonating a human or closing a human Gate; canonical Zod validation enforces each system actor’s permitted decision.
 
 Agent catalog `kind` is a role, with null for supply that does not declare one. Product surfaces display that absence as Worker without inferring a role from the runtime. Catalog entries remain summaries and carry no private launch configuration.
+
+`TurnErrorSchema.explanation` preserves a closed normalized Git fetch observation through Turn read/list and terminal-event projections. `GitFailureExplanationSchema` permits only fixed categories, a bounded UTC timestamp and typed completeness/status fields; authoritative Zod validation rejects contradictory code/status/subprocess combinations that generated JSON Schema cannot fully express. Worker policy-denial claims and arbitrary diagnostic text are not admitted.

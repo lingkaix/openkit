@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  GitFailureExplanationSchema,
   WorkerCanonicalTerminalEventDataSchema,
   type WorkerStartupFailure,
 } from '@openkit/worker-protocol';
@@ -479,6 +480,12 @@ function describeWorkerStartupFailure(
   stage: WorkerStartupFailure['stage'],
   cause: unknown
 ): WorkerStartupFailure {
+  const explanation = GitFailureExplanationSchema.safeParse(
+    cause instanceof Error && 'explanation' in cause ? cause.explanation : undefined
+  );
+  if (explanation.success && stage === explanation.data.stage) {
+    return { stage, reason: explanation.data.code, explanation: explanation.data };
+  }
   const reasons: Readonly<Record<string, WorkerStartupFailure['reason']>> = {
     'Retained Git workspace baseline is unavailable.': 'retained_baseline_unavailable',
     'Retained Git workspace baseline conflicts with the requested commit.':

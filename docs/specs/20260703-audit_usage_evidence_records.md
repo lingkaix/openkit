@@ -5,6 +5,12 @@ updated: 2026-09-21
 ---
 # Audit, Usage, And Evidence Records
 
+## Normalized Startup Failure Evidence
+
+The [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation) owns the closed product-safe Git fetch explanation. At result acceptance, the existing Harness operation slot validates authenticated operation lineage and records Core acceptance time; later dispatch may replace that slot, so it is not retained receipt history. Durable Turn, AEP and backend records keep their existing scope and lineage. `observedAt` is producer observation time, not independently verified wall-clock truth. Receipt validation rejects mismatched operation, stage/reason, identity and malformed facts before acknowledgement. Worker-observed HTTP status is not trusted policy-enforcement evidence.
+
+After terminal persistence, the Turn error and terminal event retain the accepted explanation independently of optional telemetry and sandbox lifetime. A crash between result acceptance and Turn persistence can leave cause unavailable, particularly after cleanup dispatch replaces the receipt; no atomicity across those writes or recovered historical receipt is promised. Existing record retention and source/destination audience rules apply; receipt identifiers confer no access and restricted runtime lineage is not copied to ordinary product projections. Partial evidence and private-output truncation remain explicit. Missing or unavailable producer delivery cannot be reconstructed by speculation or replay, and later evidence never silently rewrites the original result. No raw output, secret, URL or host path is admitted to these normalized facts, including for administrators. No separate failure store or new retention lifecycle is introduced.
+
 ## Personal Conversation And Scoped Learning Evidence
 
 Private dialogue and private Memory are not payloads for shared effect audit. Management mutations retain actor, target scope, exact base/candidate identity, gate/command lineage and outcome through existing AuditEvent records; effect visibility does not expose the originating private Thread. Scope-qualified Memory/Knowledge operations and assessment/consolidation calls retain the owning User/Workspace/Server and current responsible actor in existing evidence. Assessment results use existing Knowledge Observations and never impersonate a human Review. Do not duplicate private source text, secrets or a personal summary in Server/Workspace audit or usage records.

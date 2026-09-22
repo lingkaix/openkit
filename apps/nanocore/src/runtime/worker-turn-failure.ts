@@ -1,4 +1,8 @@
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import {
+  type GitFailureExplanation,
+  GitFailureExplanationSchema,
+  isSealedTurnTerminal,
+} from '@openkit/protocol';
 
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
 
@@ -10,6 +14,8 @@ export interface TerminalizeGovernedWorkerTurnInput {
   readonly completedAt: string;
   /** Stable product diagnostic code. */
   readonly errorCode: string;
+  /** Closed primary observation, separate from cleanup disposition. */
+  readonly explanation?: GitFailureExplanation;
   /** Product-safe terminal message. */
   readonly message: string;
   /** Product outcome established by governed-worker terminalization. */
@@ -76,10 +82,16 @@ export function terminalizeGovernedWorkerTurn(
   if (!errorCode || !message) {
     throw new Error('Governed worker terminalization is missing its durable error projection.');
   }
+  const explanation = recoveryOwnsOutcome ? initialTurn.error?.explanation : input.explanation;
+  const safeExplanation = explanation ? GitFailureExplanationSchema.parse(explanation) : undefined;
   const errors: unknown[] = [];
   const turnPatch = {
     completedAt,
-    error: { code: errorCode, message },
+    error: {
+      code: errorCode,
+      message,
+      ...(safeExplanation ? { explanation: safeExplanation } : {}),
+    },
     status: input.outcome,
   } as const;
   let terminalTurn = initialTurn;

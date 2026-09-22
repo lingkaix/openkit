@@ -4096,6 +4096,83 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
+  it.each([
+    false,
+    true,
+  ])('persists primary HTTP facts when cleanup also fails: %s', async (cleanupFails) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-primary-fetch-failure-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Observe failed fetch');
+    const backend = new FakeWorkerGovernanceBackend();
+    const explanation = {
+      code: 'git_fetch_http_refused',
+      stage: 'workspace_materialization',
+      operation: 'git.fetch',
+      dependency: 'git_remote',
+      producer: 'worker-shim',
+      observedAt: '2026-09-22T00:00:00.000Z',
+      basis: 'direct_observation',
+      subprocess: 'exit',
+      httpStatus: 403,
+      enforcement: 'unavailable',
+      evidence: { availability: 'partial', outputTruncated: false },
+    } as const;
+    vi.spyOn(backend, 'launch').mockRejectedValue(
+      Object.assign(new Error('Repository access returned HTTP 403; attribution unavailable.'), {
+        explanation,
+      })
+    );
+    backend.failTeardown = cleanupFails;
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => 'as_fetch_failure',
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-06-16T00:00:00.000Z',
+    });
+    try {
+      await expect(
+        startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_fetch_failure',
+          '2026-06-15T23:59:59.000Z',
+          'Observe failed fetch',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: '00000000-0000-4000-8000-000000000205',
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [],
+          }
+        )
+      ).rejects.toThrow(
+        cleanupFails
+          ? 'Worker execution and backend cleanup failed'
+          : 'Repository access returned HTTP 403'
+      );
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        status: 'failed',
+        error: { explanation },
+      });
+      expect(store.getTurnEvents(turn.id)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: 'turn.completed',
+            data: expect.objectContaining({
+              turn: expect.objectContaining({ error: expect.objectContaining({ explanation }) }),
+            }),
+          }),
+        ])
+      );
+      expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('keeps workspace handles pending and omits teardown evidence when cleanup fails', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-teardown-fail-')));
 
