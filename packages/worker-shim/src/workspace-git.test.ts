@@ -469,7 +469,14 @@ describe('workspace Git materialization', () => {
             sessionDir
           )
         )
-      ).rejects.toThrow('Remote Git commit fetch transport failed.');
+      ).rejects.toMatchObject({
+        message: 'Remote Git commit fetch transport failed.',
+        explanation: {
+          code: 'git_fetch_transport_failed',
+          subprocess: 'timeout',
+          httpStatus: null,
+        },
+      });
     } finally {
       if (previousTimeout === undefined) {
         delete process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;
@@ -507,6 +514,159 @@ describe('workspace Git materialization', () => {
 
     expect(existsSync(join(target, '.git'))).toBe(true);
     expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it.each([
+    401, 403,
+  ])('retains HTTP %s without attributing it to sandbox policy', async (status) => {
+    const remote = createBareGitRemote({ 'README.md': '# refused\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-http-refusal-'));
+    const sessionDir = join(root, 'session');
+    const workspaceRoot = join(root, 'workspace');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+    const failure = await withScriptedGit(
+      root,
+      join(root, 'git.log'),
+      {
+        shaFetch: 'tls',
+        advertisedStderr: `fatal: unable to access 'https://canary-secret@example.invalid/private?canary-secret': The requested URL returned error: ${status}\n`,
+      },
+      () =>
+        materializeWorkspaceGitInputs(
+          [createWorkspaceGitInput(target, remote.commit, remote.path)],
+          workspaceRoot,
+          sessionDir
+        )
+    ).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      message: 'Remote Git commit fetch HTTP refused.',
+      explanation: {
+        code: 'git_fetch_http_refused',
+        httpStatus: status,
+        subprocess: 'exit',
+        enforcement: 'unavailable',
+        evidence: { availability: 'partial', outputTruncated: false },
+      },
+    });
+    expect(JSON.stringify(failure)).not.toContain('canary-secret');
+    expect(existsSync(join(target, '.git'))).toBe(true);
+  });
+
+  it.each([
+    {
+      stderr: `${'x'.repeat(4096 - 'the requested url returned error: 403'.length)}the requested url returned error: 4030\n`,
+      code: 'git_fetch_failed',
+      truncated: true,
+    },
+    {
+      stderr: `${'x'.repeat(4095 - 'the requested url returned error: 403'.length)}the requested url returned error: 403\ntrailing`,
+      code: 'git_fetch_http_refused',
+      truncated: true,
+    },
+    { stderr: 'unknown canary-secret failure', code: 'git_fetch_failed', truncated: false },
+    {
+      stderr: 'fatal: SSL certificate problem canary-secret',
+      code: 'git_fetch_tls_failed',
+      truncated: false,
+    },
+    {
+      stderr: 'fatal: early EOF canary-secret',
+      code: 'git_fetch_transport_failed',
+      truncated: false,
+    },
+    {
+      stderr: `${'canary-secret'.repeat(500)}The requested URL returned error: 403`,
+      code: 'git_fetch_failed',
+      truncated: true,
+    },
+    {
+      stderr: 'fatal: access https://example.invalid/403?status=401 canary-secret',
+      code: 'git_fetch_failed',
+      truncated: false,
+    },
+  ])('retains safe terminal facts for $code (truncated=$truncated)', async ({
+    stderr,
+    code,
+    truncated,
+  }) => {
+    const remote = createBareGitRemote({ 'README.md': '# failed\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-fetch-observation-'));
+    const sessionDir = join(root, 'session');
+    const workspaceRoot = join(root, 'workspace');
+    mkdirSync(sessionDir);
+    const failure = await withScriptedGit(
+      root,
+      join(root, 'git.log'),
+      {
+        shaFetch: 'unrecognized',
+        advertisedStderr: stderr,
+      },
+      () =>
+        materializeWorkspaceGitInputs(
+          [
+            createWorkspaceGitInput(
+              join(workspaceRoot, 'worktrees', 'main'),
+              remote.commit,
+              remote.path
+            ),
+          ],
+          workspaceRoot,
+          sessionDir
+        )
+    ).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      explanation: {
+        code,
+        subprocess: 'exit',
+        httpStatus: code === 'git_fetch_http_refused' ? 403 : null,
+        evidence: { availability: 'partial', outputTruncated: truncated },
+      },
+    });
+    expect(JSON.stringify(failure)).not.toContain('canary-secret');
+  });
+
+  it('retains a real fetch spawn failure without stderr or fallback', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# spawn failure\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-fetch-spawn-'));
+    const sessionDir = join(root, 'session');
+    const workspaceRoot = join(root, 'workspace');
+    mkdirSync(sessionDir);
+    const oldPath = process.env.PATH;
+    try {
+      await withScriptedGit(
+        root,
+        join(root, 'git.log'),
+        {
+          shaFetch: 'unrecognized',
+          removeAfterRemote: true,
+        },
+        async () => {
+          process.env.PATH = `${join(root, 'bin')}${delimiter}${dirname(process.execPath)}`;
+          await expect(
+            materializeWorkspaceGitInputs(
+              [
+                createWorkspaceGitInput(
+                  join(workspaceRoot, 'worktrees', 'main'),
+                  remote.commit,
+                  remote.path
+                ),
+              ],
+              workspaceRoot,
+              sessionDir
+            )
+          ).rejects.toMatchObject({
+            explanation: {
+              code: 'git_fetch_transport_failed',
+              subprocess: 'spawn',
+              httpStatus: null,
+            },
+          });
+        }
+      );
+    } finally {
+      process.env.PATH = oldPath;
+    }
   });
 
   it('checks out after a certificate failure when the advertised fallback succeeds', async () => {
@@ -1058,6 +1218,8 @@ async function withScriptedGit(
   logPath: string,
   behavior: {
     advertisedFetch?: 'early-eof' | 'gnutls' | 'gnutls-verify' | 'proxy' | 'proxy-resolve' | 'tls';
+    advertisedStderr?: string;
+    removeAfterRemote?: boolean;
     catFile?: 'fail';
     shaFetch: 'hang-after-refusal' | 'tls' | 'unrecognized' | 'missing-ref';
   },
@@ -1070,7 +1232,7 @@ async function withScriptedGit(
     join(bin, 'git'),
     `#!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
-const { appendFileSync } = require('node:fs');
+const { appendFileSync, unlinkSync } = require('node:fs');
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + '\\n');
 const shaFetch = args.includes('fetch') && args.some((arg) => /^[0-9a-f]{40}$/.test(arg));
@@ -1089,19 +1251,20 @@ if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'tls') {
   process.exit(128);
 }
 const advertisedFailure = ${JSON.stringify(
-      behavior.advertisedFetch === 'tls'
-        ? 'fatal: SSL certificate problem: self-signed certificate in certificate chain\n'
-        : behavior.advertisedFetch === 'gnutls'
-          ? "fatal: unable to access 'https://127.0.0.1:9/repo.git/': server verification failed: certificate signer not trusted. (CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none)\n"
-          : behavior.advertisedFetch === 'gnutls-verify'
-            ? 'fatal: server certificate verification failed\n'
-            : behavior.advertisedFetch === 'proxy'
-              ? "fatal: unable to access 'https://example.invalid/repo.git/': CONNECT tunnel failed, response 407\n"
-              : behavior.advertisedFetch === 'proxy-resolve'
-                ? "fatal: unable to access 'https://example.invalid/repo.git/': Could not resolve proxy: example.invalid\n"
-                : behavior.advertisedFetch === 'early-eof'
-                  ? 'fatal: early EOF\n'
-                  : ''
+      behavior.advertisedStderr ??
+        (behavior.advertisedFetch === 'tls'
+          ? 'fatal: SSL certificate problem: self-signed certificate in certificate chain\n'
+          : behavior.advertisedFetch === 'gnutls'
+            ? "fatal: unable to access 'https://127.0.0.1:9/repo.git/': server verification failed: certificate signer not trusted. (CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none)\n"
+            : behavior.advertisedFetch === 'gnutls-verify'
+              ? 'fatal: server certificate verification failed\n'
+              : behavior.advertisedFetch === 'proxy'
+                ? "fatal: unable to access 'https://example.invalid/repo.git/': CONNECT tunnel failed, response 407\n"
+                : behavior.advertisedFetch === 'proxy-resolve'
+                  ? "fatal: unable to access 'https://example.invalid/repo.git/': Could not resolve proxy: example.invalid\n"
+                  : behavior.advertisedFetch === 'early-eof'
+                    ? 'fatal: early EOF\n'
+                    : '')
     )};
 if (advertisedFailure && args.includes('fetch') && args.some((arg) => String(arg).includes('refs/'))) {
   process.stderr.write(advertisedFailure);
@@ -1112,6 +1275,7 @@ if (catFile && ${JSON.stringify(behavior.catFile ?? '')} === 'fail') {
   process.exit(2);
 }
 const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
+if (${JSON.stringify(behavior.removeAfterRemote ?? false)} && args.includes('remote') && args.includes('add')) unlinkSync(process.argv[1]);
 process.exit(result.status === null ? 1 : result.status);
 `
   );

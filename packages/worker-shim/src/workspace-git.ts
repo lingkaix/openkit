@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
+import type { GitFailureExplanation } from '@openkit/worker-protocol';
+
 import type { WorkerLineage } from './transcript.js';
 
 const GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -951,6 +953,7 @@ interface GitInvocation {
   readonly failure: GitFailureKind | null;
   readonly ok: boolean;
   readonly stderr: string;
+  readonly stderrTruncated: boolean;
   readonly stdout: Buffer;
 }
 
@@ -1043,17 +1046,43 @@ const FETCH_TRANSPORT_MARKERS = [
  * @param invocation Failed fetch invocation.
  */
 function throwTerminalFetchFailure(invocation: GitInvocation): never {
-  if (invocation.failure !== 'exit') {
-    throw new Error('Remote Git commit fetch transport failed.');
-  }
   const stderr = invocation.stderr.toLowerCase();
-  if (FETCH_TLS_MARKERS.some((marker) => stderr.includes(marker))) {
-    throw new Error('Remote Git commit fetch TLS failed.');
-  }
-  if (FETCH_TRANSPORT_MARKERS.some((marker) => stderr.includes(marker))) {
-    throw new Error('Remote Git commit fetch transport failed.');
-  }
-  throw new Error('Remote Git commit fetch failed.');
+  // Match Git's refusal phrase, never an arbitrary status-looking URL or identifier.
+  const refusalPattern = invocation.stderrTruncated
+    ? /the requested url returned error: (401|403)(?=\s)/
+    : /the requested url returned error: (401|403)(?=\s|$)/;
+  const status = refusalPattern.exec(stderr)?.[1];
+  const httpStatus = invocation.failure === 'exit' && status ? (Number(status) as 401 | 403) : null;
+  const code: GitFailureExplanation['code'] =
+    invocation.failure !== 'exit'
+      ? 'git_fetch_transport_failed'
+      : httpStatus !== null
+        ? 'git_fetch_http_refused'
+        : FETCH_TLS_MARKERS.some((marker) => stderr.includes(marker))
+          ? 'git_fetch_tls_failed'
+          : FETCH_TRANSPORT_MARKERS.some((marker) => stderr.includes(marker))
+            ? 'git_fetch_transport_failed'
+            : 'git_fetch_failed';
+  const messages: Record<GitFailureExplanation['code'], string> = {
+    git_fetch_failed: 'Remote Git commit fetch failed.',
+    git_fetch_tls_failed: 'Remote Git commit fetch TLS failed.',
+    git_fetch_transport_failed: 'Remote Git commit fetch transport failed.',
+    git_fetch_http_refused: 'Remote Git commit fetch HTTP refused.',
+  };
+  const explanation: GitFailureExplanation = {
+    code,
+    stage: 'workspace_materialization',
+    operation: 'git.fetch',
+    dependency: 'git_remote',
+    producer: 'worker-shim',
+    observedAt: new Date().toISOString(),
+    basis: 'direct_observation',
+    subprocess: invocation.failure ?? 'exit',
+    httpStatus,
+    enforcement: 'unavailable',
+    evidence: { availability: 'partial', outputTruncated: invocation.stderrTruncated },
+  };
+  throw Object.assign(new Error(messages[code]), { explanation });
 }
 
 /**
@@ -1116,6 +1145,7 @@ async function gitInvocation(
     );
     const chunks: Buffer[] = [];
     let stderr = '';
+    let stderrTruncated = false;
     let settled = false;
     let failure: GitFailureKind | null = null;
     const finish = (ok: boolean) => {
@@ -1124,7 +1154,13 @@ async function gitInvocation(
       }
       settled = true;
       clearTimeout(timeout);
-      resolveOutput({ failure: ok ? null : failure, ok, stderr, stdout: Buffer.concat(chunks) });
+      resolveOutput({
+        failure: ok ? null : failure,
+        ok,
+        stderr,
+        stderrTruncated,
+        stdout: Buffer.concat(chunks),
+      });
     };
     const abort = () => {
       if (settled) {
@@ -1137,6 +1173,9 @@ async function gitInvocation(
 
     child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderr.length + chunk.toString('utf8').length > GIT_STDERR_LIMIT) {
+        stderrTruncated = true;
+      }
       if (stderr.length < GIT_STDERR_LIMIT) {
         stderr += chunk.toString('utf8');
         if (stderr.length > GIT_STDERR_LIMIT) {
