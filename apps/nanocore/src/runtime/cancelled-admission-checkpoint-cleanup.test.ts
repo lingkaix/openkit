@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
@@ -1036,16 +1044,16 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
         })
       ),
     });
-    const sessionDir = join(
-      fixture.dataRoot,
-      'workspaces',
-      fixture.workspaceId,
-      'runtime',
-      'agent-sessions',
-      sessionId
-    );
-    mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({ id: sessionId }));
+    fixture.store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      id: sessionId,
+      message: null,
+      status: 'closed',
+      threadId: fixture.threadId,
+      updatedAt: '2026-09-22T00:00:00.000Z',
+      workspaceId: fixture.workspaceId,
+    });
     closeFixture(fixture);
 
     const result = await cleanCancelledAdmissionTaskCheckpoints({
@@ -1068,16 +1076,16 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     writeStartFailureLease(fixture.coreDb, { ...identity, requestId });
     writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const sessionId = `as_${identity.turnId}`;
-    const sessionDir = join(
-      fixture.dataRoot,
-      'workspaces',
-      fixture.workspaceId,
-      'runtime',
-      'agent-sessions',
-      sessionId
-    );
-    mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({ id: sessionId }));
+    fixture.store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      id: sessionId,
+      message: null,
+      status: 'closed',
+      threadId: fixture.threadId,
+      updatedAt: '2026-09-22T00:00:00.000Z',
+      workspaceId: fixture.workspaceId,
+    });
     closeFixture(fixture);
 
     const result = await cleanCancelledAdmissionTaskCheckpoints({
@@ -1157,7 +1165,133 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     expect(schedulerSnapshot(fixture.dataRoot)).toEqual(schedulerBefore);
     expect(readFileSync(destination, 'utf8')).toBe('occupied');
   });
+
+  it.each([
+    ['invalid Turn status', 'turn-schema'],
+    ['corrupt Thread JSON', 'thread-json'],
+    ['malformed Item JSONL', 'items-json'],
+    ['missing Item history', 'missing-items'],
+  ] as const)('blocks cleanup when unrelated published history has %s', async (_label, kind) => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, `turn_corrupt_${kind}`);
+    const requestId = '0190f4c8-0000-7000-8000-000000001099';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    const unrelated = publishUnrelatedTurn(fixture.store, fixture.dataRoot);
+    const historyPath = unrelatedHistoryPath(unrelated, kind);
+    if (kind === 'turn-schema') {
+      const record = JSON.parse(readFileSync(historyPath, 'utf8')) as { status: string };
+      record.status = 'corrupt-invalid-status';
+      writeFileSync(historyPath, JSON.stringify(record));
+    } else if (kind === 'thread-json') {
+      writeFileSync(historyPath, '{');
+    } else if (kind === 'items-json') {
+      writeFileSync(historyPath, '{\n');
+    } else {
+      unlinkSync(historyPath);
+    }
+    const historyBefore = existsSyncFile(historyPath);
+    const checkpointBefore = getWorkerCheckpoint(
+      fixture.workspaceDb,
+      fixture.workspaceId,
+      fixture.threadId,
+      identity.turnId
+    );
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.outcome).toBe('blocked');
+    expect(result.removedCount).toBe(0);
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        decision: 'refused',
+        reason: 'unreadable-history',
+        turnId: identity.turnId,
+      }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpointBefore);
+    expect(existsSyncFile(historyPath)).toEqual(historyBefore);
+  });
+
+  it('keeps an incomplete Item JSONL tail without treating it as corrupt history', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_incomplete_tail');
+    const requestId = '0190f4c8-0000-7000-8000-000000001098';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    const unrelated = publishUnrelatedTurn(fixture.store, fixture.dataRoot);
+    const itemsPath = unrelatedHistoryPath(unrelated, 'items-json');
+    appendFileSync(itemsPath, '{"id":');
+    const itemsBefore = readFileSync(itemsPath);
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.removedCount).toBe(1);
+    expect(readFileSync(itemsPath)).toEqual(itemsBefore);
+    expect(readCheckpoint(fixture.dataRoot, identity)).toBeNull();
+  });
 });
+
+/** Publishes one valid Turn outside the selected checkpoint Workspace. */
+function publishUnrelatedTurn(
+  store: FsStore,
+  dataRoot: string
+): {
+  readonly itemsPath: string;
+  readonly threadId: string;
+  readonly threadPath: string;
+  readonly turnId: string;
+  readonly turnPath: string;
+  readonly workspaceId: string;
+} {
+  const workspace = store.createWorkspace('Unrelated history');
+  const thread = store.createThread(workspace.id, 'Unrelated history');
+  const turn = store.createTurn(workspace.id, thread.id, 'Unrelated work', ACTOR);
+  const turnRoot = join(
+    dataRoot,
+    'workspaces',
+    workspace.id,
+    'threads',
+    thread.id,
+    'turns',
+    turn.id
+  );
+  return {
+    itemsPath: join(turnRoot, 'items.jsonl'),
+    threadId: thread.id,
+    threadPath: join(dataRoot, 'workspaces', workspace.id, 'threads', thread.id, 'thread.json'),
+    turnId: turn.id,
+    turnPath: join(turnRoot, 'turn.json'),
+    workspaceId: workspace.id,
+  };
+}
+
+/** Resolves the canonical file introduced by one corruption case. */
+function unrelatedHistoryPath(
+  unrelated: ReturnType<typeof publishUnrelatedTurn>,
+  kind: 'turn-schema' | 'thread-json' | 'items-json' | 'missing-items'
+): string {
+  if (kind === 'thread-json') return unrelated.threadPath;
+  if (kind === 'turn-schema') return unrelated.turnPath;
+  return unrelated.itemsPath;
+}
+
+/** Reads one canonical file, or null when the corruption case removed it. */
+function existsSyncFile(path: string): Buffer | null {
+  return existsSync(path) ? readFileSync(path) : null;
+}
 
 /** Builds one checkpoint identity inside a fixture Workspace and Thread. */
 function identityFor(
