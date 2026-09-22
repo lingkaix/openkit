@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { getEventListeners } from 'node:events';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,7 +13,7 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   parseWorkerShimArgs,
@@ -3483,6 +3484,79 @@ describe('worker shim CLI parsing', () => {
     });
     expect(runner.run).not.toHaveBeenCalled();
     expect(readFileSync(join(target, 'unknown.txt'), 'utf8')).toBe('must remain');
+  });
+
+  it.each([
+    {
+      message: 'Remote Git commit fetch TLS failed.',
+      reason: 'git_fetch_tls_failed',
+      stderr: 'fatal: SSL certificate problem: unable to get local issuer certificate\n',
+    },
+    {
+      message: 'Remote Git commit fetch transport failed.',
+      reason: 'git_fetch_transport_failed',
+      stderr: 'fatal: early EOF\n',
+    },
+  ])('reports $reason when the terminal Git fetch matches that private failure', async ({
+    message,
+    reason,
+    stderr,
+  }) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-startup-fetch-'));
+    const workspaceRoot = join(sessionDir, 'workspace');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const packagePath = join(sessionDir, 'package.json');
+    const bin = join(sessionDir, 'bin');
+    mkdirSync(bin);
+    const gitPath = process.env.PATH?.split(delimiter)
+      .map((entry) => join(entry, 'git'))
+      .find((candidate) => existsSync(candidate));
+    if (!gitPath) {
+      throw new Error('Git fetch classification fixture requires Git on PATH.');
+    }
+    writeRawFileSync(
+      join(bin, 'git'),
+      `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args.includes('fetch')) {
+  process.stderr.write(${JSON.stringify(stderr)});
+  process.exit(128);
+}
+const result = spawnSync(${JSON.stringify(gitPath)}, args, { stdio: 'inherit' });
+process.exit(result.status === null ? 1 : result.status);
+`
+    );
+    chmodSync(join(bin, 'git'), 0o755);
+    writeGitWorkspacePackage(packagePath, workspaceRoot, [
+      { id: 'repo', source: remoteGitTestSource('repo'), target },
+    ]);
+    const runner = { run: vi.fn() };
+    const onStartupFailure = vi.fn();
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}${delimiter}${previousPath ?? ''}`;
+    try {
+      await expect(
+        runWorkerShim({
+          args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+          environment: workerShimEnvironment(),
+          runner,
+          onStartupFailure,
+        })
+      ).rejects.toThrow(message);
+    } finally {
+      if (previousPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = previousPath;
+      }
+    }
+    expect(onStartupFailure).toHaveBeenCalledWith({
+      stage: 'workspace_materialization',
+      reason,
+    });
+    expect(runner.run).not.toHaveBeenCalled();
+    expect(existsSync(join(target, '.git'))).toBe(true);
   });
 
   it('orders Git materialization, native execution, and publication with one lineage', async () => {

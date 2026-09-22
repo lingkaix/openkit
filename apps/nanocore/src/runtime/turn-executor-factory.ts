@@ -459,6 +459,12 @@ function workspaceMaterializationRefusalExplanation(
   if (startup.reason === 'git_fetch_commit_unavailable') {
     return ' The configured Git remote does not serve the requested commit; publish that commit or select one the remote serves, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
   }
+  if (startup.reason === 'git_fetch_tls_failed') {
+    return ' The worker could not trust the configured Git remote during fetch. Repair the sandbox trust bundle, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
+  }
+  if (startup.reason === 'git_fetch_transport_failed') {
+    return ' The worker could not complete the Git fetch transport. This covers a subprocess, timeout, or transport failure and is not proof that the remote lacks the commit. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
+  }
   return '';
 }
 
