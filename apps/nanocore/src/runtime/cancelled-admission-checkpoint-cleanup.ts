@@ -1,22 +1,31 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
-import { FsStore } from '../lib/store.js';
 import {
   isTerminalLeaseStatus,
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
   type SchedulerSessionLeaseRecord,
 } from '../scheduler-records.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import {
-  getWorkerCheckpoint,
-  parseWorkerCheckpointContextAssembly,
-  type WorkerCheckpointRecord,
-} from './worker-checkpoints.js';
+  type DurableCommandRequestRead,
+  readDurableCommandRequestRecords,
+} from '../storage/command-request-records.js';
+import {
+  type CoreDb,
+  openBootVerifiedWorkspaceDb,
+  openExistingCoreDbWithIntegrityCheck,
+  type WorkspaceDb,
+} from '../storage/db.js';
+import {
+  type PublishedTurnIdentity,
+  readPublishedAgentSessionIds,
+  readPublishedTurnIdentities,
+} from '../storage/workspace-file-records.js';
+import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
+import { getWorkerCheckpoint, type WorkerCheckpointRecord } from './worker-checkpoints.js';
 import { clearWorkerCheckpointAfterTerminalState } from './worker-recovery.js';
 import { isTerminalWorkerTurnStage } from './worker-stage.js';
 
@@ -55,15 +64,7 @@ export interface CleanCancelledAdmissionTaskCheckpointsInput {
   readonly dataRoot: string;
 }
 
-interface TurnFileHit {
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly workspaceId: string;
-}
-
-type TurnHistory =
-  | { readonly status: 'readable'; readonly hits: readonly TurnFileHit[] }
-  | { readonly status: 'unreadable' };
+type ReadableReceipts = Extract<DurableCommandRequestRead, { status: 'readable' }>['records'];
 
 type Classification = {
   readonly decision: 'absent' | 'removable' | 'refused';
@@ -120,17 +121,21 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
     throw error;
   }
 
-  const coreDb = openCoreDb(dataRoot);
+  let coreDb: CoreDb | null = null;
   const workspaceDbs = new Map<string, WorkspaceDb>();
   try {
-    let store: FsStore;
     try {
-      store = new FsStore({ dataRoot });
+      coreDb = openExistingCoreDbWithIntegrityCheck(dataRoot);
     } catch {
       return blocked(input.checkpoints, 'unreadable-history');
     }
-    const history = readTurnHistory(dataRoot);
-    if (history.status === 'unreadable') {
+    const openedCoreDb = coreDb;
+    if (!openedCoreDb) {
+      return blocked(input.checkpoints, 'unreadable-history');
+    }
+    const history = readPublishedTurnIdentities(dataRoot);
+    const receipts = readDurableCommandRequestRecords(dataRoot);
+    if (history.status === 'unreadable' || receipts.status === 'unreadable') {
       return blocked(input.checkpoints, 'unreadable-history');
     }
 
@@ -138,10 +143,10 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
       const workspaceDb = openSelectedWorkspace(workspaceDbs, dataRoot, identity.workspaceId);
       const classification = classifyCheckpoint({
         checkpoint: identity,
-        coreDb,
+        coreDb: openedCoreDb,
         dataRoot,
         history,
-        store,
+        receipts: receipts.records,
         workspaceDb,
       });
       return { ...identity, ...classification };
@@ -200,12 +205,18 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
         rows.push({ ...row, decision: 'refused', reason: 'changed-before-delete' });
         continue;
       }
+      const againHistory = readPublishedTurnIdentities(dataRoot);
+      const againReceipts = readDurableCommandRequestRecords(dataRoot);
+      if (againHistory.status === 'unreadable' || againReceipts.status === 'unreadable') {
+        rows.push({ ...row, decision: 'refused', reason: 'changed-before-delete' });
+        continue;
+      }
       const again = classifyCheckpoint({
         checkpoint: row,
-        coreDb,
+        coreDb: openedCoreDb,
         dataRoot,
-        history: readTurnHistory(dataRoot),
-        store,
+        history: againHistory,
+        receipts: againReceipts.records,
         workspaceDb,
       });
       if (again.decision !== 'removable' || again.reason !== row.reason) {
@@ -235,7 +246,7 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
     for (const workspaceDb of workspaceDbs.values()) {
       workspaceDb.sqlite.close();
     }
-    coreDb.sqlite.close();
+    coreDb?.sqlite.close();
     lock.release();
   }
 }
@@ -348,7 +359,7 @@ function openSelectedWorkspace(
   if (!existsSync(join(dataRoot, 'workspaces', workspaceId, 'workspace-record.json'))) {
     return null;
   }
-  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
   workspaceDbs.set(workspaceId, workspaceDb);
   return workspaceDb;
 }
@@ -357,8 +368,8 @@ function classifyCheckpoint(input: {
   readonly checkpoint: CancelledAdmissionCheckpointIdentity;
   readonly coreDb: CoreDb;
   readonly dataRoot: string;
-  readonly history: TurnHistory;
-  readonly store: FsStore;
+  readonly history: ReturnType<typeof readPublishedTurnIdentities>;
+  readonly receipts: ReadableReceipts;
   readonly workspaceDb: WorkspaceDb | null;
 }): Classification {
   if (input.history.status === 'unreadable') {
@@ -382,7 +393,7 @@ function classifyCheckpoint(input: {
   }
   const shape = classifyShape(checkpoint);
   if (shape) return shape;
-  const turn = classifyTurnAbsence(input.store, input.history.hits, input.checkpoint);
+  const turn = classifyTurnAbsence(input.history.turns, input.checkpoint);
   if (turn) return turn;
   const leases = listLeasesForTurn(input.coreDb, checkpoint.turnId);
   if (leases === 'unreadable') {
@@ -397,13 +408,14 @@ function classifyCheckpoint(input: {
   if (leases.some((lease) => !leaseMatches(lease, checkpoint))) {
     return { decision: 'refused', reason: 'missing-provenance' };
   }
-  const evidence = classifyExecutionEvidence(
-    input.coreDb,
-    input.store,
-    input.workspaceDb,
+  const evidence = classifyExecutionEvidence({
     checkpoint,
-    leases[0]
-  );
+    coreDb: input.coreDb,
+    dataRoot: input.dataRoot,
+    lease: leases[0],
+    receipts: input.receipts,
+    workspaceDb: input.workspaceDb,
+  });
   if (evidence) return evidence;
   return classifyProof(input.coreDb, checkpoint, leases[0]);
 }
@@ -424,62 +436,38 @@ function classifyShape(checkpoint: WorkerCheckpointRecord): Classification | nul
   if (checkpoint.iteration !== 0) {
     return { decision: 'refused', reason: 'missing-provenance' };
   }
-  if (
-    checkpoint.contextDigest !== null ||
-    parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary) ||
-    hasEvidenceDiagnostics(checkpoint.diagnosticsSummary)
-  ) {
+  const diagnostics = classifyDiagnostics(checkpoint.diagnosticsSummary);
+  if (diagnostics === 'unreadable') {
+    return { decision: 'refused', reason: 'unreadable-history' };
+  }
+  if (checkpoint.contextDigest !== null || diagnostics === 'evidence') {
     return { decision: 'refused', reason: 'runtime-evidence' };
   }
   return null;
 }
 
 function classifyTurnAbsence(
-  store: FsStore,
-  hits: readonly TurnFileHit[],
+  turns: readonly PublishedTurnIdentity[],
   identity: CancelledAdmissionCheckpointIdentity
 ): Classification | null {
-  const matches = hits.filter((hit) => hit.turnId === identity.turnId);
-  const fileVerdict = turnFileVerdict(matches, identity);
-  let indexVerdict: 'absent' | 'present' | 'mismatched' | 'unreadable';
-  try {
-    const turn = store.getTurnById(identity.turnId);
-    indexVerdict =
-      turn.id === identity.turnId &&
-      turn.workspaceId === identity.workspaceId &&
-      turn.threadId === identity.threadId
-        ? 'present'
-        : 'mismatched';
-  } catch (error) {
-    indexVerdict =
-      error instanceof Error && error.message === `Turn not found: ${identity.turnId}`
-        ? 'absent'
-        : 'unreadable';
+  const verdict = turnFileVerdict(
+    turns.filter((hit) => hit.turnId === identity.turnId),
+    identity
+  );
+  if (verdict === 'unreadable') {
+    return { decision: 'refused', reason: 'unreadable-history' };
   }
-  if (
-    fileVerdict === 'unreadable' ||
-    indexVerdict === 'unreadable' ||
-    fileVerdict !== indexVerdict
-  ) {
-    return {
-      decision: 'refused',
-      reason:
-        fileVerdict === 'mismatched' || indexVerdict === 'mismatched'
-          ? 'mismatched-turn-lineage'
-          : 'unreadable-history',
-    };
-  }
-  if (fileVerdict === 'mismatched') {
+  if (verdict === 'mismatched') {
     return { decision: 'refused', reason: 'mismatched-turn-lineage' };
   }
-  if (fileVerdict === 'present') {
+  if (verdict === 'present') {
     return { decision: 'refused', reason: 'missing-provenance' };
   }
   return null;
 }
 
 function turnFileVerdict(
-  matches: readonly TurnFileHit[],
+  matches: readonly PublishedTurnIdentity[],
   identity: CancelledAdmissionCheckpointIdentity
 ): 'absent' | 'present' | 'mismatched' | 'unreadable' {
   if (matches.length === 0) return 'absent';
@@ -490,13 +478,15 @@ function turnFileVerdict(
     : 'mismatched';
 }
 
-function classifyExecutionEvidence(
-  coreDb: CoreDb,
-  store: FsStore,
-  workspaceDb: WorkspaceDb,
-  checkpoint: WorkerCheckpointRecord,
-  lease: SchedulerSessionLeaseRecord | undefined
-): Classification | null {
+function classifyExecutionEvidence(input: {
+  readonly checkpoint: WorkerCheckpointRecord;
+  readonly coreDb: CoreDb;
+  readonly dataRoot: string;
+  readonly lease: SchedulerSessionLeaseRecord | undefined;
+  readonly receipts: ReadableReceipts;
+  readonly workspaceDb: WorkspaceDb;
+}): Classification | null {
+  const { checkpoint, coreDb, dataRoot, lease, receipts, workspaceDb } = input;
   try {
     const execution = coreDb.sqlite
       .prepare(
@@ -538,11 +528,11 @@ function classifyExecutionEvidence(
         snapshot.turnId === checkpoint.turnId ||
         (lease !== undefined && snapshot.agentSessionId === lease.agentSessionId)
     );
-    const sessionHit =
-      lease !== undefined &&
-      store
-        .listWorkspaceAgentSessions(checkpoint.workspaceId)
-        .some((session) => session.id === lease.agentSessionId);
+    const sessions = readPublishedAgentSessionIds(dataRoot, checkpoint.workspaceId);
+    if (sessions.status === 'unreadable') {
+      return { decision: 'refused', reason: 'unreadable-history' };
+    }
+    const sessionHit = lease !== undefined && sessions.sessionIds.includes(lease.agentSessionId);
     if (execution || runtime || packageHit || sessionHit) {
       return { decision: 'refused', reason: 'runtime-evidence' };
     }
@@ -550,7 +540,7 @@ function classifyExecutionEvidence(
     return { decision: 'refused', reason: 'unreadable-history' };
   }
 
-  const receiptHit = store.listCommandRequests().some((record) => {
+  const receiptHit = receipts.some((record) => {
     const responseId = 'id' in record.response ? record.response.id : null;
     return record.requestId === checkpoint.requestId || responseId === checkpoint.turnId;
   });
@@ -566,7 +556,11 @@ function classifyProof(
   lease: SchedulerSessionLeaseRecord | undefined
 ): Classification {
   const admissions = listAdmissions(coreDb, checkpoint);
-  const plans = listPlans(coreDb, checkpoint.turnId);
+  const plans = listPlans(
+    coreDb,
+    checkpoint.turnId,
+    admissions === 'unreadable' ? [] : admissions.map((admission) => admission.queueEntryId)
+  );
   if (admissions === 'unreadable' || plans === 'unreadable') {
     return { decision: 'refused', reason: 'unreadable-history' };
   }
@@ -614,8 +608,8 @@ function classifyProof(
     admission.workspaceId === checkpoint.workspaceId &&
     admission.threadId === checkpoint.threadId &&
     admission.turnId === checkpoint.turnId &&
-    plan?.planId === lease.planId &&
-    plan.queueEntryId === admission.queueEntryId
+    plan !== undefined &&
+    planMatchesLineage(plan, checkpoint, lease, admission)
   ) {
     return { decision: 'removable', reason: 'turn-start-failed' };
   }
@@ -695,18 +689,58 @@ function listAdmissions(
   }
 }
 
+interface PlacementPlanLineage {
+  readonly planId: string;
+  readonly queueEntryId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly workspaceId: string;
+}
+
+function planMatchesLineage(
+  plan: PlacementPlanLineage,
+  checkpoint: WorkerCheckpointRecord,
+  lease: SchedulerSessionLeaseRecord,
+  admission: {
+    readonly queueEntryId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly workspaceId: string;
+  }
+): boolean {
+  return (
+    plan.planId === lease.planId &&
+    plan.queueEntryId === admission.queueEntryId &&
+    plan.workspaceId === checkpoint.workspaceId &&
+    plan.threadId === checkpoint.threadId &&
+    plan.turnId === checkpoint.turnId &&
+    plan.workspaceId === lease.workspaceId &&
+    plan.threadId === lease.threadId &&
+    plan.turnId === lease.turnId &&
+    plan.workspaceId === admission.workspaceId &&
+    plan.threadId === admission.threadId &&
+    plan.turnId === admission.turnId
+  );
+}
+
 function listPlans(
   coreDb: CoreDb,
-  turnId: string
-): readonly { readonly planId: string; readonly queueEntryId: string }[] | 'unreadable' {
+  turnId: string,
+  queueEntryIds: readonly string[]
+): readonly PlacementPlanLineage[] | 'unreadable' {
   try {
+    const queueClause =
+      queueEntryIds.length === 0
+        ? 'turn_id = ?'
+        : `turn_id = ? OR queue_entry_id IN (${queueEntryIds.map(() => '?').join(', ')})`;
     return coreDb.sqlite
       .prepare(
-        `SELECT plan_id AS planId, queue_entry_id AS queueEntryId
-         FROM scheduler_placement_plans WHERE turn_id = ?
+        `SELECT plan_id AS planId, queue_entry_id AS queueEntryId,
+                workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId
+         FROM scheduler_placement_plans WHERE ${queueClause}
          ORDER BY plan_id ASC`
       )
-      .all(turnId) as { readonly planId: string; readonly queueEntryId: string }[];
+      .all(turnId, ...queueEntryIds) as PlacementPlanLineage[];
   } catch {
     return 'unreadable';
   }
@@ -756,72 +790,34 @@ function readWorkspaceThreadOwner(
   }
 }
 
-function readTurnHistory(dataRoot: string): TurnHistory {
-  const hits: TurnFileHit[] = [];
-  const workspacesRoot = join(dataRoot, 'workspaces');
-  const workspaces = listDirectories(workspacesRoot);
-  if (workspaces === 'unreadable') return { status: 'unreadable' };
-  for (const workspaceId of workspaces) {
-    const threads = listDirectories(join(workspacesRoot, workspaceId, 'threads'));
-    if (threads === 'unreadable') return { status: 'unreadable' };
-    for (const threadId of threads) {
-      const turnsRoot = join(workspacesRoot, workspaceId, 'threads', threadId, 'turns');
-      const turns = listDirectories(turnsRoot);
-      if (turns === 'unreadable') return { status: 'unreadable' };
-      for (const turnId of turns) {
-        const turnPath = join(turnsRoot, turnId, 'turn.json');
-        if (!existsSync(turnPath)) return { status: 'unreadable' };
-        try {
-          const parsed = JSON.parse(readFileSync(turnPath, 'utf8')) as {
-            readonly id?: unknown;
-            readonly threadId?: unknown;
-            readonly workspaceId?: unknown;
-          };
-          if (
-            parsed.id !== turnId ||
-            parsed.workspaceId !== workspaceId ||
-            parsed.threadId !== threadId
-          ) {
-            return { status: 'unreadable' };
-          }
-        } catch {
-          return { status: 'unreadable' };
-        }
-        hits.push({ threadId, turnId, workspaceId });
-      }
-    }
-  }
-  return { status: 'readable', hits };
-}
-
-function listDirectories(root: string): readonly string[] | 'unreadable' {
-  if (!existsSync(root)) return [];
+function classifyDiagnostics(
+  diagnosticsSummary: string | null
+): 'none' | 'evidence' | 'unreadable' {
+  if (diagnosticsSummary === null || diagnosticsSummary.trim() === '') return 'none';
+  const looksStructured =
+    diagnosticsSummary.trim().startsWith('{') || diagnosticsSummary.trim().startsWith('[');
+  let parsed: unknown;
   try {
-    const names: string[] = [];
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (entry.isSymbolicLink()) return 'unreadable';
-      if (entry.isDirectory()) names.push(entry.name);
-    }
-    return names;
+    parsed = JSON.parse(diagnosticsSummary);
   } catch {
+    return looksStructured ? 'unreadable' : 'none';
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return 'unreadable';
   }
-}
-
-function hasEvidenceDiagnostics(diagnosticsSummary: string | null): boolean {
-  if (!diagnosticsSummary) return false;
-  try {
-    const parsed = JSON.parse(diagnosticsSummary) as {
-      readonly artifactIds?: unknown;
-      readonly itemIds?: unknown;
-    };
-    return (
-      (Array.isArray(parsed.itemIds) && parsed.itemIds.length > 0) ||
-      (Array.isArray(parsed.artifactIds) && parsed.artifactIds.length > 0)
-    );
-  } catch {
-    return false;
+  const record = parsed as Record<string, unknown>;
+  if ('itemIds' in record && !Array.isArray(record.itemIds)) return 'unreadable';
+  if ('artifactIds' in record && !Array.isArray(record.artifactIds)) return 'unreadable';
+  if ('contextAssembly' in record) return 'evidence';
+  const itemIds = record.itemIds;
+  const artifactIds = record.artifactIds;
+  if (
+    (Array.isArray(itemIds) && itemIds.length > 0) ||
+    (Array.isArray(artifactIds) && artifactIds.length > 0)
+  ) {
+    return 'evidence';
   }
+  return 'none';
 }
 
 function checkpointKey(identity: CancelledAdmissionCheckpointIdentity): string {

@@ -1,9 +1,11 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
+import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { FsStore } from '../lib/store.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -15,6 +17,9 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { cleanCancelledAdmissionTaskCheckpoints } from './cancelled-admission-checkpoint-cleanup.js';
 import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
@@ -560,3 +565,665 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
     }
   });
 });
+
+describe('cancelled-admission checkpoint cleanup preservation', () => {
+  it('keeps a matching expired receipt during dry-run and apply', async () => {
+    for (const apply of [false, true]) {
+      const fixture = createFixture();
+      const turnId = `turn_receipt_${apply}`;
+      const requestId = '0190f4c8-0000-7000-8000-000000000991';
+      const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
+      writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+      writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+      insertReceipt(fixture.workspaceDb, {
+        expiresAt: '2020-01-02T00:00:00.000Z',
+        requestId,
+        requestKey: `receipt_${turnId}`,
+        responseId: turnId,
+        scope: { threadId: fixture.threadId, workspaceId: fixture.workspaceId },
+      });
+      const receiptsBefore = readReceipts(fixture.dataRoot, fixture.workspaceId);
+      const checkpointBefore = getWorkerCheckpoint(
+        fixture.workspaceDb,
+        fixture.workspaceId,
+        fixture.threadId,
+        turnId
+      );
+      closeFixture(fixture);
+
+      const result = await cleanCancelledAdmissionTaskCheckpoints({
+        apply,
+        backupRoot: fixture.backupRoot,
+        checkpoints: [identity],
+        dataRoot: fixture.dataRoot,
+      });
+
+      expect(result.removedCount).toBe(0);
+      expect(result.backupRoot).toBeNull();
+      expect(result.rows).toEqual([
+        expect.objectContaining({ decision: 'refused', reason: 'missing-provenance', turnId }),
+      ]);
+      expect(readReceipts(fixture.dataRoot, fixture.workspaceId)).toEqual(receiptsBefore);
+      expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpointBefore);
+    }
+  });
+
+  it('preserves an unrelated expired receipt while removing a proved checkpoint', async () => {
+    const fixture = createFixture();
+    const turnId = 'turn_unrelated_receipt';
+    const requestId = '0190f4c8-0000-7000-8000-000000000992';
+    const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    insertReceipt(fixture.workspaceDb, {
+      expiresAt: '2020-01-02T00:00:00.000Z',
+      requestId: '0190f4c8-0000-7000-8000-000000000993',
+      requestKey: 'receipt_unrelated',
+      responseId: 'turn_someone_else',
+      scope: { threadId: fixture.threadId, workspaceId: fixture.workspaceId },
+    });
+    const receiptsBefore = readReceipts(fixture.dataRoot, fixture.workspaceId);
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.rows).toEqual([
+      expect.objectContaining({ decision: 'removed', reason: 'cancelled-admission', turnId }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).toBeNull();
+    expect(readReceipts(fixture.dataRoot, fixture.workspaceId)).toEqual(receiptsBefore);
+  });
+
+  it.each([
+    'dry-run',
+    'apply',
+    'refused',
+  ] as const)('preserves an unrelated pending approval during %s', async (mode) => {
+    const fixture = createFixture();
+    const turnId = `turn_history_${mode}`;
+    const requestId = '0190f4c8-0000-7000-8000-000000000994';
+    const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
+    if (mode !== 'refused') {
+      writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    }
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    const unrelated = fixture.store.createTurn(
+      fixture.workspaceId,
+      fixture.threadId,
+      'Unrelated terminal approval',
+      ACTOR
+    );
+    const timestamp = '2026-09-22T00:00:00.000Z';
+    fixture.store.createItem({
+      approvalRequestId: `ap_${unrelated.id}`,
+      completedAt: null,
+      createdAt: timestamp,
+      description: 'Independent history',
+      id: `it_req_${unrelated.id}`,
+      kind: 'permission',
+      status: 'in_progress',
+      threadId: fixture.threadId,
+      title: 'Unresolved approval',
+      turnId: unrelated.id,
+      type: 'approval-request',
+      workspaceId: fixture.workspaceId,
+    });
+    fixture.store.updateTurn(unrelated.id, {
+      completedAt: timestamp,
+      error: null,
+      status: 'completed',
+    });
+    const itemsPath = join(
+      fixture.dataRoot,
+      'workspaces',
+      fixture.workspaceId,
+      'threads',
+      fixture.threadId,
+      'turns',
+      unrelated.id,
+      'items.jsonl'
+    );
+    const itemsBefore = readFileSync(itemsPath);
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: mode === 'apply',
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(readFileSync(itemsPath)).toEqual(itemsBefore);
+    expect(readFileSync(itemsPath, 'utf8')).not.toContain('it_approval_terminal_denial_');
+    if (mode === 'apply') {
+      expect(result.removedCount).toBe(1);
+      expect(readCheckpoint(fixture.dataRoot, identity)).toBeNull();
+    } else {
+      expect(result.removedCount).toBe(0);
+      expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
+    }
+  });
+
+  it('refuses malformed diagnostics and blocks every selected checkpoint', async () => {
+    const fixture = createFixture();
+    const corruptId = identityFor(fixture, 'turn_diag_corrupt');
+    const cleanId = identityFor(fixture, 'turn_diag_clean');
+    writeCancelledAdmission(fixture.coreDb, {
+      ...corruptId,
+      requestId: '0190f4c8-0000-7000-8000-000000000995',
+    });
+    writeFailedCheckpoint(fixture.workspaceDb, {
+      ...corruptId,
+      requestId: '0190f4c8-0000-7000-8000-000000000995',
+    });
+    writeCancelledAdmission(fixture.coreDb, {
+      ...cleanId,
+      requestId: '0190f4c8-0000-7000-8000-000000001095',
+    });
+    writeFailedCheckpoint(fixture.workspaceDb, {
+      ...cleanId,
+      requestId: '0190f4c8-0000-7000-8000-000000001095',
+    });
+    fixture.workspaceDb.sqlite
+      .prepare('UPDATE worker_turn_checkpoints SET diagnostics_summary = ? WHERE turn_id = ?')
+      .run('{', corruptId.turnId);
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [corruptId, cleanId],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.outcome).toBe('blocked');
+    expect(result.removedCount).toBe(0);
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        decision: 'refused',
+        reason: 'unreadable-history',
+        turnId: corruptId.turnId,
+      }),
+      expect.objectContaining({
+        decision: 'refused',
+        reason: 'unreadable-history',
+        turnId: cleanId.turnId,
+      }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, corruptId)).not.toBeNull();
+    expect(readCheckpoint(fixture.dataRoot, cleanId)).not.toBeNull();
+  });
+
+  it('treats incomplete context assembly as execution evidence', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_context_shape');
+    const requestId = '0190f4c8-0000-7000-8000-000000000996';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    fixture.workspaceDb.sqlite
+      .prepare('UPDATE worker_turn_checkpoints SET diagnostics_summary = ? WHERE turn_id = ?')
+      .run(
+        JSON.stringify({ contextAssembly: { contextDigest: 'sha256:ran', contextRefs: [] } }),
+        identity.turnId
+      );
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.removedCount).toBe(0);
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        decision: 'refused',
+        reason: 'runtime-evidence',
+        turnId: identity.turnId,
+      }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
+  });
+
+  it.each([
+    ['item ids', JSON.stringify({ itemIds: 'bad' })],
+    ['artifact ids', JSON.stringify({ artifactIds: {} })],
+  ] as const)('refuses incorrectly typed %s diagnostics', async (_label, diagnostics) => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, `turn_typed_${_label.replace(' ', '_')}`);
+    const requestId = '0190f4c8-0000-7000-8000-000000000997';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    fixture.workspaceDb.sqlite
+      .prepare('UPDATE worker_turn_checkpoints SET diagnostics_summary = ? WHERE turn_id = ?')
+      .run(diagnostics, identity.turnId);
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.outcome).toBe('blocked');
+    expect(result.removedCount).toBe(0);
+    expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
+  });
+
+  it('still removes a checkpoint whose diagnostics are plain failure text', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_plain_failure');
+    const requestId = '0190f4c8-0000-7000-8000-000000000998';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    fixture.workspaceDb.sqlite
+      .prepare('UPDATE worker_turn_checkpoints SET diagnostics_summary = ? WHERE turn_id = ?')
+      .run('Worker start failed.', identity.turnId);
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.rows).toEqual([
+      expect.objectContaining({ decision: 'removed', reason: 'cancelled-admission' }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).toBeNull();
+  });
+
+  it.each([
+    'workspace_id',
+    'thread_id',
+  ] as const)('refuses a placement plan whose %s disagrees with the proof', async (column) => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, `turn_plan_${column}`);
+    const requestId = '0190f4c8-0000-7000-8000-000000000999';
+    writeStartFailureLease(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    fixture.coreDb.sqlite
+      .prepare(`UPDATE scheduler_placement_plans SET ${column} = ? WHERE turn_id = ?`)
+      .run(column === 'workspace_id' ? 'ws_foreign' : 'th_foreign', identity.turnId);
+    const plansBefore = fixture.coreDb.sqlite
+      .prepare(
+        `SELECT plan_id, queue_entry_id, workspace_id, thread_id, turn_id
+           FROM scheduler_placement_plans ORDER BY plan_id`
+      )
+      .all();
+    const schedulerBefore = schedulerSnapshot(fixture.dataRoot);
+    const checkpointBefore = getWorkerCheckpoint(
+      fixture.workspaceDb,
+      fixture.workspaceId,
+      fixture.threadId,
+      identity.turnId
+    );
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.removedCount).toBe(0);
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        decision: 'refused',
+        reason: 'missing-provenance',
+        turnId: identity.turnId,
+      }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpointBefore);
+    expect(schedulerSnapshot(fixture.dataRoot)).toEqual(schedulerBefore);
+    const coreDb = openCoreDb(fixture.dataRoot);
+    try {
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT plan_id, queue_entry_id, workspace_id, thread_id, turn_id
+               FROM scheduler_placement_plans ORDER BY plan_id`
+          )
+          .all()
+      ).toEqual(plansBefore);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses a runtime evidence row without using context digest as a shortcut', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_runtime_row');
+    const requestId = '0190f4c8-0000-7000-8000-000000001001';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    fixture.workspaceDb.sqlite
+      .prepare(
+        `INSERT INTO runtime_evidence (
+           runtime_evidence_id, workspace_id, thread_id, turn_id, placement, phase, summary,
+           upload_manifest_json, download_manifest_json, outcome, evidence_bundle_ids_json,
+           content_digests_json, required_features_json, created_at
+         ) VALUES (?, ?, ?, ?, 'local', 'checkpoint', 'fixture', '[]', '[]', 'unknown', '[]', '[]', '[]', ?)`
+      )
+      .run(
+        `rte_${identity.turnId}`,
+        fixture.workspaceId,
+        fixture.threadId,
+        identity.turnId,
+        '2026-09-22T00:00:00.000Z'
+      );
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.rows).toEqual([
+      expect.objectContaining({ decision: 'refused', reason: 'runtime-evidence' }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
+  });
+
+  it('refuses a worker control record for the checkpoint Turn', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_control');
+    const requestId = '0190f4c8-0000-7000-8000-000000001002';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    fixture.coreDb.sqlite
+      .prepare(
+        `INSERT INTO worker_control_records (
+           workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id,
+           operation, record_key, sequence, record_json, accepted_at
+         ) VALUES (?, ?, ?, 'as_control', 'aepsnap_control', ?, 'observe', 'key', 1, '{}', ?)`
+      )
+      .run(
+        fixture.workspaceId,
+        fixture.threadId,
+        identity.turnId,
+        requestId,
+        '2026-09-22T00:00:00.000Z'
+      );
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.rows).toEqual([
+      expect.objectContaining({ decision: 'refused', reason: 'runtime-evidence' }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
+  });
+
+  it('refuses an environment package bound to the checkpoint Turn', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_package');
+    const requestId = '0190f4c8-0000-7000-8000-000000001003';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    const sessionId = 'as_package';
+    recordAgentEnvironmentPackageSnapshot(fixture.workspaceDb, {
+      createdAt: '2026-09-22T00:00:00.000Z',
+      environmentPackage: AgentEnvironmentPackageSchema.parse(
+        resolveAgentEnvironmentPackage({
+          agent: {
+            capabilities: [],
+            config: {
+              adapterType: 'codex',
+              baseUrl: null,
+              capabilities: [],
+              command: null,
+              environment: {},
+              workspaceRoot: '/workspace',
+            },
+            defaultProfileId: 'default',
+            id: 'agent_codex_host',
+            kind: 'coder',
+            modelId: null,
+            name: 'Codex Agent',
+            profiles: [
+              {
+                capabilityIds: [],
+                displayName: 'Default',
+                id: 'default',
+                instructionsRef: null,
+                modelId: null,
+                skillIds: [],
+              },
+            ],
+            sandboxSummary: null,
+            skillIds: [],
+            status: 'enabled',
+          },
+          agentSessionId: sessionId,
+          agentSetup: createTestAgentSetup(),
+          backend: { kind: 'openshell' },
+          requestId,
+          triggerActor: ACTOR,
+          turn: {
+            completedAt: null,
+            configVersion: null,
+            durationMs: null,
+            error: null,
+            humanGate: null,
+            id: identity.turnId,
+            items: [],
+            startedAt: '2026-09-22T00:00:00.000Z',
+            status: 'running',
+            threadId: fixture.threadId,
+            triggerActor: ACTOR,
+            workspaceId: fixture.workspaceId,
+          },
+          turnInput: 'Run tests',
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        })
+      ),
+    });
+    const sessionDir = join(
+      fixture.dataRoot,
+      'workspaces',
+      fixture.workspaceId,
+      'runtime',
+      'agent-sessions',
+      sessionId
+    );
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({ id: sessionId }));
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.rows).toEqual([
+      expect.objectContaining({ decision: 'refused', reason: 'runtime-evidence' }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
+  });
+
+  it('refuses an AgentSession that matches the start-failure lease', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_session');
+    const requestId = '0190f4c8-0000-7000-8000-000000001004';
+    writeStartFailureLease(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    const sessionId = `as_${identity.turnId}`;
+    const sessionDir = join(
+      fixture.dataRoot,
+      'workspaces',
+      fixture.workspaceId,
+      'runtime',
+      'agent-sessions',
+      sessionId
+    );
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'session.json'), JSON.stringify({ id: sessionId }));
+    closeFixture(fixture);
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+
+    expect(result.rows).toEqual([
+      expect.objectContaining({ decision: 'refused', reason: 'runtime-evidence' }),
+    ]);
+    expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
+  });
+
+  it('refuses cleanup while another holder owns the data-root lock', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_lock');
+    const requestId = '0190f4c8-0000-7000-8000-000000001005';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    const checkpointBefore = getWorkerCheckpoint(
+      fixture.workspaceDb,
+      fixture.workspaceId,
+      fixture.threadId,
+      identity.turnId
+    );
+    closeFixture(fixture);
+    const lock = acquireDataRootLock(fixture.dataRoot, { bootId: 'held-by-test' });
+    try {
+      await expect(
+        cleanCancelledAdmissionTaskCheckpoints({
+          apply: true,
+          backupRoot: fixture.backupRoot,
+          checkpoints: [identity],
+          dataRoot: fixture.dataRoot,
+        })
+      ).rejects.toThrow(/stopped NanoCore/);
+    } finally {
+      lock.release();
+    }
+    expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpointBefore);
+  });
+
+  it('refuses apply when the backup destination already exists', async () => {
+    const fixture = createFixture();
+    const identity = identityFor(fixture, 'turn_backup');
+    const requestId = '0190f4c8-0000-7000-8000-000000001006';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    const schedulerBefore = schedulerSnapshot(fixture.dataRoot);
+    const checkpointBefore = getWorkerCheckpoint(
+      fixture.workspaceDb,
+      fixture.workspaceId,
+      fixture.threadId,
+      identity.turnId
+    );
+    closeFixture(fixture);
+    const destination = join(
+      fixture.backupRoot,
+      'workspaces',
+      fixture.workspaceId,
+      'workspace.sqlite'
+    );
+    mkdirSync(join(fixture.backupRoot, 'workspaces', fixture.workspaceId), { recursive: true });
+    writeFileSync(destination, 'occupied');
+
+    await expect(
+      cleanCancelledAdmissionTaskCheckpoints({
+        apply: true,
+        backupRoot: fixture.backupRoot,
+        checkpoints: [identity],
+        dataRoot: fixture.dataRoot,
+      })
+    ).rejects.toThrow(/backup destination already exists/);
+    expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpointBefore);
+    expect(schedulerSnapshot(fixture.dataRoot)).toEqual(schedulerBefore);
+    expect(readFileSync(destination, 'utf8')).toBe('occupied');
+  });
+});
+
+/** Builds one checkpoint identity inside a fixture Workspace and Thread. */
+function identityFor(
+  fixture: { readonly threadId: string; readonly workspaceId: string },
+  turnId: string
+): { readonly threadId: string; readonly turnId: string; readonly workspaceId: string } {
+  return { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
+}
+
+/** Inserts one command receipt, including an already expired row. */
+function insertReceipt(
+  workspaceDb: WorkspaceDb,
+  input: {
+    readonly expiresAt: string;
+    readonly requestId: string;
+    readonly requestKey: string;
+    readonly responseId: string;
+    readonly scope: { readonly threadId: string; readonly workspaceId: string };
+  }
+): void {
+  workspaceDb.sqlite
+    .prepare(
+      `INSERT INTO idempotency_requests (
+         request_key, command_name, request_id, scope_json, input_hash, response_kind,
+         response_id, created_at, expires_at
+       ) VALUES (?, 'task.start', ?, ?, 'hash', 'turn', ?, '2020-01-01T00:00:00.000Z', ?)`
+    )
+    .run(
+      input.requestKey,
+      input.requestId,
+      JSON.stringify(input.scope),
+      input.responseId,
+      input.expiresAt
+    );
+}
+
+/** Reads receipt rows without using the pruning inventory. */
+function readReceipts(dataRoot: string, workspaceId: string): unknown[] {
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  try {
+    return workspaceDb.sqlite
+      .prepare(
+        `SELECT request_key, command_name, request_id, scope_json, input_hash, response_kind,
+                response_id, response_json, created_at, expires_at
+         FROM idempotency_requests ORDER BY request_key`
+      )
+      .all();
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+/** Reopens a Workspace database and reads one checkpoint. */
+function readCheckpoint(
+  dataRoot: string,
+  identity: { readonly threadId: string; readonly turnId: string; readonly workspaceId: string }
+) {
+  const workspaceDb = openWorkspaceDb(dataRoot, identity.workspaceId);
+  try {
+    return getWorkerCheckpoint(
+      workspaceDb,
+      identity.workspaceId,
+      identity.threadId,
+      identity.turnId
+    );
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}

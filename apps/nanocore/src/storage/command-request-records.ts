@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type {
@@ -286,6 +287,93 @@ export function getCommandRequestRecordFromDb(
     );
   }
   return record;
+}
+
+/** Read-only inventory of command receipts, including expired rows. */
+export type DurableCommandRequestRead =
+  | { readonly records: readonly CommandRequestRecord[]; readonly status: 'readable' }
+  | { readonly status: 'unreadable' };
+
+/**
+ * Reads every existing command receipt without pruning, migrating, or creating a database.
+ *
+ * Expired rows remain visible so cleanup cannot treat a pruned receipt as absent provenance.
+ *
+ * @param dataRoot Data root whose existing Core, User, and Workspace databases should be read.
+ * @returns Receipt rows, or `unreadable` when a database or row cannot be read.
+ */
+export function readDurableCommandRequestRecords(dataRoot: string): DurableCommandRequestRead {
+  try {
+    const records: CommandRequestRecord[] = [];
+    for (const path of existingCommandRequestDatabasePaths(dataRoot)) {
+      const sqlite = new Database(path, { fileMustExist: true, readonly: true });
+      try {
+        const table = sqlite
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+          .get('idempotency_requests') as { name: string } | undefined;
+        if (!table) {
+          return { status: 'unreadable' };
+        }
+        const rows = sqlite
+          .prepare(`${COMMAND_REQUEST_SELECT} ORDER BY created_at ASC, request_key ASC`)
+          .all() as CommandRequestRow[];
+        for (const row of rows) {
+          records.push(mapCommandRequestRow(row));
+        }
+      } finally {
+        sqlite.close();
+      }
+    }
+    records.sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key)
+    );
+    return { records, status: 'readable' };
+  } catch {
+    return { status: 'unreadable' };
+  }
+}
+
+/**
+ * Lists database files that already exist for command receipts.
+ *
+ * @param dataRoot Data root to inspect.
+ * @returns Existing Core, User, and Workspace database paths.
+ * @throws Error when a scanned directory contains a symbolic link.
+ */
+function existingCommandRequestDatabasePaths(dataRoot: string): string[] {
+  const paths: string[] = [];
+  const corePath = coreDbPath(dataRoot);
+  if (existsSync(corePath)) {
+    paths.push(corePath);
+  }
+  const usersRoot = resolveDataRootPath(dataRoot, 'users');
+  if (existsSync(usersRoot)) {
+    for (const entry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name)
+    )) {
+      if (entry.isSymbolicLink()) {
+        throw new Error('Command receipt user directory is symbolic.');
+      }
+      if (!entry.isDirectory()) continue;
+      const path = userDbPath(dataRoot, entry.name);
+      if (existsSync(path)) paths.push(path);
+    }
+  }
+  const workspacesRoot = resolveDataRootPath(dataRoot, 'workspaces');
+  if (existsSync(workspacesRoot)) {
+    for (const entry of readdirSync(workspacesRoot, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name)
+    )) {
+      if (entry.isSymbolicLink()) {
+        throw new Error('Command receipt workspace directory is symbolic.');
+      }
+      if (!entry.isDirectory() || entry.name === '.staging') continue;
+      const path = workspaceDbPath(dataRoot, entry.name);
+      if (existsSync(path)) paths.push(path);
+    }
+  }
+  return paths;
 }
 
 /**

@@ -122,13 +122,13 @@ A complete terminal owner tuple may finish through the existing owner transactio
 
 Boot classification stays fail-closed when a Task checkpoint's product Turn cannot be read. `getTurn` reports one error both when that Turn is absent and when the same Turn id belongs to another Workspace or Thread. Restart recovery MUST NOT treat that error, a null `workerSessionId`, a failed checkpoint, or a `turn-start-failed` lease as proof that no Worker ran, and it MUST NOT delete the checkpoint.
 
-A stopped-NanoCore operator command is the only supported deletion path for that leftover. It MUST hold the existing data-root lock, default to dry-run, accept only explicit checkpoint identities, and, on apply, write a consistent backup of each Workspace database it will change to a destination outside the data root before rechecking the selected row. It then MAY delete only that checkpoint through the existing terminal-checkpoint clearer.
+A stopped-NanoCore operator command is the only supported deletion path for that leftover. It MUST hold the existing data-root lock, default to dry-run, accept only explicit checkpoint identities, and, on apply, write a consistent backup of each Workspace database it will change to a destination outside the data root before rechecking the selected row. It then MAY delete only that checkpoint through the existing terminal-checkpoint clearer. Classification and dry-run MUST NOT prune receipts, migrate Thread envelopes, repair approval history, or create missing databases. A matching command receipt, including an expired receipt, contradicts cleanup. Malformed checkpoint diagnostics are unreadable history. Context-assembly diagnostics are execution evidence even when a summary parser cannot reconstruct every field. A placement plan's Workspace, Thread, and Turn MUST match the checkpoint, lease, and admission.
 
 The command admits a row only when every predicate holds:
 
 - The checkpoint stage is `failed`, `stopReason` is `error`, `workerSessionId` is null, `goalId` is null, `taskId` is null, and `iteration` is 0.
 - The checkpoint has no context digest, context-assembly diagnostics, item or artifact evidence, runtime-evidence row, evidence bundle, environment package, worker-control record, backend session, or AgentSession for that Turn.
-- Durable Turn files and the global Turn index both show that the Turn id is absent. A Turn present under any Workspace or Thread, including a lineage mismatch, refuses cleanup. Unreadable or corrupt history refuses cleanup for the invocation and deletes nothing.
+- Published Turn files show that the Turn id is absent under every Workspace and Thread. A Turn present under any owner, including a lineage mismatch, refuses cleanup. Unreadable or corrupt history, including malformed checkpoint diagnostics, refuses cleanup for the invocation and deletes nothing.
 - The Workspace and Thread records match the selected identity.
 - No lease for the Turn is live, and the Turn does not have more than one lease.
 - No command receipt, placement plan, package, control record, session, or admission contradicts the single proof below.
@@ -136,7 +136,7 @@ The command admits a row only when every predicate holds:
 Proof is exactly one of these tuples. Anything else, including a missing or ambiguous owner, leaves the row for inspection:
 
 - Exactly one admission for that Workspace, Thread, Turn, and command request has status `cancelled`, and that Turn has no placement plan and no lease.
-- Exactly one lease for that Workspace, Thread, and Turn is `failed` with release reason `turn-start-failed` and recovery state `needs-evidence`, its backend anchor is `unanchored`, and it has no accepted heartbeat, worker sequence, process key, or route-token hash. That lease's admission is the only admission for the request and Turn, its status is `admitted`, and its request id is the checkpoint request id.
+- Exactly one lease for that Workspace, Thread, and Turn is `failed` with release reason `turn-start-failed` and recovery state `needs-evidence`, its backend anchor is `unanchored`, and it has no accepted heartbeat, worker sequence, process key, or route-token hash. That lease's admission is the only admission for the request and Turn, its status is `admitted`, and its request id is the checkpoint request id. Its single placement plan uses that same Workspace, Thread, Turn, plan id, and admission queue entry.
 
 The command does not create, update, or synthesize a Turn, receipt, lease, admission, or capacity row. It does not retry work, repair product history, clean runtime state, or release scheduler capacity. Deletion removes only the proved checkpoint. A later apply that no longer finds that checkpoint is a no-op. A row that changes between classification and deletion is left in place. Lock loss, backup failure, or an unreadable dependency refuses the invocation before deletion.
 

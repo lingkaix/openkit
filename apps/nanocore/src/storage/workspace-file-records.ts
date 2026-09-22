@@ -783,6 +783,95 @@ export interface WorkspaceFileRecords {
   readonly turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
 }
 
+/** One published Turn identity read without repairing canonical files. */
+export interface PublishedTurnIdentity {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly workspaceId: string;
+}
+
+/** Read-only result of scanning published Turn files. */
+export type PublishedTurnIdentityRead =
+  | { readonly status: 'readable'; readonly turns: readonly PublishedTurnIdentity[] }
+  | { readonly status: 'unreadable' };
+
+/** Read-only result of scanning published AgentSession ids. */
+export type PublishedAgentSessionIdRead =
+  | { readonly sessionIds: readonly string[]; readonly status: 'readable' }
+  | { readonly status: 'unreadable' };
+
+/**
+ * Reads published Turn identities without creating layout, rewriting Thread envelopes, or repairing history.
+ *
+ * @param dataRoot Data root whose workspace tree should be inspected.
+ * @returns Turn identities whose file lineage matches their directories, or `unreadable` when a Turn file is missing or corrupt.
+ */
+export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIdentityRead {
+  try {
+    const turns: PublishedTurnIdentity[] = [];
+    const workspacesRoot = join(dataRoot, 'workspaces');
+    for (const workspaceId of listDirectoryNames(workspacesRoot)) {
+      const threadsRoot = join(workspacesRoot, workspaceId, 'threads');
+      for (const threadId of listDirectoryNames(threadsRoot)) {
+        const turnsRoot = join(threadsRoot, threadId, 'turns');
+        for (const turnId of listDirectoryNames(turnsRoot)) {
+          const turnPath = join(turnsRoot, turnId, 'turn.json');
+          if (!existsSync(turnPath)) {
+            return { status: 'unreadable' };
+          }
+          const parsed = JSON.parse(readFileSync(turnPath, 'utf8')) as {
+            readonly id?: unknown;
+            readonly threadId?: unknown;
+            readonly workspaceId?: unknown;
+          };
+          if (
+            parsed.id !== turnId ||
+            parsed.workspaceId !== workspaceId ||
+            parsed.threadId !== threadId
+          ) {
+            return { status: 'unreadable' };
+          }
+          turns.push({ threadId, turnId, workspaceId });
+        }
+      }
+    }
+    return { status: 'readable', turns };
+  } catch {
+    return { status: 'unreadable' };
+  }
+}
+
+/**
+ * Reads published AgentSession ids without repairing session records.
+ *
+ * @param dataRoot Data root that owns the Workspace.
+ * @param workspaceId Workspace whose runtime session directory should be inspected.
+ * @returns Session ids, or `unreadable` when a session directory cannot be proved.
+ */
+export function readPublishedAgentSessionIds(
+  dataRoot: string,
+  workspaceId: string
+): PublishedAgentSessionIdRead {
+  try {
+    const root = join(dataRoot, 'workspaces', workspaceId, 'runtime', 'agent-sessions');
+    const sessionIds: string[] = [];
+    for (const sessionId of listDirectoryNames(root)) {
+      const sessionPath = join(root, sessionId, 'session.json');
+      if (!existsSync(sessionPath)) {
+        return { status: 'unreadable' };
+      }
+      const parsed = JSON.parse(readFileSync(sessionPath, 'utf8')) as { readonly id?: unknown };
+      if (parsed.id !== sessionId) {
+        return { status: 'unreadable' };
+      }
+      sessionIds.push(sessionId);
+    }
+    return { sessionIds, status: 'readable' };
+  } catch {
+    return { status: 'unreadable' };
+  }
+}
+
 /**
  * Loads every published workspace from canonical file records.
  *
