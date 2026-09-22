@@ -1013,6 +1013,9 @@ const FETCH_TLS_MARKERS = [
   'self-signed',
   'unable to get local issuer',
   'tls certificate',
+  'certificate signer not trusted',
+  'server certificate verification failed',
+  'certificate verification failed',
 ] as const;
 
 /** Private stderr phrases that identify a transport failure without leaving the process. */
@@ -1027,6 +1030,8 @@ const FETCH_TRANSPORT_MARKERS = [
   'connection timed out',
   'early eof',
   'proxy connect',
+  'connect tunnel failed',
+  'could not resolve proxy',
   'recv failure',
 ] as const;
 

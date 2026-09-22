@@ -581,6 +581,52 @@ describe('workspace Git materialization', () => {
     expect(existsSync(join(target, 'README.md'))).toBe(false);
   });
 
+  it.each([
+    {
+      advertisedFetch: 'gnutls' as const,
+      message: 'Remote Git commit fetch TLS failed.',
+    },
+    {
+      advertisedFetch: 'gnutls-verify' as const,
+      message: 'Remote Git commit fetch TLS failed.',
+    },
+    {
+      advertisedFetch: 'proxy' as const,
+      message: 'Remote Git commit fetch transport failed.',
+    },
+    {
+      advertisedFetch: 'proxy-resolve' as const,
+      message: 'Remote Git commit fetch transport failed.',
+    },
+  ])('classifies a terminal $advertisedFetch fallback without collapsing it', async ({
+    advertisedFetch,
+    message,
+  }) => {
+    const remote = createBareGitRemote({ 'README.md': '# Classified fallback\n' });
+    const root = mkdtempSync(join(tmpdir(), `openkit-workspace-${advertisedFetch}-`));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { advertisedFetch, shaFetch: 'unrecognized' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow(message);
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
   it('refuses a commit the configured remote does not serve and keeps the partial slot', async () => {
     const remote = createBareGitRemote({ 'README.md': '# Other commit\n' });
     const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-missing-commit-'));
@@ -1011,7 +1057,7 @@ async function withScriptedGit(
   root: string,
   logPath: string,
   behavior: {
-    advertisedFetch?: 'early-eof' | 'tls';
+    advertisedFetch?: 'early-eof' | 'gnutls' | 'gnutls-verify' | 'proxy' | 'proxy-resolve' | 'tls';
     catFile?: 'fail';
     shaFetch: 'hang-after-refusal' | 'tls' | 'unrecognized' | 'missing-ref';
   },
@@ -1042,12 +1088,23 @@ if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'tls') {
   process.stderr.write('fatal: SSL certificate problem: unable to get local issuer certificate\\n');
   process.exit(128);
 }
-if (args.includes('fetch') && args.some((arg) => String(arg).includes('refs/')) && ${JSON.stringify(behavior.advertisedFetch ?? '')} === 'tls') {
-  process.stderr.write('fatal: SSL certificate problem: self-signed certificate in certificate chain\\n');
-  process.exit(128);
-}
-if (args.includes('fetch') && args.some((arg) => String(arg).includes('refs/')) && ${JSON.stringify(behavior.advertisedFetch ?? '')} === 'early-eof') {
-  process.stderr.write('fatal: early EOF\\n');
+const advertisedFailure = ${JSON.stringify(
+      behavior.advertisedFetch === 'tls'
+        ? 'fatal: SSL certificate problem: self-signed certificate in certificate chain\n'
+        : behavior.advertisedFetch === 'gnutls'
+          ? "fatal: unable to access 'https://127.0.0.1:9/repo.git/': server verification failed: certificate signer not trusted. (CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none)\n"
+          : behavior.advertisedFetch === 'gnutls-verify'
+            ? 'fatal: server certificate verification failed\n'
+            : behavior.advertisedFetch === 'proxy'
+              ? "fatal: unable to access 'https://example.invalid/repo.git/': CONNECT tunnel failed, response 407\n"
+              : behavior.advertisedFetch === 'proxy-resolve'
+                ? "fatal: unable to access 'https://example.invalid/repo.git/': Could not resolve proxy: example.invalid\n"
+                : behavior.advertisedFetch === 'early-eof'
+                  ? 'fatal: early EOF\n'
+                  : ''
+    )};
+if (advertisedFailure && args.includes('fetch') && args.some((arg) => String(arg).includes('refs/'))) {
+  process.stderr.write(advertisedFailure);
   process.exit(128);
 }
 if (catFile && ${JSON.stringify(behavior.catFile ?? '')} === 'fail') {
