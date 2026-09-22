@@ -6,6 +6,10 @@ updated: 2026-09-21
 ---
 # NanoHost Runtime And Transport
 
+## Startup Failure Diagnostic Carriage
+
+A `turn.start` dependency refusal may carry the closed startup explanation owned by the [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation). Existing exact operation identity, sequence, identical-result redelivery, durable result-before-acknowledgement and cleanup/fence rules apply unchanged. Core rejects a mismatched outer stage/reason or malformed explanation before settlement. Diagnostic collection adds no replay, extra result channel, disk spool or wait beyond existing deadlines. Absence of this observation is unavailable cause, not proof of network policy or credential failure. Private Epoch report restrictions are unchanged; full trusted enforcement correlation is outside this carriage contract.
+
 ## Persistent Worker Storage Amendment
 
 [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns the storageRef and complete inherited volume-layout contract. NanoHost realizes its current admitted attachment through stock OpenShell `SandboxTemplate.driver_config` and the private Docker driver's explicit mount support. The Gateway enables binds only for NanoHost-generated, root-validated mounts; no public caller supplies backend paths or arbitrary driver config. `/var/lib/openkit/nanohost-work` is a durable execution-host root outside both epoch roots, the Image Store, credentials and forensic evidence. It is never included in recursive epoch cleanup, explicit image removal or normal Sandbox deletion.
