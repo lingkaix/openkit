@@ -5923,7 +5923,7 @@ describe('createConfiguredTurnExecutor', () => {
               : startupRefused === 'git_fetch_tls_failed'
                 ? ' The worker could not trust the configured Git remote during fetch. Repair the sandbox trust bundle, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
                 : startupRefused === 'git_fetch_transport_failed'
-                  ? ' The worker could not complete the Git fetch transport. This is a sandbox network or HTTP failure, not proof that the remote lacks the commit. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
+                  ? ' The worker could not complete the Git fetch transport. This covers a subprocess, timeout, or transport failure and is not proof that the remote lacks the commit. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
                   : '';
         const rejected = expect(launch).rejects.toThrow(
           new Error(
