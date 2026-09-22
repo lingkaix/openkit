@@ -630,9 +630,12 @@ describe('post-terminal write admission', () => {
     expect(reconcileWorkerMcpItems(present.dataRoot, present.store)).toBe(0);
   });
 
-  it('admits a stored Item whose parent its own earlier parentless fill could not carry', () => {
-    // An earlier boot filled this Item without a parent because the snapshot was unreadable.
-    // Once the snapshot is readable this reader must not fail boot on a record it wrote itself.
+  it('admits a stored Item with no parent against a decided parent and leaves it unchanged', () => {
+    // Only two writers can produce this pair. One is an earlier boot of this same path that could
+    // not read the snapshot; the other would be a snapshot whose scope disagrees with the package
+    // the live publish used, which is an integrity fault rather than a competing publication.
+    // Admitting it stops this reader failing boot on a record it wrote itself. It does not repair
+    // the parent, because completing a stored Item is not an admitted post-terminal write.
     const { dataRoot, store } = seedMcpBootItem({
       callId: 'cap_mcp_parent_backfilled',
       createdAt: COMPLETED_AT,
@@ -641,9 +644,12 @@ describe('post-terminal write admission', () => {
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+    const stored = store.listAllItems().find((item) => item.id === 'it_mcp_parent_backfilled');
+    expect(stored).toBeDefined();
+    expect(stored as unknown as { parentItemId?: string }).not.toHaveProperty('parentItemId');
   });
 
-  it('still fills a row whose stored snapshot lineage is absent', () => {
+  it('still fills a row whose stored snapshot lineage is absent, without inventing a parent', () => {
     const { dataRoot, store } = seedMcpBootItem({
       callId: 'cap_mcp_null_lineage',
       createdAt: COMPLETED_AT,
@@ -653,6 +659,9 @@ describe('post-terminal write admission', () => {
     });
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+    const filled = store.listAllItems().find((item) => item.id === 'it_mcp_null_lineage');
+    expect(filled).toMatchObject({ causationId: 'cap_mcp_null_lineage', status: 'completed' });
+    expect(filled as unknown as { parentItemId?: string }).not.toHaveProperty('parentItemId');
   });
 
   it('leaves a generative MCP call row alone because it published no tool-call Item', () => {

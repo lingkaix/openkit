@@ -809,10 +809,14 @@ function mcpBootDecidedPublicationEqual(
 /**
  * Returns whether a stored parent agrees with the decided publication.
  *
- * A stored Item with no parent is admitted against a decided parent because only one writer
- * produces that pair: an earlier boot of this same path that could not read the snapshot and
- * filled the Item without its parent. Rejecting it would let this reader fail boot on a record
- * it wrote itself. A stored parent that disagrees with the decided one is still a conflict.
+ * Every other decided value must already match, so this only decides the one field. A stored Item
+ * with no parent is admitted against a decided parent. A live publication cannot produce that pair,
+ * because it omits the parent only when the package scope has no Item and the snapshot written from
+ * that same package then has none either. The reachable producer is an earlier boot of this path
+ * that could not read the snapshot, and rejecting it would fail boot on a record this path wrote.
+ * The remaining producer would be a snapshot whose scope disagrees with the package the publish
+ * used, which is an integrity fault rather than a competing publication. A stored parent that
+ * disagrees with the decided one is still a conflict, and so is a stored parent against none.
  *
  * @param parentComparable Whether the AEP snapshot supplied the decided parent.
  * @param recorded Stored parent, or null.
@@ -835,9 +839,10 @@ function mcpBootParentAgrees(
  * Both production snapshot writers are conditional, so a terminal call row can name a snapshot that was
  * never recorded. An absent snapshot leaves the parent unknown, and that case keeps the earlier behaviour
  * exactly: the fill still recovers the Item without a parent and the parent is not compared, so this reader
- * is never narrower than the one it replaced. Failing boot instead would punish a state production already
- * produces, and skipping the fill would lose the Item this path exists to recover. A snapshot that exists
- * but does not validate still fails.
+ * is never narrower than the one it replaced. Failing boot instead would lose the whole process over one
+ * lineage field, and skipping the fill would lose the Item this path exists to recover. A stored lineage
+ * that cannot address a snapshot file is unknown for the same reason. A snapshot that exists but does not
+ * validate still fails.
  *
  * @param workspaceDb Open workspace database that owns the snapshot.
  * @param workspaceId Workspace that owns the call row.
