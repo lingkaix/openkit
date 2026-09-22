@@ -419,6 +419,17 @@ interface NanoHostIdleSandboxEviction {
   readonly sandboxRuntimeId: string;
 }
 
+/** Process-local proof that this attempt created a Sandbox before publishing its session. */
+interface LivePartialSandboxMaterialization {
+  readonly attachmentGeneration: number;
+  readonly expectedRevision: number;
+  readonly leaseId: string;
+  readonly originPhysicalEpoch: string;
+  readonly sandboxId: string;
+  readonly storageRef: string;
+  deleteDispatched: boolean;
+}
+
 /** NanoHost-backed effect boundary used by the sole production turn executor. */
 class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private readonly agentSessionCloseOwners = new Map<string, NanoHostAgentSessionCloseOwner>();
@@ -428,6 +439,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   >();
   /** Live attempts that failed before Sandbox creation, with any storage reservation rolled back. */
   private readonly failedPreSandboxPreparations = new Set<string>();
+  /** Created Sandboxes whose in-memory session was never published in this process. */
+  private readonly livePartialMaterializations = new Map<
+    string,
+    LivePartialSandboxMaterialization
+  >();
   private readonly sessions = new Map<string, NanoHostBackendTurnSession>();
   private readonly sharedSandboxes = new Map<string, NanoHostSharedSandbox>();
   private readonly sharedHarnesses = new Map<string, NanoHostSharedHarness>();
@@ -1242,6 +1258,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         this.releaseWorkerStorageForFailedMaterialization(
           this.findWorkerStorageForFailedMaterialization(durableCleanupFailure)
         );
+        this.livePartialMaterializations.delete(identity.packageSnapshotId);
+        return;
+      }
+      const livePartial = this.livePartialMaterializations.get(identity.packageSnapshotId);
+      if (!session && livePartial) {
+        await this.cleanupLivePartialMaterialization(identity, livePartial, pendingStorage);
         return;
       }
       if (session?.turnStarted && session.terminalInspectionComplete) {
@@ -1362,6 +1384,47 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         this.sharedHarnesses.delete(key);
       }
     }
+  }
+
+  /**
+   * Deletes one Sandbox this process created but never published, then releases its exact reservation.
+   *
+   * @param identity Exact backend attempt that owns the partial creation.
+   * @param partial Process-local create proof captured before session publication.
+   * @param pendingStorage Reservation captured before the delete is awaited.
+   * @throws Error when epoch, lineage, deletion, or the storage compare-and-swap is not proved.
+   */
+  private async cleanupLivePartialMaterialization(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    partial: LivePartialSandboxMaterialization,
+    pendingStorage: WorkerStorageBinding | null
+  ): Promise<void> {
+    if (partial.deleteDispatched) {
+      throw new Error('NanoHost live partial Sandbox deletion is already dispatched.');
+    }
+    if (
+      !pendingStorage ||
+      pendingStorage.storageRef !== partial.storageRef ||
+      pendingStorage.attachmentGeneration !== partial.attachmentGeneration ||
+      pendingStorage.revision !== partial.expectedRevision ||
+      pendingStorage.state !== 'reserved' ||
+      pendingStorage.currentSandboxBindingRef !== null
+    ) {
+      throw new Error(
+        'NanoHost live partial storage reservation does not match cleanup ownership.'
+      );
+    }
+    this.requireCurrentBackendPhysicalEpoch(identity, partial.originPhysicalEpoch);
+    partial.deleteDispatched = true;
+    await this.effect(
+      identity,
+      partial.leaseId,
+      'sandbox.delete',
+      { leaseId: partial.leaseId, sandboxId: partial.sandboxId },
+      partial.originPhysicalEpoch
+    );
+    this.releaseWorkerStorageForFailedMaterialization(pendingStorage);
+    this.livePartialMaterializations.delete(identity.packageSnapshotId);
   }
 
   /** Releases an existing attachment after writer cleanup proof without reconstructing missing storage. */
@@ -2054,6 +2117,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         });
         throw error;
       }
+      this.livePartialMaterializations.set(identity.packageSnapshotId, {
+        attachmentGeneration: storageBinding.attachmentGeneration,
+        deleteDispatched: false,
+        expectedRevision: storageBinding.revision,
+        leaseId,
+        originPhysicalEpoch,
+        sandboxId,
+        storageRef: storageBinding.storageRef,
+      });
       requireNanoHostResultString(sandboxResult, 'sandboxId');
       this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
       const attachedStorage = activateWorkerStorageAttachment(this.coreDb, {
@@ -2130,6 +2202,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       terminalInspectionComplete: false,
       turnStarted: false,
     });
+    this.livePartialMaterializations.delete(identity.packageSnapshotId);
     this.requireSession(environmentPackage.snapshotId).pendingImports = [
       ...(await prepareNanoHostContextPackageImports(environmentPackage, context)),
       ...runtimeCredentialImports,
