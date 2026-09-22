@@ -57,6 +57,8 @@ Thread header icon commands use 20px glyphs in 32px square buttons without inher
 
 The Thread Side panel indexes each referenced Artifact version once, even when multiple Turns attach it. Conversation history retains every reference, and file-change records remain individually visible.
 
+Primitive status pairs are owned by `src/primitives/status.ts`; CountBadge and PhaseStepper reuse those pairs while retaining their distinct accent and foreground-only states. Composer uses the same layout on starter and Thread surfaces. Goal BoardLens renders its three fixed columns through one card mapping; CompletedView keeps Artifact rows display-only. Workspace Overview uses its live attention and conversation queries, and Portability hooks infer result shapes from the Core Client.
+
 ## Stack
 
 Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md):

@@ -87,7 +87,6 @@ export function ChatStarter() {
       ) : null}
 
       <Composer
-        size="starter"
         targetCatalog={targets.data ?? null}
         artifacts={(artifacts.data ?? []).map((artifact) => ({
           id: artifact.id,

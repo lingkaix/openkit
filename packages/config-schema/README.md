@@ -38,6 +38,8 @@ The session workspace planner consumes the pure Worker protocol path projection 
 
 Optional `server.jsonc.appUpdate` fixes one SSH host, user, port, identity file and known-hosts file. It is deployment configuration requiring App restart, not a Workspace capability or editable request destination. NanoCore checks that the protected files remain outside Data Root; host installation owns the forced command and fixed deployment target.
 
+[`src/tree-digest.ts`](src/tree-digest.ts) owns openkit-tree-v1 framing and validation; its path ordering uses unsigned UTF-8 byte comparison through Node Buffer.compare, not locale or UTF-16 ordering.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`

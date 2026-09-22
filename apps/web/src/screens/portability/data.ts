@@ -10,14 +10,10 @@ import { useCoreClient } from '../../app/core-client';
 import { chatKeys, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 import { settingsKeys } from '../settings/data';
 
-/** Schema-owned export result from `exportWorkspace`. */
-export type PortabilityExportResult = Awaited<ReturnType<CoreClient['app']['exportWorkspace']>>;
 /** Schema-owned dry-run review from `dryRunWorkspaceImport`. */
 export type PortabilityImportReview = Awaited<
   ReturnType<CoreClient['app']['dryRunWorkspaceImport']>
 >;
-/** Schema-owned import result from `importWorkspace`. */
-export type PortabilityImportResult = Awaited<ReturnType<CoreClient['app']['importWorkspace']>>;
 /** Exact import command accepted by `importWorkspace`. */
 export type PortabilityImportCommand = Parameters<CoreClient['app']['importWorkspace']>[0];
 /** Exact dry-run command accepted by `dryRunWorkspaceImport`. */

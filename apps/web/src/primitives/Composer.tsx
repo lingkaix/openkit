@@ -74,7 +74,6 @@ export interface ComposerWorkerEnvironments {
 
 export interface ComposerProps {
   placeholder?: string;
-  size?: 'dock' | 'starter';
   disabledReason?: string;
   targetCatalog?: ConversationTargetCatalog | null;
   artifacts?: ComposerArtifactOption[];

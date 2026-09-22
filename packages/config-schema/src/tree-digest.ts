@@ -225,14 +225,7 @@ function validateTreePath(path: string, maxDepth: number): void {
 function compareUtf8(left: string, right: string): number {
   const leftBytes = Buffer.from(left, 'utf8');
   const rightBytes = Buffer.from(right, 'utf8');
-  const limit = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < limit; index += 1) {
-    const delta = leftBytes[index]! - rightBytes[index]!;
-    if (delta !== 0) {
-      return delta;
-    }
-  }
-  return leftBytes.length - rightBytes.length;
+  return Buffer.compare(leftBytes, rightBytes);
 }
 
 /**

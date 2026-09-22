@@ -64,6 +64,8 @@ The source commit must already exist in the linked NanoCore repository through t
 
 ## Runtime
 
+Authored manifests and profiles are validated by AuthoredAgentConfigSchema in `@openkit/config-schema`; `src/agents/setup-resolver.ts` owns profile selection and composition. The dispatch retry service calls `src/runtime/scheduler-dispatch-loop.ts` directly; its timer, snapshot refresh, and error handling remain in `src/runtime/scheduler-dispatch-service.ts`.
+
 - `nanocore` admits governed worker sessions only through the configured NanoHost RuntimeTarget and its current native HTTP/2 connection generation.
 - NanoCore persists separate Sandbox runtime, Harness instance, and AgentSession runtime-binding records, and stores only hashes of raw Turn route credentials
 - the selectable NanoHost foundation supports one long-lived Harness, fixed private Harness operations, multiple AgentSessions for distinct Threads, restricted Codex handles, and shared-Sandbox retention

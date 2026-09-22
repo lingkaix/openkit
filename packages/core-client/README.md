@@ -22,6 +22,8 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 [`src/request-id.ts`](src/request-id.ts) owns missing request identity insertion. Sub-clients use `withRequestId` for body-carried command identities; explicit header-carried identities remain at the routes that own that contract.
 
+[`src/events.ts`](src/events.ts) shares event URL construction between Fetch and EventSource while each transport retains its own streaming, cursor, and reconnect lifecycle.
+
 ## Client Shape
 
 - `client.core`: Core protocol routes and turn SSE.

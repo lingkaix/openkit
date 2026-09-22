@@ -147,6 +147,36 @@ export function subscribeTurnEvents(
 }
 
 /**
+ * Builds an event URL from the subscription's normalized base and current cursor.
+ *
+ * @param normalizedBaseUrl Base URL normalized once when the subscription starts.
+ * @param options Subscription identifiers to encode at request time.
+ * @param lastSeen Latest sequence observed by the selected transport.
+ * @returns Relative or absolute event URL with the exact subscription query.
+ */
+function buildTurnEventsUrl(
+  normalizedBaseUrl: string,
+  options: SubscribeTurnEventsOptions,
+  lastSeen: number
+): string {
+  const path = `/api/workspaces/${encodeURIComponent(options.workspaceId)}/threads/${encodeURIComponent(
+    options.threadId
+  )}/events`;
+  const params = new URLSearchParams({
+    turnId: options.turnId,
+    since: String(lastSeen),
+  });
+
+  if (normalizedBaseUrl === '') {
+    return `${path}?${params.toString()}`;
+  }
+
+  const url = new URL(path, normalizedBaseUrl);
+  url.search = params.toString();
+  return url.toString();
+}
+
+/**
  * Subscribes to turn events through a status-aware fetch SSE stream.
  */
 function subscribeTurnEventsWithFetch(
@@ -165,24 +195,6 @@ function subscribeTurnEventsWithFetch(
     for (const resolve of resolvers) {
       resolve();
     }
-  };
-
-  const buildUrl = (): string => {
-    const path = `/api/workspaces/${encodeURIComponent(options.workspaceId)}/threads/${encodeURIComponent(
-      options.threadId
-    )}/events`;
-    const params = new URLSearchParams({
-      turnId: options.turnId,
-      since: String(lastSeen),
-    });
-
-    if (normalizedBaseUrl === '') {
-      return `${path}?${params.toString()}`;
-    }
-
-    const url = new URL(path, normalizedBaseUrl);
-    url.search = params.toString();
-    return url.toString();
   };
 
   const pushError = (error: unknown): void => {
@@ -232,7 +244,7 @@ function subscribeTurnEventsWithFetch(
       activeController = controller;
 
       try {
-        const response = await fetcher(buildUrl(), {
+        const response = await fetcher(buildTurnEventsUrl(normalizedBaseUrl, options, lastSeen), {
           credentials: 'include',
           headers: mergeHeaders(options.headers, { accept: 'text/event-stream' }),
           signal: controller.signal,
@@ -315,24 +327,6 @@ function subscribeTurnEventsWithEventSource(
     }
   };
 
-  const buildUrl = (): string => {
-    const path = `/api/workspaces/${encodeURIComponent(options.workspaceId)}/threads/${encodeURIComponent(
-      options.threadId
-    )}/events`;
-    const params = new URLSearchParams({
-      turnId: options.turnId,
-      since: String(lastSeen),
-    });
-
-    if (normalizedBaseUrl === '') {
-      return `${path}?${params.toString()}`;
-    }
-
-    const url = new URL(path, normalizedBaseUrl);
-    url.search = params.toString();
-    return url.toString();
-  };
-
   const reopen = (): void => {
     if (stopped) {
       return;
@@ -341,7 +335,7 @@ function subscribeTurnEventsWithEventSource(
     const previousSource = source;
     source = null;
     previousSource?.close();
-    source = new eventSourceFactory(buildUrl());
+    source = new eventSourceFactory(buildTurnEventsUrl(normalizedBaseUrl, options, lastSeen));
     const openedSource = source;
 
     source.addEventListener('message', (event) => {

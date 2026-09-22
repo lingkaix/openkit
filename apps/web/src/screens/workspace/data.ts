@@ -30,7 +30,6 @@ export const workspaceKeys = {
   knowledgeClaims: (workspaceId: string) => ['knowledge-claims', workspaceId] as const,
   knowledgeConflicts: (workspaceId: string) => ['knowledge-conflicts', workspaceId] as const,
   knowledgeIndexes: (workspaceId: string) => ['knowledge-indexes', workspaceId] as const,
-  dashboard: (workspaceId: string) => ['dashboard', workspaceId] as const,
   repositories: (workspaceId: string) => ['repositories', workspaceId] as const,
   catalog: (workspaceId: string) => ['catalog', workspaceId] as const,
 };
@@ -178,16 +177,6 @@ export function useHumanAttention(workspaceId: string | null) {
     enabled: Boolean(workspaceId),
     refetchInterval: 5_000,
     refetchIntervalInBackground: false,
-  });
-}
-
-/** Optional ambient dashboard counts / in-motion cards for Overview. */
-export function useWorkspaceDashboard(workspaceId: string | null) {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: workspaceKeys.dashboard(workspaceId ?? ''),
-    queryFn: () => client.app.getWorkspaceDashboard(workspaceId as string),
-    enabled: Boolean(workspaceId),
   });
 }
 

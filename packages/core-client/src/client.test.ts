@@ -5179,6 +5179,43 @@ describe('createCoreClient', () => {
     expect(fetchCalls).toEqual(['https://nanocore.test/api/meta']);
   });
 
+  it.each([
+    '',
+    'https://nanocore.test/prefix/',
+  ])('encodes SSE path and query identifiers on both transports with base %j', async (baseUrl) => {
+    const options = {
+      baseUrl,
+      workspaceId: 'ws /?',
+      threadId: 'th #/é',
+      turnId: 'turn &?=+',
+      since: 7,
+    };
+    const path =
+      '/api/workspaces/ws%20%2F%3F/threads/th%20%23%2F%C3%A9/events?turnId=turn+%26%3F%3D%2B&since=7';
+    const expected = baseUrl ? `https://nanocore.test${path}` : path;
+    const fetchUrls: string[] = [];
+    const iterator = subscribeTurnEvents({
+      ...options,
+      fetch: async (input) => {
+        fetchUrls.push(String(input));
+        return new Response(null, { status: 204 });
+      },
+    })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(fetchUrls).toEqual([expected]);
+
+    FakeEventSource.instances = [];
+    const eventSourceIterator = subscribeTurnEvents({
+      ...options,
+      eventSource: FakeEventSource,
+    })[Symbol.asyncIterator]();
+    try {
+      expect(FakeEventSource.instances.map((source) => source.url)).toEqual([expected]);
+    } finally {
+      await eventSourceIterator.return?.();
+    }
+  });
+
   it('withholds AgentSession events and projects embedded Turns over fetch SSE', async () => {
     const terminal = turnEvent(2, 'turn.completed');
     const iterator = subscribeTurnEvents({

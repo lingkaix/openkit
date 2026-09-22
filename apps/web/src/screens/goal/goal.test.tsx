@@ -1961,12 +1961,55 @@ describe('goal surfaces (WP-5)', () => {
       search = s;
     });
     const card = await screen.findByRole('button', { name: /Run verification/i });
+    const board = screen.getByRole('region', { name: 'Goal board' });
+    expect(
+      Array.from(board.children, (column) => column.querySelector('header')?.textContent)
+    ).toEqual(['To do1', 'In progress1', 'Done1']);
+    for (const [title, hue, meta] of [
+      ['1 queued task', 'scout', null],
+      ['Run verification', 'quill', 'running'],
+      ['2 completed', 'ledger', 'Done'],
+    ] as const) {
+      const row = within(board).getByRole('button', { name: new RegExp(title) });
+      expect(within(row).getByRole('img', { name: 'Worker' })).toHaveClass(
+        `bg-worker-${hue}`,
+        `text-worker-${hue}-fg`
+      );
+      expect(within(row).getByText('WK')).toBeInTheDocument();
+      if (meta) expect(within(row).getByText(meta)).toBeInTheDocument();
+    }
     expect(
       screen.queryByRole('button', { name: /move to done|drop.*done/i })
     ).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/drop into done/i)).not.toBeInTheDocument();
     await user.click(card);
     await waitFor(() => expect(search).toContain('lens=thread'));
+  });
+
+  it('preserves plan order within board columns and renders an empty Done column', async () => {
+    const client = makeClient();
+    const queryClient = renderApp('/goals/ws1/th1?lens=board', client);
+    queryClient.setQueryData(goalKeys.plan('ws1', 'th1', 'goal1'), {
+      ...currentPlanRead('running'),
+      plan: {
+        ...PLAN,
+        tasks: [
+          { ...PLAN.tasks[0], taskId: 'task_later', title: 'Queued first' },
+          { ...PLAN.tasks[0], taskId: 'task_demo', title: 'Run verification' },
+          { ...PLAN.tasks[0], taskId: 'task_earlier', title: 'Queued second' },
+        ],
+      },
+    });
+    await screen.findByRole('button', { name: /Queued second/ });
+    const board = screen.getByRole('region', { name: 'Goal board' });
+    expect(
+      Array.from(board.children, (column) => column.querySelector('header')?.textContent)
+    ).toEqual(['To do2', 'In progress1', 'Done0']);
+    expect(
+      within(board)
+        .getAllByRole('button')
+        .map((card) => card.textContent)
+    ).toEqual(['Queued firstWKQueued', 'Queued secondWKQueued', 'Run verificationWKrunning']);
   });
 
   it('shows the completed closeout when the goal is completed', async () => {
@@ -1977,6 +2020,9 @@ describe('goal surfaces (WP-5)', () => {
     expect(await screen.findByText(/Goal completed/i)).toBeInTheDocument();
     expect(screen.getByText('Release verification passed.')).toBeInTheDocument();
     expect(screen.getByText('Publish v0.0.6.')).toBeInTheDocument();
+    const artifact = screen.getByText('artifact1');
+    expect(artifact).toBeVisible();
+    expect(artifact.closest('button, a, [role="button"]')).toBeNull();
   });
 
   it('disables the steer bar when core.meta fails', async () => {

@@ -1,3 +1,5 @@
+import { STATUS_CLASS } from './status';
+
 export interface CountBadgeProps {
   /** The count of items needing attention. Nothing renders when 0. */
   count: number;
@@ -8,8 +10,8 @@ export interface CountBadgeProps {
 }
 
 const TONE = {
-  notice: 'bg-notice-bg text-notice-fg',
-  neutral: 'bg-neutral-bg text-neutral-fg',
+  notice: STATUS_CLASS.notice,
+  neutral: STATUS_CLASS.neutral,
   accent: 'bg-accent text-on-accent',
 } as const;
 
