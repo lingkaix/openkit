@@ -66,6 +66,7 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './turn-executor-factory.js';
 import type { PrepareAgentSessionForTurnInput } from './types.js';
+import { transitionWorkerBackendSessionState } from './worker-backend-sessions.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import {
@@ -500,6 +501,142 @@ function createFactoryNanoHostDispatch(
     async route() {
       throw new Error('Unexpected semantic route.');
     },
+  };
+}
+
+/**
+ * Materializes until storage activation aborts, leaving a created Sandbox and a reserved association.
+ *
+ * @param label Fixture identity suffix.
+ * @param hooks Optional delete-time mutation or failure.
+ * @returns The live attempt, still in `materializing`, with the activation trigger removed.
+ */
+async function failLivePartialSandboxActivation(
+  label: string,
+  hooks: {
+    readonly deleteError?: Error;
+    readonly duringDelete?: (
+      coreDb: ReturnType<typeof createFactoryCoreDb>,
+      storageRef: string
+    ) => void;
+  } = {}
+) {
+  const coreDb = createFactoryCoreDb();
+  const effects: NanoHostSessionEffectRequest[] = [];
+  const expectResultOnly = vi.fn(async () => {
+    throw new Error('unexpected result-only recovery');
+  });
+  const sessionDispatch: NanoHostSessionDispatch = {
+    async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+      const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+      effects.push(request);
+      if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
+      if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+      if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
+      if (request.kind === 'sandbox.delete') {
+        const storageRef = coreDb.sqlite
+          .prepare(
+            `SELECT storage_ref AS storageRef FROM worker_storage_bindings WHERE state = 'reserved'`
+          )
+          .get() as { readonly storageRef: string } | undefined;
+        if (storageRef) hooks.duringDelete?.(coreDb, storageRef.storageRef);
+        if (hooks.deleteError) throw hooks.deleteError;
+        return { sandboxId: request.input.sandboxId, state: 'deleted' };
+      }
+      throw new Error(`Unexpected NanoHost effect ${request.kind}.`);
+    },
+    expectResultOnly,
+    async poll() {
+      return null;
+    },
+    async result() {},
+    async route() {
+      throw new Error('Unexpected semantic route.');
+    },
+  };
+  const environmentPackage = completeNanoHostPackage({
+    runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
+    scope: {
+      agentSessionId: `as_${label}`,
+      threadId: `thread_${label}`,
+      turnId: `turn_${label}`,
+      workspaceId: `ws_${label}`,
+    },
+    snapshotId: `aepsnap_${label}`,
+  });
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO nanohost_runtime_targets (
+         target_id, identity_id, deployment_id, connection_generation,
+         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+       ) VALUES (?, ?, ?, 1, 1, 1, 1, ?, ?, 1)`
+    )
+    .run(
+      `target_${label}`,
+      `identity_${label}`,
+      `deployment_${label}`,
+      'a'.repeat(64),
+      environmentPackage.createdAt
+    );
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    coreDb,
+    env: {},
+    nanoHostSessionDispatch: sessionDispatch,
+    workerControlGateway: new WorkerControlGateway(),
+  });
+  const backend = (
+    runtime.turnExecutor as unknown as {
+      readonly backend: WorkerGovernanceBackend & {
+        requireLeaseId(packageSnapshotId: string): string;
+        readonly sessions: Map<string, unknown>;
+      };
+    }
+  ).backend;
+  const leaseId = `lease_${label}`;
+  backend.requireLeaseId = () => leaseId;
+  authorizeNanoHostPackage(coreDb, environmentPackage);
+  anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+  coreDb.sqlite.exec(`CREATE TEMP TRIGGER abort_${label}_activation
+    BEFORE UPDATE ON worker_storage_bindings
+    WHEN OLD.state = 'reserved' AND NEW.state = 'attached'
+    BEGIN
+      SELECT RAISE(ABORT, 'test activation write failure');
+    END`);
+  try {
+    await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
+      'test activation write failure'
+    );
+  } finally {
+    coreDb.sqlite.exec(`DROP TRIGGER abort_${label}_activation`);
+  }
+  const reserved = coreDb.sqlite
+    .prepare(
+      `SELECT storage_ref AS storageRef FROM worker_storage_bindings WHERE state = 'reserved'`
+    )
+    .get() as { readonly storageRef: string };
+  expect(getWorkerStorageBinding(coreDb, { storageRef: reserved.storageRef })).toMatchObject({
+    currentSandboxBindingRef: null,
+    state: 'reserved',
+  });
+  expect(backend.sessions.has(environmentPackage.snapshotId)).toBe(false);
+  expect(
+    coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+  ).toEqual({ count: 0 });
+  expect(effects.map((effect) => effect.kind)).toEqual([
+    'image.acquire',
+    'image.inspect',
+    'sandbox.create',
+  ]);
+  return {
+    backend,
+    coreDb,
+    effects,
+    environmentPackage,
+    expectResultOnly,
+    identity: backend.planSession(environmentPackage),
+    leaseId,
+    runtime,
+    storageRef: reserved.storageRef,
   };
 }
 
@@ -4609,6 +4746,161 @@ describe('createConfiguredTurnExecutor', () => {
       expect(operations).toEqual(['image.acquire', 'image.inspect']);
     } finally {
       factoryCoreDb.sqlite.exec('DROP TRIGGER reject_test_storage_contributor');
+    }
+  });
+
+  it('deletes a live created Sandbox and releases its reservation when attachment activation fails before session registration', async () => {
+    const fixture = await failLivePartialSandboxActivation('live_partial_activation');
+    try {
+      const before = getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })!;
+      const contributors = fixture.coreDb.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM worker_storage_contributors WHERE storage_ref = ?')
+        .get(fixture.storageRef) as { readonly count: number };
+      const sibling = createWorkerStorageBinding(fixture.coreDb, {
+        deploymentId: fixture.identity.deploymentId,
+        layout: before.layout,
+        runtimeTargetId: fixture.identity.runtimeTargetId,
+        workspaceId: fixture.environmentPackage.scope.workspaceId,
+      });
+      const siblingReserved = reserveWorkerStorageAttachment(fixture.coreDb, {
+        agentSessionId: 'as_live_partial_sibling',
+        authorizeContributor: () => true,
+        expectedRevision: sibling.revision,
+        layout: before.layout,
+        purpose: 'work',
+        responsibleUserId: 'user-factory',
+        runtimeTargetId: fixture.identity.runtimeTargetId,
+        storageRef: sibling.storageRef,
+        threadId: 'thread_live_partial_sibling',
+        workspaceId: fixture.environmentPackage.scope.workspaceId,
+      });
+      transitionWorkerBackendSessionState(fixture.coreDb, {
+        fromState: 'materializing',
+        leaseId: fixture.leaseId,
+        now: () => '2026-08-21T00:00:01.000Z',
+        toState: 'cleanup-pending',
+      });
+
+      await expect(
+        fixture.runtime.cleanupBackendSession(fixture.identity)
+      ).resolves.toBeUndefined();
+
+      expect(fixture.expectResultOnly).not.toHaveBeenCalled();
+      expect(fixture.effects.slice(3).map((effect) => effect.kind)).toEqual(['sandbox.delete']);
+      expect(fixture.effects[3]).toMatchObject({
+        input: { leaseId: fixture.leaseId, sandboxId: fixture.effects[2]?.input.sandboxId },
+      });
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
+      ).toMatchObject({
+        attachmentGeneration: before.attachmentGeneration,
+        currentAgentSessionId: null,
+        currentSandboxBindingRef: null,
+        currentThreadId: null,
+        currentWorkSlotRef: null,
+        revision: before.revision + 1,
+        state: 'idle',
+      });
+      expect(
+        fixture.coreDb.sqlite
+          .prepare(
+            'SELECT COUNT(*) AS count FROM worker_storage_contributors WHERE storage_ref = ?'
+          )
+          .get(fixture.storageRef)
+      ).toEqual(contributors);
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: siblingReserved.storageRef })
+      ).toMatchObject({ revision: siblingReserved.revision, state: 'reserved' });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps the reservation when live partial Sandbox deletion fails and does not replay it', async () => {
+    const fixture = await failLivePartialSandboxActivation('live_partial_delete_failure', {
+      deleteError: new Error('Sandbox cleanup delete-failed.'),
+    });
+    try {
+      transitionWorkerBackendSessionState(fixture.coreDb, {
+        fromState: 'materializing',
+        leaseId: fixture.leaseId,
+        now: () => '2026-08-21T00:00:01.000Z',
+        toState: 'cleanup-pending',
+      });
+      await expect(fixture.runtime.cleanupBackendSession(fixture.identity)).rejects.toThrow(
+        'Sandbox cleanup delete-failed.'
+      );
+      expect(fixture.expectResultOnly).not.toHaveBeenCalled();
+      expect(fixture.effects.filter((effect) => effect.kind === 'sandbox.delete')).toHaveLength(1);
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
+      ).toMatchObject({ state: 'reserved' });
+
+      await expect(fixture.runtime.cleanupBackendSession(fixture.identity)).rejects.toThrow(
+        'already dispatched'
+      );
+      expect(fixture.effects.filter((effect) => effect.kind === 'sandbox.delete')).toHaveLength(1);
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
+      ).toMatchObject({ state: 'reserved' });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('does not release storage when the reservation revision changes during live partial deletion', async () => {
+    const fixture = await failLivePartialSandboxActivation('live_partial_revision', {
+      duringDelete: (coreDb, storageRef) => {
+        coreDb.sqlite
+          .prepare(
+            'UPDATE worker_storage_bindings SET revision = revision + 1 WHERE storage_ref = ?'
+          )
+          .run(storageRef);
+      },
+    });
+    try {
+      const before = getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })!;
+      transitionWorkerBackendSessionState(fixture.coreDb, {
+        fromState: 'materializing',
+        leaseId: fixture.leaseId,
+        now: () => '2026-08-21T00:00:01.000Z',
+        toState: 'cleanup-pending',
+      });
+      await expect(fixture.runtime.cleanupBackendSession(fixture.identity)).rejects.toThrow(
+        'Worker storage revision changed.'
+      );
+      expect(fixture.expectResultOnly).not.toHaveBeenCalled();
+      expect(fixture.effects.filter((effect) => effect.kind === 'sandbox.delete')).toHaveLength(1);
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
+      ).toMatchObject({ revision: before.revision + 1, state: 'reserved' });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('does not delete a live partial Sandbox after its physical Epoch changes', async () => {
+    const fixture = await failLivePartialSandboxActivation('live_partial_epoch');
+    try {
+      fixture.coreDb.sqlite
+        .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ? WHERE target_id = ?')
+        .run('b'.repeat(64), fixture.identity.runtimeTargetId);
+      transitionWorkerBackendSessionState(fixture.coreDb, {
+        fromState: 'materializing',
+        leaseId: fixture.leaseId,
+        now: () => '2026-08-21T00:00:01.000Z',
+        toState: 'cleanup-pending',
+      });
+      await expect(fixture.runtime.cleanupBackendSession(fixture.identity)).rejects.toThrow(
+        'physical Epoch changed'
+      );
+      expect(fixture.expectResultOnly).not.toHaveBeenCalled();
+      expect(fixture.effects.map((effect) => effect.kind)).not.toContain('sandbox.delete');
+      expect(
+        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.storageRef })
+      ).toMatchObject({ state: 'reserved' });
+    } finally {
+      fixture.coreDb.sqlite.close();
     }
   });
 
