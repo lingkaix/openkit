@@ -31,6 +31,7 @@ export const WorkerStartupFailureSchema = z
       'retained_source_conflict',
       'git_init_failed',
       'git_fetch_failed',
+      'git_fetch_commit_unavailable',
       'git_checkout_failed',
       'control_timeout',
     ]),

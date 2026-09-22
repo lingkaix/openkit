@@ -488,6 +488,8 @@ function describeWorkerStartupFailure(
       'retained_source_conflict',
     'Remote Git workspace initialization failed.': 'git_init_failed',
     'Remote Git commit fetch failed.': 'git_fetch_failed',
+    'Remote Git commit is not available from the configured remote.':
+      'git_fetch_commit_unavailable',
     'Remote Git commit checkout failed.': 'git_checkout_failed',
     'Worker control readiness timed out.': 'control_timeout',
   };

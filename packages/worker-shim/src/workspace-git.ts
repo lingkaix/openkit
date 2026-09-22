@@ -113,13 +113,7 @@ export async function materializeWorkspaceGitInputs(
       {},
       'Remote Git origin configuration failed.'
     );
-    await requireGitText(
-      target,
-      sessionDir,
-      ['fetch', '--no-tags', '--depth=1', 'origin', input.source.commit],
-      {},
-      'Remote Git commit fetch failed.'
-    );
+    await fetchDeclaredCommit(target, sessionDir, input.source.commit);
     await requireGitText(
       target,
       sessionDir,
@@ -946,6 +940,70 @@ async function requireGitText(
   ).toString('utf8');
 }
 
+/** Private stderr retained only to classify a failed fetch. It never enters a product error. */
+const GIT_STDERR_LIMIT = 4096;
+
+/** Outcome of one bounded Git subprocess. */
+interface GitInvocation {
+  readonly ok: boolean;
+  readonly stderr: string;
+  readonly stdout: Buffer;
+}
+
+/**
+ * Fetches one exact commit into an empty slot.
+ *
+ * A depth-1 raw object id is the fast path. When the remote refuses that unadvertised want, one fetch of advertised branch tips and tags may prove the same commit. A commit that is still absent after that fetch succeeds is a distinct refusal. A failed fallback stays an ordinary fetch failure.
+ *
+ * @param cwd Empty Git workspace root.
+ * @param sessionDir Worker session directory used for the scrubbed Git environment.
+ * @param commit Exact declared commit.
+ */
+async function fetchDeclaredCommit(cwd: string, sessionDir: string, commit: string): Promise<void> {
+  const direct = await gitInvocation(cwd, sessionDir, [
+    'fetch',
+    '--no-tags',
+    '--depth=1',
+    'origin',
+    commit,
+  ]);
+  if (direct.ok) {
+    return;
+  }
+  if (!isUnadvertisedCommitRefusal(direct.stderr)) {
+    throw new Error('Remote Git commit fetch failed.');
+  }
+  const advertised = await gitInvocation(cwd, sessionDir, [
+    'fetch',
+    'origin',
+    '+refs/heads/*:refs/remotes/origin/*',
+    '+refs/tags/*:refs/tags/*',
+  ]);
+  if (!advertised.ok) {
+    throw new Error('Remote Git commit fetch failed.');
+  }
+  const object = await gitInvocation(cwd, sessionDir, ['cat-file', '-e', `${commit}^{commit}`]);
+  if (!object.ok) {
+    throw new Error('Remote Git commit is not available from the configured remote.');
+  }
+}
+
+/**
+ * Detects a server refusal of an unadvertised commit want.
+ *
+ * @param stderr Bounded private Git stderr.
+ * @returns Whether the failure is a missing advertised object rather than transport loss.
+ */
+function isUnadvertisedCommitRefusal(stderr: string): boolean {
+  const text = stderr.toLowerCase();
+  return (
+    text.includes('not our ref') ||
+    text.includes('unadvertised object') ||
+    text.includes("couldn't find remote ref") ||
+    text.includes('could not find remote ref')
+  );
+}
+
 /**
  * Runs one bounded Git subprocess with a scrubbed environment.
  *
@@ -963,6 +1021,27 @@ async function gitBytes(
   environment: NodeJS.ProcessEnv = {},
   stdin?: Buffer
 ): Promise<Buffer | null> {
+  const result = await gitInvocation(cwd, sessionDir, argv, environment, stdin);
+  return result.ok ? result.stdout : null;
+}
+
+/**
+ * Runs one bounded Git subprocess and retains a private stderr prefix.
+ *
+ * @param cwd Git workspace root.
+ * @param sessionDir Worker session directory used to disable ambient config.
+ * @param argv Git argument vector.
+ * @param environment Explicit command-local Git environment overrides.
+ * @param stdin Optional exact stdin bytes.
+ * @returns Success, exact stdout, and a bounded stderr prefix.
+ */
+async function gitInvocation(
+  cwd: string,
+  sessionDir: string,
+  argv: readonly string[],
+  environment: NodeJS.ProcessEnv = {},
+  stdin?: Buffer
+): Promise<GitInvocation> {
   return new Promise((resolveOutput) => {
     const child = spawn(
       'git',
@@ -970,19 +1049,20 @@ async function gitBytes(
       {
         cwd,
         env: gitEnvironment(sessionDir, environment),
-        stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'ignore'],
+        stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       }
     );
     const chunks: Buffer[] = [];
+    let stderr = '';
     let settled = false;
     let aborted = false;
-    const finish = (output: Buffer | null) => {
+    const finish = (ok: boolean) => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
-      resolveOutput(output);
+      resolveOutput({ ok, stderr, stdout: Buffer.concat(chunks) });
     };
     const abort = () => {
       if (settled) {
@@ -994,11 +1074,17 @@ async function gitBytes(
     const timeout = setTimeout(abort, GIT_TIMEOUT_MS);
 
     child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderr.length < GIT_STDERR_LIMIT) {
+        stderr += chunk.toString('utf8');
+        if (stderr.length > GIT_STDERR_LIMIT) {
+          stderr = stderr.slice(0, GIT_STDERR_LIMIT);
+        }
+      }
+    });
     child.stdin?.on('error', abort);
-    child.on('error', () => finish(null));
-    child.on('close', (exitCode) =>
-      finish(!aborted && exitCode === 0 ? Buffer.concat(chunks) : null)
-    );
+    child.on('error', () => finish(false));
+    child.on('close', (exitCode) => finish(!aborted && exitCode === 0));
     child.stdin?.end(stdin);
   });
 }
