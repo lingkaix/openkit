@@ -90,7 +90,7 @@ function seedMcpBootItem(input: {
   skipExistingItem?: boolean;
   skipSnapshot?: boolean;
 }): { dataRoot: string; store: FsStore } {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-boot-'));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-mcp-'));
   const store = createDemoStore({ dataRoot });
   const turn = seedTurn(store, 'completed');
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
@@ -310,7 +310,7 @@ describe('post-terminal write admission', () => {
   });
 
   it('admits identical, missing, and conflicting MCP boot backfill publications', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-admission-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-mcp-admission-'));
     const store = createDemoStore({ dataRoot });
     const turn = seedTurn(store, 'completed');
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
@@ -351,7 +351,7 @@ describe('post-terminal write admission', () => {
       expect.objectContaining({ id: 'it_mcp_admission', causationId: 'cap_mcp_admission' })
     );
 
-    const conflictRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-admission-conflict-'));
+    const conflictRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-mcp-admission-conflict-'));
     const conflictStore = createDemoStore({ dataRoot: conflictRoot });
     const conflictTurn = seedTurn(conflictStore, 'completed');
     const conflictDb = openWorkspaceDb(conflictRoot, 'ws_demo');
