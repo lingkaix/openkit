@@ -15,20 +15,21 @@ import { ItemView } from './ItemView';
 
 const MISSING_TURN_ERROR = 'This turn failed. Review the conversation before trying again.';
 
-/** Item-log groups plus dashboard failed Turns that recorded no Items. */
+/** Item-log groups plus dashboard activity or historical failures for Turns with no Items. */
 function streamGroupsByTurn(
   items: ThreadItem[],
   turns: readonly { id: string; status: string }[] | undefined,
-  latestTurnId: string | undefined
+  latestTurnId: string | undefined,
+  activityTurnIds: ReadonlySet<string>
 ): { turnId: string; items: ThreadItem[] }[] {
   const groups = groupItemsByTurn(items);
   const orderedTurns = turns ?? [];
   const turnOrder = new Map(orderedTurns.map((turn, index) => [turn.id, index]));
   for (const [index, turn] of orderedTurns.entries()) {
-    // Product projection that differs from sealed terminals: historical error groups insert failed Turns only.
+    // Historical errors insert failed Turns only; supplied activity also needs a group without Items.
+    const historicalFailure = turn.status === 'failed' && turn.id !== latestTurnId;
     if (
-      turn.status !== 'failed' ||
-      turn.id === latestTurnId ||
+      (!historicalFailure && !activityTurnIds.has(turn.id)) ||
       groups.some((group) => group.turnId === turn.id)
     )
       continue;
@@ -55,7 +56,7 @@ export interface ThreadStreamProps {
  * flight, an inline error with retry, a calm empty block, or the populated stream
  * grouped by Turn (Thread → Turn → Item). Each durable failed Turn that is not the
  * latest keeps its recorded dashboard error beside that Turn, including Turns with no
- * Items. Unresolved approvals and non-secret Gate answers are
+ * Items. Authorized runtime activity appears once at each Turn's final Item group, or an empty group, as plain text with explicit coverage and presentation omissions; it creates no human Gate or execution state. A failed dashboard refresh suppresses cached activity until a successful read, with retry owned by the existing dashboard query. Unresolved approvals and non-secret Gate answers are
  * actionable inline unless read-only. Baseline readiness stays sticky only for the current
  * Workspace and Thread so later command refetches cannot tear down its live subscription.
  */
@@ -104,7 +105,15 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
   }
 
   const latestTurnId = dashboard?.turns.at(-1)?.id;
-  const groups = streamGroupsByTurn(items.data ?? [], dashboard?.turns, latestTurnId);
+  const activityByTurn = new Map(
+    live.isError ? [] : dashboard?.runtimeActivity?.map((activity) => [activity.turnId, activity])
+  );
+  const groups = streamGroupsByTurn(
+    items.data ?? [],
+    dashboard?.turns,
+    latestTurnId,
+    new Set(activityByTurn.keys())
+  );
   const participantNames = new Map(
     dashboard?.participants?.map((participant) => [
       `${participant.kind}:${participant.id}`,
@@ -118,7 +127,7 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
     ])
   );
 
-  if (groups.length === 0) {
+  if (groups.length === 0 && !live.isError) {
     return (
       <EmptyState
         icon="chat"
@@ -152,12 +161,19 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
 
   return (
     <div className="flex flex-col gap-5">
+      {live.isError ? (
+        <ErrorBanner
+          message="Runtime activity is unavailable. Retry to refresh."
+          onRetry={() => void live.refetch()}
+        />
+      ) : null}
       {groups.map((group, index) => {
         const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
+        const isLastGroup =
+          groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index;
+        const activity = groupTurn && isLastGroup ? activityByTurn.get(group.turnId) : undefined;
         const historicalFailure =
-          groupTurn?.status === 'failed' &&
-          groupTurn.id !== latestTurnId &&
-          groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index
+          groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
             ? (groupTurn.error?.message ?? MISSING_TURN_ERROR)
             : null;
 
@@ -248,6 +264,65 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                 />
               )
             )}
+            {activity ? (
+              <section
+                aria-label="Runtime activity"
+                className="rounded-ok border border-border bg-sunken p-4 text-sm"
+              >
+                <h3 className="font-semibold text-fg">Runtime activity</h3>
+                <p className="mt-1 text-fg-muted">
+                  {activity.coverage === 'collecting'
+                    ? 'Activity collection is ongoing.'
+                    : activity.coverage === 'partial'
+                      ? 'Activity coverage is partial.'
+                      : 'Activity coverage is unavailable.'}
+                </p>
+                <p className="mt-1 text-fg-muted">
+                  {activity.contentCapture === 'on'
+                    ? 'Full-content capture was enabled for this Turn.'
+                    : activity.contentCapture === 'off'
+                      ? 'Full-content capture was off for this Turn.'
+                      : 'Full-content capture setting is unknown.'}
+                </p>
+                {activity.omittedEntryCount > 0 ? (
+                  <p className="mt-1 text-fg-muted">
+                    {activity.omittedEntryCount} earlier activity entries not shown.
+                  </p>
+                ) : null}
+                {activity.entries.length > 0 ? (
+                  <ol className="mt-3 flex flex-col gap-3">
+                    {activity.entries.map((entry) => (
+                      <li key={entry.sequence}>
+                        <div className="flex flex-wrap items-baseline gap-2">
+                          <span className="font-medium text-fg">
+                            {entry.label ??
+                              {
+                                'child-started': 'Child activity started',
+                                progress: 'Reported progress',
+                                result: 'Reported result',
+                                failure: 'Reported failure',
+                              }[entry.kind]}
+                          </span>
+                          <time dateTime={entry.observedAt} className="text-xs text-fg-muted">
+                            {new Date(entry.observedAt).toLocaleTimeString()}
+                          </time>
+                        </div>
+                        {entry.text !== undefined ? (
+                          <p className="mt-1 whitespace-pre-wrap break-words text-fg">
+                            {entry.text}
+                          </p>
+                        ) : null}
+                        {entry.textTruncated ? (
+                          <p className="mt-1 text-xs text-fg-muted">
+                            Text shortened for this timeline.
+                          </p>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+              </section>
+            ) : null}
             {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
           </div>
         );

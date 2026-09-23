@@ -71,6 +71,7 @@ function createRestorableWorkerControlFixture(
   });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
+      captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_restore_1',
       backend: {

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type AgentEnvironmentPackage,
+  AgentEnvironmentPackageSchema,
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
@@ -424,6 +425,7 @@ function completeNanoHostPackage(input: {
   readonly workspace?: Record<string, unknown>;
 }): AgentEnvironmentPackage {
   const base = resolveAgentEnvironmentPackage({
+    captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: 'as_factory_fixture',
     agentSetup: createTestAgentSetup(),
     backend: { kind: 'openshell' },
@@ -2131,6 +2133,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
       const triggerActor = { kind: 'user' as const, id: 'user-factory' };
       const packageResolution = {
+        captureCoverage: { scope: 'server', value: 'off' } as const,
         agentSessionId: 'as_restart_same_epoch',
         agentSetup: createTestAgentSetup(),
         backend: { kind: 'openshell' as const },
@@ -2558,6 +2561,7 @@ describe('createConfiguredTurnExecutor', () => {
       const selectedWorkSlotRef = predecessor.currentWorkSlotRef!;
       const triggerActor = { id: 'user-factory', kind: 'user' as const };
       const environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: 'as_selected_slot_successor',
         agentSetup: createTestAgentSetup(),
         backend: { kind: 'openshell' },
@@ -2710,7 +2714,12 @@ describe('createConfiguredTurnExecutor', () => {
         ],
         workspaceSourceRefs: { repo: 'main-repo' },
       };
-      const successorPackage = previewPackage('as_selected_slot_no_choice', successorPreparation);
+      const successorPreview = previewPackage('as_selected_slot_no_choice', successorPreparation);
+      expect(successorPreview).not.toHaveProperty('observability');
+      const successorPackage = AgentEnvironmentPackageSchema.parse({
+        ...successorPreview,
+        observability: environmentPackage.observability,
+      });
       const freshSuccessorPackage = previewPackage('as_selected_slot_fresh', {
         ...successorPreparation,
         freshAgentSessionId: 'as_selected_slot_fresh',
@@ -5343,6 +5352,7 @@ describe('createConfiguredTurnExecutor', () => {
       const packageFor = (adapterId: 'codex' | 'opencode', suffix: string = adapterId) => {
         const triggerActor = { id: 'user-multi-harness', kind: 'user' as const };
         return resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSessionId: `agent-session-${suffix}`,
           agentSetup: createTestAgentSetup({
             adapter: adapterId,
@@ -5444,6 +5454,7 @@ describe('createConfiguredTurnExecutor', () => {
       firstBackend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
       const triggerActor = { id: 'user-measured-restore', kind: 'user' as const };
       const environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: 'agent-session-measured-restore',
         agentSetup: createTestAgentSetup({
           adapter: 'codex',
@@ -5602,6 +5613,7 @@ describe('createConfiguredTurnExecutor', () => {
       backend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
       const triggerActor = { id: 'user-measured-inspect', kind: 'user' as const };
       const firstPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: 'agent-session-measured-inspect',
         agentSetup: createTestAgentSetup({
           adapter: 'codex',

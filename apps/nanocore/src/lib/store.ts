@@ -84,6 +84,7 @@ import {
   assertSafeWorkspacePathSegment,
   assertTurnEventPayloadLineage,
   type CaptureCoverageBinding,
+  CaptureCoverageBindingSchema,
   deleteWorkspaceKnowledgeRecord,
   isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
@@ -1980,6 +1981,8 @@ export class FsStore {
     turnEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[];
     knowledgeSources?: readonly KnowledgeSourceRecord[];
     knowledgeSourceMaterials?: readonly KnowledgeSourceMaterialRecord[];
+    /** Immutable capture admission for imported Turns; absence remains unknown history. */
+    turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
     stageWorkspace?: (stage: ImportWorkspaceStage) => void;
   }): WorkspaceRecord {
     const history = parseCanonicalWorkspaceHistory({
@@ -2000,6 +2003,15 @@ export class FsStore {
       if (this.threads.has(thread.id)) {
         throw new Error(`Thread already exists: ${thread.id}`);
       }
+    }
+
+    const importedTurnIds = new Set(history.turns.map((turn) => turn.id));
+    const captureCoverage = new Map<string, CaptureCoverageBinding>();
+    for (const [turnId, binding] of input.turnCaptureCoverage ?? []) {
+      if (!importedTurnIds.has(turnId)) {
+        throw new Error(`Capture coverage references missing imported Turn: ${turnId}`);
+      }
+      captureCoverage.set(turnId, CaptureCoverageBindingSchema.parse(binding));
     }
 
     const currentItems = history.turns.flatMap((turn) => turn.items);
@@ -2055,6 +2067,7 @@ export class FsStore {
       knowledge: [...input.knowledge],
       threads: history.threads,
       turns: approvalState.turns,
+      turnCaptureCoverage: captureCoverage,
       itemRevisions: history.itemRevisions,
       artifacts: history.artifacts,
       knowledgeProposals: [],
@@ -2080,6 +2093,8 @@ export class FsStore {
     }
     for (const turn of approvalState.turns) {
       this.turns.set(turn.id, turn);
+      const binding = captureCoverage.get(turn.id);
+      if (binding) this.turnCaptureCoverage.set(turn.id, binding);
     }
     for (const item of currentItems) {
       this.items.set(item.id, item);
@@ -2145,6 +2160,7 @@ export class FsStore {
     }
     for (const turnId of turnIds) {
       this.turns.delete(turnId);
+      this.turnCaptureCoverage.delete(turnId);
       const stream = this.streams.get(turnId);
       if (stream) {
         for (const timer of stream.timers) {

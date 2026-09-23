@@ -173,7 +173,7 @@ describe('WorkerControlClient', () => {
       },
       kind: 'event',
       lineage,
-      schemaVersion: 2,
+      schemaVersion: 1,
       sequence: 3,
     };
 
@@ -226,7 +226,7 @@ describe('WorkerControlClient', () => {
       },
       kind: 'event',
       lineage,
-      schemaVersion: 2,
+      schemaVersion: 1,
       sequence: 3,
     };
 

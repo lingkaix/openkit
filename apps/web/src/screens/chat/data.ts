@@ -403,6 +403,8 @@ export function useThreadDashboard(
     queryKey: chatKeys.dashboard(workspaceId ?? '', threadId),
     queryFn: () => client.app.getThreadDashboard(workspaceId as string, threadId),
     enabled: Boolean(workspaceId) && enabled,
+    // Shared stream and workbench observers reuse a fresh dashboard until the next poll.
+    staleTime: poll ? 5_000 : 0,
     refetchInterval: poll ? 5_000 : false,
     refetchIntervalInBackground: false,
   });
@@ -471,7 +473,7 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
 /**
  * Subscribes once to the authoritative running Turn, folds item events into the
  * item cache, and projects its matching updated or terminal Turn into the dashboard cache.
- * Chat/Task dashboards refresh in the foreground; Item observers refresh only while idle.
+ * Every mounted Thread stream keeps its dashboard observer polling in the foreground, including observation-only updates; Chat/Task Item observers refresh only while idle.
  * Latest dashboard Turn id/status changes invalidate this Thread's conversation-target catalog.
  * Returns the dashboard query for message attribution and authoritative action readiness.
  *
@@ -490,11 +492,7 @@ export function useLiveThreadItems(
   const queryClient = useQueryClient();
   const { clear, report } = useConnectionFailure();
   const [attempt, setAttempt] = useState(0);
-  const dashboard = useThreadDashboard(
-    workspaceId,
-    threadId,
-    enabled && !queryClient.getQueryData(chatKeys.dashboard(workspaceId ?? '', threadId))
-  );
+  const dashboard = useThreadDashboard(workspaceId, threadId, enabled, true);
   const turnId = dashboard.data?.turns.findLast((turn) => turn.status === 'running')?.id;
   const latestTurnId = dashboard.data?.turns.at(-1)?.id;
   const latestTurnStatus = dashboard.data?.turns.at(-1)?.status;

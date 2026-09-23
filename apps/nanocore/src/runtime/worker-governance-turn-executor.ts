@@ -50,6 +50,7 @@ import {
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
@@ -69,6 +70,7 @@ import {
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
+  type AgentEnvironmentPackagePreview,
   type PreparedWorkerContextPackage,
   type ResolveAgentEnvironmentBackendInput,
   type ResolvedAgentEnvironmentProviderCredential,
@@ -602,7 +604,7 @@ export interface WorkerGovernanceTurnExecutorOptions {
   runtimeProvenanceImporter?: typeof importWorkerRuntimeProvenance | undefined;
   /** Resolves an exact work slot from a compatible resident Sandbox without effects. */
   resolveResidentWorkerStorageWorkSlotRef?:
-    | ((environmentPackage: AgentEnvironmentPackage) => string | null)
+    | ((environmentPackage: AgentEnvironmentPackagePreview) => string | null)
     | undefined;
   /** Optional vault backend used for grant-derived provider attachments. */
   vaultBackend?: (() => VaultBackend) | undefined;
@@ -647,7 +649,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly createAgentSessionId: () => string;
   private readonly now: () => string;
   private readonly resolveResidentWorkerStorageWorkSlotRef:
-    | ((environmentPackage: AgentEnvironmentPackage) => string | null)
+    | ((environmentPackage: AgentEnvironmentPackagePreview) => string | null)
     | null;
   private readonly runtimeProvenanceImporter: typeof importWorkerRuntimeProvenance;
   private readonly vaultBackend: (() => VaultBackend) | null;
@@ -888,7 +890,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const inspectBackendContinuity = async (
       agentSessionId: string,
       agentSessionCompatibilityKey: string,
-      environmentPackage: AgentEnvironmentPackage,
+      environmentPackage: AgentEnvironmentPackagePreview,
       reuseAllowed: boolean
     ) => {
       try {
@@ -1169,11 +1171,26 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     );
   }
 
+  /** Reads durable admission before preview or dispatch; missing history cannot become default-off. */
+  private requireTurnCaptureCoverage(turn: { workspaceId: string; threadId: string; id: string }) {
+    const workspaceDb = this.openWorkspaceDb(turn.workspaceId);
+    if (!workspaceDb) throw new TurnStartValidationError('recovery_required', 'Worker capture admission is not durable.', 409);
+    try {
+      const binding = readWorkObservationTurnBinding(workspaceDb, { threadId: turn.threadId, turnId: turn.id });
+      if (!binding.coverage) throw new Error('Missing persisted capture coverage');
+      return binding.coverage;
+    } catch {
+      throw new TurnStartValidationError('recovery_required', 'Worker capture admission is unavailable.', 409);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  }
+
   /** Resolves one complete secret-free AEP for admission without backend or Store effects. */
   private previewAgentEnvironmentPackage(
     agentSessionId: string,
     input: PrepareAgentSessionForTurnInput
-  ): AgentEnvironmentPackage {
+  ): AgentEnvironmentPackagePreview {
     const resolvePackage = (workSlotRef: string) =>
       resolveAgentEnvironmentPackageMetadata({
         agentSessionId,
@@ -1267,6 +1284,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       const resolvedAgentSessionId = agentSessionId ?? this.createAgentSessionId();
       agentSessionId = resolvedAgentSessionId;
+      const captureCoverage = this.requireTurnCaptureCoverage(turn);
       const launchEnvironmentPackage = this.previewAgentEnvironmentPackage(resolvedAgentSessionId, {
         agentSetup: context.agentSetup,
         freshAgentSessionId: resolvedAgentSessionId,
@@ -1343,6 +1361,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const runtimeFileCredentials: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
       const credentialReceipts: CreateVaultInjectionReceiptInput[] = [];
       const resolvedEnvironmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage,
         agentSetup: context.agentSetup,
         agentSessionId: resolvedAgentSessionId,
         backend: { kind: 'openshell' },
@@ -2934,7 +2953,7 @@ function asWorkerArtifactTurnError(error: unknown): unknown {
 
 /** Reads the canonical SessionCompatibilityKey from one metadata-only AEP. */
 function agentSessionCompatibilityKeyFromPackage(
-  environmentPackage: AgentEnvironmentPackage
+  environmentPackage: AgentEnvironmentPackagePreview
 ): string {
   return (
     environmentPackage.extensions.openkit as {
@@ -2945,7 +2964,7 @@ function agentSessionCompatibilityKeyFromPackage(
 
 /** Reads the exact work-slot identity already validated into one metadata-only AEP. */
 function requirePackageWorkerStorageWorkSlotRef(
-  environmentPackage: AgentEnvironmentPackage
+  environmentPackage: AgentEnvironmentPackagePreview
 ): string {
   const workSlotRef = (
     environmentPackage.extensions.openkit as {

@@ -27,6 +27,26 @@ const THREAD = {
   updatedAt: '2026-07-21T00:00:00.000Z',
 };
 
+/** Safe dashboard activity is informational even when its outward text requests a decision. */
+const RUNTIME_ACTIVITY = [
+  {
+    turnId: 't1',
+    contentCapture: 'on' as const,
+    coverage: 'partial' as const,
+    entries: [
+      {
+        sequence: 3,
+        observedAt: '2026-07-21T00:00:01.000Z',
+        kind: 'progress' as const,
+        label: 'Child 1: verification running',
+        text: 'Please approve the reported proposal.',
+        textTruncated: false,
+      },
+    ],
+    omittedEntryCount: 0,
+  },
+];
+
 const CONVERSATION_TARGET = {
   workspaceId: 'ws1',
   threadId: null,
@@ -966,10 +986,17 @@ describe('chat thread (boards 02/03)', () => {
         respondApproval,
       },
       {
-        getThreadDashboard: vi.fn().mockResolvedValue({ turns: [APPROVAL_TURN] }),
+        getThreadDashboard: vi
+          .fn()
+          .mockResolvedValue({ turns: [APPROVAL_TURN], runtimeActivity: RUNTIME_ACTIVITY }),
       }
     );
     renderApp('/chat/ws1/th1', client);
+    expect(await screen.findByText('Child 1: verification running')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1);
+    expect(
+      screen.getByRole('region', { name: 'Runtime activity' }).querySelector('button')
+    ).toBeNull();
     await user.click(await screen.findByRole('button', { name: 'Approve' }));
     expect(respondApproval).toHaveBeenCalledWith('ap1', {
       workspaceId: 'ws1',
@@ -1148,12 +1175,35 @@ describe('chat thread (boards 02/03)', () => {
   it('renders every non-secret Gate question and submits one complete answer map', async () => {
     const user = userEvent.setup();
     const startTurn = vi.fn().mockResolvedValue(COMPLETED_TURN);
-    const client = makeClient({
-      listThreadItems: vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
-      startTurn,
-    });
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
+        startTurn,
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          viewerUserId: 'user_editor',
+          turns: [
+            {
+              ...APPROVAL_TURN,
+              items: USER_INPUT_ITEMS,
+              humanGate: {
+                kind: 'user-input',
+                itemId: 'i-user-input',
+                userInputRequestId: 'uir1',
+              },
+            },
+          ],
+          runtimeActivity: RUNTIME_ACTIVITY,
+        }),
+      }
+    );
     renderApp('/chat/ws1/th1', client);
 
+    expect(await screen.findByText('Child 1: verification running')).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: 'Runtime activity' }).querySelector('input, button')
+    ).toBeNull();
     await user.type(await screen.findByRole('textbox', { name: 'Audience' }), 'Operators');
     await user.click(screen.getByRole('radio', { name: 'Concise' }));
     await user.click(screen.getByRole('button', { name: 'Submit answers' }));
@@ -3005,6 +3055,112 @@ describe('open thread external activity', () => {
     await waitFor(() => expect(screen.getByText('CATALOG_OK_GROK')).toBeInTheDocument());
     expect(listThreadItems.mock.calls.length).toBeGreaterThan(itemCallsAfterBaseline);
     expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(dashboardCallsAfterBaseline);
+  });
+
+  it.each(
+    [500, 401, 403].flatMap((status) => [true, false].map((hasItems) => ({ status, hasItems })))
+  )('suppresses cached activity after a $status refresh with Items=$hasItems until retry succeeds', async ({
+    status,
+    hasItems,
+  }) => {
+    const user = userEvent.setup();
+    const initialDashboard = {
+      turns: [hasItems ? APPROVAL_TURN : { ...idleTurn, items: [] }],
+      runtimeActivity: RUNTIME_ACTIVITY.map((activity) => ({
+        ...activity,
+        coverage: 'collecting' as const,
+      })),
+    };
+    const getThreadDashboard = vi.fn().mockResolvedValue(initialDashboard);
+    const queryClient = renderApp(
+      '/chat/ws1/th1',
+      makeClient(
+        {
+          listThreadItems: vi
+            .fn()
+            .mockResolvedValue({ items: hasItems ? ITEMS : [], nextCursor: null }),
+        },
+        { getThreadDashboard }
+      )
+    );
+    expect(await screen.findByText('Activity collection is ongoing.')).toBeInTheDocument();
+    expect(screen.getByText('Please approve the reported proposal.')).toBeInTheDocument();
+    if (hasItems) expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+
+    getThreadDashboard.mockRejectedValue(new ApiCallError(status, 'Private refresh diagnostic'));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: chatKeys.dashboard('ws1', 'th1'), exact: true });
+    });
+    expect(queryClient.getQueryState(chatKeys.dashboard('ws1', 'th1'))?.status).toBe('error');
+    expect(queryClient.getQueryData(chatKeys.dashboard('ws1', 'th1'))).toEqual(initialDashboard);
+    await waitFor(() =>
+      expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument()
+    );
+    expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Full-content capture was enabled for this Turn.')
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Private refresh diagnostic')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Runtime activity is unavailable. Retry to refresh.')
+    ).toBeInTheDocument();
+    if (hasItems) {
+      expect(screen.getByText('Draft a competitive teardown.')).toBeInTheDocument();
+      expect(screen.getByText('Approve $5 spend')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    }
+
+    const recovery = createDeferred<typeof initialDashboard>();
+    getThreadDashboard.mockImplementation(() => recovery.promise);
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() =>
+      expect(queryClient.getQueryState(chatKeys.dashboard('ws1', 'th1'))?.fetchStatus).toBe(
+        'fetching'
+      )
+    );
+    expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument();
+    await act(async () => {
+      recovery.resolve({
+        ...initialDashboard,
+        runtimeActivity: initialDashboard.runtimeActivity.map((activity) => ({
+          ...activity,
+          entries: activity.entries.map((entry) => ({
+            ...entry,
+            text: 'Fresh authorized activity after recovery.',
+          })),
+        })),
+      });
+    });
+    expect(
+      await screen.findByText('Fresh authorized activity after recovery.')
+    ).toBeInTheDocument();
+    expect(screen.getByText('Activity collection is ongoing.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Runtime activity is unavailable. Retry to refresh.')
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
+    if (hasItems) expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+  });
+
+  it('refreshes runtime activity on the existing dashboard poll without new Items', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let reported = false;
+    const getThreadDashboard = vi.fn(async () => ({
+      turns: [idleTurn],
+      runtimeActivity: reported ? RUNTIME_ACTIVITY : [],
+    }));
+    const listThreadItems = vi.fn(async () => ({ items: ITEMS, nextCursor: null }));
+    renderApp('/chat/ws1/th1', makeClient({ listThreadItems }, { getThreadDashboard }));
+    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Runtime activity' })).not.toBeInTheDocument();
+    reported = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(await screen.findByText('Child 1: verification running')).toBeInTheDocument();
+    expect(screen.getAllByRole('region', { name: 'Runtime activity' })).toHaveLength(1);
+    expect(screen.getAllByText('On it — gathering the details.')).toHaveLength(1);
   });
 
   it('refetches stale items when the dashboard is already new', async () => {

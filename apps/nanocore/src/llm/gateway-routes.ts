@@ -16,12 +16,14 @@ import {
   currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import {
   finishCapabilityCall,
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
+import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
@@ -38,6 +40,7 @@ import {
   resolveLogicalModel,
   resolveLogicalModelCatalog,
 } from './logical-models.js';
+import { type ModelCaptureContext, ModelCaptureError } from './model-capture.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   type OpenAICompatibleChatCompletionResponse,
@@ -168,7 +171,10 @@ function startPublicLlmGatewayCall(input: {
       requestId: lineage.requestId ?? randomUUID(),
       serviceRef: 'llm-gateway',
       sourceIds: lineage.sourceIds ?? [],
-      summary: `Public ${input.endpoint} LLM gateway call.`,
+      summary:
+        lineage.threadId && lineage.turnId
+          ? `Public ${input.endpoint} LLM gateway call.`
+          : `Public ${input.endpoint} LLM gateway call. Model capture unavailable: no Turn admission.`,
       threadId: lineage.threadId ?? null,
       turnId: lineage.turnId ?? null,
       workspaceDb,
@@ -192,6 +198,25 @@ function startPublicLlmGatewayCall(input: {
     workspaceDb.sqlite.close();
     throw error;
   }
+}
+
+/** Selects capture lineage only after the route has authenticated and authorized the exact owner. */
+function captureForCall(
+  call: DurableLlmGatewayCall | null,
+  corr: string,
+  attempt: number
+): ModelCaptureContext | undefined {
+  const lineage = call?.call.context;
+  if (!call || !lineage?.threadId || !lineage.turnId) return undefined;
+  return {
+    workspaceDb: call.workspaceDb,
+    threadId: lineage.threadId,
+    turnId: lineage.turnId,
+    corr,
+    attempt,
+    capabilityCallId: call.call.id,
+    runtimeOriginRef: lineage.runtimeOriginRef ?? null,
+  };
 }
 
 /**
@@ -385,6 +410,8 @@ function publicGatewayAuthorityDenied(input: {
   coreDb?: CoreDb;
   /** OpenAI-compatible request metadata. */
   metadata: unknown;
+  /** Current authenticated store used to enforce the selected Thread audience. */
+  store?: FsStore;
 }): boolean {
   const lineage = readPublicLlmGatewayLineage(input.metadata);
 
@@ -397,7 +424,16 @@ function publicGatewayAuthorityDenied(input: {
           input.actor,
           'llm.gateway.use',
           true
-        ))
+        ) ||
+        (lineage.threadId && lineage.turnId &&
+          (!input.store ||
+            input.actor.kind !== 'user' ||
+            !isThreadIdVisible(
+              input.store,
+              lineage.workspaceId,
+              lineage.threadId,
+              input.actor.id
+            ))))
   );
 }
 
@@ -1511,10 +1547,9 @@ export function registerWorkerInferenceRoutes({
         throw invalidWorkerInferenceRequest();
       }
       const sanitized = sanitizeWorkerInferenceRequest(input, route);
-      const runtimeOriginRef =
-        provenanceRequired && runtimeHint
-          ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)
-          : null;
+      const runtimeOriginRef = runtimeHint
+        ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)
+        : null;
       if (
         !coreDb ||
         !currentWorkerLineageWorkspaceAuthority(
@@ -1575,7 +1610,7 @@ export function registerWorkerInferenceRoutes({
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
         resolveGatewayProvider,
         signal: c.req.raw.signal,
-        attempt: async ({ provider, providerModel, subscriptionModels }) => {
+        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => {
           const cache = resolveWorkerPromptCacheKey({
             accountSlotId: provider.accountSlotId ?? null,
             model: providerModel,
@@ -1611,6 +1646,7 @@ export function registerWorkerInferenceRoutes({
           let responseTurnState: string | undefined;
           const requestTurnState = c.req.header('x-codex-turn-state');
           const dispatchContext = {
+            capture: captureForCall(durableCall, corr, attempt),
             onUsage: (usage: unknown) =>
               recordLlmGatewayUsage({
                 durableCall,
@@ -1802,7 +1838,8 @@ export class LogicalModelRoutesExhaustedError extends Error {
 
 /** Returns whether one pre-output failure permits trying the next ordered route member. */
 function isLogicalModelFallbackEligible(error: unknown): boolean {
-  if (error instanceof WorkerInferenceRouteError) return false;
+  if (error instanceof WorkerInferenceRouteError || error instanceof ModelCaptureError)
+    return false;
   const code = classifyGatewayProviderFailure(error, 'provider_error').code;
   return (
     code === 'gateway_provider_authentication_failed' ||
@@ -1895,8 +1932,11 @@ export async function dispatchLogicalModel<T>(input: {
     provider: ResolvedLLMProviderConfig;
     providerModel: string;
     subscriptionModels: Awaited<ReturnType<typeof resolveGatewaySubscriptionModels>>;
+    corr: string;
+    attempt: number;
   }) => Promise<T>;
 }): Promise<T> {
+  const corr = randomUUID();
   for (const [index, route] of input.logicalModel.routes.entries()) {
     try {
       const provider = input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
@@ -1909,6 +1949,8 @@ export async function dispatchLogicalModel<T>(input: {
         provider,
         providerModel: route.providerModel,
         subscriptionModels,
+        corr,
+        attempt: index,
       });
     } catch (error) {
       if (input.signal.aborted || !isLogicalModelFallbackEligible(error)) throw error;
@@ -1928,6 +1970,7 @@ export async function dispatchLogicalModel<T>(input: {
 export function registerLlmGatewayRoutes({
   app,
   coreDb,
+  requestStore,
   llmGatewayDispatcher,
   providerSubscriptionAccountManager,
   resolveGatewayProvider,
@@ -1935,6 +1978,7 @@ export function registerLlmGatewayRoutes({
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb?: CoreDb;
+  readonly requestStore?: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
@@ -2068,6 +2112,7 @@ export function registerLlmGatewayRoutes({
           actor: authorityActor,
           ...(coreDb ? { coreDb } : {}),
           metadata: (input as { metadata?: unknown }).metadata,
+          ...(requestStore ? { store: requestStore(c) } : {}),
         })
       ) {
         return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
@@ -2086,12 +2131,8 @@ export function registerLlmGatewayRoutes({
       const request = {
         ...input,
         messages: input.messages.map((message): OpenAICompatibleChatMessage => {
-          const mapped: OpenAICompatibleChatMessage = {
-            role: message.role,
-            content: message.content,
-          };
-
-          return message.tool_call_id ? { ...mapped, tool_call_id: message.tool_call_id } : mapped;
+          const { tool_call_id, ...rest } = message;
+          return { ...rest, ...(tool_call_id === undefined ? {} : { tool_call_id }) };
         }),
       };
 
@@ -2100,7 +2141,7 @@ export function registerLlmGatewayRoutes({
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
         resolveGatewayProvider,
         signal: c.req.raw.signal,
-        attempt: async ({ provider, providerModel, subscriptionModels }) => {
+        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => {
           const durableCall = startPublicLlmGatewayCall({
             ...(coreDb ? { coreDb } : {}),
             authorityActor,
@@ -2115,6 +2156,7 @@ export function registerLlmGatewayRoutes({
                 provider,
                 { ...request, model: providerModel, stream: true },
                 {
+                  capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
                     recordLlmGatewayUsage({
                       durableCall,
@@ -2147,6 +2189,7 @@ export function registerLlmGatewayRoutes({
                 provider,
                 { ...request, model: providerModel, stream: false },
                 {
+                  capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
                     recordLlmGatewayUsage({
                       durableCall,
@@ -2208,6 +2251,7 @@ export function registerLlmGatewayRoutes({
           actor: authorityActor,
           ...(coreDb ? { coreDb } : {}),
           metadata: (input as { metadata?: unknown }).metadata,
+          ...(requestStore ? { store: requestStore(c) } : {}),
         })
       ) {
         return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
@@ -2233,7 +2277,7 @@ export function registerLlmGatewayRoutes({
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
         resolveGatewayProvider,
         signal: c.req.raw.signal,
-        attempt: async ({ provider, providerModel, subscriptionModels }) => {
+        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => {
           const durableCall = startPublicLlmGatewayCall({
             ...(coreDb ? { coreDb } : {}),
             authorityActor,
@@ -2248,6 +2292,7 @@ export function registerLlmGatewayRoutes({
                 provider,
                 { ...request, model: providerModel, stream: true },
                 {
+                  capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
                     recordLlmGatewayUsage({
                       durableCall,
@@ -2280,6 +2325,7 @@ export function registerLlmGatewayRoutes({
                 provider,
                 { ...request, model: providerModel },
                 {
+                  capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
                     recordLlmGatewayUsage({
                       durableCall,

@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -1951,6 +1951,99 @@ describe('goal surfaces (WP-5)', () => {
     await user.click(screen.getByRole('tab', { name: 'Plan' }));
     await waitFor(() => expect(search).toContain('lens=plan'));
     expect(pathname).toBe('/goals/ws1/th1');
+  });
+
+  it('polls observation-only runtime activity in the Goal Thread lens without new Items', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const activity = {
+        turnId: 'turn_worker',
+        contentCapture: 'on',
+        coverage: 'collecting',
+        omittedEntryCount: 0,
+        entries: [],
+      };
+      const dashboard = {
+        turns: [{ id: 'turn_worker', status: 'completed', items: [] }],
+        runtimeActivity: [activity],
+      };
+      const getThreadDashboard = vi.fn().mockResolvedValue(dashboard);
+      const listThreadItems = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
+      renderApp(
+        '/goals/ws1/th1?lens=thread',
+        makeClient({ app: { getThreadDashboard }, core: { listThreadItems } })
+      );
+      expect(await screen.findByText('Activity collection is ongoing.')).toBeInTheDocument();
+      const baselineReads = getThreadDashboard.mock.calls.length;
+      const itemReads = listThreadItems.mock.calls.length;
+      getThreadDashboard.mockResolvedValue({
+        ...dashboard,
+        runtimeActivity: [
+          {
+            ...activity,
+            coverage: 'partial',
+            entries: [
+              {
+                sequence: 9,
+                observedAt: TIMESTAMP,
+                kind: 'result',
+                label: 'Child 2: result reported',
+                text: 'Goal observation arrived without an Item.',
+                textTruncated: false,
+              },
+            ],
+          },
+        ],
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(
+        await screen.findByText('Goal observation arrived without an Item.')
+      ).toBeInTheDocument();
+      expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(baselineReads);
+      expect(listThreadItems.mock.calls.length).toBe(itemReads);
+      expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows authorized runtime activity in the shared Thread lens without Items', async () => {
+    const client = makeClient({
+      app: {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          turns: [{ id: 'turn_worker', status: 'completed', items: [] }],
+          runtimeActivity: [
+            {
+              turnId: 'turn_worker',
+              contentCapture: 'on',
+              coverage: 'partial',
+              omittedEntryCount: 0,
+              entries: [
+                {
+                  sequence: 8,
+                  observedAt: TIMESTAMP,
+                  kind: 'result',
+                  label: 'Child 2: result reported',
+                  text: 'Verification found a missing requirement.',
+                  textTruncated: false,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=thread', client);
+    expect(
+      await screen.findByText('Verification found a missing requirement.')
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole('region', { name: 'Runtime activity' })).toHaveLength(1);
+    expect(screen.getByText('Activity coverage is partial.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: 'Runtime activity' }).querySelector('button')
+    ).toBeNull();
   });
 
   it('opens board cards into the thread lens and offers no Done drop control', async () => {

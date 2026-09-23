@@ -6,6 +6,12 @@ import type {
   WorkerAdapterResult,
   WorkerNativeProcessResult,
 } from '../adapter-registry.js';
+import {
+  ParentRuntimeCapture,
+  runtimeOriginRef,
+  runtimeRef,
+  runtimeToolName,
+} from '../runtime-capture.js';
 
 /** Fixed OpenCode-native provider id for the trusted worker-inference relay. */
 const OPENCODE_PROVIDER = 'openkit-worker-inference';
@@ -50,6 +56,93 @@ async function prepareOpenCode(input: WorkerAdapterPrepareInput) {
   }
 
   const nativeModel = `${OPENCODE_PROVIDER}/${route.model}`;
+  const capture = new ParentRuntimeCapture(input.runtimeCapture, async (event, emit) => {
+    const part = isRecord(event.part) ? event.part : null;
+    const nativeOrigin =
+      typeof event.sessionID === 'string'
+        ? event.sessionID
+        : part && typeof part.sessionID === 'string'
+          ? part.sessionID
+          : undefined;
+    const origin = nativeOrigin
+      ? runtimeOriginRef(input.runtimeCapture.packageSnapshotId, nativeOrigin)
+      : null;
+    if (!part) return;
+    const key =
+      typeof part.id === 'string'
+        ? part.id
+        : typeof part.messageID === 'string'
+          ? part.messageID
+          : undefined;
+    if (
+      event.type === 'text' &&
+      part.type === 'text' &&
+      part.ignored !== true &&
+      typeof part.text === 'string' &&
+      key
+    ) {
+      await emit(
+        {
+          kind: 'assistant',
+          runtimeOriginRef: origin,
+          messageRef: runtimeRef(
+            'rtm',
+            input.runtimeCapture.packageSnapshotId,
+            `${nativeOrigin}:${key}`
+          ),
+          phase: isRecord(part.time) && typeof part.time.end === 'number' ? 'completed' : 'updated',
+          representation: 'snapshot',
+        },
+        {
+          bytes: Buffer.from(part.text),
+          mediaType: 'text/plain',
+          boundary: 'runtime.assistant.text',
+        }
+      );
+    }
+    if (event.type === 'tool_use' && part.type === 'tool' && isRecord(part.state)) {
+      const toolName = runtimeToolName(part.tool);
+      const callId = typeof part.callID === 'string' ? part.callID : key;
+      if (!callId) return;
+      const state = part.state;
+      const phase =
+        state.status === 'completed'
+          ? 'completed'
+          : state.status === 'error'
+            ? 'failed'
+            : state.status === 'running'
+              ? 'running'
+              : 'started';
+      const fact = {
+        kind: 'tool' as const,
+        runtimeOriginRef: origin,
+        callRef: runtimeRef(
+          'rtc',
+          input.runtimeCapture.packageSnapshotId,
+          `${nativeOrigin}:${callId}`
+        ),
+        ...(toolName ? { toolName } : {}),
+        phase: phase as 'started' | 'running' | 'completed' | 'failed',
+      };
+      await emit(
+        fact,
+        state.input !== undefined
+          ? {
+              bytes: Buffer.from(JSON.stringify(state.input)),
+              mediaType: 'application/json',
+              boundary: 'runtime.tool.arguments',
+            }
+          : undefined
+      );
+      const output = state.output ?? state.error;
+      if (output !== undefined)
+        await emit(fact, {
+          bytes: Buffer.from(typeof output === 'string' ? output : JSON.stringify(output)),
+          mediaType: typeof output === 'string' ? 'text/plain' : 'application/json',
+          boundary: 'runtime.tool.result',
+        });
+    }
+  });
 
   return {
     argv: [
@@ -64,6 +157,10 @@ async function prepareOpenCode(input: WorkerAdapterPrepareInput) {
       input.turnInput,
     ],
     captureStdout: true,
+    writeStdout: (chunk: Uint8Array) => capture.writeStdout(chunk),
+    finalize: () => capture.finalize(),
+    invalidate: () => capture.invalidate(),
+    suppressFailureDiagnostics: true,
     environment: {
       ...input.childEnvironment,
       HOME: join(input.stateRoot, 'home'),

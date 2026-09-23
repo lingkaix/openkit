@@ -47,7 +47,7 @@ import {
 } from '../context/worker-context-package.js';
 import {
   importWorkspaceEvidenceBundles,
-  listWorkspaceEvidenceBundles,
+  listStoredWorkspaceEvidenceBundles,
 } from '../evidence-bundles.js';
 import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
@@ -153,6 +153,7 @@ import {
   workspaceMaterialRevisions,
   workspaceMaterials,
 } from './schema/index.js';
+import { readWorkObservations, readWorkObservationTurnBinding } from './work-observations.js';
 import {
   splitWorkspaceArchivePath,
   stageWorkspaceArchive,
@@ -169,6 +170,9 @@ import {
 import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
+  type CaptureCoverageBinding,
+  readCanonicalTextFile,
+  writeFileAtomic,
 } from './workspace-file-records.js';
 import {
   readWorkspaceImportSnapshot,
@@ -521,7 +525,7 @@ function collectWorkspaceExportRows(
           workspaceId
         ),
         capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
-        evidenceBundles: listWorkspaceEvidenceBundles(workspaceDb, workspaceId),
+        evidenceBundles: listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId),
         gitPushRecords: listExportableGitPushRecords(workspaceDb, workspaceId),
         goalRecords: listExportableGoalRecords(workspaceDb, workspaceId),
         goalPlanRecords: listExportableGoalPlanRecords(workspaceDb, workspaceId),
@@ -815,6 +819,18 @@ export function importVerifiedWorkspace({
   });
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
     writeWorkspacePortableFileState(workspaceRoot, snapshot.portableFileState);
+    for (const [turnId, text] of snapshot.turnObservations) {
+      const turn = snapshot.turns.find((candidate) => candidate.id === turnId);
+      if (!turn) throw new Error('Imported work observations have no Turn owner.');
+      const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turnId);
+      mkdirSync(root, { recursive: true });
+      // The canonical Store writer runs after this stage and preserves the admitted private fields.
+      writeFileAtomic(
+        join(root, 'turn.json'),
+        `${JSON.stringify({ ...turn, items: [], requiredFeatures: ['openkit.work-observations.v1'], captureCoverage: snapshot.turnCaptureCoverage.get(turnId) }, null, 2)}\n`
+      );
+      writeFileAtomic(join(root, 'observations.jsonl'), text);
+    }
     verifyImportedWorkerContextPackageSnapshot(snapshot, workspaceRoot);
     for (const [bundleId, text] of snapshot.runtimeProvenanceIndexes) {
       assertSafeWorkspacePathSegment(bundleId, 'Evidence bundle id');
@@ -901,6 +917,9 @@ export function createVerifiedWorkspaceExport({
 }) {
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
+  if (threads.some((thread) => thread.visibility === 'private')) {
+    throw new Error('Private Thread history requires a separately authorized export.');
+  }
   const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   assertCanonicalDirectory(workspaceRoot);
@@ -937,6 +956,30 @@ export function createVerifiedWorkspaceExport({
     assertCanonicalDirectory(path);
   }
   const exportRoot = join(workspaceExportsRoot, exportId);
+  const turnObservations = new Map<string, string>();
+  const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
+  for (const turn of turns) {
+    const coverage = store.getTurnCaptureCoverage(turn.id);
+    if (coverage) turnCaptureCoverage.set(turn.id, coverage);
+    const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
+    const rawTurn = JSON.parse(readCanonicalTextFile(join(root, 'turn.json')));
+    const declared = Array.isArray(rawTurn.requiredFeatures) && rawTurn.requiredFeatures.includes('openkit.work-observations.v1');
+    if (!declared) {
+      if (existsSync(join(root, 'observations.jsonl'))) throw new Error('Work observation file lacks its Turn required-feature declaration.');
+      continue;
+    }
+    if (!coreDb) throw new Error('Work observation export requires durable evidence storage.');
+    const observationDb = repositoryWorkspaceDb(workspaceId);
+    try {
+      const input = { threadId: turn.threadId, turnId: turn.id };
+      const binding = readWorkObservationTurnBinding(observationDb, input);
+      if (binding.coverage) turnCaptureCoverage.set(turn.id, binding.coverage);
+      const rows = readWorkObservations(observationDb, input);
+      turnObservations.set(turn.id, rows.map((row) => `${JSON.stringify(row)}\n`).join(''));
+    } finally {
+      observationDb.sqlite.close();
+    }
+  }
   const runtimeProvenanceIndexes = new Map<string, string>();
   for (const bundle of workspaceRowFamilies.evidenceBundles) {
     if (bundle.sourceKind !== 'worker-runtime-provenance-index') {
@@ -1038,6 +1081,8 @@ export function createVerifiedWorkspaceExport({
     resolvedAgentSetups: workspaceRowFamilies.resolvedAgentSetups,
     runtimeEvidence: workspaceRowFamilies.runtimeEvidence,
     runtimeProvenanceIndexes,
+    turnObservations,
+    turnCaptureCoverage,
     stagedWorkspaceReviews: workspaceRowFamilies.workspaceSyncRecords.stagedReviews,
     usageRecords: workspaceRowFamilies.usageRecords,
     vaultUseRecords: workspaceRowFamilies.vaultUseRecords,

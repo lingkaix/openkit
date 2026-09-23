@@ -1,5 +1,5 @@
 import { createHash, type Hash } from 'node:crypto';
-import type { Dir } from 'node:fs';
+import { constants, type Dir } from 'node:fs';
 import {
   type FileHandle,
   mkdir,
@@ -11,7 +11,6 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-
 import {
   type WorkerLineage,
   type WorkerRuntimeNativeOriginIndexEntry,
@@ -19,11 +18,14 @@ import {
   type WorkerRuntimeRawStreamManifest,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
+import { runtimeToolName } from './runtime-capture.js';
 
 const PRIMARY_STREAM_REF = 'stream-0000.jsonl';
 const MAX_FRAME_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_SESSION_META_BYTES = 1024 * 1024;
-const MAX_ROLLOUT_CANDIDATES = 256;
+export const MAX_ROLLOUT_CANDIDATES = 256;
+/** Existing admitted reachable stream ceiling, shared with incremental capture. */
+export const MAX_CODEX_RUNTIME_STREAMS = 64;
 const MAX_ROLLOUT_SCAN_ENTRIES = 2048;
 const MAX_RETAINED_FRAMES = 4096;
 const MAX_NATIVE_INDEX_VALUE_BYTES = 512;
@@ -54,9 +56,11 @@ export interface CodexRuntimeProvenanceCaptureOptions {
 }
 
 /** Metadata parsed from the first frame of one Codex rollout. */
-interface RolloutCandidate {
+export interface RolloutCandidate {
   /** Whether native metadata reports the pinned Codex adapter version. */
   adapterVersionValid: boolean;
+  /** Whether this new rollout starts with copied ancestor history before its own settings marker. */
+  copiedHistory?: boolean;
   /** Initial device id used to detect path replacement. */
   initialDev: number;
   /** Initial inode used to detect path replacement. */
@@ -157,7 +161,9 @@ export async function proveCodexNativeConversation(options: {
 }
 
 /** Mutable attribution inherited by physical frames within one raw stream. */
-interface StreamOriginContext {
+export interface StreamOriginContext {
+  /** Copied ancestor content is not newly observed work under this Turn's capture setting. */
+  inheritedHistory?: boolean;
   /** Native parent thread id. */
   parentThreadId?: string;
   /** Native runtime depth. */
@@ -175,7 +181,11 @@ interface StreamOriginContext {
 }
 
 /** Parsed product-neutral fields used to build one restricted index entry. */
-interface ParsedFrame {
+export interface ParsedFrame {
+  /** False while a child file carries copied ancestor history rather than current work. */
+  contentEligible?: boolean;
+  /** Decoded native record used only by the allowlisted runtime content projector. */
+  value?: Record<string, unknown>;
   /** Runtime-native event kind. */
   eventKind: string;
   /** Parse outcome for the retained bytes. */
@@ -346,67 +356,16 @@ export class CodexRuntimeProvenanceCapture {
 
   /** Parses one primary exec frame and updates native root/spawn state. */
   private parsePrimaryFrame(bytes: Uint8Array, truncated: boolean): ParsedFrame {
-    const parsed = parseJsonFrame(bytes, truncated);
-
-    if (!parsed.value) {
-      return {
-        eventKind: parsed.eventKind,
-        origin: this.primaryOrigin(),
-        parseStatus: parsed.status,
-      };
-    }
-    const record = parsed.value;
-    const rawType = stringField(record, 'type');
-    const safeType = boundedRuntimeValue(rawType, MAX_EVENT_KIND_BYTES);
-    const type = safeType ?? 'unattributed';
-    let attributable = rawType === undefined || safeType !== undefined;
-    if (!attributable) {
-      this.raiseStatus('failed');
-    }
-    if (type === 'thread.started') {
-      const rawThreadId = stringField(record, 'thread_id');
-      const threadId = boundedRuntimeValue(rawThreadId);
-      if (rawThreadId && !threadId) {
-        attributable = false;
-        this.raiseStatus('failed');
-      }
-      if (threadId) {
-        if (this.primaryThreadId && this.primaryThreadId !== threadId) {
-          this.raiseStatus('unstable');
-        } else {
-          this.primaryThreadId = threadId;
-        }
-      }
-    }
-    const item = objectField(record, 'item');
-    const rawSender = item ? stringField(item, 'sender_thread_id') : undefined;
-    const sender = boundedRuntimeValue(rawSender);
-    if (rawSender && !sender) {
-      attributable = false;
-      this.raiseStatus('failed');
-    }
-    if (item && stringField(item, 'type') === 'collab_tool_call') {
-      if (sender) {
-        for (const rawReceiver of stringArrayField(item, 'receiver_thread_ids')) {
-          const receiver = boundedRuntimeValue(rawReceiver);
-          if (receiver) {
-            this.recordSpawnEdge(sender, receiver);
-          } else {
-            attributable = false;
-            this.raiseStatus('failed');
-          }
-        }
-      }
-    }
-
-    return {
-      eventKind: type,
-      origin: {
-        ...this.primaryOrigin(),
-        ...(sender ? { threadId: sender } : {}),
-      },
-      parseStatus: attributable ? parsed.status : 'unattributed',
-    };
+    const context = this.primaryOrigin();
+    const parsed = parseCodexPrimaryFrame(
+      bytes,
+      truncated,
+      context,
+      (sender, receiver) => this.recordSpawnEdge(sender, receiver),
+      (status) => this.raiseStatus(status)
+    );
+    this.primaryThreadId = context.threadId;
+    return parsed;
   }
 
   /** Returns the attribution currently known for primary exec frames. */
@@ -610,56 +569,13 @@ export class CodexRuntimeProvenanceCapture {
     truncated: boolean,
     context: StreamOriginContext
   ): ParsedFrame {
-    const parsed = parseJsonFrame(bytes, truncated);
-    if (!parsed.value) {
-      return { eventKind: parsed.eventKind, origin: { ...context }, parseStatus: parsed.status };
-    }
-    const record = parsed.value;
-    const rawType = stringField(record, 'type');
-    const safeType = boundedRuntimeValue(rawType, MAX_EVENT_KIND_BYTES);
-    const type = safeType ?? 'unattributed';
-    let attributable = rawType === undefined || safeType !== undefined;
-    if (!attributable) {
-      this.raiseStatus('failed');
-    }
-    const payload = objectField(record, 'payload');
-    if (type === 'turn_context' && payload) {
-      const rawTurnId = stringField(payload, 'turn_id');
-      const turnId = boundedRuntimeValue(rawTurnId);
-      if (rawTurnId && !turnId) {
-        attributable = false;
-        this.raiseStatus('failed');
-      }
-      if (turnId) {
-        context.turnId = turnId;
-      }
-    }
-    const rawNestedType =
-      type === 'event_msg' && payload ? stringField(payload, 'type') : undefined;
-    const nestedType = boundedRuntimeValue(rawNestedType, MAX_EVENT_KIND_BYTES);
-    if (rawNestedType && !nestedType) {
-      attributable = false;
-      this.raiseStatus('failed');
-    }
-    if (nestedType === 'collab_agent_spawn_end' && payload) {
-      const rawSender = stringField(payload, 'sender_thread_id');
-      const rawReceiver = stringField(payload, 'new_thread_id');
-      const sender = boundedRuntimeValue(rawSender);
-      const receiver = boundedRuntimeValue(rawReceiver);
-      if ((rawSender && !sender) || (rawReceiver && !receiver)) {
-        attributable = false;
-        this.raiseStatus('failed');
-      }
-      if (sender && receiver) {
-        this.recordSpawnEdge(sender, receiver);
-      }
-    }
-
-    return {
-      eventKind: nestedType ?? type,
-      origin: { ...context },
-      parseStatus: attributable ? parsed.status : 'unattributed',
-    };
+    return parseCodexRolloutFrame(
+      bytes,
+      truncated,
+      context,
+      (sender, receiver) => this.recordSpawnEdge(sender, receiver),
+      (status) => this.raiseStatus(status)
+    );
   }
 
   /** Writes one protocol-validated native-origin JSONL entry. */
@@ -733,6 +649,331 @@ export class CodexRuntimeProvenanceCapture {
   private temporaryIndexPath(): string {
     return `${this.options.nativeOriginIndexPath}.tmp`;
   }
+}
+
+/** Interprets pinned primary structure for both provenance and incremental collection. */
+export function parseCodexPrimaryFrame(
+  bytes: Uint8Array,
+  truncated: boolean,
+  context: StreamOriginContext,
+  spawn: (sender: string, receiver: string) => void,
+  status: (value: WorkerRuntimeCaptureStatus) => void
+): ParsedFrame {
+  const parsed = parseJsonFrame(bytes, truncated);
+  if (!parsed.value)
+    return { eventKind: parsed.eventKind, origin: { ...context }, parseStatus: parsed.status };
+  const value = parsed.value;
+  const rawType = stringField(value, 'type');
+  const type = boundedRuntimeValue(rawType, MAX_EVENT_KIND_BYTES);
+  let valid = rawType === undefined || type !== undefined;
+  if (type === 'thread.started') {
+    const id = boundedRuntimeValue(stringField(value, 'thread_id'));
+    if (!id) valid = false;
+    else if (context.threadId && context.threadId !== id) {
+      valid = false;
+      status('unstable');
+    } else context.threadId = id;
+  }
+  const item = objectField(value, 'item');
+  if (
+    item?.type === 'collab_tool_call' &&
+    (stringArrayField(item, 'receiver_thread_ids').length > MAX_CODEX_RUNTIME_STREAMS ||
+      Object.keys(objectField(item, 'agents_states') ?? {}).length > MAX_CODEX_RUNTIME_STREAMS)
+  )
+    valid = false;
+  const rawSender = item ? stringField(item, 'sender_thread_id') : undefined;
+  const sender = boundedRuntimeValue(rawSender);
+  if (rawSender && !sender) valid = false;
+  if (item?.type === 'collab_tool_call' && item.tool === 'spawn_agent' && sender) {
+    for (const rawReceiver of stringArrayField(item, 'receiver_thread_ids')) {
+      const receiver = boundedRuntimeValue(rawReceiver);
+      if (receiver) spawn(sender, receiver);
+      else valid = false;
+    }
+  }
+  if (!valid) status('failed');
+  return {
+    eventKind: type ?? 'unattributed',
+    origin: { ...context, ...(sender ? { threadId: sender } : {}) },
+    parseStatus: valid ? parsed.status : 'unattributed',
+    ...(valid ? { value } : {}),
+  };
+}
+
+/** Interprets pinned rollout structure for both provenance and incremental collection. */
+export function parseCodexRolloutFrame(
+  bytes: Uint8Array,
+  truncated: boolean,
+  context: StreamOriginContext,
+  spawn: (sender: string, receiver: string) => void,
+  status: (value: WorkerRuntimeCaptureStatus) => void
+): ParsedFrame {
+  const parsed = parseJsonFrame(bytes, truncated);
+  if (!parsed.value)
+    return { eventKind: parsed.eventKind, origin: { ...context }, parseStatus: parsed.status };
+  const value = parsed.value;
+  const rawType = stringField(value, 'type');
+  const type = boundedRuntimeValue(rawType, MAX_EVENT_KIND_BYTES);
+  let valid = rawType === undefined || type !== undefined;
+  const payload = objectField(value, 'payload');
+  if (type === 'session_meta' && payload && stringField(payload, 'id') !== context.threadId)
+    context.inheritedHistory = true;
+  if (
+    type === 'event_msg' &&
+    payload?.type === 'thread_settings_applied' &&
+    payload.thread_id === context.threadId
+  )
+    context.inheritedHistory = false;
+  if (type === 'turn_context' && payload) {
+    const rawId = stringField(payload, 'turn_id');
+    const id = boundedRuntimeValue(rawId);
+    if (rawId && !id) valid = false;
+    if (id) context.turnId = id;
+  }
+  const rawNested = type === 'event_msg' && payload ? stringField(payload, 'type') : undefined;
+  const nested = boundedRuntimeValue(rawNested, MAX_EVENT_KIND_BYTES);
+  if (rawNested && !nested) valid = false;
+  if (nested === 'collab_agent_spawn_end' && payload) {
+    const sender = boundedRuntimeValue(stringField(payload, 'sender_thread_id'));
+    const receiver = boundedRuntimeValue(stringField(payload, 'new_thread_id'));
+    if (sender && receiver) spawn(sender, receiver);
+    else valid = false;
+  }
+  if (!valid) status('failed');
+  return {
+    eventKind: nested ?? type ?? 'unattributed',
+    origin: { ...context },
+    contentEligible: !context.inheritedHistory,
+    parseStatus: valid ? parsed.status : 'unattributed',
+    ...(valid ? { value } : {}),
+  };
+}
+
+/** One admitted native activity, still private until opaque identity projection. */
+export interface CodexActivity {
+  /** Semantic source kind. */
+  kind: 'origin' | 'tool' | 'assistant';
+  /** Native thread that reported or owns the activity. */
+  threadId?: string | undefined;
+  /** Explicit native parent evidence, never a send/wait receiver. */
+  parentThreadId?: string;
+  /** Source-reported phase, not an OpenKit lifecycle. */
+  phase:
+    | 'observed'
+    | 'started'
+    | 'updated'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'interrupted'
+    | 'closed'
+    | 'unknown';
+  /** Native call or message correlation scoped to its source. */
+  key?: string | undefined;
+  /** Validated tool identifier. */
+  toolName?: string;
+  /** Native command exit code when present. */
+  exitCode?: number;
+  /** Exact admitted semantic content, excluding the surrounding native record. */
+  body?: { bytes: Uint8Array; mediaType: 'text/plain' | 'application/json'; boundary: string };
+}
+
+/** Positive-selects outward text and tool fields; never serializes a whole native frame. */
+export function codexFrameActivities(frame: ParsedFrame): CodexActivity[] {
+  const value = frame.value;
+  if (!value || frame.parseStatus !== 'parsed' || frame.contentEligible === false) return [];
+  const threadId = frame.origin.threadId;
+  const activities: CodexActivity[] = [];
+  const text = (value: string, boundary: string): NonNullable<CodexActivity['body']> => ({
+    bytes: Buffer.from(value),
+    mediaType: 'text/plain',
+    boundary,
+  });
+  const json = (value: unknown, boundary: string): NonNullable<CodexActivity['body']> => ({
+    bytes: Buffer.from(JSON.stringify(value)),
+    mediaType: 'application/json',
+    boundary,
+  });
+  const phase = (status: unknown): CodexActivity['phase'] =>
+    status === 'completed'
+      ? 'completed'
+      : status === 'failed' || status === 'errored' || status === 'declined'
+        ? 'failed'
+        : status === 'running'
+          ? 'running'
+          : status === 'interrupted'
+            ? 'interrupted'
+            : status === 'shutdown'
+              ? 'closed'
+              : status === 'in_progress' || status === 'pending_init'
+                ? 'started'
+                : 'unknown';
+  if (value.type === 'thread.started')
+    activities.push({ kind: 'origin', threadId, phase: 'observed' });
+  const item = objectField(value, 'item');
+  if (
+    item &&
+    typeof value.type === 'string' &&
+    /^item\.(started|updated|completed)$/.test(value.type)
+  ) {
+    const key = boundedRuntimeValue(stringField(item, 'id'));
+    const itemPhase =
+      value.type === 'item.started'
+        ? 'started'
+        : value.type === 'item.updated'
+          ? 'updated'
+          : phase(item.status ?? 'completed');
+    if (item.type === 'agent_message' && typeof item.text === 'string')
+      activities.push({
+        kind: 'assistant',
+        threadId,
+        key,
+        phase: itemPhase,
+        body: text(item.text, 'runtime.assistant.text'),
+      });
+    const toolName =
+      item.type === 'command_execution'
+        ? 'shell'
+        : item.type === 'file_change'
+          ? 'apply_patch'
+          : runtimeToolName(item.tool);
+    if (
+      toolName &&
+      ['command_execution', 'mcp_tool_call', 'collab_tool_call', 'file_change'].includes(
+        String(item.type)
+      )
+    ) {
+      const base: CodexActivity = {
+        kind: 'tool',
+        threadId,
+        key,
+        toolName,
+        phase: itemPhase,
+        ...(Number.isInteger(item.exit_code) ? { exitCode: item.exit_code as number } : {}),
+      };
+      activities.push({
+        ...base,
+        ...(typeof item.command === 'string'
+          ? { body: text(item.command, 'runtime.tool.arguments') }
+          : item.arguments !== undefined
+            ? { body: json(item.arguments, 'runtime.tool.arguments') }
+            : typeof item.prompt === 'string'
+              ? { body: text(item.prompt, 'runtime.tool.arguments') }
+              : {}),
+      });
+      if (typeof item.aggregated_output === 'string' && value.type !== 'item.started')
+        activities.push({ ...base, body: text(item.aggregated_output, 'runtime.tool.result') });
+      if (item.result !== null && item.result !== undefined)
+        activities.push({ ...base, body: json(item.result, 'runtime.tool.result') });
+      if (item.error !== null && item.error !== undefined)
+        activities.push({ ...base, body: json(item.error, 'runtime.tool.result') });
+      if (item.type === 'file_change' && Array.isArray(item.changes))
+        activities.push({ ...base, body: json(item.changes, 'runtime.tool.result') });
+    }
+    if (item.type === 'collab_tool_call') {
+      const sender = boundedRuntimeValue(stringField(item, 'sender_thread_id'));
+      if (item.tool === 'spawn_agent' && sender)
+        for (const receiver of stringArrayField(item, 'receiver_thread_ids').slice(
+          0,
+          MAX_CODEX_RUNTIME_STREAMS
+        ))
+          activities.push({
+            kind: 'origin',
+            threadId: receiver,
+            parentThreadId: sender,
+            phase: 'observed',
+          });
+      const states = objectField(item, 'agents_states');
+      if (states)
+        for (const [id, state] of Object.entries(states).slice(0, MAX_CODEX_RUNTIME_STREAMS)) {
+          if (!isRecord(state) || !boundedRuntimeValue(id)) continue;
+          activities.push({ kind: 'origin', threadId: id, phase: phase(state.status) });
+          if (typeof state.message === 'string')
+            activities.push({
+              kind: 'assistant',
+              threadId: id,
+              key: `${key}:reported:${id}`,
+              phase: 'updated',
+              body: text(state.message, 'runtime.assistant.reported-text'),
+            });
+        }
+    }
+  }
+  const payload = objectField(value, 'payload');
+  if (!payload) return activities;
+  if (value.type === 'response_item') {
+    const key = boundedRuntimeValue(stringField(payload, 'call_id') ?? stringField(payload, 'id'));
+    if (
+      payload.type === 'message' &&
+      payload.role === 'assistant' &&
+      (payload.channel === undefined ||
+        payload.channel === 'final' ||
+        payload.channel === 'commentary') &&
+      Array.isArray(payload.content)
+    ) {
+      for (const part of payload.content)
+        if (isRecord(part) && part.type === 'output_text' && typeof part.text === 'string')
+          activities.push({
+            kind: 'assistant',
+            threadId,
+            key,
+            phase: 'completed',
+            body: text(part.text, 'runtime.assistant.text'),
+          });
+    }
+    if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
+      const toolName = runtimeToolName(payload.name);
+      const argumentsValue = payload.type === 'function_call' ? payload.arguments : payload.input;
+      if (toolName && typeof argumentsValue === 'string')
+        activities.push({
+          kind: 'tool',
+          threadId,
+          key,
+          toolName,
+          phase: 'started',
+          body: text(argumentsValue, 'runtime.tool.arguments'),
+        });
+    }
+    if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+      activities.push({
+        kind: 'tool',
+        threadId,
+        key,
+        phase: 'completed',
+        ...(typeof payload.output === 'string'
+          ? { body: text(payload.output, 'runtime.tool.result') }
+          : payload.output !== undefined
+            ? { body: json(payload.output, 'runtime.tool.result') }
+            : {}),
+      });
+    }
+  }
+  if (value.type === 'event_msg') {
+    if (payload.type === 'task_started' || payload.type === 'turn_started')
+      activities.push({ kind: 'origin', threadId, phase: 'running' });
+    if (payload.type === 'turn_aborted')
+      activities.push({ kind: 'origin', threadId, phase: 'interrupted' });
+    // A completed native turn is not proof that a reusable child thread has closed.
+    if (payload.type === 'agent_message' && typeof payload.message === 'string')
+      activities.push({
+        kind: 'assistant',
+        threadId,
+        phase: 'completed',
+        body: text(payload.message, 'runtime.assistant.text'),
+      });
+    if (payload.type === 'collab_agent_spawn_end') {
+      const sender = boundedRuntimeValue(stringField(payload, 'sender_thread_id'));
+      const receiver = boundedRuntimeValue(stringField(payload, 'new_thread_id'));
+      if (sender && receiver)
+        activities.push({
+          kind: 'origin',
+          threadId: receiver,
+          parentThreadId: sender,
+          phase: 'observed',
+        });
+    }
+  }
+  return activities;
 }
 
 /** Physical frame coordinates written into the native-origin index. */
@@ -937,7 +1178,7 @@ interface JsonFrameResult {
 }
 
 /** Parses one bounded physical JSONL frame without normalizing its raw bytes. */
-function parseJsonFrame(bytes: Uint8Array, truncated: boolean): JsonFrameResult {
+export function parseJsonFrame(bytes: Uint8Array, truncated: boolean): JsonFrameResult {
   if (truncated) {
     return { eventKind: 'truncated', status: 'truncated', value: null };
   }
@@ -950,7 +1191,9 @@ function parseJsonFrame(bytes: Uint8Array, truncated: boolean): JsonFrameResult 
   }
 
   try {
-    const value = JSON.parse(Buffer.from(bytes).subarray(0, end).toString('utf8')) as unknown;
+    const value = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, end))
+    ) as unknown;
     if (!isRecord(value)) {
       return { eventKind: 'unattributed', status: 'unattributed', value: null };
     }
@@ -1021,13 +1264,14 @@ function sessionMetadata(
 }
 
 /** Reads the bounded first physical line and projects one rollout candidate. */
-async function readRolloutCandidate(
+export async function readRolloutCandidate(
   path: string,
   adapterVersion: string
 ): Promise<RolloutCandidate | null> {
-  const metadata = await stat(path);
-  const handle = await open(path, 'r');
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) return null;
     const buffer = Buffer.alloc(Math.min(metadata.size, MAX_SESSION_META_BYTES));
     const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
     const newline = buffer.indexOf(0x0a, 0);
@@ -1049,6 +1293,7 @@ async function readRolloutCandidate(
     }
     return {
       adapterVersionValid: projected.adapterVersionValid,
+      copiedHistory: typeof payload.forked_from_id === 'string' && !payload.history_base,
       initialCtimeMs: metadata.ctimeMs,
       initialDev: metadata.dev,
       initialIno: metadata.ino,
@@ -1091,7 +1336,7 @@ interface RolloutFileDiscoveryState extends RolloutFileDiscovery {
 }
 
 /** Recursively lists standard Codex rollout JSONL files within internal hard limits. */
-async function listRolloutFiles(root: string): Promise<RolloutFileDiscovery> {
+export async function listRolloutFiles(root: string): Promise<RolloutFileDiscovery> {
   const state: RolloutFileDiscoveryState = {
     paths: [],
     scannedEntries: 0,

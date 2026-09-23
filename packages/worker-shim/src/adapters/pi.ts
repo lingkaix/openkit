@@ -5,6 +5,12 @@ import type {
   WorkerAdapterResult,
   WorkerNativeProcessResult,
 } from '../adapter-registry.js';
+import {
+  ParentRuntimeCapture,
+  runtimeOriginRef,
+  runtimeRef,
+  runtimeToolName,
+} from '../runtime-capture.js';
 
 /** Exact resolved provider instance preserved as upstream authority. */
 const PI_PROVIDER_INSTANCE = 'anthropic';
@@ -47,6 +53,155 @@ async function preparePi(input: WorkerAdapterPrepareInput) {
   if (!supported) {
     throw new Error('Unsupported Pi provider route.');
   }
+  let nativeOrigin: string | undefined;
+  let messageOrdinal = 0;
+  const capture = new ParentRuntimeCapture(input.runtimeCapture, async (event, emit) => {
+    if (event.type === 'session' && typeof event.id === 'string') nativeOrigin = event.id;
+    if (event.type === 'message_start') messageOrdinal += 1;
+    const origin = nativeOrigin
+      ? runtimeOriginRef(input.runtimeCapture.packageSnapshotId, nativeOrigin)
+      : null;
+    const messageRef = runtimeRef(
+      'rtm',
+      input.runtimeCapture.packageSnapshotId,
+      `${nativeOrigin}:${messageOrdinal}`
+    );
+    const update = isRecord(event.assistantMessageEvent) ? event.assistantMessageEvent : null;
+    if (
+      event.type === 'message_update' &&
+      update?.type === 'text_delta' &&
+      typeof update.delta === 'string'
+    )
+      await emit(
+        {
+          kind: 'assistant',
+          runtimeOriginRef: origin,
+          messageRef,
+          phase: 'updated',
+          representation: 'delta',
+        },
+        {
+          bytes: Buffer.from(update.delta),
+          mediaType: 'text/plain',
+          boundary: 'runtime.assistant.text',
+        }
+      );
+    if (
+      event.type === 'message_end' &&
+      isRecord(event.message) &&
+      event.message.role === 'assistant' &&
+      Array.isArray(event.message.content)
+    ) {
+      for (const part of event.message.content) {
+        if (!isRecord(part)) continue;
+        if (part.type === 'text' && typeof part.text === 'string')
+          await emit(
+            {
+              kind: 'assistant',
+              runtimeOriginRef: origin,
+              messageRef,
+              phase:
+                event.message.stopReason === 'aborted'
+                  ? 'interrupted'
+                  : event.message.stopReason === 'error'
+                    ? 'failed'
+                    : 'completed',
+              representation: 'snapshot',
+            },
+            {
+              bytes: Buffer.from(part.text),
+              mediaType: 'text/plain',
+              boundary: 'runtime.assistant.text',
+            }
+          );
+        if (part.type === 'toolCall' && typeof part.id === 'string') {
+          const toolName = runtimeToolName(part.name);
+          await emit(
+            {
+              kind: 'tool',
+              runtimeOriginRef: origin,
+              callRef: runtimeRef(
+                'rtc',
+                input.runtimeCapture.packageSnapshotId,
+                `${nativeOrigin}:${part.id}`
+              ),
+              phase: 'started',
+              ...(toolName ? { toolName } : {}),
+            },
+            part.arguments !== undefined
+              ? {
+                  bytes: Buffer.from(JSON.stringify(part.arguments)),
+                  mediaType: 'application/json',
+                  boundary: 'runtime.tool.arguments',
+                }
+              : undefined
+          );
+        }
+      }
+      if (
+        !event.message.content.some(
+          (part) => isRecord(part) && part.type === 'text' && typeof part.text === 'string'
+        )
+      )
+        await emit({
+          kind: 'assistant',
+          runtimeOriginRef: origin,
+          messageRef,
+          phase:
+            event.message.stopReason === 'aborted'
+              ? 'interrupted'
+              : event.message.stopReason === 'error'
+                ? 'failed'
+                : 'completed',
+          representation: 'snapshot',
+        });
+    }
+    if (
+      (event.type === 'tool_execution_start' ||
+        event.type === 'tool_execution_end' ||
+        event.type === 'tool_execution_update') &&
+      typeof event.toolCallId === 'string'
+    ) {
+      const toolName = runtimeToolName(event.toolName);
+      const fact = {
+        kind: 'tool' as const,
+        runtimeOriginRef: origin,
+        callRef: runtimeRef(
+          'rtc',
+          input.runtimeCapture.packageSnapshotId,
+          `${nativeOrigin}:${event.toolCallId}`
+        ),
+        phase:
+          event.type === 'tool_execution_start'
+            ? ('started' as const)
+            : event.type === 'tool_execution_update'
+              ? ('updated' as const)
+              : event.isError === true
+                ? ('failed' as const)
+                : ('completed' as const),
+        ...(toolName ? { toolName } : {}),
+      };
+      const body =
+        event.type === 'tool_execution_start'
+          ? event.args
+          : event.type === 'tool_execution_update'
+            ? event.partialResult
+            : event.result;
+      await emit(
+        fact,
+        body !== undefined
+          ? {
+              bytes: Buffer.from(JSON.stringify(body)),
+              mediaType: 'application/json',
+              boundary:
+                event.type === 'tool_execution_start'
+                  ? 'runtime.tool.arguments'
+                  : 'runtime.tool.result',
+            }
+          : undefined
+      );
+    }
+  });
   return {
     argv: [
       'pi',
@@ -67,6 +222,10 @@ async function preparePi(input: WorkerAdapterPrepareInput) {
       input.turnInput,
     ],
     captureStdout: true,
+    writeStdout: (chunk: Uint8Array) => capture.writeStdout(chunk),
+    finalize: () => capture.finalize(),
+    invalidate: () => capture.invalidate(),
+    suppressFailureDiagnostics: true,
     environment: {
       ...input.childEnvironment,
       PI_CODING_AGENT_DIR: `${input.stateRoot}/pi`,

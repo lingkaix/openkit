@@ -18,6 +18,7 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { createDeterministicGoalPlanFallback, type GoalPlanOutput } from './goal-plan.js';
 import {
   createGoalPlanProposeTool,
@@ -74,6 +75,10 @@ function openRevisionUsageStorage(): { coreDb: CoreDb; workspaceDb: WorkspaceDb 
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-plan-revision-usage-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  const store = createDemoStore({ dataRoot });
+  store.createTurn(GOAL.workspaceId, GOAL.threadId, 'Revise Plan', REVISION_ACTOR, null, {
+    turnId: 'tu_revision_capture',
+  });
   const workspaceDb = openWorkspaceDb(dataRoot, GOAL.workspaceId);
   applyScopedMigrations(workspaceDb);
   return { coreDb, workspaceDb };
@@ -563,6 +568,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
 
       const plan = await planner({
         goal: GOAL,
+        capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
         revisionText: REVISION,
@@ -667,6 +673,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
 
       const plan = await planner({
         goal: GOAL,
+        capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
         revisionText: REVISION,
@@ -746,6 +753,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
       await expect(
         planner({
           goal: GOAL,
+          capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
           previousPlan: PREVIOUS_PLAN,
           previousPlanItemId: 'it_goal_plan_prior',
           revisionText: REVISION,
@@ -754,6 +762,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
       await expect(
         planner({
           goal: GOAL,
+          capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
           previousPlan: PREVIOUS_PLAN,
           previousPlanItemId: 'it_goal_plan_prior',
           revisionText: REVISION,

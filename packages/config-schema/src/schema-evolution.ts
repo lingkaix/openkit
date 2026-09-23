@@ -39,6 +39,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Thread records preserve the immutable server-authored conversation or administration entry path.',
   },
+  'openkit.work-observations.v1': {
+    id: 'openkit.work-observations.v1',
+    status: 'active',
+    description:
+      'Turn-scoped work observations, restricted content publication and exact portable reference closure.',
+  },
   'workspace.mount.fuse': {
     id: 'workspace.mount.fuse',
     status: 'active',

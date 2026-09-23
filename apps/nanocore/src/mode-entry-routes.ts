@@ -77,6 +77,7 @@ import {
 import { dispatchLogicalModel, LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
 import { parseUsage } from './llm/gateway-usage.js';
 import type { ResolvedLogicalModel } from './llm/logical-models.js';
+import type { ModelCaptureContext } from './llm/model-capture.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
@@ -1467,7 +1468,9 @@ function recordQuickChatLlmUsage(input: {
       redactionClass: 'metadata-only',
       requestId: normalizeCapabilityRequestId(input.requestId) ?? randomUUID(),
       serviceRef: 'llm-gateway',
-      summary: 'QuickChatAgent LLM call.',
+      summary: input.turnId
+        ? 'QuickChatAgent LLM call.'
+        : 'QuickChatAgent LLM call. Model capture unavailable: no Turn admission.',
       threadId: input.threadId ?? null,
       turnId: input.turnId ?? null,
       itemId: input.itemId ?? null,
@@ -2433,6 +2436,8 @@ export function registerQuickAndChatModeRoutes({
    * @throws Error when provider resolution or dispatch fails.
    */
   async function callQuickChatProvider(input: {
+    /** Entry-admitted Chat Turn; standalone Quick Chat remains an explicit no-Turn gap. */
+    readonly capture?: Omit<ModelCaptureContext, 'corr'>;
     /** Selected logical-model contract. */
     readonly logicalModel: ResolvedLogicalModel;
     /** User prompt. */
@@ -2468,7 +2473,7 @@ export function registerQuickAndChatModeRoutes({
         signal,
         resolveGatewayProvider,
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-        attempt: async ({ provider, providerModel, subscriptionModels }) => ({
+        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => ({
           providerId: provider.id,
           response: await Promise.race([
             llmGatewayDispatcher.createChatCompletion(
@@ -2481,7 +2486,8 @@ export function registerQuickAndChatModeRoutes({
                 ],
               },
               {
-                ...(subscriptionModels ? { subscriptionModels } : {}),
+                ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                ...(input.capture ? { capture: { ...input.capture, corr, attempt } } : {}),
                 promptCacheScope: {
                   sessionId: input.sessionId,
                   workspaceId: input.workspaceId,
@@ -3654,15 +3660,30 @@ export function registerQuickAndChatModeRoutes({
         );
       }
 
-      const result = await callQuickChatProvider({
-        logicalModel: selection.logicalModel,
-        prompt: conversationPrompt,
-        sessionId,
-        workspaceId,
-        signal: c.req.raw.signal,
-      });
+      const turn = createChatTurn(new Date().toISOString());
+      let result: Awaited<ReturnType<typeof callQuickChatProvider>>;
+      let captureDb: WorkspaceDb | undefined;
+      try {
+        captureDb = repositoryWorkspaceDb(workspaceId);
+        result = await callQuickChatProvider({
+          logicalModel: selection.logicalModel,
+          prompt: conversationPrompt,
+          sessionId,
+          workspaceId,
+          signal: c.req.raw.signal,
+          capture: { workspaceDb: captureDb, threadId, turnId: turn.id },
+        });
+      } catch (error) {
+        store.updateTurn(turn.id, {
+          status: c.req.raw.signal.aborted ? 'interrupted' : 'failed',
+          completedAt: new Date().toISOString(),
+          error: { code: 'chat_provider_failed', message: 'Chat model work did not complete.' },
+        });
+        throw error;
+      } finally {
+        captureDb?.sqlite.close();
+      }
       const completedAt = new Date().toISOString();
-      const turn = createChatTurn(completedAt);
       recordQuickChatLlmUsage({
         ...(coreDb ? { coreDb } : {}),
         authorityActor: triggerActor,

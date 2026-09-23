@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,15 +10,20 @@ import type {
   WorkerCanonicalEventRecord,
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { CodexRuntimeCapture } from '../../../../packages/worker-shim/src/codex-runtime-capture.js';
+import { runtimeOriginRef } from '../../../../packages/worker-shim/src/runtime-capture.js';
+import { WorkerTranscriptWriter } from '../../../../packages/worker-shim/src/transcript.js';
+import { compactWorkspaceEvidenceBundles, readWorkObservationBody } from '../evidence-bundles.js';
 import {
   createSchedulerAdmissionEntry,
   createSchedulerPlacementPlan,
   createSchedulerSessionLease,
   markSchedulerSessionLeaseReleasing,
 } from '../scheduler-records.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { readThreadRuntimeActivity, readWorkObservations } from '../storage/work-observations.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
@@ -33,6 +38,8 @@ import {
   type WorkerControlGatewayError,
   type WorkerControlLineage,
 } from './worker-control-gateway.js';
+import { createWorkerControlAcceptedRecordRecorder } from './worker-control-records.js';
+import { createWorkerControlSequenceRecorder } from './worker-control-sequences.js';
 
 /**
  * Creates an OpenShell-targeted package fixture for worker control tests.
@@ -40,11 +47,15 @@ import {
  * @param suffix Stable suffix used to create a distinct complete lineage.
  * @returns Package fixture and lineage expected by the control gateway.
  */
-function createWorkerControlFixture(suffix = '1'): {
+function createWorkerControlFixture(
+  suffix = '1',
+  dataRoot?: string
+): {
   environmentPackage: AgentEnvironmentPackage;
   lineage: WorkerControlLineage;
 } {
-  const store = createDemoStore();
+  const store = createDemoStore(dataRoot ? { dataRoot } : {});
+  if (dataRoot) store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
   const turn = store.createTurn(
     'ws_demo',
     'th_demo',
@@ -57,6 +68,7 @@ function createWorkerControlFixture(suffix = '1'): {
     { turnId: `tu_control_${suffix}` }
   );
   const environmentPackage = resolveAgentEnvironmentPackage({
+    captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
     agentSetup: createTestAgentSetup(),
     agentSessionId: `as_control_${suffix}`,
     triggerActor: { kind: 'user', id: 'user_local' },
@@ -70,6 +82,19 @@ function createWorkerControlFixture(suffix = '1'): {
     workspaceRoots: [],
   });
 
+  if (dataRoot) {
+    store.createAgentSession({
+      id: `as_control_${suffix}`,
+      agentId: environmentPackage.agent.agentId,
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      status: 'busy',
+      message: null,
+      createdAt: turn.startedAt!,
+      updatedAt: turn.startedAt!,
+    });
+    store.updateTurn(turn.id, { agentSessionId: `as_control_${suffix}` });
+  }
   return {
     environmentPackage: AgentEnvironmentPackageSchema.parse(environmentPackage),
     lineage: {
@@ -222,6 +247,261 @@ function heartbeatRequest(
 }
 
 describe('WorkerControlGateway', () => {
+  it('retains live nested Codex producer content through the real codec, restart, publication and timeline', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-live-observation-'));
+    const fixture = createWorkerControlFixture('capture', root);
+    let coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const makeGateway = () => {
+      const gateway = new WorkerControlGateway({
+        resolveTokenBinding: () => ({ status: 'accepted' }),
+        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+      });
+      registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:capture');
+      return gateway;
+    };
+    let gateway = makeGateway();
+    const bytes = Buffer.from('Preserved outward response 世界\n'.repeat(2000));
+    const chunkSize = 48 * 1024;
+    const replayFrames: WorkerCanonicalEventRecord[] = [];
+    let restartedAfterStaging = false;
+    let retriedPublication = false;
+    const send = (record: unknown) =>
+      gateway.appendEvent({
+        authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
+        lineage: fixture.lineage,
+        record,
+      });
+    let workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
+    const sessionDir = join(root, 'worker-session');
+    const home = join(root, 'native-home');
+    mkdirSync(join(home, 'sessions'), { recursive: true });
+    const writer = new WorkerTranscriptWriter({
+      lineage: fixture.lineage,
+      sessionDir,
+      appendEvent: async (record) => {
+        if (record.event.type === 'observation.content.chunk') {
+          replayFrames.push(record);
+          if (record.event.data.chunkIndex === 1 && !retriedPublication) {
+            coreDb.sqlite.exec(
+              "CREATE TRIGGER fail_receipt BEFORE INSERT ON worker_control_records BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END"
+            );
+            expect(() => send(record)).toThrow('injected receipt failure');
+            coreDb.sqlite.exec('DROP TRIGGER fail_receipt');
+            coreDb.sqlite.close();
+            coreDb = openCoreDb(root);
+            gateway = makeGateway();
+            retriedPublication = true;
+          }
+        }
+        send(record);
+        if (record.event.type === 'observation.content.chunk' && !restartedAfterStaging) {
+          expect(
+            readWorkObservations(workspaceDb, fixture.lineage).some(
+              (row) => row.type === 'content.published'
+            )
+          ).toBe(false);
+          coreDb.sqlite.close();
+          coreDb = openCoreDb(root);
+          gateway = makeGateway();
+          expect(send(record).accepted).toBe(true);
+          restartedAfterStaging = true;
+        }
+      },
+    });
+    let captureFailure: unknown;
+    const capture = await CodexRuntimeCapture.create(
+      {
+        packageSnapshotId: fixture.lineage.packageSnapshotId,
+        captureCoverage: { scope: 'server', value: 'on' },
+        credentialValues: [],
+        emit: (record, body) =>
+          writer.writeObservation(record, body).catch((error: unknown) => {
+            captureFailure = error;
+            throw error;
+          }),
+      },
+      home
+    );
+    // Same pinned rollout metadata and native frame shapes as worker-shim's nested live fixture.
+    const lines = (...records: unknown[]) =>
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+    const meta = (id: string, parent?: string) => ({
+      type: 'session_meta',
+      payload: {
+        id,
+        session_id: 'root',
+        cli_version: '0.153.4',
+        ...(parent
+          ? {
+              parent_thread_id: parent,
+              source: {
+                subagent: {
+                  thread_spawn: { parent_thread_id: parent, depth: parent === 'root' ? 1 : 2 },
+                },
+              },
+            }
+          : {}),
+      },
+    });
+    try {
+      writeFileSync(join(home, 'sessions', 'rollout-root.jsonl'), lines(meta('root')));
+      await capture.writeStdout(
+        Buffer.from(
+          lines(
+            { type: 'thread.started', thread_id: 'root' },
+            {
+              type: 'item.completed',
+              item: {
+                type: 'collab_tool_call',
+                id: 'spawn-one',
+                tool: 'spawn_agent',
+                sender_thread_id: 'root',
+                receiver_thread_ids: ['child'],
+                status: 'completed',
+                agents_states: { child: { status: 'running', message: null } },
+              },
+            }
+          )
+        )
+      );
+      writeFileSync(
+        join(home, 'sessions', 'rollout-child.jsonl'),
+        lines(meta('child', 'root'), {
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            channel: 'final',
+            content: [{ type: 'output_text', text: bytes.toString('utf8') }],
+          },
+        })
+      );
+      writeFileSync(
+        join(home, 'sessions', 'rollout-grandchild.jsonl'),
+        lines(meta('grandchild', 'child'), {
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            channel: 'final',
+            content: [{ type: 'output_text', text: 'Nested outward result' }],
+          },
+        })
+      );
+      const grandchildRef = runtimeOriginRef(fixture.lineage.packageSnapshotId, 'grandchild');
+      await vi.waitFor(
+        () => {
+          if (captureFailure) throw captureFailure;
+          const rows = readWorkObservations(workspaceDb, fixture.lineage);
+          const message = rows.find(
+            (row) =>
+              (row.payload.fact as { runtimeOriginRef?: string; kind?: string } | undefined)
+                ?.runtimeOriginRef === grandchildRef &&
+              (row.payload.fact as { kind?: string }).kind === 'assistant'
+          );
+          expect(
+            rows.some((row) => row.type === 'content.published' && row.parent === message?.id)
+          ).toBe(true);
+        },
+        { timeout: 5000 }
+      );
+      await capture.invalidate();
+      expect(writer.eventTranscriptSealed).toBe(false);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM worker_control_records WHERE operation = 'final_status'"
+          )
+          .get()
+      ).toEqual({ count: 0 });
+      expect(restartedAfterStaging && retriedPublication).toBe(true);
+      workspaceDb.sqlite.close();
+      workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
+      const rows = readWorkObservations(workspaceDb, fixture.lineage);
+      const initial = rows.find(
+        (row) =>
+          (row.payload.fact as { kind?: string; runtimeOriginRef?: string } | undefined)?.kind ===
+            'assistant' &&
+          (row.payload.fact as { runtimeOriginRef?: string }).runtimeOriginRef ===
+            runtimeOriginRef(fixture.lineage.packageSnapshotId, 'child')
+      )!;
+      const publication = rows.find(
+        (row) => row.type === 'content.published' && row.parent === initial.id
+      )!;
+      const ref = publication.refs![0]!;
+      expect(
+        readWorkObservationBody(workspaceDb, {
+          ...fixture.lineage,
+          bundleId: ref.locator,
+          createdAt: initial.ts,
+          sha256: ref.digest!,
+        })
+      ).toEqual(bytes);
+      expect(send(replayFrames[0]!).accepted).toBe(true);
+      expect(readWorkObservations(workspaceDb, fixture.lineage)).toEqual(rows);
+      const activity = readThreadRuntimeActivity(workspaceDb, {
+        threadId: fixture.lineage.threadId,
+        turnIds: [fixture.lineage.turnId],
+        maxEntriesPerTurn: 50,
+        maxTextCharacters: 1000,
+      })[0]!;
+      expect(
+        activity.entries.some(
+          (entry) =>
+            entry.label === 'Child 2: response completed' && entry.text === 'Nested outward result'
+        )
+      ).toBe(true);
+      expect(
+        activity.entries.some(
+          (entry) => entry.text === bytes.toString('utf8').slice(0, 1000) && entry.textTruncated
+        )
+      ).toBe(true);
+      expect(activity.entries.filter((entry) => entry.kind === 'child-started')).toHaveLength(2);
+      const receipts = JSON.stringify(
+        coreDb.sqlite.prepare('SELECT record_json FROM worker_control_records').all()
+      );
+      const fingerprints = JSON.stringify(
+        coreDb.sqlite.prepare('SELECT fingerprint FROM worker_control_sequence_fingerprints').all()
+      );
+      for (const persisted of [
+        receipts,
+        fingerprints,
+        JSON.stringify(gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId)),
+      ]) {
+        expect(persisted).not.toContain('Preserved outward response');
+        expect(persisted).not.toContain(bytes.subarray(0, chunkSize).toString('base64'));
+      }
+      expect(readFileSync(join(sessionDir, 'events.jsonl'), 'utf8')).not.toContain(
+        'observation.content.chunk'
+      );
+      const changed = structuredClone(replayFrames[0]!);
+      if (changed.event.type !== 'observation.content.chunk')
+        throw new Error('Missing codec content frame');
+      changed.event.data.data = Buffer.from('different').toString('base64');
+      expect(() => send(changed)).toThrow(/different content/);
+      compactWorkspaceEvidenceBundles({
+        workspaceDb,
+        workspaceId: fixture.lineage.workspaceId,
+        olderThan: '9999-01-01T00:00:00.000Z',
+      });
+      expect(send(replayFrames[0]!).accepted).toBe(true);
+      expect(
+        readWorkObservationBody(workspaceDb, {
+          ...fixture.lineage,
+          bundleId: ref.locator,
+          createdAt: initial.ts,
+          sha256: ref.digest!,
+        })
+      ).toBeNull();
+    } finally {
+      await capture.invalidate();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('authenticates sandbox tokens and records live heartbeat plus artifact notices', () => {
     const { environmentPackage, lineage } = createWorkerControlFixture();
     const gateway = new WorkerControlGateway({

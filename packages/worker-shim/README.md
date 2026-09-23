@@ -28,9 +28,13 @@ For one read-write Git workspace input, the shared supervisor validates the clos
 
 ## Codex Runtime Provenance
 
-Runtime provenance is opt-in through `control.transcript.runtimeProvenance`. The Codex adapter streams primary `codex exec --json` output with backpressure and incrementally copies the stable Codex 0.153.4 rollout forest reachable from the primary thread. It writes only the fixed package-declared outputs under `/openkit/session/runtime`, subject to the declared byte and stream limits and the adapter's pinned discovery guards.
+Runtime provenance is opt-in through `control.transcript.runtimeProvenance`. The optional provenance path streams primary `codex exec --json` output with backpressure and finalizes the stable Codex 0.153.4 rollout forest reachable from the primary thread. It writes only the fixed package-declared outputs under `/openkit/session/runtime`, subject to the declared byte and stream limits and the adapter's pinned discovery guards.
 
 Missing root evidence is `failed`; missing, contradictory, or changing reachable evidence is `unstable`; and partial or limit-bounded evidence is `truncated`. Malformed physical frames remain explicitly indexed instead of being silently attributed. A new capture removes any prior manifest commit marker before touching raw files, and provenance-enabled failures do not copy native output into ordinary transcript diagnostics.
+
+## Incremental Work Capture
+
+`src/runtime-capture.ts` supplies bounded source framing, exact admitted body selection and opaque references; `src/codex-runtime-capture.ts` tails reachable Codex rollout activity while the parent is running. The existing provenance module owns shared Codex structural interpretation. The AEP supplies immutable capture coverage; off preserves required facts, while on permits complete admitted bodies. Restricted chunks bypass ordinary local transcript payloads and are sent with backpressure through the existing control client. Explicit source/version/parse gaps do not imply zero children or complete coverage; optional provenance retains its stronger separate verifier.
 
 ## Commands
 

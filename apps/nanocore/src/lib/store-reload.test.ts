@@ -1683,6 +1683,28 @@ describe('FsStore canonical reload', () => {
     expect(() => store.importWorkspaceSnapshot(input)).toThrow(expectedError);
   });
 
+  it('preserves imported capture bindings without observations across live reads, restart and eviction', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-capture-'));
+    const store = new FsStore({ dataRoot });
+    const input = workspaceImportPayload('ws_capture_import');
+    const turnId = input.turns[0]!.id;
+    const binding = { scope: 'task', value: 'on' } as const;
+    const turnCaptureCoverage = new Map([[turnId, binding]]);
+    expect(() => store.importWorkspaceSnapshot({
+      ...input, turnCaptureCoverage: new Map([['missing_turn', binding]]),
+    })).toThrow('Capture coverage references missing imported Turn');
+    expect(() => store.importWorkspaceSnapshot({
+      ...input, turnCaptureCoverage,
+      stageWorkspace: () => { throw new Error('staging failed'); },
+    })).toThrow('staging failed');
+    expect(store.getTurnCaptureCoverage(turnId)).toBeNull();
+    store.importWorkspaceSnapshot({ ...input, turnCaptureCoverage });
+    expect(store.getTurnCaptureCoverage(turnId)).toEqual(binding);
+    expect(new FsStore({ dataRoot }).getTurnCaptureCoverage(turnId)).toEqual(binding);
+    store.rollbackImportedWorkspace(input.workspace.id);
+    expect(store.getTurnCaptureCoverage(turnId)).toBeNull();
+  });
+
   it('rolls back imported records when persistence fails', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-rollback-'));
     const store = new FsStore({ dataRoot });

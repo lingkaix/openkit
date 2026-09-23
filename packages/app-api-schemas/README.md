@@ -44,6 +44,8 @@ Worker environment schemas project bounded retained-storage summaries, explicit 
 
 Workspace Sync Review patch schemas scan metadata and ordinary file contents for raw-secret-shaped strings. Only complete Git unified-diff hunks for the exact generated `skills/openkit/scripts/openkit` path are exempt; unsupported or malformed patches retain full scanning. Nested review and list schemas preserve this boundary without rescanning patch text.
 
+`ThreadDashboard.runtimeActivity` is an optional bounded per-Turn projection with structural coverage and separate `contentCapture` off/on/unknown. It contains display-safe text and source sequence only, not body references, native identities, execution authority or approval controls.
+
 ## Commands
 
 - `pnpm --filter @openkit/app-api-schemas test`

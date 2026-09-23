@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   type WorkerCanonicalEventRecord,
+  WorkerCanonicalEventRecordSchema,
   type WorkerCanonicalTerminalEventDataInput,
   WorkerCanonicalTerminalEventDataSchema,
   type WorkerControlResponseEnvelope,
@@ -267,9 +268,12 @@ export class WorkerControlClient {
     record: WorkerCanonicalEventRecord,
     signal?: AbortSignal
   ): Promise<WorkerControlResponseEnvelope> {
+    const validated = WorkerCanonicalEventRecordSchema.parse(record);
     return this.request(
       async () =>
-        requireAcceptedControlResponse(await this.postJson('/events/append', { record }, signal)),
+        requireAcceptedControlResponse(
+          await this.postJson('/events/append', { record: validated }, signal)
+        ),
       signal
     );
   }

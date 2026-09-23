@@ -482,7 +482,8 @@ function readNumber(value: unknown): number | undefined {
 }
 
 /**
- * Converts complete SSE events while preserving native stream backpressure and cancellation.
+ * Converts complete SSE events, continuing through filtered or partial chunks until output is ready.
+ * Preserves native stream backpressure and cancellation.
  *
  * @param stream Provider SSE byte stream.
  * @param convertEvent Endpoint-specific event converter.
@@ -502,32 +503,37 @@ function convertSseStream(
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const result = await reader.read();
+        while (!cancelled) {
+          const result = await reader.read();
 
-        if (result.done) {
-          if (!cancelled && buffer.trim()) {
-            for (const converted of convertEvent(buffer)) {
+          if (result.done) {
+            if (!cancelled && buffer.trim()) {
+              for (const converted of convertEvent(buffer)) {
+                controller.enqueue(encoder.encode(`${converted}\n\n`));
+              }
+            }
+            if (!readerReleased) {
+              readerReleased = true;
+              reader.releaseLock();
+            }
+            if (!cancelled) {
+              controller.close();
+            }
+            return;
+          }
+
+          buffer += decoder.decode(result.value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() ?? '';
+
+          let emitted = false;
+          for (const event of events) {
+            for (const converted of convertEvent(event)) {
               controller.enqueue(encoder.encode(`${converted}\n\n`));
+              emitted = true;
             }
           }
-          if (!readerReleased) {
-            readerReleased = true;
-            reader.releaseLock();
-          }
-          if (!cancelled) {
-            controller.close();
-          }
-          return;
-        }
-
-        buffer += decoder.decode(result.value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() ?? '';
-
-        for (const event of events) {
-          for (const converted of convertEvent(event)) {
-            controller.enqueue(encoder.encode(`${converted}\n\n`));
-          }
+          if (emitted) return;
         }
       } catch (error) {
         if (!readerReleased) {

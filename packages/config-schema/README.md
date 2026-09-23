@@ -40,6 +40,8 @@ Optional `server.jsonc.appUpdate` fixes one SSH host, user, port, identity file 
 
 [`src/tree-digest.ts`](src/tree-digest.ts) owns openkit-tree-v1 framing and validation; its path ordering uses unsigned UTF-8 byte comparison through Node Buffer.compare, not locale or UTF-16 ordering.
 
+AEP `observability.captureCoverage` is a required admission-bound pair without a default. Runtime construction reads the persisted Turn setting; the shim never resolves configuration precedence. `openkit.work-observations.v1` registers the observation family for explicit reader support and portable reference handling, independently of optional full runtime provenance.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`

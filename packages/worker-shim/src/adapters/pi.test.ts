@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { type WorkerObservationData, WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
 import type { WorkerAdapterPrepareInput, WorkerNativeProcessResult } from '../adapter-registry.js';
 import { piAdapter } from './pi.js';
@@ -14,6 +15,12 @@ function piInput(): WorkerAdapterPrepareInput {
   const root = mkdtempSync(join(tmpdir(), 'openkit-pi-adapter-'));
 
   return {
+    runtimeCapture: {
+      captureCoverage: { scope: 'server', value: 'off' },
+      packageSnapshotId: 'aep_test',
+      credentialValues: [],
+      emit: async () => undefined,
+    },
     childEnvironment: {
       ANTHROPIC_API_KEY: 'provider-credential-value',
       PATH: process.env.PATH ?? '',
@@ -107,6 +114,70 @@ function settledEvents(message: Record<string, unknown>): Array<Record<string, u
 }
 
 describe('Pi worker adapter', () => {
+  it.each([
+    'on',
+    'off',
+  ] as const)('streams admitted text and actual tool results with capture %s, without claiming child support', async (value) => {
+    const input = piInput();
+    const recorded: Array<{ record: WorkerObservationData; body?: Uint8Array }> = [];
+    const plan = await piAdapter.prepare({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value },
+        emit: async (record, body) => {
+          recorded.push({
+            record: WorkerObservationDataSchema.parse(record),
+            ...(body ? { body } : {}),
+          });
+        },
+      },
+    });
+    const result = { content: [{ type: 'text', text: '  tool 💡\n' }], details: { exitCode: 0 } };
+    await plan.writeStdout!(
+      nativeResult([
+        { type: 'message_start' },
+        {
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', delta: '  live 💡\n' },
+        },
+        {
+          type: 'message_update',
+          assistantMessageEvent: { type: 'thinking_delta', delta: 'unpublished-canary' },
+        },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'call-1',
+          toolName: 'bash',
+          args: { command: 'true' },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'call-1',
+          toolName: 'bash',
+          isError: false,
+          result,
+        },
+      ]).stdout
+    );
+    const tools = recorded.filter(
+      ({ record, body }) => record.fact.kind === 'tool' && (value === 'off' || body !== undefined)
+    );
+    expect(tools.map(({ record }) => record.fact.phase)).toEqual(['started', 'completed']);
+    expect(tools[0]?.record.fact.callRef).toBe(tools[1]?.record.fact.callRef);
+    expect(recorded.filter(({ record }) => record.fact.coverage === 'unsupported')).toHaveLength(2);
+    expect(
+      recorded.some(({ body }) => body && Buffer.from(body).toString() === '  live 💡\n')
+    ).toBe(false);
+    await plan.finalize!();
+    if (value === 'on')
+      expect(recorded.map(({ body }) => body && Buffer.from(body).toString())).toEqual(
+        expect.arrayContaining(['  live 💡\n', JSON.stringify(result)])
+      );
+    else expect(recorded.every(({ body }) => body === undefined)).toBe(true);
+    expect(JSON.stringify(recorded)).not.toContain('unpublished-canary');
+    await plan.finalize!();
+  });
   it('prepares the pinned JSON command with every ambient resource path disabled', async () => {
     const input = piInput();
     const plan = await piAdapter.prepare(input);

@@ -513,3 +513,7 @@ Deferred work is non-authorizing and creates no current schema, state, compatibi
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260702-knowledge_store_governance_rules.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
+
+## Incremental Work Observations
+
+The existing canonical event append accepts strict observation.recorded metadata and observation.content.chunk records under its existing outer lineage, revocation, sequence and replay checks. AEP projects the admitted Turn capture binding. Metadata is an observation-family fact, never an Item or child execution command. Chunks are canonical base64 with a maximum 48 KiB decoded length and validated index/offset; complete body length and digest are verified before publication. Metadata declares expected content first; each chunk ACK proves restricted staging, and a separate publication observation follows durable complete-body adoption. Receipt/fingerprint state contains only safe descriptors and digests, never content bytes. The acceptance/replay path must reconcile an interrupted publication before reporting its success. Full body admission, exclusions and failures follow 20260921-work_data_retention_format.md; there is no second transport, execution high-watermark or child-management API.

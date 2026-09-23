@@ -334,3 +334,9 @@ The contract is satisfied only when all of the following are observable:
 - Complete restart evidence rejects a missing or mismatched package snapshot and requires `backend.preferred` and `runtime.image.ref` to match the durable backend session before claiming package-to-session consistency; the current path remains partial for those two comparisons.
 - Current diagnostics distinguish the implemented setup failures and truthful broader failure categories without claiming a unified typed resolver taxonomy.
 - Deleting backend-private material or one concrete adapter does not change the AEP's NanoCore-owned authority, strict envelope, or product lineage.
+
+## Admitted Capture Binding
+
+observability.captureCoverage is the required immutable projection of the owning Turn admission pair {scope: server | workspace | task, value: off | on}. Core supplies it from persisted history before governed work starts; Worker code does not re-resolve current configuration or infer it from provenance enablement. Missing or conflicting history blocks governed dispatch rather than silently selecting off. Exact reconnect reuses the binding; a new Turn receives its own binding. Runtime availability and successful content publication are separate observations, not claims made by this setting.
+
+Pure pre-admission compatibility planning may use a non-dispatchable metadata projection that omits the not-yet-admitted capture binding. It must not pass as a complete dispatchable AEP, persist a historical binding, or start governed work. Actual AEP construction requires the durable Turn binding. Per-Turn capture values do not partition the existing SessionCompatibilityKey.

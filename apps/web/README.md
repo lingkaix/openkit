@@ -59,6 +59,8 @@ The Thread Side panel indexes each referenced Artifact version once, even when m
 
 Primitive status pairs are owned by `src/primitives/status.ts`; CountBadge and PhaseStepper reuse those pairs while retaining their distinct accent and foreground-only states. Composer uses the same layout on starter and Thread surfaces. Goal BoardLens renders its three fixed columns through one card mapping; CompletedView keeps Artifact rows display-only. Workspace Overview uses its live attention and conversation queries, and Portability hooks infer result shapes from the Core Client.
 
+Thread runtime activity uses the existing authorized dashboard and shared `ThreadStream`. It renders once per Turn, including activity without Items, with explicit display omissions and capture-off/unknown notices. Existing Item-backed approval, input and correction controls remain the interaction owners; account transitions clear activity through the same dashboard cache.
+
 ## Stack
 
 Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md):

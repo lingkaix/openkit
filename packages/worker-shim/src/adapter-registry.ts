@@ -2,6 +2,7 @@ import type { WorkerLineage } from '@openkit/worker-protocol';
 import { codexAdapter } from './adapters/codex.js';
 import { opencodeAdapter } from './adapters/opencode.js';
 import { piAdapter } from './adapters/pi.js';
+import type { RuntimeCaptureInput } from './runtime-capture.js';
 
 /** One Shim-selected worker LLM route passed unchanged to an adapter. */
 export interface WorkerAdapterLlmRoute {
@@ -65,6 +66,8 @@ export interface WorkerAdapterPrepareInput {
   readonly sessionDirectory: string;
   /** Optional private directory for one Turn's native-only outputs. */
   readonly nativeTurnDirectory?: string | undefined;
+  /** Admission-bound live observations, independent of optional verified provenance. */
+  readonly runtimeCapture: RuntimeCaptureInput;
   /** Optional separately owned bounded native provenance capture input. */
   readonly runtimeProvenance?: WorkerAdapterRuntimeProvenance | undefined;
   /** Retained opaque native data root. */

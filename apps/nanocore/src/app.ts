@@ -1521,6 +1521,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerLlmGatewayRoutes({
     app,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    requestStore,
     llmGatewayDispatcher,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     resolveGatewayProvider,

@@ -223,7 +223,12 @@ export function createPreApprovalGoalPlanRevisionPlanner(
   options: PreApprovalGoalPlanRevisionPlannerOptions
 ): GoalPlanner {
   return async (input) => {
-    if (!input.previousPlan || !input.previousPlanItemId || input.revisionText === undefined) {
+    if (
+      !input.capture ||
+      !input.previousPlan ||
+      !input.previousPlanItemId ||
+      input.revisionText === undefined
+    ) {
       throw new GoalPlanRevisionError(
         'goal_plan_revision_invalid',
         'Pre-approval Goal Plan revision is missing its prior Plan or instruction.'
@@ -272,6 +277,7 @@ export function createPreApprovalGoalPlanRevisionPlanner(
       },
       limits: selection.profile?.limits ?? DEFAULT_REVISION_LIMITS,
       callProvider: createInternalAgentGatewayProvider({
+        capture: input.capture,
         logicalModel: selection.logicalModel,
         dispatcher: options.llmGatewayDispatcher,
         resolveGatewayProvider: options.resolveGatewayProvider,

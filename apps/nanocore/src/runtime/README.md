@@ -54,6 +54,8 @@ Result-only cleanup of an exact `cleanup-pending` backend with no in-memory sess
 
 `git-push-linkage.ts` collects known applied and staged review ids for every requested commit, including host-exempt pushes and repositories with linkage enforcement disabled. Exemption changes the missing-link refusal only; publication authority and durable audit ownership remain with the existing push executor.
 
+Worker observation ingress retains structural facts and restricted chunks through the existing authenticated sequence path, with the storage owner deciding durable publication. AEP construction projects the historical Turn capture binding. Live observations do not advertise complete runtime provenance or replace its independent verifier.
+
 ## Verification
 
 Run the nearest focused tests first, followed by NanoCore typecheck, lint, build, and the complete NanoCore test suite for runtime behavior changes. Governed-worker changes should also run worker-control, recovery, scheduler, and Server route coverage relevant to the changed lifecycle.

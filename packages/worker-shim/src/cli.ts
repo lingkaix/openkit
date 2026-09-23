@@ -20,6 +20,7 @@ import {
   type WorkerControlFetch,
 } from './control-client.js';
 import { openSandboxIntegration, type SandboxIntegrationClient } from './integration-client.js';
+import type { RuntimeCaptureInput } from './runtime-capture.js';
 import {
   type WorkerLineage,
   type WorkerTerminalOutcomeInput,
@@ -225,6 +226,8 @@ type DirectWorkerControlCommand = {
 
 /** Minimal immutable AEP projection consumed by the worker shim. */
 interface WorkerShimPackageManifest {
+  /** Exact immutable observation admission binding projected by Core. */
+  observability?: { captureCoverage?: unknown };
   /** Package-owned lineage fields consumed by the worker supervisor. */
   scope?: {
     /** Request that owns this worker Turn, when present. */
@@ -535,6 +538,16 @@ async function runWorkerShimImplementation(
   const turnInput = resolveWorkerTurnInput(packageManifest);
   const cwd = resolveWorkerWorkingDirectory(packageManifest);
   const workspaceInputs = resolveWorkspaceInputs(packageManifest);
+  const rawCoverage = packageManifest.observability?.captureCoverage;
+  if (
+    !isRecord(rawCoverage) ||
+    !['server', 'workspace', 'task'].includes(String(rawCoverage.scope)) ||
+    (rawCoverage.value !== 'off' && rawCoverage.value !== 'on') ||
+    Object.keys(rawCoverage).some((key) => key !== 'scope' && key !== 'value')
+  ) {
+    throw new Error('Worker observation capture requires the exact admitted coverage binding.');
+  }
+  const captureCoverage = rawCoverage as RuntimeCaptureInput['captureCoverage'];
 
   if (options.args.dryRun) {
     const stateRoot = join(options.args.sessionDir, 'native-state');
@@ -552,6 +565,14 @@ async function runWorkerShimImplementation(
         ),
         controlRoot,
         llmRoute,
+        runtimeCapture: {
+          captureCoverage,
+          packageSnapshotId: 'dry-run',
+          credentialValues: [],
+          emit: async () => {
+            throw new Error('Dry run cannot publish observations.');
+          },
+        },
         mcpServerIds,
         skillTargetPaths: skillSupply.map((skill) => ({
           id: skill.id,
@@ -614,11 +635,18 @@ async function runWorkerShimImplementation(
     await mkdir(controlRoot, { mode: 0o700, recursive: true });
   }
   let launchPlan: WorkerAdapterLaunchPlan;
+  let collectionFinalized = false;
   try {
     launchPlan = await (adapter.mode === 'bounded-turn' ? adapter.prepare : adapter.prepareTurn)({
       childEnvironment,
       controlRoot,
       llmRoute,
+      runtimeCapture: {
+        captureCoverage,
+        packageSnapshotId: lineage.packageSnapshotId,
+        credentialValues,
+        emit: (record, body) => writer.writeObservation(record, body),
+      },
       mcpServerIds,
       skillTargetPaths: skillSupply.map((skill) => ({
         id: skill.id,
@@ -775,6 +803,7 @@ async function runWorkerShimImplementation(
     let stdoutBytes = 0;
     /** Retains exact adapter stdout under the shared 16 MiB bound and forwards adapter-local sinks. */
     const writeStdout = async (chunk: Uint8Array) => {
+      await launchPlan.writeStdout?.(chunk);
       if (launchPlan.captureStdout) {
         stdoutBytes += chunk.byteLength;
         if (stdoutBytes > NATIVE_STDOUT_MAX_BYTES) {
@@ -782,7 +811,6 @@ async function runWorkerShimImplementation(
         }
         stdoutChunks.push(Buffer.from(chunk));
       }
-      await launchPlan.writeStdout?.(chunk);
     };
 
     try {
@@ -883,6 +911,7 @@ async function runWorkerShimImplementation(
             stateRoot,
           });
     await launchPlan.finalize?.();
+    collectionFinalized = true;
     if (!options.sessionStateRoot) {
       await rm(stateRoot, { force: true, recursive: true });
     }
@@ -987,6 +1016,7 @@ async function runWorkerShimImplementation(
     }
     throw error;
   } finally {
+    if (!collectionFinalized) await launchPlan.invalidate?.().catch(() => undefined);
     options.signal?.removeEventListener('abort', abortForParent);
     abortChildren();
     integration?.clearTurnRouteTokens();

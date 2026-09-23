@@ -18,10 +18,17 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import {
+  isSupportedWorkObservationType,
+  parseWorkObservationRecord,
+  type WorkObservationRecord,
+} from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
   artifactContentFileName,
   assertSafeWorkspacePathSegment,
+  type CaptureCoverageBinding,
+  CaptureCoverageBindingSchema,
   listUnresolvedUserInputRequestItemIds,
   parseCanonicalWorkspaceHistory,
   projectWorkspaceSystemRecord,
@@ -188,6 +195,10 @@ export interface WriteWorkspaceExportTreeInput {
   runtimeEvidence?: readonly unknown[];
   /** Product-safe normalized runtime provenance indexes keyed by source bundle id. */
   runtimeProvenanceIndexes?: ReadonlyMap<string, string>;
+  /** Committed Turn observation JSONL keyed by its owning Turn id. */
+  turnObservations?: ReadonlyMap<string, string>;
+  /** Immutable historical capture bindings, separate from public Turn projections. */
+  turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
   /** Workspace-scoped usage records to export as line-oriented records. */
   usageRecords?: readonly unknown[];
   /** Workspace-owned data source catalog to export. */
@@ -303,6 +314,9 @@ export function writeWorkspaceExportTree(
     agentSessions: input.agentSessions,
     turnEvents: input.turnEvents,
   });
+  if (history.threads.some((thread) => thread.visibility === 'private')) {
+    throw new Error('Private Thread history requires a separately authorized export.');
+  }
   const knowledge = input.knowledge.map((record) => KnowledgeEntrySchema.parse(record));
   const portableFileState = input.portableFileState;
   if (!portableFileState?.workspaceConfig) {
@@ -344,6 +358,7 @@ export function writeWorkspaceExportTree(
     throw new Error(`Export root parent must be a real directory: ${parent}`);
   }
   mkdirSync(input.exportRoot);
+  const publishedObservationBundles = new Set<string>();
 
   try {
     const recordsRoot = join(input.exportRoot, 'records');
@@ -354,7 +369,50 @@ export function writeWorkspaceExportTree(
       projectWorkspaceSystemRecord(history.workspace)
     );
     writeJsonl(join(recordsRoot, 'threads.jsonl'), history.threads);
-    writeJsonl(join(recordsRoot, 'turns.jsonl'), history.turns);
+    writeJsonl(
+      join(recordsRoot, 'turns.jsonl'),
+      history.turns.map((turn) => {
+        const binding = input.turnCaptureCoverage?.get(turn.id);
+        return {
+          ...turn,
+          ...(binding ? { captureCoverage: CaptureCoverageBindingSchema.parse(binding) } : {}),
+          ...(input.turnObservations?.has(turn.id)
+            ? { requiredFeatures: ['openkit.work-observations.v1'] }
+            : {}),
+        };
+      })
+    );
+    for (const [turnId, text] of input.turnObservations ?? []) {
+      const turn = history.turns.find((candidate) => candidate.id === turnId);
+      if (!turn) {
+        throw new Error(`Work observations reference missing exported Turn: ${turnId}`);
+      }
+      if (!input.turnCaptureCoverage?.has(turnId)) {
+        throw new Error('Work observation export requires historical capture coverage.');
+      }
+      const rows = parsePortableWorkObservations(text, turnId);
+      for (const row of rows) {
+        for (const ref of row.refs ?? []) {
+          if (
+            ref.kind === 'evidence-bundle' &&
+            ref.edge === 'publication' &&
+            ref.scope.workspaceId === history.workspace.id
+          )
+            publishedObservationBundles.add(ref.locator);
+        }
+      }
+      const path = join(
+        input.exportRoot,
+        'workspace-files',
+        'threads',
+        turn.threadId,
+        'turns',
+        turnId,
+        'observations.jsonl'
+      );
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, rows.length ? text.slice(0, text.lastIndexOf('\n') + 1) : '');
+    }
     writeJsonl(join(recordsRoot, 'knowledge.jsonl'), knowledge);
     writeJsonl(join(recordsRoot, 'item-revisions.jsonl'), history.itemRevisions, true);
     writeJsonl(join(recordsRoot, 'artifact-reviews.jsonl'), input.artifactReviews);
@@ -436,16 +494,25 @@ export function writeWorkspaceExportTree(
     if (input.capabilityCalls?.length) {
       writeJsonl(join(recordsRoot, 'capability-calls.jsonl'), input.capabilityCalls);
     }
-    const evidenceBundles = (input.evidenceBundles ?? []).map((record) =>
-      isRestrictedRuntimeProvenanceBundle(record)
-        ? {
-            ...record,
-            importStatus: 'expired',
-            rawEvidenceRefs: [],
-            redactedEvidenceRefs: [],
-          }
-        : record
-    );
+    const evidenceBundles = (input.evidenceBundles ?? [])
+      .filter(
+        (record) =>
+          !isRecord(record) ||
+          record.sourceKind !== 'work-observation-body' ||
+          (typeof record.id === 'string' &&
+            publishedObservationBundles.has(record.id) &&
+            (record.importStatus === 'promoted' || record.importStatus === 'expired'))
+      )
+      .map((record) =>
+        isRestrictedPortableEvidenceBundle(record)
+          ? {
+              ...record,
+              importStatus: 'expired',
+              rawEvidenceRefs: [],
+              redactedEvidenceRefs: [],
+            }
+          : record
+      );
     if (evidenceBundles.length) {
       writeJsonl(join(recordsRoot, 'evidence-bundles.jsonl'), evidenceBundles);
     }
@@ -646,6 +713,9 @@ export function writeWorkspaceExportTree(
     if (input.generativePresentations?.length) {
       requiredFeatures.push('workspace.generative-ui.native-v1');
     }
+    if (input.turnObservations?.size) {
+      requiredFeatures.push('openkit.work-observations.v1');
+    }
     const manifest: WorkspaceExportManifest = {
       schemaVersion: 1,
       recordType: 'workspace-export',
@@ -673,6 +743,7 @@ export function writeWorkspaceExportTree(
         WORKSPACE_EXPORT_CATALOG_FEATURE,
         'workspace.generative-kernel.v1',
         'workspace.generative-ui.native-v1',
+        'openkit.work-observations.v1',
       ],
     });
   } catch (error) {
@@ -681,13 +752,35 @@ export function writeWorkspaceExportTree(
   }
 }
 
-/** Returns whether one export record is the restricted runtime provenance source bundle. */
-function isRestrictedRuntimeProvenanceBundle(record: unknown): record is Record<string, unknown> {
+/** Identifies restricted originals whose portable projection contains no content locators. */
+function isRestrictedPortableEvidenceBundle(record: unknown): record is Record<string, unknown> {
   return (
     isRecord(record) &&
-    record.sourceKind === 'worker-runtime-provenance-raw' &&
-    record.retentionClass === 'restricted-raw'
+    (record.sourceKind === 'worker-runtime-provenance-raw' ||
+      record.sourceKind === 'work-observation-body')
   );
+}
+
+/** Validates committed portable rows through the owning schema without interpreting torn tails. */
+export function parsePortableWorkObservations(
+  text: string,
+  turnId: string
+): WorkObservationRecord[] {
+  const committed = text.slice(0, text.lastIndexOf('\n') + 1);
+  const rows: WorkObservationRecord[] = [];
+  const ids = new Set<string>();
+  for (const line of committed.split('\n').slice(0, -1)) {
+    const row = parseWorkObservationRecord(JSON.parse(line));
+    if (!isSupportedWorkObservationType(row.type)) {
+      throw new Error(`Unsupported work observation type: ${row.type}`);
+    }
+    if (row.turnId !== turnId || row.seq !== rows.length + 1 || ids.has(row.id)) {
+      throw new Error('Invalid portable work observation sequence or ownership.');
+    }
+    ids.add(row.id);
+    rows.push(row);
+  }
+  return rows;
 }
 
 /** Returns whether one unknown value is a non-array object. */
@@ -754,9 +847,21 @@ export function verifyWorkspaceExportTree(
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       'workspace.generative-kernel.v1',
       'workspace.generative-ui.native-v1',
+      'openkit.work-observations.v1',
       ...(input.supportedFeatures ?? []),
     ],
   });
+  for (const entry of manifest.contentInventory) {
+    if (entry.path.startsWith('workspace-files/evidence/backend/')) {
+      throw new Error('Restricted originals and unpublished observation staging are not portable.');
+    }
+    if (
+      /^workspace-files\/threads\/[^/]+\/turns\/[^/]+\/observations\.jsonl$/.test(entry.path) &&
+      !manifest.requiredFeatures.includes('openkit.work-observations.v1')
+    ) {
+      throw new Error('Work observations require the portable required-feature declaration.');
+    }
+  }
   for (const unsupportedPath of UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS) {
     if (manifest.contentInventory.some((entry) => entry.path === unsupportedPath)) {
       throw new Error(`Unsupported workspace export record path: ${unsupportedPath}`);

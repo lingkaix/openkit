@@ -80,7 +80,8 @@ function createLineageExportInput(
     | 'sync-artifact'
     | 'usage-session'
     | 'vault-approval'
-    | 'vault-session'
+    | 'vault-session',
+  captureValue: 'off' | 'on' = 'off'
 ): WriteWorkspaceExportTreeInput {
   const agentSetup = createTestAgentSetup();
   const item = {
@@ -174,6 +175,7 @@ function createLineageExportInput(
     durationMs: 1,
   };
   const environmentPackage = resolveAgentEnvironmentPackage({
+    captureCoverage: { scope: 'server', value: captureValue },
     agent: {
       id: 'agent_codex_host',
       name: 'Codex Agent',
@@ -1325,6 +1327,336 @@ function createWorkResourceLineageExportInput(followUp?: {
 }
 
 describe('workspace auxiliary lineage reminting', () => {
+  it('refuses ordinary export containing private Thread history before collecting portable content', () => {
+    const input = createLineageExportInput();
+    input.threads = input.threads.map((thread) => ({
+      ...(thread as Record<string, unknown>),
+      visibility: 'private',
+      privateOwnerUserId: 'another-user',
+    }));
+    expect(() => writeWorkspaceExportTree(input)).toThrow(
+      'Private Thread history requires a separately authorized export.'
+    );
+  });
+
+  it('inventories Turn observations and remints observation and Item anchors without rewriting content identities', () => {
+    const input = createLineageExportInput();
+    const rows = [
+      {
+        v: 1,
+        type: 'runtime.observed',
+        id: 'observation_source',
+        ts: timestamp,
+        seq: 1,
+        obs: 'sidecar',
+        turnId: source.turnId,
+        parent: source.itemId,
+        corr: 'call_source',
+        payload: {
+          observationId: 'observation_source',
+          sourceRef: 'source_1',
+          sourceSequence: 1,
+          observedAt: timestamp,
+          fact: { kind: 'origin', phase: 'started', runtimeOriginRef: `rto_${'a'.repeat(24)}` },
+          content: { state: 'off' },
+        },
+      },
+      {
+        v: 1,
+        type: 'runtime.observed',
+        id: 'observation_followup',
+        ts: timestamp,
+        seq: 2,
+        obs: 'sidecar',
+        turnId: source.turnId,
+        parent: 'observation_source',
+        corr: 'call_source',
+        payload: {
+          observationId: 'observation_followup',
+          sourceRef: 'source_1',
+          sourceSequence: 2,
+          observedAt: timestamp,
+          fact: { kind: 'origin', phase: 'running', runtimeOriginRef: `rto_${'a'.repeat(24)}` },
+          content: { state: 'off' },
+        },
+      },
+    ];
+    const externalRefs = [
+      { kind: 'sandbox-image', scope: { ownerScope: 'server', deploymentId: 'dep_other' }, locator: 'sha256:source-image', edge: 'association' },
+      { kind: 'artifact', scope: { workspaceId: source.workspaceId, deploymentId: 'dep_other' }, locator: source.artifactId, edge: 'association' },
+    ];
+    const text = `${rows.map((row) => JSON.stringify({ ...row, refs: externalRefs })).join('\n')}\n`;
+    const verified = writeWorkspaceExportTree({
+      ...input,
+      turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'off' }]]),
+      turnObservations: new Map([[source.turnId, text]]),
+    });
+    const path = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/observations.jsonl`;
+    expect(verified.fileContents.get(path)).toBe(text);
+    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    const targetTurnId = imported.turnIds.get(source.turnId)!;
+    expect(imported.turnCaptureCoverage.get(targetTurnId)).toEqual({
+      scope: 'server',
+      value: 'off',
+    });
+    const observations = imported.turnObservations.get(targetTurnId)!;
+    const [first, second] = observations
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(first).toMatchObject({
+      turnId: targetTurnId,
+      parent: imported.itemIds.get(source.itemId),
+      corr: 'call_source',
+      payload: {
+        ...rows[0]!.payload,
+        observationId: expect.stringMatching(/^obs_[a-f0-9]{24}$/),
+        sourceRef: expect.stringMatching(/^rts_[a-f0-9]{24}$/),
+        fact: {
+          ...rows[0]!.payload.fact,
+          runtimeOriginRef: `rto_${createHash('sha256')
+            .update(
+              `${imported.agentEnvironmentPackageSnapshots[0]!.snapshotId}:rto_${'a'.repeat(24)}`
+            )
+            .digest('hex')
+            .slice(0, 24)}`,
+        },
+      },
+    });
+    expect(first.refs).toEqual(externalRefs);
+    expect(first.payload.sourceRef).not.toBe(rows[0]!.payload.sourceRef);
+    expect(second.payload.sourceRef).toBe(first.payload.sourceRef);
+    expect(second.payload.observationId).not.toBe(first.payload.observationId);
+    expect(first.id).not.toBe(rows[0]!.id);
+    expect(second).toMatchObject({ parent: first.id, turnId: targetTurnId, seq: 2 });
+    expect(second.id).not.toBe(rows[1]!.id);
+  });
+
+  it('shares one exact child-origin remint with Gateway calls without a provenance index', () => {
+    const input = createLineageExportInput();
+    const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
+    const rootRef = `rto_${'a'.repeat(24)}`;
+    const childRef = `rto_${'b'.repeat(24)}`;
+    input.capabilityCalls = input.capabilityCalls!.map((call) => ({
+      ...(call as Record<string, unknown>),
+      packageSnapshotId,
+      runtimeOriginRef: childRef,
+    }));
+    const row = {
+      v: 1,
+      id: 'child_observation',
+      type: 'runtime.observed',
+      ts: timestamp,
+      seq: 1,
+      obs: 'sidecar',
+      turnId: source.turnId,
+      payload: {
+        observationId: 'child_observation',
+        sourceRef: 'source_1',
+        sourceSequence: 1,
+        observedAt: timestamp,
+        fact: {
+          kind: 'origin',
+          phase: 'started',
+          runtimeOriginRef: childRef,
+          parentRuntimeOriginRef: rootRef,
+        },
+        content: { state: 'off' },
+      },
+    };
+    const verified = writeWorkspaceExportTree({
+      ...input,
+      turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'off' }]]),
+      turnObservations: new Map([[source.turnId, `${JSON.stringify(row)}\n`]]),
+    });
+    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    expect(imported.runtimeProvenanceIndexes.size).toBe(0);
+    const targetPackageId = imported.agentEnvironmentPackageSnapshots[0]!.snapshotId;
+    const expectedRef = (ref: string) =>
+      `rto_${createHash('sha256').update(`${targetPackageId}:${ref}`).digest('hex').slice(0, 24)}`;
+    const observation = JSON.parse(
+      imported.turnObservations.get(imported.turnIds.get(source.turnId)!)!.trim()
+    );
+    expect(observation.payload.fact).toMatchObject({
+      runtimeOriginRef: expectedRef(childRef),
+      parentRuntimeOriginRef: expectedRef(rootRef),
+    });
+    expect(imported.capabilityCalls[0]).toMatchObject({
+      runtimeOriginRef: expectedRef(childRef),
+      packageSnapshotId: targetPackageId,
+    });
+  });
+
+  it('keeps restricted observation bodies unavailable while reminting their exact publication references', () => {
+    const input = createLineageExportInput(undefined, 'on');
+    const digest = createHash('sha256').update('  original é\n').digest('hex');
+    input.evidenceBundles = [
+      {
+        id: 'evb_observation',
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        turnId: source.turnId,
+        goalId: null,
+        agentSessionId: null,
+        backendType: 'internal',
+        sourceKind: 'work-observation-body',
+        summary: 'Restricted observation content.',
+        rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'original.bin' }],
+        redactedEvidenceRefs: [],
+        contentDigests: [digest],
+        retentionClass: 'restricted-raw',
+        sensitivityClass: 'restricted',
+        importStatus: 'promoted',
+        requiredFeatures: ['evidence.bundle.v1', 'openkit.work-observations.v1'],
+        createdAt: timestamp,
+      },
+    ];
+    const initial = {
+      v: 1,
+      id: 'observation_initial',
+      type: 'runtime.observed',
+      ts: timestamp,
+      seq: 1,
+      obs: 'sidecar',
+      turnId: source.turnId,
+      payload: {
+        observationId: 'observation_initial',
+        sourceRef: 'source_1',
+        sourceSequence: 1,
+        observedAt: timestamp,
+        fact: {
+          kind: 'assistant',
+          phase: 'completed',
+          runtimeOriginRef: null,
+          messageRef: 'message_1',
+          representation: 'snapshot',
+        },
+        content: {
+          state: 'expected',
+          sha256: `sha256:${digest}`,
+          bytes: Buffer.byteLength('  original é\n'),
+          mediaType: 'text/plain',
+          boundary: 'assistant.text',
+          chunkCount: 1,
+        },
+      },
+    };
+    const row = {
+      v: 1,
+      id: 'observation_body',
+      type: 'content.published',
+      ts: timestamp,
+      seq: 2,
+      obs: 'sidecar',
+      turnId: source.turnId,
+      parent: initial.id,
+      refs: [
+        {
+          kind: 'evidence-bundle',
+          scope: { workspaceId: source.workspaceId, pathClass: 'backend' },
+          locator: 'evb_observation',
+          digest,
+          edge: 'publication',
+        },
+      ],
+      payload: {
+        bodies: [
+          {
+            id: 'body_1',
+            bundleId: 'evb_observation',
+            sha256: digest,
+            bytes: Buffer.byteLength('  original é\n'),
+            mediaType: 'text/plain',
+            boundary: 'assistant.text',
+          },
+        ],
+      },
+    };
+    const verified = writeWorkspaceExportTree({
+      ...input,
+      turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'on' }]]),
+      turnObservations: new Map([
+        [source.turnId, `${JSON.stringify(initial)}\n${JSON.stringify(row)}\n`],
+      ]),
+    });
+    expect(verified.manifest.requiredFeatures).toContain('openkit.work-observations.v1');
+    expect(verified.checkedFiles.some((path) => path.includes('original.bin'))).toBe(false);
+    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    const bundle = imported.evidenceBundles[0]!;
+    expect(bundle).toMatchObject({
+      importStatus: 'expired',
+      rawEvidenceRefs: [],
+      redactedEvidenceRefs: [],
+      contentDigests: [digest],
+    });
+    const targetTurnId = imported.turnIds.get(source.turnId)!;
+    const observation = JSON.parse(
+      imported.turnObservations.get(targetTurnId)!.trim().split('\n')[1]!
+    );
+    expect(observation.refs).toEqual([
+      {
+        ...row.refs[0],
+        locator: bundle.id,
+        scope: { workspaceId: targetWorkspaceId, pathClass: 'backend' },
+      },
+    ]);
+  });
+
+  it.each([
+    'parent',
+    'sequence',
+    'turn',
+    'bundle',
+    'type',
+  ] as const)('rejects invalid observation %s instead of silently dropping or rebinding it', (defect) => {
+    const input = createLineageExportInput();
+    const row = {
+      v: 1,
+      id: 'observation_source',
+      type: defect === 'type' ? 'future.unknown' : 'runtime.observed',
+      ts: timestamp,
+      seq: defect === 'sequence' ? 2 : 1,
+      obs: 'sidecar',
+      turnId: defect === 'turn' ? 'tu_missing' : source.turnId,
+      parent: defect === 'parent' ? 'missing-parent' : source.itemId,
+      ...(defect === 'bundle'
+        ? {
+            refs: [
+              {
+                kind: 'evidence-bundle',
+                scope: { workspaceId: source.workspaceId, pathClass: 'backend' },
+                locator: 'evb_missing',
+                edge: 'association',
+              },
+            ],
+          }
+        : {}),
+      payload: {
+        observationId: 'observation_source',
+        sourceRef: 'source_1',
+        sourceSequence: 1,
+        observedAt: timestamp,
+        fact: { kind: 'origin', phase: 'started', runtimeOriginRef: null },
+        content: { state: 'off' },
+      },
+    };
+    expect(() => {
+      const verified = writeWorkspaceExportTree({
+        ...input,
+        turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'off' }]]),
+        turnObservations: new Map([[source.turnId, `${JSON.stringify(row)}\n`]]),
+      });
+      readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    }).toThrow(
+      {
+        parent: /parent references missing/,
+        sequence: /sequence or ownership/,
+        turn: /sequence or ownership/,
+        bundle: /evidence bundle references missing/,
+        type: /Unsupported work observation type/,
+      }[defect]
+    );
+  });
   it('remints accepted Knowledge Page Context Package references with the imported digest', () => {
     const input = createWorkResourceLineageExportInput();
     const sourceTraceText = [...input.portableFileState!.workerContextPackageFiles.entries()].find(

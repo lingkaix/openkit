@@ -16,6 +16,24 @@ import {
   type WorkerLineage,
 } from '@openkit/worker-protocol';
 
+/** Sanitizes restricted transport frames before any server fingerprint, receipt or snapshot. */
+export function workerControlEventReceipt(record: WorkerCanonicalEventRecord): unknown {
+  if (record.event.type !== 'observation.content.chunk') return record;
+  const { data, ...coordinates } = record.event.data;
+  const bytes = Buffer.from(data, 'base64');
+  return {
+    ...record,
+    event: {
+      type: record.event.type,
+      data: {
+        ...coordinates,
+        bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      },
+    },
+  };
+}
+
 /**
  * Stable lineage required on every worker control request.
  */
@@ -1527,7 +1545,17 @@ export class WorkerControlGateway {
     lineage: WorkerControlLineage,
     record: WorkerCanonicalEventRecord
   ): { readonly duplicate: boolean } {
-    const fingerprint = stableJson(record);
+    const receipt = workerControlEventReceipt(record);
+    const fingerprint = stableJson(receipt);
+    const observationEvent =
+      record.event.type === 'observation.recorded' ||
+      record.event.type === 'observation.content.chunk';
+    if (observationEvent && !this.acceptedRecordRecorder)
+      throw new WorkerControlGatewayError(
+        'worker_observation_storage_unavailable',
+        'Observation receipt requires durable storage.',
+        503
+      );
     const existingFingerprint = state.eventFingerprintsBySequence.get(record.sequence);
 
     if (existingFingerprint) {
@@ -1539,10 +1567,23 @@ export class WorkerControlGateway {
         );
       }
 
+      if (observationEvent)
+        this.recordAcceptedRecord({
+          acceptedAt: this.now(),
+          lineage,
+          operation: 'event_append',
+          record,
+          recordKey: String(record.sequence),
+          sequence: record.sequence,
+        });
       return { duplicate: true };
     }
 
-    if (state.highestEventSequence !== null && record.sequence < state.highestEventSequence) {
+    if (
+      !this.sequenceRecorder &&
+      state.highestEventSequence !== null &&
+      record.sequence < state.highestEventSequence
+    ) {
       throw new WorkerControlGatewayError(
         'worker_control_sequence_stale',
         `Worker event sequence is older than the latest accepted event: ${record.sequence}`,
@@ -1562,11 +1603,12 @@ export class WorkerControlGateway {
     }
 
     state.eventFingerprintsBySequence.set(record.sequence, fingerprint);
-    state.highestEventSequence =
-      state.highestEventSequence === null
-        ? record.sequence
-        : Math.max(state.highestEventSequence, record.sequence);
-    state.snapshot.events.push(cloneCanonicalEventRecord(record));
+    state.highestEventSequence = Math.max(
+      state.highestEventSequence ?? -1,
+      record.sequence,
+      (durableSequence?.nextExpectedSequence ?? 0) - 1
+    );
+    if (!observationEvent) state.snapshot.events.push(cloneCanonicalEventRecord(record));
     try {
       this.recordAcceptedRecord({
         acceptedAt: this.now(),

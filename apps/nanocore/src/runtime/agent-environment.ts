@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
+  type AgentEnvironmentCaptureCoverage,
+  AgentEnvironmentCaptureCoverageSchema,
   type AgentEnvironmentCredentialDeclaration,
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
@@ -108,6 +110,8 @@ export interface PreparedWorkerContextPackage {
  * Inputs required to resolve one Agent Environment Package for the current container runtime.
  */
 export interface ResolveAgentEnvironmentPackageInput {
+  /** Immutable persisted Turn admission binding; never inferred from current configuration. */
+  captureCoverage: AgentEnvironmentCaptureCoverage;
   /** Complete manifest and provider selection resolved before materialization. */
   agentSetup: ResolvedAgentSetup;
   /** AgentSession id that the package will govern. */
@@ -154,9 +158,13 @@ export interface ResolveAgentEnvironmentPackageInput {
   credentialReceiptSink?: (receipt: CreateVaultInjectionReceiptInput) => void;
 }
 
+/** Non-dispatchable planning projection; capture admission exists only on the constructed AEP. */
+export type AgentEnvironmentPackagePreview = Omit<AgentEnvironmentPackage, 'observability'>;
+
 /** Secret-free input used to compute one future Turn's exact AgentSession compatibility key. */
 export type ResolveAgentSessionCompatibilityKeyInput = Omit<
   ResolveAgentEnvironmentPackageInput,
+  | 'captureCoverage'
   | 'credentialReceiptSink'
   | 'preparedContextPackage'
   | 'providerCredentialSink'
@@ -176,7 +184,15 @@ export function resolveAgentEnvironmentPackage(
   input: ResolveAgentEnvironmentPackageInput
 ): AgentEnvironmentPackage {
   if (input.backend?.kind === 'openshell') {
-    return resolveOpenShellAgentEnvironmentPackage(input, input.backend, 'materialize');
+    const captureCoverage = AgentEnvironmentCaptureCoverageSchema.parse(input.captureCoverage);
+    return AgentEnvironmentPackageSchema.parse({
+      ...resolveOpenShellAgentEnvironmentPackage(input, input.backend, 'materialize'),
+      observability: {
+        captureCoverage,
+        audit: { required: true, formats: { preferred: 'ocsf-json' } },
+        evidence: { collectBackendLogs: true, collectSessionFiles: true },
+      },
+    });
   }
 
   if (input.backend && (input.backend as { kind?: string }).kind === 'host') {
@@ -205,14 +221,14 @@ export function resolveAgentSessionCompatibilityKey(
 }
 
 /**
- * Resolves the complete secret-free AEP projection used by pre-lease runtime admission.
+ * Resolves non-dispatchable static planning metadata before Turn capture admission.
  *
  * @param input Future Turn, resolved agent, and static workspace inputs.
- * @returns Metadata-only Agent Environment Package with no Vault resolution or durable effects.
+ * @returns Planning fields with no capture claim, Vault resolution, or durable effects.
  */
 export function resolveAgentEnvironmentPackageMetadata(
   input: ResolveAgentSessionCompatibilityKeyInput
-): AgentEnvironmentPackage {
+): AgentEnvironmentPackagePreview {
   if (input.backend?.kind !== 'openshell') {
     throw new Error('AgentSession compatibility requires a container backend.');
   }
@@ -222,6 +238,31 @@ export function resolveAgentEnvironmentPackageMetadata(
     'metadata-only',
     hasWorkerContextPackageCheckpoint(input.coreDb, input.turn)
   );
+}
+
+/** Parses planning components with their existing owners, without claiming a dispatch-valid AEP. */
+function parseAgentEnvironmentPlanningFields(input: Record<string, unknown>): AgentEnvironmentPackagePreview {
+  const fields = AgentEnvironmentPackageSchema.shape;
+  return {
+    schemaVersion: fields.schemaVersion.parse(input.schemaVersion),
+    packageId: fields.packageId.parse(input.packageId),
+    snapshotId: fields.snapshotId.parse(input.snapshotId),
+    createdAt: fields.createdAt.parse(input.createdAt),
+    scope: fields.scope.parse(input.scope),
+    agent: fields.agent.parse(input.agent),
+    runtime: fields.runtime.parse(input.runtime),
+    workspace: fields.workspace.parse(input.workspace),
+    supply: fields.supply.parse(input.supply),
+    control: fields.control.parse(input.control),
+    capabilities: fields.capabilities.parse(input.capabilities),
+    credentials: fields.credentials.parse(input.credentials),
+    vault: fields.vault.parse(input.vault),
+    policy: fields.policy.parse(input.policy),
+    llm: fields.llm.parse(input.llm),
+    resources: fields.resources.parse(input.resources),
+    backend: fields.backend.parse(input.backend),
+    extensions: fields.extensions.parse(input.extensions),
+  };
 }
 
 /** Reads whether the existing durable launch path will prepare a Context Package for this Turn. */
@@ -266,11 +307,11 @@ function hasWorkerContextPackageCheckpoint(coreDb: CoreDb | undefined, turn: Tur
  * @returns Parsed OpenShell package.
  */
 function resolveOpenShellAgentEnvironmentPackage(
-  input: ResolveAgentEnvironmentPackageInput,
+  input: Omit<ResolveAgentEnvironmentPackageInput, 'captureCoverage'>,
   backend: ResolveOpenShellAgentEnvironmentBackendInput,
   credentialResolution: 'materialize' | 'metadata-only',
   includeExpectedContextPackage = false
-): AgentEnvironmentPackage {
+): AgentEnvironmentPackagePreview {
   if (Object.keys(backend).some((key) => key !== 'kind')) {
     throw new Error('Agent Environment Package backends cannot select retired placement or URLs.');
   }
@@ -424,7 +465,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   });
   const workerProviderId = 'openkit-gateway';
 
-  const environmentPackage = AgentEnvironmentPackageSchema.parse({
+  const environmentPackage = parseAgentEnvironmentPlanningFields({
     schemaVersion: 4,
     packageId,
     snapshotId,
@@ -655,18 +696,6 @@ function resolveOpenShellAgentEnvironmentPackage(
       })),
     },
     resources: {},
-    observability: {
-      audit: {
-        required: true,
-        formats: {
-          preferred: 'ocsf-json',
-        },
-      },
-      evidence: {
-        collectBackendLogs: true,
-        collectSessionFiles: true,
-      },
-    },
     backend: {
       preferred: backendRequirements?.preferred ?? 'openshell',
       allowedKinds: backendAllowedKinds,
@@ -715,7 +744,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   );
   const openkitExtensions = environmentPackage.extensions.openkit as Record<string, unknown>;
 
-  return AgentEnvironmentPackageSchema.parse({
+  return parseAgentEnvironmentPlanningFields({
     ...environmentPackage,
     workspace: {
       ...environmentPackage.workspace,
@@ -839,7 +868,7 @@ function requirePreparedWorkerContextPackage(
  */
 function workspaceInputSource(
   root: MaterializedWorkspaceRoot,
-  input: ResolveAgentEnvironmentPackageInput
+  input: Omit<ResolveAgentEnvironmentPackageInput, 'captureCoverage'>
 ): Record<string, unknown> {
   const sourceRef = input.workspaceSourceRefs?.[root.id];
 

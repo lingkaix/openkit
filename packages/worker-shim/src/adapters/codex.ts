@@ -21,6 +21,7 @@ import type {
   WorkerAdapterResult,
   WorkerNativeProcessResult,
 } from '../adapter-registry.js';
+import { CodexRuntimeCapture } from '../codex-runtime-capture.js';
 import {
   CodexRuntimeProvenanceCapture,
   proveCodexNativeConversation,
@@ -187,6 +188,7 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
         ),
       })
     : null;
+  const capture = await CodexRuntimeCapture.create(input.runtimeCapture, input.stateRoot);
   const nativeHandle = await readNativeHandle(input.controlRoot);
   const command = nativeHandle ? ['codex', 'exec', 'resume'] : ['codex', 'exec'];
   // Resume has no --cd; the Harness spawn cwd is the working-directory owner.
@@ -236,14 +238,19 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
       ...input.childEnvironment,
       CODEX_HOME: input.stateRoot,
     },
-    ...(provenance
-      ? {
-          finalize: () => provenance.finalize(),
-          invalidate: () => provenance.invalidate(),
-          suppressFailureDiagnostics: true,
-          writeStdout: (chunk: Uint8Array) => provenance.writePrimaryChunk(chunk),
-        }
-      : {}),
+    finalize: async () => {
+      await capture.finalize();
+      await provenance?.finalize();
+    },
+    invalidate: async () => {
+      await capture.invalidate();
+      await provenance?.invalidate();
+    },
+    suppressFailureDiagnostics: true,
+    writeStdout: async (chunk: Uint8Array) => {
+      await capture.writeStdout(chunk);
+      await provenance?.writePrimaryChunk(chunk);
+    },
   };
 }
 

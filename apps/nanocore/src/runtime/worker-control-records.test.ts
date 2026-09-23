@@ -313,11 +313,14 @@ describe('worker control accepted event records', () => {
         acceptedAt: '2026-07-15T00:00:00.000Z',
         lineage,
         operation: 'event_append',
-        record,
+        record: eventRecord(1),
         recordKey: '1',
         sequence: 1,
       });
-
+      // Corrupt the durable artifact directly: the production recorder now validates ingress too.
+      coreDb.sqlite
+        .prepare('UPDATE worker_control_records SET record_json = ?')
+        .run(JSON.stringify(record));
       expect(() => listWorkerControlAcceptedEvents(coreDb, lineage)).toThrow();
       coreDb.sqlite.close();
     }

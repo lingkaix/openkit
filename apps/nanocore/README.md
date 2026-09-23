@@ -87,6 +87,8 @@ Authored manifests and profiles are validated by AuthoredAgentConfigSchema in `@
 - synthetic application requests and caller-provided NanoHost connection handles or generations are not selectable runtime paths
 - subscription-backed inference requires a prepared provider-subscription account and bound provider profile; worker-runtime authentication remains a separate adapter concern
 
+Incremental work retention enters through `src/storage/work-observations.ts`; runtime ingress, Gateway capture and the authorized Thread dashboard share that owner. Complete admitted originals remain governed by the Turn-bound capture setting and existing restricted EvidenceBundle lifecycle; runtime activity is a lossy display projection.
+
 ## Commands
 
 ```bash

@@ -455,6 +455,12 @@ OpenShell ids, gateway ids, provider handles, supervisor logs, process ids, and 
 
 Runtime-internal sub-agent streams and their native origin indexes follow the restricted evidence and product-safe normalization contract in `docs/specs/20260711-worker_runtime_subagent_provenance.md`; they do not create additional OpenKit thread, turn, or AgentSession storage trees.
 
+### Turn Observation Placement
+
+The work-data observation family lives in `threads/<threadId>/turns/<turnId>/observations.jsonl` beside the existing Item stream. The admitted header is `v`, `type`, `id`, `ts`, `seq`, `obs`, `ret`, `parent`, `corr`, `outcome`, `cert`, `turnId`, `refs`, and `ext`, with required `payload`; requiredness and meanings follow the work-data owner. Directory-level `turn.json` carries `requiredFeatures: [openkit.work-observations.v1]` when this family is present, alongside existing lineage and immutable capture binding. Its append order is local to that file; the two families do not share order. `20260921-work_data_retention_format.md` owns the header and byte admission. One storage append owner validates persisted Workspace/Thread/Turn lineage and immutable capture binding, assigns contiguous sequence, and publishes references only after existing EvidenceBundle body and metadata durability. Restricted body staging and final bytes remain within that existing evidence owner, never a new Turn blob lifecycle or server transcript copy.
+
+Observation recovery discards every unterminated tail after the last LF, including parseable JSON, and rejects corrupt interior records or conflicting identities. Body and owner metadata durability precede observation file and required directory fsync. Receipt replay must verify the publication boundary after interruption; SQLite receipts and file publication remain separate stores. Lawful body expiry is not undone by replay. Observation rows follow existing Thread/Workspace history retention; referenced bytes follow evidence retention, hold, access revocation and disposal. Portable export/import must include the family, preserve unresolved references truthfully, remint in-package owner identities through exact maps and reject unsupported required features before activating imported data.
+
 ## Server Storage Layout
 
 `server/db/core.sqlite` owns:

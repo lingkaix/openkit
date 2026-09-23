@@ -525,3 +525,7 @@ None. The accepted V1 contract deliberately leaves provider-specific header name
 - [Codex exec JSONL event model](https://github.com/openai/codex/blob/main/codex-rs/exec/src/exec_events.rs)
 - [Codex exec JSONL projection](https://github.com/openai/codex/blob/main/codex-rs/exec/src/event_processor_with_jsonl_output.rs)
 - [Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
+
+## Incremental Observation Boundary
+
+Incremental source-reported child facts and admitted content follow 20260921-work_data_retention_format.md under the outer Turn. They have different assurance from the verified restricted raw bundle and normalized provenance index specified here. They do not advertise worker.runtime-provenance.v1, relax its completeness/quarantine contract or erase observations when final verification fails. One shim native structural interpretation owner may serve both producers; the independently pinned Core verifier remains independent. Safe opaque origin hint correlation may operate without full-provenance advertisement, but missing attribution stays null and source hints never authorize calls or establish Core identities. Runtime-native identifiers remain restricted; ordinary observations and timeline contain only opaque refs and admitted projections.

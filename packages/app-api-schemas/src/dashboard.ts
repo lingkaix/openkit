@@ -687,6 +687,33 @@ export const ThreadDashboardResponseSchema = z.object({
     href: z.string().min(1),
   }),
   taskInputs: z.array(ThreadTaskInputSchema),
+  /** Lossy outward activity, never retained bodies, execution authority, or proof of completeness. */
+  runtimeActivity: z
+    .array(
+      z
+        .object({
+          turnId: z.string().min(1),
+          contentCapture: z.enum(['off', 'on', 'unknown']),
+          coverage: z.enum(['collecting', 'partial', 'unavailable']),
+          entries: z
+            .array(
+              z
+                .object({
+                  sequence: z.number().int().nonnegative(),
+                  observedAt: z.iso.datetime(),
+                  kind: z.enum(['child-started', 'progress', 'result', 'failure']),
+                  label: z.string().min(1).max(80).optional(),
+                  text: z.string().max(1000).optional(),
+                  textTruncated: z.boolean(),
+                })
+                .strict()
+            )
+            .max(50),
+          omittedEntryCount: z.number().int().nonnegative(),
+        })
+        .strict()
+    )
+    .optional(),
 });
 
 /** Agent health refresh response payload. */

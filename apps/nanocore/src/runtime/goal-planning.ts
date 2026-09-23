@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
 
 import type { FsStore } from '../lib/store.js';
+import type { ModelCaptureContext } from '../llm/model-capture.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   computeGoalPlanDigest,
@@ -72,6 +73,8 @@ export interface PreApprovalGoalPlanRevision {
  * Planner input for one Goal Mode planning run.
  */
 export interface GoalPlannerInput {
+  /** Exact persisted planning Turn supplied before any model-based planner effect. */
+  readonly capture?: Omit<ModelCaptureContext, 'corr'>;
   /** Stored goal record to plan. */
   readonly goal: GoalRecord;
   /** Exact previous Plan when this run follows a recorded pre-approval revision. */
@@ -175,21 +178,42 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     threadId: input.threadId,
     goalId: input.goalId,
   });
-  const plannerInput: GoalPlannerInput = revision
-    ? {
-        goal,
-        previousPlan: revision.previousPlan,
-        previousPlanItemId: revision.previousPlanItemId,
-        revisionText: revision.revisionText,
-      }
-    : { goal };
   const ids = goalPlanCreationIds(input);
+  const turn = input.store.createTurn(
+    input.workspaceId,
+    input.threadId,
+    `Plan goal: ${goal.title}`,
+    input.triggerActor,
+    null,
+    { turnId: ids.turnId }
+  );
+  const timestamp = turn.startedAt ?? new Date().toISOString();
+  const plannerInput: GoalPlannerInput = {
+    goal,
+    capture: { workspaceDb: input.workspaceDb, threadId: input.threadId, turnId: turn.id },
+    ...(revision
+      ? {
+          previousPlan: revision.previousPlan,
+          previousPlanItemId: revision.previousPlanItemId,
+          revisionText: revision.revisionText,
+        }
+      : {}),
+  };
 
   let plan: GoalPlanOutput;
   if (revision) {
     try {
       plan = await runGoalPlanner(input.planner, plannerInput, false);
+      assertApprovableGoalPlanRevision(plan, revision.previousPlan);
     } catch (error) {
+      input.store.updateTurn(turn.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        error: {
+          code: 'goal_plan_revision_failed',
+          message: 'Goal Plan revision did not complete.',
+        },
+      });
       if (error instanceof GoalPlanRevisionError) {
         throw error;
       }
@@ -198,17 +222,7 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
         'Pre-approval Goal Plan revision planner failed.'
       );
     }
-    assertApprovableGoalPlanRevision(plan, revision.previousPlan);
   } else {
-    const turn = input.store.createTurn(
-      input.workspaceId,
-      input.threadId,
-      `Plan goal: ${goal.title}`,
-      input.triggerActor,
-      null,
-      { turnId: ids.turnId }
-    );
-    const timestamp = turn.startedAt ?? new Date().toISOString();
     try {
       plan = await runGoalPlanner(input.planner, plannerInput, true);
     } catch {
@@ -250,15 +264,6 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan, null);
   }
 
-  const turn = input.store.createTurn(
-    input.workspaceId,
-    input.threadId,
-    `Plan goal: ${goal.title}`,
-    input.triggerActor,
-    null,
-    { turnId: ids.turnId }
-  );
-  const timestamp = turn.startedAt ?? new Date().toISOString();
   return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan, revision);
 }
 

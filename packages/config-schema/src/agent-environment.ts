@@ -1027,11 +1027,23 @@ export const AgentEnvironmentResourcesSchema = z
   })
   .strict();
 
+/** Immutable projection of the owning Turn's persisted capture admission binding. */
+export const AgentEnvironmentCaptureCoverageSchema = z
+  .object({
+    scope: z.enum(['server', 'workspace', 'task']),
+    value: z.enum(['off', 'on']),
+  })
+  .strict();
+
+/** Capture binding supplied by Core; workers never resolve current policy from it. */
+export type AgentEnvironmentCaptureCoverage = z.infer<typeof AgentEnvironmentCaptureCoverageSchema>;
+
 /**
  * Observability and audit sink expectations.
  */
 export const AgentEnvironmentObservabilitySchema = z
   .object({
+    captureCoverage: AgentEnvironmentCaptureCoverageSchema,
     audit: z
       .object({
         required: z.boolean().default(false),

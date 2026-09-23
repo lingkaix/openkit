@@ -234,7 +234,9 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
             throw error;
           }
 
+          const captureDb = openWorkspaceDb(input.coreDb!.dataRoot, workspaceId);
           try {
+            applyScopedMigrations(captureDb);
             const snapshot = input.runtimeConfig();
             const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
             const userConfig = snapshot.userConfigs.find(
@@ -326,6 +328,7 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
                 signal: context.req.raw.signal,
               },
               createInternalAgentGatewayProvider({
+                capture: { workspaceDb: captureDb, threadId: thread.id, turnId: turn.id },
                 logicalModel: selection.logicalModel,
                 dispatcher: input.llmGatewayDispatcher,
                 resolveGatewayProvider: input.resolveGatewayProvider,
@@ -412,6 +415,8 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
                 ? 'Current deployment administrator authority was lost before publication.'
                 : 'Administration could not settle the current bounded run.'
             );
+          } finally {
+            captureDb.sqlite.close();
           }
         },
         inflightCommands: input.inflightCommands,

@@ -20,6 +20,7 @@ import {
 } from '@openkit/worker-protocol';
 import { skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 import type { OpenShellFilesystemGrant, OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
@@ -62,7 +63,7 @@ export interface WorkerGovernanceAgentSessionContinuityInput {
   /** Exact desired compatibility key derived from current static owners. */
   readonly agentSessionCompatibilityKey: string;
   /** Secret-free successor package required only for post-dispatch whole-Sandbox retirement. */
-  readonly environmentPackage?: AgentEnvironmentPackage;
+  readonly environmentPackage?: AgentEnvironmentPackagePreview;
   /** Whether the product owner permits reuse if backend hygiene is exact. */
   readonly reuseAllowed: boolean;
   /** Exact retained-storage selection whose attached Sandbox may be retired. */
@@ -692,11 +693,11 @@ export interface WorkerGovernanceBackend {
    * @param environmentPackage Immutable package that owns the future session.
    * @returns Deterministic physical identity persisted before materialization.
    */
-  planSession(environmentPackage: AgentEnvironmentPackage): WorkerGovernanceBackendSessionIdentity;
+  planSession(environmentPackage: AgentEnvironmentPackagePreview): WorkerGovernanceBackendSessionIdentity;
 
   /** Reads whether the one configured physical runtime can admit this secret-free package. */
   inspectMaterializationCapacity?(
-    environmentPackage: AgentEnvironmentPackage
+    environmentPackage: AgentEnvironmentPackagePreview
   ): 'available' | 'capacity-saturated';
 
   /**

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-const partialWriteState = vi.hoisted(() => ({ calls: 0 }));
+const partialWriteState = vi.hoisted(() => ({ calls: 0, failSync: false }));
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -24,12 +24,30 @@ vi.mock('node:fs', async (importOriginal) => {
     return actual.writeSync(descriptor, buffer, offset, Math.max(1, Math.ceil(length / 2)));
   }) as typeof actual.writeSync;
 
-  return { ...actual, writeSync };
+  return {
+    ...actual,
+    writeSync,
+    fsyncSync: (descriptor: number) => {
+      if (partialWriteState.failSync) throw new Error('injected durability failure');
+      actual.fsyncSync(descriptor);
+    },
+  };
 });
 
-import { appendWorkspaceItemRevision } from './workspace-file-records.js';
+import { appendCanonicalTextFile, appendWorkspaceItemRevision } from './workspace-file-records.js';
 
 describe('canonical append writes', () => {
+  it('does not acknowledge an append when durable synchronization fails', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-append-sync-'));
+    partialWriteState.failSync = true;
+    try {
+      expect(() => appendCanonicalTextFile(join(root, 'events.jsonl'), '{"id":"one"}\n')).toThrow(
+        'injected durability failure'
+      );
+    } finally {
+      partialWriteState.failSync = false;
+    }
+  });
   it('finishes one JSONL row when the filesystem reports partial writes', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-partial-append-'));
     const threadId = 'th_partial_append';

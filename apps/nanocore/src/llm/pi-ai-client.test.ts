@@ -81,6 +81,48 @@ function expectedAdapterCostTotal(
 }
 
 describe('PiAiGatewayClient', () => {
+  it('observes admitted response deltas before native Responses defers public text', async () => {
+    const faux = fauxProvider({
+      api: 'openai-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-test', reasoning: true }],
+    });
+    const partial = fauxAssistantMessage([fauxText('  雪\n')]);
+    const events = createAssistantMessageEventStream();
+    Object.assign(faux.provider, {
+      stream: (_model: unknown, _context: unknown, options: StreamOptions) => {
+        options.signal?.addEventListener('abort', () => events.end(partial), { once: true });
+        return events;
+      },
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const observed: unknown[] = [];
+    events.push({ type: 'start', partial: { ...partial, content: [] } });
+    events.push({ type: 'text_delta', contentIndex: 0, delta: '  雪\n', partial });
+    const client = new PiAiGatewayClient();
+    const stream = await client.createResponsesStream(
+      providerConfig({ adapterId: 'openai-codex', subscriptionProviderId: 'openai-codex' }),
+      { model: 'gpt-test', input: 'hello', stream: true, store: false },
+      undefined,
+      { onModelEvent: (event) => observed.push(event) },
+      models
+    );
+    const reader = stream.getReader();
+    await reader.read();
+    const pending = reader.read();
+    await vi.waitFor(() =>
+      expect(observed).toContainEqual({
+        type: 'text_delta',
+        contentIndex: 0,
+        delta: '  雪\n',
+      })
+    );
+    await reader.cancel();
+    await pending;
+    expect(observed).toContainEqual({ type: 'interrupted' });
+  });
+
   it.each([
     false,
     true,

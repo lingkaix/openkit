@@ -264,6 +264,7 @@ describe('worker shim CLI parsing', () => {
           },
           mode: 'sandbox-integration',
         },
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
         extensions: { openkit: { turnInput: 'Validate the image.' } },
         llm: {
           mode: 'gateway',
@@ -2362,27 +2363,43 @@ describe('worker shim CLI parsing', () => {
         streamRef: 'stream-0001.jsonl',
       }),
     ]);
-    expect(readJsonl(join(sessionDir, 'events.jsonl'))).toEqual([
-      expect.objectContaining({
-        event: expect.objectContaining({
-          data: { status: 'starting' },
-          type: 'worker.heartbeat',
-        }),
-        sequence: 0,
-      }),
-      expect.objectContaining({
-        event: expect.objectContaining({ type: 'worker.ready' }),
-        sequence: 1,
-      }),
-      expect.objectContaining({
-        event: expect.objectContaining({ type: 'worker.heartbeat' }),
-        sequence: 2,
-      }),
-      expect.objectContaining({
-        event: expect.objectContaining({ type: 'turn.completed' }),
-        sequence: 3,
-      }),
+    const events = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
+      sequence: number;
+      event: { type: string; data: Record<string, unknown> };
+    }>;
+    expect(events.map((record) => record.sequence)).toEqual(events.map((_, index) => index));
+    expect(
+      events
+        .filter((record) => record.event.type !== 'observation.recorded')
+        .map((record) => record.event)
+    ).toEqual([
+      { type: 'worker.heartbeat', data: { status: 'starting' } },
+      { type: 'worker.ready', data: { adapter: 'codex', status: 'process.started' } },
+      {
+        type: 'worker.heartbeat',
+        data: { adapter: 'codex', status: 'process.exited', exitCode: 0, signal: null },
+      },
+      {
+        type: 'turn.completed',
+        data: { evidenceManifestDigests: {}, status: 'completed', stopReason: 'completed' },
+      },
     ]);
+    const observations = events.filter((record) => record.event.type === 'observation.recorded');
+    expect(observations).toHaveLength(9);
+    expect(observations.map((record) => record.event.data)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fact: expect.objectContaining({ family: 'primary-content', coverage: 'off' }),
+        }),
+        expect.objectContaining({
+          fact: expect.objectContaining({ kind: 'assistant' }),
+          content: { state: 'off' },
+        }),
+        expect.objectContaining({
+          fact: expect.objectContaining({ family: 'child-content', coverage: 'ended' }),
+        }),
+      ])
+    );
   });
 
   it('invalidates a reused provenance manifest before a later capture failure', async () => {
@@ -4065,6 +4082,9 @@ function writeFileSync(path: string, data: string | Buffer, encoding?: BufferEnc
           : 'gpt-5';
       data = JSON.stringify({
         ...parsed,
+        observability: parsed.observability ?? {
+          captureCoverage: { scope: 'server', value: 'off' },
+        },
         control: {
           ...control,
           adapter: control.adapter ?? {

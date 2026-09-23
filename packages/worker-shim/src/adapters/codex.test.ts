@@ -52,6 +52,12 @@ function codexInput(): WorkerAdapterPrepareInput {
   const root = mkdtempSync(join(tmpdir(), 'openkit-codex-adapter-'));
 
   return {
+    runtimeCapture: {
+      captureCoverage: { scope: 'server', value: 'off' },
+      packageSnapshotId: 'aep_test',
+      credentialValues: [],
+      emit: async () => undefined,
+    },
     childEnvironment: {
       OPENKIT_WORKER_INFERENCE_TOKEN: 'openshell-placeholder-value',
       PATH: process.env.PATH ?? '',

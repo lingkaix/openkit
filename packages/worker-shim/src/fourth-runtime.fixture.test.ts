@@ -74,6 +74,7 @@ describe('fourth worker runtime fixture', () => {
       packagePath,
       JSON.stringify({
         agent: { runtimeKind: 'descriptive-value-that-must-not-select-code' },
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
         control: {
           adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-fourth' },
           bindings: {

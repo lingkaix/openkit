@@ -115197,6 +115197,94 @@
               ],
               "additionalProperties": false
             }
+          },
+          "runtimeActivity": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "turnId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contentCapture": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "on",
+                    "unknown"
+                  ]
+                },
+                "coverage": {
+                  "type": "string",
+                  "enum": [
+                    "collecting",
+                    "partial",
+                    "unavailable"
+                  ]
+                },
+                "entries": {
+                  "maxItems": 50,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "sequence": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "child-started",
+                          "progress",
+                          "result",
+                          "failure"
+                        ]
+                      },
+                      "label": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 80
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "textTruncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "sequence",
+                      "observedAt",
+                      "kind",
+                      "textTruncated"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "omittedEntryCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "turnId",
+                "contentCapture",
+                "coverage",
+                "entries",
+                "omittedEntryCount"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -118078,5 +118166,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:99ab3b9ea708c5e1476c2c49a978228974a69ac42bd405fb7abbd922bda7eb5b"
+  "x-openkit-source-digest": "sha256:6035e09fe8dbeb42de827e36a4cfe47015b224b45603d87b601814b6f6175b77"
 }

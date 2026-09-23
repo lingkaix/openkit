@@ -1,6 +1,36 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FsStore } from '../lib/store.js';
+import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
+
+const databases: WorkspaceDb[] = [];
+const roots: string[] = [];
+afterEach(() => {
+  for (const db of databases.splice(0)) db.sqlite.close();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+/** Creates actual persisted admission even when the model transport is a fixture. */
+function captureBinding() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'internal-model-capture-'));
+  roots.push(dataRoot);
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Internal capture');
+  const thread = store.createThread(workspace.id, 'Internal capture');
+  const turn = store.createTurn(workspace.id, thread.id, 'Request', {
+    kind: 'user',
+    id: 'user_local',
+  });
+  const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+  databases.push(workspaceDb);
+  applyScopedMigrations(workspaceDb);
+  return { workspaceDb, threadId: thread.id, turnId: turn.id };
+}
 
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
@@ -70,6 +100,7 @@ describe('internal Agent Gateway provider', () => {
         ({ id: 'provider', models: ['model'], gatewayCapabilities: {} }) as never,
       promptCacheScope: { sessionId: 'admin:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
+      capture: captureBinding(),
       onDispatch,
     });
 
@@ -116,6 +147,7 @@ describe('internal Agent Gateway provider', () => {
       resolveGatewayProvider: () => ({}) as never,
       promptCacheScope: { sessionId: 'admin:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
+      capture: captureBinding(),
     });
 
     await expect(provider(request('x'.repeat(8_000)))).rejects.toMatchObject({
@@ -147,6 +179,7 @@ describe('internal Agent Gateway provider', () => {
         models: ['model'],
         requiresApiKey: true,
       }),
+      capture: captureBinding(),
       promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
     });
@@ -193,6 +226,7 @@ describe('internal Agent Gateway provider', () => {
         requiresApiKey: false,
         subscriptionProviderId: 'openai-codex',
       }),
+      capture: captureBinding(),
       providerSubscriptionAccountManager: {
         getPairHandle: async () => ({ models: pairModels }),
       } as never,
@@ -214,6 +248,7 @@ describe('internal Agent Gateway provider', () => {
       resolveGatewayProvider: () => ({}) as never,
       promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
+      capture: captureBinding(),
     });
     const input = request();
 

@@ -10,6 +10,8 @@ The runtime provenance contract keeps `WorkerLineageSchema` unchanged and adds o
 
 `WorkerStartupFailureSchema` defines the closed, value-free pre-native stage/reason pair shared by Harness refusals and NanoCore validation; it admits no arbitrary diagnostic text.
 
+Incremental work observations use strict `observation.recorded` metadata and `observation.content.chunk` events on the existing control route. Shared schemas own fact combinations, exact content descriptors, canonical base64 and transport bounds; Core owns chunk continuity, historical capture admission and durable publication. A chunk is restricted transport, never an ordinary transcript or UI payload.
+
 ## Commands
 
 - `pnpm --filter @openkit/worker-protocol test`

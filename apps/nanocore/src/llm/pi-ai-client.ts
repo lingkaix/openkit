@@ -37,6 +37,7 @@ import {
   GatewayUnsupportedFeatureError,
 } from './gateway-converters.js';
 import { mergeAdapterCostRates, resolveEffectiveModelMetadata } from './logical-models.js';
+import { admittedModelEvent, type ModelSemanticEvent } from './model-semantic-content.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   type OpenAICompatibleChatCompletionResponse,
@@ -102,6 +103,58 @@ async function raceProviderWithSignal<T>(
     if (abortListener) {
       signal.removeEventListener('abort', abortListener);
     }
+  }
+}
+
+/** Publishes only admitted fields; private reasoning events never reach retention. */
+function observeModelEvent(
+  event: AssistantMessageEvent,
+  observer?: (event: ModelSemanticEvent) => void
+): void {
+  if (!observer) return;
+  const admitted = admittedModelEvent(event);
+  if (admitted) observer(admitted);
+}
+
+/** Consumes one model stream incrementally even when the caller requested a final response. */
+async function completeObservedModel(
+  models: Models,
+  model: Model<string>,
+  context: Context,
+  options: StreamOptions & Record<string, unknown>,
+  transport: LLMGatewayTransportContext,
+  onTerminal: (message: AssistantMessage) => void
+): Promise<AssistantMessage> {
+  if (!transport.onModelEvent) {
+    const response = await models.complete(model, context, options);
+    onTerminal(response);
+    return response;
+  }
+  const localAbort = new AbortController();
+  const signal = transport.signal
+    ? AbortSignal.any([transport.signal, localAbort.signal])
+    : localAbort.signal;
+  const events = models.stream(model, context, { ...options, signal });
+  const iterator = events[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const result = await raceProviderWithSignal(() => iterator.next(), signal);
+      if (result.done) {
+        transport.onModelEvent({ type: 'truncated' });
+        throw piAiStreamFailure('Provider stream failed.', 'provider_stream_truncated');
+      }
+      if (result.value.type === 'done') onTerminal(result.value.message);
+      if (result.value.type === 'error') onTerminal(result.value.error);
+      observeModelEvent(result.value, transport.onModelEvent);
+      if (result.value.type === 'done') return result.value.message;
+      if (result.value.type === 'error') return result.value.error;
+    }
+  } catch (error) {
+    localAbort.abort(error);
+    transport.onModelEvent({ type: transport.signal?.aborted ? 'interrupted' : 'failed' });
+    throw error;
+  } finally {
+    await iterator.return?.();
   }
 }
 
@@ -194,14 +247,16 @@ export class PiAiGatewayClient {
     const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const response = await raceProviderWithSignal(
       () =>
-        models.complete(
+        completeObservedModel(
+          models,
           model,
           this.toContext(request, model),
-          this.toStreamOptions(provider, request, transport)
+          this.toStreamOptions(provider, request, transport),
+          transport,
+          (message) => publishObservedUsage(onUsage, message.usage, model, knownCost)
         ),
       transport.signal
     );
-    publishObservedUsage(onUsage, response.usage, model, knownCost);
 
     if (response.stopReason === 'error' || response.stopReason === 'aborted') {
       throw new OpenAICompatibleProviderError({
@@ -254,7 +309,8 @@ export class PiAiGatewayClient {
       signal,
       (reason) => {
         localAbortController.abort(reason);
-      }
+      },
+      transport.onModelEvent
     );
   }
 
@@ -286,7 +342,8 @@ export class PiAiGatewayClient {
       const { knownCost, model } = this.resolveModel(provider, request.model, models);
       const response = await raceProviderWithSignal(
         () =>
-          models.complete(
+          completeObservedModel(
+            models,
             model,
             toPiResponsesContext(
               request,
@@ -297,11 +354,12 @@ export class PiAiGatewayClient {
             ),
             codexProvider
               ? this.toCodexResponsesOptions(request, model, transport, additionalTools)
-              : this.toBridgedResponsesOptions(provider, request, transport)
+              : this.toBridgedResponsesOptions(provider, request, transport),
+            transport,
+            (message) => publishObservedUsage(onUsage, message.usage, model, knownCost)
           ),
         transport.signal
       );
-      publishObservedUsage(onUsage, response.usage, model, knownCost);
       if (response.stopReason === 'error' || response.stopReason === 'aborted') {
         throw new OpenAICompatibleProviderError({
           code: 'provider_error',
@@ -365,8 +423,13 @@ export class PiAiGatewayClient {
       try {
         first = await raceProviderWithSignal(() => iterator.next(), signal);
       } catch (error) {
+        const interrupted = signal.aborted;
         localAbortController.abort(error);
-        await iterator.return?.();
+        try {
+          transport.onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
+        } finally {
+          await iterator.return?.();
+        }
         throw error;
       }
 
@@ -382,7 +445,8 @@ export class PiAiGatewayClient {
         (usage) => publishObservedUsage(onUsage, usage, model, knownCost),
         signal,
         (reason) => localAbortController.abort(reason),
-        bridgeNames
+        bridgeNames,
+        transport.onModelEvent
       );
     }
 
@@ -991,6 +1055,7 @@ export class PiAiGatewayClient {
    * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @param signal Combined caller and downstream cancellation signal.
    * @param abortUpstream Cancels provider work when the downstream stream stops early.
+   * @param onModelEvent Private admitted-content observer, independent of public SSE delivery.
    * @returns Public Chat Completions SSE stream.
    */
   private toChatCompletionSseStream(
@@ -998,7 +1063,8 @@ export class PiAiGatewayClient {
     requestModel: string,
     onUsage: ((usage: unknown) => void) | undefined,
     signal: AbortSignal,
-    abortUpstream: (reason?: unknown) => void
+    abortUpstream: (reason?: unknown) => void,
+    onModelEvent?: (event: ModelSemanticEvent) => void
   ): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     let id = `chatcmpl_pi_${Date.now()}`;
@@ -1023,12 +1089,18 @@ export class PiAiGatewayClient {
               return;
             }
             if (result.done) {
+              onModelEvent?.({ type: 'truncated' });
               terminal = true;
               controller.close();
               return;
             }
 
             const event = result.value;
+            if (!usageObserved && (event.type === 'done' || event.type === 'error')) {
+              usageObserved = true;
+              onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
+            }
+            observeModelEvent(event, onModelEvent);
 
             if (event.type === 'start') {
               id = `chatcmpl_${event.partial.responseId ?? `pi_${event.partial.timestamp}`}`;
@@ -1162,9 +1234,16 @@ export class PiAiGatewayClient {
           }
 
           terminal = true;
+          const interrupted = signal.aborted;
           abortUpstream(error);
-          controller.error(error);
-          await iterator.return?.();
+          try {
+            onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
+            controller.error(error);
+          } catch (captureError) {
+            controller.error(captureError);
+          } finally {
+            await iterator.return?.();
+          }
         }
       },
       cancel: async (reason) => {
@@ -1174,7 +1253,11 @@ export class PiAiGatewayClient {
 
         cancelled = true;
         abortUpstream(reason);
-        await iterator.return?.();
+        try {
+          onModelEvent?.({ type: 'interrupted' });
+        } finally {
+          await iterator.return?.();
+        }
       },
     });
   }
@@ -2428,7 +2511,8 @@ function toResponsesSseStream(
   onUsage: ((usage: unknown) => void) | undefined,
   signal: AbortSignal,
   abortUpstream: (reason?: unknown) => void,
-  bridgeNames?: ResponsesBridgeNames
+  bridgeNames?: ResponsesBridgeNames,
+  onModelEvent?: (event: ModelSemanticEvent) => void
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const itemNamespace = randomUUID();
@@ -2477,6 +2561,7 @@ function toResponsesSseStream(
           const result = pending ?? (await raceProviderWithSignal(() => iterator.next(), signal));
           pending = undefined;
           if (result.done) {
+            onModelEvent?.({ type: 'truncated' });
             terminal = true;
             controller.error(
               piAiStreamFailure('Provider stream failed.', 'provider_stream_truncated')
@@ -2486,6 +2571,11 @@ function toResponsesSseStream(
           }
 
           const event = result.value;
+          if (!usageObserved && (event.type === 'done' || event.type === 'error')) {
+            usageObserved = true;
+            onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
+          }
+          observeModelEvent(event, onModelEvent);
           if (event.type === 'start') {
             controller.enqueue(
               encodeEvent({
@@ -2858,9 +2948,16 @@ function toResponsesSseStream(
           return;
         }
         terminal = true;
+        const interrupted = signal.aborted;
         abortUpstream(error);
-        controller.error(error);
-        await iterator.return?.();
+        try {
+          onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
+          controller.error(error);
+        } catch (captureError) {
+          controller.error(captureError);
+        } finally {
+          await iterator.return?.();
+        }
       }
     },
     async cancel(reason) {
@@ -2869,7 +2966,11 @@ function toResponsesSseStream(
       }
       cancelled = true;
       abortUpstream(reason);
-      await iterator.return?.();
+      try {
+        onModelEvent?.({ type: 'interrupted' });
+      } finally {
+        await iterator.return?.();
+      }
     },
   });
 }

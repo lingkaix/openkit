@@ -12,6 +12,12 @@ import {
   WorkerTranscriptItemRecordSchema,
 } from '@openkit/worker-protocol';
 
+import {
+  RUNTIME_CONTENT_CHUNK_BYTES,
+  type RuntimeObservation,
+  runtimeDigest,
+} from './runtime-capture.js';
+
 export type { WorkerLineage, WorkerTextPart } from '@openkit/worker-protocol';
 
 /**
@@ -81,6 +87,7 @@ export interface WorkerTranscriptWriterOptions {
  */
 export class WorkerTranscriptWriter {
   private appendQueue: Promise<void> = Promise.resolve();
+  private liveQueue: Promise<void> = Promise.resolve();
   private readonly appendEvent: ((record: WorkerCanonicalEventRecord) => Promise<void>) | null;
   private eventsSealed = false;
   private readonly lineage: WorkerLineage;
@@ -125,9 +132,71 @@ export class WorkerTranscriptWriter {
         type: input.type,
       },
     });
-    await this.appendJsonl('events.jsonl', record);
-    await this.appendEvent?.(record);
+    const appended = this.appendJsonl('events.jsonl', record);
+    await this.enqueueLive(async () => {
+      await appended;
+      await this.appendEvent?.(record);
+    });
     return record;
+  }
+
+  /** Publishes metadata first, then restricted chunks without writing chunk bytes to the ordinary transcript. */
+  public async writeObservation(input: RuntimeObservation, body?: Uint8Array): Promise<void> {
+    if (this.eventsSealed || !this.appendEvent) {
+      throw new Error('Runtime observations require unsealed live worker control.');
+    }
+    if (input.content.state === 'expected' && body !== undefined) {
+      if (
+        body.byteLength !== input.content.bytes ||
+        runtimeDigest(body) !== input.content.sha256 ||
+        input.content.chunkCount !== Math.ceil(body.byteLength / RUNTIME_CONTENT_CHUNK_BYTES)
+      ) {
+        throw new Error('Runtime observation body does not match its descriptor.');
+      }
+    } else if (input.content.state !== 'expected' && body !== undefined) {
+      throw new Error('Runtime observation body was not admitted.');
+    }
+    const record = WorkerTranscriptEventRecordSchema.parse({
+      ...this.nextBaseRecord('event'),
+      event: { type: 'observation.recorded', data: input },
+    });
+    const chunkCount =
+      input.content.state === 'expected' && body !== undefined ? input.content.chunkCount : 0;
+    const firstChunkSequence = this.sequence;
+    this.sequence += chunkCount;
+    const appended = this.appendJsonl('events.jsonl', record);
+    await this.enqueueLive(async () => {
+      await appended;
+      await this.appendEvent?.(record);
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+        const byteOffset = chunkIndex * RUNTIME_CONTENT_CHUNK_BYTES;
+        const chunk = WorkerTranscriptEventRecordSchema.parse({
+          kind: 'event',
+          lineage: this.lineage,
+          schemaVersion: 1,
+          sequence: firstChunkSequence + chunkIndex,
+          event: {
+            type: 'observation.content.chunk',
+            data: {
+              observationId: input.observationId,
+              chunkIndex,
+              byteOffset,
+              encoding: 'base64',
+              data: Buffer.from(
+                body!.subarray(byteOffset, byteOffset + RUNTIME_CONTENT_CHUNK_BYTES)
+              ).toString('base64'),
+            },
+          },
+        });
+        await this.appendEvent?.(chunk);
+      }
+    });
+  }
+
+  /** Serializes live acceptance as well as local append, including concurrent child sources and heartbeats. */
+  private enqueueLive(operation: () => Promise<void>): Promise<void> {
+    this.liveQueue = this.liveQueue.then(operation);
+    return this.liveQueue;
   }
 
   /**

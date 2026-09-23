@@ -305,6 +305,72 @@ beforeEach(() => {
 });
 
 describe('Administration', () => {
+  it('polls observation-only runtime activity in the private Administration Thread without new Items', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const activity = {
+        turnId: 'turn_admin',
+        contentCapture: 'on',
+        coverage: 'collecting',
+        omittedEntryCount: 0,
+        entries: [],
+      };
+      const dashboard = {
+        turns: [{ id: 'turn_admin', status: 'completed', items: [] }],
+        runtimeActivity: [activity],
+      };
+      const getThreadDashboard = vi.fn().mockResolvedValue(dashboard);
+      const listThreadItems = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
+      renderScreen(
+        makeClient(
+          { getThreadDashboard },
+          {
+            listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+            listThreadItems,
+          }
+        )
+      );
+      expect(await screen.findByText('Activity collection is ongoing.')).toBeInTheDocument();
+      const baselineReads = getThreadDashboard.mock.calls.length;
+      const itemReads = listThreadItems.mock.calls.length;
+      getThreadDashboard.mockResolvedValue({
+        ...dashboard,
+        runtimeActivity: [
+          {
+            ...activity,
+            coverage: 'partial',
+            entries: [
+              {
+                sequence: 2,
+                observedAt: TIMESTAMP,
+                kind: 'result',
+                label: 'Child 1: result reported',
+                text: 'Administration observation arrived without an Item.',
+                textTruncated: false,
+              },
+            ],
+          },
+        ],
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(
+        await screen.findByText('Administration observation arrived without an Item.')
+      ).toBeInTheDocument();
+      expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(baselineReads);
+      expect(
+        getThreadDashboard.mock.calls.every(
+          ([workspaceId, threadId]) => workspaceId === QUICK_CHAT.id && threadId === ADMIN_THREAD.id
+        )
+      ).toBe(true);
+      expect(listThreadItems.mock.calls.length).toBe(itemReads);
+      expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses the private administration entry and continues its returned Thread', async () => {
     const user = userEvent.setup();
     const submitAdministrationConversation = vi

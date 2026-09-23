@@ -36,6 +36,7 @@ import { registerAppApiRoute } from './openapi.js';
 import { listGoalRecordsForThread } from './runtime/goal-store.js';
 import { hasExactActiveHumanGate } from './runtime/worker-recovery.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { readThreadRuntimeActivity } from './storage/work-observations.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
@@ -750,18 +751,36 @@ export function registerDashboardRoutes({
       );
       const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
       let taskInputs: ThreadDashboardResponse['taskInputs'] = [];
+      let runtimeActivity: ThreadDashboardResponse['runtimeActivity'];
       if (coreDb) {
         let workspaceDb: WorkspaceDb | undefined;
         try {
           workspaceDb = repositoryWorkspaceDb(workspaceId);
-          taskInputs = projectThreadTaskInputs({
-            coreDb,
-            store,
+          try {
+            taskInputs = projectThreadTaskInputs({ coreDb, store, threadId, workspaceDb });
+          } catch {
+            taskInputs = [];
+          }
+          // Audience and Workspace lineage were checked before opening any activity or body reader.
+          runtimeActivity = readThreadRuntimeActivity(workspaceDb, {
             threadId,
-            workspaceDb,
-          });
-        } catch {
-          taskInputs = [];
+            turnIds: turns.map((turn) => turn.id),
+            maxEntriesPerTurn: 50,
+            maxTextCharacters: 1000,
+          }).map((activity) => ({
+            turnId: activity.turnId,
+            contentCapture: activity.contentCapture,
+            coverage: activity.coverage,
+            entries: activity.entries.map((entry) => ({
+              sequence: entry.sequence,
+              observedAt: entry.observedAt,
+              kind: entry.kind,
+              label: entry.label,
+              text: entry.text,
+              textTruncated: entry.textTruncated,
+            })),
+            omittedEntryCount: activity.omittedEntryCount,
+          }));
         } finally {
           workspaceDb?.sqlite.close();
         }
@@ -792,6 +811,7 @@ export function registerDashboardRoutes({
             href: `/api/app/workspaces/${workspaceId}/threads/${threadId}/items`,
           },
           taskInputs,
+          runtimeActivity,
         })
       );
     } catch (error) {
