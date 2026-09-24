@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Implemented
+kind: process
 ---
 # Documentation Field Contract
 

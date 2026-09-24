@@ -15,38 +15,8 @@ default_subagent_model = "gpt-5.6-sol"
 default_subagent_reasoning_effort = "high"
 max_concurrent_threads_per_session = 12
 
-# Each spawnable role is an optional capability. Its operational instructions
-# live in its config_file; the registry description is only a discoverability aid.
-
-[agents.researcher]
-description = "Research external projects from primary sources and retain independent evidence under temp/."
-config_file = "agents/researcher.toml"
-nickname_candidates = ["Archivist", "Surveyor", "Analyst"]
-
-[agents.test-author]
-description = "Derive the smallest useful failing check from accepted intent or an owning contract."
-config_file = "agents/test-author.toml"
-nickname_candidates = ["Oracle", "Prover", "Specifier"]
-
-[agents.builder]
-description = "Implement the smallest coherent change within explicitly owned writable paths."
-config_file = "agents/builder.toml"
-nickname_candidates = ["Builder", "Maker", "Integrator"]
-
-[agents.reviewer]
-description = "Perform normal independent pre-acceptance review of a material artifact for correctness, completeness, ownership, and simplicity."
-config_file = "agents/reviewer.toml"
-nickname_candidates = ["Reviewer", "Inspector", "Adjudicator"]
-
-[agents.consultant]
-description = "Challenge value, premises, feasibility, and continued investment before direction-bearing commitment; provide fresh direction scrutiny during long-running work."
-config_file = "agents/consultant.toml"
-nickname_candidates = ["Consultant", "Skeptic", "Prober"]
-
-[agents.auditor]
-description = "Check intent fidelity during work, adjudicate discretionary assurance, audit repository integrity, run governed measurements, or execute an engineer-approved terminal archive."
-config_file = "agents/auditor.toml"
-nickname_candidates = ["Calibrator", "Instrument", "Assayer"]
+# Role contracts live in docs/roles/ and are dispatched by prompt; docs/agent-harnesses.md
+# owns the dispatch template and the model bound to each capability tier.
 
 [mcp_servers.deepwiki]
 url = "https://mcp.deepwiki.com/mcp"

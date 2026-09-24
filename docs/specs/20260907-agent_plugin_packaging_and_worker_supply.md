@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: boundary
 updated: 2026-09-09
 ---
 # Agent Plugin Packaging And Worker Supply

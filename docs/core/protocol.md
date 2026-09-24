@@ -188,7 +188,7 @@ A Turn executed by a worker or other schedulable Agent is assigned internally to
 
 A turn can be triggered by user input, system input, automation, retry, handoff, approval resolution, or running-work steering.
 
-The complete Turn terminal-state set is:
+The complete Turn terminal-state set is, as recorded in [Turns Have Four Terminal States](../decisions/20260921-four_turn_terminal_states.md):
 
 - `completed`
 - `interrupted`
@@ -226,7 +226,7 @@ Those two categories are not a general license to write after terminal, and same
 
 The two categories have deliberately different equality rules and MUST NOT be merged into one predicate. Exact repair of an already-decided publication requires deep equality of the already-recorded bytes. A named field-limited refresh of a display projection returns the Item unchanged when its display fields already match and updates only those display fields when they differ. Each admitting path declares its own equality rule; a single shared predicate would be wrong. Completion of an already-decided publication covers Turn events as well as Items; completing a missing terminal event of an already-decided outcome is that category, not a second one.
 
-The resolved effective capture setting is fixed at Turn admission, before any work governed by that setting starts. A later change of the setting takes effect at the next Turn. An already-started Turn is never interrupted for an ordinary capture-setting change, and no mid-Turn interrupt path for that change exists or may be introduced. The switch defaults to off. This section owns when that resolved setting is fixed. It does not own the meaning or values of the setting. The admission-time pair is stored on the Turn directory record the storage owner already rewrites.
+The resolved effective capture setting is fixed at Turn admission, before any work governed by that setting starts. A later change of the setting takes effect at the next Turn. An already-started Turn is never interrupted for an ordinary capture-setting change, and no mid-Turn interrupt path for that change exists or may be introduced. The switch defaults to off ([decision](../decisions/20260921-capture_switch_spares_started_turns.md)). This section owns when that resolved setting is fixed. It does not own the meaning or values of the setting. The admission-time pair is stored on the Turn directory record the storage owner already rewrites.
 
 ### Turn Interruption
 

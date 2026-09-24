@@ -13,9 +13,9 @@ function read(path) {
 }
 
 const rootContract = read('AGENTS.md');
-const builderRole = read('.codex/agents/builder.toml');
-const reviewerRole = read('.codex/agents/reviewer.toml');
-const testAuthorRole = read('.codex/agents/test-author.toml');
+const builderRole = read('docs/roles/builder.md');
+const reviewerRole = read('docs/roles/reviewer.md');
+const testAuthorRole = read('docs/roles/test-author.md');
 
 const PRINCIPLES = [
   'Intent First',

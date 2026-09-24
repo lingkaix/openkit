@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: topology
 ---
 # Container Image Packaging And Release Publishing
 

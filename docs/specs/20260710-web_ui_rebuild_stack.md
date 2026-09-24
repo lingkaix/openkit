@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: topology
 ---
 # Web UI Rebuild Stack
 

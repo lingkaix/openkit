@@ -1,12 +1,13 @@
 ---
 status: Accepted
 implementation: Not Started
+kind: process
 ---
 # Verification Calibration Program
 
 ## Owns
 
-This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineering trust boundaries, the shared fault taxonomy, the calibration record schema, cadences, audit-side ownership and separation rules, Goodhart guards, the zero-merge seed invariant, and the falsification thresholds for the delegation premise.
+This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineering trust boundaries, the shared fault taxonomy, the calibration record schema, cadences, audit-side ownership and separation rules, Goodhart guards, the zero-merge seed invariant, and the falsification thresholds for the delegation premise. It also owns the removal-evidence outcomes that apply whenever a mechanism is removed, and the documentation probes: document ablation, the rebuild probe, and the discovery probe.
 
 ## Does Not Own
 
@@ -82,7 +83,26 @@ Static step: for a sampled document, enumerate its normative statements and, for
 
 Dynamic step: for a sample of claimed pointers, invert the pointed-to projection and confirm it fails, reusing layer 1 mechanics as the proof.
 
-The output is a load-bearing map per document — enforced, story-covered, audit-only, or unverified per statement — published as an audit record, and it drives where the next L2 tests and L0 rules are added. Existing mechanical edges are story `contracts` metadata and story deterministic assertions. A citation convention linking L2 contract tests to their owning specification remains a non-authorizing deferred question below.
+The output is a load-bearing map per document — enforced, story-covered, audit-only, or unverified per statement — published as an audit record, and it drives where the next L2 tests and L0 rules are added.
+
+Ablation step: for the same sample, ask of each normative statement whether removing it would change any derivation of implementation, tests, failure, recovery, ownership, or responsibility. Together with the static step this sorts statements into four groups: needed and enforced statements stay; needed but unenforced statements are gaps that call for a projection; enforced but unneeded statements are over-constraints, such as a check that pins a clause identifier rather than its criterion; unneeded and unenforced statements are deletion candidates. Whether a statement is needed is judged by rebuild reasoning, which is a weak oracle, so the ablation step informs an audit and never deletes a statement by itself; a deletion still keeps every criterion under DOC-015. Existing mechanical edges are story `contracts` metadata and story deterministic assertions. A citation convention linking L2 contract tests to their owning specification remains a non-authorizing deferred question below.
+
+## Removal Evidence
+
+Ablation asks which required behavior is lost when a mechanism is removed; mutation asks whether the checks would detect a deliberate break. Green checks after a removal prove nothing unless the checks have been shown, by mutation or by a named failing case, to see the responsibility the mechanism carries. Every removal candidate ends in one of four outcomes:
+
+- Redundant within its declared scope: remove it.
+- Still required by a contract: keep it.
+- Not concluded: the experiment or its oracle did not cover the responsibility, so no removal follows.
+- Behavior change found: leave the refactor scope and return the question to the owner.
+
+Mechanisms that back each other up are analyzed together, because each can look removable while the other remains. An unused export or a pure forwarding wrapper may rest on lighter evidence: its consumer closure, a check of real callers, and focused checks. Security, durable recovery, and external-effect paths need direct evidence under their own failure conditions. No experiment removes a safety protection in production, and no differential comparison fires an external effect twice. An import-graph unused-export tool may narrow a sample for an audit; a 2026-09-23 trial found it recalled 7 of 13 removed declarations and missed object and property members, so it is neither a gate nor a substitute for consumer closure.
+
+## Documentation And Discovery Probes
+
+A rebuild probe tests the governing documentation criterion recorded in [Documents Pass When A System Can Be Rebuilt From Them](../decisions/20260923-documentation_rebuild_test.md). It gives a fresh-context agent only the documents of one small, well-bounded subsystem, with no source code, asks it to implement the subsystem, possibly in another language, and checks the result with the subsystem's existing black-box conformance tests. Every question the agent must ask and every guess it must make is a specification gap, and every normative sentence it cannot use without source code is a coupling to implementation. The probe is sampled, not run on every change, and each run retains one dated audit record.
+
+A discovery probe tests whether agents find and correctly reuse existing capabilities. An independent agent receives an ordinary task description for behavior the repository already implements, with normal repository navigation and no hint of the target; the auditor records beforehand the owner, the legitimate entry point, and the behavior evidence. The probe observes whether the agent finds the existing implementation, understands its bounds, and reuses it, and records the model, tool, and context used so that runs remain comparable. A probe whose agent has already seen the answer proves no improvement.
 
 ## Shared Fault Taxonomy
 

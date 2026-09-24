@@ -23,7 +23,7 @@ The current direction preserves the protected concerns and removes the universal
 
 **The trigger measures drift, not tokens.** The first version of that check fired after every compaction. One measured pilot then compacted 107 times in 58 hours while spawning 28 subagents in total, and left no record of the check having run or of having been skipped; whether the obligation was too costly or merely ignored cannot be told from that, which is itself the problem. Compaction frequency is set by tool-output volume, so it tracks token consumption rather than accumulated drift. The same pilot showed where drift is actually expensive: a retracted host-noninterference belief was acted on three times, removing the system Docker bridge each time, before evidence caught it. A belief that is never spent costs nothing; the price is paid at the point of commitment. Its owner therefore keys the check to commitment rather than to compaction, and asks for a recorded line where no check runs so that the remaining gap is visible rather than silent.
 
-**Intent and working state have different lifecycles.** A checkpoint must be cheap to rewrite as facts and methods change. User intent cannot be equally mutable, because a compressed or resumed context could silently lose a non-negotiable. Append-only intent epochs make a real change visible while leaving the route plastic.
+**Intent and working state have different lifecycles.** A checkpoint must be cheap to rewrite as facts and methods change. User intent cannot be equally mutable, because a compressed or resumed context could silently lose a non-negotiable. Append-only intent revisions make a real change visible while leaving the route plastic.
 
 **One writer is enough concurrency machinery.** The repository paid heavily for artifact inventories, expected magnitudes, expansion counts, and lease identities. Their durable purpose was preventing agents from overwriting each other. Declaring one writer per path at a time protects that purpose directly.
 
@@ -53,7 +53,7 @@ Raw pilot transcripts, checkpoints, artifacts, timings, and human decisions rema
 
 ## What Would Falsify The Direction
 
-The subtractive direction should be reconsidered if the pilots show repeated escaped defects traceable to a removed protection, silent loss of user intent despite append-only epochs, concurrent write loss despite path ownership, repeated inability to resume after fresh-context review, or strict safety incidents. The response is to add the smallest mechanism that directly intercepts the repeated failure, not to restore an entire historical pipeline.
+The subtractive direction should be reconsidered if the pilots show repeated escaped defects traceable to a removed protection, silent loss of user intent despite append-only intent revisions, concurrent write loss despite path ownership, repeated inability to resume after fresh-context review, or strict safety incidents. The response is to add the smallest mechanism that directly intercepts the repeated failure, not to restore an entire historical pipeline.
 
 Faster completion alone is not success. The relevant comparison includes time to a usable artifact, time to first reality contact, human interruptions, wrong-premise rework, recovery latency, escaped defects, and strict incidents. These are task-external observations for engineers and auditors, not execution targets.
 

@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Implemented
+kind: boundary
 date: 2026-08-31
 ---
 # Unified Conversation Composer

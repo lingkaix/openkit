@@ -37,7 +37,7 @@ An active member is eligible for the full operation set of their Workspace, incl
 
 Eligibility is not unconditional execution. Current credential restrictions, actor responsibility, lifecycle preconditions, disclosure boundaries, Vault grants, explicit Policy restrictions, and required human decisions still apply. Ownership may identify lifecycle continuity and recovery responsibility; it MUST NOT be used as an extra privilege tier for ordinary active-Workspace operations. User-private and deployment-scoped resources do not become Workspace resources through membership.
 
-Future finer permissions use the same subject/action/resource/context and enforcement-point contracts, without requiring a new Light App authorization model or client-side role engine. This is the target authorization baseline; implementation projections must identify any remaining role-based restrictions honestly.
+Future finer permissions use the same subject/action/resource/context and enforcement-point contracts, without requiring a new Light App authorization model or client-side role engine. They include permissions for agent members, where the product Orchestrator grants permissions to the workers within its dispatch scope ([decision](../decisions/20260924-agents_are_workspace_members.md)). This is the target authorization baseline; implementation projections must identify any remaining role-based restrictions honestly.
 
 ## Personal Conversation And Scoped Learning
 

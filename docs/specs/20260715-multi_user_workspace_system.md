@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 date: 2026-07-15
 updated: 2026-09-09
 ---
@@ -215,7 +216,7 @@ The smallest safe V1 therefore requires the teammate to register first and binds
 
 ## Active-Member Authorization Target
 
-The engineer's 2026-09-09 direction replaces the previous owner/editor/viewer grant ceiling. Every current active member is eligible for the full Workspace operation set, including Light App schema/data operations, agent work, configuration, export, membership management, and governed Workspace lifecycle operations. Current Policy, credential intersection, exact human-gate eligibility, Vault grants, confidentiality, and lifecycle/integrity preconditions still decide whether a particular effect may execute. An active member does not gain another user's private scope or deployment administration.
+The 2026-09-09 decision recorded in [Member Permissions Stay Open Until The Policy Kernel Governs Them](../decisions/20260924-member_permissions_await_policy_kernel.md) replaces the previous owner/editor/viewer grant ceiling. Every current active member is eligible for the full Workspace operation set, including Light App schema/data operations, agent work, configuration, export, membership management, and governed Workspace lifecycle operations. Current Policy, credential intersection, exact human-gate eligibility, Vault grants, confidentiality, and lifecycle/integrity preconditions still decide whether a particular effect may execute. An active member does not gain another user's private scope or deployment administration.
 
 Ownership remains one registry relationship for continuity, transfer-before-owner-leave, and the already owned deletion/recovery lineage. It MUST NOT cap ordinary active-Workspace permissions. User-scoped invitation response still belongs only to the bound invitee, and a user-input gate still belongs to its exact responsible user. These are target/principal semantics, not hidden member role tiers. Deleted/deleting Workspace recovery is outside ordinary active-member access and retains its separately owned exact-request/tombstone authority until an explicit lifecycle change defines its replacement.
 

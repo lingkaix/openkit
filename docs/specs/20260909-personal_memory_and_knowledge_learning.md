@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Not Started
+kind: concept
 ---
 # Personal Memory And Scoped Knowledge Learning
 

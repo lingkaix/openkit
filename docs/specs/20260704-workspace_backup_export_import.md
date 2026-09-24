@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: mechanism
 updated: 2026-09-09
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
@@ -144,7 +145,7 @@ The accepted Skill, MCP, and Agent Plugin catalog owners introduce the bounded p
 
 Exports containing Turn work observations declare `openkit.work-observations.v1`. Each included Turn retains its `observations.jsonl` beside its Item file, with the directory-level required-feature marker and immutable capture binding preserved. This is distinct from Knowledge observations. Export/import classify the file in existing exact inventory and coverage guards; an unknown observation type or unsupported required feature cannot be silently processed or dropped. Cold whole-root backup retains the file without interpreting its feature.
 
-Current Thread audience and restricted-evidence policies apply before collecting portable bytes. Other users' private Threads and their observations/content remain excluded. Existing evidence export policy governs body inclusion, hold and unavailable/expired content; an observation reference never grants content access. Unpublished restricted chunk staging is non-portable runtime state, while complete committed content follows its EvidenceBundle owner.
+Current Thread audience policy and body-read authorization apply before collecting portable bytes, and the restricted-evidence export exception of docs/specs/20260703-audit_usage_evidence_records.md governs restricted originals. Other users' private Threads and their observations/content remain excluded. Admitted original bodies of retained work data, including restricted originals, travel intact in the portable export and import restores them intact, so that a re-imported Workspace keeps the complete information it was exported with, rather than being exported as expired, reference-free records; existing evidence policy still governs held, unavailable, and already expired content, and an observation reference never grants content access ([decision](../decisions/20260924-restricted_bodies_travel_in_export.md)). Unpublished restricted chunk staging is non-portable runtime state, while complete committed content follows its EvidenceBundle owner.
 
 Import remints observation IDs, their observation/Item parent anchors and owning Thread/Turn, and rewrites in-package reference scope/locators through exact existing maps. Existing AEP and origin-reference remapping stays consistent with the imported package; source-native identities are restricted provenance only. A body content digest continues to describe the unchanged body bytes. Digests of legitimately reminted owner records cannot substitute for identity maps. `corr` remains scoped to the reminted logical group, never a cross-import join. Server and excluded-owner references remain explicitly unresolved under source identity, never rebound by bare ID. Same-identity replay cannot resurrect lawfully expired bytes.
 

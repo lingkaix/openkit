@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: boundary
 updated: 2026-09-05
 ---
 # Vendor Snapshot Packages

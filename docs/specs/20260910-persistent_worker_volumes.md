@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Implemented
+kind: concept
 date: 2026-09-10
 ---
 # Persistent Worker Volumes And Environment Replacement

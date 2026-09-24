@@ -9,6 +9,7 @@ const INDEX_PATH = 'docs/INDEX.md';
 const SUMMARY_LIMIT = 160;
 const SECTIONS = [
   { title: 'Governance', types: ['governance'] },
+  { title: 'Role Contracts', types: ['role'] },
   { title: 'Intent', types: ['intent'] },
   { title: 'Core Model', types: ['core'] },
   { title: 'Specifications', types: ['spec'] },
@@ -16,6 +17,11 @@ const SECTIONS = [
   {
     pointer: 'Change plans are not indexed. List `docs/changes/` to see them.',
     title: 'Change Plans',
+  },
+  {
+    pointer:
+      'Decision records are not indexed. Owners link them; list `docs/decisions/` to see them.',
+    title: 'Decision Records',
   },
   { title: 'Audit Records', types: ['audit'] },
   { title: 'Platform References', types: ['platform-reference'] },
@@ -28,9 +34,10 @@ const SECTIONS = [
  * Generates the documentation index content for the committed corpus.
  *
  * The index is a generated projection defined by `docs/documentation-model.md`:
- * every classified document except local guides, the index itself, and change
- * records, grouped by type, one deterministic line per document. Change plans
- * are pointed at `docs/changes/` rather than enumerated.
+ * every classified document except local guides, the index itself, change
+ * records, and decision records, grouped by type, one deterministic line per
+ * document. Change plans and decision records are pointed at their directories
+ * rather than enumerated.
  *
  * @param {string} repoRoot Repository root.
  * @returns {string} Complete `docs/INDEX.md` content.

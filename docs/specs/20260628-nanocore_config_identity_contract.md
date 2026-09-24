@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: boundary
 ---
 # NanoCore Config And Identity Contract
 

@@ -42,12 +42,13 @@ const GOVERNANCE_CORPORA = [
       'docs/changes/AGENTS.md',
       'docs/INDEX.md',
       '.codex/config.toml',
-      '.codex/agents/auditor.toml',
-      '.codex/agents/builder.toml',
-      '.codex/agents/researcher.toml',
-      '.codex/agents/reviewer.toml',
-      '.codex/agents/test-author.toml',
-      '.codex/agents/consultant.toml',
+      'docs/roles/auditor.md',
+      'docs/roles/builder.md',
+      'docs/roles/researcher.md',
+      'docs/roles/reviewer.md',
+      'docs/roles/test-author.md',
+      'docs/roles/consultant.md',
+      'docs/roles/writer.md',
       'tests/AGENTS.md',
       'tests/agents-root-contract.test.mjs',
       'tests/change-execution-contract.test.mjs',
@@ -508,6 +509,76 @@ describe('documentation model validator', () => {
 
   it('accepts a minimal valid fixture', () => {
     assert.deepEqual(validateDocModel(createFixture()), []);
+  });
+
+  it('checks decision record headings, supersession, and change-record links', () => {
+    const root = createFixture();
+    const body =
+      '# Sample Decision\n\n## Decision\n\nD.\n\n## Reason\n\nR.\n\n' +
+      '## Rejected Alternatives\n\nNone recorded.\n\n## Revisit When\n\nW.\n\n' +
+      '## Affected Owners\n\n- docs/specs/20260101-sample_design.md\n';
+    mkdirSync(join(root, 'docs/decisions'), { recursive: true });
+    const accepted = 'docs/decisions/20260101-sample_decision.md';
+    writeFileSync(
+      join(root, accepted),
+      '---\nstatus: Accepted\ndate: "2026-01-01"\ndecider: Engineer\n---\n' + body
+    );
+    writeDocIndex(root);
+    assert.deepEqual(validateDocModel(root), []);
+
+    const reordered = 'docs/decisions/20260102-reordered.md';
+    writeFileSync(
+      join(root, reordered),
+      '---\nstatus: Accepted\ndate: "2026-01-02"\ndecider: Engineer\n---\n' +
+        body.replace('## Reason\n\nR.\n\n', '') +
+        '\n## Reason\n\nR.\n'
+    );
+    const superseded = 'docs/decisions/20260103-superseded.md';
+    writeFileSync(
+      join(root, superseded),
+      '---\nstatus: Superseded\ndate: "2026-01-03"\ndecider: Engineer\n---\n' + body
+    );
+    const linking = 'docs/decisions/20260104-linking.md';
+    writeFileSync(
+      join(root, linking),
+      '---\nstatus: Accepted\ndate: "2026-01-04"\ndecider: Engineer\n---\n' +
+        body.replace('D.', 'See [plan](../changes/202601010000000001-sample_change.md).')
+    );
+    writeDocIndex(root);
+
+    const errors = validateDocModel(root);
+    assert.ok(
+      errors.some((error) => error.startsWith(reordered + ':') && error.includes('in that order')),
+      errors.join(' | ')
+    );
+    assert.ok(
+      errors.some((error) => error.startsWith(superseded + ':') && error.includes('superseded-by')),
+      errors.join(' | ')
+    );
+    assert.ok(
+      errors.some(
+        (error) =>
+          error.startsWith(linking + ':') && error.includes('must not link to change record')
+      ),
+      errors.join(' | ')
+    );
+  });
+
+  it('classifies role contracts and decision records as their own types', () => {
+    const root = createFixture();
+    mkdirSync(join(root, 'docs/roles'), { recursive: true });
+    mkdirSync(join(root, 'docs/decisions'), { recursive: true });
+    writeFileSync(
+      join(root, 'docs/roles/builder.md'),
+      '---\nstatus: Accepted\n---\n# Builder\n\nBuilds.\n'
+    );
+    writeFileSync(
+      join(root, 'docs/decisions/20260101-sample_decision.md'),
+      '---\nstatus: Accepted\ndate: "2026-01-01"\ndecider: Engineer\n---\n# D\n'
+    );
+    const types = new Map(classifyDocuments(root).map((doc) => [doc.path, doc.type]));
+    assert.equal(types.get('docs/roles/builder.md'), 'role');
+    assert.equal(types.get('docs/decisions/20260101-sample_decision.md'), 'decision');
   });
 
   it('rejects a Core document that links downward to a specification', () => {

@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Not Started
+kind: boundary
 date: 2026-09-09
 ---
 # Internal Agent Resource Integration

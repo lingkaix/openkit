@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: process
 date: 2026-08-29
 updated: 2026-09-09
 ---

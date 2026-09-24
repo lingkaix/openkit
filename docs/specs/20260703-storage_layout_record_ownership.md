@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: mechanism
 updated: 2026-09-21
 ---
 # Storage Layout And Record Ownership
@@ -228,7 +229,7 @@ Derived records must be rebuildable from file-backed records or authoritative SQ
 
 Each Core, User, Workspace, and Light App database owns its applied-migration ledger independently. Packaged, ordered SQL migrations define changes to that scope; they do not migrate another scope, canonical file formats, external Vaults, or Worker storage. The implementation uses Drizzle migration execution and its native ledger rather than a second setup-only ledger. Diagnostics and the public storage layout report project actually recorded migrations as scope-qualified migration names; they do not create migration authority or infer an applied migration from a later timestamp alone.
 
-Before the first release, schema changes may be consolidated into each scope's initial `0000` baseline. Once released, an applied migration is immutable: each release with schema changes adds a new SQL migration in each affected scope. Deploying an unpublished baseline for testing does not freeze that baseline or require a migration for every development commit. An existing test database built from a different unpublished baseline needs an explicit operator cutover or recreation; ordinary startup neither adopts an old setup ledger nor resets data automatically.
+Before the first release, schema changes may be consolidated into each scope's initial `0000` baseline. Once released, an applied migration is immutable ([decision](../decisions/20260918-release_schema_migrations.md)): each release with schema changes adds a new SQL migration in each affected scope. Deploying an unpublished baseline for testing does not freeze that baseline or require a migration for every development commit. An existing test database built from a different unpublished baseline needs an explicit operator cutover or recreation; ordinary startup neither adopts an old setup ledger nor resets data automatically.
 
 After integrity validation, startup executes pending Core migrations and scans existing User and Workspace databases through the same scoped migration path before product admission. Newly created scoped databases execute their complete journal. Light App databases execute their own migrations through their existing open lifecycle and retain their separately owned failure boundary. Only one process may own the writable Data Root. Pending SQL and ledger publication are transactional within each database; there is no cross-database transaction or automatic rollback of previously committed scopes. Failure leaves the failing database's pending migration batch unapplied, prevents admission dependent on that database, and requires correction or explicit stopped-process recovery before retry. Missing migration files or journals are failures, not an empty migration set. Restart skips already applied migrations and retries unapplied work; it does not silently repair a contradictory database history.
 

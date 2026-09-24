@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 ---
 # Worker Turn Reliability Envelope
 

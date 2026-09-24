@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Not Started
+kind: concept
 date: 2026-09-09
 ---
 # Knowledge Notebook Editing And Publication

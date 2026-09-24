@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 date: 2026-09-08
 updated: 2026-09-09
 ---
@@ -34,7 +35,7 @@ The data source remains authoritative for business facts. A saved presentation o
 
 ## Decision
 
-Use a shared Core admission and action boundary for declarative UI, with optional admitted agent generation or deterministic construction rather than a mandatory UI agent. Adopt standard Apps SDK/MCP tool and UI-resource interface semantics, with A2UI organizing the whole surface, native components by default, and an isolated MCP Apps HTML delegate for specialized Plugin interactions. This is the engineer-selected mixed-rendering scope; exact host conformance still requires the acceptance proof below. Retain business data with its existing owner and add only the saved-definition authority needed for explicit reuse; the initial native contract below fixes concrete persistence and public bindings while deferred profiles remain unavailable.
+Use a shared Core admission and action boundary for declarative UI, with optional admitted agent generation or deterministic construction rather than a mandatory UI agent. Adopt standard Apps SDK/MCP tool and UI-resource interface semantics, with A2UI organizing the whole surface, native components by default, and an isolated MCP Apps HTML delegate for specialized Plugin interactions. This is the mixed-rendering scope recorded in [An HTML Delegate Is Reserved For Components The Native Set Cannot Compose](../decisions/20260924-html_delegate_for_complex_components.md); exact host conformance still requires the acceptance proof below. Retain business data with its existing owner and add only the saved-definition authority needed for explicit reuse; the initial native contract below fixes concrete persistence and public bindings while deferred profiles remain unavailable.
 
 ## Protocol And Version Direction
 

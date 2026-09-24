@@ -36,6 +36,8 @@ const CHANGE_STATUS_VALUES = [
   'superseded',
 ];
 const CHANGE_TYPE_VALUES = ['change-plan', 'pr-summary', 'standalone-change', 'release-summary'];
+const SPEC_KIND_VALUES = ['concept', 'boundary', 'mechanism', 'topology', 'process'];
+const DECISION_STATUS_VALUES = ['Accepted', 'Superseded'];
 const IMPLEMENTATION_VALUES = [
   'Not Started',
   'In Progress',
@@ -50,10 +52,11 @@ const freeText = z.string();
 const nonEmptyText = z.string().trim().min(1);
 const dateText = z.string().regex(DATE_PATTERN);
 const implementationValue = z.string().pipe(z.enum(IMPLEMENTATION_VALUES));
+const specKindValue = z.string().pipe(z.enum(SPEC_KIND_VALUES));
 const specStatusValue = z.string().pipe(z.enum(SPEC_STATUS_VALUES));
 const acceptedStatusValue = z.string().pipe(z.enum(['Accepted']));
 
-// Core model, governance, intent, platform reference, and manual documents share one row of
+// Core model, governance, role contract, intent, platform reference, and manual documents share one row of
 // the per-type table, as do audit records, findings reports, cookbooks, external
 // snapshots, and local guides. Sharing the schema object keeps the rows from
 // drifting apart.
@@ -88,16 +91,26 @@ export const fieldSchemas = {
   'change-findings': optionalStatusFields,
   cookbook: optionalStatusFields,
   core: acceptedStatusFields,
+  // `scripts/validate-doc-model.mjs` checks that only a Superseded record names `superseded-by`.
+  decision: z.strictObject({
+    date: dateText,
+    decider: nonEmptyText,
+    status: z.string().pipe(z.enum(DECISION_STATUS_VALUES)),
+    'superseded-by': nonEmptyText.optional(),
+    supersedes: nonEmptyText.optional(),
+  }),
   governance: acceptedStatusFields,
   'platform-reference': acceptedStatusFields,
   index: z.strictObject({}),
   intent: acceptedStatusFields,
   'local-guide': optionalStatusFields,
+  role: acceptedStatusFields,
   manual: acceptedStatusFields,
   snapshot: optionalStatusFields,
   spec: z.strictObject({
     date: dateText.optional(),
     implementation: implementationValue,
+    kind: specKindValue,
     status: specStatusValue,
     updated: dateText.optional(),
   }),
@@ -106,6 +119,8 @@ export const fieldSchemas = {
     date: dateText.optional(),
     'decision-evidence': nonEmptyText,
     implementation: implementationValue,
+    // Archived specifications are frozen before kinds existed; a Deprecated one in the root keeps its kind.
+    kind: specKindValue.optional(),
     status: specStatusValue,
     'status-changed': dateText,
     updated: dateText.optional(),

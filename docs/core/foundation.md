@@ -22,6 +22,7 @@ This model supplies those cross-aspect invariants without replacing the speciali
 - Apps, channels, skills, CLIs, adapters, indexes, and caches are projections over Core contracts. A projection must not become an independent workflow or authority source.
 - Learning and self-improvement must remain source-traceable, reviewable, and reversible. Derived knowledge must not silently replace human intent or accepted product truth.
 - Trust, authorization, credential, execution, data-loss, and external-effect boundaries must be explicit. Missing authority or unverifiable lineage fails closed.
+- Boundaries fail fast. A component validates what it admits and reports a violated known invariant or an unsupported required semantic immediately, with an explainable error that names its owner, instead of continuing with damaged state. Tolerance applies only to safely ignorable extensions under `docs/core/contract-evolution.md`, and failing fast does not mean retrying fast.
 - Reliability and assurance should be proportional to the documented deployment scale, consequence, and trust boundary. Safe interruption, inspection, or a new authorized attempt may be the correct outcome when transparent recovery would require another authority or workflow.
 - Future scale, availability, and deployment hypotheses are non-authorizing until an accepted current design promotes them.
 - Core should coordinate and govern work while specialized agents and runtimes perform heavy execution.

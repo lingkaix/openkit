@@ -29,6 +29,9 @@ const PLATFORM_REFERENCE_FILES = new Set([
   'docs/deployment.md',
   'docs/app-api.md',
   'docs/toolchain.md',
+  'docs/glossary.md',
+  'docs/writing.md',
+  'docs/agent-harnesses.md',
 ]);
 const SNAPSHOT_FILES = new Set([
   'docs/okf-spec-v0.1-snapshot.md',
@@ -55,6 +58,15 @@ const FINDING_OPEN_FIELDS = [...FINDING_COMMON_FIELDS, 'Next action'];
 const FINDING_CLOSED_FIELDS = [...FINDING_OPEN_FIELDS, 'Closing verdict', 'Closure evidence'];
 const FINDING_FIELDS = new Set([...FINDING_OPEN_FIELDS, ...FINDING_CLOSED_FIELDS]);
 const AUDIT_FILE_PATTERN = /^20\d{6}-[a-z0-9_]+\.md$/;
+const DECISION_FILE_PATTERN = /^20\d{6}-[a-z0-9_]+\.md$/;
+const DECISION_HEADINGS = [
+  'Decision',
+  'Reason',
+  'Rejected Alternatives',
+  'Revisit When',
+  'Affected Owners',
+];
+const ROLE_FILE_PATTERN = /^[a-z][a-z-]*\.md$/;
 const CHANGE_RECORD_PATH_PREFIX = 'docs/changes/';
 const AUTHORITY_CHANGE_RECORD_ERROR = 'must not link to change record';
 const MISSING_LINK_TARGET_ERROR = 'documentation link target does not exist';
@@ -177,6 +189,12 @@ function classifyPath(path) {
   if (segments[1] === 'audits' && segments.length === 3) {
     return 'audit';
   }
+  if (segments[1] === 'decisions' && segments.length === 3 && DECISION_FILE_PATTERN.test(name)) {
+    return 'decision';
+  }
+  if (segments[1] === 'roles' && segments.length === 3 && ROLE_FILE_PATTERN.test(name)) {
+    return 'role';
+  }
   if (segments[1] === 'cookbooks' && segments.length === 3) {
     return 'cookbook';
   }
@@ -241,6 +259,11 @@ export function validateDocModel(repoRoot) {
       validateAuditRecord(path, links, errors);
     }
 
+    if (type === 'decision') {
+      validateDecisionRecord(path, content.slice(metadata.bodyOffset), metadata.fields, errors);
+      validateAuthorityChangeRecordLinks(path, links, errors);
+    }
+
     if (type === 'manual') {
       validateManualPage(repoRoot, path, errors);
     }
@@ -249,6 +272,32 @@ export function validateDocModel(repoRoot) {
   validateChangeBundles(repoRoot, errors);
 
   return errors.sort();
+}
+
+/**
+ * Validates one decision record's supersession fields and fixed body headings.
+ *
+ * The check is structural: it does not judge whether a reason is true or sufficient.
+ *
+ * @param {string} path Repository-relative decision-record path.
+ * @param {string} content Markdown body after the frontmatter.
+ * @param {Record<string, unknown>} fields Parsed frontmatter fields.
+ * @param {string[]} errors Mutable validation error list.
+ */
+function validateDecisionRecord(path, content, fields, errors) {
+  if ((fields.status === 'Superseded') !== (fields['superseded-by'] !== undefined)) {
+    errors.push(path + ': only a Superseded decision record names superseded-by, and it must.');
+  }
+
+  const headings = [...content.matchAll(/^##\s+(.+?)\s*$/gmu)].map((match) => match[1]);
+  if (headings.join('\n') !== DECISION_HEADINGS.join('\n')) {
+    errors.push(
+      path +
+        ': decision records use exactly the level-two headings ' +
+        DECISION_HEADINGS.join(', ') +
+        ', in that order.'
+    );
+  }
 }
 
 /**

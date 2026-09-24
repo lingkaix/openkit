@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 ---
 # Provider Subscription Accounts
 

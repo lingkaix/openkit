@@ -22,7 +22,7 @@ const taxonomy = read(TAXONOMY_PATH);
 const toolchain = read(TOOLCHAIN_PATH);
 const changeExecution = read('docs/change-execution.md');
 const documentationModel = read('docs/documentation-model.md');
-const testAuthorRole = read('.codex/agents/test-author.toml');
+const testAuthorRole = read('docs/roles/test-author.md');
 
 const APPROVED_SECTIONS = [
   'Purpose, Scope, And Ownership',
@@ -545,6 +545,6 @@ test('routes conditional instrument use to the document that owns it', () => {
   assertRetains(
     testAuthorRole,
     [`Oracle Classification table of ${CONTRACT_PATH}`],
-    '.codex/agents/test-author.toml'
+    'docs/roles/test-author.md'
   );
 });

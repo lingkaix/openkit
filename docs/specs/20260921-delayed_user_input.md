@@ -1,6 +1,7 @@
 ---
 status: Draft
 implementation: Not Started
+kind: concept
 date: "2026-09-21"
 updated: "2026-09-21"
 ---
@@ -30,7 +31,7 @@ This Draft does not own Turn lifecycle, human-gate semantics, approval status, I
 
 ## Summary
 
-User input can arrive after a long delay. A Turn can wait on approval while the user continues other work and returns after several Turns, or after months; by then a stale approval or other pending message is already stale product information, and a late reply may have little remaining value. This Draft records that problem, the engineer's recorded direction, evidence that must not be gathered again, and constraints this line must not overturn. A future blocking-gate expiry producer maps the Turn to `cancelled`, with the owning workflow able to withdraw authorization and with the reason recorded on an expiry Item; that mapping is not a universal cancellation rule and does not change current worker-gate closeout. Owner admission, the exact producer, request lifecycle, and structured expiry representation remain open. This document authorizes no Core, specification, or production change.
+User input can arrive after a long delay. A Turn can wait on approval while the user continues other work and returns after several Turns, or after months; by then a stale approval or other pending message is already stale product information, and a late reply may have little remaining value. This Draft records that problem, the direction recorded in [Delayed User Input Is Its Own Design Line](../decisions/20260921-blocking_gate_expiry_cancels_turn.md), evidence that must not be gathered again, and constraints this line must not overturn. A future blocking-gate expiry producer maps the Turn to `cancelled`, with the owning workflow able to withdraw authorization and with the reason recorded on an expiry Item; that mapping is not a universal cancellation rule and does not change current worker-gate closeout. Owner admission, the exact producer, request lifecycle, and structured expiry representation remain open. This document authorizes no Core, specification, or production change.
 
 ## Goals
 
@@ -52,7 +53,7 @@ The engineer opened this line on 2026-09-21 from the work-data retention discuss
 
 ## Recorded Direction
 
-The following is the engineer's recorded direction from that working session, including later confirmations that overturned part of the first write-up.
+The following direction comes from that working session, including later confirmations that overturned part of the first write-up; its decided parts are recorded in [Delayed User Input Is Its Own Design Line](../decisions/20260921-blocking_gate_expiry_cancels_turn.md), which also notes that extending the Action Center projection was the author's adoption of review rather than an engineer confirmation.
 
 Approvals should distinguish blocking from non-blocking forms: a blocking approval stops and waits; a non-blocking approval continues. When the user responds, the response is written in place on the Turn and timeline where the user gave it, and it is not backfilled onto the Turn where the approval was opened. The record must be complete enough that a later reader can tell what happened, and it must link back to the Item that initiated the request. Some requests expire or become invalid, including when the task was completed another way or the Goal was abandoned. In that case the system produces an Item that records the handling and the reason, after which the request is no longer needed and the user is no longer allowed to act on it.
 

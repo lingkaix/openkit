@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: boundary
 ---
 # Pi AI Provider Gateway Adoption
 

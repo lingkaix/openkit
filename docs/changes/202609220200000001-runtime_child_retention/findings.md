@@ -7,6 +7,7 @@ These items record structural observations about this plan's uncommitted impleme
 - [ ] `RCR-FND-001` [open] Bind capture coverage once and pass it opaquely
 - [ ] `RCR-FND-002` [open] Construct ModelCaptureContext at one admission point
 - [ ] `RCR-FND-003` [open] Seat timeline presentation limits in one owner
+- [ ] `RCR-FND-004` [open] Reconcile with the governance landing before resuming
 
 ## [open] RCR-FND-001 — Bind capture coverage once and pass it opaquely
 
@@ -31,3 +32,11 @@ These items record structural observations about this plan's uncommitted impleme
 - **Evidence:** temp/quality-governance/probes/probe-b-change-fanout.md, projection and specification sections; spot-checked by Claude Code at work-observations.ts:551-552 and 665-670, app-dashboard.ts:768-769, and dashboard.ts:706 and 711.
 - **Owner:** docs/changes/202609220200000001-runtime_child_retention/plan.md, the paused runtime child retention primary.
 - **Next action:** On resumption, keep the limits in the shared dashboard schema as the single code owner, have the storage projection and dashboard read them from it, and remove the restated coverage mapping from the retention specification in favor of a link to the Web projection owner.
+
+## [open] RCR-FND-004 — Reconcile with the governance landing before resuming
+
+- **Observation:** While this plan was paused, the engineering governance landing edited paths this plan also changed: root AGENTS.md, docs/change-execution.md, docs/engineering-doctrine.md, docs/INDEX.md, docs/core/protocol.md, docs/specs/20260921-work_data_retention_format.md, docs/specs/20260703-worker_control_protocol.md, and the kind field of every specification. Role contracts moved from .codex/agents/ to docs/roles/, L2 now includes in-process composition tests with fault injection at a seam, change plans now say Intent Revision, and inline engineer-ruling markers in the retention specification became decision-record links. At commit 2ff8887c the repository check fails at biome with 15 errors in 14 apps/nanocore files, all of which this plan changed; biome also reports a warning, not an error, in apps/nanocore/src/docker/app-run-script.test.ts, which this plan did not change. The same errors appear with the landing diff stashed.
+- **Impact:** Resuming from this plan's own checkpoint without reconciling would work against superseded role paths and test-layer rules, and the biome failures block the repository check for every other change.
+- **Evidence:** git diff 2ff8887c on the named paths; the biome step of the repository check run with and without the landing diff on 2026-09-24.
+- **Owner:** docs/changes/202609220200000001-runtime_child_retention/plan.md, the paused runtime child retention primary.
+- **Next action:** On resumption, read docs/changes/202609231611190001-engineering_governance_landing/plan.md and its diff, name the seams this plan crosses in its checkpoint, fix the 15 biome errors in its 14 files and re-run the repository check.

@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: mechanism
 ---
 # Policy Enforcement Mapping
 

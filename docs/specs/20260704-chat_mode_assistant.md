@@ -2,6 +2,7 @@
 status: Accepted
 updated: 2026-09-10
 implementation: Partial
+kind: concept
 ---
 # Chat Mode And Core Assistant
 

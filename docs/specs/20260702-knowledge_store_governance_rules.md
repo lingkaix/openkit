@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 ---
 # Knowledge Store Governance Rules
 

@@ -5,7 +5,7 @@ Read `README.md` first. This file adds only directory-local execution rules.
 ## Local Agent Rules
 
 - Keep one concise record per material lifecycle and link the current owners.
-- For long-running material work, append Intent Epochs and rewrite only the marked working checkpoint.
+- For long-running material work, append Intent Revisions and rewrite only the marked working checkpoint.
 - Update the checkpoint when evidence changes a fact, unknown, method, frontier, or predicted Next Action; do not log routine commands or role transitions.
 - Preserve worthwhile scheme rationale in optional `proposal.md` under `docs/change-execution.md`; let `plan.md` reference it, and keep lasting design in its accepted owner.
 - Inspect actual artifacts and named execution evidence before recording acceptance.

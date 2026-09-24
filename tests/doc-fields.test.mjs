@@ -14,9 +14,10 @@ const SCHEMA_KEYS_BY_TABLE_ROW = new Map([
   ['Specification, active', ['spec']],
   ['Specification, Deprecated-or-terminal', ['spec-terminal']],
   ['Change record', ['change']],
+  ['Decision record', ['decision']],
   [
-    'Core model, active; governance; intent; platform reference; manual',
-    ['core', 'governance', 'intent', 'platform-reference', 'manual'],
+    'Core model, active; governance; role contract; intent; platform reference; manual',
+    ['core', 'governance', 'role', 'intent', 'platform-reference', 'manual'],
   ],
   [
     'Audit record, change-bundle evidence, cookbook, external snapshot, local guide',
@@ -255,7 +256,12 @@ describe('doc frontmatter parsing', () => {
 describe('documentation field validation', () => {
   it('accepts a canonical specification field set', () => {
     assert.deepEqual(
-      validateFields('spec', { date: '2026-07-29', implementation: 'Partial', status: 'Accepted' }),
+      validateFields('spec', {
+        date: '2026-07-29',
+        implementation: 'Partial',
+        kind: 'concept',
+        status: 'Accepted',
+      }),
       []
     );
   });
@@ -319,13 +325,48 @@ describe('documentation field validation', () => {
   });
 
   it('reports a missing required field', () => {
-    const errors = validateFields('spec', { status: 'Accepted' });
+    const errors = validateFields('spec', { kind: 'concept', status: 'Accepted' });
 
     assert.deepEqual(errors, ['`implementation` is required.']);
   });
 
+  it('requires an active specification to declare one kind from the closed set', () => {
+    assert.deepEqual(validateFields('spec', { implementation: 'Partial', status: 'Accepted' }), [
+      '`kind` is required.',
+    ]);
+    const errors = validateFields('spec', {
+      implementation: 'Partial',
+      kind: 'feature',
+      status: 'Accepted',
+    });
+    assert.ok(
+      errors.some((error) => error.includes('`kind`') && error.includes('"feature"')),
+      errors.join(' | ')
+    );
+  });
+
+  it('accepts a decision record and rejects a status outside its set', () => {
+    assert.deepEqual(
+      validateFields('decision', { date: '2026-09-24', decider: 'Engineer', status: 'Accepted' }),
+      []
+    );
+    const errors = validateFields('decision', {
+      date: '2026-09-24',
+      decider: 'Engineer',
+      status: 'Draft',
+    });
+    assert.ok(
+      errors.some((error) => error.includes('`status`')),
+      errors.join(' | ')
+    );
+  });
+
   it('reports a value outside a canonical set', () => {
-    const errors = validateFields('spec', { implementation: 'Not started', status: 'Accepted' });
+    const errors = validateFields('spec', {
+      implementation: 'Not started',
+      kind: 'concept',
+      status: 'Accepted',
+    });
 
     assert.deepEqual(errors, [
       '`implementation` must use one canonical value; found "Not started".',

@@ -76,12 +76,12 @@ test('accepts canonical active and terminal lifecycle documents', () => {
   writeFixture(
     root,
     'docs/specs/20260711-accepted.md',
-    '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Accepted\n'
+    '---\nstatus: Accepted\nimplementation: Implemented\nkind: concept\n---\n# Accepted\n'
   );
   writeFixture(
     root,
     'docs/specs/20260711-draft.md',
-    '---\nstatus: Draft\nimplementation: Not Started\n---\n# Draft\n'
+    '---\nstatus: Draft\nimplementation: Not Started\nkind: process\n---\n# Draft\n'
   );
   writeFixture(
     root,

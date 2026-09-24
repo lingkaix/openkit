@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: mechanism
 ---
 # OpenShell Mechanism Internalization
 

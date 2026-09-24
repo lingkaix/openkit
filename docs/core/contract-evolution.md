@@ -22,6 +22,7 @@ This model separates how long a contract must remain meaningful from the mechani
 - Experimental and private shapes must not become authority-bearing or persistent dependencies by accident.
 - Product projections must preserve promoted Core meaning without becoming the owner of that meaning.
 - Unknown semantics that affect authority, safety, retention, billing, or product meaning must fail closed.
+- Settled mechanisms stay stable, and extension stays open. Internal development removes obligations toward old data and old callers; it does not license rewriting a settled mechanism, and it does not conflict with an older reader tolerating a newer, safely ignorable extension. The reason is recorded in [Settled Mechanisms Stay Stable And Extension Stays Open](../decisions/20260924-stable_mechanisms_open_extension.md). The rule it qualifies is recorded in [Internal Development Does Not Consider Backward Compatibility](../decisions/20260709-no_backward_compatibility.md).
 
 ## Canonical Terms
 
@@ -218,6 +219,10 @@ Durable storage and manifest readers may ignore unknown optional non-authority-b
 Storage tolerance never relaxes protocol, App API, CLI, Skill, or UI projection strictness. A projection MUST emit a strictly valid payload for its exact claimed contract identity and MUST drop safely ignorable storage extensions rather than forwarding unknown fields.
 
 Unsupported authority-bearing semantics, required features, canonical record families, or major format versions MUST fail closed or enter the quarantine behavior defined by their owner.
+
+## Hand-Written Configuration
+
+A reader of operator- or user-authored configuration reports an unknown key as a warning diagnostic that names the key and its location, and otherwise ignores it, so that a configuration written for a newer release does not stop an older one. An unknown key inside an authority-bearing section, and a feature the file declares as required, fail closed. A warning is not silent: the diagnostic reaches the operator through the same channel as other configuration errors. Generated and machine-written configuration follows the storage rules above.
 
 ## Relationships To Other Core Aspects
 

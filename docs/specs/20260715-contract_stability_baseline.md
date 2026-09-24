@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: process
 date: 2026-07-15
 ---
 # Contract Stability Baseline
