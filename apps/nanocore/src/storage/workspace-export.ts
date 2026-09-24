@@ -32,6 +32,7 @@ import {
   listUnresolvedUserInputRequestItemIds,
   parseCanonicalWorkspaceHistory,
   projectWorkspaceSystemRecord,
+  readCanonicalFile,
   readCanonicalTextFile,
 } from './workspace-file-records.js';
 import {
@@ -131,6 +132,8 @@ export interface VerifiedWorkspaceExportTree {
   checkedFiles: string[];
   /** Exact inventory file contents consumed by import after this verification. */
   fileContents: ReadonlyMap<string, string>;
+  /** Exact restricted original bytes, kept separate from canonical UTF-8 records. */
+  binaryFileContents: ReadonlyMap<string, Uint8Array>;
   /** Digest of the exact manifest bytes parsed by this verification. */
   manifestDigest: string;
 }
@@ -191,6 +194,8 @@ export interface WriteWorkspaceExportTreeInput {
   capabilityCalls?: readonly unknown[];
   /** Workspace-scoped evidence bundles to export as line-oriented records. */
   evidenceBundles?: readonly unknown[];
+  /** Committed restricted originals keyed by bundle id and relative evidence path. */
+  restrictedEvidenceFiles?: ReadonlyMap<string, Uint8Array>;
   /** Workspace-scoped runtime evidence to export as line-oriented records. */
   runtimeEvidence?: readonly unknown[];
   /** Product-safe normalized runtime provenance indexes keyed by source bundle id. */
@@ -494,27 +499,34 @@ export function writeWorkspaceExportTree(
     if (input.capabilityCalls?.length) {
       writeJsonl(join(recordsRoot, 'capability-calls.jsonl'), input.capabilityCalls);
     }
-    const evidenceBundles = (input.evidenceBundles ?? [])
-      .filter(
-        (record) =>
-          !isRecord(record) ||
-          record.sourceKind !== 'work-observation-body' ||
-          (typeof record.id === 'string' &&
-            publishedObservationBundles.has(record.id) &&
-            (record.importStatus === 'promoted' || record.importStatus === 'expired'))
-      )
-      .map((record) =>
-        isRestrictedPortableEvidenceBundle(record)
-          ? {
-              ...record,
-              importStatus: 'expired',
-              rawEvidenceRefs: [],
-              redactedEvidenceRefs: [],
-            }
-          : record
-      );
+    const evidenceBundles = (input.evidenceBundles ?? []).filter(
+      (record) =>
+        !isRecord(record) ||
+        record.sourceKind !== 'work-observation-body' ||
+        (typeof record.id === 'string' &&
+          publishedObservationBundles.has(record.id) &&
+          (record.importStatus === 'promoted' || record.importStatus === 'expired'))
+    );
     if (evidenceBundles.length) {
       writeJsonl(join(recordsRoot, 'evidence-bundles.jsonl'), evidenceBundles);
+    }
+    for (const [path, bytes] of input.restrictedEvidenceFiles ?? []) {
+      assertWorkspaceArchiveFilePath(path);
+      const slash = path.indexOf('/');
+      const bundleId = path.slice(0, slash);
+      const ref = path.slice(slash + 1);
+      const bundle = evidenceBundles.find((record) => isRecord(record) && record.id === bundleId);
+      if (
+        !isRestrictedPortableEvidenceBundle(bundle) ||
+        bundle.importStatus === 'expired' ||
+        !Array.isArray(bundle.rawEvidenceRefs) ||
+        !bundle.rawEvidenceRefs.some((value) => isRecord(value) && value.ref === ref)
+      ) {
+        throw new Error(`Restricted export content has no retained owner: ${path}`);
+      }
+      const target = join(input.exportRoot, 'workspace-files', 'evidence', 'backend', path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, bytes);
     }
     if (input.runtimeEvidence?.length) {
       writeJsonl(join(recordsRoot, 'runtime-evidence.jsonl'), input.runtimeEvidence);
@@ -694,11 +706,11 @@ export function writeWorkspaceExportTree(
       .map((path) => {
         assertWorkspaceArchiveFilePath(path);
         const filePath = join(input.exportRoot, path);
-        const text = readCanonicalTextFile(filePath);
+        const bytes = readCanonicalFile(filePath);
         return {
           path,
-          digest: digestText(text),
-          bytes: Buffer.byteLength(text),
+          digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          bytes: bytes.byteLength,
         };
       })
       .sort((left, right) => left.path.localeCompare(right.path));
@@ -752,7 +764,7 @@ export function writeWorkspaceExportTree(
   }
 }
 
-/** Identifies restricted originals whose portable projection contains no content locators. */
+/** Identifies the retained original families admitted by portable evidence policy. */
 function isRestrictedPortableEvidenceBundle(record: unknown): record is Record<string, unknown> {
   return (
     isRecord(record) &&
@@ -852,9 +864,6 @@ export function verifyWorkspaceExportTree(
     ],
   });
   for (const entry of manifest.contentInventory) {
-    if (entry.path.startsWith('workspace-files/evidence/backend/')) {
-      throw new Error('Restricted originals and unpublished observation staging are not portable.');
-    }
     if (
       /^workspace-files\/threads\/[^/]+\/turns\/[^/]+\/observations\.jsonl$/.test(entry.path) &&
       !manifest.requiredFeatures.includes('openkit.work-observations.v1')
@@ -887,6 +896,7 @@ export function verifyWorkspaceExportTree(
   }
   const expected = new Map(manifest.contentInventory.map((entry) => [entry.path, entry]));
   const fileContents = new Map<string, string>();
+  const binaryFileContents = new Map<string, Uint8Array>();
   const actual = listRegularExportFiles(input.exportRoot).filter(
     (path) => path !== WORKSPACE_EXPORT_MANIFEST_FILE
   );
@@ -904,14 +914,21 @@ export function verifyWorkspaceExportTree(
   }
 
   for (const entry of manifest.contentInventory) {
-    const text = readCanonicalTextFile(join(input.exportRoot, entry.path));
-    if (Buffer.byteLength(text) !== entry.bytes) {
+    const bytes = readCanonicalFile(join(input.exportRoot, entry.path));
+    if (bytes.byteLength !== entry.bytes) {
       throw new Error(`Size mismatch for export file ${entry.path}`);
     }
-    if (digestText(text) !== entry.digest) {
+    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== entry.digest) {
       throw new Error(`Digest mismatch for export file ${entry.path}`);
     }
-    fileContents.set(entry.path, text);
+    if (entry.path.startsWith('workspace-files/evidence/backend/')) {
+      binaryFileContents.set(entry.path, bytes);
+    } else {
+      const text = bytes.toString('utf8');
+      if (!Buffer.from(text).equals(bytes))
+        throw new Error(`Invalid UTF-8 canonical export file: ${entry.path}`);
+      fileContents.set(entry.path, text);
+    }
   }
 
   const itemRevisionText = fileContents.get('records/item-revisions.jsonl');
@@ -935,6 +952,7 @@ export function verifyWorkspaceExportTree(
     manifestText,
     checkedFiles: manifest.contentInventory.map((entry) => entry.path).sort(),
     fileContents,
+    binaryFileContents,
     manifestDigest: digestText(manifestText),
   };
 }

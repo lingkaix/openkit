@@ -103,6 +103,7 @@ import {
   WorkerRuntimeOriginIndexRowSchema,
 } from '../runtime/worker-runtime-provenance.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
+import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
   dryRunWorkspaceImport,
   type ExportedKnowledgeSourceMaterial,
@@ -653,6 +654,8 @@ export interface WorkspaceImportSnapshot {
   runtimeEvidence: RuntimeEvidenceRecord[];
   /** Reminted product-safe runtime provenance indexes keyed by target bundle id. */
   runtimeProvenanceIndexes: ReadonlyMap<string, string>;
+  /** Exact retained restricted bodies keyed by reminted bundle and unchanged relative path. */
+  restrictedEvidenceFiles: ReadonlyMap<string, Uint8Array>;
   /** Reminted committed observation JSONL keyed by target Turn id. */
   turnObservations: ReadonlyMap<string, string>;
   /** Immutable historical coverage keyed by target Turn id. */
@@ -880,6 +883,8 @@ function importedGoalGateContextItemIds(
 interface ImportRemintContext {
   /** Exact export files captured by offline verification. */
   files: ReadonlyMap<string, string>;
+  /** Verified original evidence bytes, never parsed or rewritten as canonical history. */
+  binaryFiles: ReadonlyMap<string, Uint8Array>;
   /** Digest of the verified manifest bytes. */
   manifestDigest: string;
   /** Dry-run report that owns source export lineage. */
@@ -989,6 +994,7 @@ export function readWorkspaceImportSnapshot(
   ).map((record) => ImportedArtifactReviewSchema.parse(record));
   const context: ImportRemintContext = {
     files: input.verified.fileContents,
+    binaryFiles: input.verified.binaryFileContents,
     manifestDigest: input.verified.manifestDigest,
     report,
     targetWorkspaceId: input.targetWorkspaceId,
@@ -1106,6 +1112,7 @@ export function readWorkspaceImportSnapshot(
     evidenceBundles: securityRuntime.evidenceBundles,
     runtimeEvidence: securityRuntime.runtimeEvidence,
     runtimeProvenanceIndexes: securityRuntime.runtimeProvenanceIndexes,
+    restrictedEvidenceFiles: securityRuntime.restrictedEvidenceFiles,
     ...readWorkObservationImportState(context),
     usageRecords: securityRuntime.usageRecords,
     dataSourceCatalog: securityRuntime.dataSourceCatalog,
@@ -2315,6 +2322,13 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       workspaceId: context.targetWorkspaceId,
     });
   });
+  const sourceProvenancePackages = new Map(
+    readOptionalImportJsonl(context.files, 'records/agent-environment-package-snapshots.jsonl')
+      .map((record) => ExportedAgentEnvironmentPackageSnapshotSchema.parse(record))
+      .map((record) => [createWorkerRuntimeProvenanceEvidenceId(record.snapshotId), record])
+  );
+  const rawProvenancePackageIds = new Map<string, string>();
+  const importedEvidenceBundleIds = new Set<string>();
   for (const [index, bundle] of exportedEvidenceBundles.entries()) {
     const indexPackage = provenancePackages.get(bundle.id);
     const pairedIndexId = exportedRuntimeEvidence
@@ -2322,34 +2336,70 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       ?.evidenceBundleIds.find((id) => provenancePackages.has(id));
     const pairedPackage = pairedIndexId ? provenancePackages.get(pairedIndexId) : undefined;
     const provenancePackage = indexPackage ?? pairedPackage;
+    let targetPackageSnapshotId = provenancePackage?.targetPackageSnapshotId;
+    if (bundle.sourceKind === 'worker-runtime-provenance-raw' && !targetPackageSnapshotId) {
+      const linked = exportedRuntimeEvidence.filter((record) =>
+        record.evidenceBundleIds.includes(bundle.id)
+      );
+      const runtime = linked[0];
+      const sourcePackage = runtime ? sourceProvenancePackages.get(runtime.id) : undefined;
+      const sourcePackageSnapshotId = sourcePackage?.snapshotId;
+      if (
+        linked.length !== 1 ||
+        !runtime ||
+        !sourcePackageSnapshotId ||
+        !sourcePackage ||
+        sourcePackage.workspaceId !== bundle.workspaceId ||
+        sourcePackage.threadId !== bundle.threadId ||
+        sourcePackage.turnId !== bundle.turnId ||
+        sourcePackage.agentSessionId !== bundle.agentSessionId ||
+        sourcePackage.backendKind !== bundle.backendType ||
+        !['quarantined', 'expired'].includes(bundle.importStatus) ||
+        runtime.phase !== 'transcript-collection' ||
+        !runtime.requiredFeatures.includes('worker.runtime-provenance.v1') ||
+        runtime.outcome !== 'failed' ||
+        runtime.evidenceBundleIds.length !== 1 ||
+        runtime.evidenceBundleIds[0] !== bundle.id ||
+        runtime.backendType !== bundle.backendType ||
+        JSON.stringify(runtime.contentDigests) !== JSON.stringify(bundle.contentDigests) ||
+        runtime.workspaceId !== bundle.workspaceId ||
+        runtime.threadId !== bundle.threadId ||
+        runtime.turnId !== bundle.turnId ||
+        runtime.agentSessionId !== bundle.agentSessionId
+      )
+        throw new Error('Runtime provenance bundle linkage is incomplete.');
+      targetPackageSnapshotId = requiredMapValue(
+        agentEnvironmentPackageSnapshotIds,
+        sourcePackageSnapshotId,
+        'agent environment package snapshot'
+      );
+    }
     if (
       (bundle.sourceKind === 'worker-runtime-provenance-raw' ||
         bundle.sourceKind === 'worker-runtime-provenance-index') &&
-      !provenancePackage
+      !targetPackageSnapshotId
     ) {
       throw new Error('Runtime provenance bundle linkage is incomplete.');
     }
-    const targetId = provenancePackage
+    if (bundle.sourceKind === 'worker-runtime-provenance-raw' && targetPackageSnapshotId) {
+      rawProvenancePackageIds.set(bundle.id, targetPackageSnapshotId);
+    }
+    const targetId = targetPackageSnapshotId
       ? createWorkerRuntimeProvenanceBundleId(
           bundle.sourceKind === 'worker-runtime-provenance-raw'
             ? 'worker-runtime-provenance-raw'
             : 'worker-runtime-provenance-index',
-          provenancePackage.targetPackageSnapshotId
+          targetPackageSnapshotId
         )
       : `evb_imported_${context.targetWorkspaceId}_${index + 1}`;
+    if (importedEvidenceBundleIds.has(targetId)) {
+      throw new Error('Runtime provenance bundle linkage aliases another evidence bundle.');
+    }
+    importedEvidenceBundleIds.add(targetId);
     evidenceBundleIds.set(bundle.id, targetId);
   }
   const evidenceBundles = exportedEvidenceBundles.map((parsed) => {
     const provenancePackage = provenancePackages.get(parsed.id);
-    if (
-      (parsed.sourceKind === 'worker-runtime-provenance-raw' ||
-        parsed.sourceKind === 'work-observation-body') &&
-      (parsed.importStatus !== 'expired' ||
-        parsed.rawEvidenceRefs.length > 0 ||
-        parsed.redactedEvidenceRefs.length > 0)
-    ) {
-      throw new Error('Portable restricted evidence must be expired and ref-free.');
-    }
 
     return EvidenceBundleRecordSchema.parse({
       ...parsed,
@@ -2362,10 +2412,48 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         : null,
       rawEvidenceRefs: rewriteEvidenceRefs(parsed.rawEvidenceRefs, context),
       redactedEvidenceRefs: rewriteEvidenceRefs(parsed.redactedEvidenceRefs, context),
-      ...(provenancePackage ? { contentDigests: [provenancePackage.digest] } : {}),
+      ...(provenancePackage && parsed.sourceKind === 'worker-runtime-provenance-index'
+        ? { contentDigests: [provenancePackage.digest] }
+        : {}),
       workspaceId: context.targetWorkspaceId,
     });
   });
+  const restrictedEvidenceFiles = new Map<string, Uint8Array>();
+  const admittedPaths = new Set<string>();
+  for (const bundle of exportedEvidenceBundles) {
+    if (!['work-observation-body', 'worker-runtime-provenance-raw'].includes(bundle.sourceKind))
+      continue;
+    if (bundle.importStatus === 'expired') {
+      if (bundle.rawEvidenceRefs.length || bundle.redactedEvidenceRefs.length)
+        throw new Error('Expired restricted evidence retains content references.');
+      continue;
+    }
+    if (
+      bundle.sourceKind === 'work-observation-body' &&
+      (bundle.importStatus !== 'promoted' ||
+        bundle.rawEvidenceRefs.length !== 1 ||
+        bundle.rawEvidenceRefs[0]?.ref !== 'raw/content' ||
+        bundle.contentDigests.length !== 1)
+    )
+      throw new Error('Portable observation body is not completely published.');
+    if (bundle.rawEvidenceRefs.length !== bundle.contentDigests.length)
+      throw new Error('Restricted evidence file digest inventory is incomplete.');
+    for (const [index, ref] of bundle.rawEvidenceRefs.entries()) {
+      assertWorkspaceArchiveFilePath(ref.ref);
+      const sourcePath = `workspace-files/evidence/backend/${bundle.id}/${ref.ref}`;
+      const bytes = context.binaryFiles.get(sourcePath);
+      const expected = bundle.contentDigests[index]!.replace(/^sha256:/, '');
+      if (!bytes || createHash('sha256').update(bytes).digest('hex') !== expected)
+        throw new Error(`Restricted evidence bytes are missing or invalid: ${sourcePath}`);
+      admittedPaths.add(sourcePath);
+      const targetId = requiredMapValue(evidenceBundleIds, bundle.id, 'evidence bundle');
+      restrictedEvidenceFiles.set(`${targetId}/${ref.ref}`, bytes);
+    }
+  }
+  for (const path of context.binaryFiles.keys()) {
+    if (!admittedPaths.has(path))
+      throw new Error(`Restricted evidence has no retained owner: ${path}`);
+  }
   const runtimeEvidence = exportedRuntimeEvidence.map((parsed) => {
     const sourceIndexId = parsed.evidenceBundleIds.find((id) => provenancePackages.has(id));
     const provenancePackage = sourceIndexId ? provenancePackages.get(sourceIndexId) : undefined;
@@ -2373,6 +2461,11 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       ? exportedEvidenceBundles.find((bundle) => bundle.id === sourceIndexId)
       : undefined;
     const targetIndexDigest = provenancePackage?.digest;
+    const targetProvenancePackageId =
+      provenancePackage?.targetPackageSnapshotId ??
+      parsed.evidenceBundleIds
+        .map((id) => rawProvenancePackageIds.get(id))
+        .find((id) => id !== undefined);
     assertApprovedGoalTaskReference(
       parsed.goalId,
       parsed.taskId,
@@ -2382,8 +2475,8 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
 
     return RuntimeEvidenceRecordSchema.parse({
       ...parsed,
-      ...(provenancePackage
-        ? { id: createWorkerRuntimeProvenanceEvidenceId(provenancePackage.targetPackageSnapshotId) }
+      ...(targetProvenancePackageId
+        ? { id: createWorkerRuntimeProvenanceEvidenceId(targetProvenancePackageId) }
         : {}),
       threadId: parsed.threadId ? requiredMapValue(threadIds, parsed.threadId, 'thread') : null,
       turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
@@ -2513,6 +2606,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     evidenceBundles,
     runtimeEvidence,
     runtimeProvenanceIndexes,
+    restrictedEvidenceFiles,
     usageRecords,
     dataSourceCatalog,
     gitPushRecords,
@@ -4781,7 +4875,7 @@ function readWorkObservationImportState(
       throw new Error(`Work observations have no exported Turn owner: ${path}`);
     }
     if (path.startsWith('workspace-files/evidence/backend/')) {
-      throw new Error('Restricted originals and unpublished observation staging are not portable.');
+      throw new Error('Restricted originals must use the verified binary evidence inventory.');
     }
   }
   return { turnObservations, turnCaptureCoverage };

@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: planned
+status: verified
 date: "2026-09-24"
 ---
 # Complete Work Data Export
@@ -19,11 +19,17 @@ On 2026-09-24 the engineer decided that a portable Workspace export carries admi
 - [Export Does Simple Necessary Processing And Then Exports Completely](../../decisions/20260921-export_simple_and_complete.md).
 - [Sensitive Data Is Handled Outside The System Before Each Use](../../decisions/20260924-sensitive_data_handled_outside_the_system.md).
 
-## Working Checkpoint
+## Closeout
 
-Status is planned. Facts observed on 2026-09-24 by independent review: apps/nanocore/src/storage/workspace-export.ts converts restricted bundles into expired, reference-free records; apps/nanocore/src/storage/workspace-import.ts rejects portable work-observation bodies unless they are expired and reference-free; apps/nanocore/src/storage/workspace-export-observations.test.ts pins that omission. Those tests encode the superseded rule and change with the owner. Unknown: how restricted bodies are stored relative to their EvidenceBundle, and whether import can restore them under the target's evidence retention without a new record family.
+The implementation and independent review are complete. The shared import, lineage test and storage guide changes are split through verified temporary snapshots: export-only content is committed independently, while Goal changes remain in the working tree. Reapplying the Goal-only patch to those snapshots reproduces the exact full-file SHA-256 values; no production bytes were discarded. The independent real-storage regression first failed because restricted body bytes were absent from the export inventory. Export now inventories original binary bytes separately from canonical UTF-8 text; import verifies bundle ownership and digests, remints references, and restores bytes through the existing staging publication path. The known imported EvidenceRef kinds include work-observation-body so restored published content remains readable. Source sensitivity, retention class and creation time survive; no new expiry or hold record family was introduced.
 
-Predicted Next Action: a test author writes the round-trip regression from the amended owner before any code changes: starting from the existing real-storage composition fixture, export a Workspace whose Turn holds a restricted original body, import it into a new Workspace, and assert that the body bytes and content digests are identical and that the references are correctly reminted and resolve to the corresponding bodies in the target, including a remint collision case, with parent and reference closure intact and excluded external references left unresolved; that the imported body keeps its retention class, sensitivity, hold state, and original expiry; and that another user's private Thread and secret material stay absent and no other product API exposes the body. Expected observable: the regression fails on the current code at the export step. Evidence that would change the route: body storage that cannot be carried without a new portable record family, which returns to the backup/export owner first.
+Independent review identified a real failure branch: transcript collection can retain quarantined raw provenance without a normalized index. Import now validates the exact existing failed RuntimeEvidence and source AEP tuple before reminting that branch, rejects multiple raw bundle aliases and backend or digest disagreement, and preserves quarantine. It creates neither a replacement normalized index nor synthetic completed observations. Grok's final actual-source review accepted these guards; the deciding negative cases remain in the lineage oracle.
+
+## Verification
+
+Observed on 2026-09-24: `pnpm --filter @openkit/nanocore exec vitest run src/storage/workspace-export.test.ts src/storage/workspace-export-boundaries.test.ts src/storage/workspace-export-lineage.test.ts src/storage/workspace-export-observations.test.ts src/evidence-bundles.test.ts --reporter=dot` passes five files and 126 tests. Output is temp/changes/202609241200000004-complete_work_data_export/export-all-five.txt. The independent oracle covers exact body bytes, arbitrary non-UTF-8 runtime provenance, missing and tampered binary rejection, remint closure, restart reads, legal-hold retention, expired-body non-resurrection, private-Thread export refusal, stored Vault secret exclusion and public-list exclusion. Goal portability cases preserve the original source digest so an imported pending successor cannot silently regain approval against reminted source evidence.
+
+Raw complexity: the focused export commit changes eight files, amends no normative document, and touches three accepted concern owners: portability, retained work data, and EvidenceBundle lifecycle. It adds no dependency, record family or registry. One existing known EvidenceRef-kind set gains work-observation-body, which the existing retained-content owner already defines. The separate Goal import extension is not counted in this export-only slice. Repository-wide checks remain with the active handoff; no deployment or publication occurred.
 
 ## Verification Direction
 

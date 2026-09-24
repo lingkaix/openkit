@@ -155,6 +155,7 @@ import {
 } from './schema/index.js';
 import { readWorkObservations, readWorkObservationTurnBinding } from './work-observations.js';
 import {
+  assertWorkspaceArchiveFilePath,
   splitWorkspaceArchivePath,
   stageWorkspaceArchive,
   WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE,
@@ -171,6 +172,7 @@ import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
+  readCanonicalFile,
   readCanonicalTextFile,
   writeFileAtomic,
 } from './workspace-file-records.js';
@@ -394,6 +396,7 @@ async function writeWorkspaceArchive(
   const files = new Map<string, Buffer>([
     [WORKSPACE_EXPORT_MANIFEST_FILE, Buffer.from(verified.manifestText)],
     ...[...verified.fileContents].map(([path, text]) => [path, Buffer.from(text)] as const),
+    ...[...verified.binaryFileContents].map(([path, bytes]) => [path, Buffer.from(bytes)] as const),
   ]);
   const directories = new Set<string>();
   for (const path of files.keys()) {
@@ -831,6 +834,12 @@ export function importVerifiedWorkspace({
       );
       writeFileAtomic(join(root, 'observations.jsonl'), text);
     }
+    for (const [path, bytes] of snapshot.restrictedEvidenceFiles) {
+      assertWorkspaceArchiveFilePath(path);
+      const target = join(workspaceRoot, 'evidence', 'backend', path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileAtomic(target, bytes);
+    }
     verifyImportedWorkerContextPackageSnapshot(snapshot, workspaceRoot);
     for (const [bundleId, text] of snapshot.runtimeProvenanceIndexes) {
       assertSafeWorkspacePathSegment(bundleId, 'Evidence bundle id');
@@ -983,6 +992,35 @@ export function createVerifiedWorkspaceExport({
       observationDb.sqlite.close();
     }
   }
+  const restrictedEvidenceFiles = new Map<string, Uint8Array>();
+  for (const bundle of workspaceRowFamilies.evidenceBundles) {
+    if (
+      !['work-observation-body', 'worker-runtime-provenance-raw'].includes(bundle.sourceKind) ||
+      bundle.importStatus === 'expired'
+    )
+      continue;
+    if (bundle.sourceKind === 'work-observation-body' && bundle.importStatus !== 'promoted')
+      continue;
+    assertSafeWorkspacePathSegment(bundle.id, 'Evidence bundle id');
+    for (const [index, ref] of bundle.rawEvidenceRefs.entries()) {
+      assertWorkspaceArchiveFilePath(ref.ref);
+      const parts = [bundle.id, ...ref.ref.split('/')];
+      let directory = workspaceRoot;
+      for (const segment of ['evidence', 'backend']) {
+        directory = join(directory, segment);
+        assertCanonicalDirectory(directory);
+      }
+      for (const part of parts.slice(0, -1)) {
+        directory = join(directory, part);
+        assertCanonicalDirectory(directory);
+      }
+      const bytes = readCanonicalFile(join(directory, parts.at(-1)!));
+      const expected = bundle.contentDigests[index]?.replace(/^sha256:/, '');
+      if (expected !== createHash('sha256').update(bytes).digest('hex'))
+        throw new Error(`Restricted evidence digest mismatch: ${bundle.id}/${ref.ref}`);
+      restrictedEvidenceFiles.set(`${bundle.id}/${ref.ref}`, bytes);
+    }
+  }
   const runtimeProvenanceIndexes = new Map<string, string>();
   for (const bundle of workspaceRowFamilies.evidenceBundles) {
     if (bundle.sourceKind !== 'worker-runtime-provenance-index') {
@@ -1084,6 +1122,7 @@ export function createVerifiedWorkspaceExport({
     resolvedAgentSetups: workspaceRowFamilies.resolvedAgentSetups,
     runtimeEvidence: workspaceRowFamilies.runtimeEvidence,
     runtimeProvenanceIndexes,
+    restrictedEvidenceFiles,
     turnObservations,
     turnCaptureCoverage,
     stagedWorkspaceReviews: workspaceRowFamilies.workspaceSyncRecords.stagedReviews,

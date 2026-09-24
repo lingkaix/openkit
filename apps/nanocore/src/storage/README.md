@@ -47,6 +47,7 @@ Timeline coverage remains partial when a collection gap follows observed runtime
 - Fail closed on malformed canonical records, invalid lineage, unsupported required features, path escapes, and legacy authority files.
 - `ensureLayout` rejects absolute DATA_ROOT paths only in canonical product-record locations. Verbatim exceptions are anchored to `server/` or `workspaces/<workspaceId>/`: backend streams under `evidence/backend/<bundleId>/raw/`, and Skill or Plugin snapshot trees under `catalog/skill-snapshots/` and `catalog/plugin-snapshots/`. Backend bundle manifest and native-index siblings remain scanned; nested misleading names, unsafe links, ownership, envelope, and canonical-path checks still apply.
 - Export V2 preserves complete canonical history and exact portable file bytes; V1 exports are intentionally rejected.
+- Portable evidence keeps admitted restricted originals as verified binary bytes under their EvidenceBundle, separate from canonical UTF-8 records. Import remints owner references, preserves body digests and retention, and stages bytes before publishing the Workspace. Unpublished observation chunks and expired body bytes stay excluded.
 - Import writes the complete workspace tree and workspace database under `.staging`, publishes with one same-filesystem rename inside the Core transaction, and removes the published workspace when synchronous Core replay fails; this is coordinated rollback, not crash-atomic filesystem and SQLite commit.
 - Deletion removes the canonical file or directory so restart cannot resurrect stale state.
 

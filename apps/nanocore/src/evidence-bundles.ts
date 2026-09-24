@@ -47,6 +47,7 @@ const knownImportedEvidenceRefKinds = new Set([
   'workspace-change-set',
   'workspace-review',
   'workspace-sync-patch',
+  'work-observation-body',
   'worker-runtime-provenance-index',
   'worker-runtime-provenance-manifest',
   'worker-runtime-provenance-native-index',

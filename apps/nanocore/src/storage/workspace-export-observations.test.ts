@@ -4,11 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  compactWorkspaceEvidenceBundles,
   listStoredWorkspaceEvidenceBundles,
+  listWorkspaceEvidenceBundles,
   readWorkObservationBody,
   stageWorkObservationChunk,
 } from '../evidence-bundles.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -26,7 +29,7 @@ function workspaceDb(dataRoot: string, workspaceId: string) {
 }
 
 describe('work observation portable closure', () => {
-  it('publishes reminted observations through real storage, preserves coverage after restart, and never exports restricted originals', () => {
+  it('round-trips retained restricted originals through real storage with reminted publication closure', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-observations-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -63,6 +66,17 @@ describe('work observation portable closure', () => {
     const db = workspaceDb(dataRoot, demo.workspace.id);
     const bytes = Buffer.from('  exact original é\n\tfinal  ');
     const sha256 = createHash('sha256').update(bytes).digest('hex');
+    createEncryptedFileVaultBackend({
+      masterKey: Buffer.alloc(32, 17),
+      storeDir: join(dataRoot, 'server', 'vault'),
+    }).store({
+      material: 'system_secret_export_canary',
+      metadata: { ownerScope: 'server' },
+      referenceId: 'vault_export_canary',
+    });
+    const systemSecretFile = readFileSync(
+      join(dataRoot, 'server', 'vault', 'entries', 'vault_export_canary', '1.enc')
+    );
     try {
       appendWorkObservation(db, {
         threadId: demo.thread.id,
@@ -84,6 +98,7 @@ describe('work observation portable closure', () => {
         bodies: [{ id: 'body_1', bytes, mediaType: 'text/plain', boundary: 'assistant.text' }],
       });
       const sourceBundle = listStoredWorkspaceEvidenceBundles(db, demo.workspace.id)[0]!;
+      expect(listWorkspaceEvidenceBundles(db, demo.workspace.id)).toEqual([]);
       expect(
         readWorkObservationBody(db, {
           bundleId: sourceBundle.id,
@@ -116,8 +131,35 @@ describe('work observation portable closure', () => {
       });
       const verified = exported.verified;
       expect(
-        [...verified.fileContents.values()].some((text) => text.includes(bytes.toString()))
+        verified.manifest.contentInventory.some((entry) =>
+          readFileSync(
+            join(
+              dataRoot,
+              'server',
+              'exports',
+              'workspaces',
+              demo.workspace.id,
+              'export_observations',
+              entry.path
+            )
+          ).equals(systemSecretFile)
+        )
       ).toBe(false);
+      expect(
+        verified.manifest.contentInventory.some((entry) =>
+          readFileSync(
+            join(
+              dataRoot,
+              'server',
+              'exports',
+              'workspaces',
+              demo.workspace.id,
+              'export_observations',
+              entry.path
+            )
+          ).equals(bytes)
+        )
+      ).toBe(true);
       expect(verified.fileContents.get('records/evidence-bundles.jsonl')).not.toContain(
         'evb_unpublished'
       );
@@ -132,6 +174,9 @@ describe('work observation portable closure', () => {
       const targetWorkspaceId = result.importedWorkspaceId;
       const targetThread = store.listThreads(targetWorkspaceId)[0]!;
       const targetTurn = store.listThreadTurns(targetWorkspaceId, targetThread.id)[0]!;
+      expect(targetWorkspaceId).not.toBe(demo.workspace.id);
+      expect(targetThread.id).not.toBe(demo.thread.id);
+      expect(targetTurn.id).not.toBe(turn.id);
       const importedDb = workspaceDb(dataRoot, targetWorkspaceId);
       try {
         const rows = readWorkObservations(importedDb, {
@@ -139,10 +184,18 @@ describe('work observation portable closure', () => {
           turnId: targetTurn.id,
         });
         expect(rows).toHaveLength(2);
+        expect(rows[0]!.id).not.toBe('model_response');
         expect(rows[1]!.parent).toBe(rows[0]!.id);
         expect(rows[0]!.corr).toBe('call_1');
         const bundle = listStoredWorkspaceEvidenceBundles(importedDb, targetWorkspaceId)[0]!;
-        expect(bundle.importStatus).toBe('expired');
+        expect(listWorkspaceEvidenceBundles(importedDb, targetWorkspaceId)).toEqual([]);
+        expect(bundle.id).not.toBe(sourceBundle.id);
+        expect(bundle.importStatus).toBe('promoted');
+        expect(bundle.retentionClass).toBe(sourceBundle.retentionClass);
+        expect(bundle.sensitivityClass).toBe(sourceBundle.sensitivityClass);
+        expect(bundle.createdAt).toBe(sourceBundle.createdAt);
+        expect(bundle.contentDigests).toEqual([sha256]);
+        expect(bundle.rawEvidenceRefs).toEqual(sourceBundle.rawEvidenceRefs);
         expect(rows[1]!.refs?.[0]).toMatchObject({
           locator: bundle.id,
           scope: { workspaceId: targetWorkspaceId },
@@ -156,12 +209,12 @@ describe('work observation portable closure', () => {
             createdAt: bundle.createdAt,
             sha256,
           })
-        ).toBeNull();
+        ).toEqual(bytes);
         expect(
           existsSync(
             join(dataRoot, 'workspaces', targetWorkspaceId, 'evidence', 'backend', bundle.id)
           )
-        ).toBe(false);
+        ).toBe(true);
       } finally {
         importedDb.sqlite.close();
       }
@@ -174,6 +227,21 @@ describe('work observation portable closure', () => {
         scope: 'workspace',
         value: 'on',
       });
+      const reopenedDb = workspaceDb(dataRoot, targetWorkspaceId);
+      try {
+        const bundle = listStoredWorkspaceEvidenceBundles(reopenedDb, targetWorkspaceId)[0]!;
+        expect(
+          readWorkObservationBody(reopenedDb, {
+            bundleId: bundle.id,
+            threadId: targetThread.id,
+            turnId: targetTurn.id,
+            createdAt: bundle.createdAt,
+            sha256,
+          })
+        ).toEqual(bytes);
+      } finally {
+        reopenedDb.sqlite.close();
+      }
       const rawTurn = JSON.parse(
         readFileSync(
           join(
@@ -190,6 +258,111 @@ describe('work observation portable closure', () => {
         )
       );
       expect(rawTurn.requiredFeatures).toContain('openkit.work-observations.v1');
+      db.sqlite
+        .prepare(
+          "UPDATE evidence_bundles SET retention_class = 'legal-hold' WHERE evidence_bundle_id = ?"
+        )
+        .run(sourceBundle.id);
+      const heldExport = createVerifiedWorkspaceExport({
+        authorityUserId: 'user_local',
+        coreDb,
+        dataRoot,
+        exportId: 'export_held_observations',
+        repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
+        store,
+        workspaceId: demo.workspace.id,
+      });
+      const heldImport = importVerifiedWorkspace({
+        authorityUserId: 'user_local',
+        coreDb,
+        dataRoot,
+        requestId: null,
+        store,
+        verified: heldExport.verified,
+      });
+      const heldDb = workspaceDb(dataRoot, heldImport.importedWorkspaceId);
+      try {
+        const heldBundle = listStoredWorkspaceEvidenceBundles(
+          heldDb,
+          heldImport.importedWorkspaceId
+        )[0]!;
+        expect(heldBundle.retentionClass).toBe('legal-hold');
+        expect(
+          readWorkObservationBody(heldDb, {
+            bundleId: heldBundle.id,
+            threadId: heldBundle.threadId!,
+            turnId: heldBundle.turnId!,
+            createdAt: heldBundle.createdAt,
+            sha256,
+          })
+        ).toEqual(bytes);
+      } finally {
+        heldDb.sqlite.close();
+      }
+      db.sqlite
+        .prepare(
+          "UPDATE evidence_bundles SET retention_class = 'restricted-raw' WHERE evidence_bundle_id = ?"
+        )
+        .run(sourceBundle.id);
+      expect(
+        compactWorkspaceEvidenceBundles({
+          workspaceDb: db,
+          workspaceId: demo.workspace.id,
+          olderThan: '2026-09-23T00:00:00.000Z',
+        }).expiredCount
+      ).toBe(2);
+      const expiredExport = createVerifiedWorkspaceExport({
+        authorityUserId: 'user_local',
+        coreDb,
+        dataRoot,
+        exportId: 'export_expired_observations',
+        repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
+        store,
+        workspaceId: demo.workspace.id,
+      });
+      expect(
+        expiredExport.verified.manifest.contentInventory.some((entry) =>
+          readFileSync(
+            join(
+              dataRoot,
+              'server',
+              'exports',
+              'workspaces',
+              demo.workspace.id,
+              'export_expired_observations',
+              entry.path
+            )
+          ).equals(bytes)
+        )
+      ).toBe(false);
+      const expiredImport = importVerifiedWorkspace({
+        authorityUserId: 'user_local',
+        coreDb,
+        dataRoot,
+        requestId: null,
+        store,
+        verified: expiredExport.verified,
+      });
+      const expiredDb = workspaceDb(dataRoot, expiredImport.importedWorkspaceId);
+      try {
+        const expiredBundle = listStoredWorkspaceEvidenceBundles(
+          expiredDb,
+          expiredImport.importedWorkspaceId
+        )[0]!;
+        expect(expiredBundle.importStatus).toBe('expired');
+        expect(expiredBundle.rawEvidenceRefs).toEqual([]);
+        expect(
+          readWorkObservationBody(expiredDb, {
+            bundleId: expiredBundle.id,
+            threadId: expiredBundle.threadId!,
+            turnId: expiredBundle.turnId!,
+            createdAt: expiredBundle.createdAt,
+            sha256,
+          })
+        ).toBeNull();
+      } finally {
+        expiredDb.sqlite.close();
+      }
     } finally {
       db.sqlite.close();
       coreDb.sqlite.close();

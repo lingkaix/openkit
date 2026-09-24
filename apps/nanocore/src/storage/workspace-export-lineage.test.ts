@@ -30,6 +30,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { computeGoalPlanDigest, GoalPlanOutputSchema } from '../runtime/goal-plan.js';
+import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import {
   type WriteWorkspaceExportTreeInput,
@@ -1497,9 +1498,10 @@ describe('workspace auxiliary lineage reminting', () => {
     });
   });
 
-  it('keeps restricted observation bodies unavailable while reminting their exact publication references', () => {
+  it('retains restricted observation bytes while reminting their exact publication references', () => {
     const input = createLineageExportInput(undefined, 'on');
-    const digest = createHash('sha256').update('  original é\n').digest('hex');
+    const bytes = Buffer.from('  original é\n');
+    const digest = createHash('sha256').update(bytes).digest('hex');
     input.evidenceBundles = [
       {
         id: 'evb_observation',
@@ -1511,7 +1513,7 @@ describe('workspace auxiliary lineage reminting', () => {
         backendType: 'internal',
         sourceKind: 'work-observation-body',
         summary: 'Restricted observation content.',
-        rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'original.bin' }],
+        rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'raw/content' }],
         redactedEvidenceRefs: [],
         contentDigests: [digest],
         retentionClass: 'restricted-raw',
@@ -1584,21 +1586,28 @@ describe('workspace auxiliary lineage reminting', () => {
     };
     const verified = writeWorkspaceExportTree({
       ...input,
+      restrictedEvidenceFiles: new Map([['evb_observation/raw/content', bytes]]),
       turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'on' }]]),
       turnObservations: new Map([
         [source.turnId, `${JSON.stringify(initial)}\n${JSON.stringify(row)}\n`],
       ]),
     });
     expect(verified.manifest.requiredFeatures).toContain('openkit.work-observations.v1');
-    expect(verified.checkedFiles.some((path) => path.includes('original.bin'))).toBe(false);
+    expect(
+      verified.binaryFileContents.get(
+        'workspace-files/evidence/backend/evb_observation/raw/content'
+      )
+    ).toEqual(bytes);
     const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
     const bundle = imported.evidenceBundles[0]!;
     expect(bundle).toMatchObject({
-      importStatus: 'expired',
-      rawEvidenceRefs: [],
+      importStatus: 'promoted',
+      rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'raw/content' }],
       redactedEvidenceRefs: [],
       contentDigests: [digest],
     });
+    expect(bundle.id).not.toBe('evb_observation');
+    expect(imported.restrictedEvidenceFiles.get(`${bundle.id}/raw/content`)).toEqual(bytes);
     const targetTurnId = imported.turnIds.get(source.turnId)!;
     const observation = JSON.parse(
       imported.turnObservations.get(targetTurnId)!.trim().split('\n')[1]!
@@ -2676,12 +2685,15 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(() => importLineage(createLineageExportInput(missing))).toThrow(error);
   });
 
-  it('exports and remints only the product-safe runtime provenance index', () => {
+  it('exports and remints exact binary runtime provenance alongside its product-safe index', () => {
     const input = createLineageExportInput();
     const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
     const rawBundleId = 'evb_runtime_raw_source';
     const indexBundleId = 'evb_runtime_index_source';
     const runtimeEvidenceId = 'rte_runtime_source';
+    const rawBytes = Buffer.from([0, 255, 128, 10, 13, 0, 254]);
+    const rawDigest = `sha256:${createHash('sha256').update(rawBytes).digest('hex')}`;
+    const rawPath = `workspace-files/evidence/backend/${rawBundleId}/raw/native-canary.bin`;
     const sourceOriginRef = `rto_${'a'.repeat(24)}`;
     const sourceTurnRef = `rtt_${'b'.repeat(24)}`;
     const indexText = `${JSON.stringify({
@@ -2719,10 +2731,10 @@ describe('workspace auxiliary lineage reminting', () => {
         sourceKind: 'worker-runtime-provenance-raw',
         summary: 'Restricted runtime provenance.',
         rawEvidenceRefs: [
-          { kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.jsonl' },
+          { kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.bin' },
         ],
         redactedEvidenceRefs: [],
-        contentDigests: [`sha256:${'2'.repeat(64)}`],
+        contentDigests: [rawDigest],
         retentionClass: 'restricted-raw',
         sensitivityClass: 'restricted',
         importStatus: 'promoted',
@@ -2783,7 +2795,7 @@ describe('workspace auxiliary lineage reminting', () => {
         redactedStdoutSummary: null,
         redactedStderrSummary: null,
         evidenceBundleIds: [rawBundleId, indexBundleId],
-        contentDigests: [`sha256:${'2'.repeat(64)}`, indexDigest],
+        contentDigests: [rawDigest, indexDigest],
         requiredFeatures: ['worker.runtime-provenance.v1'],
         createdAt: timestamp,
         startedAt: null,
@@ -2792,6 +2804,7 @@ describe('workspace auxiliary lineage reminting', () => {
       },
     ];
     input.runtimeProvenanceIndexes = new Map([[indexBundleId, indexText]]);
+    input.restrictedEvidenceFiles = new Map([[`${rawBundleId}/raw/native-canary.bin`, rawBytes]]);
     const sourceCacheLineageRef = `rcl_${'c'.repeat(24)}`;
     input.capabilityCalls = [
       {
@@ -2819,19 +2832,40 @@ describe('workspace auxiliary lineage reminting', () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(exportedBundles.find((bundle) => bundle.id === rawBundleId)).toMatchObject({
       id: rawBundleId,
-      importStatus: 'expired',
-      rawEvidenceRefs: [],
+      importStatus: 'promoted',
+      rawEvidenceRefs: [{ kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.bin' }],
       redactedEvidenceRefs: [],
+      contentDigests: [rawDigest],
     });
-    expect(JSON.stringify([...verified.fileContents])).not.toContain('native-canary');
+    expect(verified.binaryFileContents.get(rawPath)).toEqual(rawBytes);
+    expect(readFileSync(join(input.exportRoot, rawPath))).toEqual(rawBytes);
+    expect(
+      verified.manifest.contentInventory.find((entry) => entry.path === rawPath)
+    ).toMatchObject({
+      bytes: rawBytes.byteLength,
+      digest: rawDigest,
+    });
     expect(
       verified.fileContents.get(
         `workspace-files/evidence/bundles/${indexBundleId}/runtime-origin-index.jsonl`
       )
     ).toBe(indexText);
-    expect(
-      [...verified.fileContents.keys()].some((path) => path.startsWith('evidence/backend/'))
-    ).toBe(false);
+    const missingBinary = new Map(verified.binaryFileContents);
+    missingBinary.delete(rawPath);
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, binaryFileContents: missingBinary },
+        targetWorkspaceId,
+      })
+    ).toThrow(/Restricted evidence bytes are missing or invalid/);
+    const tamperedBinary = new Map(verified.binaryFileContents);
+    tamperedBinary.set(rawPath, Buffer.from([0]));
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, binaryFileContents: tamperedBinary },
+        targetWorkspaceId,
+      })
+    ).toThrow(/Restricted evidence bytes are missing or invalid/);
 
     const imported = readWorkspaceImportSnapshot({
       verified,
@@ -2845,8 +2879,15 @@ describe('workspace auxiliary lineage reminting', () => {
     const importedIndexBundle = imported.evidenceBundles.find(
       (bundle) => bundle.sourceKind === 'worker-runtime-provenance-index'
     );
-    expect(importedRawBundle).toMatchObject({ importStatus: 'expired', rawEvidenceRefs: [] });
+    expect(importedRawBundle).toMatchObject({
+      importStatus: 'promoted',
+      rawEvidenceRefs: [{ kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.bin' }],
+      contentDigests: [rawDigest],
+    });
     expect(importedRawBundle?.id).not.toBe(rawBundleId);
+    expect(
+      imported.restrictedEvidenceFiles.get(`${importedRawBundle?.id}/raw/native-canary.bin`)
+    ).toEqual(rawBytes);
     expect(importedIndexBundle?.id).not.toBe(indexBundleId);
     expect(imported.runtimeEvidence[0]?.id).not.toBe(runtimeEvidenceId);
     expect(imported.runtimeEvidence[0]?.evidenceBundleIds).toEqual([
@@ -2881,6 +2922,104 @@ describe('workspace auxiliary lineage reminting', () => {
         .update(importedIndexText ?? '')
         .digest('hex')}`,
     ]);
+
+    const failedRaw = writeWorkspaceExportTree({
+      ...input,
+      exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-provenance-failed-')), 'export'),
+      evidenceBundles: [
+        { ...(input.evidenceBundles![0] as Record<string, unknown>), importStatus: 'quarantined' },
+      ],
+      runtimeEvidence: [
+        {
+          ...(input.runtimeEvidence![0] as Record<string, unknown>),
+          id: createWorkerRuntimeProvenanceEvidenceId(packageSnapshotId),
+          evidenceBundleIds: [rawBundleId],
+          contentDigests: [rawDigest],
+          outcome: 'failed',
+          errorCode: 'worker_runtime_provenance_invalid',
+          errorMessage: 'Worker runtime provenance verification failed.',
+        },
+      ],
+      runtimeProvenanceIndexes: new Map(),
+      capabilityCalls: createLineageExportInput().capabilityCalls,
+    });
+    expect(failedRaw.binaryFileContents.get(rawPath)).toEqual(rawBytes);
+    const importedFailed = readWorkspaceImportSnapshot({
+      verified: failedRaw,
+      targetWorkspaceId: 'ws_imported_failed_provenance',
+    });
+    const importedFailedRaw = importedFailed.evidenceBundles.find(
+      (bundle) => bundle.sourceKind === 'worker-runtime-provenance-raw'
+    )!;
+    expect(importedFailed.evidenceBundles).toHaveLength(1);
+    expect(importedFailedRaw.importStatus).toBe('quarantined');
+    expect(importedFailedRaw.id).not.toBe(rawBundleId);
+    expect(importedFailed.runtimeEvidence[0]?.evidenceBundleIds).toEqual([importedFailedRaw.id]);
+    expect(
+      importedFailed.restrictedEvidenceFiles.get(`${importedFailedRaw.id}/raw/native-canary.bin`)
+    ).toEqual(rawBytes);
+    const mismatchedOwnerFiles = new Map(failedRaw.fileContents);
+    for (const path of ['records/evidence-bundles.jsonl', 'records/runtime-evidence.jsonl']) {
+      const record = JSON.parse(mismatchedOwnerFiles.get(path)!) as Record<string, unknown>;
+      mismatchedOwnerFiles.set(path, `${JSON.stringify({ ...record, agentSessionId: null })}\n`);
+    }
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...failedRaw, fileContents: mismatchedOwnerFiles },
+        targetWorkspaceId: 'ws_imported_mismatched_provenance',
+      })
+    ).toThrow(/Runtime provenance bundle linkage is incomplete/);
+    for (const mismatch of [
+      { backendType: 'other-backend' },
+      { contentDigests: [`sha256:${'f'.repeat(64)}`] },
+    ]) {
+      const fileContents = new Map(failedRaw.fileContents);
+      const path = 'records/runtime-evidence.jsonl';
+      const record = JSON.parse(fileContents.get(path)!) as Record<string, unknown>;
+      fileContents.set(path, `${JSON.stringify({ ...record, ...mismatch })}\n`);
+      expect(() =>
+        readWorkspaceImportSnapshot({
+          verified: { ...failedRaw, fileContents },
+          targetWorkspaceId: 'ws_imported_mismatched_runtime',
+        })
+      ).toThrow(/Runtime provenance bundle linkage is incomplete/);
+    }
+    const duplicateRawId = 'evb_runtime_raw_source_duplicate';
+    const duplicateFiles = new Map(failedRaw.fileContents);
+    const rawRecord = JSON.parse(duplicateFiles.get('records/evidence-bundles.jsonl')!) as Record<
+      string,
+      unknown
+    >;
+    duplicateFiles.set(
+      'records/evidence-bundles.jsonl',
+      `${JSON.stringify(rawRecord)}\n${JSON.stringify({ ...rawRecord, id: duplicateRawId })}\n`
+    );
+    const runtimeRecord = JSON.parse(
+      duplicateFiles.get('records/runtime-evidence.jsonl')!
+    ) as Record<string, unknown>;
+    duplicateFiles.set(
+      'records/runtime-evidence.jsonl',
+      `${JSON.stringify({
+        ...runtimeRecord,
+        evidenceBundleIds: [rawBundleId, duplicateRawId],
+        contentDigests: [rawDigest, rawDigest],
+      })}\n`
+    );
+    const duplicateBinary = new Map(failedRaw.binaryFileContents);
+    duplicateBinary.set(
+      `workspace-files/evidence/backend/${duplicateRawId}/raw/native-canary.bin`,
+      rawBytes
+    );
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: {
+          ...failedRaw,
+          fileContents: duplicateFiles,
+          binaryFileContents: duplicateBinary,
+        },
+        targetWorkspaceId: 'ws_imported_duplicate_provenance',
+      })
+    ).toThrow(/Runtime provenance bundle linkage is incomplete/);
 
     const unlinkedRoot = join(
       mkdtempSync(join(tmpdir(), 'openkit-workspace-provenance-unlinked-')),
