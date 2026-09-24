@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: planned
+status: verified
 date: "2026-09-24"
 ---
 # Configuration Tolerant Reader
@@ -11,18 +11,24 @@ On 2026-09-24 the engineer accepted that settled mechanisms stay stable while ex
 
 ## Owners
 
-[Contract Evolution](../../core/contract-evolution.md) owns stability classes and extension tolerance, including the Hand-Written Configuration section. [NanoCore Config Identity Contract](../../specs/20260628-nanocore_config_identity_contract.md) owns the authored Server, User, and Workspace files and their loaders. [Agent Environment Package](../../specs/20260616-agent_environment_package.md) owns the agent environment manifest. [Schema Evolution Record Envelope](../../specs/20260703-schema_evolution_record_envelope.md) owns the required-feature registry that already expresses required features.
+[Contract Evolution](../../core/contract-evolution.md) owns stability classes and extension tolerance, including the Hand-Written Configuration section. [NanoCore Config Identity Contract](../../specs/20260628-nanocore_config_identity_contract.md) owns authored Server, User, and Workspace file classification and runtime-config diagnostics. [Workspace Data Source Catalog](../../specs/20260704-workspace_data_source_catalog.md) owns `data-sources.jsonc` semantics. [Agent Environment Package](../../specs/20260616-agent_environment_package.md) owns the agent environment manifest. [Schema Evolution Record Envelope](../../specs/20260703-schema_evolution_record_envelope.md) owns the required-feature registry that already expresses required features.
 
 ## Accepted Decisions
 
 - [Settled Mechanisms Stay Stable And Extension Stays Open](../../decisions/20260924-stable_mechanisms_open_extension.md) is the governing decision.
 - [Internal Development Does Not Consider Backward Compatibility](../../decisions/20260709-no_backward_compatibility.md) still holds: this plan adds tolerance for newer files in older readers, not aliases or migrations for old files.
 
-## Working Checkpoint
+## Closeout
 
-Status is planned. Facts measured on 2026-09-24: the configuration specification says that all authored files use strict schemas and that unknown authority-bearing behavior remains invalid, which contradicts the Core rule for tolerant sections and must be amended first; packages/config-schema/src uses strict object schemas in about 160 places; apps/nanocore/src/config/agents-loader.test.ts expects an Unrecognized keys error for an unknown field. Unknown: which sections are authority-bearing in each file; which loaders share one parse path; whether the existing configuration-error channel can carry a warning without failing the load.
+Status is completed under the handoff's local-commit authorization. The accepted per-file classification is implemented: unknown optional keys at the named Server, User, Workspace and data-source locations produce located warnings; authority-bearing sections and unsupported required features reject. One shared required-feature validator serves the three newly tolerant schemas, and one small unknown-key collector serves their loaders and the existing editor. Data-source parsing keeps its existing behavior-inert unknown fields. Editor writes preserve the submitted JSONC bytes.
 
-Predicted Next Action: amend the configuration specification with a per-file table that classifies each section as tolerant or authority-bearing, with independent Consultant scrutiny because the classification decides which unknown keys fail closed; then change the shared schema construction so that tolerant sections collect unknown keys as warnings. Expected observable: a regression that loads a file with an unknown key in a tolerant section and observes the warning and a successful load, and one with an unknown key in an authority-bearing section and observes the existing failure. Evidence that would change the route: a section whose tolerance would let an unknown key change authorization, credentials, sandbox, or routing behavior, which stays strict and goes to the engineer if the classification is disputed.
+Independent Grok review found missing reload warning delivery and duplicate editor diagnostics with incorrect scoped file IDs. The corrections use the existing reload-plan warning array and public file-ID mapping. Web now renders that warning array after Apply. The review's initial startup claim was disproved by the existing index.ts startup diagnostic loop; no second startup logger was added. A second actual-diff review accepted the correction. Its output is retained at temp/changes/202609241200000001-configuration_tolerant_reader/grok-review-final.txt.
+
+## Verification
+
+The independent config-tolerance suite passes 11 tests, including exact once-only warnings and public file IDs, redacted reload locations, authority rejection, required-feature rejection before write, and unchanged disk bytes on failure. The broader focused NanoCore configuration set passes 45 tests; the config-schema Server, source-catalog and Workspace set passes 47 tests. ConfigurationScreen passes 12 tests, with the warning-display regression first observed failing. Both affected backend package builds and typechecks, focused Biome and git diff --check pass. Raw UI evidence is web-warning-red.txt and web-warning-green.txt in the same temporary bundle. Repository-wide verification belongs to the final handoff checkpoint and is not inferred from these checks.
+
+The current implementation introduces no dependency, policy engine, configuration file type, public status field or registry. Four authored file kinds gain or complete warning delivery; three existing parser/diagnostic consumers share one collector, and the three newly tolerant schemas share one required-feature predicate. The one owning specification changed is the NanoCore Config Identity Contract; the other named owners retain their criteria. The focused commit changes 19 files across config-schema, NanoCore configuration and Web configuration, with one normative document amended; the local commit is recorded by the handoff closeout. No unresolved configuration finding remains; GOVLAND-FND-008 is closed in the governance landing findings.
 
 ## Verification Direction
 

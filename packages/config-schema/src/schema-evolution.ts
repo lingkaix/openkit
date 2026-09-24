@@ -189,6 +189,19 @@ export function isRegisteredRequiredFeature(feature: string): feature is Require
   return Object.hasOwn(REQUIRED_FEATURE_REGISTRY, feature);
 }
 
+/** Declared requirements for authored Server, User, and Workspace config readers, which support no required features yet. */
+export const AuthoredConfigRequiredFeaturesSchema = z
+  .array(z.string().min(1))
+  .superRefine((features, ctx) => {
+    for (const [index, feature] of features.entries()) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `${isRegisteredRequiredFeature(feature) ? 'Unsupported' : 'Unregistered'} required feature: ${feature}`,
+        path: [index],
+      });
+    }
+  });
+
 /**
  * Verifies that writers only emit registered required features.
  *

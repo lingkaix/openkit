@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
+import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Exact HTTP or HTTPS origin accepted by browser-facing server configuration. */
 const HttpOriginSchema = z
@@ -251,11 +252,12 @@ export const OpenKitConfigSchema = z
       .strict()
       .optional(),
     nanohost: OpenKitNanoHostConfigSchema.optional(),
+    requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
     schemaVersion: z.literal(1).optional(),
     server: OpenKitServerRuntimeSchema.optional(),
     vault: OpenKitVaultConfigSchema.optional(),
   })
-  .strict();
+  .strip();
 
 /**
  * File-backed NanoCore configuration.

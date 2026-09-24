@@ -11,7 +11,7 @@ These items hand candidate inputs to owners outside this plan; they are non-auth
 - [x] `GOVLAND-FND-005` [closed] Five decision records lack a recorded reason
 - [x] `GOVLAND-FND-006` [closed] Export posture decision has no owner statement
 - [x] `GOVLAND-FND-007` [closed] Roadmap batch cadence premise has likely expired
-- [ ] `GOVLAND-FND-008` [deferred] Hand-written configuration still rejects unknown keys
+- [x] `GOVLAND-FND-008` [closed] Hand-written configuration still rejects unknown keys
 - [ ] `GOVLAND-FND-009` [deferred] Specification bodies need normalization
 - [ ] `GOVLAND-FND-010` [deferred] The new governance framework is not yet evaluated
 - [ ] `GOVLAND-FND-011` [deferred] DeepSeek Harness dispatch is unverified
@@ -82,13 +82,15 @@ These items hand candidate inputs to owners outside this plan; they are non-auth
 - **Closing verdict:** Recorded disposition: on 2026-09-24 the engineer confirmed that the large-batch cadence premise still holds. Terminal disposition: docs/roadmap.md and the evaluation harness specification stay as they are, and docs/decisions/20260912-large_batches_before_first_release.md remains Accepted.
 - **Closure evidence:** The engineer's answer of 2026-09-24; no document change was needed.
 
-## [deferred] GOVLAND-FND-008 — Hand-written configuration still rejects unknown keys
+## [closed] GOVLAND-FND-008 — Hand-written configuration still rejects unknown keys
 
 - **Observation:** docs/core/contract-evolution.md now requires that an unknown key in hand-written configuration produce a warning diagnostic while authority-bearing sections and required features fail closed. docs/specs/20260628-nanocore_config_identity_contract.md still says that all authored files use strict schemas, which the Core rule now overrides for tolerant sections; packages/config-schema/src uses strict object schemas in about 160 places, and the NanoCore agents loader test expects an Unrecognized keys error.
 - **Impact:** docs/specs/20260628-nanocore_config_identity_contract.md and docs/specs/20260616-agent_environment_package.md own the affected configuration; until they classify each section, an older NanoCore rejects configuration that a newer one wrote.
 - **Evidence:** The authored-file schema paragraph of docs/specs/20260628-nanocore_config_identity_contract.md, a count of strict object schemas in packages/config-schema/src, and apps/nanocore/src/config/agents-loader.test.ts, all on 2026-09-24.
-- **Owner:** docs/changes/202609241200000001-configuration_tolerant_reader/plan.md; no receiver has accepted it.
-- **Next action:** Moved outside this plan by the engineer's instruction of 2026-09-24 to plan the other landing tasks. The configuration tolerant reader plan starts when the engineer transfers it.
+- **Owner:** docs/changes/202609241200000001-configuration_tolerant_reader/plan.md; accepted by the resumed governance handoff primary on 2026-09-24.
+- **Next action:** Moved outside this plan by the engineer's instruction of 2026-09-24 to plan the other landing tasks. The configuration tolerant reader plan starts when the engineer transfers it. The resumed handoff admitted the task on 2026-09-24; the accepted per-file classification, loader and editor warnings, and operator delivery are now implemented and independently accepted.
+- **Closing verdict:** Closed after tolerant optional fields and strict authority/required-feature boundaries passed their regressions, including source-preserving editor writes and visible reload warnings.
+- **Closure evidence:** Configuration plan checkpoint; independent Grok actual-diff review in temp/changes/202609241200000001-configuration_tolerant_reader/grok-review-final.txt; configuration oracle 11/11, focused NanoCore configuration 45/45, config-schema 47/47, and Web ConfigurationScreen 12/12 tests.
 
 ## [deferred] GOVLAND-FND-009 — Specification bodies need normalization
 

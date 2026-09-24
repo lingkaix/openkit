@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { z } from 'zod';
 import { AuthoredAgentMcpEntrySchema, AuthoredAgentSandboxSchema } from './agent.js';
+import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Workspace grant bound to one reusable Agent credential requirement. */
 export const WorkspaceCredentialBindingSchema = z
@@ -35,7 +36,7 @@ export const WorkspaceInternalRoleBindingSchema = z
     profileId: z.string().min(1).optional(),
     preferredLogicalModelId: z.string().min(1).optional(),
   })
-  .strict();
+  .strip();
 
 /**
  * Workspace data root source kinds supported by V1.
@@ -128,10 +129,11 @@ export const WorkspaceConfigWorkspaceSchema = z
 export const WorkspaceConfigSchema = z
   .object({
     schemaVersion: z.literal(1).optional(),
+    requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
     workspace: WorkspaceConfigWorkspaceSchema,
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     const ids = new Set<string>();
 

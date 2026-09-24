@@ -38,6 +38,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 
 ## Core References
 
+- `docs/core/contract-evolution.md`
 - `docs/core/identity.md`
 - `docs/core/communication.md`
 - `docs/core/storage.md`
@@ -105,6 +106,7 @@ DATA_ROOT/config/providers/<providerId>.provider.jsonc
 DATA_ROOT/config/agents/<agentId>.agent.jsonc
 DATA_ROOT/users/<userId>/config/user.jsonc
 DATA_ROOT/workspaces/<workspaceId>/config/workspace.jsonc
+DATA_ROOT/workspaces/<workspaceId>/config/data-sources.jsonc
 ```
 
 `server.jsonc` owns deployment, auth, listener, NanoHost, per-Workspace host-push approval modes, and final `defaults.defaultAgentId` values. The optional deployment-owned `policy.workspaceApprovalModes` field is restart-required and follows `20260704-git_write_workflow.md`; Workspace and request configuration cannot override it. It contains no `coreProviderId`, `coreModel`, `gatewayProviderId`, or `gatewayModel`, and it does not duplicate the Gateway logical-model catalog.
@@ -123,7 +125,17 @@ Workspace MCP server catalogs are not authored runtime-config files. Effective G
 
 `knowledgeMaintenance` is an owner-local field of `user.jsonc` for User Memory, `workspace.jsonc` for Workspace Knowledge, and `server.jsonc` for Server Knowledge. Its strict shape is `{enabled:boolean,reviewRequiredPageIds:string[]}`, defaulting to disabled/empty; IDs are safe, unique and scope-local under the Knowledge owner. Existing current-user, Workspace configuration and administrator authorization respectively govern edits; no cross-scope inheritance applies. The notebook publisher rechecks the current validated snapshot immediately before publication and records the exact value/digest as admission evidence. Reload can revoke an in-flight publication without changing that run's Tool set. Import of notebook content never enables this setting. This design is Not Started until config schemas, revision-aware commands and the notebook consumer land together; it adds no new settings store.
 
-All authored files use strict schemas, explicit `schemaVersion`, the shared required-feature registry when behavior needs a feature gate, and namespaced descriptive extensions. Unknown authority-bearing behavior remains invalid. This change adds no compatibility alias, generic unknown-field activation, routing plugin registry, or parallel configuration transaction protocol.
+Authored configuration uses the hand-written configuration rule in `docs/core/contract-evolution.md`. Every file retains its explicit `schemaVersion` contract, and every known field retains its owning validation. The reader checks a file's declared `requiredFeatures` against the shared registry and its supported features before ignoring any unknown optional field. Unsupported or unregistered required features fail closed. Unknown keys in the tolerant locations below produce warning diagnostics that name the key and its location through the existing operator configuration-diagnostic channel, while the effective snapshot ignores those keys. Unknown keys in authority-bearing locations fail closed. Ignoring an unknown key never grants authority or activates behavior; new authority-bearing semantics require a supported required feature and an accepted owner.
+
+| Authored file | Unknown keys warned about and ignored | Unknown keys rejected |
+| --- | --- | --- |
+| `server.jsonc` | File top level, after checking top-level `requiredFeatures`. | Inside `auth`, `vault`, `nanohost`, `policy`, `server`, `defaults`, and `appUpdate`, including their nested objects; the known `mode` value retains its strict enum validation. |
+| `user.jsonc` | File top level, each `workspaces` preference object, and each nested `internalRoles` preference object, after checking top-level `requiredFeatures`. | No additional unknown-key rejection location; every known preference field retains its validation. |
+| `workspace.jsonc` | File top level and each `workspace.internalRoles` preference object, after checking top-level `requiredFeatures`. | The `workspace` object itself and its `agents`, `roots`, and `assistant` composition and authority objects, including their nested objects. |
+| `gateway.jsonc`, `model-catalog.jsonc`, `internal-role-profiles.jsonc`, provider profiles, and Agent Manifests | No new tolerant location. Existing explicit extension namespaces and open records keep their own accepted semantics. | Unknown keys outside those existing locations, and unsupported required features where a file admits them. |
+| `data-sources.jsonc` | Unknown optional descriptive keys at catalog and source-entry level under the Workspace Data Source Catalog owner; the existing tolerant parser must also report the warning and location. | Invalid known authority fields, including `kind`, `access`, `locator`, and `vaultGrantRef`, and unsupported required features at catalog or entry level. |
+
+`server.jsonc`, `user.jsonc`, and `workspace.jsonc` admit top-level `requiredFeatures` through the shared required-feature registry. The [Workspace Data Source Catalog](./20260704-workspace_data_source_catalog.md) owns source-entry field semantics and required-feature placement; this contract owns its participation in NanoCore runtime-config diagnostics. A reader preserves unknown optional fields in the authored source when it projects an effective snapshot. Revision-protected raw JSONC editing keeps those fields unless the submitted source explicitly removes them. This change adds no compatibility alias, generic unknown-field activation, routing plugin registry, or parallel configuration transaction protocol. Generated Workspace MCP catalogs and Agent Environment Package manifests remain outside this hand-written configuration classification.
 
 ## Deployment Model Extension File
 

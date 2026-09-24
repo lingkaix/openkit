@@ -183,7 +183,7 @@ describe('loadOpenKitConfig', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
-  it('rejects raw API keys in provider config fields', () => {
+  it('ignores an unowned provider config field without exposing its raw API key', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
@@ -202,13 +202,16 @@ describe('loadOpenKitConfig', () => {
       })
     );
 
-    expect(() => loadOpenKitConfig(dataRoot)).toThrow();
+    const loaded = loadOpenKitConfigWithDiagnostics(dataRoot);
+    expect(loaded.config).toEqual({});
+    expect(loaded.diagnostics[0]?.message).toContain('providers');
+    expect(JSON.stringify(loaded)).not.toContain('sk-raw-secret');
   });
 
   it.each([
     ['extraBody', { service_tier: 'auto' }],
     ['extraHeaders', { 'x-provider-feature': 'enabled' }],
-  ] as const)('rejects unowned provider field %s', (field, value) => {
+  ] as const)('ignores unowned top-level provider field %s', (field, value) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
@@ -227,10 +230,12 @@ describe('loadOpenKitConfig', () => {
       })
     );
 
-    expect(() => loadOpenKitConfig(dataRoot)).toThrow(BootConfigError);
+    const loaded = loadOpenKitConfigWithDiagnostics(dataRoot);
+    expect(loaded.config).toEqual({});
+    expect(loaded.diagnostics[0]?.message).toContain('providers');
   });
 
-  it('rejects removed internal OpenAI-compatible facade settings', () => {
+  it('ignores removed top-level internal OpenAI-compatible facade settings', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
@@ -246,7 +251,9 @@ describe('loadOpenKitConfig', () => {
       })
     );
 
-    expect(() => loadOpenKitConfig(dataRoot)).toThrow();
+    const loaded = loadOpenKitConfigWithDiagnostics(dataRoot);
+    expect(loaded.config).toEqual({});
+    expect(loaded.diagnostics[0]?.message).toContain('internal');
   });
 
   it('rejects invalid config values with a boot error', () => {
