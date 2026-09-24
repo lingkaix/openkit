@@ -963,9 +963,12 @@ export function createVerifiedWorkspaceExport({
     if (coverage) turnCaptureCoverage.set(turn.id, coverage);
     const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
     const rawTurn = JSON.parse(readCanonicalTextFile(join(root, 'turn.json')));
-    const declared = Array.isArray(rawTurn.requiredFeatures) && rawTurn.requiredFeatures.includes('openkit.work-observations.v1');
+    const declared =
+      Array.isArray(rawTurn.requiredFeatures) &&
+      rawTurn.requiredFeatures.includes('openkit.work-observations.v1');
     if (!declared) {
-      if (existsSync(join(root, 'observations.jsonl'))) throw new Error('Work observation file lacks its Turn required-feature declaration.');
+      if (existsSync(join(root, 'observations.jsonl')))
+        throw new Error('Work observation file lacks its Turn required-feature declaration.');
       continue;
     }
     if (!coreDb) throw new Error('Work observation export requires durable evidence storage.');

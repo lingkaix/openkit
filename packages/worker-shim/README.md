@@ -36,6 +36,12 @@ Missing root evidence is `failed`; missing, contradictory, or changing reachable
 
 `src/runtime-capture.ts` supplies bounded source framing, exact admitted body selection and opaque references; `src/codex-runtime-capture.ts` tails reachable Codex rollout activity while the parent is running. The existing provenance module owns shared Codex structural interpretation. The AEP supplies immutable capture coverage; off preserves required facts, while on permits complete admitted bodies. Restricted chunks bypass ordinary local transcript payloads and are sent with backpressure through the existing control client. Explicit source/version/parse gaps do not imply zero children or complete coverage; optional provenance retains its stronger separate verifier.
 
+A pre-launch watermarked child is reported as current Turn activity only after appended source bytes or a current Turn spawn edge. Its retained parent declaration still supports nested reachability without replaying historical activity.
+
+When a semantic unit fails credential or size admission after expected metadata was emitted, the shim emits an unavailability fact for each expected observation ID without forwarding rejected body bytes.
+
+The shim validates the AEP capture pair with the shared Worker protocol schema when it reads the package, then passes that typed pair to adapters without resolving policy again.
+
 ## Commands
 
 - `pnpm --filter @openkit/worker-shim test`

@@ -56,6 +56,8 @@ Result-only cleanup of an exact `cleanup-pending` backend with no in-memory sess
 
 Worker observation ingress retains structural facts and restricted chunks through the existing authenticated sequence path, with the storage owner deciding durable publication. AEP construction projects the historical Turn capture binding. Live observations do not advertise complete runtime provenance or replace its independent verifier.
 
+An unavailable Worker observation may cite an earlier expected observation from the same authenticated package and Turn; ingress validates that anchor before persisting the parent reference.
+
 ## Verification
 
 Run the nearest focused tests first, followed by NanoCore typecheck, lint, build, and the complete NanoCore test suite for runtime behavior changes. Governed-worker changes should also run worker-control, recovery, scheduler, and Server route coverage relevant to the changed lifecycle.

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  type CaptureCoverageBinding,
   WORKER_OBSERVATION_CHUNK_MAX_BYTES,
   WORKER_OBSERVATION_CONTENT_MAX_BYTES,
   type WorkerObservationData,
@@ -13,10 +14,7 @@ export type RuntimeFact = WorkerObservationFact;
 /** Immutable admission binding and backpressured restricted publication supplied to adapters. */
 export interface RuntimeCaptureInput {
   /** Exact AEP admission-time setting; adapters never resolve defaults. */
-  readonly captureCoverage: {
-    readonly scope: 'server' | 'workspace' | 'task';
-    readonly value: 'off' | 'on';
-  };
+  readonly captureCoverage: CaptureCoverageBinding;
   /** Execution namespace used by the existing opaque runtime-origin algorithm. */
   readonly packageSnapshotId: string;
   /** Known injected secret values, used only for rejection before transmission. */
@@ -147,6 +145,8 @@ interface RuntimeSemanticUnit {
   sourceRef: string;
   fact: RuntimeFact;
   events: Array<{ record: RuntimeObservation; body: Uint8Array }>;
+  expected: Array<{ observationId: string; fact: RuntimeFact }>;
+  hadExpected: boolean;
   size: number;
   reason?: 'credential-excluded' | 'truncated';
 }
@@ -183,7 +183,7 @@ export class RuntimeSemanticCapture {
     const key = prefix + body.boundary;
     let unit = this.units.get(key);
     if (!unit) {
-      unit = { sourceRef, fact, events: [], size: 0 };
+      unit = { sourceRef, fact, events: [], expected: [], hadExpected: false, size: 0 };
       this.units.set(key, unit);
     }
     unit.fact = fact;
@@ -197,6 +197,10 @@ export class RuntimeSemanticCapture {
       {
         ...this.input,
         emit: async (record, admitted) => {
+          if (record.content.state === 'expected') {
+            current.expected.push({ observationId: record.observationId, fact: record.fact });
+            current.hadExpected = true;
+          }
           if (record.content.state === 'unavailable') {
             current.reason =
               record.content.reason === 'credential-excluded' ? 'credential-excluded' : 'truncated';
@@ -211,6 +215,7 @@ export class RuntimeSemanticCapture {
       fact,
       body
     );
+    if (unit.reason && unit.expected.length) await this.reportUnavailable(unit, false);
     if (terminal || body.boundary === 'runtime.tool.arguments') this.completed.add(key);
   }
   /** Completes all terminal units only after every sibling field in the native frame was observed. */
@@ -239,6 +244,7 @@ export class RuntimeSemanticCapture {
     )
       unit.reason = 'credential-excluded';
     if (unit.reason) {
+      const anchorsAlreadyReported = unit.hadExpected && unit.expected.length === 0;
       if (unit.reason === 'truncated')
         await this.emit(unit.sourceRef, {
           kind: 'coverage',
@@ -247,20 +253,40 @@ export class RuntimeSemanticCapture {
           coverage: 'unavailable',
           reason: 'limit-exceeded',
         });
+      await this.reportUnavailable(unit, interrupted);
+      if (interrupted && anchorsAlreadyReported)
+        await this.emit(unit.sourceRef, { ...unit.fact, phase: 'interrupted' });
+    } else {
+      if (interrupted) await this.emit(unit.sourceRef, { ...unit.fact, phase: 'interrupted' });
+      for (const { record, body } of unit.events) await this.input.emit(record, body);
+    }
+  }
+
+  /** Flushes rejected metadata anchors without retaining later rejected frames in the unit. */
+  private async reportUnavailable(unit: RuntimeSemanticUnit, interrupted: boolean): Promise<void> {
+    const expected = unit.expected.splice(0);
+    if (!expected.length && unit.hadExpected) return;
+    for (const entry of expected.length
+      ? expected
+      : [{ observationId: undefined, fact: unit.fact }]) {
       const sourceSequence = this.nextSequence(unit.sourceRef);
       this.sequences.set(unit.sourceRef, sourceSequence + 1);
       await emitRuntimeFact(
         {
           ...this.input,
           emit: (record) =>
-            this.input.emit({ ...record, content: { state: 'unavailable', reason: unit.reason! } }),
+            this.input.emit({
+              ...record,
+              content: {
+                state: 'unavailable',
+                reason: unit.reason!,
+                ...(entry.observationId ? { expectedObservationId: entry.observationId } : {}),
+              },
+            }),
         },
         { sourceRef: unit.sourceRef, sourceSequence },
-        { ...unit.fact, ...(interrupted ? { phase: 'interrupted' as const } : {}) }
+        { ...entry.fact, ...(interrupted ? { phase: 'interrupted' as const } : {}) }
       );
-    } else {
-      if (interrupted) await this.emit(unit.sourceRef, { ...unit.fact, phase: 'interrupted' });
-      for (const { record, body } of unit.events) await this.input.emit(record, body);
     }
   }
 }

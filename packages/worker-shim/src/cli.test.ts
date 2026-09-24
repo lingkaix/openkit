@@ -240,7 +240,7 @@ describe('worker shim CLI parsing', () => {
     ).toThrow('Unsupported worker shim argument: --artifact-dir');
   });
 
-  it('validates the local Integration bootstrap before completing a dry run', async () => {
+  it('validates local Integration and the exact admitted capture binding before a dry run', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-dry-run-control-'));
     const packagePath = join(sessionDir, 'package.json');
     writeRawFileSync(
@@ -296,6 +296,57 @@ describe('worker shim CLI parsing', () => {
     expect(existsSync(join(sessionDir, 'events.jsonl'))).toBe(false);
     expect(existsSync(join(sessionDir, 'items.jsonl'))).toBe(false);
     expect(existsSync(join(sessionDir, 'artifacts.jsonl'))).toBe(false);
+
+    const admittedPackage = JSON.parse(readFileSync(packagePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    for (const captureCoverage of [
+      undefined,
+      { scope: 'server', value: 'off', mutable: true },
+      { scope: 'thread', value: 'on' },
+      { scope: 'server', value: 'enabled' },
+    ]) {
+      writeRawFileSync(
+        packagePath,
+        JSON.stringify({ ...admittedPackage, observability: { captureCoverage } }),
+        'utf8'
+      );
+      await expect(
+        runWorkerShim({
+          args: parseWorkerShimArgs([
+            '--package',
+            packagePath,
+            '--session-dir',
+            sessionDir,
+            '--dry-run',
+          ]),
+          environment: { OPENKIT_WORKER_INFERENCE_TOKEN: 'image-smoke-placeholder' },
+        })
+      ).rejects.toThrow('Worker observation capture requires the exact admitted coverage binding.');
+      expect(existsSync(join(sessionDir, 'native-state'))).toBe(false);
+    }
+
+    writeRawFileSync(
+      packagePath,
+      JSON.stringify({
+        ...admittedPackage,
+        observability: { captureCoverage: { scope: 'task', value: 'on' } },
+      }),
+      'utf8'
+    );
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs([
+          '--package',
+          packagePath,
+          '--session-dir',
+          sessionDir,
+          '--dry-run',
+        ]),
+        environment: { OPENKIT_WORKER_INFERENCE_TOKEN: 'image-smoke-placeholder' },
+      })
+    ).resolves.toEqual({ exitCode: 0, signal: null, status: 'completed' });
   });
 
   it('rejects missing, direct NanoCore, or shared Integration credentials', async () => {

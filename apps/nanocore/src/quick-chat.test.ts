@@ -8,7 +8,7 @@ import {
   ConversationTargetCatalogSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createApp } from './app.js';
 import { FsStore } from './lib/store.js';
@@ -274,13 +274,19 @@ describe('quick chat app API', () => {
   });
 
   it('records a thread-scoped Chat Mode answer without starting a worker turn', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-answer-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
     const calls: Array<{
       providerId: string;
       request: Parameters<PiAiGatewayClient['createChatCompletion']>[1];
     }> = [];
     const app = createApp({
       ...createQuickChatProviderOptions(),
-      store: createDemoStore(),
+      coreDb,
+      dataRoot,
+      store: createDemoStore({ dataRoot }),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
         createChatCompletion: async (provider, request) => {
@@ -301,6 +307,7 @@ describe('quick chat app API', () => {
         },
       } as unknown as PiAiGatewayClient,
     });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
 
     const res = await app.request(
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
@@ -355,8 +362,11 @@ describe('quick chat app API', () => {
   });
 
   it('answers a Chat Mode handoff summary from current input despite incidental review nouns', async () => {
-    const store = createDemoStore();
-    const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-handoff-summary-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
+    const store = createDemoStore({ dataRoot });
     const calls: Array<{
       request: Parameters<PiAiGatewayClient['createChatCompletion']>[1];
     }> = [];
@@ -364,6 +374,8 @@ describe('quick chat app API', () => {
       'Current handoff evidence includes the last review notes and the audit write. For this turn only, do not call tools, start workers, change configuration, approve anything, publish, or deploy. Summarize this handoff from the current input only.';
     const app = createApp({
       ...createQuickChatProviderOptions(),
+      coreDb,
+      dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -385,6 +397,8 @@ describe('quick chat app API', () => {
         },
       } as unknown as PiAiGatewayClient,
     });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
 
     try {
       const res = await app.request(

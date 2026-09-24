@@ -199,9 +199,11 @@ function recordWorkerObservation(
   const { lineage } = event;
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
   const owner = { threadId: lineage.threadId, turnId: lineage.turnId };
-  const id = `obs_runtime_${createHash('sha256')
-    .update(JSON.stringify([lineage.packageSnapshotId, event.event.data.observationId]))
-    .digest('hex')}`;
+  const recordId = (observationId: string) =>
+    `obs_runtime_${createHash('sha256')
+      .update(JSON.stringify([lineage.packageSnapshotId, observationId]))
+      .digest('hex')}`;
+  const id = recordId(event.event.data.observationId);
   try {
     applyScopedMigrations(workspaceDb);
     const binding = readWorkObservationTurnBinding(workspaceDb, owner);
@@ -213,11 +215,44 @@ function recordWorkerObservation(
       const data = event.event.data;
       if (data.content.state === 'expected' && binding.coverage.value !== 'on')
         throw new Error('Observation content is not admitted by this Turn');
+      let parent: string | undefined;
+      if (data.content.state === 'unavailable' && data.content.expectedObservationId) {
+        parent = recordId(data.content.expectedObservationId);
+        const rows = readWorkObservations(workspaceDb, owner);
+        const expected = rows.find((row) => row.id === parent);
+        const current = rows.find((row) => row.id === id);
+        if (
+          !expected ||
+          expected.type !== 'runtime.observed' ||
+          (current && expected.seq >= current.seq) ||
+          !expected.refs?.some(
+            (ref) =>
+              ref.kind === 'aep-snapshot' &&
+              ref.edge === 'association' &&
+              ref.locator === lineage.packageSnapshotId &&
+              ref.scope.workspaceId === lineage.workspaceId
+          )
+        )
+          throw new Error('Observation unavailability lacks earlier same-package metadata');
+        const declaration = WorkerObservationDataSchema.parse(expected.payload);
+        if (
+          declaration.observationId !== data.content.expectedObservationId ||
+          declaration.content.state !== 'expected' ||
+          declaration.sourceRef !== data.sourceRef ||
+          declaration.sourceSequence >= data.sourceSequence ||
+          declaration.fact.kind !== data.fact.kind ||
+          declaration.fact.runtimeOriginRef !== data.fact.runtimeOriginRef ||
+          declaration.fact.callRef !== data.fact.callRef ||
+          declaration.fact.messageRef !== data.fact.messageRef
+        )
+          throw new Error('Observation unavailability lacks earlier expected content');
+      }
       const observation: WorkObservationDraft = {
         id,
         type: 'runtime.observed',
         ts: data.observedAt,
         obs: 'sidecar',
+        ...(parent ? { parent } : {}),
         ret: 'turn-evidence',
         refs: [
           {

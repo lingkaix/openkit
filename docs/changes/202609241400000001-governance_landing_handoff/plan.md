@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: planned
+status: in-progress
 date: "2026-09-24"
 ---
 # Governance Landing Handoff
@@ -42,4 +42,8 @@ These are recorded and have no task now.
 
 ## Working Checkpoint
 
-Status is planned. The governance landing is committed. Predicted Next Action: the receiving worker reads the documents under Before You Start and resumes task 1 from the runtime child retention checkpoint. Expected observable: RCR-FND-004 reconciled and the biome step of the repository check passing. Evidence that would change the route: a conflict between the paused implementation and a landed owner that needs an engineer decision, which the worker raises instead of choosing a side.
+Status is active on task 1. RCR-FND-004 is reconciled and the repository check passed its Biome step. Predicted Next Action: finish the independently reproduced retention corrections under task 1, including engineer-approved collector-fault semantics. Goal failure/readback work is paused while the engineer discusses the Planning phase; the other active tasks have not started. Expected observable: focused behavior checks and independent acceptance support task 1 closeout without weakening existing assertions. Evidence that changes the route: an unresolved governing decision, unexplained regression, or reviewer counterexample; preserve it in the owning task rather than declaring completion.
+
+## Intent Revision 2 — 2026-09-24
+
+The engineer transferred this handoff to the resumed runtime-retention primary, named the paused implementation and governance landing commits, and authorized completing its tasks in order followed by evaluation under the landed framework. The engineer specified gpt-6-sol for internal sub-agents and allowed independent Claude Code opus 5.5 consultation. The queued documentation-normalization task and recorded-only runtime qualification work are not activated by this instruction. Evaluation of the completed active work will distinguish direct observations from claims requiring the separately controlled framework experiments.

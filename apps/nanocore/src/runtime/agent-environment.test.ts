@@ -232,23 +232,38 @@ describe('agent environment package resolver', () => {
         const captureCoverage = { scope, value };
         const environmentPackage = resolveAgentEnvironmentPackage({ ...input, captureCoverage });
         expect(environmentPackage.observability.captureCoverage).toEqual(captureCoverage);
-        expect((environmentPackage.extensions.openkit as { sessionWorkspace: SessionWorkspaceMaterializationPlan }).sessionWorkspace.compatibilityKey.digest).toBe(key);
+        expect(
+          (
+            environmentPackage.extensions.openkit as {
+              sessionWorkspace: SessionWorkspaceMaterializationPlan;
+            }
+          ).sessionWorkspace.compatibilityKey.digest
+        ).toBe(key);
       }
     }
   });
 
   it('rejects missing capture admission before credential authority resolution', () => {
     const input = {
-      agentSetup: createTestSetup({ credentialDeclarations: [{
-        id: 'test_key', targetEnvVarName: 'TEST_KEY', vaultGrantId: 'grant_missing', visibility: 'runtime-env',
-      }] }),
+      agentSetup: createTestSetup({
+        credentialDeclarations: [
+          {
+            id: 'test_key',
+            targetEnvVarName: 'TEST_KEY',
+            vaultGrantId: 'grant_missing',
+            visibility: 'runtime-env',
+          },
+        ],
+      }),
       agentSessionId: 'session_missing_capture',
       backend: { kind: 'openshell' as const },
       turn: createTurnFixture('Reject missing capture admission'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
-    expect(() => resolveAgentEnvironmentPackage(input as Parameters<typeof resolveAgentEnvironmentPackage>[0])).toThrow('expected object');
+    expect(() =>
+      resolveAgentEnvironmentPackage(input as Parameters<typeof resolveAgentEnvironmentPackage>[0])
+    ).toThrow('expected object');
   });
 
   it('selects the built-in repository MCP only by an explicit manifest id', () => {

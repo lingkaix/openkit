@@ -150,7 +150,7 @@ describe('NanoHost worker governance helpers', () => {
       });
       const environmentPackage = AgentEnvironmentPackageSchema.parse(
         resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
           agentSessionId: 'as_nanohost_1',
           backend: { kind: 'openshell' },

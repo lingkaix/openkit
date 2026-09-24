@@ -24,6 +24,7 @@ import {
   type WorkspaceDataSourceCatalog,
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
+import type { CaptureCoverageBinding } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import {
@@ -206,10 +207,7 @@ interface RuntimeConfigManagerOptions {
   initialSnapshot?: RuntimeConfigSnapshot;
   /** Live capture-coverage sink updated on load and applied reload. */
   captureCoverage?: {
-    setLiveCaptureCoverage(binding: {
-      readonly scope: 'server' | 'workspace' | 'task';
-      readonly value: 'off' | 'on';
-    }): void;
+    setLiveCaptureCoverage(binding: CaptureCoverageBinding): void;
   };
 }
 
@@ -270,10 +268,9 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
  * @param config Parsed server.jsonc OpenKit config.
  * @returns Admission-time pair; omitted policy is off.
  */
-export function captureCoverageBindingFromOpenKitConfig(config: OpenKitConfig): {
-  readonly scope: 'server';
-  readonly value: 'off' | 'on';
-} {
+export function captureCoverageBindingFromOpenKitConfig(
+  config: OpenKitConfig
+): CaptureCoverageBinding {
   return {
     scope: 'server',
     value: config.policy?.workDataCapture?.value ?? 'off',

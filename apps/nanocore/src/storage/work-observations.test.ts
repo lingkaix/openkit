@@ -237,8 +237,6 @@ describe('durable work observations', () => {
       readThreadRuntimeActivity(f.db, {
         threadId: f.owner.threadId,
         turnIds: [f.owner.turnId],
-        maxEntriesPerTurn: 50,
-        maxTextCharacters: 1000,
       })
     ).toEqual([
       {
@@ -283,8 +281,6 @@ describe('durable work observations', () => {
       readThreadRuntimeActivity(f.db, {
         threadId: f.owner.threadId,
         turnIds: [f.owner.turnId],
-        maxEntriesPerTurn: 50,
-        maxTextCharacters: 1000,
       })[0]?.contentCapture
     ).toBe('unknown');
   });
@@ -363,8 +359,6 @@ describe('durable work observations', () => {
     const activity = readThreadRuntimeActivity(f.db, {
       threadId: f.owner.threadId,
       turnIds: [f.owner.turnId],
-      maxEntriesPerTurn: 50,
-      maxTextCharacters: 1000,
     })[0]!;
     expect(activity).toMatchObject({
       coverage: 'collecting',
@@ -385,9 +379,72 @@ describe('durable work observations', () => {
       readThreadRuntimeActivity(f.db, {
         threadId: f.owner.threadId,
         turnIds: [f.owner.turnId],
-        maxEntriesPerTurn: 50,
-        maxTextCharacters: 1000,
       })[0]?.entries[1]?.text
     ).toBeUndefined();
+  });
+
+  it.each([
+    'malformed-frame',
+    'partial-frame',
+  ] as const)('keeps observed child activity partial after a %s collection gap', (reason) => {
+    const f = fixture();
+    appendWorkObservation(f.db, {
+      ...f.owner,
+      observation: {
+        id: 'observed-child',
+        type: 'runtime.observed',
+        ts: '2026-09-22T00:00:00.000Z',
+        obs: 'sidecar',
+        payload: {
+          observationId: 'observed-child',
+          sourceRef: 'source-one',
+          sourceSequence: 0,
+          observedAt: '2026-09-22T00:00:00.000Z',
+          fact: {
+            kind: 'origin',
+            runtimeOriginRef: 'origin-child',
+            parentRuntimeOriginRef: 'origin-parent',
+            phase: 'started',
+          },
+          content: { state: 'not-applicable' },
+        },
+      },
+      bodies: [],
+    });
+    appendWorkObservation(f.db, {
+      ...f.owner,
+      observation: {
+        id: `gap-${reason}`,
+        type: 'runtime.observed',
+        ts: '2026-09-22T00:00:01.000Z',
+        obs: 'sidecar',
+        payload: {
+          observationId: `gap-${reason}`,
+          sourceRef: 'source-one',
+          sourceSequence: 1,
+          observedAt: '2026-09-22T00:00:01.000Z',
+          fact: {
+            kind: 'coverage',
+            runtimeOriginRef: null,
+            family: 'child-content',
+            coverage: 'unavailable',
+            reason,
+          },
+          content: { state: 'not-applicable' },
+        },
+      },
+      bodies: [],
+    });
+
+    expect(
+      readThreadRuntimeActivity(f.db, {
+        threadId: f.owner.threadId,
+        turnIds: [f.owner.turnId],
+      })[0]
+    ).toMatchObject({
+      coverage: 'partial',
+      contentCapture: 'on',
+      entries: [{ kind: 'child-started', label: 'Child 1 started' }],
+    });
   });
 });

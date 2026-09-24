@@ -50,9 +50,9 @@ import {
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import {
@@ -1174,13 +1174,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   /** Reads durable admission before preview or dispatch; missing history cannot become default-off. */
   private requireTurnCaptureCoverage(turn: { workspaceId: string; threadId: string; id: string }) {
     const workspaceDb = this.openWorkspaceDb(turn.workspaceId);
-    if (!workspaceDb) throw new TurnStartValidationError('recovery_required', 'Worker capture admission is not durable.', 409);
+    if (!workspaceDb)
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Worker capture admission is not durable.',
+        409
+      );
     try {
-      const binding = readWorkObservationTurnBinding(workspaceDb, { threadId: turn.threadId, turnId: turn.id });
+      const binding = readWorkObservationTurnBinding(workspaceDb, {
+        threadId: turn.threadId,
+        turnId: turn.id,
+      });
       if (!binding.coverage) throw new Error('Missing persisted capture coverage');
       return binding.coverage;
     } catch {
-      throw new TurnStartValidationError('recovery_required', 'Worker capture admission is unavailable.', 409);
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Worker capture admission is unavailable.',
+        409
+      );
     } finally {
       workspaceDb.sqlite.close();
     }

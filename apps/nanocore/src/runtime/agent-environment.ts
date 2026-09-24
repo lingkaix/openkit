@@ -241,7 +241,9 @@ export function resolveAgentEnvironmentPackageMetadata(
 }
 
 /** Parses planning components with their existing owners, without claiming a dispatch-valid AEP. */
-function parseAgentEnvironmentPlanningFields(input: Record<string, unknown>): AgentEnvironmentPackagePreview {
+function parseAgentEnvironmentPlanningFields(
+  input: Record<string, unknown>
+): AgentEnvironmentPackagePreview {
   const fields = AgentEnvironmentPackageSchema.shape;
   return {
     schemaVersion: fields.schemaVersion.parse(input.schemaVersion),

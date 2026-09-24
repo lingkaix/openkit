@@ -3240,17 +3240,44 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Reject missing binding');
-    const turnPath = join(coreDb.dataRoot, 'workspaces', turn.workspaceId, 'threads', turn.threadId, 'turns', turn.id, 'turn.json');
+    const turnPath = join(
+      coreDb.dataRoot,
+      'workspaces',
+      turn.workspaceId,
+      'threads',
+      turn.threadId,
+      'turns',
+      turn.id,
+      'turn.json'
+    );
     const record = JSON.parse(readFileSync(turnPath, 'utf8'));
     delete record.captureCoverage;
     writeFileSync(turnPath, JSON.stringify(record));
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
     const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb, environmentBackend: { kind: 'openshell' } });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      environmentBackend: { kind: 'openshell' },
+    });
     try {
-      await expect(startWithExecutorLease(coreDb, executor, store, turn, 'as_missing_capture', new Date().toISOString(), 'Reject missing binding', {
-        agentSetup: createTestAgentSetup(), requestId: '00000000-0000-4000-8000-000000000299', triggerActor: turn.triggerActor, workspaceRoots: [],
-      })).rejects.toMatchObject({ code: 'recovery_required' });
+      await expect(
+        startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_missing_capture',
+          new Date().toISOString(),
+          'Reject missing binding',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: '00000000-0000-4000-8000-000000000299',
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [],
+          }
+        )
+      ).rejects.toMatchObject({ code: 'recovery_required' });
       expect(backend.calls).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -3272,15 +3299,24 @@ describe('WorkerGovernanceTurnExecutor', () => {
       },
     });
 
-    await startWithExecutorLease(coreDb, executor, store, turn, 'as_governance_relay_1', new Date().toISOString(), 'Run trusted worker inference', {
-      agentSetup: createTestAgentSetup({
-        requiredCapabilities: ['trusted-worker-inference-relay'],
-      }),
-      requestId: '00000000-0000-4000-8000-000000000214',
-      triggerActor: turn.triggerActor,
-      workspaceCwd: '/workspace/repo',
-      workspaceRoots: [],
-    });
+    await startWithExecutorLease(
+      coreDb,
+      executor,
+      store,
+      turn,
+      'as_governance_relay_1',
+      new Date().toISOString(),
+      'Run trusted worker inference',
+      {
+        agentSetup: createTestAgentSetup({
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        }),
+        requestId: '00000000-0000-4000-8000-000000000214',
+        triggerActor: turn.triggerActor,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      }
+    );
 
     expect(backend.lastPackage?.llm.routes).toEqual([
       expect.objectContaining({
@@ -3432,18 +3468,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      await expect(executor.startTurn(
-        fixture.store,
-        fixture.environmentPackage.scope.turnId,
-        'Review Git changes without durable workspace storage',
-        {
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000202',
-          triggerActor: fixture.store.getTurnById(fixture.environmentPackage.scope.turnId)
-            .triggerActor,
-          workspaceRoots: [],
-        }
-      )).rejects.toMatchObject({ code: 'recovery_required' });
+      await expect(
+        executor.startTurn(
+          fixture.store,
+          fixture.environmentPackage.scope.turnId,
+          'Review Git changes without durable workspace storage',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: '00000000-0000-4000-8000-000000000202',
+            triggerActor: fixture.store.getTurnById(fixture.environmentPackage.scope.turnId)
+              .triggerActor,
+            workspaceRoots: [],
+          }
+        )
+      ).rejects.toMatchObject({ code: 'recovery_required' });
 
       expect(backend.calls).toEqual([]);
       expect(collectWorkspaceChanges).not.toHaveBeenCalled();
@@ -4524,12 +4562,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        startWithExecutorLease(coreDb, executor, store, turn, 'as_completed_turn_persistence_fail_1', new Date().toISOString(), 'Fail completed turn persistence', {
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000211',
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [],
-        })
+        startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_completed_turn_persistence_fail_1',
+          new Date().toISOString(),
+          'Fail completed turn persistence',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: '00000000-0000-4000-8000-000000000211',
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [],
+          }
+        )
       ).rejects.toThrow('completed turn persistence failed');
 
       expect(store.getAgentSession('as_completed_turn_persistence_fail_1')).toMatchObject({
@@ -4567,12 +4614,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let rejected = false;
 
     try {
-      await startWithExecutorLease(coreDb, executor, store, turn, 'as_falsey_rejection_1', new Date().toISOString(), 'Reject without an error value', {
-        agentSetup: createTestAgentSetup(),
-        requestId: '00000000-0000-4000-8000-000000000101',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_falsey_rejection_1',
+        new Date().toISOString(),
+        'Reject without an error value',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000101',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
     } catch {
       rejected = true;
     } finally {
@@ -4617,12 +4673,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let failure: unknown = null;
 
     try {
-      await startWithExecutorLease(coreDb, executor, store, turn, 'as_terminal_notify_fail_1', new Date().toISOString(), 'Fail completion notification', {
-        agentSetup: createTestAgentSetup(),
-        requestId: '00000000-0000-4000-8000-000000000102',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_terminal_notify_fail_1',
+        new Date().toISOString(),
+        'Fail completion notification',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000102',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
     } catch (error) {
       failure = error;
     } finally {
@@ -4721,12 +4786,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let failure: unknown = null;
 
     try {
-      await startWithExecutorLease(coreDb, executor, store, turn, `as_${failurePoint}_fail_1`, new Date().toISOString(), `Fail ${failurePoint} persistence`, {
-        agentSetup: createTestAgentSetup(),
-        requestId,
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        `as_${failurePoint}_fail_1`,
+        new Date().toISOString(),
+        `Fail ${failurePoint} persistence`,
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId,
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
     } catch (error) {
       failure = error;
     } finally {
@@ -4772,12 +4846,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let failure: unknown = null;
 
     try {
-      await startWithExecutorLease(coreDb, executor, store, turn, 'as_setup_fail_1', new Date().toISOString(), 'Fail worker setup', {
-        agentSetup: createTestAgentSetup(),
-        requestId: '00000000-0000-4000-8000-000000000106',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_setup_fail_1',
+        new Date().toISOString(),
+        'Fail worker setup',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000106',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
     } catch (error) {
       failure = error;
     } finally {

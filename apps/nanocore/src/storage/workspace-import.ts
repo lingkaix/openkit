@@ -4666,10 +4666,16 @@ function readWorkObservationImportState(
         if (sourcePackages.length !== 1)
           throw new Error('Runtime observation requires one exact exported AEP.');
         const targetPackageId = requiredMapValue(
-          context.agentEnvironmentPackageSnapshotIds, sourcePackages[0]!.snapshotId, 'AEP snapshot'
+          context.agentEnvironmentPackageSnapshotIds,
+          sourcePackages[0]!.snapshotId,
+          'AEP snapshot'
         );
-        for (const [key, prefix] of [['observationId', 'obs'], ['sourceRef', 'rts']] as const) {
-          payload[key] = `${prefix}_${createHash('sha256').update(`${targetPackageId}:${payload[key]}`).digest('hex').slice(0, 24)}`;
+        for (const [key, prefix] of [
+          ['observationId', 'obs'],
+          ['sourceRef', 'rts'],
+        ] as const) {
+          payload[key] =
+            `${prefix}_${createHash('sha256').update(`${targetPackageId}:${payload[key]}`).digest('hex').slice(0, 24)}`;
         }
       }
       const origins =
@@ -4694,16 +4700,21 @@ function readWorkObservationImportState(
         }
         if (row.type === 'runtime.observed') {
           const targetPackageId = requiredMapValue(
-            context.agentEnvironmentPackageSnapshotIds, sourcePackages[0]!.snapshotId, 'AEP snapshot'
+            context.agentEnvironmentPackageSnapshotIds,
+            sourcePackages[0]!.snapshotId,
+            'AEP snapshot'
           );
-          for (const [key, prefix] of [['callRef', 'rtc'], ['messageRef', 'rtm']] as const) {
+          for (const [key, prefix] of [
+            ['callRef', 'rtc'],
+            ['messageRef', 'rtm'],
+          ] as const) {
             const sourceRef = rewritten[key];
             if (typeof sourceRef === 'string')
-              rewritten[key] = `${prefix}_${createHash('sha256').update(`${targetPackageId}:${sourceRef}`).digest('hex').slice(0, 24)}`;
+              rewritten[key] =
+                `${prefix}_${createHash('sha256').update(`${targetPackageId}:${sourceRef}`).digest('hex').slice(0, 24)}`;
           }
           payload.fact = rewritten;
-        }
-        else Object.assign(payload, rewritten);
+        } else Object.assign(payload, rewritten);
       }
       if (Array.isArray(payload.bodies)) {
         payload.bodies = payload.bodies.map((body: unknown) => {
@@ -4826,7 +4837,8 @@ function remintWorkObservationReference(
     ref.scope.workspaceId !== context.report.exportedWorkspaceId ||
     ref.scope.deploymentId !== undefined ||
     (ref.scope.ownerScope !== undefined && ref.scope.ownerScope !== 'workspace')
-  ) return ref;
+  )
+    return ref;
   const scope: Record<string, string> = { ...ref.scope, workspaceId: context.targetWorkspaceId };
   for (const [key, map] of [
     ['threadId', context.threadIds],

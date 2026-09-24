@@ -1382,8 +1382,18 @@ describe('workspace auxiliary lineage reminting', () => {
       },
     ];
     const externalRefs = [
-      { kind: 'sandbox-image', scope: { ownerScope: 'server', deploymentId: 'dep_other' }, locator: 'sha256:source-image', edge: 'association' },
-      { kind: 'artifact', scope: { workspaceId: source.workspaceId, deploymentId: 'dep_other' }, locator: source.artifactId, edge: 'association' },
+      {
+        kind: 'sandbox-image',
+        scope: { ownerScope: 'server', deploymentId: 'dep_other' },
+        locator: 'sha256:source-image',
+        edge: 'association',
+      },
+      {
+        kind: 'artifact',
+        scope: { workspaceId: source.workspaceId, deploymentId: 'dep_other' },
+        locator: source.artifactId,
+        edge: 'association',
+      },
     ];
     const text = `${rows.map((row) => JSON.stringify({ ...row, refs: externalRefs })).join('\n')}\n`;
     const verified = writeWorkspaceExportTree({

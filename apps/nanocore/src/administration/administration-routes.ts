@@ -34,6 +34,7 @@ import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
 import { parseUsage } from '../llm/gateway-usage.js';
+import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -234,9 +235,7 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
             throw error;
           }
 
-          const captureDb = openWorkspaceDb(input.coreDb!.dataRoot, workspaceId);
           try {
-            applyScopedMigrations(captureDb);
             const snapshot = input.runtimeConfig();
             const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
             const userConfig = snapshot.userConfigs.find(
@@ -310,47 +309,52 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
               }),
             });
             const priorMessages = administrationMessages(store, workspaceId, thread.id, turn.id);
-            const loopResult = await runInternalAgentLoop(
-              {
-                systemPrompt: administrationSystemPrompt(workspaceId, thread.id),
-                messages: priorMessages,
-                tools,
-                model: {
-                  logicalModelId: selection.logicalModel.id,
-                  capabilities: selection.logicalModel.capabilities,
-                  modelFamilyId: selection.logicalModel.modelFamilyId,
-                },
-                contextManagement: {
-                  ...selection.logicalModel.contextManagement,
-                  authority: 'openkit',
-                },
-                limits: selection.profile?.limits ?? DEFAULT_LIMITS,
-                signal: context.req.raw.signal,
-              },
-              createInternalAgentGatewayProvider({
-                capture: { workspaceDb: captureDb, threadId: thread.id, turnId: turn.id },
-                logicalModel: selection.logicalModel,
-                dispatcher: input.llmGatewayDispatcher,
-                resolveGatewayProvider: input.resolveGatewayProvider,
-                ...(input.providerSubscriptionAccountManager
-                  ? { providerSubscriptionAccountManager: input.providerSubscriptionAccountManager }
-                  : {}),
-                promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
-                usageEndpoint: 'responses',
-                onDispatch: ({ providerId, usage }) => {
-                  recordAdministrationLlmUsage({
-                    authorityActor: triggerActor,
-                    coreDb: input.coreDb!,
+            const loopResult = await withTurnModelCapture({ store, turn }, (capture) =>
+              runInternalAgentLoop(
+                {
+                  systemPrompt: administrationSystemPrompt(workspaceId, thread.id),
+                  messages: priorMessages,
+                  tools,
+                  model: {
                     logicalModelId: selection.logicalModel.id,
-                    providerId,
-                    requestId: request.requestId,
-                    threadId: thread.id,
-                    turnId: turn.id,
-                    usage,
-                    workspaceId,
-                  });
+                    capabilities: selection.logicalModel.capabilities,
+                    modelFamilyId: selection.logicalModel.modelFamilyId,
+                  },
+                  contextManagement: {
+                    ...selection.logicalModel.contextManagement,
+                    authority: 'openkit',
+                  },
+                  limits: selection.profile?.limits ?? DEFAULT_LIMITS,
+                  signal: context.req.raw.signal,
                 },
-              })
+                createInternalAgentGatewayProvider({
+                  capture,
+                  logicalModel: selection.logicalModel,
+                  dispatcher: input.llmGatewayDispatcher,
+                  resolveGatewayProvider: input.resolveGatewayProvider,
+                  ...(input.providerSubscriptionAccountManager
+                    ? {
+                        providerSubscriptionAccountManager:
+                          input.providerSubscriptionAccountManager,
+                      }
+                    : {}),
+                  promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
+                  usageEndpoint: 'responses',
+                  onDispatch: ({ providerId, usage }) => {
+                    recordAdministrationLlmUsage({
+                      authorityActor: triggerActor,
+                      coreDb: input.coreDb!,
+                      logicalModelId: selection.logicalModel.id,
+                      providerId,
+                      requestId: request.requestId,
+                      threadId: thread.id,
+                      turnId: turn.id,
+                      usage,
+                      workspaceId,
+                    });
+                  },
+                })
+              )
             );
             if (loopResult.kind !== 'quiescent') {
               const code =
@@ -415,8 +419,6 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
                 ? 'Current deployment administrator authority was lost before publication.'
                 : 'Administration could not settle the current bounded run.'
             );
-          } finally {
-            captureDb.sqlite.close();
           }
         },
         inflightCommands: input.inflightCommands,

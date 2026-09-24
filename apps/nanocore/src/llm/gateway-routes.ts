@@ -425,7 +425,8 @@ function publicGatewayAuthorityDenied(input: {
           'llm.gateway.use',
           true
         ) ||
-        (lineage.threadId && lineage.turnId &&
+        (lineage.threadId &&
+          lineage.turnId &&
           (!input.store ||
             input.actor.kind !== 'user' ||
             !isThreadIdVisible(

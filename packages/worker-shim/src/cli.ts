@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  CaptureCoverageBindingSchema,
   WorkerCanonicalTerminalEventDataSchema,
   type WorkerStartupFailure,
 } from '@openkit/worker-protocol';
@@ -20,7 +21,6 @@ import {
   type WorkerControlFetch,
 } from './control-client.js';
 import { openSandboxIntegration, type SandboxIntegrationClient } from './integration-client.js';
-import type { RuntimeCaptureInput } from './runtime-capture.js';
 import {
   type WorkerLineage,
   type WorkerTerminalOutcomeInput,
@@ -538,16 +538,13 @@ async function runWorkerShimImplementation(
   const turnInput = resolveWorkerTurnInput(packageManifest);
   const cwd = resolveWorkerWorkingDirectory(packageManifest);
   const workspaceInputs = resolveWorkspaceInputs(packageManifest);
-  const rawCoverage = packageManifest.observability?.captureCoverage;
-  if (
-    !isRecord(rawCoverage) ||
-    !['server', 'workspace', 'task'].includes(String(rawCoverage.scope)) ||
-    (rawCoverage.value !== 'off' && rawCoverage.value !== 'on') ||
-    Object.keys(rawCoverage).some((key) => key !== 'scope' && key !== 'value')
-  ) {
+  const captureCoverageResult = CaptureCoverageBindingSchema.safeParse(
+    packageManifest.observability?.captureCoverage
+  );
+  if (!captureCoverageResult.success) {
     throw new Error('Worker observation capture requires the exact admitted coverage binding.');
   }
-  const captureCoverage = rawCoverage as RuntimeCaptureInput['captureCoverage'];
+  const captureCoverage = captureCoverageResult.data;
 
   if (options.args.dryRun) {
     const stateRoot = join(options.args.sessionDir, 'native-state');

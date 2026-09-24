@@ -8,6 +8,7 @@ import {
   type RuntimeCaptureInput,
   type RuntimeObservation,
   runtimeOriginRef,
+  runtimeRef,
 } from './runtime-capture.js';
 
 /** Encodes complete native frames without transforming admitted content strings. */
@@ -60,6 +61,205 @@ async function fixture(value: 'off' | 'on') {
 }
 
 describe('incremental Codex capture', () => {
+  it('retains a complete native ancestry fault as a gap without failing collection finalization', async () => {
+    const f = await fixture('on');
+    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    try {
+      await writeFile(f.path('root'), lines(meta('root')));
+      await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+      await capture.writeStdout(
+        Buffer.from(
+          lines({
+            type: 'item.completed',
+            item: {
+              type: 'collab_tool_call',
+              id: 'self-spawn',
+              tool: 'spawn_agent',
+              sender_thread_id: 'root',
+              receiver_thread_ids: ['root'],
+              status: 'completed',
+            },
+          })
+        )
+      );
+      expect(
+        f.received.some(
+          ({ record }) =>
+            record.fact.kind === 'coverage' &&
+            record.fact.coverage === 'unavailable' &&
+            record.fact.reason !== undefined
+        )
+      ).toBe(true);
+      await capture.finalize();
+      expect(f.received.some(({ record }) => record.fact.coverage === 'ended')).toBe(true);
+    } finally {
+      await capture.invalidate();
+      await rm(f.home, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a gap when a reachable child rollout disappears after discovery', async () => {
+    const f = await fixture('on');
+    const childRef = runtimeOriginRef('aep_live', 'child');
+    const childPath = f.path('child');
+    let removedAfterOrigin = false;
+    const capture = await CodexRuntimeCapture.create(
+      {
+        ...f.input,
+        emit: async (record, body) => {
+          await f.input.emit(record, body);
+          if (
+            !removedAfterOrigin &&
+            record.fact.kind === 'origin' &&
+            record.sourceRef === runtimeRef('rts', 'aep_live', 'child') &&
+            record.fact.runtimeOriginRef === childRef
+          ) {
+            await rm(childPath);
+            removedAfterOrigin = true;
+          }
+        },
+      },
+      f.home
+    );
+    try {
+      await writeFile(f.path('root'), lines(meta('root')));
+      await writeFile(
+        childPath,
+        lines(meta('child', 'root'), {
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            channel: 'final',
+            content: [{ type: 'output_text', text: 'vanishing child content' }],
+          },
+        })
+      );
+      await capture.writeStdout(
+        Buffer.from(
+          lines(
+            { type: 'thread.started', thread_id: 'root' },
+            {
+              type: 'item.completed',
+              item: {
+                type: 'collab_tool_call',
+                id: 'spawn-child',
+                tool: 'spawn_agent',
+                sender_thread_id: 'root',
+                receiver_thread_ids: ['child'],
+                status: 'completed',
+              },
+            }
+          )
+        )
+      );
+      expect(removedAfterOrigin).toBe(true);
+      expect(
+        f.received.some(
+          ({ record }) =>
+            record.fact.kind === 'coverage' &&
+            record.fact.family === 'child-content' &&
+            record.fact.coverage === 'unavailable' &&
+            record.fact.reason !== undefined
+        )
+      ).toBe(true);
+      await capture.finalize();
+      expect(f.received.some(({ body }) => body)).toBe(false);
+    } finally {
+      await capture.invalidate();
+      await rm(f.home, { recursive: true, force: true });
+    }
+  });
+
+  it('does not tail a descendant through duplicated child ancestry', async () => {
+    const f = await fixture('on');
+    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    try {
+      await writeFile(f.path('root'), lines(meta('root')));
+      await writeFile(f.path('child'), lines(meta('child', 'root')));
+      await writeFile(f.path('child-copy'), lines(meta('child', 'root')));
+      await writeFile(
+        f.path('grandchild'),
+        lines(meta('grandchild', 'child'), {
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            channel: 'final',
+            content: [{ type: 'output_text', text: 'untrusted descendant body' }],
+          },
+        })
+      );
+      await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+      await capture.finalize();
+      expect(
+        f.received.some(
+          ({ record }) =>
+            record.fact.kind === 'coverage' &&
+            record.fact.family === 'child-metadata' &&
+            record.fact.coverage === 'unavailable' &&
+            record.fact.reason === 'source-changed'
+        )
+      ).toBe(true);
+      expect(
+        f.received.filter(
+          ({ record }) =>
+            record.sourceRef === runtimeRef('rts', 'aep_live', 'grandchild') &&
+            record.fact.kind !== 'coverage'
+        )
+      ).toEqual([]);
+      expect(JSON.stringify(f.received)).not.toContain('untrusted descendant body');
+    } finally {
+      await capture.invalidate();
+      await rm(f.home, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the next stdout write after a timer-only required observation append fails', async () => {
+    const f = await fixture('on');
+    const childSourceRef = runtimeRef('rts', 'aep_live', 'child');
+    let rejected = false;
+    const capture = await CodexRuntimeCapture.create(
+      {
+        ...f.input,
+        emit: async (record, body) => {
+          if (!rejected && record.sourceRef === childSourceRef && record.fact.kind === 'origin') {
+            rejected = true;
+            throw new Error('injected timer observation append rejection');
+          }
+          await f.input.emit(record, body);
+        },
+      },
+      f.home
+    );
+    try {
+      await writeFile(f.path('root'), lines(meta('root')));
+      await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+      await writeFile(f.path('child'), lines(meta('child', 'root')));
+      await vi.waitFor(() => expect(rejected).toBe(true));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await expect(
+        capture.writeStdout(
+          Buffer.from(
+            lines({
+              type: 'item.completed',
+              item: { id: 'continued', type: 'agent_message', text: 'continued' },
+            })
+          )
+        )
+      ).rejects.toThrow('injected timer observation append rejection');
+      expect(f.received.some(({ record }) => record.fact.reason === 'collector-failed')).toBe(
+        false
+      );
+      await expect(capture.finalize()).rejects.toThrow(
+        'injected timer observation append rejection'
+      );
+    } finally {
+      await capture.invalidate();
+      await rm(f.home, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     'on',
     'off',
@@ -418,6 +618,35 @@ it('restores resumed child parser eligibility at the pre-launch watermark withou
       f.received.filter(({ body }) => body).map(({ body }) => Buffer.from(body!).toString())
     ).toEqual(['fresh body']);
     expect(f.received.some(({ record }) => record.fact.reason === 'source-missing')).toBe(false);
+  } finally {
+    await capture.invalidate();
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+it('does not report a watermarked child as current-Turn activity without new source bytes', async () => {
+  const f = await fixture('on');
+  await writeFile(f.path('root'), lines(meta('root')));
+  await writeFile(
+    f.path('child'),
+    lines(meta('child', 'root'), {
+      type: 'event_msg',
+      payload: { type: 'agent_message', message: 'earlier Turn only' },
+    })
+  );
+  const capture = await CodexRuntimeCapture.create(f.input, f.home);
+  try {
+    await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+    await capture.finalize();
+    const childRef = runtimeOriginRef('aep_live', 'child');
+    expect(f.received.filter(({ record }) => record.fact.runtimeOriginRef === childRef)).toEqual(
+      []
+    );
+    expect(
+      f.received.every(
+        ({ body }) => !body || !Buffer.from(body).toString().includes('earlier Turn only')
+      )
+    ).toBe(true);
   } finally {
     await capture.invalidate();
     await rm(f.home, { recursive: true, force: true });

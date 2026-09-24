@@ -3289,7 +3289,9 @@ function requireWorkerStorageWorkSlot(
 }
 
 /** Reads the exact work slot already validated into one Agent Environment Package. */
-function packageWorkerStorageWorkSlotRef(environmentPackage: AgentEnvironmentPackagePreview): string {
+function packageWorkerStorageWorkSlotRef(
+  environmentPackage: AgentEnvironmentPackagePreview
+): string {
   return (
     environmentPackage.extensions.openkit as {
       workerStorage: { workSlotRef: string };
@@ -3424,7 +3426,9 @@ function nanoHostRuntimeCredentialImports(
 }
 
 /** Hashes only the exact inputs that decide physical Sandbox reuse. */
-function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPackagePreview): string {
+function nanoHostSandboxCompatibilityKey(
+  environmentPackage: AgentEnvironmentPackagePreview
+): string {
   const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
   const { contextRoot, packagePath } = workerSessionInputPaths(
     environmentPackage.scope.agentSessionId
@@ -3530,7 +3534,9 @@ function nanoHostSandboxIdFromBackendSessionId(backendSessionId: string): string
 }
 
 /** Hashes the process-static adapter and Integration configuration of one Harness. */
-function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPackagePreview): string {
+function nanoHostHarnessCompatibilityKey(
+  environmentPackage: AgentEnvironmentPackagePreview
+): string {
   const { openkit, ...extensions } = environmentPackage.extensions ?? {};
   const openkitRecord =
     openkit && typeof openkit === 'object' && !Array.isArray(openkit)
@@ -3615,7 +3621,9 @@ function nanoHostStaticWorkspaceInput(
 }
 
 /** Hashes only the exact inputs that decide one AgentSession's native continuity. */
-function nanoHostAgentSessionCompatibilityKey(environmentPackage: AgentEnvironmentPackagePreview): string {
+function nanoHostAgentSessionCompatibilityKey(
+  environmentPackage: AgentEnvironmentPackagePreview
+): string {
   const sessionCompatibilityKey = planSessionWorkspaceMaterialization({ environmentPackage })
     .compatibilityKey.digest;
   return deriveNanoHostAgentSessionCompatibilityKey({

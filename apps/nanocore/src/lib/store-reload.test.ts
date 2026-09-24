@@ -1690,13 +1690,21 @@ describe('FsStore canonical reload', () => {
     const turnId = input.turns[0]!.id;
     const binding = { scope: 'task', value: 'on' } as const;
     const turnCaptureCoverage = new Map([[turnId, binding]]);
-    expect(() => store.importWorkspaceSnapshot({
-      ...input, turnCaptureCoverage: new Map([['missing_turn', binding]]),
-    })).toThrow('Capture coverage references missing imported Turn');
-    expect(() => store.importWorkspaceSnapshot({
-      ...input, turnCaptureCoverage,
-      stageWorkspace: () => { throw new Error('staging failed'); },
-    })).toThrow('staging failed');
+    expect(() =>
+      store.importWorkspaceSnapshot({
+        ...input,
+        turnCaptureCoverage: new Map([['missing_turn', binding]]),
+      })
+    ).toThrow('Capture coverage references missing imported Turn');
+    expect(() =>
+      store.importWorkspaceSnapshot({
+        ...input,
+        turnCaptureCoverage,
+        stageWorkspace: () => {
+          throw new Error('staging failed');
+        },
+      })
+    ).toThrow('staging failed');
     expect(store.getTurnCaptureCoverage(turnId)).toBeNull();
     store.importWorkspaceSnapshot({ ...input, turnCaptureCoverage });
     expect(store.getTurnCaptureCoverage(turnId)).toEqual(binding);

@@ -765,8 +765,6 @@ export function registerDashboardRoutes({
           runtimeActivity = readThreadRuntimeActivity(workspaceDb, {
             threadId,
             turnIds: turns.map((turn) => turn.id),
-            maxEntriesPerTurn: 50,
-            maxTextCharacters: 1000,
           }).map((activity) => ({
             turnId: activity.turnId,
             contentCapture: activity.contentCapture,

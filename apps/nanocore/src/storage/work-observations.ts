@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import { closeSync, constants, existsSync, fsyncSync, ftruncateSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import {
+  THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES,
+  THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS,
+} from '@openkit/app-api-schemas';
 import { SystemPromptDigestSchema, TurnSchema } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -548,8 +552,6 @@ export function readThreadRuntimeActivity(
   input: {
     readonly threadId: string;
     readonly turnIds: readonly string[];
-    readonly maxEntriesPerTurn: 50;
-    readonly maxTextCharacters: 1000;
   }
 ): readonly ThreadRuntimeActivity[] {
   return input.turnIds.map((turnId): ThreadRuntimeActivity => {
@@ -662,17 +664,22 @@ export function readThreadRuntimeActivity(
           label,
           ...(text === undefined
             ? {}
-            : { text: text.slice(0, Math.min(1000, input.maxTextCharacters)) }),
+            : { text: text.slice(0, THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS) }),
           textTruncated:
-            text !== undefined && text.length > Math.min(1000, input.maxTextCharacters),
+            text !== undefined && text.length > THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS,
         });
       }
-      const limit = Math.max(0, Math.min(50, input.maxEntriesPerTurn));
+      const limit = THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES;
       return {
         turnId,
         contentCapture,
-        coverage: unavailable ? 'unavailable' : partial ? 'partial' : 'collecting',
-        entries: limit === 0 ? [] : entries.slice(-limit),
+        coverage:
+          unavailable && entries.length === 0
+            ? 'unavailable'
+            : partial || unavailable
+              ? 'partial'
+              : 'collecting',
+        entries: entries.slice(-limit),
         omittedEntryCount: Math.max(0, entries.length - limit),
       };
     } catch {

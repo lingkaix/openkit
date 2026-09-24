@@ -10,9 +10,13 @@ import type {
   WorkerCanonicalEventRecord,
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
+import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { CodexRuntimeCapture } from '../../../../packages/worker-shim/src/codex-runtime-capture.js';
-import { runtimeOriginRef } from '../../../../packages/worker-shim/src/runtime-capture.js';
+import {
+  RuntimeSemanticCapture,
+  runtimeOriginRef,
+} from '../../../../packages/worker-shim/src/runtime-capture.js';
 import { WorkerTranscriptWriter } from '../../../../packages/worker-shim/src/transcript.js';
 import { compactWorkspaceEvidenceBundles, readWorkObservationBody } from '../evidence-bundles.js';
 import {
@@ -247,6 +251,268 @@ function heartbeatRequest(
 }
 
 describe('WorkerControlGateway', () => {
+  it('persists rejected tool arguments and results under their exact expected observations', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-rejected-observation-'));
+    const fixture = createWorkerControlFixture('rejected-observation', root);
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+      sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    });
+    registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:rejected');
+    const writer = new WorkerTranscriptWriter({
+      lineage: fixture.lineage,
+      sessionDir: join(root, 'worker-session'),
+      appendEvent: async (record) => {
+        gateway.appendEvent({
+          authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
+          lineage: fixture.lineage,
+          record,
+        });
+      },
+    });
+    const capture = new RuntimeSemanticCapture({
+      packageSnapshotId: fixture.lineage.packageSnapshotId,
+      captureCoverage: { scope: 'server', value: 'on' },
+      credentialValues: ['known-secret-value'],
+      emit: (record, body) => writer.writeObservation(record, body),
+    });
+    try {
+      for (const boundary of ['runtime.tool.arguments', 'runtime.tool.result'] as const) {
+        for (const [index, text] of ['known-', 'secret-value'].entries()) {
+          await capture.emit(
+            'source',
+            {
+              kind: 'tool',
+              runtimeOriginRef: null,
+              callRef: 'same-call',
+              phase: index ? 'completed' : 'updated',
+            },
+            {
+              bytes: Buffer.from(JSON.stringify({ text })),
+              mediaType: 'application/json',
+              boundary,
+            }
+          );
+        }
+      }
+      await capture.flushCompleted();
+      const rows = readWorkObservations(workspaceDb, fixture.lineage);
+      const observed = rows
+        .filter((row) => row.type === 'runtime.observed')
+        .map((row) => ({ row, data: WorkerObservationDataSchema.parse(row.payload) }))
+        .filter(({ data }) => data.fact.kind === 'tool' && data.fact.callRef === 'same-call');
+      const expected = observed.filter(({ data }) => data.content.state === 'expected');
+      expect(expected).toHaveLength(4);
+      expect(
+        expected.map(({ data }) => data.content.state === 'expected' && data.content.boundary)
+      ).toEqual([
+        'runtime.tool.arguments',
+        'runtime.tool.arguments',
+        'runtime.tool.result',
+        'runtime.tool.result',
+      ]);
+      const unavailable = observed.filter(
+        ({ data }) =>
+          data.content.state === 'unavailable' && data.content.reason === 'credential-excluded'
+      );
+      expect(unavailable).toHaveLength(4);
+      expect(unavailable.map(({ row }) => row.parent).sort()).toEqual(
+        expected.map(({ row }) => row.id).sort()
+      );
+      expect(rows.some((row) => row.type === 'content.published')).toBe(false);
+      expect(JSON.stringify(rows)).not.toContain('known-secret-value');
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an unavailability anchor to earlier content-free metadata in the same package', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-rejected-anchor-'));
+    const fixture = createWorkerControlFixture('rejected-anchor', root);
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+      sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    });
+    registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:rejected-anchor');
+    const send = (sequence: number, data: ReturnType<typeof WorkerObservationDataSchema.parse>) =>
+      gateway.appendEvent({
+        authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
+        lineage: fixture.lineage,
+        record: {
+          kind: 'event',
+          schemaVersion: 1,
+          lineage: fixture.lineage,
+          sequence,
+          event: { type: 'observation.recorded', data },
+        },
+      });
+    const fact = {
+      kind: 'tool' as const,
+      runtimeOriginRef: null,
+      callRef: 'same-call',
+      phase: 'updated' as const,
+    };
+    try {
+      const progress = WorkerObservationDataSchema.parse({
+        observationId: 'obs_progress',
+        sourceRef: 'source',
+        sourceSequence: 0,
+        observedAt: '2026-09-22T00:00:00.000Z',
+        fact,
+        content: { state: 'not-applicable' },
+      });
+      expect(send(0, progress).accepted).toBe(true);
+      const before = readWorkObservations(workspaceDb, fixture.lineage);
+      expect(before).toHaveLength(1);
+      const invalid = WorkerObservationDataSchema.parse({
+        observationId: 'obs_unavailable',
+        sourceRef: 'source',
+        sourceSequence: 1,
+        observedAt: '2026-09-22T00:00:01.000Z',
+        fact,
+        content: {
+          state: 'unavailable',
+          reason: 'credential-excluded',
+          expectedObservationId: progress.observationId,
+        },
+      });
+      expect(() => send(1, invalid)).toThrow();
+      expect(readWorkObservations(workspaceDb, fixture.lineage)).toEqual(before);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { gapRejected: false, label: 'persisted gap' },
+    { gapRejected: true, label: 'rejected gap append' },
+  ])('keeps native outcome separate from a $label after a source ancestry fault', async ({
+    gapRejected,
+  }) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-ancestry-outcome-'));
+    const fixture = createWorkerControlFixture('ancestry-outcome', root);
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
+    const committed: unknown[] = [];
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+      onFinalStatusCommitted: (input) => committed.push(input),
+      sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    });
+    registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:ancestry-outcome');
+    let gapAppendAttempted = false;
+    const writer = new WorkerTranscriptWriter({
+      lineage: fixture.lineage,
+      sessionDir: join(root, 'worker-session'),
+      appendEvent: async (record) => {
+        if (
+          record.event.type === 'observation.recorded' &&
+          record.event.data.fact.kind === 'coverage' &&
+          record.event.data.fact.coverage === 'unavailable'
+        ) {
+          gapAppendAttempted = true;
+          if (gapRejected) throw new Error('injected required gap append rejection');
+        }
+        gateway.appendEvent({
+          authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
+          lineage: fixture.lineage,
+          record,
+        });
+      },
+    });
+    const home = join(root, 'native-home');
+    mkdirSync(join(home, 'sessions'), { recursive: true });
+    const capture = await CodexRuntimeCapture.create(
+      {
+        packageSnapshotId: fixture.lineage.packageSnapshotId,
+        captureCoverage: { scope: 'server', value: 'on' },
+        credentialValues: [],
+        emit: (record, body) => writer.writeObservation(record, body),
+      },
+      home
+    );
+    try {
+      writeFileSync(
+        join(home, 'sessions', 'rollout-root.jsonl'),
+        `${JSON.stringify({ type: 'session_meta', payload: { id: 'root', session_id: 'root', cli_version: '0.153.4' } })}\n`
+      );
+      const frame = (value: unknown) => `${JSON.stringify(value)}\n`;
+      await capture.writeStdout(Buffer.from(frame({ type: 'thread.started', thread_id: 'root' })));
+      const fault = Buffer.from(
+        frame({
+          type: 'item.completed',
+          item: {
+            type: 'collab_tool_call',
+            id: 'self-spawn',
+            tool: 'spawn_agent',
+            sender_thread_id: 'root',
+            receiver_thread_ids: ['root'],
+            status: 'completed',
+          },
+        })
+      );
+      if (gapRejected) {
+        await expect(capture.writeStdout(fault)).rejects.toThrow(
+          'injected required gap append rejection'
+        );
+        expect(gapAppendAttempted).toBe(true);
+        await expect(capture.finalize()).rejects.toThrow('injected required gap append rejection');
+        expect(
+          readWorkObservations(workspaceDb, fixture.lineage).some(
+            (row) =>
+              row.type === 'runtime.observed' &&
+              (row.payload.fact as { coverage?: string }).coverage === 'unavailable'
+          )
+        ).toBe(false);
+      } else {
+        await capture.writeStdout(fault);
+        expect(gapAppendAttempted).toBe(true);
+        expect(
+          readWorkObservations(workspaceDb, fixture.lineage).some(
+            (row) =>
+              row.type === 'runtime.observed' &&
+              (row.payload.fact as { coverage?: string }).coverage === 'unavailable'
+          )
+        ).toBe(true);
+        await capture.finalize();
+        const terminal = await writer.writeTerminalOutcome({
+          status: 'completed',
+          stopReason: 'completed',
+        });
+        gateway.recordFinalStatus({
+          authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
+          lineage: fixture.lineage,
+          sequence: terminal.sequence,
+          status: 'completed',
+          stopReason: 'completed',
+        });
+        expect(committed).toEqual([
+          expect.objectContaining({ eventType: 'turn.completed', lineage: fixture.lineage }),
+        ]);
+      }
+    } finally {
+      await capture.invalidate();
+      if (gapRejected) await writer.writeTerminalOutcome({ status: 'failed', stopReason: 'error' });
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('retains live nested Codex producer content through the real codec, restart, publication and timeline', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-live-observation-'));
     const fixture = createWorkerControlFixture('capture', root);
@@ -444,8 +710,6 @@ describe('WorkerControlGateway', () => {
       const activity = readThreadRuntimeActivity(workspaceDb, {
         threadId: fixture.lineage.threadId,
         turnIds: [fixture.lineage.turnId],
-        maxEntriesPerTurn: 50,
-        maxTextCharacters: 1000,
       })[0]!;
       expect(
         activity.entries.some(

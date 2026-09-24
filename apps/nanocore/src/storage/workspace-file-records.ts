@@ -36,6 +36,10 @@ import {
   TurnSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
+import {
+  type CaptureCoverageBinding,
+  CaptureCoverageBindingSchema,
+} from '@openkit/worker-protocol';
 import Database from 'better-sqlite3';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
@@ -64,28 +68,10 @@ type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
 
-/** Capture coverage value fixed at Turn admission. */
-export const CaptureCoverageValueSchema = z.enum(['off', 'on']);
-
-/** Scope that won when the admission-time capture pair was resolved. */
-export const CaptureCoverageScopeSchema = z.enum(['server', 'workspace', 'task']);
-
 /** Admission-time resolved capture pair stored on turn.json. */
-export const CaptureCoverageBindingSchema = z
-  .object({
-    scope: CaptureCoverageScopeSchema,
-    value: CaptureCoverageValueSchema,
-  })
-  .strict();
-
-/** Capture coverage value fixed at Turn admission. */
-export type CaptureCoverageValue = z.infer<typeof CaptureCoverageValueSchema>;
-
-/** Scope that won when the admission-time capture pair was resolved. */
-export type CaptureCoverageScope = z.infer<typeof CaptureCoverageScopeSchema>;
-
+export type { CaptureCoverageBinding };
 /** Admission-time resolved capture pair stored on turn.json. */
-export type CaptureCoverageBinding = z.infer<typeof CaptureCoverageBindingSchema>;
+export { CaptureCoverageBindingSchema };
 
 const THREAD_ENTRY_REQUIRED_FEATURE = 'openkit.thread-entry.v1' as const;
 const THREAD_VISIBILITY_REQUIRED_FEATURE = 'openkit.thread-visibility.v1' as const;

@@ -304,8 +304,6 @@ describe('thread dashboard app API', () => {
       expect(read).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
         threadId: thread.id,
         turnIds: [turn.id],
-        maxEntriesPerTurn: 50,
-        maxTextCharacters: 1000,
       });
       expect(body.runtimeActivity).toEqual([
         {

@@ -8,6 +8,17 @@ export const WorkerProtocolSchemaVersionSchema = z.literal(1);
 /** Direct worker-control envelope version, independent from canonical worker records. */
 export const WorkerControlSchemaVersionSchema = z.literal(2);
 
+/** Immutable Turn admission coverage pair carried from Core to Worker. */
+export const CaptureCoverageBindingSchema = z
+  .object({
+    scope: z.enum(['server', 'workspace', 'task']),
+    value: z.enum(['off', 'on']),
+  })
+  .strict();
+
+/** Validated Turn admission coverage pair; collection success is recorded separately. */
+export type CaptureCoverageBinding = Readonly<z.infer<typeof CaptureCoverageBindingSchema>>;
+
 /** Value-free pre-native startup diagnostics carried by a private Harness refusal. */
 export const WorkerStartupFailureSchema = z
   .object({
@@ -344,6 +355,7 @@ export const WorkerObservationContentSchema = z.discriminatedUnion('state', [
     .object({
       state: z.literal('unavailable'),
       reason: z.enum(['unsupported', 'capture-failed', 'truncated', 'credential-excluded']),
+      expectedObservationId: ObservationRefSchema.optional(),
     })
     .strict(),
   z

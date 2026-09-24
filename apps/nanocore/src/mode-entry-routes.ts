@@ -77,7 +77,7 @@ import {
 import { dispatchLogicalModel, LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
 import { parseUsage } from './llm/gateway-usage.js';
 import type { ResolvedLogicalModel } from './llm/logical-models.js';
-import type { ModelCaptureContext } from './llm/model-capture.js';
+import { type ModelCaptureContext, withTurnModelCapture } from './llm/model-capture.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
@@ -3662,17 +3662,17 @@ export function registerQuickAndChatModeRoutes({
 
       const turn = createChatTurn(new Date().toISOString());
       let result: Awaited<ReturnType<typeof callQuickChatProvider>>;
-      let captureDb: WorkspaceDb | undefined;
       try {
-        captureDb = repositoryWorkspaceDb(workspaceId);
-        result = await callQuickChatProvider({
-          logicalModel: selection.logicalModel,
-          prompt: conversationPrompt,
-          sessionId,
-          workspaceId,
-          signal: c.req.raw.signal,
-          capture: { workspaceDb: captureDb, threadId, turnId: turn.id },
-        });
+        result = await withTurnModelCapture({ store, turn }, (capture) =>
+          callQuickChatProvider({
+            logicalModel: selection.logicalModel,
+            prompt: conversationPrompt,
+            sessionId,
+            workspaceId,
+            signal: c.req.raw.signal,
+            capture,
+          })
+        );
       } catch (error) {
         store.updateTurn(turn.id, {
           status: c.req.raw.signal.aborted ? 'interrupted' : 'failed',
@@ -3680,8 +3680,6 @@ export function registerQuickAndChatModeRoutes({
           error: { code: 'chat_provider_failed', message: 'Chat model work did not complete.' },
         });
         throw error;
-      } finally {
-        captureDb?.sqlite.close();
       }
       const completedAt = new Date().toISOString();
       recordQuickChatLlmUsage({

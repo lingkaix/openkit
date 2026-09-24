@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { FsStore } from '../lib/store.js';
+import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   type AdmittedWorkBody,
   appendWorkObservation,
@@ -27,6 +29,61 @@ export class ModelCaptureError extends Error {
   public constructor() {
     super('Model observation retention is unavailable.');
     this.name = 'ModelCaptureError';
+  }
+}
+
+/**
+ * Runs one model effect with the exact admitted Turn binding and owns any Workspace database it opens.
+ *
+ * @param input Store-owned Turn and optional borrowed Goal planning database.
+ * @param run Model effect that receives the trusted context.
+ * @returns The model effect's result.
+ * @throws ModelCaptureError when durable lineage or coverage cannot be verified.
+ */
+export async function withTurnModelCapture<T>(
+  input: {
+    readonly store: FsStore;
+    readonly turn: ReturnType<FsStore['createTurn']>;
+    readonly workspaceDb?: WorkspaceDb;
+  },
+  run: (capture: Omit<ModelCaptureContext, 'corr'>) => Promise<T>
+): Promise<T> {
+  const { store, turn, workspaceDb } = input;
+  const dataRoot = store.getDataRoot();
+  if (
+    !dataRoot ||
+    (workspaceDb &&
+      (workspaceDb.dataRoot !== dataRoot || workspaceDb.workspaceId !== turn.workspaceId))
+  ) {
+    throw new ModelCaptureError();
+  }
+  try {
+    store.getTurn(turn.workspaceId, turn.threadId, turn.id);
+  } catch {
+    throw new ModelCaptureError();
+  }
+  let captureDb: WorkspaceDb;
+  try {
+    captureDb = workspaceDb ?? openWorkspaceDb(dataRoot, turn.workspaceId);
+  } catch {
+    throw new ModelCaptureError();
+  }
+  try {
+    try {
+      if (!workspaceDb) applyScopedMigrations(captureDb);
+      const binding = readWorkObservationTurnBinding(captureDb, {
+        threadId: turn.threadId,
+        turnId: turn.id,
+      });
+      if (!binding.coverage) {
+        throw new ModelCaptureError();
+      }
+    } catch {
+      throw new ModelCaptureError();
+    }
+    return await run({ workspaceDb: captureDb, threadId: turn.threadId, turnId: turn.id });
+  } finally {
+    if (!workspaceDb) captureDb.sqlite.close();
   }
 }
 

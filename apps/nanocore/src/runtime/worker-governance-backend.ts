@@ -693,7 +693,9 @@ export interface WorkerGovernanceBackend {
    * @param environmentPackage Immutable package that owns the future session.
    * @returns Deterministic physical identity persisted before materialization.
    */
-  planSession(environmentPackage: AgentEnvironmentPackagePreview): WorkerGovernanceBackendSessionIdentity;
+  planSession(
+    environmentPackage: AgentEnvironmentPackagePreview
+  ): WorkerGovernanceBackendSessionIdentity;
 
   /** Reads whether the one configured physical runtime can admit this secret-free package. */
   inspectMaterializationCapacity?(

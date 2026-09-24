@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
 
 import type { FsStore } from '../lib/store.js';
-import type { ModelCaptureContext } from '../llm/model-capture.js';
+import { type ModelCaptureContext, withTurnModelCapture } from '../llm/model-capture.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   computeGoalPlanDigest,
@@ -190,7 +190,6 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
   const timestamp = turn.startedAt ?? new Date().toISOString();
   const plannerInput: GoalPlannerInput = {
     goal,
-    capture: { workspaceDb: input.workspaceDb, threadId: input.threadId, turnId: turn.id },
     ...(revision
       ? {
           previousPlan: revision.previousPlan,
@@ -203,7 +202,14 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
   let plan: GoalPlanOutput;
   if (revision) {
     try {
-      plan = await runGoalPlanner(input.planner, plannerInput, false);
+      plan = await runGoalPlanner(
+        input.planner,
+        plannerInput,
+        false,
+        input.store,
+        turn,
+        input.workspaceDb
+      );
       assertApprovableGoalPlanRevision(plan, revision.previousPlan);
     } catch (error) {
       input.store.updateTurn(turn.id, {
@@ -224,7 +230,14 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     }
   } else {
     try {
-      plan = await runGoalPlanner(input.planner, plannerInput, true);
+      plan = await runGoalPlanner(
+        input.planner,
+        plannerInput,
+        true,
+        input.store,
+        turn,
+        input.workspaceDb
+      );
     } catch {
       const errorMessage = 'Goal planner failed.';
       const errorItem = input.store.createItem({
@@ -676,13 +689,19 @@ function goalPlanCreationIds(input: Omit<CreateGoalPlanInput, 'goalId' | 'planne
  * @param planner Optional planner effect.
  * @param input Goal and optional recorded revision lineage.
  * @param allowDeterministicFallback Whether an omitted planner may synthesize the initial draft.
+ * @param store Owner of the admitted planning Turn.
+ * @param turn Exact planning Turn.
+ * @param workspaceDb Borrowed Goal planning database.
  * @returns Validated plan output.
  * @throws GoalPlanRevisionError when a revision run has no semantic planner.
  */
 async function runGoalPlanner(
   planner: GoalPlanner | undefined,
   input: GoalPlannerInput,
-  allowDeterministicFallback: boolean
+  allowDeterministicFallback: boolean,
+  store: FsStore,
+  turn: ReturnType<FsStore['createTurn']>,
+  workspaceDb: WorkspaceDb
 ): Promise<GoalPlanOutput> {
   if (!planner) {
     if (!allowDeterministicFallback) {
@@ -699,5 +718,9 @@ async function runGoalPlanner(
     );
   }
 
-  return GoalPlanOutputSchema.parse(await planner(input));
+  return GoalPlanOutputSchema.parse(
+    await withTurnModelCapture({ store, turn, workspaceDb }, (capture) =>
+      Promise.resolve(planner({ ...input, capture }))
+    )
+  );
 }

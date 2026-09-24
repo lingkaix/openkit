@@ -1,7 +1,11 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { ActorRefSchema } from '@openkit/protocol';
-import { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
+import {
+  type CaptureCoverageBinding as AgentEnvironmentCaptureCoverage,
+  CaptureCoverageBindingSchema as AgentEnvironmentCaptureCoverageSchema,
+  WORKER_RUNTIME_PROVENANCE_FEATURE,
+} from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { SECRET_SHAPED_BUILD_ARGUMENT_PATTERN } from './build-argument-pattern.js';
 
@@ -1027,16 +1031,10 @@ export const AgentEnvironmentResourcesSchema = z
   })
   .strict();
 
-/** Immutable projection of the owning Turn's persisted capture admission binding. */
-export const AgentEnvironmentCaptureCoverageSchema = z
-  .object({
-    scope: z.enum(['server', 'workspace', 'task']),
-    value: z.enum(['off', 'on']),
-  })
-  .strict();
-
 /** Capture binding supplied by Core; workers never resolve current policy from it. */
-export type AgentEnvironmentCaptureCoverage = z.infer<typeof AgentEnvironmentCaptureCoverageSchema>;
+export type { AgentEnvironmentCaptureCoverage };
+/** Immutable projection of the owning Turn's persisted capture admission binding. */
+export { AgentEnvironmentCaptureCoverageSchema };
 
 /**
  * Observability and audit sink expectations.

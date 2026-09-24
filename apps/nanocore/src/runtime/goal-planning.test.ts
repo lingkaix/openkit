@@ -54,21 +54,24 @@ function revisedTwoTaskPlan(previous: GoalPlanOutput, revisionText: string): Goa
 }
 
 /**
- * Opens a migrated workspace database for goal planning tests.
+ * Creates a durable Store and migrated workspace database for goal planning tests.
  *
- * @returns Migrated workspace database handles.
+ * @returns Aligned Store and workspace database handles.
  */
-function createWorkspaceDb(): WorkspaceDb {
+function createPlanningFixture(): {
+  workspaceDb: WorkspaceDb;
+  store: ReturnType<typeof createDemoStore>;
+} {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-planning-'));
+  const store = createDemoStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
-  return workspaceDb;
+  return { workspaceDb, store };
 }
 
 describe('goal planning path', () => {
   it('stores a successful plan against the goal through one planning path', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Plan goal thread');
 
     try {
@@ -127,8 +130,7 @@ describe('goal planning path', () => {
   });
 
   it('fails closed when the Goal loses its planning transition fence', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Plan transition fence thread');
 
     try {
@@ -172,8 +174,7 @@ describe('goal planning path', () => {
   });
 
   it('emits bounded elicitation questions when the planner requires user input', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Question goal thread');
 
     try {
@@ -241,8 +242,7 @@ describe('goal planning path', () => {
   });
 
   it('fails closed without a responsible user before writing a question or Gate', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Unassigned question thread');
 
     try {
@@ -289,8 +289,7 @@ describe('goal planning path', () => {
   });
 
   it('turns planner failures into a failed goal state', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Failing goal thread');
 
     try {
@@ -342,8 +341,7 @@ describe('goal planning path', () => {
   });
 
   it('keeps the Goal at awaiting_plan_approval with its Plan pointer after a revision request', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise preserve scene thread');
 
     try {
@@ -403,8 +401,7 @@ describe('goal planning path', () => {
   });
 
   it('does not regenerate the unchanged initial draft after a recorded revision', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise ignored thread');
     const unchangedDraft = createDeterministicGoalPlanFallback({
       goalTitle: 'Ship v0.0.6',
@@ -490,8 +487,7 @@ describe('goal planning path', () => {
   });
 
   it('does not substitute a deterministic draft when a revision planner is omitted', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise omitted planner thread');
 
     try {
@@ -576,8 +572,7 @@ describe('goal planning path', () => {
   });
 
   it('creates a revised Plan from the exact prior Plan and recorded instruction', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise consume thread');
     const seen: Array<{
       readonly previousPlan: GoalPlanOutput | undefined;
@@ -690,8 +685,7 @@ describe('goal planning path', () => {
   });
 
   it('preserves recoverable revision owners when the semantic planner fails', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise fail thread');
 
     try {
@@ -789,8 +783,7 @@ describe('goal planning path', () => {
   });
 
   it('lets the user approve the previous Plan after a revision planner failure', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise fail then approve thread');
 
     try {
@@ -863,8 +856,7 @@ describe('goal planning path', () => {
   });
 
   it('retries the recorded revision instruction after a planner failure', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise fail then retry thread');
 
     try {
@@ -939,8 +931,7 @@ describe('goal planning path', () => {
   });
 
   it('fails closed when a second reviseGoalPlan runs before a successor Plan lands', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise concurrent thread');
 
     try {
@@ -1001,8 +992,7 @@ describe('goal planning path', () => {
   });
 
   it('keeps the planning fence after a successful revision create', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise fence thread');
 
     try {
@@ -1077,8 +1067,7 @@ describe('goal planning path', () => {
   });
 
   it('rejects a revision proposal that is not an approvable draft', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise questions thread');
 
     try {
@@ -1150,8 +1139,7 @@ describe('goal planning path', () => {
   });
 
   it('rejects a byte-identical previous draft as a revision success', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise identical thread');
 
     try {

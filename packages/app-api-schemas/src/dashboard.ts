@@ -663,6 +663,12 @@ export const WorkspaceDashboardResponseSchema = z.object({
   attentionNeeded: z.array(WorkspaceAttentionSchema).default([]),
 });
 
+/** Maximum outward runtime activity entries projected for one Turn. */
+export const THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES = 50;
+
+/** Maximum outward text characters per activity entry; retained bodies remain complete. */
+export const THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS = 1000;
+
 /** Thread dashboard response payload. */
 export const ThreadDashboardResponseSchema = z.object({
   viewerUserId: z.string().min(1).nullable(),
@@ -703,12 +709,12 @@ export const ThreadDashboardResponseSchema = z.object({
                   observedAt: z.iso.datetime(),
                   kind: z.enum(['child-started', 'progress', 'result', 'failure']),
                   label: z.string().min(1).max(80).optional(),
-                  text: z.string().max(1000).optional(),
+                  text: z.string().max(THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS).optional(),
                   textTruncated: z.boolean(),
                 })
                 .strict()
             )
-            .max(50),
+            .max(THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES),
           omittedEntryCount: z.number().int().nonnegative(),
         })
         .strict()

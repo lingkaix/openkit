@@ -501,11 +501,19 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           409
         );
       }
-      const captureCoverage = workspaceDb && checkpoint
-        ? readWorkObservationTurnBinding(workspaceDb, { threadId: turn.threadId, turnId: turn.id }).coverage
-        : null;
+      const captureCoverage =
+        workspaceDb && checkpoint
+          ? readWorkObservationTurnBinding(workspaceDb, {
+              threadId: turn.threadId,
+              turnId: turn.id,
+            }).coverage
+          : null;
       if (checkpoint && !captureCoverage) {
-        throw new TurnStartValidationError('recovery_required', 'Simulator capture admission is unavailable.', 409);
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Simulator capture admission is unavailable.',
+          409
+        );
       }
       const agentSessionId = context.agentSessionId ?? `session_sim_turn_${turn.id}`;
       const preparedContext =

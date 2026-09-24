@@ -200,6 +200,36 @@ it('scans an interrupted prefix before publishing it and marks the interruption 
   await rejected.write(['secret-value']);
   await rejected.capture.invalidate();
   expect(rejected.received.some(({ body }) => body)).toBe(false);
+  expect(
+    rejected.received.some(
+      ({ record, body }) =>
+        record.fact.kind === 'assistant' &&
+        record.fact.phase === 'interrupted' &&
+        body === undefined
+    )
+  ).toBe(true);
+});
+
+it('keeps an interrupted outcome after early rejection drained the expected anchors', async () => {
+  const f = streamingFixture(['known-secret-value']);
+  await f.write(['safe prefix']);
+  await f.write(['known-secret-value']);
+  expect(
+    f.received.some(
+      ({ record }) =>
+        record.content.state === 'unavailable' && record.content.expectedObservationId !== undefined
+    )
+  ).toBe(true);
+  expect(f.received.some(({ body }) => body)).toBe(false);
+  await f.capture.invalidate();
+  expect(
+    f.received.some(
+      ({ record, body }) =>
+        record.fact.kind === 'assistant' &&
+        record.fact.phase === 'interrupted' &&
+        body === undefined
+    )
+  ).toBe(true);
 });
 
 it('rejects decoded JSON credentials including escaped keys and sibling string values', async () => {
@@ -293,6 +323,60 @@ it('scans decoded tool result strings across partial events before any publicati
         record.content.state === 'unavailable' && record.content.reason === 'credential-excluded'
     )
   ).toBe(true);
+});
+
+it('anchors every rejected tool observation to its exact expected boundary despite a shared call reference', async () => {
+  const received: Array<{ record: RuntimeObservation; body?: Uint8Array }> = [];
+  const capture = new RuntimeSemanticCapture({
+    packageSnapshotId: 'aep_tool_anchor',
+    captureCoverage: { scope: 'server', value: 'on' },
+    credentialValues: ['known-secret-value'],
+    emit: async (record, body) => {
+      received.push({ record, ...(body ? { body } : {}) });
+    },
+  });
+  for (const boundary of ['runtime.tool.arguments', 'runtime.tool.result'] as const) {
+    for (const [index, text] of ['known-', 'secret-value'].entries()) {
+      await capture.emit(
+        'source',
+        {
+          kind: 'tool',
+          runtimeOriginRef: null,
+          callRef: 'same-call',
+          phase: index ? 'completed' : 'updated',
+        },
+        {
+          bytes: Buffer.from(JSON.stringify({ text })),
+          mediaType: 'application/json',
+          boundary,
+        }
+      );
+    }
+  }
+  await capture.flushCompleted();
+  expect(received.some(({ body }) => body)).toBe(false);
+  const expected = received.filter(({ record }) => record.content.state === 'expected');
+  expect(expected.map(({ record }) => record.content)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ boundary: 'runtime.tool.arguments' }),
+      expect.objectContaining({ boundary: 'runtime.tool.result' }),
+    ])
+  );
+  expect(expected).toHaveLength(4);
+  const unavailable = received.filter(
+    ({ record }) =>
+      record.content.state === 'unavailable' && record.content.reason === 'credential-excluded'
+  );
+  expect(unavailable).toHaveLength(4);
+  expect(
+    unavailable
+      .map(({ record }) =>
+        record.content.state === 'unavailable'
+          ? (record.content as { expectedObservationId?: string }).expectedObservationId
+          : undefined
+      )
+      .sort()
+  ).toEqual(expected.map(({ record }) => record.observationId).sort());
 });
 
 it('carries expected-only metadata through the real transcript writer before a unit completes', async () => {

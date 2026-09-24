@@ -36,7 +36,9 @@ One record family must have one durable authority. Do not add aggregate workspac
 - Secret material belongs to `../vault/` backends and credential consumers; storage may retain only explicitly allowed non-secret metadata and redacted evidence.
 - The scheduler lease is the narrow exception for worker route authentication: it retains exactly three nullable lowercase SHA-256 projections for the control, inference, and capability families, never a raw token or a derived sandbox-binding credential.
 
-`work-observations.ts` is the entry point for Turn observation append, validated reads and safe timeline projection. It validates immutable capture admission and separates expected facts from successful evidence publication. `../evidence-bundles.ts` owns restricted body staging, retention and expiry; callers never construct content paths or store bodies in control receipts. Portable consumers reuse the observation parser and existing exact reference maps.
+`work-observations.ts` is the entry point for Turn observation append, validated reads and safe timeline projection using the shared App API presentation bounds. It validates immutable capture admission and separates expected facts from successful evidence publication. `../evidence-bundles.ts` owns restricted body staging, retention and expiry; callers never construct content paths or store bodies in control receipts. Portable consumers reuse the observation parser and existing exact reference maps.
+
+Timeline coverage remains partial when a collection gap follows observed runtime activity; unsupported or unavailable collection without observed activity remains unavailable.
 
 ## File Record Rules
 

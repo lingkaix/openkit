@@ -35,6 +35,7 @@ interface RolloutTail {
   reader: RuntimeJsonlReader;
   context: StreamOriginContext;
   sourceRef: string;
+  originEmitted: boolean;
   stopped: boolean;
 }
 
@@ -43,8 +44,10 @@ export class CodexRuntimeCapture {
   private readonly primaryContext: StreamOriginContext = {};
   private readonly primary: RuntimeJsonlReader;
   private readonly watermarks = new Map<string, Watermark>();
+  private readonly untrustedPaths = new Set<string>();
   private readonly tails = new Map<string, RolloutTail>();
   private readonly parents = new Map<string, string>();
+  private readonly observedSpawns = new Set<string>();
   private readonly semantic: RuntimeSemanticCapture;
   private readonly gaps = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
@@ -53,6 +56,7 @@ export class CodexRuntimeCapture {
   private stopped = false;
   private failed: unknown;
   private initialScanTruncated = false;
+  private initialScanFailed = false;
   private readonly primaryRef: string;
 
   /** Creates the reader; use create() to establish pre-launch retained-file watermarks. */
@@ -68,15 +72,23 @@ export class CodexRuntimeCapture {
         return;
       }
       let invalid = false;
-      const parsed = parseCodexPrimaryFrame(
-        bytes,
-        false,
-        this.primaryContext,
-        (parent, child) => this.spawn(parent, child),
-        () => {
-          invalid = true;
-        }
-      );
+      let parsed: ParsedFrame;
+      try {
+        parsed = parseCodexPrimaryFrame(
+          bytes,
+          false,
+          this.primaryContext,
+          (parent, child) => {
+            if (!this.spawn(parent, child, true)) invalid = true;
+          },
+          () => {
+            invalid = true;
+          }
+        );
+      } catch {
+        await this.gap(this.primaryRef, 'primary-content', 'malformed-frame');
+        return;
+      }
       if (invalid || parsed.parseStatus !== 'parsed')
         await this.gap(this.primaryRef, 'primary-content', 'malformed-frame');
       else await this.project(parsed, this.primaryRef);
@@ -89,10 +101,22 @@ export class CodexRuntimeCapture {
     codexHome: string
   ): Promise<CodexRuntimeCapture> {
     const capture = new CodexRuntimeCapture(input, codexHome);
-    const files = await listRolloutFiles(join(codexHome, 'sessions'));
+    let files: Awaited<ReturnType<typeof listRolloutFiles>>;
+    try {
+      files = await listRolloutFiles(join(codexHome, 'sessions'));
+    } catch {
+      capture.initialScanFailed = true;
+      return capture;
+    }
     capture.initialScanTruncated = files.truncated;
     for (const path of files.paths) {
-      const candidate = await readRolloutCandidate(path, '0.153.4');
+      let candidate: RolloutCandidate | null;
+      try {
+        candidate = await readRolloutCandidate(path, '0.153.4');
+      } catch {
+        capture.untrustedPaths.add(path);
+        continue;
+      }
       if (candidate)
         capture.watermarks.set(path, {
           dev: candidate.initialDev,
@@ -106,7 +130,9 @@ export class CodexRuntimeCapture {
   /** Consumes live stdout under backpressure; the first chunk starts independent child polling. */
   public writeStdout(chunk: Uint8Array): Promise<void> {
     if (this.stopped) return Promise.reject(new Error('Runtime capture is stopped.'));
+    if (this.failed) return Promise.reject(this.failed);
     return this.enqueue(async () => {
+      if (this.failed) throw this.failed;
       if (!this.started) {
         this.started = true;
         await this.coverage(
@@ -122,6 +148,8 @@ export class CodexRuntimeCapture {
         );
         if (this.initialScanTruncated)
           await this.gap(this.primaryRef, 'child-metadata', 'limit-exceeded');
+        if (this.initialScanFailed || this.untrustedPaths.size)
+          await this.gap(this.primaryRef, 'child-metadata', 'collector-failed');
         this.schedule();
       }
       await this.primary.write(chunk);
@@ -184,44 +212,62 @@ export class CodexRuntimeCapture {
     if (this.stopped || this.failed) return;
     this.timer = setTimeout(() => {
       void this.enqueue(() => this.poll())
-        .catch(async () => {
-          await this.gap(this.primaryRef, 'child-content', 'collector-failed').catch(
-            () => undefined
-          );
-        })
+        .catch(() => undefined)
         .finally(() => this.schedule());
     }, 100);
     this.timer.unref();
   }
 
-  /** Retains only causal spawn edges; contradictory ancestry cannot select a winner. */
-  private spawn(parent: string, child: string): void {
+  /** Retains only causal spawn edges; contradictory native ancestry cannot select a winner. */
+  private spawn(parent: string, child: string, observed = false): boolean {
     if (parent === child || (this.parents.has(child) && this.parents.get(child) !== parent))
-      throw new Error('Conflicting runtime ancestry.');
+      return false;
     let ancestor: string | undefined = parent;
     for (let depth = 0; ancestor && depth <= MAX_CODEX_RUNTIME_STREAMS; depth += 1) {
-      if (ancestor === child) throw new Error('Cyclic runtime ancestry.');
+      if (ancestor === child) return false;
       ancestor = this.parents.get(ancestor);
     }
-    if (this.parents.size >= MAX_CODEX_RUNTIME_STREAMS && !this.parents.has(child))
-      throw new Error('Runtime ancestry exceeds its bound.');
+    if (this.parents.size >= MAX_CODEX_RUNTIME_STREAMS && !this.parents.has(child)) return false;
     this.parents.set(child, parent);
+    if (observed) this.observedSpawns.add(child);
+    return true;
   }
 
   /** Discovers metadata under the existing guards and reads bodies only after root reachability. */
   private async poll(): Promise<void> {
     const root = this.primaryContext.threadId;
-    if (!root) return;
-    const files = await listRolloutFiles(join(this.codexHome, 'sessions'));
+    if (!root || this.initialScanFailed) return;
+    let files: Awaited<ReturnType<typeof listRolloutFiles>>;
+    try {
+      files = await listRolloutFiles(join(this.codexHome, 'sessions'));
+    } catch {
+      await this.gap(this.primaryRef, 'child-metadata', 'collector-failed');
+      return;
+    }
     if (files.truncated) await this.gap(this.primaryRef, 'child-metadata', 'limit-exceeded');
     const candidates = new Map<string, RolloutCandidate>();
     const duplicates = new Set<string>();
     for (const path of files.paths) {
-      const candidate = await readRolloutCandidate(path, '0.153.4');
+      if (this.untrustedPaths.has(path)) continue;
+      let candidate: RolloutCandidate | null;
+      try {
+        candidate = await readRolloutCandidate(path, '0.153.4');
+      } catch {
+        this.untrustedPaths.add(path);
+        await this.gap(this.primaryRef, 'child-metadata', 'collector-failed');
+        continue;
+      }
       if (!candidate) continue;
       if (candidates.has(candidate.threadId)) duplicates.add(candidate.threadId);
       else candidates.set(candidate.threadId, candidate);
     }
+    const rejected = (candidate: RolloutCandidate): boolean =>
+      duplicates.has(candidate.threadId) ||
+      !candidate.valid ||
+      !candidate.adapterVersionValid ||
+      (candidate.threadId === root && !!candidate.parentThreadId) ||
+      (this.parents.has(candidate.threadId) &&
+        this.parents.get(candidate.threadId) !== candidate.parentThreadId);
     const reachable = new Set([root]);
     for (let pass = 0; pass < MAX_CODEX_RUNTIME_STREAMS; pass += 1) {
       let added = false;
@@ -231,17 +277,37 @@ export class CodexRuntimeCapture {
           reachable.has(candidate.parentThreadId) &&
           !reachable.has(candidate.threadId)
         ) {
+          if (rejected(candidate)) {
+            await this.gap(
+              runtimeRef('rts', this.input.packageSnapshotId, candidate.threadId),
+              candidate.adapterVersionValid ? 'child-metadata' : 'child-content',
+              candidate.adapterVersionValid ? 'source-changed' : 'version-mismatch'
+            );
+            continue;
+          }
           if (reachable.size >= MAX_CODEX_RUNTIME_STREAMS - 1) {
             await this.gap(this.primaryRef, 'child-metadata', 'limit-exceeded');
             break;
           }
-          this.spawn(candidate.parentThreadId, candidate.threadId);
+          if (!this.spawn(candidate.parentThreadId, candidate.threadId)) {
+            await this.gap(this.primaryRef, 'child-metadata', 'source-changed');
+            continue;
+          }
           reachable.add(candidate.threadId);
           added = true;
         }
       }
       for (const [child, parent] of this.parents)
         if (reachable.has(parent) && !reachable.has(child)) {
+          const candidate = candidates.get(child);
+          if (candidate && rejected(candidate)) {
+            await this.gap(
+              runtimeRef('rts', this.input.packageSnapshotId, child),
+              candidate.adapterVersionValid ? 'child-metadata' : 'child-content',
+              candidate.adapterVersionValid ? 'source-changed' : 'version-mismatch'
+            );
+            continue;
+          }
           if (reachable.size >= MAX_CODEX_RUNTIME_STREAMS - 1) {
             await this.gap(this.primaryRef, 'child-metadata', 'limit-exceeded');
             break;
@@ -262,20 +328,15 @@ export class CodexRuntimeCapture {
         }
         continue;
       }
-      if (
-        duplicates.has(id) ||
-        !candidate.valid ||
-        (id === root && candidate.parentThreadId) ||
-        (this.parents.has(id) && this.parents.get(id) !== candidate.parentThreadId)
-      ) {
-        await this.gap(sourceRef, 'child-metadata', 'source-changed');
-        continue;
-      }
-      if (!candidate.adapterVersionValid) {
+      if (rejected(candidate)) {
         await this.gap(
           sourceRef,
-          id === root ? 'primary-content' : 'child-content',
-          'version-mismatch'
+          candidate.adapterVersionValid
+            ? 'child-metadata'
+            : id === root
+              ? 'primary-content'
+              : 'child-content',
+          candidate.adapterVersionValid ? 'source-changed' : 'version-mismatch'
         );
         continue;
       }
@@ -297,22 +358,42 @@ export class CodexRuntimeCapture {
           inheritedHistory: candidate.copiedHistory ?? false,
           ...(candidate.parentThreadId ? { parentThreadId: candidate.parentThreadId } : {}),
         };
-        if (before) await this.restoreContext(candidate, before.size, context);
+        if (before) {
+          try {
+            await this.restoreContext(candidate, before.size, context);
+          } catch {
+            this.untrustedPaths.add(candidate.path);
+            await this.gap(sourceRef, 'child-content', 'source-changed');
+            continue;
+          }
+        }
         const reader = new RuntimeJsonlReader(async (bytes, _sequence, failure) => {
           if (!bytes) {
             await this.gap(sourceRef, id === root ? 'primary-content' : 'child-content', failure!);
             return;
           }
           let invalid = false;
-          const parsed = parseCodexRolloutFrame(
-            bytes,
-            false,
-            context,
-            (parent, child) => this.spawn(parent, child),
-            () => {
-              invalid = true;
-            }
-          );
+          let parsed: ParsedFrame;
+          try {
+            parsed = parseCodexRolloutFrame(
+              bytes,
+              false,
+              context,
+              (parent, child) => {
+                if (!this.spawn(parent, child, true)) invalid = true;
+              },
+              () => {
+                invalid = true;
+              }
+            );
+          } catch {
+            await this.gap(
+              sourceRef,
+              id === root ? 'primary-content' : 'child-content',
+              'malformed-frame'
+            );
+            return;
+          }
           if (invalid || parsed.parseStatus !== 'parsed')
             await this.gap(
               sourceRef,
@@ -327,25 +408,34 @@ export class CodexRuntimeCapture {
           reader,
           context,
           sourceRef,
+          originEmitted: false,
           stopped: false,
         };
         this.tails.set(id, tail);
-        await this.emit(sourceRef, {
-          kind: 'origin',
-          runtimeOriginRef: runtimeOriginRef(this.input.packageSnapshotId, id),
-          ...(candidate.parentThreadId
-            ? {
-                parentRuntimeOriginRef: runtimeOriginRef(
-                  this.input.packageSnapshotId,
-                  candidate.parentThreadId
-                ),
-              }
-            : {}),
-          phase: 'observed',
-        });
+        if (!before) await this.emitOrigin(tail);
       }
+      if (!tail.originEmitted && this.observedSpawns.has(id)) await this.emitOrigin(tail);
       if (!tail.stopped) await this.readTail(tail);
     }
+  }
+
+  /** Reports a reachable origin only after a new source or current-Turn spawn is observed. */
+  private async emitOrigin(tail: RolloutTail): Promise<void> {
+    const id = tail.candidate.threadId;
+    await this.emit(tail.sourceRef, {
+      kind: 'origin',
+      runtimeOriginRef: runtimeOriginRef(this.input.packageSnapshotId, id),
+      ...(tail.candidate.parentThreadId
+        ? {
+            parentRuntimeOriginRef: runtimeOriginRef(
+              this.input.packageSnapshotId,
+              tail.candidate.parentThreadId
+            ),
+          }
+        : {}),
+      phase: 'observed',
+    });
+    tail.originEmitted = true;
   }
 
   /** Replays only parser eligibility before a watermark; historical activities and bodies are never emitted. */
@@ -394,9 +484,24 @@ export class CodexRuntimeCapture {
 
   /** Reads only appended bytes from the same regular file; replacement or shrink is a gap. */
   private async readTail(tail: RolloutTail): Promise<void> {
-    const handle = await open(tail.candidate.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let handle: Awaited<ReturnType<typeof open>>;
+    let failed = false;
     try {
-      const stat = await handle.stat();
+      handle = await open(tail.candidate.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch {
+      tail.stopped = true;
+      await this.gap(tail.sourceRef, 'child-content', 'source-changed');
+      return;
+    }
+    try {
+      let stat: Awaited<ReturnType<typeof handle.stat>>;
+      try {
+        stat = await handle.stat();
+      } catch {
+        tail.stopped = true;
+        await this.gap(tail.sourceRef, 'child-content', 'source-changed');
+        return;
+      }
       if (
         !stat.isFile() ||
         stat.dev !== tail.candidate.initialDev ||
@@ -409,18 +514,40 @@ export class CodexRuntimeCapture {
       }
       const buffer = Buffer.alloc(64 * 1024);
       while (tail.position < stat.size) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, stat.size - tail.position),
-          tail.position
-        );
-        if (!bytesRead) break;
+        let bytesRead: number;
+        try {
+          ({ bytesRead } = await handle.read(
+            buffer,
+            0,
+            Math.min(buffer.length, stat.size - tail.position),
+            tail.position
+          ));
+        } catch {
+          tail.stopped = true;
+          await this.gap(tail.sourceRef, 'child-content', 'source-changed');
+          return;
+        }
+        if (!bytesRead) {
+          tail.stopped = true;
+          await this.gap(tail.sourceRef, 'child-content', 'source-changed');
+          return;
+        }
+        if (!tail.originEmitted) await this.emitOrigin(tail);
         await tail.reader.write(buffer.subarray(0, bytesRead));
         tail.position += bytesRead;
       }
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await handle.close();
+      try {
+        await handle.close();
+      } catch {
+        if (!failed) {
+          tail.stopped = true;
+          await this.gap(tail.sourceRef, 'child-content', 'source-changed');
+        }
+      }
     }
   }
 
