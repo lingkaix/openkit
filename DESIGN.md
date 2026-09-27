@@ -2,7 +2,7 @@
 name: OpenKit Web UI
 kind: design.md
 status: Accepted
-updated: 2026-08-01
+updated: 2026-09-28
 canonical: this file (repo root) is the single source of truth for OpenKit Web UI design
 sources:
   - docs/product-vision.md                        # why the product exists
@@ -72,24 +72,15 @@ tokens:
 
 This is the durable, canonical design guide for the OpenKit Web UI. It states design **intent** so future implementation, redesign, and AI-generated surfaces preserve the product's shape rather than re-deriving it. When code and this file disagree on presentation design, **this file is the source of truth**; accepted specifications remain the sole owners of product behavior. The Claude Design project (`7579f69f-4474-492b-bf09-b85e2ac9f56c`) is the living visual canvas that holds a non-exhaustive board inventory, the `openkit.css` reference implementation, and `themes.css`. A board is a visual-language and design-element reference, not a catalog entry that admits or excludes a product surface. The rationale behind this guide is captured inline — via the `(D-0xx)` citations and the **Decision record** in §18 — so this file stands on its own.
 
-Read this alongside three files it depends on: [`docs/product-vision.md`](docs/product-vision.md)
-(why the product exists), [`README.md`](README.md) (the NanoCore-first / end-user
-Agent Skill + CLI-first posture and work model), and [`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md)
-(the implementation stack and the token-bridge contract this guide's tokens feed).
+Read this alongside three files it depends on: [`docs/product-vision.md`](docs/product-vision.md) (why the product exists), [`README.md`](README.md) (the NanoCore-first / end-user Agent Skill + CLI-first posture and work model), and [`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md) (the implementation stack and the token-bridge contract this guide's tokens feed).
 
-> **Not a pixel spec.** Keep this file as durable intent; keep Claude Design as
-> the living visuals; keep the token bridge (§4.6) as the reconciliation anchor
-> between them. Exploratory pixel detail stays in Claude Design, not here.
+> **Not a pixel spec.** Keep this file as durable intent; keep Claude Design as the living visuals; keep the token bridge (§4.6) as the reconciliation anchor between them. Exploratory pixel detail stays in Claude Design, not here.
 
 ---
 
 ## 1. Overview — what OpenKit is, and what the UI must be
 
-OpenKit is an **agent workspace**: a place to delegate real work to a team of
-agents, supervise it, preserve its artifacts and history, and improve the
-human + agents system over time. It coordinates mature agent runtimes (Codex,
-OpenCode, Pi Agent) through a small **Core**; it is not itself another agent
-runtime.
+OpenKit is an **agent workspace**: a place to delegate real work to a team of agents, supervise it, preserve its artifacts and history, and improve the human + agents system over time. It coordinates mature agent runtimes (Codex, OpenCode, Pi Agent) through a small **Core**; it is not itself another agent runtime.
 
 The product backbone is a single durable hierarchy:
 
@@ -97,22 +88,11 @@ The product backbone is a single durable hierarchy:
 Workspace → Thread → Turn → Item[]   (+ Artifact as a first-class durable output)
 ```
 
-Everything the UI shows is a projection of that hierarchy. The interface's job
-is to answer, at a glance: who is responsible for what; how far the current work
-has progressed; what communication and handoffs happened between agents; which
-artifacts are done and which are in flight; and **when the human needs to step
-in, and when they can just watch the result.**
+Everything the UI shows is a projection of that hierarchy. The interface's job is to answer, at a glance: who is responsible for what; how far the current work has progressed; what communication and handoffs happened between agents; which artifacts are done and which are in flight; and **when the human needs to step in, and when they can just watch the result.**
 
-**The UI is a supervisor's instrument, not a chat toy and not a marketing page.**
-The first screen is the usable workbench. No landing page, hero section, or
-walkthrough shell precedes the product. It should feel like a dense, calm,
-professional tool — *capable but neat*.
+**The UI is a supervisor's instrument, not a chat toy and not a marketing page.** The first screen is the usable workbench. No landing page, hero section, or walkthrough shell precedes the product. It should feel like a dense, calm, professional tool — *capable but neat*.
 
-**Posture note (2026):** the current implementation is NanoCore-first and the
-primary end-user agent path is one `openkit` Skill with its bundled CLI. The Web
-UI is the *visible follower* over stable NanoCore read models. The design must therefore make work
-legible **regardless of which channel initiated it** (see §9.7), and must stay
-honest when the Core it follows is unreachable (see §9.12, §11).
+**Posture note (2026):** the current implementation is NanoCore-first and the primary end-user agent path is one `openkit` Skill with its bundled CLI. The Web UI is the *visible follower* over stable NanoCore read models. The design must therefore make work legible **regardless of which channel initiated it** (see §9.7), and must stay honest when the Core it follows is unreachable (see §9.12, §11).
 
 ---
 
@@ -120,37 +100,19 @@ honest when the Core it follows is unreachable (see §9.12, §11).
 
 These are the yardsticks. Every new surface is measured against them.
 
-1. **Weak interaction by default; strong intervention always one gesture away.**
-   (D-009, the strategic bet.) Agents proceed silently on an approved plan; the
-   system pulls the human in only at key points (approval gates, blocked work,
-   review); the human can walk in at any time (steer bar, card → thread).
-   **The test for any proposal:** *does it ask the user for more ongoing
-   involvement, or less — while keeping intervention cheap?* More = wrong
-   direction. This exists because the productivity leap is **1:N supervision**
-   (one person, five goals), not 1:1 chat, and because agent capability only
-   grows — betting on per-card babysitting is betting on today's model defects.
+1. **Weak interaction by default; strong intervention always one gesture away.** (D-009, the strategic bet.) Agents proceed silently on an approved plan; the system pulls the human in only at key points (approval gates, blocked work, review); the human can walk in at any time (steer bar, card → thread). **The test for any proposal:** *does it ask the user for more ongoing involvement, or less — while keeping intervention cheap?* More = wrong direction. This exists because the productivity leap is **1:N supervision** (one person, five goals), not 1:1 chat, and because agent capability only grows — betting on per-card babysitting is betting on today's model defects.
 
-2. **Capable but neat.** Carry conversation, artifacts, config, and supervision
-   without clutter. Maximize useful screen area. Prefer tone shifts, grouping,
-   and compact spacing over heavy borders and framed-in-framed cards.
+2. **Capable but neat.** Carry conversation, artifacts, config, and supervision without clutter. Maximize useful screen area. Prefer tone shifts, grouping, and compact spacing over heavy borders and framed-in-framed cards.
 
-3. **One info stream at a time.** Tabs/lenses over master-detail. A supervisor
-   glances in and out; side-by-side density serves the high-frequency
-   intervener we explicitly bet against (D-009).
+3. **One info stream at a time.** Tabs/lenses over master-detail. A supervisor glances in and out; side-by-side density serves the high-frequency intervener we explicitly bet against (D-009).
 
-4. **Legible, gateable, interruptible = trust.** The bottleneck to delegation is
-   trust, not capability. Make work visible, make consequential actions
-   gateable, and let the human interrupt at will.
+4. **Legible, gateable, interruptible = trust.** The bottleneck to delegation is trust, not capability. Make work visible, make consequential actions gateable, and let the human interrupt at will.
 
-5. **Plain language over jargon.** "Overview," "Needs you," "Ready / Working /
-   Needs attention." Non-technical end users are first-class; diagnostics and
-   logs live behind progressive disclosure (D-003, D-004).
+5. **Plain language over jargon.** "Overview," "Needs you," "Ready / Working / Needs attention." Non-technical end users are first-class; diagnostics and logs live behind progressive disclosure (D-003, D-004).
 
-6. **Status is text + semantic color, never color alone.** (Accessibility and
-   clarity.)
+6. **Status is text + semantic color, never color alone.** (Accessibility and clarity.)
 
-7. **Auditable by construction.** Every artifact and action answers "why" —
-   traceable to a plan step, an initiator, and a time (D-010 #5).
+7. **Auditable by construction.** Every artifact and action answers "why" — traceable to a plan step, an initiator, and a time (D-010 #5).
 
 8. **Small, durable, honest.** Don't ship inactive/decorative controls (no dead search box). Don't invent surfaces the kernel can't back — where a designed surface runs ahead of its kernel contract, keep it out of published navigation and routing until the contract is stable (see §11).
 
@@ -187,30 +149,21 @@ Two modes; never mix them.
 
 **Settings mode:** the brand row, Search, and the sole selected-Workspace switcher remain fixed while the navigation body swaps to a **Back to app** action and explicit scope groups. **Workspace** contains General when the selected Workspace is validated; General uses this same Settings shell at `/workspace`. **User** contains Account, Appearance, My admin access, New workspace, and Portability; **Server** contains Configuration, AI interface, and Debug; **Administration** contains Access tokens. Workspace Vault, Usage & audit, Repositories, Workspace changes, and Recovery remain operational destinations in the app shortcut grid. Combining navigation does not combine authorization: General still reads and edits only the selected Workspace, while User and deployment categories retain their existing scopes. Settings categories are interactive navigation with an accessible current-page state and never create a second Settings sidebar inside the main panel.
 
-Naming: the home surface is **Overview** (formerly "Mission control") — plainer,
-Spectrum-calm, better for non-technical users (D-003).
+Naming: the home surface is **Overview** (formerly "Mission control") — plainer, Spectrum-calm, better for non-technical users (D-003).
 
 ### 3.2 Main panel — the focused work surface
 
-- **Centered, single column, top-to-bottom.** Avoid left/right content splits
-  inside the main panel unless a workflow *genuinely* needs comparison.
-- **Compact stacked header** (~52px): breadcrumbs → current context, the goal
-  **phase stepper** (§9.5) where relevant, and right-aligned actions.
+- **Centered, single column, top-to-bottom.** Avoid left/right content splits inside the main panel unless a workflow *genuinely* needs comparison.
+- **Compact stacked header** (~52px): breadcrumbs → current context, the goal **phase stepper** (§9.5) where relevant, and right-aligned actions.
 - **Thread title bars are scarce space.** Preserve the longest practical Thread name before secondary state. Compact icon-only actions are preferred when the symbol is established and every control supplies an accessible name plus a hover and keyboard-focus hint. Rename, Archive, and Side panel use 20px non-shrinking glyphs in 32px square controls with zero horizontal padding. Rename and Archive sit immediately beside the Thread name because they act on it; the optional Side panel toggle occupies the far-right edge, leaving the center available for future Worker counts, Goal status, and other Thread state.
 - **Conversation column** caps at ~760px, centered, `20px` gap between items.
-- **Composer docked at the bottom** of every active work surface — the rule is:
-  *on every surface, the bottom bar is where you talk to the AI* (D-007).
+- **Composer docked at the bottom** of every active work surface — the rule is: *on every surface, the bottom bar is where you talk to the AI* (D-007).
 
 ### 3.3 Right Side panel — optional auxiliary index, never required
 
 The **Side panel** only mirrors and indexes Thread auxiliary information. Its current Chat projection is the Thread's Artifact and file-change index, not the global Artifact inventory; future accepted projections may add approvals, activity, Worker, or Goal context without making the panel canonical. D-006: turning it off must never block a core action. Its Approvals tab reads "Approve in conversation" and points back to the Thread; it carries "you *can* look," never "you *must* do." The Thread header toggles the panel. The conversation region keeps a 32rem minimum width within the supported workbench. The 15rem panel docks beside it only when the Thread container is at least 47rem wide; below that threshold it overlays the right side without changing the conversation or composer width. The non-modal panel includes its own Close control, which returns focus to the header toggle.
 
-Because the rail is optional, **required actions surface through three non-rail
-channels** (D-006), by urgency: **(1) in-thread inline** (primary) — approval /
-needs-review cards grow next to the work (board 04); **(2) global queue + counts**
-— the Overview "Needs you" queue + nav/workspace count badges; **(3) light toast**
-— transient, dismissible notice for background events, with a "View" action back
-to the source, never blocking.
+Because the rail is optional, **required actions surface through three non-rail channels** (D-006), by urgency: **(1) in-thread inline** (primary) — approval / needs-review cards grow next to the work (board 04); **(2) global queue + counts** — the Overview "Needs you" queue + nav/workspace count badges; **(3) light toast** — transient, dismissible notice for background events, with a "View" action back to the source, never blocking.
 
 ### 3.4 Viewport floor — desktop workbench, 600×600
 
@@ -220,11 +173,7 @@ OpenKit is a **productivity/supervision tool**, so the design prioritizes the de
 
 ## 4. Color & the theme system
 
-OpenKit derives all color from **Adobe Spectrum 2** semantic tokens. Component
-markup references *semantic* tokens (surface / text / accent / status / skeleton),
-**never** raw palette swatches (`--spectrum-gray-200`, `--spectrum-red-100`, …)
-and never hard-coded hex. This single discipline is what lets three themes swap
-cleanly under the same markup.
+OpenKit derives all color from **Adobe Spectrum 2** semantic tokens. Component markup references *semantic* tokens (surface / text / accent / status / skeleton), **never** raw palette swatches (`--spectrum-gray-200`, `--spectrum-red-100`, …) and never hard-coded hex. This single discipline is what lets three themes swap cleanly under the same markup.
 
 ### 4.1 Core semantic roles (Spectrum light reference)
 
@@ -247,10 +196,7 @@ cleanly under the same markup.
 
 ### 4.2 Status colors — the status vocabulary
 
-Status is **always text + semantic color**. Five families, mapped to a fixed
-vocabulary so the same state always reads the same way. Chips resolve their tint
-from Spectrum status steps that each theme retints (§4.5), so the *meaning* is
-constant while the *look* follows the theme.
+Status is **always text + semantic color**. Five families, mapped to a fixed vocabulary so the same state always reads the same way. Chips resolve their tint from Spectrum status steps that each theme retints (§4.5), so the *meaning* is constant while the *look* follows the theme.
 
 | Family | Words it owns |
 |---|---|
@@ -260,147 +206,82 @@ constant while the *look* follows the theme.
 | **Negative** (red family) | Failed · Rejected · Error |
 | **Neutral** (gray family) | Idle · Paused · Draft · Queued · Cancelled |
 
-Do not invent new status hues, and do not reuse a family for a meaning outside
-its column.
+Do not invent new status hues, and do not reuse a family for a meaning outside its column.
 
 ### 4.3 Worker identity hues
 
-Human = **circle** avatar with initials. Worker agent = **rounded-square**
-avatar with initials. Each named worker keeps **one hue on every surface and in
-every theme** (brand + identity never shift):
+Human = **circle** avatar with initials. Worker agent = **rounded-square** avatar with initials. Each named worker keeps **one hue on every surface and in every theme** (brand + identity never shift):
 
 - **Scout → seafoam**, **Quill → purple**, **Ledger → indigo**, **Pixel → orange**, **You → blue**.
 
-The canonical roster is **four workers** (Scout / Quill / Ledger / Pixel) plus
-the human (SW), kept consistent across all sample data (D-005).
+The canonical roster is **four workers** (Scout / Quill / Ledger / Pixel) plus the human (SW), kept consistent across all sample data (D-005).
 
 ### 4.4 Prohibitions
 
-No decorative gradients, blurred/bokeh backgrounds, floating orbs, or hero
-compositions. No hard-coded stone/slate text classes. **No raw Spectrum global
-tokens and no ad-hoc hex, spacing, or radius literals in component markup** — only
-bridge-produced semantic tokens (§4.6). This is enforced mechanically by the
-token-parity check in the rebuild-stack spec.
+No decorative gradients, blurred/bokeh backgrounds, floating orbs, or hero compositions. No hard-coded stone/slate text classes. **No raw Spectrum global tokens and no ad-hoc hex, spacing, or radius literals in component markup** — only bridge-produced semantic tokens (§4.6). This is enforced mechanically by the token-parity check in the rebuild-stack spec.
 
 ### 4.5 The three themes
 
-OpenKit ships **three color themes**. All three are scoped overrides of the *same*
-semantic tokens, applied by a class/attribute on the app root (`.ok-app` or the
-document root). Nothing applied → the stock Spectrum light theme. Worker-identity
-hues and the brand quad stay constant across all three; only surfaces, text,
-borders, accent, and the status tint steps retint.
+OpenKit ships **three color themes**. All three are scoped overrides of the *same* semantic tokens, applied by a class/attribute on the app root (`.ok-app` or the document root). Nothing applied → the stock Spectrum light theme. Worker-identity hues and the brand quad stay constant across all three; only surfaces, text, borders, accent, and the status tint steps retint.
 
-1. **Spectrum** — *the default, light.* Neutral Spectrum gray ramp, Spectrum blue
-   accent (`#0265DC`). The reference look; also available as an explicit
-   `.ok-theme-spectrum` reset so a Spectrum preview can render correctly *inside*
-   a page already scoped to another theme (e.g. the Settings theme picker).
-2. **Paper** — *light, cozy/relaxed (`.ok-theme-paper`).* A warm aged-paper canvas
-   (`#E6DDC7`), low-chroma warm ramp, warm near-black ink (`#322F1E`), and a deep
-   **pine-green** accent (`#2E5D45`). Cards lift one warm step off the paper via
-   hairline + soft shadow rather than stark white. Status hues are kept (they read
-   as meaning on the warm canvas). Row/hover overlays are warmed so they never go
-   cool-gray.
-3. **Noir** — *the dark theme (`.ok-theme-noir`).* A warm charcoal canvas
-   (`#1E1B14`, never pure black), a **gold** ink ramp (body `#D4B15A`, headings
-   `#EBCE7A`) and a **gold** accent (`#C6A24C`, hover lifts brighter per dark-mode
-   convention), with dark ink on gold fills. Status tints are retuned to a warm
-   auxiliary palette (grey-blue informative, bright-yellow notice, yellow-green
-   positive, dusty-rose negative) so chips/glyphs/phase pills stay legible and in
-   harmony with the gold instead of fighting it. `color-scheme: dark`.
+1. **Spectrum** — *the default, light.* Neutral Spectrum gray ramp, Spectrum blue accent (`#0265DC`). The reference look; also available as an explicit `.ok-theme-spectrum` reset so a Spectrum preview can render correctly *inside* a page already scoped to another theme (e.g. the Settings theme picker).
+2. **Paper** — *light, cozy/relaxed (`.ok-theme-paper`).* A warm aged-paper canvas (`#E6DDC7`), low-chroma warm ramp, warm near-black ink (`#322F1E`), and a deep **pine-green** accent (`#2E5D45`). Cards lift one warm step off the paper via hairline + soft shadow rather than stark white. Status hues are kept (they read as meaning on the warm canvas). Row/hover overlays are warmed so they never go cool-gray.
+3. **Noir** — *the dark theme (`.ok-theme-noir`).* A warm charcoal canvas (`#1E1B14`, never pure black), a **gold** ink ramp (body `#D4B15A`, headings `#EBCE7A`) and a **gold** accent (`#C6A24C`, hover lifts brighter per dark-mode convention), with dark ink on gold fills. Status tints are retuned to a warm auxiliary palette (grey-blue informative, bright-yellow notice, yellow-green positive, dusty-rose negative) so chips/glyphs/phase pills stay legible and in harmony with the gold instead of fighting it. `color-scheme: dark`.
 
-**Switching model.** Theme choice lives in **Settings → Appearance**, shown as
-compact preview cards (base surface + accent + a couple of status/neutral
-samples), each with an accessible button label. The selection persists locally
-and restores on reload. Theme switching never lives in a global header. The
-reference implementation is `themes.css` in the Claude Design project; the token
-bridge (§4.6) is where the same values enter the compiled Tailwind theme
-(`apps/web/src/styles`).
+**Switching model.** Theme choice lives in **Settings → Appearance**, shown as compact preview cards (base surface + accent + a couple of status/neutral samples), each with an accessible button label. The selection persists locally and restores on reload. Theme switching never lives in a global header. The reference implementation is `themes.css` in the Claude Design project; the token bridge (§4.6) is where the same values enter the compiled Tailwind theme (`apps/web/src/styles`).
 
 ### 4.6 Token bridge (the reconciliation anchor)
 
-A single bridge source file maps Spectrum tokens (global + semantic) to the
-OpenKit semantic theme consumed by code, and is the one place the three themes are
-expressed for the app. The **same values back both sides** of the design loop —
-the Spectrum design authored in Claude Design and the Tailwind theme compiled into
-`apps/web`. Component code consumes only these semantic tokens. Contract, parity
-test, and layer boundaries are owned by
-[`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md).
+A single bridge source file maps Spectrum tokens (global + semantic) to the OpenKit semantic theme consumed by code, and is the one place the three themes are expressed for the app. The **same values back both sides** of the design loop — the Spectrum design authored in Claude Design and the Tailwind theme compiled into `apps/web`. Component code consumes only these semantic tokens. Contract, parity test, and layer boundaries are owned by [`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md).
 
 ---
 
 ## 5. Typography
 
-- **Sans:** `Source Sans 3` (open substitute for Adobe Clean); `Source Code Pro`
-  for code, diffs, IDs, and protocol values.
-- **Base 14px** UI size on a **1.125 modular scale**. Type is compact and
-  proportional to the surface: large headings only for page/section identity;
-  smaller headings inside panels, sidebars, and repeated items.
-- **Weights:** 400 body · 500 medium (nav, labels) · 700 bold (headings, chips,
-  buttons) · 800 extra-bold (page titles, wordmark).
+- **Sans:** `Source Sans 3` (open substitute for Adobe Clean); `Source Code Pro` for code, diffs, IDs, and protocol values.
+- **Base 14px** UI size on a **1.125 modular scale**. Type is compact and proportional to the surface: large headings only for page/section identity; smaller headings inside panels, sidebars, and repeated items.
+- **Weights:** 400 body · 500 medium (nav, labels) · 700 bold (headings, chips, buttons) · 800 extra-bold (page titles, wordmark).
 - **Line height:** heading 1.23 · UI 1.3 · body 1.5.
-- **Letter spacing 0**, except all-caps eyebrows/kickers/section labels at
-  `0.06em`. Never scale font size with viewport width.
+- **Letter spacing 0**, except all-caps eyebrows/kickers/section labels at `0.06em`. Never scale font size with viewport width.
 
-Key roles: page title `26px/800`; item-card title `14px/700`; body `14px/1.5`;
-meta & detail `12px`; micro labels / chips / counts `11px/700`; eyebrows
-`11px/700 uppercase +0.06em`.
+Key roles: page title `26px/800`; item-card title `14px/700`; body `14px/1.5`; meta & detail `12px`; micro labels / chips / counts `11px/700`; eyebrows `11px/700 uppercase +0.06em`.
 
 ---
 
 ## 6. Spacing, sizing & shape
 
-- **Spacing ramp (px):** 2 · 4 · 8 · 12 · 16 · 24 · 32 · 40 · 48 · 64. Compact by
-  default; group with tone and spacing, not boxes.
-- **Control heights:** 28 (sm) · **32 (md, default)** · 40 (lg). Minimum touch
-  target 44px.
-- **Radius:** 4 chips/swatches · **8 cards, inputs, menus, nav, kanban cards** ·
-  10 item/dialog cards · 16 composer & user bubble · full (pill) for buttons,
-  chips, avatars, phase pills. Radii come from Spectrum's corner scale expressed
-  as bridge tokens only — no ad-hoc literals.
+- **Spacing ramp (px):** 2 · 4 · 8 · 12 · 16 · 24 · 32 · 40 · 48 · 64. Compact by default; group with tone and spacing, not boxes.
+- **Control heights:** 28 (sm) · **32 (md, default)** · 40 (lg). Minimum touch target 44px.
+- **Radius:** 4 chips/swatches · **8 cards, inputs, menus, nav, kanban cards** · 10 item/dialog cards · 16 composer & user bubble · full (pill) for buttons, chips, avatars, phase pills. Radii come from Spectrum's corner scale expressed as bridge tokens only — no ad-hoc literals.
 - **Borders:** 1px default control border; 2px emphasized/selected/focus.
-- Use stable dimensions for fixed-format controls (theme cards, composer,
-  counters, badges); dynamic content must not resize surrounding layout.
+- Use stable dimensions for fixed-format controls (theme cards, composer, counters, badges); dynamic content must not resize surrounding layout.
 
 ---
 
 ## 7. Elevation & motion
 
-- **Elevation is subtle.** Resting cards `0 1px 4px rgba(0,0,0,.09)`; menus /
-  popovers / toasts `0 4px 12px rgba(0,0,0,.14)`; dragged items lift more; modals
-  `0 12px 40px rgba(0,0,0,.24)`. Prefer soft shadow + tone over borders.
-- **Motion is quick and confident:** 130ms micro (hover/press), 160ms control,
-  190ms overlays, on `cubic-bezier(0.45,0,0.4,1)`. No long, showy transitions.
+- **Elevation is subtle.** Resting cards `0 1px 4px rgba(0,0,0,.09)`; menus / popovers / toasts `0 4px 12px rgba(0,0,0,.14)`; dragged items lift more; modals `0 12px 40px rgba(0,0,0,.24)`. Prefer soft shadow + tone over borders.
+- **Motion is quick and confident:** 130ms micro (hover/press), 160ms control, 190ms overlays, on `cubic-bezier(0.45,0,0.4,1)`. No long, showy transitions.
 - **Focus ring:** 2px accent ring, 2px offset — always visible for keyboard use.
 
 ---
 
 ## 8. Iconography
 
-- **Spectrum workflow icons**, monochrome, single-path, tinted with
-  `currentColor`. Sizes 18px default, 16 sm, 20 lg.
-- Icons are baked as **tintable data-URI mask variables** (`--ic-*`); each `.ok-i`
-  reads `--i:var(--ic-name)` (D-013 — external SVG mask files were tainted by the
-  preview serve endpoint and rendered as solid squares; do not reintroduce them).
-- In the implemented app, **Iconify + Remix Icon** is the runtime icon stack
-  (unchanged from the prior app and confirmed by the rebuild-stack spec). Do not
-  handcraft new SVGs when an appropriate icon exists. Icon-only controls must
-  carry an accessible label.
+- **Spectrum workflow icons**, monochrome, single-path, tinted with `currentColor`. Sizes 18px default, 16 sm, 20 lg.
+- Icons are baked as **tintable data-URI mask variables** (`--ic-*`); each `.ok-i` reads `--i:var(--ic-name)` (D-013 — external SVG mask files were tainted by the preview serve endpoint and rendered as solid squares; do not reintroduce them).
+- In the implemented app, **Iconify + Remix Icon** is the runtime icon stack (unchanged from the prior app and confirmed by the rebuild-stack spec). Do not handcraft new SVGs when an appropriate icon exists. Icon-only controls must carry an accessible label.
 
 ---
 
 ## 9. Components & patterns
 
-The component set below is also the **A2UI catalog seed** (D-011): generated
-surfaces may only compose whitelisted OpenKit primitives, always styled by us — a
-generated surface is indistinguishable from built UI except for a "Generated" tag.
-All class names are prefixed `ok-`.
+The component set below is also the **A2UI catalog seed** (D-011): generated surfaces may only compose whitelisted OpenKit primitives, always styled by us — a generated surface is indistinguishable from built UI except for a "Generated" tag. All class names are prefixed `ok-`.
 
 ### 9.1 Conversation items
 - **User message** (`ok-msg-user`): soft sunken bubble, 16px radius, with a name and circular initials avatar. The authenticated human's messages and identity row align right and carry a You marker; other humans align left.
 - **Assistant message** (`ok-msg-assistant`): left-aligned calm *unboxed* flow with a square avatar and a small identity meta row (avatar · author · time · optional `via` channel tag). Assistant report text renders Markdown with scoped semantic typography for headings, lists, links, quotes, and code. Headings start below the page heading; wide code and tables scroll within the message. Raw HTML stays literal, images remain text rather than loading external resources, and links cannot execute code. Human messages and raw diagnostic/evidence content remain verbatim; rendering never changes the stored message.
-- **Item card** (`ok-item-card`): soft 10px card for in-stream system events —
-  mode transitions, task status, approvals, results. An `ok-item-glyph`
-  (informative/notice/positive/neutral) badges its kind. Never louder than needed.
+- **Item card** (`ok-item-card`): soft 10px card for in-stream system events — mode transitions, task status, approvals, results. An `ok-item-glyph` (informative/notice/positive/neutral) badges its kind. Never louder than needed.
 
 ### 9.2 Composer (`ok-composer`)
 This section is the visual projection of the observable Composer contract owned by `docs/specs/20260831-unified_conversation_composer.md`; that specification decides behavior when the two differ.
@@ -412,98 +293,53 @@ The lower action row follows one fixed visual order: attachment `+`, conversatio
 Selected Artifacts and attachments appear as removable context chips between the text region and lower action row without changing their canonical owners. Enabled state, accessibility, failure retention, and keyboard behavior follow the owning Composer specification rather than being duplicated here.
 
 ### 9.3 Buttons, chips, controls
-- **Buttons** are Spectrum pills, 32px: `accent` (primary), `outline`
-  (secondary), `negative` / `negative-outline`, `quiet`, and `sm`, plus a
-  **disabled** state (disabled bg/content/border tokens).
-- **Status chip** (`ok-chip`): pill, 20px, optional dot, text + semantic color
-  per §4.2.
+- **Buttons** are Spectrum pills, 32px: `accent` (primary), `outline` (secondary), `negative` / `negative-outline`, `quiet`, and `sm`, plus a **disabled** state (disabled bg/content/border tokens).
+- **Status chip** (`ok-chip`): pill, 20px, optional dot, text + semantic color per §4.2.
 - **Context chip** (`ok-ctx-chip`): pill, sunken, for composer context.
-- **Fields** (`ok-input`, `ok-field`, `ok-switch`): 32px controls, 8px radius,
-  accent focus; default / focus / with-value / disabled states. Native controls or
-  React Aria equivalents — never decorative divs.
+- **Fields** (`ok-input`, `ok-field`, `ok-switch`): 32px controls, 8px radius, accent focus; default / focus / with-value / disabled states. Native controls or React Aria equivalents — never decorative divs.
 
 ### 9.4 Avatars, nav rows, count badges
-Circle (human) / rounded-square (worker) avatars per §4.3, default and `sm` sizes.
-Nav items, workspace rows, thread rows, and workspace sub-items share one quiet row
-grammar (hover = `overlay-hover`, active = `selected` tint + accent text + bold).
-**Count badges** (`ok-nav-count`) mark required work outside the rail.
+Circle (human) / rounded-square (worker) avatars per §4.3, default and `sm` sizes. Nav items, workspace rows, thread rows, and workspace sub-items share one quiet row grammar (hover = `overlay-hover`, active = `selected` tint + accent text + bold). **Count badges** (`ok-nav-count`) mark required work outside the rail.
 
 Conversation hover/focus hints are compact, non-interactive previews: show at most three title lines with contained overflow and keep the activity/state description separate. Prefer placement beside the rail, constrain the hint to the viewport, and let pointer input pass through so adjacent navigation rows remain clickable. Keep the complete title in the row's accessible name and the conversation itself.
 
 ### 9.5 Goal phase stepper (`ok-phases`) — D-009
-Replaces the lone status chip in the goal header: **Draft › Plan › Execute ›
-Review**, current phase lit (informative, or notice if it's a gate). Blocked /
-paused detail stays on chips *inside* the content, never on the stepper. Present on
-goal boards 05 / 05b / 05c / 06 / 21.
+Replaces the lone status chip in the goal header: **Draft › Plan › Execute › Review**, current phase lit (informative, or notice if it's a gate). Blocked / paused detail stays on chips *inside* the content, never on the stepper. Present on goal boards 05 / 05b / 05c / 06 / 21.
 
 ### 9.6 Turn separators (`ok-turn-sep`)
-A light labeled divider that groups the items of one **Turn** (a bounded execution
-step/attempt) without boxing the stream. Quiet by default; can carry a one-line
-note. Reflects the `Thread → Turn → Item` work model.
+A light labeled divider that groups the items of one **Turn** (a bounded execution step/attempt) without boxing the stream. Quiet by default; can carry a one-line note. Reflects the `Thread → Turn → Item` work model.
 
 ### 9.7 Channel attribution (`ok-via`) — D-008 → channel
-Every item can say **where** it came from: a quiet `via openkit Skill` / `via
-Slack` tag next to the initiator. This makes the Web UI the single visible layer
-for work driven from *any* channel.
+Every item can say **where** it came from: a quiet `via openkit Skill` / `via Slack` tag next to the initiator. This makes the Web UI the single visible layer for work driven from *any* channel.
 
 ### 9.8 Kanban (goal board lens, `ok-kanban`)
-250px columns on `layer-1`, 8px-radius cards with title + worker avatar + meta.
-**Drag = command, never free arrangement** (D-007): within-column = reprioritize;
-To do → In progress = "start now"; dragging into Done is forbidden (use the card
-menu's "Skip this step"). Card menu: Prioritize / Reassign / Skip / Pause. Cards
-open **back into the conversation** — the board indexes the thread, never a
-parallel world.
+250px columns on `layer-1`, 8px-radius cards with title + worker avatar + meta. **Drag = command, never free arrangement** (D-007): within-column = reprioritize; To do → In progress = "start now"; dragging into Done is forbidden (use the card menu's "Skip this step"). Card menu: Prioritize / Reassign / Skip / Pause. Cards open **back into the conversation** — the board indexes the thread, never a parallel world.
 
 ### 9.9 Artifact rows (`ok-artifact-row`)
-Icon · name · meta (mono diff `+/−`, time). Artifacts are first-class durable
-outputs; a completed turn always leaves visible evidence of output, reachable from
-the main flow (board 12 adds a provenance rail: created-by, plan step, versions,
-evidence + a review gate).
+Icon · name · meta (mono diff `+/−`, time). Artifacts are first-class durable outputs; a completed turn always leaves visible evidence of output, reachable from the main flow (board 12 adds a provenance rail: created-by, plan step, versions, evidence + a review gate).
 
 Thread Artifact references expose View content in both the stream and side index. Both entry points distinguish saved outputs with their recorded version from file-change records with their change kind; titles and paths wrap in full instead of truncating. Specific Artifact types come from loaded content, never guesses from the title. Inspection reads the referenced Workspace and Artifact, displays only a matching version, and provides loading, retry and close controls. Workspace-change Artifacts show recorded paths and available text diff with full escaped content; recorded review status is historical evidence, not current decision authority.
 
 ### 9.10 Toast (`ok-toast`)
-The only floating layer. Dark, ≥340px, bottom-center, with a "View" action and a
-close button. Transient, dismissible, non-blocking — for events that finished while
-the user was elsewhere (D-006 #3). Under Noir the toast keeps an explicit dark fill
-(the gold ramp would otherwise invert it).
+The only floating layer. Dark, ≥340px, bottom-center, with a "View" action and a close button. Transient, dismissible, non-blocking — for events that finished while the user was elsewhere (D-006 #3). Under Noir the toast keeps an explicit dark fill (the gold ramp would otherwise invert it).
 
 ### 9.11 Page scaffolding
-`ok-page` (centered, ≤1080px, 24px gap), `ok-page-title` (26/800), `ok-page-sub`,
-`ok-eyebrow`, `ok-card` (generic 10px card), `ok-list-row` (hairline-separated
-table rows). Cards are for repeated items, modals, and meaningful grouped controls
-— **not** for every page section, and never cards inside cards.
+`ok-page` (centered, ≤1080px, 24px gap), `ok-page-title` (26/800), `ok-page-sub`, `ok-eyebrow`, `ok-card` (generic 10px card), `ok-list-row` (hairline-separated table rows). Cards are for repeated items, modals, and meaningful grouped controls — **not** for every page section, and never cards inside cards.
 
-### 9.12 System states (loading / empty / error / disconnected) — first-class
+### 9.12 System states and action outcomes — first-class
 
-Because the Web UI is a *visible follower* over NanoCore read models, every
-data-backed surface MUST define what it shows when it is not in the populated,
-happy state. These are first-class patterns, not afterthoughts, and they resolve
-from semantic tokens only (never raw palette).
+Because the Web UI is a *visible follower* over NanoCore read models, every data-backed surface MUST define what it shows when it is not in the populated, happy state. These are first-class patterns, not afterthoughts, and they resolve from semantic tokens only (never raw palette).
 
-- **Loading (`ok-skeleton`).** Neutral placeholder bars on `--surface-skeleton`,
-  shaped like the content they precede (a few lines for a card; rows for a list).
-  Used while a read model is in flight. No spinners as the primary loading device.
-- **Empty (`ok-empty`).** A calm centered block: a soft round glyph, a short
-  title ("Nothing here yet"), one line of plain guidance, and a single primary
-  action ("New chat"). First-run onboarding (board 18) is the app-level case of
-  this pattern.
-- **Error (`ok-error`).** An inline banner (negative family) with a plain message
-  and a **Try again** action. Errors are recoverable and stated in plain language;
-  never a raw stack trace in the main flow (technical detail folds into
-  Diagnostics, §13).
-- **Disconnected.** The specific, important error case: NanoCore is
-  unreachable ("Couldn't reach NanoCore."). Because the whole app follows
-  NanoCore, a disconnected state must be **globally legible** (a persistent, quiet
-  banner/affordance), while per-surface content degrades to its `ok-error` or
-  last-known read model rather than blanking out. Reconnect is retryable and does
-  not lose the user's place.
+- **Loading (`ok-skeleton`).** Neutral placeholder bars on `--surface-skeleton`, shaped like the content they precede (a few lines for a card; rows for a list). Used while a read model is in flight. No spinners as the primary loading device.
+- **Empty (`ok-empty`).** A calm centered block: a soft round glyph, a short title ("Nothing here yet"), one line of plain guidance, and a single primary action ("New chat"). First-run onboarding (board 18) is the app-level case of this pattern. Empty means the read succeeded and returned nothing; data that is unavailable, denied, or failed to load uses the error or disconnected treatment, never the empty one.
+- **Error (`ok-error`).** An inline banner (negative family) with a plain message and, when the owning operation allows a safe retry, a **Try again** action. Errors are stated in plain language; never a raw stack trace in the main flow (technical detail folds into Diagnostics, §13). A failed action keeps the user's relevant input for correction, except fields that the owning contract clears, such as secret material.
+- **Disconnected.** The specific, important error case: NanoCore is unreachable ("Couldn't reach NanoCore."). Because the whole app follows NanoCore, a disconnected state must be **globally legible** (a persistent, quiet banner/affordance), while per-surface content degrades to its `ok-error` or last-known read model rather than blanking out. Reconnect is retryable and does not lose the user's place.
+- **Action outcomes.** An action the user starts shows a visible pending state until its owner settles it, then a plain success or failure. When the outcome is unknown, for example after a transport failure, the surface says so and offers only the inspection or retry that the operation's identity and effect contract allows.
 - **Disabled.** Individual controls can use disabled bg/content/border tokens; a whole surface without a stable backing contract is unpublished rather than exposed as inactive product UI (§11).
 
 ### 9.13 Per-surface state matrix
 
-Every Tier-A surface (§11) must specify all applicable states below before it is
-considered design-complete. "—" means the state does not apply to that surface.
+Every Tier-A surface (§11) must specify all applicable states below before it is considered design-complete. "—" means the state does not apply to that surface.
 
 | Surface | Loading | Empty | Error | Disconnected |
 |---|---|---|---|---|
@@ -538,34 +374,15 @@ Accepted specifications alone own product behavior, operations, authority, lifec
 
 Ordered by how the D-010 roadmap prioritizes them.
 
-1. **Overview = home of 1:N supervision.** The default question is "where am I
-   needed," not "how is this one goal." "Needs you" leads the page, sorted by
-   waiting time; everything else is ambient awareness. Target: open once a day,
-   clear every interrupt in ~90 seconds, close.
-2. **Interrupts decidable without opening the goal.** Every "Needs you" row carries
-   enough context to Approve / Skip / one-line-reply inline. Entering the goal is
-   the fallback, not the required path.
-3. **Catch-up card ("since you last looked").** A returning user's thread tops with
-   an agent-written delta: done / blocked / next / plan changes (board 05c).
-4. **Three lenses on one goal, one dataset** (D-008): **Thread** (time) · **Plan**
-   (structure, live status chips) · **Board** (parallelism). Switching is free and
-   loses no context. Default view follows the goal's phase: drafting /
-   awaiting-plan-approval → Thread; executing → Plan (live); Board is always
-   opt-in. Thread alone degrades gracefully to "a very capable conversation."
-5. **Plan approval gate** (D-005): the trust contract before delegation. Pre-approval,
-   every step reads **Planned**; execution chips appear only after approval.
-   **Autonomy dials** sit at this gate (D-010 #4) — per-goal grants for which
-   actions ask first (spend, send, delete) vs. auto-pass (read). The dial *is* the
-   migration path from strong to weak interaction.
-6. **Steer bar** = the bottom composer on goal surfaces; its replies live in the
-   Thread lens. Intervention channel always open.
-7. **Multiplayer: skeleton, not muscle** (D-008). Every instruction / approval /
-   message carries an **initiator** now ("Approved by SW"); presence, @mentions,
-   roles, and conflict resolution are deferred. The Thread view *is* the
-   multiplayer surface; single-player is its degenerate case.
+1. **Overview = home of 1:N supervision.** The default question is "where am I needed," not "how is this one goal." "Needs you" leads the page, sorted by waiting time; everything else is ambient awareness. Target: open once a day, clear every interrupt in ~90 seconds, close.
+2. **Interrupts decidable without opening the goal.** Every "Needs you" row carries enough context to Approve / Skip / one-line-reply inline. Entering the goal is the fallback, not the required path.
+3. **Catch-up card ("since you last looked").** A returning user's thread tops with an agent-written delta: done / blocked / next / plan changes (board 05c).
+4. **Three lenses on one goal, one dataset** (D-008): **Thread** (time) · **Plan** (structure, live status chips) · **Board** (parallelism). Switching is free and loses no context. Default view follows the goal's phase: drafting / awaiting-plan-approval → Thread; executing → Plan (live); Board is always opt-in. Thread alone degrades gracefully to "a very capable conversation."
+5. **Plan approval gate** (D-005): the trust contract before delegation. Pre-approval, every step reads **Planned**; execution chips appear only after approval. **Autonomy dials** sit at this gate (D-010 #4) — per-goal grants for which actions ask first (spend, send, delete) vs. auto-pass (read). The dial *is* the migration path from strong to weak interaction.
+6. **Steer bar** = the bottom composer on goal surfaces; its replies live in the Thread lens. Intervention channel always open.
+7. **Multiplayer: skeleton, not muscle** (D-008). Every instruction / approval / message carries an **initiator** now ("Approved by SW"); presence, @mentions, roles, and conflict resolution are deferred. The Thread view *is* the multiplayer surface; single-player is its degenerate case.
 8. **Generative UI = A2UI** (D-011). A producer submits declarative JSON through Core admission; the client renders whitelisted OpenKit primitives by default, with one admitted PluginWidget delegate for isolated MCP Apps HTML. Arbitrary code cannot execute in the host DOM. In-thread presentations are **thread items**; saved reusable views retain separate definition identity under the Generative UI contract; user-visible action outcomes use existing attributed history; three states, no dead ends: **streaming skeleton → rendered → plain-content fallback** (an unknown component degrades to content, never a surprise executable frame; an admitted delegate has its own local failure and safe-load retry state). *The internal review surface remains unpublished until its Generative UI contract and implementation support publication (§11); only Kernel-backed views also depend on Kernel.*
-9. **Reach while away** (D-010 #6, future mechanic): interrupts travel out
-   (notifications / email digest) and are actionable in place.
+9. **Reach while away** (D-010 #6, future mechanic): interrupts travel out (notifications / email digest) and are actionable in place.
 
 ---
 
@@ -578,64 +395,46 @@ The current 24 reference boards (01–22, with 05b/05c) and their audited build 
 **Tier A — live or current build target (kernel-backed today):**
 - **Chat:** 01 starter · 02 thread · 03 thread + aux rail.
 - **Task:** 04 task thread (inline approval-card pattern).
-- **Goals:** 05 plan / approval gate · 05b plan live · 05c thread (catch-up +
-  attribution + turn separators) · 06 board (kanban lens) · 12 artifact review ·
-  21 goal completed.
+- **Goals:** 05 plan / approval gate · 05b plan live · 05c thread (catch-up + attribution + turn separators) · 06 board (kanban lens) · 12 artifact review · 21 goal completed. Goal development is frozen pending the Goal Mode Redesign ([decision](docs/decisions/20260928-goal_freeze_and_export_backup_boundary.md)); these surfaces stay published and unchanged until that Redesign reconsiders them.
 - **Workspace:** 07 Overview / Action Center · 08 Agents · 14 Knowledge (minimal slice) · 18 First run · 19 Repositories (live selected-Workspace repository resources, diagnostics, durable push records, and the existing approval-gated push workflow). Worker-proposed-file Workspace Sync review→apply UX remains deferred and is not part of board 19's Tier-A scope; this tier classification does not claim browser proof or a real external push.
-- **Settings:** 10 Settings core · 15 Vault (read-only Workspace Vault references, grants, and use evidence) · 17 Usage & audit (read-only selected-Workspace capability usage, Workspace audit events, and Workspace permission decisions) · 11 Debug (developer component catalog and the home for future contract-backed inspection panels).
+- **Settings:** 10 Settings core · 15 Vault (read-only Workspace Vault references, grants, and use evidence) · 17 Usage & audit (read-only selected-Workspace capability usage, Workspace audit events, and Workspace permission decisions) · 20 AI interface (provider subscription accounts, provider and model diagnostics, and provider configuration behind the bounded deployment-admin gate) · 11 Debug (developer component catalog and the home for future contract-backed inspection panels).
 - **Reference-backed completion surfaces:** server-mode sign-up, sign-in, and sign-out (18/10/11/22), Workspace members and invitations (10/11/22), and the Thread Plane 1 Material workbench (05c/12/11/22). Their accepted specifications admit behavior; §9.14 owns only their deterministic visual composition.
 
 **Tier B — built, unpublished (contract not yet stable):**
-- 09 Automations (the automation facade is non-executing), 16 Channels, and 20 AI interface (provider-subscription status requires a separate server-admin Web authorization path). Retain their internal review implementations, but omit them from published navigation and routing until their contracts stabilize.
+- 09 Automations (the automation facade is non-executing) and 16 Channels. Retain their internal review implementations, but omit them from published navigation and routing until their contracts stabilize.
 
 **Tier C — deferred (needs prerequisite design first):**
-- 13 Generative UI / A2UI (needs the independent interaction, persistence, and current-authority contract; Kernel-backed views additionally need the Kernel backend). Retain the in-thread render *shell* and three-state fallback as an internal review implementation, but omit the surface from published navigation and routing.
+- 13 Generative UI / A2UI: Chat Items of type `generative-ui-reference` already render in live Chat through the native A2UI host. The standalone fixture shell and its three-state fallback remain an internal review implementation, omitted from published navigation and routing, until the independent interaction, persistence, and current-authority contract supports publication; Kernel-backed views additionally need the Kernel backend.
 - A cross-goal board (D-001): deferred — its job overlaps Overview.
 
 ---
 
 ## 12. Responsive behavior (desktop-first, not mobile-first)
 
-OpenKit is a productivity and supervision tool; the design **optimizes for the
-desktop workbench** that surfaces the most information at once. It is
-**responsive but not mobile-first.**
+OpenKit is a productivity and supervision tool; the design **optimizes for the desktop workbench** that surfaces the most information at once. It is **responsive but not mobile-first.**
 
 - **Supported floor: 600×600.** The shell, centered main column, and composer dock stay usable and free of horizontal overflow down to 600×600. Below 800px the left navigation is a modal overlay drawer, closed initially and opened by a labelled top button. Escape, outside dismissal, an explicit close control, or selecting a navigation destination closes it; focus is contained while open and restored on dismissal. Resizing to at least 800px restores the persistent sidebar and dismisses the drawer; returning to a narrow viewport starts closed. App and Settings use this same shell behavior. The Thread auxiliary panel overlays rather than compressing the conversation when their combined minimum widths do not fit (§3.3); the main column keeps a readable width and never splits.
-- **No horizontal overflow** at any supported size. Wide content (tables, kanban,
-  diagrams, code) scrolls inside its own container; the page body never scrolls
-  sideways.
+- **No horizontal overflow** at any supported size. Wide content (tables, kanban, diagrams, code) scrolls inside its own container; the page body never scrolls sideways.
 - **Text fits** inside buttons, cards, theme previews, badges, and rows. Base typography uses overflow-wrap anywhere so long IDs and unspaced words wrap without expanding flex/grid minimum widths; ordinary words retain normal wrapping. Narrative and pre-wrapped JSON inherit it. Explicit whitespace-pre code/editor regions and wide tables retain their own horizontal scrolling. Compact context chips and selected labels truncate within their controls while preserving full accessible text and readable expanded choices. Never hide overflowing narrative content.
-- **Below the floor / true mobile is out of scope for v1.** A phone-class layout
-  is not a current deliverable; do not compromise desktop density to chase it. If
-  a mobile form is pursued later it gets its own design pass (and pairs with the
-  deferred Tauri packaging in `docs/product-vision.md`), rather than a mobile-first
-  reflow of these surfaces.
+- **Below the floor / true mobile is out of scope for v1.** A phone-class layout is not a current deliverable; do not compromise desktop density to chase it. If a mobile form is pursued later it gets its own design pass (and pairs with the deferred Tauri packaging in `docs/product-vision.md`), rather than a mobile-first reflow of these surfaces.
 
 ---
 
 ## 13. Accessibility
 
-- **State = text + semantic color**, never color alone (turn status, approval,
-  agent health, artifact status, connection).
-- Icon-only controls carry accessible labels; navigation regions carry clear
-  `aria-label`s (Primary workspace navigation, Workspace threads, Settings
-  sections, Conversation workspace).
-- Collapsible workspace controls use stable generic labels ("Collapse/Expand
-  workspace threads") so row names stay unambiguous.
-- Native controls (button / input / select / checkbox / textarea) or **React Aria
-  Components** — never decorative divs. Keyboard focus is always visible (§7).
-- Progressive disclosure for anything technical: the Agents drawer opens to
-  plain-language diagnostics first; logs/traces fold under a further "View details"
-  (D-004). Diagnostics owns the protocol snapshot + event timeline and stays
-  single-column.
+- **State = text + semantic color**, never color alone (turn status, approval, agent health, artifact status, connection).
+- Icon-only controls carry accessible labels; navigation regions carry clear `aria-label`s (Primary workspace navigation, Workspace threads, Settings sections, Conversation workspace).
+- Collapsible workspace controls use stable generic labels ("Collapse/Expand workspace threads") so row names stay unambiguous.
+- Native controls (button / input / select / checkbox / textarea) or **React Aria Components** — never decorative divs. Keyboard focus is always visible (§7).
+- Every flow is operable by keyboard, and every control has an accessible name and state. A state change that matters to the current task, such as a pending action settling, a failure, or a disconnect, is announced to assistive technology, not only shown.
+- Focus management fits the surface: a modal dialog or modal drawer contains focus and restores it on dismissal (§12), while a non-modal overlay such as the Side panel returns focus to its trigger when closed (§3.3) without trapping it.
+- Progressive disclosure for anything technical: the Agents drawer opens to plain-language diagnostics first; logs/traces fold under a further "View details" (D-004). Diagnostics owns the protocol snapshot + event timeline and stays single-column.
 
 ---
 
 ## 14. Content & voice
 
-- **Plain, calm, sentence-case.** "Overview," "Needs you," "Approve in
-  conversation," "Ready / Working / Needs attention." Prefer nouns a non-technical
-  operator understands.
+- **Plain, calm, sentence-case.** "Overview," "Needs you," "Approve in conversation," "Ready / Working / Needs attention." Prefer nouns a non-technical operator understands.
 - Don't pad with filler. Every stat, icon, and row earns its place.
 
 ---
@@ -646,7 +445,7 @@ desktop workbench** that surfaces the most information at once. It is
 - Start on the working surface; keep the main panel centered and vertical.
 - Surface required work in-thread and in the Overview queue + counts.
 - Use the fixed status vocabulary, fixed worker hues, and the three named themes.
-- Define loading / empty / error / disconnected for every data-backed surface (§9.12–9.13).
+- Define loading / empty / error / disconnected states and action outcomes for every data-backed surface (§9.12–9.13).
 - Keep the phase stepper for lifecycle, chips for point-in-time state.
 - Let cards open back into the conversation; keep the rail as a mirror.
 - Reference semantic bridge tokens only; keep not-yet-backed surfaces unpublished.
@@ -657,8 +456,7 @@ desktop workbench** that surfaces the most information at once. It is
 - Make the right rail (or any single channel) *required* for a core action.
 - Put Settings in top-right chrome, or a second Settings sidebar in the main panel.
 - Ship inactive/decorative controls, or wire a not-yet-backed surface as if live.
-- Use color alone for state, raw palette tokens, ad-hoc hex/radius/spacing,
-  decorative gradients, emoji, or handcrafted icons where a Spectrum/Remix icon exists.
+- Use color alone for state, raw palette tokens, ad-hoc hex/radius/spacing, decorative gradients, emoji, or handcrafted icons where a Spectrum/Remix icon exists.
 - Let drag freely rearrange board cards, or allow a manual drag into Done.
 - Compromise desktop density to chase a mobile-first reflow.
 
@@ -666,14 +464,7 @@ desktop workbench** that surfaces the most information at once. It is
 
 ## 16. Implementation stack (summary; spec is authoritative)
 
-The rebuilt `apps/web` is React + Vite, with **React Aria Components** for
-accessible behavior, **Adobe Spectrum tokens projected into Tailwind CSS v4** for
-styling (the token bridge, §4.6), **Zustand** for UI state, **TanStack Query** for
-server state over `@openkit/core-client`, **React Router** for routing, **A2UI**
-for generative surfaces (deferred, §11), and **Iconify + Remix Icon** for icons.
-SolidJS, daisyUI, and the old 35-theme catalog are removed. The full stack
-contract, layer boundaries, token-parity test, and rollout are owned by
-[`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md).
+The rebuilt `apps/web` is React + Vite, with **React Aria Components** for accessible behavior, **Adobe Spectrum tokens projected into Tailwind CSS v4** for styling (the token bridge, §4.6), **Zustand** for UI state, **TanStack Query** for server state over `@openkit/core-client`, **React Router** for routing, **A2UI** for generative surfaces (live Chat Items; the fixture shell is deferred, §11), and **Iconify + Remix Icon** for icons. SolidJS, daisyUI, and the old 35-theme catalog are removed. The full stack contract, layer boundaries, token-parity test, and rollout are owned by [`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md).
 
 ---
 
@@ -694,80 +485,32 @@ contract, layer boundaries, token-parity test, and rollout are owned by
 
 ## 18. Decision record (D-001 … D-014)
 
-The reasoning behind the guidance above, kept inline so this guide stands on its
-own. Newest first; each entry states the question, the decision, and why. The
-body cites these as `(D-0xx)`.
+The reasoning behind the guidance above, kept inline so this guide stands on its own. Newest first; each entry states the question, the decision, and why. The body cites these as `(D-0xx)`.
 
 **D-014 · Boards are non-exhaustive visual references, not surface admission.** A current, contract-backed surface may compose deterministic visual intent from existing boards, tokens, themes, primitives, layout, density, states, responsive rules, and accessibility without receiving a dedicated Claude Design frame. Server-mode account access composes 18/10/11/22, members and invitations compose 10/11/22, and the Plane 1 Material workbench composes 05c/12/11/22. A new frame is required only when those sources leave genuinely new or ambiguous visual language, and every implementation still receives final human fidelity review. *Why:* behavior is admitted only by accepted specifications, while the visual canvas deliberately remains a reusable, non-exhaustive reference library.
 
-**D-013 · Close the NanoCore-first surface gaps.** Added **Repositories** (a
-workspace owns repos; link → sync state → review→apply gate with an evidence
-bundle, distinct from artifact review because it lands a *change into a repo*),
-**AI interface** (makes the NanoCore-first, end-user Agent Skill + CLI-first
-posture visible), and **Goal completed** (the terminal state: verification
-evidence + follow-up decisions). *Why:* express what the Core already does before
-inventing new concepts; apply/attribution extend auditability (D-010 #5) to the
-code layer.
+**D-013 · Close the NanoCore-first surface gaps.** Added **Repositories** (a workspace owns repos; link → sync state → review→apply gate with an evidence bundle, distinct from artifact review because it lands a *change into a repo*), **AI interface** (makes the NanoCore-first, end-user Agent Skill + CLI-first posture visible), and **Goal completed** (the terminal state: verification evidence + follow-up decisions). *Why:* express what the Core already does before inventing new concepts; apply/attribution extend auditability (D-010 #5) to the code layer.
 
 **D-012 · Audit the bounded vision surfaces.** Added artifact review, generative UI, knowledge, vault, channels, usage/audit, and first run; paid the phase-stepper, catch-up-card, inline-decidable-interrupt, and attribution debts on the boards in that audit. *Why:* make the then-current product direction visually inspectable; this bounded audit did not make the board set an admission catalog or require one dedicated board for every future contract-backed surface (D-014).
 
 **D-011 · Generative UI = A2UI.** A producer submits declarative JSON through Core admission; the client renders whitelisted OpenKit primitives by default and a generic PluginWidget delegates specialized interaction to isolated MCP Apps HTML. Resource identity, bridge capabilities, and Core effects are governed; arbitrary code cannot execute in the host DOM. In-thread presentations are thread items; reusable views retain their own saved definition identity; user-visible action outcomes use existing attributed history; three states, no dead ends (streaming skeleton → rendered → plain-content fallback). *Why:* matches Core security boundaries, keeps the frontend small, and pairs with the NanoCore-first posture. The review shell remains unpublished until the independent Generative UI contract and implementation support publication (§10.8, §11 Tier C). Only Kernel-backed views additionally depend on Kernel. Plugins own specialized maps/canvases/timelines inside the delegate; layout, native siblings, accessibility, and authorized action routing remain with OpenKit. Start with A2UI v0.9 and target eventual v1.0 compatibility without waiting for upstream release.
 
-**D-010 · The weak-interaction roadmap.** Six improvements, priority order:
-Overview as the 1:N supervision home; interrupts decidable without opening the
-goal; the catch-up card; autonomy dials; auditable decisions; reach-while-away.
-*Why:* apply the D-009 yardstick to the whole product (§10).
+**D-010 · The weak-interaction roadmap.** Six improvements, priority order: Overview as the 1:N supervision home; interrupts decidable without opening the goal; the catch-up card; autonomy dials; auditable decisions; reach-while-away. *Why:* apply the D-009 yardstick to the whole product (§10).
 
-**D-009 · ⭐ The strategic bet — weak interaction wins.** Chose *weak interaction*
-(delegate a large task, supervise, occasionally steer; 1:N) over *strong
-interaction* (continuous 1:1 per-card chat). *Why,* in order of weight: (1)
-**economics** — strong interaction caps at 1:1; 1:N supervision is the real
-productivity leap, and attention is the one resource that never gets cheaper; (2)
-**the capability curve moves one way** — autonomous task lengths keep growing, so
-betting on per-card babysitting bets on today's model defects; (3) **but trust,
-not capability, is today's bottleneck** — so the winning form is *interrupt-driven*:
-silent by default, pulled in at gates/blocks/review, walk-in anytime. Corollaries:
-tabs over master-detail for goal views; adopt the phase stepper. This is the
-yardstick for every future UI debate (Principle 1).
+**D-009 · ⭐ The strategic bet — weak interaction wins.** Chose *weak interaction* (delegate a large task, supervise, occasionally steer; 1:N) over *strong interaction* (continuous 1:1 per-card chat). *Why,* in order of weight: (1) **economics** — strong interaction caps at 1:1; 1:N supervision is the real productivity leap, and attention is the one resource that never gets cheaper; (2) **the capability curve moves one way** — autonomous task lengths keep growing, so betting on per-card babysitting bets on today's model defects; (3) **but trust, not capability, is today's bottleneck** — so the winning form is *interrupt-driven*: silent by default, pulled in at gates/blocks/review, walk-in anytime. Corollaries: tabs over master-detail for goal views; adopt the phase stepper. This is the yardstick for every future UI debate (Principle 1).
 
-**D-008 · Goal Thread view; multiplayer-ready data, single-player UI.** Goal mode
-gets a **Thread** lens isomorphic with chat/task threads, so it degrades
-gracefully to "a very capable conversation"; the default lens follows the goal's
-phase. Every instruction/approval/message carries an **initiator** now
-("Approved by SW"); presence, @mentions, roles, and conflict resolution are
-deferred. *Why:* the steer bar needs a home for its replies, and the Thread view
-*is* the multiplayer surface — single-player is its degenerate case, so no
-separate "Slack UI" is ever needed; Plan/Board are state projections and thus
-multiplayer-safe by construction.
+**D-008 · Goal Thread view; multiplayer-ready data, single-player UI.** Goal mode gets a **Thread** lens isomorphic with chat/task threads, so it degrades gracefully to "a very capable conversation"; the default lens follows the goal's phase. Every instruction/approval/message carries an **initiator** now ("Approved by SW"); presence, @mentions, roles, and conflict resolution are deferred. *Why:* the steer bar needs a home for its replies, and the Thread view *is* the multiplayer surface — single-player is its degenerate case, so no separate "Slack UI" is ever needed; Plan/Board are state projections and thus multiplayer-safe by construction.
 
-**D-007 · Kanban is a lens, not a place.** The board is an opt-in projection of
-goal data; the default execution view is **Plan (live)**. Steer bar at the
-bottom; cards open back into the conversation; **drag = command** (reprioritize,
-or "start now"), never free arrangement, and never a manual drag into Done (use
-"Skip this step"). *Why:* the board's unique value is showing parallelism, but it
-must never become a parallel world that competes with the thread.
+**D-007 · Kanban is a lens, not a place.** The board is an opt-in projection of goal data; the default execution view is **Plan (live)**. Steer bar at the bottom; cards open back into the conversation; **drag = command** (reprioritize, or "start now"), never free arrangement, and never a manual drag into Done (use "Skip this step"). *Why:* the board's unique value is showing parallelism, but it must never become a parallel world that competes with the thread.
 
-**D-006 · Required actions never live only in the right rail.** Surfaced through
-three non-rail channels by urgency: in-thread inline (primary), the Overview
-queue + count badges, and a light toast. The rail only mirrors/indexes. *Why:*
-turning the rail off must never block a core action (§3.3).
+**D-006 · Required actions never live only in the right rail.** Surfaced through three non-rail channels by urgency: in-thread inline (primary), the Overview queue + count badges, and a light toast. The rail only mirrors/indexes. *Why:* turning the rail off must never block a core action (§3.3).
 
-**D-005 · The sample-data canon.** Four workers — Scout / Quill / Ledger / Pixel
-— plus the human (SW); goal step 6 "Final review with you" returns to the human
-with an "In review" chip. *Why:* one consistent canon across every board.
+**D-005 · The sample-data canon.** Four workers — Scout / Quill / Ledger / Pixel — plus the human (SW); goal step 6 "Final review with you" returns to the human with an "In review" chip. *Why:* one consistent canon across every board.
 
-**D-004 · Agents-page depth.** Surface plain-language readiness ("Ready /
-Working / Needs attention"); technical diagnostics sit behind progressive
-disclosure ("View details"). *Why:* non-technical users are first-class and must
-not be confronted with logs.
+**D-004 · Agents-page depth.** Surface plain-language readiness ("Ready / Working / Needs attention"); technical diagnostics sit behind progressive disclosure ("View details"). *Why:* non-technical users are first-class and must not be confronted with logs.
 
-**D-003 · "Overview," not "Mission control."** *Why:* plainer, Spectrum-calm,
-and better for non-technical users; the concept (global orchestration view) is
-unchanged.
+**D-003 · "Overview," not "Mission control."** *Why:* plainer, Spectrum-calm, and better for non-technical users; the concept (global orchestration view) is unchanged.
 
-**D-002 · One Settings gear, no identity row.** *Why:* identity is not
-re-asserted on every page — full account info lives inside Settings.
+**D-002 · One Settings gear, no identity row.** *Why:* identity is not re-asserted on every page — full account info lives inside Settings.
 
-**D-001 · Kanban stays single-goal (open / deferred).** A workspace-level
-cross-goal board is deferred because its job overlaps Overview. *Why:* avoid a
-second status lens until real usage shows the need (§11 Tier C).
+**D-001 · Kanban stays single-goal (open / deferred).** A workspace-level cross-goal board is deferred because its job overlaps Overview. *Why:* avoid a second status lens until real usage shows the need (§11 Tier C).
