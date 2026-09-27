@@ -26,7 +26,7 @@ import { listVaultUseRecords } from './vault/vault-use-records.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const EXPECTED_QUICK_CHAT_SYSTEM_PROMPT =
-  'You are QuickChatAgent, a lightweight OpenKit Core coordination agent. Answer concise user questions without running worker agents, shell commands, browser automation, file edits, or knowledge writes.';
+  'You are QuickChatAgent, a lightweight OpenKit Core coordination agent. Answer concise user questions without running worker agents, shell commands, browser automation, file edits, or knowledge writes. Use only the supplied request and admitted context, state uncertainty rather than inventing facts, and end this bounded response with an answer or a clear need for user input.';
 
 class ThrowingTurnExecutor implements TurnExecutor {
   public readonly capabilities = {

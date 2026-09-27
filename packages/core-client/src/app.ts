@@ -331,6 +331,10 @@ import {
   ReverseKnowledgeProposalRequestSchema,
   type ReverseKnowledgeProposalResponse,
   ReverseKnowledgeProposalResponseSchema,
+  type ReviseThreadGoalIntentRequest,
+  ReviseThreadGoalIntentRequestSchema,
+  type ReviseThreadGoalIntentResponse,
+  ReviseThreadGoalIntentResponseSchema,
   type ReviseThreadGoalPlanRequest,
   ReviseThreadGoalPlanRequestSchema,
   type ReviseThreadGoalPlanResponse,
@@ -953,7 +957,7 @@ export interface AppApiClient {
   getThreadDashboard(workspaceId: string, threadId: string): Promise<ThreadDashboardResponse>;
   /** Reads one thread Goal Mode summary read model. */
   getThreadGoalSummary(workspaceId: string, threadId: string): Promise<ThreadGoalSummaryResponse>;
-  /** Reads the current Goal Plan owned by the Thread's latest Goal. */
+  /** Reads active and pending Plans plus the exact next planning action. */
   getThreadGoalPlan(workspaceId: string, threadId: string): Promise<ThreadGoalPlanReadResponse>;
   /** Starts Goal Mode for one thread. */
   startThreadGoal(
@@ -961,7 +965,7 @@ export interface AppApiClient {
     threadId: string,
     input: StartThreadGoalInput
   ): Promise<StartThreadGoalResponse>;
-  /** Creates a deterministic Goal Mode plan for one planning goal. */
+  /** Drafts an initial or requested successor Goal Plan. */
   createThreadGoalPlan(
     workspaceId: string,
     threadId: string,
@@ -973,12 +977,18 @@ export interface AppApiClient {
     threadId: string,
     input: ApproveThreadGoalPlanRequest
   ): Promise<ApproveThreadGoalPlanResponse>;
-  /** Requests Goal Mode plan revisions and returns the goal to planning. */
+  /** Records one Plan revision instruction without changing the approved Plan. */
   reviseThreadGoalPlan(
     workspaceId: string,
     threadId: string,
     input: ReviseThreadGoalPlanRequest
   ): Promise<ReviseThreadGoalPlanResponse>;
+  /** Records one same-Goal intent revision and conservatively holds affected work. */
+  reviseThreadGoalIntent(
+    workspaceId: string,
+    threadId: string,
+    input: ReviseThreadGoalIntentRequest
+  ): Promise<ReviseThreadGoalIntentResponse>;
   /** Pauses the active Goal Mode workflow for one thread. */
   pauseThreadGoal(
     workspaceId: string,
@@ -1832,6 +1842,12 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/plan/revise`,
         ReviseThreadGoalPlanRequestSchema.parse(input),
         ReviseThreadGoalPlanResponseSchema
+      ),
+    reviseThreadGoalIntent: (workspaceId, threadId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/intent/revise`,
+        ReviseThreadGoalIntentRequestSchema.parse(input),
+        ReviseThreadGoalIntentResponseSchema
       ),
     pauseThreadGoal: (workspaceId, threadId, input = {}) => {
       const request = withRequestId(input);

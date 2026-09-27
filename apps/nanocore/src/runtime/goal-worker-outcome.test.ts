@@ -30,6 +30,7 @@ function addRunningGoalTask(workspaceDb: WorkspaceDb): void {
   createGoalRecord(workspaceDb, {
     workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
     goalId: 'goal_demo',
+    createdByItemId: 'it_initial_intent_goal_demo',
     workspaceId: 'ws_demo',
     threadId: 'th_demo',
     title: 'Record outcome',

@@ -27,6 +27,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -1068,6 +1069,13 @@ describe('action center app API', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Runtime attention');
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      objective: 'Finish the human attention slice.',
+      userId: 'user_local',
+    });
     const turn = store.createTurn('ws_demo', thread.id, 'Run goal worker', {
       kind: 'user',
       id: 'user_local',
@@ -1089,6 +1097,7 @@ describe('action center app API', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_demo',
+        createdByItemId: initialIntentItemId,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         title: 'Ship the slice',
@@ -1269,11 +1278,19 @@ describe('action center app API', () => {
     const activeTurnId = 'tu_action_center_steering';
     const goalId = 'goal_action_center_steering';
     const requestId = 'goal-steering-action-center';
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      objective: 'Keep the exact pending input private.',
+      userId: 'user_local',
+    });
 
     try {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId,
+        createdByItemId: initialIntentItemId,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         title: 'Apply pending input',
@@ -1697,6 +1714,13 @@ describe('action center app API', () => {
 
     try {
       for (const thread of [firstThread, secondThread]) {
+        const initialIntentItemId = createInitialGoalIntentItem({
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          objective: 'Prove Action Center ids are scoped.',
+          userId: 'user_local',
+        });
         const turn = store.createTurn('ws_demo', thread.id, 'Review duplicated ids', {
           kind: 'user',
           id: 'user_local',
@@ -1705,6 +1729,7 @@ describe('action center app API', () => {
         createGoalRecord(workspaceDb, {
           workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
           goalId: 'goal_duplicate',
+          createdByItemId: initialIntentItemId,
           workspaceId: 'ws_demo',
           threadId: thread.id,
           title: 'Duplicated app-local goal',
@@ -1818,6 +1843,13 @@ describe('action center app API', () => {
 
     try {
       for (const scenario of scenarios) {
+        const initialIntentItemId = createInitialGoalIntentItem({
+          store,
+          workspaceId: 'ws_demo',
+          threadId: scenario.thread.id,
+          objective: 'Project only actionable accept review attention.',
+          userId: 'user_local',
+        });
         const turn = store.createTurn(
           'ws_demo',
           scenario.thread.id,
@@ -1827,6 +1859,7 @@ describe('action center app API', () => {
         createGoalRecord(workspaceDb, {
           workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
           goalId: `goal_accept_${scenario.id}`,
+          createdByItemId: initialIntentItemId,
           workspaceId: 'ws_demo',
           threadId: scenario.thread.id,
           title: 'Accept review goal',
@@ -1950,6 +1983,13 @@ describe('action center app API', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Resolved goal review');
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      objective: 'Hide resolved review attention.',
+      userId: 'user_local',
+    });
     const turn = store.createTurn('ws_demo', thread.id, 'Review then resolve', {
       kind: 'user',
       id: 'user_local',
@@ -1959,6 +1999,7 @@ describe('action center app API', () => {
       const goal = createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_resolved_review',
+        createdByItemId: initialIntentItemId,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         title: 'Resolved review goal',

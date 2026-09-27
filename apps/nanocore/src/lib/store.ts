@@ -229,6 +229,7 @@ export type CommandRequestName =
   | 'goal.plan'
   | 'goal.plan.approve'
   | 'goal.plan.revise'
+  | 'goal.intent.revise'
   | 'goal.pause'
   | 'goal.resume'
   | 'goal.step'

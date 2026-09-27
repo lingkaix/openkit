@@ -55,6 +55,7 @@ const source = {
   goalId: 'goal_source',
   grantId: 'grant_source',
   itemId: 'it_source',
+  intentItemId: 'it_goal_intent_source',
   planItemId: 'it_goal_plan_source',
   sessionId: 'as_source',
   taskId: 'task_source',
@@ -108,6 +109,18 @@ function createLineageExportInput(
     title: 'Approve portable lineage',
     description: 'Approve the portable operation.',
     kind: 'permission',
+    createdAt: timestamp,
+    completedAt: timestamp,
+  };
+  const intentItem = {
+    id: source.intentItemId,
+    workspaceId: source.workspaceId,
+    threadId: source.threadId,
+    turnId: source.turnId,
+    type: 'user-message',
+    actor: { kind: 'user', id: 'user_source' },
+    status: 'completed',
+    text: 'Keep lineage portable.',
     createdAt: timestamp,
     completedAt: timestamp,
   };
@@ -166,7 +179,7 @@ function createLineageExportInput(
     workspaceId: source.workspaceId,
     threadId: source.threadId,
     triggerActor: { kind: 'user', id: 'user_local' } as const,
-    items: [item, planItem, artifactReferenceItem, approvalItem],
+    items: [item, planItem, artifactReferenceItem, approvalItem, intentItem],
     status: 'completed',
     humanGate: null,
     error: null,
@@ -283,6 +296,7 @@ function createLineageExportInput(
         escalationConditions: ['Escalate if portable lineage is incomplete.'],
       },
     ],
+    taskDispositions: [],
     risks: [],
     questions: [],
     verificationApproach: 'Review every reminted reference.',
@@ -350,7 +364,7 @@ function createLineageExportInput(
         },
       ],
     },
-    itemRevisions: [item, planItem, artifactReferenceItem, approvalItem],
+    itemRevisions: [item, planItem, artifactReferenceItem, approvalItem, intentItem],
     artifacts: [artifact],
     artifactReviews: [],
     threadMaterialBindings: [],
@@ -554,7 +568,10 @@ function createLineageExportInput(
         title: 'Portable goal',
         objective: 'Keep lineage portable.',
         createdByItemId: missing === 'goal-item' ? 'it_missing' : source.itemId,
+        currentIntentItemId: source.intentItemId,
+        currentAffectedTaskIds: [],
         planItemId: source.planItemId,
+        pendingPlanItemId: null,
         currentTaskId: source.taskId,
         terminalStopReason: null,
         workerStorageChoice: null,
@@ -570,6 +587,9 @@ function createLineageExportInput(
         goalId: source.goalId,
         planItemId: source.planItemId,
         planDigest: computeGoalPlanDigest(goalPlan),
+        predecessorPlanItemId: null,
+        sourceIntentItemId: source.intentItemId,
+        sourceTaskEvidenceDigest: null,
         createdByRequestId: 'goal-plan-source-1',
         createdAt: timestamp,
       },
@@ -2253,6 +2273,8 @@ describe('workspace auxiliary lineage reminting', () => {
     input.goalRecords = (input.goalRecords ?? []).map((record) => ({
       ...(record as Record<string, unknown>),
       status: 'awaiting_plan_approval',
+      planItemId: null,
+      pendingPlanItemId: source.planItemId,
       currentTaskId: null,
     }));
     input.goalTasks = [];
@@ -2269,6 +2291,134 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(imported.goalPlanRecords[0]?.planDigest).toBe(
       computeGoalPlanDigest(imported.goalPlanRecords[0]!)
     );
+  });
+
+  it('retains an approved Plan and Task beside a pending successor without refreshing its source evidence fence', () => {
+    const input = createLineageExportInput();
+    const pendingPlanItemId = 'it_goal_plan_successor';
+    const pendingTaskId = 'task_successor';
+    const historicalDigest = `sha256:${'a'.repeat(64)}`;
+    const dispositionReason = 'Carry the unfinished review into the successor Task.';
+    const sourcePlanItem = input.itemRevisions.find(
+      (item) => (item as { id?: string }).id === source.planItemId
+    ) as Record<string, unknown>;
+    const pendingPlanItem = {
+      ...sourcePlanItem,
+      id: pendingPlanItemId,
+      steps: [{ id: pendingTaskId, title: 'Successor task', status: 'pending' }],
+    };
+    input.itemRevisions = [...input.itemRevisions, pendingPlanItem];
+    input.turns = input.turns.map((turn) => ({
+      ...(turn as Record<string, unknown>),
+      items: [...(turn as { items: unknown[] }).items, pendingPlanItem],
+    }));
+    input.goalRecords = (input.goalRecords ?? []).map((goal) => ({
+      ...(goal as Record<string, unknown>),
+      pendingPlanItemId,
+      currentAffectedTaskIds: [source.taskId],
+    }));
+    const sourcePlan = input.goalPlanRecords![0] as Record<string, unknown>;
+    const sourceTask = (sourcePlan.tasks as Record<string, unknown>[])[0]!;
+    const successorPayload = GoalPlanOutputSchema.parse({
+      schemaVersion: sourcePlan.schemaVersion,
+      goalSummary: sourcePlan.goalSummary,
+      assumptions: sourcePlan.assumptions,
+      tasks: [{ ...sourceTask, taskId: pendingTaskId, dependsOnTaskIds: [] }],
+      taskDispositions: [
+        {
+          taskId: source.taskId,
+          successorTaskId: pendingTaskId,
+          reason: dispositionReason,
+        },
+      ],
+      risks: sourcePlan.risks,
+      questions: sourcePlan.questions,
+      verificationApproach: sourcePlan.verificationApproach,
+    });
+    input.goalPlanRecords = [
+      sourcePlan,
+      {
+        ...sourcePlan,
+        ...successorPayload,
+        planItemId: pendingPlanItemId,
+        predecessorPlanItemId: source.planItemId,
+        sourceTaskEvidenceDigest: historicalDigest,
+        planDigest: computeGoalPlanDigest(successorPayload),
+      },
+    ];
+
+    const imported = importLineage(input);
+    const goal = imported.goalRecords[0]!;
+    const active = imported.goalPlanRecords.find((plan) => plan.predecessorPlanItemId === null)!;
+    const pending = imported.goalPlanRecords.find((plan) => plan.predecessorPlanItemId !== null)!;
+    const approvedTask = imported.goalTasks[0]!;
+    const intentItem = imported.itemRevisions.find((item) => item.type === 'user-message')!;
+    expect(imported.goalPlanRecords).toHaveLength(2);
+    expect(imported.goalTasks).toHaveLength(1);
+    expect(active.taskDispositions).toEqual([]);
+    expect(goal.planItemId).toBe(active.planItemId);
+    expect(goal.pendingPlanItemId).toBe(pending.planItemId);
+    expect(goal.currentTaskId).toBe(approvedTask.taskId);
+    expect(goal.currentAffectedTaskIds).toEqual([approvedTask.taskId]);
+    expect(approvedTask.planItemId).toBe(active.planItemId);
+    expect(approvedTask.status).toBe('reviewing');
+    expect(pending.predecessorPlanItemId).toBe(active.planItemId);
+    expect(pending.sourceIntentItemId).toBe(intentItem.id);
+    expect(pending.tasks[0]!.taskId).not.toBe(pendingTaskId);
+    expect(pending.taskDispositions).toEqual([
+      {
+        taskId: approvedTask.taskId,
+        successorTaskId: pending.tasks[0]!.taskId,
+        reason: dispositionReason,
+      },
+    ]);
+    expect(pending.sourceTaskEvidenceDigest).toBe(historicalDigest);
+    expect(pending.planDigest).toBe(computeGoalPlanDigest(pending));
+
+    for (const [sourceTaskEvidenceDigest, expectedError] of [
+      [null, /Goal Plan source evidence does not match its approval history/],
+      ['sha256:invalid', /sha256:/],
+    ] as const) {
+      expect(() =>
+        importLineage({
+          ...input,
+          exportRoot: join(
+            mkdtempSync(join(tmpdir(), 'openkit-goal-invalid-successor-')),
+            'export'
+          ),
+          goalPlanRecords: [
+            sourcePlan,
+            { ...(input.goalPlanRecords![1] as Record<string, unknown>), sourceTaskEvidenceDigest },
+          ],
+        })
+      ).toThrow(expectedError);
+    }
+    for (const invalidDisposition of [
+      { taskId: 'task_foreign', successorTaskId: pendingTaskId, reason: dispositionReason },
+      { taskId: source.taskId, successorTaskId: 'task_foreign', reason: dispositionReason },
+    ]) {
+      const malformedPayload = GoalPlanOutputSchema.parse({
+        ...successorPayload,
+        taskDispositions: [invalidDisposition],
+      });
+      expect(() =>
+        importLineage({
+          ...input,
+          exportRoot: join(
+            mkdtempSync(join(tmpdir(), 'openkit-goal-invalid-disposition-')),
+            'export'
+          ),
+          goalPlanRecords: [
+            sourcePlan,
+            {
+              ...(input.goalPlanRecords![1] as Record<string, unknown>),
+              ...malformedPayload,
+              planDigest: computeGoalPlanDigest(malformedPayload),
+            },
+          ],
+        })
+      ).toThrow(/Goal Plan task disposition has invalid lineage/);
+    }
   });
 
   it('rejects approved Task rows while a Goal awaits Plan approval', () => {

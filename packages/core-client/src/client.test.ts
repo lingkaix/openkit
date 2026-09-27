@@ -823,6 +823,7 @@ function goalPlanPayload() {
         ],
       },
     ],
+    taskDispositions: [],
     risks: [
       'Deterministic fallback output is intentionally generic and may need human refinement.',
     ],
@@ -4169,6 +4170,22 @@ describe('createCoreClient', () => {
       'GET /api/app/workspaces/ws_demo/dashboard': { body: workspaceDashboard() },
       'GET /api/app/workspaces/ws_demo/threads/th_demo/dashboard': { body: threadDashboard() },
       'GET /api/app/workspaces/ws_demo/threads/th_demo/goal': { body: threadGoalSummary() },
+      'GET /api/app/workspaces/ws_demo/threads/th_demo/goal/plan': {
+        body: {
+          goal: threadGoalSummary().goal,
+          activePlanItemId: null,
+          activePlan: null,
+          pendingPlanItemId: 'it_goal_plan_goal_demo',
+          pendingPlan: goalPlan,
+          pendingPlanItemSummary: 'Reason: initial Goal plan. Proposer: Workflow Coordinator.',
+          selectableAffectedTasks: [],
+          planningAction: 'await_approval',
+          draftRevision: null,
+          continuePlanning: null,
+          canRunStep: false,
+          canApprovePendingPlan: true,
+        },
+      },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal': {
         body: { ...threadGoalSummary(), objectiveItemId: 'it_goal_objective' },
       },
@@ -4201,10 +4218,13 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/plan/revise': {
         body: {
-          goal: { ...threadGoalSummary().goal, status: 'planning' },
+          goal: threadGoalSummary().goal,
           revisionItemId: 'it_goal_plan_revision_goal_demo',
           startsWorkerTurn: false,
         },
+      },
+      'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/intent/revise': {
+        body: { goal: threadGoalSummary().goal, intentItemId: 'it_goal_intent_revision' },
       },
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/pause': {
         body: {
@@ -4340,6 +4360,11 @@ describe('createCoreClient', () => {
     await expect(client.app.getThreadGoalSummary('ws_demo', 'th_demo')).resolves.toEqual(
       threadGoalSummary()
     );
+    await expect(client.app.getThreadGoalPlan('ws_demo', 'th_demo')).resolves.toMatchObject({
+      activePlanItemId: null,
+      pendingPlanItemId: 'it_goal_plan_goal_demo',
+      planningAction: 'await_approval',
+    });
     await expect(
       client.app.startThreadGoal('ws_demo', 'th_demo', {
         objective: 'Make v0.0.6 ready to publish.',
@@ -4372,9 +4397,19 @@ describe('createCoreClient', () => {
         revision: 'Split the plan into safer review gates.',
       })
     ).resolves.toEqual({
-      goal: { ...threadGoalSummary().goal, status: 'planning' },
+      goal: threadGoalSummary().goal,
       revisionItemId: 'it_goal_plan_revision_goal_demo',
       startsWorkerTurn: false,
+    });
+    await expect(
+      client.app.reviseThreadGoalIntent('ws_demo', 'th_demo', {
+        requestId: 'req_goal_intent_revise',
+        objective: 'Ship the revised release.',
+        revision: 'The release audience changed.',
+      })
+    ).resolves.toEqual({
+      goal: threadGoalSummary().goal,
+      intentItemId: 'it_goal_intent_revision',
     });
     await expect(
       client.app.pauseThreadGoal('ws_demo', 'th_demo', { requestId: 'req_goal_pause' })
@@ -4499,10 +4534,12 @@ describe('createCoreClient', () => {
       'GET /api/app/workspaces/ws_demo/dashboard',
       'GET /api/app/workspaces/ws_demo/threads/th_demo/dashboard',
       'GET /api/app/workspaces/ws_demo/threads/th_demo/goal',
+      'GET /api/app/workspaces/ws_demo/threads/th_demo/goal/plan',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/plan',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/plan/approve',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/plan/revise',
+      'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/intent/revise',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/pause',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/resume',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/step',
@@ -4531,6 +4568,11 @@ describe('createCoreClient', () => {
     expect(requests.find((request) => request.path.endsWith('/goal/plan/approve'))?.body).toEqual({
       requestId: 'req_goal_plan_approve',
       planItemId: 'it_goal_plan_goal_demo',
+    });
+    expect(requests.find((request) => request.path.endsWith('/goal/intent/revise'))?.body).toEqual({
+      requestId: 'req_goal_intent_revise',
+      objective: 'Ship the revised release.',
+      revision: 'The release audience changed.',
     });
     expect(requests.find((request) => request.path.endsWith('/goal/pause'))?.body).toEqual({
       requestId: 'req_goal_pause',

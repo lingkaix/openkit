@@ -373,7 +373,10 @@ const ExportedGoalRecordSchema = z
     title: z.string().min(1),
     objective: z.string().min(1),
     createdByItemId: z.string().min(1).nullable(),
+    currentIntentItemId: z.string().min(1),
+    currentAffectedTaskIds: z.array(z.string().min(1)).nullable(),
     planItemId: z.string().min(1).nullable(),
+    pendingPlanItemId: z.string().min(1).nullable(),
     currentTaskId: z.string().min(1).nullable(),
     terminalStopReason: ExportedStopReasonSchema.nullable(),
     workerStorageChoice: z.null(),
@@ -390,6 +393,12 @@ const ExportedGoalPlanRecordSchema = GoalPlanOutputSchema.extend({
   goalId: z.string().min(1),
   planItemId: z.string().min(1),
   planDigest: z.string().min(1),
+  predecessorPlanItemId: z.string().min(1).nullable(),
+  sourceIntentItemId: z.string().min(1),
+  sourceTaskEvidenceDigest: z
+    .string()
+    .regex(/^sha256:[a-f0-9]{64}$/)
+    .nullable(),
   createdByRequestId: z.string().min(1),
   createdAt: z.string().datetime(),
 }).strict();
@@ -4235,13 +4244,22 @@ function assertGoalAuthorityConsistency(input: {
   const taskRecordKeys = new Set<string>();
 
   for (const goal of input.goals) {
-    if (goal.workspaceId !== input.sourceWorkspaceId) {
+    const intent = input.itemLineage.get(goal.currentIntentItemId);
+    if (
+      goal.workspaceId !== input.sourceWorkspaceId ||
+      !intent ||
+      intent.type !== 'user-message' ||
+      intent.status !== 'completed' ||
+      intent.workspaceId !== goal.workspaceId ||
+      intent.threadId !== goal.threadId
+    ) {
       throw new Error(`Goal has invalid Workspace lineage: ${goal.goalId}`);
     }
   }
   for (const plan of input.plans) {
     const goal = goalsById.get(plan.goalId);
     const planItem = input.itemLineage.get(plan.planItemId);
+    const intent = input.itemLineage.get(plan.sourceIntentItemId);
     const key = goalPlanRecordKey(plan.goalId, plan.planItemId);
     if (plansByKey.has(key)) {
       throw new Error(`Goal Plan identity is duplicated: ${plan.planItemId}`);
@@ -4253,7 +4271,12 @@ function assertGoalAuthorityConsistency(input: {
       !planItem ||
       planItem.workspaceId !== input.sourceWorkspaceId ||
       planItem.threadId !== plan.threadId ||
-      planItem.type !== 'plan'
+      planItem.type !== 'plan' ||
+      !intent ||
+      intent.type !== 'user-message' ||
+      intent.status !== 'completed' ||
+      intent.workspaceId !== plan.workspaceId ||
+      intent.threadId !== plan.threadId
     ) {
       throw new Error(`Goal Plan has invalid lineage: ${plan.planItemId}`);
     }
@@ -4265,6 +4288,44 @@ function assertGoalAuthorityConsistency(input: {
       throw new Error(`Goal Plan digest does not match its payload: ${plan.planItemId}`);
     }
     plansByKey.set(key, plan);
+  }
+  for (const plan of input.plans) {
+    const visited = new Set([plan.planItemId]);
+    let predecessor = plan.predecessorPlanItemId;
+    let followsApprovedPlan = false;
+    let approvedPredecessor: ExportedGoalPlanRecord | undefined;
+    while (predecessor !== null) {
+      const prior = plansByKey.get(goalPlanRecordKey(plan.goalId, predecessor));
+      if (!prior || visited.has(predecessor)) {
+        throw new Error(`Goal Plan predecessor lineage is missing or cyclic: ${plan.planItemId}`);
+      }
+      visited.add(predecessor);
+      if (
+        input.tasks.some((task) => task.goalId === plan.goalId && task.planItemId === predecessor)
+      ) {
+        followsApprovedPlan = true;
+        approvedPredecessor ??= prior;
+      }
+      predecessor = prior.predecessorPlanItemId;
+    }
+    if (followsApprovedPlan !== (plan.sourceTaskEvidenceDigest !== null)) {
+      throw new Error(
+        `Goal Plan source evidence does not match its approval history: ${plan.planItemId}`
+      );
+    }
+    const predecessorTaskIds = approvedPredecessor?.tasks.map((task) => task.taskId) ?? [];
+    let priorIndex = -1;
+    for (const entry of plan.taskDispositions) {
+      const index = predecessorTaskIds.indexOf(entry.taskId);
+      if (
+        index <= priorIndex ||
+        (entry.successorTaskId !== null &&
+          !plan.tasks.some((task) => task.taskId === entry.successorTaskId))
+      ) {
+        throw new Error(`Goal Plan task disposition has invalid lineage: ${plan.planItemId}`);
+      }
+      priorIndex = index;
+    }
   }
   for (const task of input.tasks) {
     const goal = goalsById.get(task.goalId);
@@ -4279,7 +4340,6 @@ function assertGoalAuthorityConsistency(input: {
       !plan ||
       task.workspaceId !== input.sourceWorkspaceId ||
       task.threadId !== goal.threadId ||
-      task.planItemId !== goal.planItemId ||
       !plannedTask ||
       JSON.stringify(selectGoalPlanTaskPayload(task)) !== JSON.stringify(plannedTask)
     ) {
@@ -4328,8 +4388,25 @@ function assertGoalAuthorityConsistency(input: {
     if (
       (goal.planItemId !== null &&
         !plansByKey.has(goalPlanRecordKey(goal.goalId, goal.planItemId))) ||
+      (goal.pendingPlanItemId !== null &&
+        (!plansByKey.has(goalPlanRecordKey(goal.goalId, goal.pendingPlanItemId)) ||
+          goal.pendingPlanItemId === goal.planItemId)) ||
       (goal.currentTaskId !== null &&
-        !taskRecordKeys.has(goalTaskRecordKey(goal.goalId, goal.currentTaskId)))
+        !input.tasks.some(
+          (task) =>
+            task.goalId === goal.goalId &&
+            task.taskId === goal.currentTaskId &&
+            task.planItemId === goal.planItemId
+        )) ||
+      goal.currentAffectedTaskIds?.some(
+        (id) =>
+          !input.tasks.some(
+            (task) =>
+              task.goalId === goal.goalId &&
+              task.taskId === id &&
+              task.planItemId === goal.planItemId
+          )
+      )
     ) {
       throw new Error(`Goal has incomplete Plan or Task authority: ${goal.goalId}`);
     }
@@ -4337,7 +4414,9 @@ function assertGoalAuthorityConsistency(input: {
       goal.planItemId === null
         ? undefined
         : plansByKey.get(goalPlanRecordKey(goal.goalId, goal.planItemId));
-    const goalTasks = input.tasks.filter((task) => task.goalId === goal.goalId);
+    const goalTasks = input.tasks.filter(
+      (task) => task.goalId === goal.goalId && task.planItemId === goal.planItemId
+    );
     const hasNoApprovedTasks = goalTasks.length === 0;
     const hasCompleteApprovedTasks =
       activePlan !== undefined && goalTasks.length === activePlan.tasks.length;
@@ -4346,7 +4425,7 @@ function assertGoalAuthorityConsistency(input: {
       goal.status === 'planning'
         ? hasNoActivePlanOrTasks
         : goal.status === 'awaiting_plan_approval'
-          ? activePlan !== undefined && hasNoApprovedTasks
+          ? goal.pendingPlanItemId !== null && hasNoActivePlanOrTasks
           : goal.status === 'awaiting_user'
             ? hasNoActivePlanOrTasks || hasCompleteApprovedTasks
             : goal.status === 'failed'
@@ -4354,6 +4433,14 @@ function assertGoalAuthorityConsistency(input: {
               : hasCompleteApprovedTasks;
     if (!lifecycleIsCoherent) {
       throw new Error(`Goal lifecycle has incoherent Task authority: ${goal.goalId}`);
+    }
+    for (const plan of input.plans.filter((candidate) => candidate.goalId === goal.goalId)) {
+      const tasks = input.tasks.filter(
+        (task) => task.goalId === goal.goalId && task.planItemId === plan.planItemId
+      );
+      if (tasks.length > 0 && tasks.length !== plan.tasks.length) {
+        throw new Error(`Historical Goal Plan has incomplete Task authority: ${plan.planItemId}`);
+      }
     }
   }
   return taskRecordKeys;
@@ -4453,7 +4540,14 @@ function rewriteImportedGoalRecord(
     createdByItemId: record.createdByItemId
       ? requiredMapValue(itemIds, record.createdByItemId, 'item')
       : null,
+    currentIntentItemId: requiredMapValue(itemIds, record.currentIntentItemId, 'intent item'),
+    currentAffectedTaskIds:
+      record.currentAffectedTaskIds?.map((id) => requiredMapValue(taskIds, id, 'goal task')) ??
+      null,
     planItemId: record.planItemId ? requiredMapValue(itemIds, record.planItemId, 'item') : null,
+    pendingPlanItemId: record.pendingPlanItemId
+      ? requiredMapValue(itemIds, record.pendingPlanItemId, 'item')
+      : null,
     currentTaskId: record.currentTaskId
       ? requiredMapValue(taskIds, record.currentTaskId, 'goal task')
       : null,
@@ -4486,6 +4580,14 @@ function rewriteImportedGoalPlanRecord(
     tasks: record.tasks.map((task) =>
       rewriteGoalPlanTaskPayload(task, itemIds, artifactIds, taskIds)
     ),
+    taskDispositions: record.taskDispositions.map((entry) => ({
+      ...entry,
+      taskId: requiredMapValue(taskIds, entry.taskId, 'predecessor goal task'),
+      successorTaskId:
+        entry.successorTaskId === null
+          ? null
+          : requiredMapValue(taskIds, entry.successorTaskId, 'successor goal task'),
+    })),
   });
   assertValidGoalPlanGraph(plan.tasks);
   return ExportedGoalPlanRecordSchema.parse({
@@ -4495,6 +4597,10 @@ function rewriteImportedGoalPlanRecord(
     threadId: requiredMapValue(threadIds, record.threadId, 'thread'),
     goalId: requiredMapValue(goalIds, record.goalId, 'goal'),
     planItemId: requiredMapValue(itemIds, record.planItemId, 'item'),
+    predecessorPlanItemId: record.predecessorPlanItemId
+      ? requiredMapValue(itemIds, record.predecessorPlanItemId, 'item')
+      : null,
+    sourceIntentItemId: requiredMapValue(itemIds, record.sourceIntentItemId, 'intent item'),
     planDigest: computeGoalPlanDigest(plan),
   });
 }

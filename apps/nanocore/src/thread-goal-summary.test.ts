@@ -35,12 +35,14 @@ import {
   recordAgentEnvironmentPackageSnapshot,
 } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
+import { createDeterministicGoalPlanFallback } from './runtime/goal-plan.js';
 import * as goalPlanPropose from './runtime/goal-plan-propose-tool.js';
 import {
   createGoalReviewRecord,
   listGoalReviewRecordsForTask,
 } from './runtime/goal-review-records.js';
 import {
+  createGoalPlanRecord,
   createGoalRecord,
   createGoalTask,
   getGoalRecord,
@@ -95,6 +97,7 @@ import { createTestAgentSetup, createTestGatewayConfig } from './test-support/ag
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -125,6 +128,62 @@ const GOAL_TASK_EXECUTION_FIELDS = {
   escalationConditions: ['Escalate if the approved Task cannot be completed as specified.'],
 };
 
+/** Seeds the immutable initial Plan authority named by direct Goal Task fixtures. */
+function seedFixtureGoalPlanAuthority(
+  workspaceDb: WorkspaceDb,
+  threadId: string,
+  goalId: string,
+  taskIds: readonly string[]
+): void {
+  const goal = getGoalRecord(workspaceDb, workspaceDb.workspaceId, threadId, goalId);
+  if (!goal) throw new Error('Goal fixture is missing before its Plan is seeded.');
+  const fallback = createDeterministicGoalPlanFallback({
+    goalTitle: goal.title,
+    objective: goal.objective,
+  });
+  const tasks = listGoalTasks(workspaceDb, {
+    workspaceId: workspaceDb.workspaceId,
+    threadId,
+    goalId,
+  });
+  if (JSON.stringify(tasks.map((task) => task.taskId)) !== JSON.stringify(taskIds)) {
+    throw new Error('Goal fixture Tasks do not match its approved Plan.');
+  }
+  createGoalPlanRecord(workspaceDb, {
+    workspaceId: workspaceDb.workspaceId,
+    threadId,
+    goalId,
+    planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+    predecessorPlanItemId: null,
+    sourceIntentItemId: goal.currentIntentItemId,
+    sourceTaskEvidenceDigest: null,
+    plan: {
+      ...fallback,
+      tasks: tasks.map((task) => ({
+        taskId: task.taskId,
+        title: task.title,
+        objective: task.objective,
+        acceptanceCriteria: task.acceptanceCriteria,
+        contextBudgetTokens: task.contextBudgetTokens,
+        resources: task.resources,
+        expectedArtifacts: task.expectedArtifacts,
+        verificationChecks: task.verificationChecks,
+        reviewPolicy: task.reviewPolicy,
+        dependsOnTaskIds: task.dependsOnTaskIds,
+        escalationConditions: task.escalationConditions,
+      })),
+    },
+    createdByRequestId: `req_${goalId}_fixture_plan`,
+  });
+  updateGoalStatus(workspaceDb, {
+    workspaceId: workspaceDb.workspaceId,
+    threadId,
+    goalId,
+    status: goal.status,
+    planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
+  });
+}
+
 describe('Goal review decision lineage', () => {
   it('denies a Goal Review whose scoped owner is outside the authorized path Workspace', async () => {
     const coreDb = createCoreDb();
@@ -132,6 +191,13 @@ describe('Goal review decision lineage', () => {
     const authorizedThread = store.createThread('ws_demo', 'Authorized review Thread');
     const foreignWorkspace = store.createWorkspace('Foreign Goal Workspace');
     const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Goal Thread');
+    const foreignIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: foreignWorkspace.id,
+      threadId: foreignThread.id,
+      objective: 'Remain in the foreign Workspace.',
+      userId: 'user_local',
+    });
     const foreignTurn = store.createTurn(
       foreignWorkspace.id,
       foreignThread.id,
@@ -141,6 +207,7 @@ describe('Goal review decision lineage', () => {
     const foreignDb = openWorkspaceDb(coreDb.dataRoot, foreignWorkspace.id);
     applyScopedMigrations(foreignDb);
     createGoalRecord(foreignDb, {
+      createdByItemId: foreignIntentItemId,
       goalId: 'goal_foreign_lineage',
       objective: 'Remain in the foreign Workspace.',
       status: 'reviewing',
@@ -163,6 +230,9 @@ describe('Goal review decision lineage', () => {
       title: 'Foreign Task',
       workspaceId: foreignWorkspace.id,
     });
+    seedFixtureGoalPlanAuthority(foreignDb, foreignThread.id, 'goal_foreign_lineage', [
+      'task_foreign_lineage',
+    ]);
     updateGoalStatus(foreignDb, {
       currentTaskId: 'task_foreign_lineage',
       goalId: 'goal_foreign_lineage',
@@ -367,6 +437,99 @@ function testProviderRegistry(): ProviderRegistry {
   ]);
 }
 
+/** Creates a route app with one admitted model-backed Goal Plan proposal. */
+function createGoalPlanRouteApp(
+  coreDb: CoreDb,
+  store: ReturnType<typeof createDemoStore>,
+  goalTitle: string,
+  objective: string
+) {
+  const providerProfile = {
+    baseUrl: 'https://provider.invalid/v1',
+    displayName: 'Goal Plan test provider',
+    id: 'goal-plan-provider',
+    kind: 'custom' as const,
+    modelMetadata: {
+      model: {
+        family: 'test',
+        limit: { context: 200_000, output: 8_000 },
+        modalities: { input: ['text'], output: ['text'] },
+        tool_call: true,
+      },
+    },
+    models: ['model'],
+  };
+  const plan = createDeterministicGoalPlanFallback({ goalTitle, objective });
+  let responseCount = 0;
+  return createApp({
+    coreDb,
+    store,
+    gatewayConfig: {
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: 'reasoning',
+      requiredFeatures: [],
+      logicalModels: [
+        {
+          id: 'reasoning',
+          displayName: 'Reasoning',
+          contextManagement: [{ type: 'compaction', compactThreshold: 50_000 }],
+          routes: [
+            { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
+          ],
+        },
+      ],
+    },
+    internalRoleProfiles: {
+      schemaVersion: 1,
+      defaultLogicalModelId: 'reasoning',
+      profiles: [
+        {
+          id: 'goal-orchestrator-test',
+          roleId: goalPlanPropose.GOAL_ORCHESTRATOR_ROLE_ID,
+          preferredLogicalModelId: 'reasoning',
+          compatibleLogicalModelIds: [],
+          requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
+        },
+      ],
+    },
+    providerRegistry: new ProviderRegistry([providerProfile]),
+    providerCredentialResolver: () => 'unused',
+    llmGatewayDispatcher: {
+      createResponses: vi.fn(async () => {
+        responseCount += 1;
+        return responseCount % 2 === 1
+          ? {
+              id: `response_proposal_${responseCount}`,
+              object: 'response' as const,
+              status: 'completed' as const,
+              output: [
+                {
+                  type: 'function_call' as const,
+                  call_id: `call_proposal_${responseCount}`,
+                  name: goalPlanPropose.GOAL_PLAN_PROPOSE_TOOL_NAME,
+                  arguments: JSON.stringify(plan),
+                },
+              ],
+            }
+          : {
+              id: `response_completion_${responseCount}`,
+              object: 'response' as const,
+              status: 'completed' as const,
+              output: [
+                {
+                  type: 'message' as const,
+                  role: 'assistant' as const,
+                  status: 'completed' as const,
+                  content: [{ type: 'output_text' as const, text: 'Plan proposed.' }],
+                },
+              ],
+            };
+      }),
+    },
+  });
+}
+
 /**
  * Attaches the current SimulatedTurnExecutor prepare/commit contract to a Goal fixture.
  *
@@ -543,7 +706,16 @@ function seedTerminalGoalSteering(
       ? `Preserve steering input ${suffix}.`
       : `Use Workspace Material ${input.materialId} revision ${input.revisionId}.`;
 
+  const initialIntentItemId = createInitialGoalIntentItem({
+    store,
+    workspaceId: 'ws_demo',
+    threadId,
+    objective: text,
+    userId: TERMINAL_STEERING_SOURCE_ACTOR.id,
+    at: receivedAt,
+  });
   createGoalRecord(workspaceDb, {
+    createdByItemId: initialIntentItemId,
     workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
     goalId,
     workspaceId: 'ws_demo',
@@ -830,6 +1002,7 @@ async function startNeverLaunchedGoalStepFailure(
     durationMs: 0,
   });
   createGoalRecord(workspaceDb, {
+    createdByItemId: `it_context_${thread.id}`,
     workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
     goalId: 'goal_failing_step',
     workspaceId: 'ws_demo',
@@ -843,7 +1016,6 @@ async function startNeverLaunchedGoalStepFailure(
     threadId: thread.id,
     goalId: 'goal_failing_step',
     status: 'running',
-    planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
   });
   createGoalTask(workspaceDb, {
     workspaceId: 'ws_demo',
@@ -860,6 +1032,7 @@ async function startNeverLaunchedGoalStepFailure(
     verificationChecks: [{ kind: 'manual', description: 'Review failure state.' }],
     status: 'ready',
   });
+  seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_failing_step', ['task_failing_step']);
   const startContexts: TurnStartRuntimeContext[] = [];
   const app = createApp({
     agentManifests: [createTestAgentSetup().manifest],
@@ -1079,7 +1252,15 @@ describe('thread goal summary app API', () => {
     const thread = store.createThread('ws_demo', 'Planning goal thread');
 
     try {
+      const initialIntentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        objective: 'Prepare the release plan for user approval.',
+        userId: 'user_local',
+      });
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_planning',
         workspaceId: 'ws_demo',
@@ -1133,7 +1314,15 @@ describe('thread goal summary app API', () => {
     const thread = store.createThread('ws_demo', 'Running goal thread');
 
     try {
+      const initialIntentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        objective: 'Finish every release task.',
+        userId: 'user_local',
+      });
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_running',
         workspaceId: 'ws_demo',
@@ -1196,11 +1385,17 @@ describe('thread goal summary app API', () => {
         summary: 'Release verification passed.',
         artifactIds: ['artifact_release_log'],
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_running', [
+        'task_done',
+        'task_current',
+        'task_next',
+      ]);
       updateGoalStatus(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: thread.id,
         goalId: 'goal_running',
         status: 'completed',
+        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
         currentTaskId: 'task_current',
         terminalStopReason: 'completed',
         now: () => '2026-05-31T00:20:00.000Z',
@@ -1624,7 +1819,15 @@ describe('thread goal summary app API', () => {
     const thread = store.createThread('ws_demo', 'Accepted steering delivery');
 
     try {
+      const initialIntentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        objective: 'Accept input for the active worker.',
+        userId: 'user_local',
+      });
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_running',
         workspaceId: 'ws_demo',
@@ -1782,7 +1985,6 @@ describe('thread goal summary app API', () => {
         threadId: thread.id,
         goalId: 'goal_running',
         status: 'running',
-        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
       });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -1800,6 +2002,7 @@ describe('thread goal summary app API', () => {
         status: 'ready',
         now: () => '2026-07-18T02:32:00.000Z',
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_running', ['task_budget_guard']);
       const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-steering-budget-'));
       seedWritableGitRepository(repositoryPath);
       seedReadyRepository(coreDb, repositoryPath);
@@ -1850,7 +2053,15 @@ describe('thread goal summary app API', () => {
     const thread = store.createThread('ws_demo', 'Steering Item half-state');
 
     try {
+      const initialIntentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        objective: 'Keep partial steering proof fail-closed.',
+        userId: 'user_local',
+      });
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_steering_half_state',
         workspaceId: 'ws_demo',
@@ -2083,7 +2294,15 @@ describe('thread goal summary app API', () => {
           workspaceDb
         )
       ).toBeNull();
+      const initialIntentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        objective: 'Replay must not retarget this Goal.',
+        userId: 'user_local',
+      });
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_newer_after_follow_up',
         workspaceId: 'ws_demo',
@@ -2383,11 +2602,16 @@ describe('thread goal summary app API', () => {
     }
   });
 
-  it('creates a deterministic plan and persists approved goal tasks through app routes', async () => {
+  it('creates a model-backed plan and persists approved goal tasks through app routes', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_demo', 'Goal planning thread');
-    const app = createApp({ coreDb, store });
+    const app = createGoalPlanRouteApp(
+      coreDb,
+      store,
+      'Ship v0.0.6',
+      'Make v0.0.6 ready to publish.'
+    );
 
     try {
       const startRes = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/goal`, {
@@ -2428,9 +2652,15 @@ describe('thread goal summary app API', () => {
         code: 'invalid_request',
       });
 
-      const planReceiptSpy = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('simulated plan receipt write failure');
-      });
+      const recordCommandRequest = store.recordCommandRequest.bind(store);
+      const planReceiptSpy = vi
+        .spyOn(store, 'recordCommandRequest')
+        .mockImplementation((input, db) => {
+          if (input.command === 'goal.plan') {
+            throw new Error('simulated plan receipt write failure');
+          }
+          return recordCommandRequest(input, db);
+        });
       const failedPlanRes = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
         {
@@ -2441,7 +2671,7 @@ describe('thread goal summary app API', () => {
       );
       planReceiptSpy.mockRestore();
 
-      expect(failedPlanRes.status).toBe(409);
+      expect(failedPlanRes.status, await failedPlanRes.clone().text()).toBe(409);
       await expect(failedPlanRes.json()).resolves.toMatchObject({
         code: 'recovery_required',
       });
@@ -2477,7 +2707,7 @@ describe('thread goal summary app API', () => {
         };
       };
 
-      expect(planRes.status).toBe(200);
+      expect(planRes.status, JSON.stringify(planPayload)).toBe(200);
       expect(planPayload).toMatchObject({
         status: 'awaiting_plan_approval',
         goal: {
@@ -2490,7 +2720,7 @@ describe('thread goal summary app API', () => {
         },
         planner: {
           mode: 'goal',
-          sourceAgentId: 'worker-coordinator',
+          sourceAgentId: 'goal-orchestrator',
           requiredApprovals: ['plan_approval'],
           contextRefs: expect.arrayContaining([
             { kind: 'workspace', id: 'ws_demo' },
@@ -2640,7 +2870,7 @@ describe('thread goal summary app API', () => {
 
       expect(unownedReplayRes.status).toBe(409);
       await expect(unownedReplayRes.json()).resolves.toMatchObject({
-        code: 'recovery_required',
+        code: 'stale',
       });
 
       const failedPauseReceipt = vi
@@ -2955,7 +3185,7 @@ describe('thread goal summary app API', () => {
 
       expect(terminalHalfStateRes.status).toBe(409);
       await expect(terminalHalfStateRes.json()).resolves.toMatchObject({
-        code: 'recovery_required',
+        code: 'stale',
       });
 
       const nextGoalRes = await app.request(
@@ -2985,7 +3215,7 @@ describe('thread goal summary app API', () => {
 
       expect(supersededHalfStateRes.status).toBe(409);
       await expect(supersededHalfStateRes.json()).resolves.toMatchObject({
-        code: 'recovery_required',
+        code: 'stale',
       });
     } finally {
       coreDb.sqlite.close();
@@ -3027,12 +3257,18 @@ describe('thread goal summary app API', () => {
 
   it('replays Goal Plan revisions and fails closed on incomplete command ownership', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_demo', 'Goal plan revision thread');
     const app = createApp({ coreDb, store });
     const revisionPlanner = vi
-      .spyOn(goalPlanPropose, 'createPreApprovalGoalPlanRevisionPlanner')
+      .spyOn(goalPlanPropose, 'createGoalPlanPlanner')
       .mockReturnValue(async (input) => {
+        if (!input.previousPlan) {
+          return createDeterministicGoalPlanFallback({
+            goalTitle: input.goal.title,
+            objective: input.goal.objective,
+          });
+        }
         expect(input.previousPlanItemId).toBeTruthy();
         expect(input.revisionText).toBeTruthy();
         const previous = input.previousPlan!;
@@ -3076,7 +3312,8 @@ describe('thread goal summary app API', () => {
         planItemId: string;
       };
 
-      expect(planRes.status).toBe(200);
+      expect(revisionPlanner).toHaveBeenCalled();
+      expect(planRes.status, JSON.stringify(planPayload)).toBe(200);
       expect(planPayload.goal.status).toBe('awaiting_plan_approval');
 
       const missingRevisionRequestRes = await app.request(
@@ -3192,7 +3429,8 @@ describe('thread goal summary app API', () => {
       expect(currentPlanRes.status).toBe(200);
       await expect(currentPlanRes.json()).resolves.toMatchObject({
         goal: { goalId: planPayload.goal.goalId, status: 'awaiting_plan_approval' },
-        planItemId: planPayload.planItemId,
+        activePlanItemId: null,
+        pendingPlanItemId: planPayload.planItemId,
       });
 
       const revisedPlanRes = await app.request(
@@ -3448,7 +3686,15 @@ describe('thread goal summary app API', () => {
       const priorWorkSlotRef = idleStorage.contributors[0]?.workSlotRef;
       expect(priorWorkSlotRef).toBeDefined();
       expect(idleStorage.revision).toBeGreaterThan(initialStorage.revision);
+      const initialIntentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        objective: 'Run one bounded worker step.',
+        userId: 'user_local',
+      });
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_real_step',
         workspaceId: 'ws_demo',
@@ -3470,7 +3716,6 @@ describe('thread goal summary app API', () => {
         threadId: thread.id,
         goalId: 'goal_real_step',
         status: 'running',
-        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
       });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -3488,6 +3733,7 @@ describe('thread goal summary app API', () => {
         status: 'ready',
         now: () => '2026-05-31T00:00:00.000Z',
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_real_step', ['task_real_step']);
 
       const startContexts: TurnStartRuntimeContext[] = [];
       const turnExecutor = createCompletingGoalTurnExecutor(startContexts);
@@ -3592,7 +3838,11 @@ describe('thread goal summary app API', () => {
       );
       const workerTurnId = store
         .listThreadTurns('ws_demo', thread.id)
-        .find((turn) => turn.id !== contextTurn.id)?.id;
+        .find(
+          (turn) =>
+            turn.id !== contextTurn.id &&
+            getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, turn.id) !== null
+        )?.id;
       expect(workerTurnId).toBeDefined();
       const steeringReplay = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
@@ -3765,6 +4015,7 @@ describe('thread goal summary app API', () => {
         contextRefs: [
           { kind: 'workspace', id: 'ws_demo' },
           { kind: 'thread', id: thread.id },
+          { kind: 'item', id: initialIntentItemId },
           { kind: 'item', id: `it_context_${thread.id}` },
           { kind: 'item', id: steeringIds.contentItemId },
         ],
@@ -4002,6 +4253,7 @@ describe('thread goal summary app API', () => {
         durationMs: 0,
       });
       createGoalRecord(workspaceDb, {
+        createdByItemId: `it_context_${thread.id}`,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_failing_step',
         workspaceId: 'ws_demo',
@@ -4015,7 +4267,6 @@ describe('thread goal summary app API', () => {
         threadId: thread.id,
         goalId: 'goal_failing_step',
         status: 'running',
-        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
       });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -4032,6 +4283,9 @@ describe('thread goal summary app API', () => {
         verificationChecks: [{ kind: 'manual', description: 'Review failure state.' }],
         status: 'ready',
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_failing_step', [
+        'task_failing_step',
+      ]);
 
       const startContexts: TurnStartRuntimeContext[] = [];
       const app = createApp({
@@ -4378,6 +4632,7 @@ describe('thread goal summary app API', () => {
         durationMs: 0,
       });
       createGoalRecord(workspaceDb, {
+        createdByItemId: `it_context_${thread.id}`,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_deferred_step',
         workspaceId: 'ws_demo',
@@ -4392,7 +4647,6 @@ describe('thread goal summary app API', () => {
         threadId: thread.id,
         goalId: 'goal_deferred_step',
         status: 'running',
-        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
       });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -4409,6 +4663,9 @@ describe('thread goal summary app API', () => {
         verificationChecks: [{ kind: 'manual', description: 'Review scheduler state.' }],
         status: 'ready',
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_deferred_step', [
+        'task_deferred_step',
+      ]);
       ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
       upsertSchedulerCapacityRecord(coreDb, {
         targetId: 'target_local',
@@ -4520,6 +4777,7 @@ describe('thread goal summary app API', () => {
         durationMs: 0,
       });
       createGoalRecord(workspaceDb, {
+        createdByItemId: `it_context_${thread.id}`,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_no_review',
         workspaceId: 'ws_demo',
@@ -4533,7 +4791,6 @@ describe('thread goal summary app API', () => {
         threadId: thread.id,
         goalId: 'goal_no_review',
         status: 'running',
-        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
       });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -4573,6 +4830,10 @@ describe('thread goal summary app API', () => {
         },
         status: 'pending',
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_no_review', [
+        'task_no_review_1',
+        'task_no_review_2',
+      ]);
 
       const app = createApp({
         agentManifests: [createTestAgentSetup().manifest],
@@ -4762,6 +5023,7 @@ describe('thread goal summary app API', () => {
         durationMs: 0,
       });
       createGoalRecord(workspaceDb, {
+        createdByItemId: `it_context_${thread.id}`,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_atomic_review',
         workspaceId: 'ws_demo',
@@ -4775,7 +5037,6 @@ describe('thread goal summary app API', () => {
         threadId: thread.id,
         goalId: 'goal_atomic_review',
         status: 'running',
-        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
       });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -4792,6 +5053,9 @@ describe('thread goal summary app API', () => {
         verificationChecks: [{ kind: 'manual', description: 'Review worker evidence.' }],
         status: 'ready',
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_atomic_review', [
+        'task_atomic_review',
+      ]);
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER fail_goal_checkpoint_terminal
         BEFORE UPDATE OF stage ON worker_turn_checkpoints
@@ -4828,6 +5092,7 @@ describe('thread goal summary app API', () => {
           const turn = workerStore.getTurnById(turnId);
           const environmentPackage = resolveAgentEnvironmentPackage({
             agentSetup: createTestAgentSetup(),
+            captureCoverage: { scope: 'server', value: 'off' },
             agentSessionId: context.agentSessionId,
             backend: {
               kind: 'openshell',
@@ -4968,7 +5233,8 @@ describe('thread goal summary app API', () => {
       ).toEqual([]);
       const workerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
       expect(workerTurnId).toBeDefined();
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId!)).toMatchObject({
+      const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, workerTurnId!);
+      expect(checkpoint, JSON.stringify(checkpoint)).toMatchObject({
         stage: 'running_worker',
         stopReason: null,
       });
@@ -5060,6 +5326,7 @@ describe('thread goal summary app API', () => {
         durationMs: 0,
       });
       createGoalRecord(workspaceDb, {
+        createdByItemId: `it_context_${thread.id}`,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_async_step',
         workspaceId: 'ws_demo',
@@ -5074,7 +5341,6 @@ describe('thread goal summary app API', () => {
         threadId: thread.id,
         goalId: 'goal_async_step',
         status: 'running',
-        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
       });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -5092,6 +5358,7 @@ describe('thread goal summary app API', () => {
         status: 'ready',
         now: () => '2026-05-31T00:00:00.000Z',
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_async_step', ['task_async_step']);
 
       const turnExecutor: TurnExecutor = withGoalSessionContinuity({
         capabilities: {
@@ -5266,6 +5533,7 @@ describe('thread goal summary app API', () => {
         durationMs: 0,
       });
       createGoalRecord(workspaceDb, {
+        createdByItemId: `it_context_${thread.id}`,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_human_step',
         workspaceId: 'ws_demo',
@@ -5280,7 +5548,6 @@ describe('thread goal summary app API', () => {
         threadId: thread.id,
         goalId: 'goal_human_step',
         status: 'running',
-        planItemId: GOAL_TASK_EXECUTION_FIELDS.planItemId,
       });
       createGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -5298,6 +5565,7 @@ describe('thread goal summary app API', () => {
         status: 'ready',
         now: () => '2026-05-31T00:00:00.000Z',
       });
+      seedFixtureGoalPlanAuthority(workspaceDb, thread.id, 'goal_human_step', ['task_human_step']);
 
       const app = createApp({
         agentManifests: [createTestAgentSetup().manifest],

@@ -1087,7 +1087,7 @@ export function goalRows(
  * @returns Goal state rows.
  */
 function goalStatusRows(goal: GoalRecord, reviewDecisionAuthorized: boolean): HumanAttentionRow[] {
-  if (goal.status === 'awaiting_plan_approval') {
+  if (goal.pendingPlanItemId !== null) {
     if (!reviewDecisionAuthorized) {
       return [];
     }
@@ -1096,7 +1096,7 @@ function goalStatusRows(goal: GoalRecord, reviewDecisionAuthorized: boolean): Hu
         goal,
         'artifact_review',
         'Goal plan needs review',
-        'Review and approve the goal plan.',
+        `Review pending Plan ${goal.pendingPlanItemId} against active Plan ${goal.planItemId ?? 'none'} and the current Goal intent.`,
         'needs_input',
         'review_goal_plan'
       ),

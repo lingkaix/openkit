@@ -48,8 +48,14 @@ export const goalRecords = sqliteTable(
     objective: text('objective').notNull(),
     /** Optional item id that created the goal. */
     createdByItemId: text('created_by_item_id'),
+    /** Exact current objective or intent-revision Item. */
+    currentIntentItemId: text('current_intent_item_id').notNull(),
+    /** Current held Task scope; null holds all remaining Tasks. */
+    currentAffectedTaskIdsJson: text('current_affected_task_ids_json').notNull(),
     /** Optional item id containing the accepted plan. */
     planItemId: text('plan_item_id'),
+    /** Immutable proposed Plan awaiting exact approval. */
+    pendingPlanItemId: text('pending_plan_item_id'),
     /** Optional current task id for read-model projection. */
     currentTaskId: text('current_task_id'),
     /** Optional terminal stop reason after closeout. */
@@ -86,6 +92,12 @@ export const goalPlanRecords = sqliteTable(
     goalId: text('goal_id').notNull(),
     /** Visible plan Item and immutable record id. */
     planItemId: text('plan_item_id').notNull(),
+    /** Prior immutable Plan, absent only for the initial Plan. */
+    predecessorPlanItemId: text('predecessor_plan_item_id'),
+    /** Exact Goal intent Item addressed by this Plan. */
+    sourceIntentItemId: text('source_intent_item_id').notNull(),
+    /** Revision-time source Task and evidence snapshot digest. */
+    sourceTaskEvidenceDigest: text('source_task_evidence_digest'),
     /** Canonical digest of the exact Plan payload. */
     planDigest: text('plan_digest').notNull(),
     /** Exact validated Plan payload JSON. */

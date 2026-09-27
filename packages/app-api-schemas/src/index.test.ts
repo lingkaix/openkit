@@ -5404,6 +5404,7 @@ describe('app api schemas', () => {
           ],
         },
       ],
+      taskDispositions: [],
       risks: [
         'Deterministic fallback output is intentionally generic and may need human refinement.',
       ],

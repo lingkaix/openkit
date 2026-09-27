@@ -5,11 +5,13 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { createGoalRecord } from './runtime/goal-store.js';
+import { createDeterministicGoalPlanFallback } from './runtime/goal-plan.js';
+import { createGoalPlanRecord, createGoalRecord, updateGoalStatus } from './runtime/goal-store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Navigation must project current activity rather than creation order or terminal success. */
@@ -105,14 +107,70 @@ describe('conversation navigation', () => {
     applyScopedMigrations(workspaceDb);
     try {
       for (const candidate of [thread, privateThread]) {
+        const initialIntentItemId = createInitialGoalIntentItem({
+          store,
+          workspaceId: 'ws_demo',
+          threadId: candidate.id,
+          objective: 'Review plan',
+          userId: candidate.id === privateThread.id ? 'user_other' : 'user_local',
+        });
         createGoalRecord(workspaceDb, {
           workspaceExists: () => true,
           workspaceId: 'ws_demo',
           threadId: candidate.id,
           goalId: `goal_${candidate.id}`,
+          createdByItemId: initialIntentItemId,
           title: 'Goal',
           objective: 'Review plan',
           status: 'awaiting_plan_approval',
+        });
+        const plan = createDeterministicGoalPlanFallback({
+          goalTitle: 'Goal',
+          objective: 'Review plan',
+        });
+        const planItemId = `it_plan_${candidate.id}`;
+        const planningTurn = store.createTurn('ws_demo', candidate.id, 'Draft Goal Plan', {
+          kind: 'user',
+          id: candidate.id === privateThread.id ? 'user_other' : 'user_local',
+        });
+        store.createItem({
+          id: planItemId,
+          workspaceId: 'ws_demo',
+          threadId: candidate.id,
+          turnId: planningTurn.id,
+          type: 'plan',
+          status: 'completed',
+          title: 'Goal',
+          summary: plan.goalSummary,
+          steps: plan.tasks.map((task) => ({
+            id: task.taskId,
+            title: task.title,
+            status: 'pending',
+          })),
+          createdAt: planningTurn.startedAt,
+          completedAt: planningTurn.startedAt,
+        });
+        store.updateTurn(planningTurn.id, {
+          status: 'completed',
+          completedAt: planningTurn.startedAt,
+        });
+        createGoalPlanRecord(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: candidate.id,
+          goalId: `goal_${candidate.id}`,
+          planItemId,
+          predecessorPlanItemId: null,
+          sourceIntentItemId: initialIntentItemId,
+          sourceTaskEvidenceDigest: null,
+          plan,
+          createdByRequestId: `req_plan_${candidate.id}`,
+        });
+        updateGoalStatus(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: candidate.id,
+          goalId: `goal_${candidate.id}`,
+          status: 'awaiting_plan_approval',
+          pendingPlanItemId: planItemId,
         });
         store.createTurn('ws_demo', candidate.id, 'Concurrent work', {
           kind: 'user',

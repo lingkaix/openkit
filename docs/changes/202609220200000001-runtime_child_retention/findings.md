@@ -5,7 +5,7 @@ These items record structural observations about this plan's uncommitted impleme
 ## Follow-up Index
 
 - [x] `RCR-FND-001` [closed] Bind capture coverage once and pass it opaquely
-- [ ] `RCR-FND-002` [open] Construct ModelCaptureContext at one admission point
+- [x] `RCR-FND-002` [closed] Construct ModelCaptureContext at one admission point
 - [x] `RCR-FND-003` [closed] Seat timeline presentation limits in one owner
 - [x] `RCR-FND-004` [closed] Reconcile with the governance landing before resuming
 
@@ -27,13 +27,15 @@ These items record structural observations about this plan's uncommitted impleme
 - **Closing verdict:** One strict shared Worker Protocol schema defines the admitted binding; the existing aliases carry no independent rule. Early AEP validation remains because removing it allowed credential authority resolution before missing-binding rejection. The authored policy enum remains a separate concern.
 - **Closure evidence:** Independent source review in temp/changes/202609220200000001-runtime_child_retention/resume/opus-review-2.txt; protocol suite 97/97 in l1-worker-protocol-tests.txt, Core and Worker typechecks, and final repository check repo-b-final.txt in the same evidence directory. CLI exact-key and invalid-binding cases remain covered by the 98-test focused CLI run.
 
-## [open] RCR-FND-002 — Construct ModelCaptureContext at one admission point
+## [closed] RCR-FND-002 — Construct ModelCaptureContext at one admission point
 
 - **Observation:** `ModelCaptureContext` is constructed separately at four entry points, Quick Chat in mode-entry-routes.ts, Goal planning in goal-planning.ts, Administration in administration-routes.ts, and the internal Gateway provider, each opening the Workspace database; goal-planning.ts moved `createTurn` earlier only to obtain the capture handle.
 - **Impact:** docs/specs/20260921-work_data_retention_format.md owns model I/O capture. Each new internal model caller must repeat database opening and context construction, and a caller that forgets it silently loses capture.
 - **Evidence:** temp/quality-governance/probes/probe-b-change-fanout.md, path B of the parameter-threading section; spot-checked by Claude Code in the goal-planning.ts diff.
 - **Owner:** docs/changes/202609220200000001-runtime_child_retention/plan.md, the paused runtime child retention primary.
-- **Next action:** On resumption, derive the capture context once where the owning Turn is admitted and pass it through the existing provider call, removing per-entry construction, unless the retention owner records why an entry point needs different capture semantics.
+- **Next action:** On resumption, derive the capture context once where the owning Turn is admitted and pass it through the existing provider call, removing per-entry construction, unless the retention owner records why an entry point needs different capture semantics. On 2026-09-24 independent final source review confirmed that withTurnModelCapture owns database lifetime and persisted-binding validation for Quick Chat, Goal planning and Administration. Public and Worker Gateway calls instead derive their context from authenticated CapabilityCall and Worker lineage, then verify the same persisted binding through ModelCapture; apps/nanocore/src/llm/README.md records why that entry remains distinct under the existing owners. No universal admission factory is required.
+- **Closing verdict:** Closed by consolidating the three Store-admitted internal model callers while preserving the independently authenticated Gateway boundary. Each entry still owns its Turn admission; this closes duplicate construction duties, not the remaining Goal behavior or authority findings.
+- **Closure evidence:** Independent reviewer inspected model-capture.ts, all three callers and gateway-routes.ts against the current llm guide; temp/changes/202609220200000001-runtime_child_retention/resume/openkit-retention-core-fullslice.txt records 21 files and 684 passing tests. The later Goal regression remains separately open in docs/changes/202609241800000001-continuous_goal_and_builtin_prompts/findings.md as GOALCONT-FND-002.
 
 ## [closed] RCR-FND-003 — Seat timeline presentation limits in one owner
 

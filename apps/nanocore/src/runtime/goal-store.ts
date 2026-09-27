@@ -42,8 +42,14 @@ export interface GoalRecord {
   readonly objective: string;
   /** Optional item id that created the goal. */
   readonly createdByItemId: string | null;
-  /** Optional item id containing the accepted plan. */
+  /** Current immutable objective or intent-revision Item. */
+  readonly currentIntentItemId: string;
+  /** Current held Task scope; null holds every remaining Task. */
+  readonly currentAffectedTaskIds: readonly string[] | null;
+  /** Active approved Plan, absent before first approval. */
   readonly planItemId: string | null;
+  /** Immutable candidate awaiting exact approval. */
+  readonly pendingPlanItemId: string | null;
   /** Optional current task id for read-model projection. */
   readonly currentTaskId: string | null;
   /** Optional terminal stop reason after closeout. */
@@ -54,6 +60,13 @@ export interface GoalRecord {
   readonly createdAt: string;
   /** ISO timestamp for latest goal update. */
   readonly updatedAt: string;
+}
+
+/** True when a Goal can no longer accept planning, approval, or intent effects. */
+export function isTerminalGoalStatus(status: GoalRecordStatus): boolean {
+  return (
+    status === 'completed' || status === 'blocked' || status === 'aborted' || status === 'failed'
+  );
 }
 
 /**
@@ -68,6 +81,12 @@ export interface GoalPlanRecord extends GoalPlanOutput {
   readonly goalId: string;
   /** Visible plan Item and immutable record id. */
   readonly planItemId: string;
+  /** Prior Plan identity, absent only for the initial Plan. */
+  readonly predecessorPlanItemId: string | null;
+  /** Exact Goal intent Item addressed by this Plan. */
+  readonly sourceIntentItemId: string;
+  /** Revision-time source Task and evidence snapshot digest. */
+  readonly sourceTaskEvidenceDigest: string | null;
   /** Canonical digest of the exact Plan payload. */
   readonly planDigest: string;
   /** Request that created the plan authority. */
@@ -130,7 +149,10 @@ interface GoalRecordRow {
   readonly title: string;
   readonly objective: string;
   readonly created_by_item_id: string | null;
+  readonly current_intent_item_id: string;
+  readonly current_affected_task_ids_json: string;
   readonly plan_item_id: string | null;
+  readonly pending_plan_item_id: string | null;
   readonly current_task_id: string | null;
   readonly terminal_stop_reason: StopReason | null;
   readonly worker_storage_choice_json: string | null;
@@ -143,6 +165,9 @@ interface GoalPlanRecordRow {
   readonly thread_id: string;
   readonly goal_id: string;
   readonly plan_item_id: string;
+  readonly predecessor_plan_item_id: string | null;
+  readonly source_intent_item_id: string;
+  readonly source_task_evidence_digest: string | null;
   readonly plan_digest: string;
   readonly plan_json: string;
   readonly created_by_request_id: string;
@@ -188,8 +213,8 @@ export interface CreateGoalRecordInput {
   readonly title: string;
   /** Full user-facing goal objective. */
   readonly objective: string;
-  /** Optional item id that created the goal. */
-  readonly createdByItemId?: string | null;
+  /** Item id that created the goal. */
+  readonly createdByItemId: string;
   /** Optional initial goal status. */
   readonly status?: GoalRecordStatus;
   /** Explicit retained-storage choice for Goal child work. */
@@ -222,11 +247,29 @@ export interface UpdateGoalStatusInput {
   readonly status: GoalRecordStatus;
   /** Optional item id containing the accepted plan. */
   readonly planItemId?: string | null;
+  /** Optional pending immutable Plan candidate. */
+  readonly pendingPlanItemId?: string | null;
+  /** Optional current held Task scope; null holds all remaining Tasks. */
+  readonly currentAffectedTaskIds?: readonly string[] | null;
   /** Optional current task id for read-model projection. */
   readonly currentTaskId?: string | null;
   /** Optional terminal stop reason after closeout. */
   readonly terminalStopReason?: StopReason | null;
   /** Optional clock used by deterministic tests. */
+  readonly now?: () => string;
+}
+
+/** Exact Goal intent transition owned by one immutable user Item. */
+export interface UpdateGoalIntentInput extends GoalTaskListInput {
+  /** Previous current intent Item used as a transition fence. */
+  readonly previousIntentItemId: string;
+  /** New immutable user intent Item. */
+  readonly intentItemId: string;
+  /** Complete current objective. */
+  readonly objective: string;
+  /** Null holds all remaining Tasks; an array names a scoped hold. */
+  readonly affectedTaskIds: readonly string[] | null;
+  /** Optional deterministic clock. */
   readonly now?: () => string;
 }
 
@@ -242,6 +285,12 @@ export interface CreateGoalPlanRecordInput {
   readonly goalId: string;
   /** Visible plan Item and immutable record id. */
   readonly planItemId: string;
+  /** Prior immutable Plan identity, null for the initial draft. */
+  readonly predecessorPlanItemId: string | null;
+  /** Exact Goal intent Item addressed by this Plan. */
+  readonly sourceIntentItemId: string;
+  /** Revision-time source Task and evidence digest, null for the initial draft. */
+  readonly sourceTaskEvidenceDigest: string | null;
   /** Exact validated Plan payload. */
   readonly plan: GoalPlanOutput;
   /** Request that created the plan authority. */
@@ -341,6 +390,9 @@ export function createGoalRecord(
   input: CreateGoalRecordInput
 ): GoalRecord {
   assertWorkspaceExists(input.workspaceExists, input.workspaceId);
+  if (!input.createdByItemId?.trim()) {
+    throw new Error('Goal creation requires an objective Item.');
+  }
 
   const timestamp = input.now?.() ?? new Date().toISOString();
 
@@ -354,13 +406,16 @@ export function createGoalRecord(
         title,
         objective,
         created_by_item_id,
+        current_intent_item_id,
+        current_affected_task_ids_json,
         plan_item_id,
+        pending_plan_item_id,
         current_task_id,
         terminal_stop_reason,
         worker_storage_choice_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.goalId,
@@ -369,7 +424,10 @@ export function createGoalRecord(
       input.status ?? 'planning',
       input.title,
       input.objective,
-      input.createdByItemId ?? null,
+      input.createdByItemId,
+      input.createdByItemId,
+      '[]',
+      null,
       null,
       null,
       null,
@@ -491,6 +549,8 @@ export function updateGoalStatus(
       SET
         status = ?,
         plan_item_id = ?,
+        pending_plan_item_id = ?,
+        current_affected_task_ids_json = ?,
         current_task_id = ?,
         terminal_stop_reason = ?,
         updated_at = ?
@@ -499,6 +559,10 @@ export function updateGoalStatus(
     .run(
       input.status,
       input.planItemId === undefined ? existing.planItemId : input.planItemId,
+      input.pendingPlanItemId === undefined ? existing.pendingPlanItemId : input.pendingPlanItemId,
+      input.currentAffectedTaskIds === undefined
+        ? JSON.stringify(existing.currentAffectedTaskIds)
+        : JSON.stringify(input.currentAffectedTaskIds),
       input.currentTaskId === undefined ? existing.currentTaskId : input.currentTaskId,
       input.terminalStopReason === undefined
         ? existing.terminalStopReason
@@ -514,6 +578,38 @@ export function updateGoalStatus(
   return goal;
 }
 
+/** Applies one accepted intent revision to the Goal record under its prior Item fence. */
+export function updateGoalIntent(
+  workspaceDb: WorkspaceDb,
+  input: UpdateGoalIntentInput
+): GoalRecord {
+  const previous = requireGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
+  if (previous.currentIntentItemId !== input.previousIntentItemId) {
+    throw new Error('Goal intent changed before this revision could commit.');
+  }
+  const timestamp = input.now?.() ?? new Date().toISOString();
+  const update = workspaceDb.sqlite
+    .prepare(
+      `UPDATE goal_records
+      SET objective = ?, current_intent_item_id = ?, current_affected_task_ids_json = ?, updated_at = ?
+      WHERE workspace_id = ? AND thread_id = ? AND goal_id = ? AND current_intent_item_id = ?`
+    )
+    .run(
+      input.objective,
+      input.intentItemId,
+      JSON.stringify(input.affectedTaskIds),
+      timestamp,
+      input.workspaceId,
+      input.threadId,
+      input.goalId,
+      input.previousIntentItemId
+    );
+  if (update.changes !== 1) {
+    throw new Error('Goal intent changed before this revision could commit.');
+  }
+  return requireGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
+}
+
 /**
  * Creates one immutable Goal Plan authority after confirming Goal ownership.
  *
@@ -526,13 +622,28 @@ export function createGoalPlanRecord(
   workspaceDb: WorkspaceDb,
   input: CreateGoalPlanRecordInput
 ): GoalPlanRecord {
-  requireGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
+  const goal = requireGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
   const plan = GoalPlanOutputSchema.parse(input.plan);
   if (plan.questions.length > 0) {
     throw new Error('Goal Plan records require an empty questions array.');
   }
   if (input.createdByRequestId.trim().length === 0) {
     throw new Error('Goal Plan creation requires a non-empty request id.');
+  }
+  if (input.sourceIntentItemId !== goal.currentIntentItemId) {
+    throw new Error('Goal Plan source intent must match the current Goal intent.');
+  }
+  if (
+    input.predecessorPlanItemId !== goal.planItemId &&
+    input.predecessorPlanItemId !== goal.pendingPlanItemId
+  ) {
+    throw new Error('Goal Plan predecessor must match the active or pending Plan.');
+  }
+  if (input.predecessorPlanItemId === null && input.sourceTaskEvidenceDigest !== null) {
+    throw new Error('Initial Goal Plan cannot have a source Task evidence digest.');
+  }
+  if (goal.planItemId !== null && !input.sourceTaskEvidenceDigest) {
+    throw new Error('Approved-Plan successor requires a source Task evidence digest.');
   }
   const createdAt = input.now?.() ?? new Date().toISOString();
 
@@ -543,17 +654,23 @@ export function createGoalPlanRecord(
         thread_id,
         goal_id,
         plan_item_id,
+        predecessor_plan_item_id,
+        source_intent_item_id,
+        source_task_evidence_digest,
         plan_digest,
         plan_json,
         created_by_request_id,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.workspaceId,
       input.threadId,
       input.goalId,
       input.planItemId,
+      input.predecessorPlanItemId,
+      input.sourceIntentItemId,
+      input.sourceTaskEvidenceDigest,
       computeGoalPlanDigest(plan),
       JSON.stringify(plan),
       input.createdByRequestId,
@@ -709,6 +826,43 @@ export function listGoalTasks(
   ).map(mapGoalTaskRow);
 }
 
+/** Lists only current approved Plan Tasks that may be dispatched under the current Goal intent. */
+export function listDispatchableGoalTasks(
+  workspaceDb: WorkspaceDb,
+  input: GoalTaskListInput
+): GoalTaskRecord[] {
+  const goal = requireGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
+  if (!goal.planItemId) {
+    return [];
+  }
+  const plan = getGoalPlanRecord(workspaceDb, input.workspaceId, input.threadId, goal.planItemId);
+  if (!plan || plan.goalId !== goal.goalId) {
+    throw new Error('Active Goal Plan authority is missing.');
+  }
+  const tasks = listGoalTasks(workspaceDb, input).filter(
+    (task) => task.planItemId === goal.planItemId
+  );
+  if (plan.sourceIntentItemId === goal.currentIntentItemId) {
+    return tasks;
+  }
+  const held = new Set(
+    goal.currentAffectedTaskIds === null
+      ? tasks.filter((task) => task.status !== 'completed').map((task) => task.taskId)
+      : goal.currentAffectedTaskIds
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const task of tasks) {
+      if (!held.has(task.taskId) && task.dependsOnTaskIds.some((id) => held.has(id))) {
+        held.add(task.taskId);
+        changed = true;
+      }
+    }
+  }
+  return tasks.filter((task) => !held.has(task.taskId));
+}
+
 /**
  * Lists all goal task records for one workspace in stable export order.
  *
@@ -749,13 +903,16 @@ export function importGoalRecords(workspaceDb: WorkspaceDb, goals: readonly Goal
           title,
           objective,
           created_by_item_id,
+          current_intent_item_id,
+          current_affected_task_ids_json,
           plan_item_id,
+          pending_plan_item_id,
           current_task_id,
           terminal_stop_reason,
           worker_storage_choice_json,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         goal.goalId,
@@ -765,7 +922,10 @@ export function importGoalRecords(workspaceDb: WorkspaceDb, goals: readonly Goal
         goal.title,
         goal.objective,
         goal.createdByItemId,
+        goal.currentIntentItemId,
+        JSON.stringify(goal.currentAffectedTaskIds),
         goal.planItemId,
+        goal.pendingPlanItemId,
         goal.currentTaskId,
         goal.terminalStopReason,
         null,
@@ -800,17 +960,23 @@ export function importGoalPlanRecords(
           thread_id,
           goal_id,
           plan_item_id,
+          predecessor_plan_item_id,
+          source_intent_item_id,
+          source_task_evidence_digest,
           plan_digest,
           plan_json,
           created_by_request_id,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         record.workspaceId,
         record.threadId,
         record.goalId,
         record.planItemId,
+        record.predecessorPlanItemId,
+        record.sourceIntentItemId,
+        record.sourceTaskEvidenceDigest,
         record.planDigest,
         JSON.stringify(plan),
         record.createdByRequestId,
@@ -948,7 +1114,7 @@ export function reserveGoalTaskForWorkerTurn(
 ): boolean {
   return workspaceDb.sqlite.transaction(() => {
     const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, input.goalId);
-    const tasks = listGoalTasks(workspaceDb, {
+    const tasks = listDispatchableGoalTasks(workspaceDb, {
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       goalId: input.goalId,
@@ -1253,7 +1419,10 @@ function mapGoalRecordRow(row: GoalRecordRow): GoalRecord {
     title: row.title,
     objective: row.objective,
     createdByItemId: row.created_by_item_id,
+    currentIntentItemId: row.current_intent_item_id,
+    currentAffectedTaskIds: JSON.parse(row.current_affected_task_ids_json) as string[] | null,
     planItemId: row.plan_item_id,
+    pendingPlanItemId: row.pending_plan_item_id,
     currentTaskId: row.current_task_id,
     terminalStopReason: row.terminal_stop_reason,
     workerStorageChoice: row.worker_storage_choice_json
@@ -1283,6 +1452,9 @@ function mapGoalPlanRecordRow(row: GoalPlanRecordRow): GoalPlanRecord {
     threadId: row.thread_id,
     goalId: row.goal_id,
     planItemId: row.plan_item_id,
+    predecessorPlanItemId: row.predecessor_plan_item_id,
+    sourceIntentItemId: row.source_intent_item_id,
+    sourceTaskEvidenceDigest: row.source_task_evidence_digest,
     planDigest: row.plan_digest,
     createdByRequestId: row.created_by_request_id,
     createdAt: row.created_at,
@@ -1337,7 +1509,10 @@ function goalRecordSelectSql(): string {
     title,
     objective,
     created_by_item_id,
+    current_intent_item_id,
+    current_affected_task_ids_json,
     plan_item_id,
+    pending_plan_item_id,
     current_task_id,
     terminal_stop_reason,
     worker_storage_choice_json,
@@ -1357,6 +1532,9 @@ function goalPlanRecordSelectSql(): string {
     thread_id,
     goal_id,
     plan_item_id,
+    predecessor_plan_item_id,
+    source_intent_item_id,
+    source_task_evidence_digest,
     plan_digest,
     plan_json,
     created_by_request_id,

@@ -73,6 +73,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
+import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
@@ -432,6 +433,13 @@ function createWorkerContextExecutorFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const store = createDemoStore({ dataRoot });
+  const initialIntentItemId = createInitialGoalIntentItem({
+    store,
+    workspaceId: 'ws_demo',
+    threadId: 'th_demo',
+    objective: 'Prepare the accepted worker context.',
+    userId: 'user_local',
+  });
   const requestId = '00000000-0000-4000-8000-000000000270';
   const turn = createAssignedTurn(
     store,
@@ -511,6 +519,7 @@ function createWorkerContextExecutorFixture(
   const workspaceDb = openTestWorkspaceDb(coreDb);
   createGoalRecord(workspaceDb, {
     goalId,
+    createdByItemId: initialIntentItemId,
     objective: 'Prepare the accepted worker context.',
     threadId: turn.threadId,
     title: 'Prepare worker context',

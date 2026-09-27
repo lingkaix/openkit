@@ -21,6 +21,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerEnvironmentOperations } from './worker-environment-operations.js';
 
@@ -247,8 +248,16 @@ describe('Worker environment operations', () => {
     const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.workspaceId);
     try {
       applyScopedMigrations(workspaceDb);
+      const initialIntentItemId = createInitialGoalIntentItem({
+        store: fixture.store,
+        workspaceId: fixture.workspaceId,
+        threadId: fixture.threadId,
+        objective: 'Continue related work using this environment.',
+        userId: 'user_local',
+      });
       createGoalRecord(workspaceDb, {
         goalId: 'goal-retaining-storage',
+        createdByItemId: initialIntentItemId,
         objective: 'Continue related work using this environment.',
         threadId: fixture.threadId,
         title: 'Retained work',

@@ -96,8 +96,13 @@ function buildBoardCards(
  * into Done via drag (keyboard/button Skip stays conceptual for v1).
  */
 export function BoardLens({ workspaceId, threadId, goal, onOpenThread }: BoardLensProps) {
-  const planQuery = useGoalPlan(workspaceId, threadId, goal.goalId, goal.status);
-  const cards = buildBoardCards(goal, planQuery.data?.plan?.tasks);
+  const planQuery = useGoalPlan(workspaceId, threadId, goal.goalId);
+  const cards = buildBoardCards(
+    goal,
+    goal.status === 'awaiting_plan_approval'
+      ? planQuery.data?.pendingPlan?.tasks
+      : planQuery.data?.activePlan?.tasks
+  );
   const todo = cards.filter((c) => c.column === 'todo');
   const progress = cards.filter((c) => c.column === 'progress');
   const done = cards.filter((c) => c.column === 'done');

@@ -50,6 +50,7 @@ import {
   startGoalModeObjective,
   submitGoalSteeringCommand,
 } from './goal-routes.js';
+import { assembleBuiltInSystemPrompt } from './internal-agents/builtin-prompts.js';
 import {
   createStructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
@@ -131,10 +132,6 @@ import {
 
 /** Stable attribution id for the direct Quick Chat provider call. */
 export const QUICK_CHAT_AGENT_ID = 'quick-chat';
-
-/** Fixed role instruction for the bounded Quick Chat provider call. */
-const QUICK_CHAT_SYSTEM_PROMPT =
-  'You are QuickChatAgent, a lightweight OpenKit Core coordination agent. Answer concise user questions without running worker agents, shell commands, browser automation, file edits, or knowledge writes.';
 
 /** Maximum duration of one direct Quick Chat provider call. */
 const QUICK_CHAT_TIMEOUT_MS = 30_000;
@@ -2481,7 +2478,7 @@ export function registerQuickAndChatModeRoutes({
               {
                 model: providerModel,
                 messages: [
-                  { role: 'system', content: QUICK_CHAT_SYSTEM_PROMPT },
+                  { role: 'system', content: assembleBuiltInSystemPrompt('quick-chat') },
                   { role: 'user', content: input.prompt },
                 ],
               },

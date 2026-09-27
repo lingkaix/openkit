@@ -1,6 +1,7 @@
 import type { CoreClient, GetArtifactResponse } from '@openkit/core-client';
 import { createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId } from '../chat/data';
 import { type AttentionRow, workspaceKeys } from '../workspace/data';
@@ -77,6 +78,7 @@ export function useStartThreadGoal(workspaceId: string, threadId: string) {
       client.app.startThreadGoal(workspaceId, threadId, input),
     onSuccess: (response) => {
       installGoalSummary(queryClient, workspaceId, threadId, response.goal);
+      void queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) });
     },
   });
 }
@@ -89,6 +91,7 @@ export function usePauseThreadGoal(workspaceId: string, threadId: string) {
     mutationFn: () => client.app.pauseThreadGoal(workspaceId, threadId),
     onSuccess: (response) => {
       installGoalSummary(queryClient, workspaceId, threadId, response.goal);
+      void queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) });
     },
   });
 }
@@ -101,6 +104,7 @@ export function useResumeThreadGoal(workspaceId: string, threadId: string) {
     mutationFn: () => client.app.resumeThreadGoal(workspaceId, threadId),
     onSuccess: (response) => {
       installGoalSummary(queryClient, workspaceId, threadId, response.goal);
+      void queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) });
     },
   });
 }
@@ -113,6 +117,7 @@ export function useRunThreadGoalStep(workspaceId: string, threadId: string) {
     mutationFn: () => client.app.runThreadGoalStep(workspaceId, threadId),
     onSuccess: (response) => {
       installGoalSummary(queryClient, workspaceId, threadId, response.goal);
+      void queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) });
     },
   });
 }
@@ -197,6 +202,7 @@ export function useSubmitGoalReviewDecision(
           queryKey: goalKeys.summary(workspaceId, threadId),
           exact: true,
         }),
+        queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) }),
         queryClient.invalidateQueries({
           queryKey: workspaceKeys.attention(workspaceId),
           exact: true,
@@ -207,19 +213,12 @@ export function useSubmitGoalReviewDecision(
 }
 
 /**
- * Read the current Goal Plan, and create one only when the GET Goal is planning.
- * `getThreadGoalPlan` owns recovery; create never runs for a missing Goal or from
- * `awaiting_plan_approval`. Request identity is reused only within one Goal id.
+ * Read both Plan pointers. Only pristine initial planning may auto-draft; a
+ * failed or revision attempt waits for an explicit action with a new request.
  */
-export function useGoalPlan(
-  workspaceId: string | null,
-  threadId: string,
-  goalId: string,
-  status: ThreadGoalSummary['status'] | undefined
-) {
+export function useGoalPlan(workspaceId: string | null, threadId: string, goalId: string) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
-  const needsPlan = status === 'planning' || status === 'awaiting_plan_approval';
   return useQuery({
     queryKey: goalKeys.plan(workspaceId ?? '', threadId, goalId),
     queryFn: async (): Promise<ThreadGoalPlanReadResponse> => {
@@ -227,7 +226,7 @@ export function useGoalPlan(
       if (current.goal) {
         installGoalSummary(queryClient, workspaceId as string, threadId, current.goal);
       }
-      if (current.plan && current.planItemId && current.goal) {
+      if (current.pendingPlan && current.pendingPlanItemId && current.goal) {
         queryClient.removeQueries({
           queryKey: goalKeys.planCreateRequest(
             workspaceId as string,
@@ -238,7 +237,7 @@ export function useGoalPlan(
         });
         return current;
       }
-      if (!current.goal || current.goal.status !== 'planning') {
+      if (!current.goal || current.planningAction !== 'create') {
         return current;
       }
       const createRequestKey = goalKeys.planCreateRequest(
@@ -248,19 +247,71 @@ export function useGoalPlan(
       );
       const requestId = queryClient.getQueryData<string>(createRequestKey) ?? createRequestId();
       queryClient.setQueryData(createRequestKey, requestId);
-      const created = await client.app.createThreadGoalPlan(workspaceId as string, threadId, {
-        requestId,
-      });
+      try {
+        await client.app.createThreadGoalPlan(workspaceId as string, threadId, { requestId });
+      } catch (error) {
+        const after = await client.app.getThreadGoalPlan(workspaceId as string, threadId);
+        if (after.goal)
+          installGoalSummary(queryClient, workspaceId as string, threadId, after.goal);
+        if (after.planningAction !== 'create') return after;
+        throw error;
+      }
       queryClient.removeQueries({ queryKey: createRequestKey, exact: true });
-      installGoalSummary(queryClient, workspaceId as string, threadId, created.goal);
-      return {
-        goal: created.goal,
-        planItemId: created.planItemId,
-        plan: created.plan,
-      };
+      const after = await client.app.getThreadGoalPlan(workspaceId as string, threadId);
+      if (after.goal) installGoalSummary(queryClient, workspaceId as string, threadId, after.goal);
+      return after;
     },
-    enabled: Boolean(workspaceId && threadId && goalId && needsPlan),
+    enabled: Boolean(workspaceId && threadId && goalId),
     staleTime: Number.POSITIVE_INFINITY,
+    refetchInterval: (query) => {
+      const status = query.state.data?.goal?.status;
+      return status && !['completed', 'blocked', 'aborted', 'failed'].includes(status)
+        ? 5_000
+        : false;
+    },
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
+}
+
+/** Draft a successor or explicitly retry a failed planner attempt. */
+export function useCreateGoalPlan(workspaceId: string, threadId: string, goalId: string) {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  const pending = useRef<{ goalId: string; source: string; requestId: string } | null>(null);
+  return useMutation({
+    mutationFn: async (input: { previousPendingPlanItemId: string | null; source: string }) => {
+      if (pending.current?.goalId !== goalId || pending.current?.source !== input.source) {
+        pending.current = { goalId, source: input.source, requestId: createRequestId() };
+      }
+      try {
+        await client.app.createThreadGoalPlan(workspaceId, threadId, {
+          requestId: pending.current.requestId,
+        });
+      } catch (error) {
+        const read = await client.app.getThreadGoalPlan(workspaceId, threadId);
+        if (
+          (read.planningAction === 'await_approval' &&
+            read.pendingPlanItemId &&
+            read.pendingPlanItemId !== input.previousPendingPlanItemId) ||
+          read.planningAction === 'answer_question' ||
+          read.planningAction === 'in_progress'
+        ) {
+          pending.current = null;
+          return;
+        }
+        if (read.planningAction === 'retry') pending.current = null;
+        await queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) });
+        throw error;
+      }
+      pending.current = null;
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: goalKeys.summary(workspaceId, threadId) }),
+        queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) }),
+      ]);
+    },
   });
 }
 
@@ -268,13 +319,16 @@ export function useGoalPlan(
 export function useApproveGoalPlan(workspaceId: string, threadId: string) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
+  const pending = useRef<{ planItemId: string; requestId: string } | null>(null);
   return useMutation({
-    mutationFn: (planItemId: string) =>
-      client.app.approveThreadGoalPlan(workspaceId, threadId, {
-        planItemId,
-        requestId: createRequestId(),
-      }),
+    mutationFn: (planItemId: string) => {
+      if (pending.current?.planItemId !== planItemId) {
+        pending.current = { planItemId, requestId: createRequestId() };
+      }
+      return client.app.approveThreadGoalPlan(workspaceId, threadId, pending.current);
+    },
     onSuccess: () => {
+      pending.current = null;
       void queryClient.invalidateQueries({ queryKey: goalKeys.summary(workspaceId, threadId) });
       void queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) });
     },
@@ -282,18 +336,70 @@ export function useApproveGoalPlan(workspaceId: string, threadId: string) {
 }
 
 /** Ask Goal Mode to revise the active plan draft. */
-export function useReviseGoalPlan(workspaceId: string, threadId: string) {
+export function useReviseGoalPlan(workspaceId: string, threadId: string, goalId: string) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
+  const pending = useRef<{
+    goalId: string;
+    predecessorPlanItemId: string | null;
+    revision: string;
+    requestId: string;
+  } | null>(null);
   return useMutation({
-    mutationFn: (revision: string) =>
-      client.app.reviseThreadGoalPlan(workspaceId, threadId, {
-        revision,
-        requestId: createRequestId(),
-      }),
+    mutationFn: (input: { predecessorPlanItemId: string | null; revision: string }) => {
+      if (
+        pending.current?.goalId !== goalId ||
+        pending.current?.predecessorPlanItemId !== input.predecessorPlanItemId ||
+        pending.current?.revision !== input.revision
+      ) {
+        pending.current = { goalId, ...input, requestId: createRequestId() };
+      }
+      return client.app.reviseThreadGoalPlan(workspaceId, threadId, {
+        revision: input.revision,
+        requestId: pending.current.requestId,
+      });
+    },
     onSuccess: () => {
+      pending.current = null;
       void queryClient.invalidateQueries({ queryKey: goalKeys.summary(workspaceId, threadId) });
       void queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) });
+    },
+  });
+}
+
+/** Record a same-Goal intent revision, keeping its command identity on uncertain retry. */
+export function useReviseGoalIntent(workspaceId: string, threadId: string, goalId: string) {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  const pending = useRef<{
+    goalId: string;
+    objective: string;
+    revision: string;
+    affectedTaskIds?: string[];
+    requestId: string;
+  } | null>(null);
+  return useMutation({
+    mutationFn: (input: { objective: string; revision: string; affectedTaskIds?: string[] }) => {
+      if (
+        pending.current?.goalId !== goalId ||
+        pending.current?.objective !== input.objective ||
+        pending.current?.revision !== input.revision ||
+        JSON.stringify(pending.current?.affectedTaskIds) !== JSON.stringify(input.affectedTaskIds)
+      ) {
+        pending.current = { goalId, ...input, requestId: createRequestId() };
+      }
+      return client.app.reviseThreadGoalIntent(workspaceId, threadId, {
+        ...input,
+        requestId: pending.current.requestId,
+      });
+    },
+    onSuccess: async () => {
+      pending.current = null;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: goalKeys.summary(workspaceId, threadId) }),
+        queryClient.invalidateQueries({ queryKey: goalKeys.plan(workspaceId, threadId) }),
+        queryClient.invalidateQueries({ queryKey: ['items', workspaceId, threadId] }),
+      ]);
     },
   });
 }

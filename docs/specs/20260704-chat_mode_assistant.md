@@ -94,6 +94,8 @@ The missing V1 contract is the concrete Assistant boundary: which tools it may u
 
 ### Assistant Tool Boundary
 
+The ordinary Assistant and Administration entry paths use the centralized fixed prompt source and fixed-text limit owned by [Internal Agent Runtime](20260813-internal_agent_runtime.md#prompt-contract), including any direct provider-call implementation. Dynamic context does not carry additional fixed role instructions.
+
 The ordinary conversational entry path has this complete Core Tool set in stable order. `20260909-internal_agent_resource_integration.md` permits MCP only as a reviewed implementation of an owner-admitted internal capability; it does not append external server Tools to this set:
 
 1. `workspace.state.read`: bounded Workspace/work-state read for the exact selected resource.

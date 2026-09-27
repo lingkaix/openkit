@@ -12,6 +12,7 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 
 describe('worker Context Package authority reader', () => {
@@ -39,6 +40,13 @@ describe('worker Context Package authority reader', () => {
     const store = createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      objective: 'Ship the release.',
+      userId: 'user_local',
+    });
     const gateTurn = store.createTurn(
       'ws_demo',
       'th_demo',
@@ -91,6 +99,7 @@ describe('worker Context Package authority reader', () => {
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
       goalId: 'goal_demo',
+      createdByItemId: initialIntentItemId,
       title: 'Ship release',
       objective: 'Ship the release.',
     });

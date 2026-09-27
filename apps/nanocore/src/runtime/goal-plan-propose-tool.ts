@@ -8,6 +8,7 @@ import {
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
 import {
   type AgentTool,
@@ -23,6 +24,7 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
+  assertGoalPlanTaskDispositions,
   assertValidGoalPlanGraph,
   type GoalPlanOutput,
   GoalPlanOutputSchema,
@@ -33,31 +35,24 @@ import {
   type GoalPlannerInput,
   GoalPlanRevisionError,
 } from './goal-planning.js';
+import { assertGoalPlanCompletedResultTreatment } from './goal-source-evidence.js';
 
-/** Exact model-visible Tool name for one pre-approval Goal Plan proposal. */
+/** Exact model-visible Tool name for one Goal Plan proposal. */
 export const GOAL_PLAN_PROPOSE_TOOL_NAME = 'goal.plan.propose';
 
-/** Goal Orchestrator role identity reused for pre-approval revision Turns. */
+/** Goal Orchestrator role identity used by initial and successor planning Turns. */
 export const GOAL_ORCHESTRATOR_ROLE_ID = 'goal-orchestrator';
 
-const DEFAULT_REVISION_LIMITS = { maxModelTurns: 8, maxToolCalls: 4, deadlineMs: 120_000 } as const;
+const DEFAULT_PLAN_LIMITS = { maxModelTurns: 8, maxToolCalls: 4, deadlineMs: 120_000 } as const;
 
 const GOAL_PLAN_PROPOSE_INPUT_SCHEMA = stripJsonSchemaMetadata(
   z.toJSONSchema(GoalPlanOutputSchema) as Record<string, unknown>
 );
 
-const REVISION_SYSTEM_PROMPT = [
-  'You are the OpenKit Goal Orchestrator drafting one revised Goal Plan before human approval.',
-  'Use only goal.plan.propose. Submit one complete Plan that consumes the recorded human revision and the exact previous Plan.',
-  'The submitted Plan must have no unresolved questions and must differ materially from the previous Plan.',
-  'Do not invent facts that the Goal, previous Plan, or revision do not contain.',
-  'You cannot approve a Plan, dispatch Workers, access repository tools, MCP or Vault, widen Goal authority, or terminalize the Goal.',
-].join(' ');
-
 /**
- * Dependencies that bind one pre-approval revision planner to the existing internal-agent runtime.
+ * Dependencies that bind Goal planning to the existing internal-agent runtime.
  */
-export interface PreApprovalGoalPlanRevisionPlannerOptions {
+export interface GoalPlanPlannerOptions {
   /** Current runtime configuration snapshot. */
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Existing logical Gateway dispatcher. */
@@ -79,32 +74,39 @@ export interface PreApprovalGoalPlanRevisionPlannerOptions {
 }
 
 /**
- * Creates the single pre-approval `goal.plan.propose` Tool.
+ * Creates the single `goal.plan.propose` Tool.
  *
  * @param previousPlan Exact previous Plan used by owner revision guards.
  * @param submit Closure that receives one owner-validated Plan.
  * @returns Model-visible Tool bound to the existing Goal Plan owner checks.
  */
 export function createGoalPlanProposeTool(
-  previousPlan: GoalPlanOutput,
-  submit: (plan: GoalPlanOutput) => void
+  previousPlan: GoalPlanOutput | null,
+  submit: (plan: GoalPlanOutput) => void,
+  sourceTaskEvidence: GoalPlannerInput['sourceTaskEvidence'] = null
 ): AgentTool {
   return {
     name: GOAL_PLAN_PROPOSE_TOOL_NAME,
     description:
-      'Submit one complete revised Goal Plan for later human approval. Arguments are the exact Goal Plan payload. This Tool cannot approve, dispatch Workers, or terminalize the Goal.',
+      'Submit one complete Goal Plan proposal for later human approval. Arguments are the exact Goal Plan payload. This Tool cannot approve, dispatch Workers, or terminalize the Goal.',
     inputSchema: GOAL_PLAN_PROPOSE_INPUT_SCHEMA,
     execute: async (value): Promise<AgentToolResult> => {
       try {
         const plan = GoalPlanOutputSchema.parse(value);
         assertValidGoalPlanGraph(plan.tasks);
-        assertApprovableGoalPlanRevision(plan, previousPlan);
+        if (plan.questions.length === 0) {
+          assertGoalPlanTaskDispositions(plan, sourceTaskEvidence?.facts ?? []);
+          if (sourceTaskEvidence) assertGoalPlanCompletedResultTreatment(plan, sourceTaskEvidence);
+        }
+        if (previousPlan && plan.questions.length === 0) {
+          assertApprovableGoalPlanRevision(plan, previousPlan);
+        }
         submit(plan);
         return {
           content: [
             {
               type: 'text',
-              text: 'Proposed Goal Plan passed revision checks.',
+              text: 'Proposed Goal Plan passed validation.',
             },
           ],
         };
@@ -133,11 +135,13 @@ export function createGoalPlanProposeTool(
  * @returns Schema-validated proposed Plan.
  * @throws GoalPlanRevisionError when the model does not submit a valid Plan.
  */
-export async function runPreApprovalGoalPlanRevision(input: {
+export async function runGoalPlanProposal(input: {
   readonly goal: GoalPlannerInput['goal'];
-  readonly previousPlan: GoalPlanOutput;
-  readonly previousPlanItemId: string;
-  readonly revisionText: string;
+  readonly sourceTaskEvidence?: GoalPlannerInput['sourceTaskEvidence'];
+  readonly clarification?: GoalPlannerInput['clarification'];
+  readonly previousPlan: GoalPlanOutput | null;
+  readonly previousPlanItemId: string | null;
+  readonly revisionText: string | null;
   readonly model: {
     readonly logicalModelId: string;
     readonly capabilities: readonly string[];
@@ -158,13 +162,17 @@ export async function runPreApprovalGoalPlanRevision(input: {
 }): Promise<GoalPlanOutput> {
   let proposed: GoalPlanOutput | null = null;
   const tools = [
-    createGoalPlanProposeTool(input.previousPlan, (plan) => {
-      proposed = plan;
-    }),
+    createGoalPlanProposeTool(
+      input.previousPlan,
+      (plan) => {
+        proposed = plan;
+      },
+      input.sourceTaskEvidence
+    ),
   ];
   const exit = await runInternalAgentLoop(
     {
-      systemPrompt: REVISION_SYSTEM_PROMPT,
+      systemPrompt: assembleBuiltInSystemPrompt('goal-orchestrator'),
       messages: [
         {
           role: 'user',
@@ -180,6 +188,8 @@ export async function runPreApprovalGoalPlanRevision(input: {
                 previousPlanItemId: input.previousPlanItemId,
                 previousPlan: input.previousPlan,
                 revision: input.revisionText,
+                sourceTaskEvidence: input.sourceTaskEvidence,
+                clarification: input.clarification ?? null,
               }),
             },
           ],
@@ -200,38 +210,34 @@ export async function runPreApprovalGoalPlanRevision(input: {
         ? 'goal_plan_revision_invalid'
         : 'goal_plan_revision_unavailable',
       exit.kind === 'failed' && exit.code === 'internal_agent_input_invalid'
-        ? 'Pre-approval Goal Plan revision Tool assembly is invalid.'
-        : 'Pre-approval Goal Plan revision model call failed.'
+        ? 'Goal Plan proposal Tool assembly is invalid.'
+        : 'Goal Plan proposal model call failed.'
     );
   }
   if (!proposed) {
     throw new GoalPlanRevisionError(
       'goal_plan_revision_invalid',
-      'Pre-approval Goal Plan revision did not propose a valid Plan.'
+      'Goal Orchestrator did not propose a valid Plan.'
     );
   }
   return proposed;
 }
 
 /**
- * Creates the GoalPlanner used after a recorded pre-approval revision.
+ * Creates the GoalPlanner used for initial and successor Plan proposals.
  *
  * @param options Existing profile, Gateway, and request bindings.
  * @returns Planner that runs one propose-only Orchestrator Turn.
  */
-export function createPreApprovalGoalPlanRevisionPlanner(
-  options: PreApprovalGoalPlanRevisionPlannerOptions
-): GoalPlanner {
+export function createGoalPlanPlanner(options: GoalPlanPlannerOptions): GoalPlanner {
   return async (input) => {
     if (
       !input.capture ||
-      !input.previousPlan ||
-      !input.previousPlanItemId ||
-      input.revisionText === undefined
+      (input.previousPlanItemId !== undefined) !== (input.previousPlan !== undefined)
     ) {
       throw new GoalPlanRevisionError(
         'goal_plan_revision_invalid',
-        'Pre-approval Goal Plan revision is missing its prior Plan or instruction.'
+        'Goal Plan proposal is missing admitted capture or predecessor lineage.'
       );
     }
 
@@ -257,15 +263,17 @@ export function createPreApprovalGoalPlanRevisionPlanner(
     ) {
       throw new GoalPlanRevisionError(
         'goal_plan_revision_unavailable',
-        'Goal Orchestrator has no admitted logical model for pre-approval Plan revision.'
+        'Goal Orchestrator has no admitted logical model for Plan proposal.'
       );
     }
 
-    return runPreApprovalGoalPlanRevision({
+    return runGoalPlanProposal({
       goal: input.goal,
-      previousPlan: input.previousPlan,
-      previousPlanItemId: input.previousPlanItemId,
-      revisionText: input.revisionText,
+      sourceTaskEvidence: input.sourceTaskEvidence ?? null,
+      clarification: input.clarification ?? null,
+      previousPlan: input.previousPlan ?? null,
+      previousPlanItemId: input.previousPlanItemId ?? null,
+      revisionText: input.revisionText ?? null,
       model: {
         logicalModelId: selection.logicalModel.id,
         capabilities: selection.logicalModel.capabilities,
@@ -275,7 +283,7 @@ export function createPreApprovalGoalPlanRevisionPlanner(
         ...selection.logicalModel.contextManagement,
         authority: 'openkit',
       },
-      limits: selection.profile?.limits ?? DEFAULT_REVISION_LIMITS,
+      limits: selection.profile?.limits ?? DEFAULT_PLAN_LIMITS,
       callProvider: createInternalAgentGatewayProvider({
         capture: input.capture,
         logicalModel: selection.logicalModel,
@@ -290,7 +298,7 @@ export function createPreApprovalGoalPlanRevisionPlanner(
         },
         usageEndpoint: 'responses',
         onDispatch: ({ providerId, usage }) => {
-          recordGoalPlanRevisionLlmUsage({
+          recordGoalPlanLlmUsage({
             authorityActor: options.authorityActor,
             coreDb: options.coreDb,
             logicalModelId: selection.logicalModel.id,
@@ -307,11 +315,11 @@ export function createPreApprovalGoalPlanRevisionPlanner(
 }
 
 /**
- * Records one Workspace-attributed LLM usage row after a successful pre-approval revision dispatch.
+ * Records one Workspace-attributed LLM usage row after a Goal Plan model dispatch.
  *
  * @param input Existing ledger bindings, Goal Thread lineage, and Gateway-reported usage.
  */
-function recordGoalPlanRevisionLlmUsage(input: {
+function recordGoalPlanLlmUsage(input: {
   readonly authorityActor: ActorRef;
   readonly coreDb: CoreDb;
   readonly logicalModelId: string;
@@ -336,7 +344,7 @@ function recordGoalPlanRevisionLlmUsage(input: {
       callId: `cap_${randomUUID()}`,
       requestId: null,
       serviceRef: 'llm-gateway',
-      summary: 'Goal Orchestrator pre-approval Plan revision LLM call.',
+      summary: 'Goal Orchestrator Plan proposal LLM call.',
       threadId: input.threadId,
       turnId: null,
       itemId: null,

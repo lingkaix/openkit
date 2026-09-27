@@ -18,7 +18,9 @@ import {
   goalReviewDecisionInput,
   selectCurrentGoalReview,
   useApproveGoalPlan,
+  useCreateGoalPlan,
   useGoalPlan,
+  useReviseGoalIntent,
   useReviseGoalPlan,
   useSubmitGoalReviewDecision,
 } from './data';
@@ -216,19 +218,60 @@ export function GoalReviewGate({ workspaceId, threadId, goal, readOnly }: GoalRe
  * after approval the same steps show live status chips.
  */
 export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProps) {
-  const preApproval = goal.status === 'planning' || goal.status === 'awaiting_plan_approval';
-  const planQuery = useGoalPlan(workspaceId, threadId, goal.goalId, goal.status);
+  const planQuery = useGoalPlan(workspaceId, threadId, goal.goalId);
   const approve = useApproveGoalPlan(workspaceId, threadId);
-  const revise = useReviseGoalPlan(workspaceId, threadId);
+  const create = useCreateGoalPlan(workspaceId, threadId, goal.goalId);
+  const reviseIntent = useReviseGoalIntent(workspaceId, threadId, goal.goalId);
+  const revise = useReviseGoalPlan(workspaceId, threadId, goal.goalId);
   const [spendGrant, setSpendGrant] = useState(false);
   const [pushGrant, setPushGrant] = useState(false);
   const [reviseOpen, setReviseOpen] = useState(false);
   const [revision, setRevision] = useState('');
+  const [intentOpen, setIntentOpen] = useState(false);
+  const [nextObjective, setNextObjective] = useState('');
+  const [intentRevision, setIntentRevision] = useState('');
+  const [intentScope, setIntentScope] = useState<'all' | 'named' | 'none'>('all');
+  const [selectedAffectedTaskIds, setSelectedAffectedTaskIds] = useState<string[]>([]);
 
-  const plan = planQuery.data?.plan;
+  const plan = planQuery.data?.pendingPlan;
+  const activePlan = planQuery.data?.activePlan;
   const planTasks = plan?.tasks;
-  const planItemId = planQuery.data?.planItemId;
-  const steps = buildDisplaySteps(goal, preApproval ? planTasks : undefined, preApproval);
+  const planItemId = planQuery.data?.pendingPlanItemId;
+  const steps = buildDisplaySteps(goal, planTasks, Boolean(plan));
+  const planningAction = planQuery.data?.planningAction;
+  const draftRevision = planQuery.data?.draftRevision;
+  const continuePlanning = planQuery.data?.continuePlanning;
+  const selectableAffectedTasks = planQuery.data?.selectableAffectedTasks ?? [];
+  const namedScopeValid =
+    selectedAffectedTaskIds.length > 0 &&
+    selectedAffectedTaskIds.every((id) =>
+      selectableAffectedTasks.some((task) => task.taskId === id)
+    );
+  const terminal = ['completed', 'blocked', 'aborted', 'failed'].includes(goal.status);
+
+  /** Submit exact intent scope: omission means all, an empty array means none. */
+  function submitIntentRevision() {
+    const objective = nextObjective.trim();
+    const revision = intentRevision.trim();
+    if (!objective || !revision || (intentScope === 'named' && !namedScopeValid)) return;
+    const affectedTaskIds =
+      intentScope === 'all'
+        ? undefined
+        : intentScope === 'none'
+          ? []
+          : selectableAffectedTasks
+              .filter((task) => selectedAffectedTaskIds.includes(task.taskId))
+              .map((task) => task.taskId);
+    reviseIntent.mutate(
+      { objective, revision, ...(affectedTaskIds === undefined ? {} : { affectedTaskIds }) },
+      {
+        onSuccess: () => {
+          setIntentOpen(false);
+          setIntentRevision('');
+        },
+      }
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -256,21 +299,150 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
         readOnly={readOnly}
       />
 
+      {!terminal && !readOnly ? (
+        <Card>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Eyebrow>Goal intent</Eyebrow>
+              <p className="mt-1 text-sm text-fg-muted">
+                Revise this Goal's objective. Remaining work waits for a Plan that addresses it.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onPress={() => {
+                setNextObjective(goal.objective);
+                setIntentScope('all');
+                setSelectedAffectedTaskIds([]);
+                setIntentOpen((open) => !open);
+              }}
+              isDisabled={reviseIntent.isPending}
+            >
+              Revise goal intent
+            </Button>
+          </div>
+          {intentOpen ? (
+            <div className="mt-3 flex flex-col gap-3">
+              <label htmlFor="revised-goal-objective" className="text-sm font-medium text-fg">
+                Revised objective
+              </label>
+              <textarea
+                id="revised-goal-objective"
+                rows={3}
+                value={nextObjective}
+                onChange={(event) => setNextObjective(event.target.value)}
+                className="w-full resize-y rounded-ok border border-border bg-card p-2 text-sm text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              />
+              <TextField
+                label="What changed and why"
+                value={intentRevision}
+                onChange={setIntentRevision}
+              />
+              <fieldset className="flex flex-col gap-2 text-sm text-fg">
+                <legend className="mb-1 font-medium">Current approved work to reassess</legend>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="intent-affected-scope"
+                    checked={intentScope === 'all'}
+                    onChange={() => setIntentScope('all')}
+                  />
+                  All remaining work
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="intent-affected-scope"
+                    checked={intentScope === 'named'}
+                    onChange={() => setIntentScope('named')}
+                    disabled={selectableAffectedTasks.length === 0}
+                  />
+                  Named Tasks
+                </label>
+                {intentScope === 'named' ? (
+                  <div className="ml-5 flex flex-col gap-1">
+                    {selectableAffectedTasks.map((task) => (
+                      <label key={task.taskId} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedAffectedTaskIds.includes(task.taskId)}
+                          onChange={(event) =>
+                            setSelectedAffectedTaskIds((current) =>
+                              event.target.checked
+                                ? [...current, task.taskId]
+                                : current.filter((id) => id !== task.taskId)
+                            )
+                          }
+                        />
+                        {task.title} ({task.taskId}, {task.status})
+                      </label>
+                    ))}
+                    {!namedScopeValid && selectedAffectedTaskIds.length > 0 ? (
+                      <p className="text-xs text-negative-fg">
+                        A selected Task is no longer available. Update the selection.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="intent-affected-scope"
+                    checked={intentScope === 'none'}
+                    onChange={() => setIntentScope('none')}
+                  />
+                  No current work
+                </label>
+              </fieldset>
+              {reviseIntent.isError ? (
+                <ErrorBanner message="Couldn't revise the Goal intent." />
+              ) : null}
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="quiet" onPress={() => setIntentOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onPress={submitIntentRevision}
+                  isDisabled={
+                    reviseIntent.isPending ||
+                    !nextObjective.trim() ||
+                    !intentRevision.trim() ||
+                    (intentScope === 'named' && !namedScopeValid)
+                  }
+                >
+                  Save revised intent
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
+
       <Card>
         <Eyebrow>Plan</Eyebrow>
-        {preApproval && planQuery.isError ? (
+        {planQuery.isError ? (
           <div className="mt-3">
             <ErrorBanner
               message="Couldn't load the current Goal plan."
               onRetry={() => void planQuery.refetch()}
             />
           </div>
-        ) : preApproval && planQuery.isLoading ? (
+        ) : planQuery.isLoading ? (
           <div className="mt-3" aria-busy="true">
             <Skeleton lines={4} />
           </div>
-        ) : preApproval && plan ? (
+        ) : plan ? (
           <div className="mt-3 flex flex-col gap-3">
+            {planQuery.data?.pendingPlanItemSummary ? (
+              <section aria-label="Proposal context" className="text-sm text-fg">
+                <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                  Proposal context
+                </p>
+                <p className="mt-1 whitespace-pre-wrap">{planQuery.data.pendingPlanItemSummary}</p>
+              </section>
+            ) : null}
             <details className="text-sm text-fg">
               <summary className="cursor-pointer text-sm text-fg-muted">Plan details</summary>
               <div className="mt-2 flex min-w-0 flex-col gap-3">
@@ -489,6 +661,38 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
                 );
               })}
             </ol>
+            {plan.taskDispositions.length > 0 ? (
+              <section
+                aria-label="Remaining work changes"
+                className="border-t border-separator pt-3"
+              >
+                <p className="text-xs font-bold uppercase tracking-eyebrow text-fg-muted">
+                  Remaining work changes
+                </p>
+                <ol className="mt-2 flex flex-col gap-3">
+                  {plan.taskDispositions.map((disposition) => {
+                    const predecessor = activePlan?.tasks.find(
+                      (task) => task.taskId === disposition.taskId
+                    );
+                    const successor = plan.tasks.find(
+                      (task) => task.taskId === disposition.successorTaskId
+                    );
+                    return (
+                      <li key={disposition.taskId} className="text-sm text-fg">
+                        <p className="font-medium">
+                          {predecessor?.title ?? disposition.taskId} →{' '}
+                          {successor?.title ?? 'Ends without successor'}
+                        </p>
+                        <p className="mt-0.5 text-xs text-fg-muted">
+                          {disposition.taskId} → {disposition.successorTaskId ?? 'none'}
+                        </p>
+                        <p className="mt-1 whitespace-pre-wrap">{disposition.reason}</p>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </section>
+            ) : null}
           </div>
         ) : steps.length === 0 ? (
           <p className="mt-3 text-sm text-fg-muted">No plan steps yet.</p>
@@ -510,7 +714,30 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
         )}
       </Card>
 
-      {preApproval ? (
+      {plan && activePlan ? (
+        <Card>
+          <Eyebrow>Current approved work</Eyebrow>
+          <p className="mt-1 text-xs text-fg-muted">
+            This Plan remains active until the candidate is approved. Affected Tasks wait for the
+            revision.
+          </p>
+          <ol className="mt-3 flex flex-col">
+            {activePlan.tasks.map((task) => (
+              <li
+                key={task.taskId}
+                className="flex items-center gap-3 border-t border-separator py-2.5 first:border-t-0"
+              >
+                <span className="min-w-0 flex-1 text-sm text-fg">{task.title}</span>
+                {goal.currentTask?.taskId === task.taskId ? (
+                  <StatusChip tone="informative">{goal.currentTask.status}</StatusChip>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        </Card>
+      ) : null}
+
+      {plan ? (
         <Card>
           <div className="flex flex-col gap-0.5">
             <Eyebrow>Autonomy grants</Eyebrow>
@@ -541,27 +768,142 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
         </Card>
       ) : null}
 
-      {preApproval && planItemId && !readOnly ? (
+      {planItemId && planQuery.data?.canApprovePendingPlan && !readOnly ? (
         <div className="flex items-center gap-3 rounded-ok-lg bg-info-bg px-4 py-3">
           <p className="min-w-0 flex-1 text-sm font-medium text-info-fg">
-            Review the plan, then approve to start execution — or adjust it.
+            Review this exact Plan before it authorizes affected work.
           </p>
-          <Button
-            size="sm"
-            variant="outline"
-            onPress={() => setReviseOpen((v) => !v)}
-            isDisabled={revise.isPending}
-          >
-            Adjust plan
-          </Button>
+          {planningAction === 'await_approval' ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onPress={() => setReviseOpen((v) => !v)}
+              isDisabled={revise.isPending}
+            >
+              Adjust plan
+            </Button>
+          ) : null}
           <Button
             size="sm"
             onPress={() => approve.mutate(planItemId)}
-            isDisabled={approve.isPending}
+            isDisabled={approve.isPending || revise.isPending}
           >
             Approve plan
           </Button>
         </div>
+      ) : null}
+
+      {planItemId &&
+      !planQuery.data?.canApprovePendingPlan &&
+      planningAction === 'await_approval' &&
+      !readOnly ? (
+        <Card>
+          <Eyebrow>Plan needs a new draft</Eyebrow>
+          <p className="mt-1 text-sm text-fg-muted">
+            This candidate is no longer eligible for approval. Request a revision from the current
+            Goal state.
+          </p>
+          <Button size="sm" variant="outline" onPress={() => setReviseOpen((open) => !open)}>
+            Request revised plan
+          </Button>
+        </Card>
+      ) : null}
+
+      {!readOnly && !terminal && planQuery.data?.activePlanItemId && planningAction === 'none' ? (
+        <Button size="sm" variant="outline" onPress={() => setReviseOpen((open) => !open)}>
+          Request revised plan
+        </Button>
+      ) : null}
+
+      {approve.isError ? (
+        <ErrorBanner
+          message="Couldn't approve this Plan. Refresh its status before retrying."
+          onRetry={() => void planQuery.refetch()}
+        />
+      ) : null}
+      {revise.isError ? (
+        <ErrorBanner
+          message="Couldn't request that Plan revision. Refresh its status before retrying."
+          onRetry={() => void planQuery.refetch()}
+        />
+      ) : null}
+
+      {!readOnly && !terminal && planningAction === 'draft_revision' && draftRevision ? (
+        <Card>
+          <Eyebrow>Revised Plan requested</Eyebrow>
+          <p className="mt-1 text-sm text-fg-muted">
+            The revision instruction is recorded. Draft its successor Plan for review.
+          </p>
+          <Button
+            size="sm"
+            onPress={() =>
+              create.mutate({
+                previousPendingPlanItemId: planItemId ?? null,
+                source: draftRevision.itemId,
+              })
+            }
+            isDisabled={create.isPending}
+          >
+            Draft revised plan
+          </Button>
+        </Card>
+      ) : null}
+      {!readOnly && !terminal && planningAction === 'retry' ? (
+        <Card>
+          <Eyebrow>Planning needs another attempt</Eyebrow>
+          <p className="mt-1 text-sm text-fg-muted">
+            The last attempt failed. Start a new request from the current Goal.
+          </p>
+          <Button
+            size="sm"
+            onPress={() =>
+              create.mutate({ previousPendingPlanItemId: planItemId ?? null, source: 'retry' })
+            }
+            isDisabled={create.isPending}
+          >
+            Retry planning
+          </Button>
+        </Card>
+      ) : null}
+      {planningAction === 'answer_question' ? (
+        <Card>
+          <Eyebrow>Planning question</Eyebrow>
+          <p className="mt-1 text-sm text-fg-muted">
+            Answer the open question in the Thread lens before planning continues.
+          </p>
+          <Button size="sm" variant="outline" onPress={() => void planQuery.refetch()}>
+            Refresh planning status
+          </Button>
+        </Card>
+      ) : null}
+      {!readOnly && !terminal && planningAction === 'continue_planning' && continuePlanning ? (
+        <Card>
+          <Eyebrow>Planning answer recorded</Eyebrow>
+          <p className="mt-1 text-sm text-fg-muted">
+            Continue from the answered question with a new planning request.
+          </p>
+          <Button
+            size="sm"
+            onPress={() =>
+              create.mutate({
+                previousPendingPlanItemId: planItemId ?? null,
+                source: continuePlanning.responseItemId,
+              })
+            }
+            isDisabled={create.isPending}
+          >
+            Continue planning
+          </Button>
+        </Card>
+      ) : null}
+      {planningAction === 'in_progress' ? (
+        <p className="text-sm text-fg-muted">Planning is in progress.</p>
+      ) : null}
+      {create.isError ? (
+        <ErrorBanner
+          message="Couldn't draft the Plan. Refresh its status before trying again."
+          onRetry={() => void planQuery.refetch()}
+        />
       ) : null}
 
       {reviseOpen && !readOnly ? (
@@ -584,12 +926,18 @@ export function PlanLens({ workspaceId, threadId, goal, readOnly }: PlanLensProp
               onPress={() => {
                 const trimmed = revision.trim();
                 if (!trimmed) return;
-                revise.mutate(trimmed, {
-                  onSuccess: () => {
-                    setRevision('');
-                    setReviseOpen(false);
+                revise.mutate(
+                  {
+                    revision: trimmed,
+                    predecessorPlanItemId: planItemId ?? planQuery.data?.activePlanItemId ?? null,
                   },
-                });
+                  {
+                    onSuccess: () => {
+                      setRevision('');
+                      setReviseOpen(false);
+                    },
+                  }
+                );
               }}
               isDisabled={revise.isPending || !revision.trim()}
             >

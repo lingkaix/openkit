@@ -353,12 +353,20 @@ export const ThreadGoalPlanTaskSchema = z.object({
   escalationConditions: z.array(z.string().min(1).max(1_000)).max(20),
 });
 
+/** Explicit disposition of one unfinished active-Plan Task in a successor Plan. */
+export const ThreadGoalPlanTaskDispositionSchema = z.object({
+  taskId: z.string().min(1).max(120),
+  successorTaskId: z.string().min(1).max(120).nullable(),
+  reason: z.string().min(1).max(2_000),
+});
+
 /** Reviewable Goal Mode plan payload exchanged by App API routes. */
 export const ThreadGoalPlanSchema = z.object({
   schemaVersion: z.literal(1),
   goalSummary: z.string().min(1).max(2_000),
   assumptions: z.array(z.string().min(1).max(1_000)).max(20),
   tasks: z.array(ThreadGoalPlanTaskSchema).min(1).max(50),
+  taskDispositions: z.array(ThreadGoalPlanTaskDispositionSchema).max(50),
   risks: z.array(z.string().min(1).max(1_000)).max(20),
   questions: z.array(z.string().min(1).max(1_000)).max(20),
   verificationApproach: z.string().min(1).max(2_000),
@@ -367,8 +375,8 @@ export const ThreadGoalPlanSchema = z.object({
 /** Response payload returned after creating a Goal Mode plan. */
 export const GoalPlanPlannerSummarySchema = z.object({
   mode: z.literal('goal'),
-  sourceAgentId: z.literal('worker-coordinator'),
-  confidence: z.number().min(0).max(1),
+  sourceAgentId: z.enum(['worker-coordinator', 'goal-orchestrator']),
+  confidence: z.number().min(0).max(1).nullable(),
   rationale: z.string().min(1),
   contextRefs: z.array(TaskModeContextRefSchema).min(1).max(50),
   requiredApprovals: z.array(z.string().min(1)).max(20),
@@ -383,38 +391,121 @@ export const CreateThreadGoalPlanRequestSchema = z
   .strict();
 
 /** Response payload returned after creating a Goal Mode plan. */
-export const CreateThreadGoalPlanResponseSchema = z.object({
-  status: z.literal('awaiting_plan_approval'),
-  goal: ThreadGoalSummarySchema,
-  planItemId: z.string().min(1),
-  planner: GoalPlanPlannerSummarySchema,
-  plan: ThreadGoalPlanSchema,
-});
+export const CreateThreadGoalPlanResponseSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('awaiting_plan_approval'),
+    goal: ThreadGoalSummarySchema,
+    planItemId: z.string().min(1),
+    planner: GoalPlanPlannerSummarySchema,
+    plan: ThreadGoalPlanSchema,
+  }),
+  z.object({
+    status: z.literal('awaiting_user'),
+    goal: ThreadGoalSummarySchema,
+    questionItemId: z.string().min(1),
+  }),
+]);
 
 /** Current Thread Goal Plan read projection. Absent current Plan is explicit nulls. */
 export const ThreadGoalPlanReadResponseSchema = z
   .object({
     goal: ThreadGoalSummarySchema.nullable(),
-    planItemId: z.string().min(1).nullable(),
-    plan: ThreadGoalPlanSchema.nullable(),
+    activePlanItemId: z.string().min(1).nullable(),
+    activePlan: ThreadGoalPlanSchema.nullable(),
+    pendingPlanItemId: z.string().min(1).nullable(),
+    pendingPlan: ThreadGoalPlanSchema.nullable(),
+    pendingPlanItemSummary: z.string().min(1).nullable(),
+    selectableAffectedTasks: z.array(
+      z.object({
+        taskId: z.string().min(1),
+        title: z.string().min(1),
+        status: z.enum(['pending', 'ready', 'running', 'reviewing']),
+      })
+    ),
+    canRunStep: z.boolean(),
+    canApprovePendingPlan: z.boolean(),
+    planningAction: z.enum([
+      'create',
+      'draft_revision',
+      'retry',
+      'answer_question',
+      'continue_planning',
+      'await_approval',
+      'in_progress',
+      'none',
+    ]),
+    draftRevision: z.object({ itemId: z.string().min(1), requestId: z.string().min(1) }).nullable(),
+    continuePlanning: z
+      .object({ questionItemId: z.string().min(1), responseItemId: z.string().min(1) })
+      .nullable(),
   })
   .superRefine((value, ctx) => {
-    const hasPlan = value.plan !== null;
-    if (hasPlan !== (value.planItemId !== null)) {
+    if ((value.activePlan !== null) !== (value.activePlanItemId !== null)) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Current Goal plan identity and payload must be present together.',
-        path: ['planItemId'],
+        message: 'Active Goal Plan identity and payload must be present together.',
+        path: ['activePlanItemId'],
       });
     }
-    if (hasPlan && value.goal === null) {
+    if ((value.pendingPlan !== null) !== (value.pendingPlanItemId !== null)) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Current Goal plan requires the owning Goal summary.',
+        message: 'Pending Goal Plan identity and payload must be present together.',
+        path: ['pendingPlanItemId'],
+      });
+    }
+    if ((value.pendingPlanItemSummary !== null) !== (value.pendingPlanItemId !== null)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Pending Plan summary requires the pending Plan identity.',
+        path: ['pendingPlanItemSummary'],
+      });
+    }
+    if ((value.activePlan || value.pendingPlan) && value.goal === null) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Goal Plan requires the owning Goal summary.',
         path: ['goal'],
       });
     }
+    if ((value.planningAction === 'draft_revision') !== (value.draftRevision !== null)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Revision action requires exact request lineage.',
+        path: ['draftRevision'],
+      });
+    }
+    if ((value.planningAction === 'continue_planning') !== (value.continuePlanning !== null)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Planning continuation requires exact answered Gate lineage.',
+        path: ['continuePlanning'],
+      });
+    }
+    if (value.canApprovePendingPlan && value.pendingPlanItemId === null) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Approval eligibility requires a pending Goal Plan.',
+        path: ['canApprovePendingPlan'],
+      });
+    }
   });
+
+/** Request body for revising the objective inside one continuous Goal. */
+export const ReviseThreadGoalIntentRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    objective: z.string().min(1).max(4_000),
+    revision: z.string().min(1).max(4_000),
+    affectedTaskIds: z.array(z.string().min(1)).max(50).optional(),
+  })
+  .strict();
+
+/** Response after one durable Goal intent revision. */
+export const ReviseThreadGoalIntentResponseSchema = z.object({
+  goal: ThreadGoalSummarySchema,
+  intentItemId: z.string().min(1),
+});
 
 /** Request body for approving one Goal Mode plan. */
 export const ApproveThreadGoalPlanRequestSchema = z
@@ -462,6 +553,17 @@ export const GoalStepContextAssemblySchema = z.object({
 export const RunThreadGoalStepRequestSchema = z
   .object({
     requestId: z.string().min(1),
+    refinement: z
+      .object({
+        activePlanItemId: z.string().min(1),
+        taskId: z.string().min(1),
+        reason: z.string().min(1).max(2_000),
+        evidenceItemIds: z.array(z.string().min(1)).max(50),
+        evidenceArtifactIds: z.array(z.string().min(1)).max(50),
+        changedAction: z.string().min(1).max(2_000),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -814,6 +916,10 @@ export type ThreadGoalPlanTask = z.infer<typeof ThreadGoalPlanTaskSchema>;
 export type ThreadGoalPlan = z.infer<typeof ThreadGoalPlanSchema>;
 /** Current Thread Goal Plan read projection. */
 export type ThreadGoalPlanReadResponse = z.infer<typeof ThreadGoalPlanReadResponseSchema>;
+/** Request body for revising one continuous Goal intent. */
+export type ReviseThreadGoalIntentRequest = z.infer<typeof ReviseThreadGoalIntentRequestSchema>;
+/** Response after one durable Goal intent revision. */
+export type ReviseThreadGoalIntentResponse = z.infer<typeof ReviseThreadGoalIntentResponseSchema>;
 /** Request body for creating one Goal Mode plan. */
 export type CreateThreadGoalPlanRequest = z.infer<typeof CreateThreadGoalPlanRequestSchema>;
 /** Response payload returned after creating a Goal Mode plan. */
