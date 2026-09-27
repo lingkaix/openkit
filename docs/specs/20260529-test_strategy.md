@@ -184,7 +184,7 @@ Web tests must prove the UI consumes current shapes without preserving removed f
 
 For behavior crossing package boundaries, update every affected producer and consumer, but test each distinct invariant only where it can fail; for a crossing between different owners, that place is the composition test above. A schema fixture may prove a shared shape for several consumers; add NanoCore, client, Web, or browser tests only when that layer adds behavior or a distinct failure boundary.
 
-When a contract intentionally breaks during internal development, tests should reject the removed shape instead of preserving compatibility coverage.
+When a contract of a first-party surface that ships with each release intentionally breaks, tests should reject the removed shape instead of preserving compatibility coverage. A change to retained data instead carries the migration and data-continuity evidence named in `docs/core/contract-evolution.md`.
 
 ## L3 NanoCore Black-box Integration And E2E
 

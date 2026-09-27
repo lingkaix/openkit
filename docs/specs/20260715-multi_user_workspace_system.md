@@ -664,7 +664,7 @@ The existing non-Web multi-user responsibility is implemented: owner-independent
 
 This procedure records the already implemented owner-independent storage migration and its former role-based schema. It is implementation evidence, not the new membership cutover plan or permission to reintroduce access levels. Preserve its storage-integrity and no-data-loss criteria; the new cutover removes obsolete role fields and uses the target schema and acceptance above/below.
 
-The migration is offline, explicit, one-way, and internal-development only. Its invocation owner is one thin dedicated stopped-process operator CLI. The CLI invokes this procedure directly; it is not a boot phase, a restore mode, a reusable migration runner, or a test harness.
+The migration is offline, explicit, one-way, and limited to this pre-cutover transition. Its invocation owner is one thin dedicated stopped-process operator CLI. The CLI invokes this procedure directly; it is not a boot phase, a restore mode, a reusable migration runner, or a test harness.
 
 ### Preconditions
 

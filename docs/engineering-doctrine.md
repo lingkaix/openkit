@@ -15,6 +15,10 @@ No participant is assumed infallible. Engineers can approve a poor decomposition
 
 Long-horizon work cannot rely on one uninterrupted model context. Repeated compression and accumulated implementation detail can narrow attention even while every local step looks compliant. Direction must survive in source intent, append-only recorded decisions, and direct artifacts; working facts and methods stay cheap to revise. Independent fresh contexts can recover neglected premises and alternatives, but freshness alone proves neither independence nor correctness.
 
+## Collaboration Across Time
+
+Code, comments, tests, and architecture documents are a collaboration medium between present authors and future maintainers. Language-standard documentation of functions, interfaces, and other changed entities should preserve the context needed to use and change them correctly. A description that merely repeats the syntax cannot explain why a constraint exists, what could break if it changes, or when a workaround can disappear. Root AGENTS.md CODEDOC-002 owns the required context and debt traceability; the [engineer's decision](decisions/20260928-maintainer_context_and_debt_traceability.md) records its rationale. Architectural rules belong in their confirmed Core or specification owner, while decision records retain reasons and alternatives.
+
 ## Stable Direction, Plastic Method
 
 User outcome, non-negotiables, acceptance, authority, and strict-effect boundaries anchor a task. Decomposition, role composition, test order, probes, correction strategy, and intermediate record shape are methods. Treating methods as permanent authority blocks learning; treating intent as a working guess causes drift.

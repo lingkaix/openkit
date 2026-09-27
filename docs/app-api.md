@@ -17,7 +17,7 @@ Calibrated premises about scope and priority for this layer, formed from how the
 
 The App API exists to serve this repository's own Web UI, CLI, and Skill within one release, so it is optimized for reducing round trips and matching product workflows rather than for external stability.
 
-Rests on: every first-party consumer shipping in the same release as the server, per `docs/core/contract-evolution.md`; the internal-development posture in root `AGENTS.md` that removes backward-compatibility obligations; and no third-party integrator depending on these endpoints today.
+Rests on: every first-party consumer shipping in the same release as the server, per `docs/core/contract-evolution.md`; root `AGENTS.md` NONNEG-001, which places compatibility obligations on retained data rather than on release-coupled APIs; and no third-party integrator depending on these endpoints today.
 
 Overturned by: a consumer that ships on its own schedule — a published SDK, a customer integration, or a partner surface. At that point the release-coupled premise fails, and versioning and deprecation become contract questions for `docs/core/contract-evolution.md` rather than preferences stated here.
 

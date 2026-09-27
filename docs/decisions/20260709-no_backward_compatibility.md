@@ -1,5 +1,6 @@
 ---
-status: Accepted
+status: Superseded
+superseded-by: docs/decisions/20260928-compatibility_rests_on_data.md
 date: "2026-07-09"
 decider: Engineer
 ---

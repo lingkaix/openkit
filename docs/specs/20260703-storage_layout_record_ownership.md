@@ -524,7 +524,7 @@ Records without sufficient lineage may be stored as quarantined evidence but mus
 
 ## Migration Posture
 
-Because OpenKit is in active internal development, the clean target should win over legacy preservation.
+This migration moves pre-baseline storage, so the clean target should win over legacy preservation.
 
 The current migration does not need old-version compatibility.
 
@@ -567,7 +567,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - Workspace runtime, review, evidence, and log subdirectories are materialized by the layout helper, so later worker-session, review, evidence-import, and log writers do not invent private directory roots.
 - Workspace `sources/` should copy material when replay, audit, review, or user upload semantics require local evidence. It should store references when an external system remains the source of truth or copying would be unsafe, excessive, or policy-forbidden.
 - Future storage additions are additive by default. Unknown optional fields and derived directories may be ignored, but unsupported required features and unknown authority-bearing canonical record families must fail closed.
-- Current internal migration does not require compatibility with old internal storage layouts.
+- The current pre-baseline migration does not require compatibility with old internal storage layouts; changes after the baseline keep retained data usable under Retained Data Continuity in `docs/core/contract-evolution.md`.
 
 ## Deferred / Future Work
 

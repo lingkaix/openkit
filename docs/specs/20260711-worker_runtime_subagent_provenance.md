@@ -412,7 +412,7 @@ Rejected. Two concrete needs do not justify a new framework. A bounded raw strea
 
 ## Rollout / Migration Plan
 
-OpenKit is in internal development, so the clean target replaces the incomplete worker path without compatibility aliases.
+The worker path ships with each release, so the clean target replaces the incomplete worker path without compatibility aliases.
 
 1. Add failing AEP, route-token separation, `inference.local`, `/inference/*`, cancellation, compression, flow-control, and direct-egress tests for the authenticated worker inference path.
 2. Align the worker image and generated schema evidence on Codex 0.153.4, then stop implementation if the separately governed stock RelayStream plus nested standard HTTP/2 feasibility proof fails or is indeterminate.

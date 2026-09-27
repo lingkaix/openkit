@@ -747,7 +747,7 @@ Rejected. The monorepo root package currently uses `0.0.0`, and OpenKit release 
 12. Add GHCR publish jobs to `.github/workflows/ci.yml` or a dedicated image workflow that is triggered by the same release tags and depends on the existing release gate.
 13. After the migration is complete, remove root-level Dockerfiles and stale staging-specific script names.
 
-Because OpenKit is in active internal development, no permanent compatibility aliases are required for old Dockerfile paths, old image names, or old staging script names.
+Dockerfiles, image names, and staging scripts ship with each release, so no permanent compatibility aliases are required for old Dockerfile paths, old image names, or old staging script names.
 
 ## Testing Strategy / Acceptance Criteria
 

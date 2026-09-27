@@ -69,7 +69,7 @@ Work Resource Class 2 and Work Resource Class 3 are deferred boundary definition
 - Do not create a universal resource, feedback, locator, document, editor, workbench, or connector abstraction.
 - Do not build native media, design, CAD, project-file, or external-system editing in this phase.
 - Do not implement Work Resource Class 2, Work Resource Class 3, arbitrary external writeback, CRDT, operational transformation, real-time multi-user coediting, or live mutation of an active worker filesystem.
-- Do not preserve backward compatibility for repository-owned internal shapes replaced during implementation.
+- Do not preserve backward compatibility for repository-owned internal shapes replaced during implementation; retained data stays usable under Retained Data Continuity in `docs/core/contract-evolution.md`.
 
 ## Personal Scope Projection
 

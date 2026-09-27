@@ -67,7 +67,7 @@ The protocol promotion is limited to a stable `StopReason` enum and a rule that 
 
 All other pieces begin in `apps/nanocore`: the shared Internal Agent Loop's Provider-call reliability, runtime checkpoints, context package projection, accepted-request delivery, and worker-turn stop policy.
 
-Because this repository is still in internal development, implementation may break app-local shapes where that gives a cleaner design.
+Implementation may break app-local shapes where that gives a cleaner design; retained records among them stay usable under Retained Data Continuity in `docs/core/contract-evolution.md`.
 
 ### Reliability Posture
 

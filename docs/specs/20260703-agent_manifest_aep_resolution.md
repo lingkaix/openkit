@@ -248,7 +248,7 @@ Optional extension fields must be namespaced and must not become the only place 
 
 ## Manifest Evolution Rules
 
-General authority-bearing field classification and required-feature fail-closed rejection are owned by `docs/specs/20260703-schema_evolution_record_envelope.md`. This internal-development contract provides no older-reader compatibility obligation.
+General authority-bearing field classification and required-feature fail-closed rejection are owned by `docs/specs/20260703-schema_evolution_record_envelope.md`. This contract provides no older-reader compatibility obligation: an older reader need not accept a newer manifest. Existing manifests stay usable under Retained Data Continuity in `docs/core/contract-evolution.md`.
 
 This spec owns only the manifest-specific classification:
 
@@ -533,12 +533,12 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - Scale fields in manifests are intent. Scheduler records decide actual placement, queueing, reuse, and capacity.
 - Host execution is not a valid worker AEP backend target.
 - Workspace-scoped AEP snapshot metadata belongs in workspace-owned storage. Runtime/session directories may hold generated file-backed materialization copies and backend receipts.
-- Compact or historical manifest shapes do not need compatibility preservation in this internal development phase.
+- Compact or historical manifest shapes from before the accepted baseline are not preserved.
 - Workspace-local agent definitions may exist only as policy-reviewed `AgentManifest` proposals and accepted workspace-scoped `AgentManifest` catalog entries. Unreviewed workspace-local files are never launch contracts.
 - Authored Skill and MCP references resolve to exact versions under their independent catalog owners. Ranges are outside this target; Plugin expansion does not change component authority or the current MCP selection constraint.
 - Scale intent fields remain preferences or upper bounds; scheduler records own concrete placement, queueing, reuse, warm-pool realization, and capacity.
 - Product-visible readiness remediation hints must be redacted and action-oriented.
-- Manifest evolution changes the accepted current schema explicitly. Unknown fields and unsupported required features fail closed; no older-shape compatibility path is required.
+- Manifest evolution changes the accepted current schema explicitly. Unknown fields and unsupported required features fail closed; no permanent older-shape reader is required, and a schema change keeps existing manifests usable by additive evolution or one-way migration.
 - Authority-bearing manifest additions must declare required features, minimum Core version, required backend capabilities, or equivalent required semantics.
 
 ## Deferred / Future Work

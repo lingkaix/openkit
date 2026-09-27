@@ -2,6 +2,8 @@
 
 This file is the concise, always-loaded execution contract for work in this repository.
 
+[FIRST-001] [First Principles](docs/decisions/20260928-first_principles_first.md): in discussion, decisions, and design, identify the essential user need, desired outcome, and genuine constraints; derive the best justified design and a practical implementation path from them. Existing architecture and implementation are evidence, not limits on the design space. Do not compromise the target merely to preserve current code or compatibility. Reasoning beyond the current design does not authorize changing accepted owners without AUTH-001.
+
 ## Authority & Precedence
 
 - [AUTHORITY-001] Root `AGENTS.md` owns repository execution; Core and accepted specifications own design; `docs/documentation-model.md` owns document types and precedence; `docs/change-execution.md` owns material-work coordination; `docs/verification-instruments.md` owns evidence quality; `docs/toolchain.md` owns setup and dependency procedure; local guides own local workflow; change and audit records are evidence, never design authority.
@@ -13,8 +15,8 @@ This file is the concise, always-loaded execution contract for work in this repo
 
 ## Non-negotiables
 
-- [NONNEG-001] 我们的项目处在内部开发中，因此在做设计、决策、实现和修改时，不要考虑任何向后兼容的问题
-- [COMPAT-001] NONNEG-001 removes obligations toward old data and old callers; it does not license churn of settled mechanisms. Design records and configuration so that an older reader tolerates safely ignorable unknown fields while unknown required or authority-bearing semantics fail closed. `docs/core/contract-evolution.md` owns stability classes and extension tolerance.
+- [NONNEG-001] 兼容义务只落在数据上：服务器留存的数据（包括配置文件）在系统功能与实现方式变化后必须仍可继续使用。数据之上随系统一同发布的第一方 API、协议线格式、客户端与实现不承担兼容义务，另行接受的契约义务除外；重构时直接删除过时实现，禁止新增兼容层、deprecated shim 或双写逻辑。
+- [COMPAT-001] NONNEG-001's data obligation is data continuity: retained canonical records, including persisted protocol records, and authored configuration stay usable now, and SQLite source-of-truth records from the first release. Extend data additively or carry it forward by a one-way migration under an accepted design, never a permanent legacy reader or dual write. Core semantics stay Durable while projections change. Design records and configuration so an older reader tolerates safely ignorable unknown fields in owner-defined tolerant locations, while unknown required or authority-bearing semantics fail closed. Do not churn settled mechanisms without a demonstrated design need. `docs/core/contract-evolution.md` owns stability classes, data continuity, and extension tolerance.
 - [LANG-001] Repository code, comments, and documentation MUST be English Markdown where documentation applies. The two Chinese meta-instructions in this file and localized manuals are the only exceptions.
 - [LANG-002] `skills/openkit-ops/references/` follows the localized manual rules in `docs/documentation-model.md`.
 - [NONNEG-002] 在输出任何文本时，禁止在一个完整的语句或段落内插入换行符
@@ -56,6 +58,7 @@ Apply these twelve principles as judgments, not as a mandatory workflow:
 - [QUALITY-003] Prevent Over-engineering: add no entity, dependency, option, abstraction, wrapper, runner, durable state, or compatibility path without a present need. Do not deduplicate code that only looks similar or predict variants that do not exist. Reuse an existing owner before creating a parallel one.
 - [SCOPE-012] Keep failures and corrections local. Do not silently absorb adjacent improvements. When evidence defeats the premise or repeated method, reframe instead of adding another procedural container around the same work.
 - [OM-009] Keep affected owners, producers, and consumers aligned. When observable behavior or a contract changes, change its owning criterion first or in the same change; an implementation-only change edits no normative document. Document changed code entities using the language-standard style, and update the local guide when an app or package changes.
+- [CODEDOC-002] Code, comments, tests, and architecture documents preserve context for future maintainers. Document non-obvious design decisions, compatibility constraints, known defects, and temporary solutions with reasons, affected scope, risks, and removal conditions (or why removal does not apply). Link technical debt to a traceable task. After engineer confirmation, place key architectural rules in Core or specifications and their rationale in decision records; link rather than duplicate. Comments explain purpose and constraints, not merely restate code.
 - [TEST-006] After implementation, inspect simplicity, cohesion, duplication, authority alignment, and direct evidence. Consider Code Smells as diagnostic clues: identify the concrete maintenance cost or behavior risk before proposing a refactor. An acceptor MUST inspect the actual diff, bytes, or named execution output; a producer report cannot alone constitute acceptance.
 - [CHECK-019] Run focused lint, typecheck, tests, and build checks in proportion to the changed slice, reporting exact results. Full gates run only when the touched surface, accepted plan, release boundary, or engineer requires them.
 

@@ -147,7 +147,7 @@ These deltas remain recorded here as the stack-owned source for the reconciled `
 
 ## Rollout / Migration Plan
 
-Internal development: no backward-compatibility layers are preserved; the clean target wins.
+The Web UI ships with each release: no backward-compatibility layers are preserved; the clean target wins.
 
 1. Keep the `DESIGN.md` projection aligned with the reconciliation deltas above.
 2. Author the React + Spectrum + Tailwind scaffold cookbook and deprecate `spa-solid-vite.md` for the Web UI default.

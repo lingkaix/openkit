@@ -9,7 +9,7 @@ kind: boundary
 
 This spec owns the package boundary between `@openkit/protocol`, `@openkit/app-api-schemas`, `@openkit/core-client`, NanoCore App API routes, and Web UI client consumption.
 
-It owns the composed client surface, schema package split, typed client grouping, transport validation rules, and the removal of flat internal-development aliases.
+It owns the composed client surface, schema package split, typed client grouping, transport validation rules, and the removal of flat legacy aliases.
 
 ## Does Not Own
 
@@ -135,7 +135,7 @@ NanoCore exposes:
 
 `@openkit/app-api-schemas` owns the strict target catalog, structured request, and accepted response schemas defined by `docs/specs/20260831-unified_conversation_composer.md`. The client exposes `client.app.listConversationTargets(workspaceId)` and `client.app.submitConversationTurn(workspaceId, threadId, input)`, inserts a request identity when omitted, and returns only schema-validated product fields.
 
-The internal-development cutover removes `StartChatModeRequestSchema`, `StartChatModeResponseSchema`, `client.app.startChatMode`, the old thread `/chat` route, and the `chat.start` operation rather than retaining aliases. Direct Task, Goal, Knowledge Manager, and Core operations remain because they serve callers outside the Composer.
+The cutover removes `StartChatModeRequestSchema`, `StartChatModeResponseSchema`, `client.app.startChatMode`, the old thread `/chat` route, and the `chat.start` operation rather than retaining aliases. Direct Task, Goal, Knowledge Manager, and Core operations remain because they serve callers outside the Composer.
 
 ## Action Center Slice
 
@@ -176,9 +176,9 @@ Goal Mode client methods include summary retrieval, start, plan creation, plan a
 
 The deterministic test supervise-step route remains outside the public product client surface.
 
-## Internal Development Cleanup Policy
+## Alias Cleanup Policy
 
-This is an internal-development breaking change.
+This is a breaking change to release-coupled surfaces.
 
 Removed aliases and old NanoCore response shapes are not preserved.
 

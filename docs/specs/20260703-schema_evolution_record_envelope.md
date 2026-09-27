@@ -43,7 +43,7 @@ These bullets describe the concrete envelope realization only. `docs/core/contra
 
 This spec defines how OpenKit-owned files evolve after the current storage and manifest baseline is established.
 
-The current internal development phase does not preserve old internal shapes, paths, or compact manifest formats.
+Internal shapes, paths, and compact manifest formats from before the accepted baseline are not preserved.
 
 General additive evolution, unknown optional-field preservation, and fail-closed semantics follow `docs/core/contract-evolution.md`. This spec realizes those rules for envelope-backed files.
 
@@ -69,15 +69,13 @@ For envelope-backed records, writers MUST mark any new field or record behavior 
 
 ## Baseline Compatibility Posture
 
-OpenKit is currently in active internal development.
-
-The clean target wins over old internal compatibility.
+The clean target wins over pre-baseline internal compatibility.
 
 For the current storage and manifest reset, OpenKit does not need permanent legacy readers, aliases, shims, or fallback paths for old internal shapes.
 
 The compatibility contract in this spec starts at the accepted baseline created by the active storage, manifest, audit, vault, and context specs.
 
-Future versions follow the optional-field and fail-closed rules in `docs/core/contract-evolution.md`.
+Future versions follow the optional-field and fail-closed rules and Retained Data Continuity in `docs/core/contract-evolution.md`.
 
 ## Record Envelope
 
@@ -310,7 +308,7 @@ Unknown evidence may be retained as restricted evidence when storage policy allo
 
 ## Resolved Decisions
 
-- Current internal migration does not require compatibility with old internal storage or manifest shapes.
+- The pre-baseline migration does not require compatibility with old internal storage or manifest shapes; later record changes keep retained data usable.
 - General additive evolution, unknown-field preservation, and required or authority-bearing fail-closed semantics are owned by `docs/core/contract-evolution.md`; this spec realizes them through the envelope and required-feature registry.
 - Namespaced extensions are optional hints, not the stable product contract.
 - Canonical file-backed records should use a common envelope unless their owning spec defines a narrower line-oriented format.
