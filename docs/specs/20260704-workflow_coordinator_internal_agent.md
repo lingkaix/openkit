@@ -5,6 +5,10 @@ kind: concept
 ---
 # Workflow Coordinator Internal Core Role
 
+## Goal Development Freeze
+
+Further Goal Mode development, including its storage, execution flow, and associated export structures, is frozen by the engineer pending complete product Redesign. The existing clauses preserve the prior design baseline, not authorization to complete pending Goal amendments or acceptance of the checkpoint implementation. The planning-authority and completedOutcome proposals remain deferred. Non-Goal responsibilities are unaffected. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
+
 ## Owns
 
 - The reusable Workflow Coordinator Internal Core Role contract.

@@ -7,6 +7,10 @@ updated: "2026-09-22"
 ---
 # Work Data Retention Format
 
+## Export Purpose Clarification
+
+Export preserves admitted work data for external analysis, evaluation, audit, and other external use. Lossless re-import into OpenKit is not an export requirement; backup / restore is separately deferred under [Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md). Goal-specific storage and export redesign are frozen pending the engineer's product Redesign. This changes neither existing retention and access boundaries nor the facts of prior implementation checks. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
+
 ## Summary
 
 This specification owns the semantics and content model of retained OpenKit work data: what is kept, who may author it, how two record families join, how absence is distinguished from non-occurrence, and which declarations cannot be reconstructed later. Physical `DATA_ROOT` placement, source-of-truth trees, and what `turn.json` is as a file remain owned by `docs/specs/20260703-storage_layout_record_ownership.md`. Core meanings of Thread, Turn, Item, and AgentSession remain owned by Core. Architecture and technology-stack selection are out of scope.

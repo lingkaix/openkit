@@ -34,3 +34,7 @@ Raw complexity: the focused export commit changes eight files, amends no normati
 ## Verification Direction
 
 Name the seam between export collection, the portable package, and import restore, and cover it with an in-process composition test with fault injection at the crossing, as L2 requires. Keep held, unavailable, and expired content on its existing path, and keep the audience and secret exclusions as negative cases. Run the NanoCore storage suites and the repository gates in proportion.
+
+## Intent Revision 2 — 2026-09-28
+
+The engineer clarified that Workspace export targets external analysis, evaluation, and audit; lossless re-import into OpenKit is not required. Backup / restore will be designed separately. The preceding round-trip checks record completed implementation facts, not acceptance criteria for the next export design. Goal-related export structures remain frozen pending Goal product Redesign. See [the decision](../../decisions/20260928-goal_freeze_and_export_backup_boundary.md).

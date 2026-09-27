@@ -7,6 +7,12 @@ updated: 2026-09-09
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V2
 
+## Current Product Boundary And Deferred Redesign
+
+Workspace export is for use outside OpenKit, including analysis, evaluation, audit, and ingestion into external analytical software. Lossless re-import into an OpenKit Workspace is not an export acceptance requirement. Workspace and whole-server backup / restore are a separate mechanism whose detailed design is deferred. These scope decisions override contrary round-trip requirements below; existing import and recovery descriptions remain the historical implementation baseline, not a mandate to extend export into backup. This clarification does not authorize deleting existing import behavior or weakening its regression tests.
+
+Goal-related export structures remain frozen with Goal Mode pending product Redesign. Filesystem backup to S3-compatible storage or cloud drives and possible later Litestream use are candidate directions only; no backend, snapshot protocol, or restore guarantee is selected here. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
+
 ## Execution-Host Volume Coverage
 
 [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns generic retained execution-host volumes. A backup/export that covers only NanoCore files must explicitly report those volumes omitted or unavailable; Git and accepted Artifacts are not substitutes for their untracked, ignored or native data. Consistent whole-volume export requires quiescent writers and preserves the source access audience. Restore imports data into a new checked storage association and grants no live process, credential, attachment or native-session authority.
