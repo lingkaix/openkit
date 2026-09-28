@@ -48,6 +48,7 @@ function createWorkspaceDb() {
 function createEnvironmentPackage(): AgentEnvironmentPackage {
   return AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agent: {
         id: 'agent_codex_host',
         name: 'Codex Agent',

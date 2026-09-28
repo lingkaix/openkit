@@ -162,6 +162,7 @@ function createEnvironmentPackage(
   requestId = 'req_context'
 ): AgentEnvironmentPackage {
   const unresolved = resolveAgentEnvironmentPackage({
+    captureCoverage: { scope: 'server', value: 'off' },
     agent: {
       id: 'agent_context',
       name: 'Context Agent',

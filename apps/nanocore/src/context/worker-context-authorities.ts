@@ -1,5 +1,5 @@
 import type { FsStore } from '../lib/store.js';
-import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { getGoalRecord, listGoalTasks } from '../runtime/goal-store.js';
 import { latestGateContextRefs } from '../runtime/goal-task-delegation.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
@@ -46,6 +46,25 @@ export function createWorkerContextPackageAuthorityReader(
     throw new Error('Worker Context Package authority owners have different scopes.');
   }
 
+  // The trace names an immutable snapshot, including after a session's current pointer advances.
+  // Read only that filename under retained session owners; export validation stays workspace-wide.
+  const readAgentEnvironmentPackage: WorkerContextPackageAuthorityReader['readAgentEnvironmentPackage'] =
+    (workspaceId, packageSnapshotId) =>
+      readOrNull(() => {
+        const records = store
+          .listWorkspaceAgentSessions(workspaceId)
+          .map((session) =>
+            findNamedAgentEnvironmentPackageSnapshot(
+              workspaceDb,
+              workspaceId,
+              session.id,
+              packageSnapshotId
+            )
+          )
+          .filter((record) => record !== null);
+        return records.length === 1 ? records[0]!.snapshot : null;
+      });
+
   return {
     readAdmission: (workspaceId, threadId, turnId) => {
       const matches = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
@@ -54,12 +73,7 @@ export function createWorkerContextPackageAuthorityReader(
       }).filter((entry) => entry.threadId === threadId && entry.turnId === turnId);
       return matches.length === 1 ? matches[0]! : null;
     },
-    readAgentEnvironmentPackage: (workspaceId, packageSnapshotId) =>
-      readOrNull(
-        () =>
-          requireAgentEnvironmentPackageSnapshot(workspaceDb, workspaceId, packageSnapshotId)
-            .snapshot
-      ),
+    readAgentEnvironmentPackage,
     readAgentSession: (workspaceId, agentSessionId) =>
       readOrNull(() => {
         const session = store.getAgentSession(agentSessionId);
@@ -75,11 +89,10 @@ export function createWorkerContextPackageAuthorityReader(
       }),
     readBackendHandoff: (workspaceId, packageSnapshotId) =>
       readOrNull(() => {
-        const environmentPackage = requireAgentEnvironmentPackageSnapshot(
-          workspaceDb,
-          workspaceId,
-          packageSnapshotId
-        ).snapshot;
+        const environmentPackage = readAgentEnvironmentPackage(workspaceId, packageSnapshotId);
+        if (!environmentPackage) {
+          return null;
+        }
         const leases = listSchedulerSessionLeasesForTurn(coreDb, {
           workspaceId,
           threadId: environmentPackage.scope.threadId,

@@ -12,6 +12,8 @@ This directory owns deterministic projection of durable OpenKit items into provi
 - Projection must not dispatch providers, mutate thread history, or become a second persistence owner.
 - Every excluded item keeps a stable policy reason; provider-visible content must follow the selected projection policy.
 
+The S39 authority reader locates the trace's exact AEP snapshot filename under retained Workspace AgentSession owners, independently of a session's mutable current-package pointer. It requires one strictly validated match for both package and backend-handoff reads, so unrelated malformed historical snapshots cannot prevent new delivery. Missing, malformed, or conflicting selected snapshots remain unavailable; workspace export still validates the full retained AEP inventory.
+
 ## Verification
 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/context` and the workflows that materialize context packages.
