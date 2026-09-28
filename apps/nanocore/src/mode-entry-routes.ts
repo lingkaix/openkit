@@ -79,7 +79,10 @@ import { dispatchLogicalModel, LogicalModelRoutesExhaustedError } from './llm/ga
 import { parseUsage } from './llm/gateway-usage.js';
 import type { ResolvedLogicalModel } from './llm/logical-models.js';
 import { type ModelCaptureContext, withTurnModelCapture } from './llm/model-capture.js';
-import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
+import {
+  type OpenAICompatibleChatMessage,
+  OpenAICompatibleProviderError,
+} from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from './openapi.js';
@@ -2439,6 +2442,8 @@ export function registerQuickAndChatModeRoutes({
     readonly logicalModel: ResolvedLogicalModel;
     /** User prompt. */
     readonly prompt: string;
+    /** Canonical messages from this Thread, captured before admitting the current input. */
+    readonly history?: readonly OpenAICompatibleChatMessage[];
     /** Stable cache and diagnostics session id. */
     readonly sessionId: string;
     /** Workspace lineage. */
@@ -2479,6 +2484,7 @@ export function registerQuickAndChatModeRoutes({
                 model: providerModel,
                 messages: [
                   { role: 'system', content: assembleBuiltInSystemPrompt('quick-chat') },
+                  ...(input.history ?? []),
                   { role: 'user', content: input.prompt },
                 ],
               },
@@ -3648,6 +3654,15 @@ export function registerQuickAndChatModeRoutes({
         );
       }
 
+      // Read canonical history before createChatTurn persists the current user message.
+      const history = store
+        .listThreadItems(workspaceId, threadId)
+        .flatMap<OpenAICompatibleChatMessage>((item) =>
+          item.status === 'completed' &&
+          (item.type === 'user-message' || item.type === 'assistant-message')
+            ? [{ role: item.type === 'user-message' ? 'user' : 'assistant', content: item.text }]
+            : []
+        );
       const turn = createChatTurn(new Date().toISOString());
       let result: Awaited<ReturnType<typeof callQuickChatProvider>>;
       try {
@@ -3655,6 +3670,7 @@ export function registerQuickAndChatModeRoutes({
           callQuickChatProvider({
             logicalModel: selection.logicalModel,
             prompt: conversationPrompt,
+            history,
             sessionId,
             workspaceId,
             signal: c.req.raw.signal,

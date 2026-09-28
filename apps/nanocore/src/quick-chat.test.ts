@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
@@ -359,6 +359,128 @@ describe('quick chat app API', () => {
     expect(replayRes.status).toBe(200);
     expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(parsed);
     expect(calls).toHaveLength(1);
+  });
+
+  it('rebuilds Assistant continuity from only the current Thread after a disk reload', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-continuity-'));
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const otherThread = store.createThread('ws_demo', 'Unrelated conversation');
+    const initialInput = 'Explain why the sky is blue in two sentences.';
+    const otherInput = 'Explain why leaves are green.';
+    const currentInput = 'Shorten your previous answer to one sentence.';
+    const replies = [
+      'Air scatters blue light more strongly than red light. That scattered light makes the sky look blue.',
+      'Unrelated Thread answer: chlorophyll absorbs other colors and reflects green.',
+      'Air scatters blue light, making the sky look blue.',
+    ];
+    const calls: Array<Parameters<PiAiGatewayClient['createChatCompletion']>[1]> = [];
+    const appOptions = {
+      ...createQuickChatProviderOptions(),
+      coreDb,
+      dataRoot,
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async (_provider, request) => {
+          calls.push(request);
+          return {
+            id: `chatcmpl_continuity_${calls.length}`,
+            object: 'chat.completion',
+            created: 1,
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: replies[calls.length - 1] },
+                finish_reason: 'stop',
+              },
+            ],
+          };
+        },
+      } as unknown as PiAiGatewayClient,
+    };
+    const app = createApp({ ...appOptions, store });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+
+    for (const [threadId, input, requestId] of [
+      ['th_demo', initialInput, 'req_continuity_first'],
+      [otherThread.id, otherInput, 'req_continuity_other'],
+    ] as const) {
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${threadId}/conversation-turns`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(conversationRequest(input, requestId)),
+        }
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      const answer = SubmitConversationResponseSchema.parse(await response.json());
+      expect(answer.outcome).toBe('answered');
+      expect(answer.turn.status).toBe('completed');
+    }
+    expect(calls).toHaveLength(2);
+    const priorTurn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Interrupted worker attempt',
+      { kind: 'user', id: 'user_local' }
+    ).id;
+    for (const status of ['in_progress', 'failed'] as const) {
+      store.createItem({
+        id: `it_partial_${status}`,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: priorTurn,
+        type: 'assistant-message',
+        status,
+        text: `Unfinished worker text: ${status}`,
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+      });
+    }
+    store.updateTurn(priorTurn, { status: 'failed', completedAt: new Date().toISOString() });
+    const priorItems = store.listThreadItems('ws_demo', 'th_demo');
+
+    // Reconstruct the app and store so continuity cannot depend on their in-memory history.
+    const reloadedStore = new FsStore({ dataRoot });
+    expect(reloadedStore.listThreadItems('ws_demo', 'th_demo')).toEqual(priorItems);
+    const priorMessages = reloadedStore
+      .listThreadItems('ws_demo', 'th_demo')
+      .flatMap((item) =>
+        item.status === 'completed' &&
+        (item.type === 'user-message' || item.type === 'assistant-message')
+          ? [{ role: item.type === 'user-message' ? 'user' : 'assistant', content: item.text }]
+          : []
+      );
+    expect(priorMessages).toEqual([
+      { role: 'user', content: initialInput },
+      { role: 'assistant', content: replies[0] },
+    ]);
+    expect(reloadedStore.listThreadItems('ws_demo', otherThread.id)).toEqual(
+      store.listThreadItems('ws_demo', otherThread.id)
+    );
+    const reloadedApp = createApp({ ...appOptions, store: reloadedStore });
+    const response = await reloadedApp.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(conversationRequest(currentInput, 'req_continuity_next')),
+      }
+    );
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(SubmitConversationResponseSchema.parse(await response.json()).outcome).toBe('answered');
+    expect(calls).toHaveLength(3);
+    const messages = calls[2]!.messages.filter((message) => message.role !== 'system');
+    expect(messages.some((message) => message.content === otherInput)).toBe(false);
+    expect(messages.some((message) => message.content === replies[1])).toBe(false);
+    expect(messages).toEqual([...priorMessages, { role: 'user', content: currentInput }]);
   });
 
   it('answers a Chat Mode handoff summary from current input despite incidental review nouns', async () => {
