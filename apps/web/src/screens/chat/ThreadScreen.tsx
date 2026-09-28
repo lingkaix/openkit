@@ -1,6 +1,6 @@
 import { useMutationState } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
@@ -21,6 +21,7 @@ import {
   taskThreadPath,
   useArchiveThread,
   useComposerWorkerEnvironments,
+  useConversationSubmission,
   useConversationTargets,
   useCurrentWorkspaceId,
   useInterruptTurn,
@@ -126,6 +127,7 @@ export interface ThreadScreenProps {
  */
 export function ThreadScreen({ mode }: ThreadScreenProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const { workspaceId: routeWorkspaceId = '', threadId = '' } = useParams();
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
@@ -139,6 +141,26 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const workspaceArtifacts = useArtifacts(workspaceId);
   const importArtifact = useImportWorkspaceArtifact();
   const send = useSendTurn();
+  const submission = useConversationSubmission(workspaceId, threadId);
+  useEffect(() => {
+    if (
+      !submission ||
+      !location.state?.submissionRequestId ||
+      location.state.submissionRequestId !== submission?.variables?.draft.requestId ||
+      submission.status !== 'success' ||
+      !submission.data
+    )
+      return;
+    const response = submission.data;
+    if (response.receivingThreadId !== threadId || response.receivingWorkspaceId !== workspaceId) {
+      navigate(taskThreadPath(response.receivingWorkspaceId, response.receivingThreadId), {
+        replace: true,
+      });
+    } else {
+      // Consume this navigation intent so a later visit never replays an old handoff.
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.pathname, location.state, navigate, submission, threadId, workspaceId]);
   const rename = useRenameThread();
   const archive = useArchiveThread();
   const interrupt = useInterruptTurn();
@@ -215,8 +237,6 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     submitFeedback.variables?.workspaceId === workspaceId &&
     submitFeedback.variables.threadId === threadId &&
     submitFeedback.variables.turnId === feedbackTurn?.id;
-  const sendOwner =
-    send.variables?.workspaceId === workspaceId && send.variables.threadId === threadId;
   const taskDefaultTarget =
     mode === 'task'
       ? (targets.data?.targets.find(
@@ -241,10 +261,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   }
 
   async function submitConversation(draft: ComposerDraft) {
-    const response = await send.mutateAsync({ workspaceId: workspaceId ?? '', threadId, draft });
-    if (response.receivingThreadId !== threadId) {
-      navigate(taskThreadPath(response.receivingWorkspaceId, response.receivingThreadId));
-    }
+    const result = send.mutateAsync({ workspaceId: workspaceId ?? '', threadId, draft });
+    navigate(location.pathname, { replace: true, state: { submissionRequestId: draft.requestId } });
+    await result;
   }
 
   if (workspaces.isLoading) {
@@ -495,12 +514,25 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
 
         <div className="border-t border-separator px-6 py-3">
           <div className="mx-auto w-full max-w-[760px]">
-            {sendOwner && send.isError ? (
+            {submission?.status === 'error' ? (
               <p className="mb-2 text-xs font-medium text-negative-fg">
                 Couldn't send that message. Try again.
               </p>
             ) : null}
             <Composer
+              key={JSON.stringify([workspaceId, threadId])}
+              initialDraft={
+                submission?.status === 'success'
+                  ? {
+                      targetRef: submission.variables?.draft.targetRef,
+                      logicalModelId: submission.variables?.draft.logicalModelId,
+                    }
+                  : submission?.variables?.draft
+              }
+              isSubmitting={submission?.status === 'pending'}
+              completedRequestId={
+                submission?.status === 'success' ? submission.variables?.draft.requestId : undefined
+              }
               targetCatalog={
                 taskDefaultTarget && targets.data
                   ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }

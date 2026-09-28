@@ -2,6 +2,7 @@ import type { ConversationTargetCatalog } from '@openkit/app-api-schemas';
 import {
   type FormEvent,
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -21,6 +22,11 @@ import {
 import { Icon } from './Icon';
 
 type ConversationTarget = ConversationTargetCatalog['targets'][number];
+
+/** A restored request keeps its exact choice even when inventory details are unavailable. */
+type SelectedEnvironment =
+  | ComposerWorkerEnvironmentOption
+  | NonNullable<ComposerDraft['workerStorageChoice']>;
 
 export interface ComposerArtifactOption {
   id: string;
@@ -73,6 +79,12 @@ export interface ComposerWorkerEnvironments {
 }
 
 export interface ComposerProps {
+  /** Restores a pending request or seeds only agent/model preferences after acceptance. */
+  initialDraft?: Partial<ComposerDraft>;
+  /** Pending state from the existing submission mutation, including another screen's observer. */
+  isSubmitting?: boolean;
+  /** Clears only a matching accepted request, preserving the current agent and model. */
+  completedRequestId?: string;
   placeholder?: string;
   disabledReason?: string;
   targetCatalog?: ConversationTargetCatalog | null;
@@ -84,6 +96,9 @@ export interface ComposerProps {
 
 /** Shared target-aware Composer used by starter and active Thread surfaces. */
 export function Composer({
+  initialDraft,
+  isSubmitting = false,
+  completedRequestId,
   placeholder = 'Describe what you need — from a quick question to a whole project',
   disabledReason,
   targetCatalog,
@@ -92,19 +107,34 @@ export function Composer({
   onImportFile,
   onSubmit,
 }: ComposerProps) {
-  const [value, setValue] = useState('');
-  const [targetRef, setTargetRef] = useState('');
-  const [logicalModelId, setLogicalModelId] = useState('');
-  const [selectedArtifacts, setSelectedArtifacts] = useState<ComposerArtifactOption[]>([]);
-  const [selectedEnvironment, setSelectedEnvironment] =
-    useState<ComposerWorkerEnvironmentOption | null>(null);
+  const [value, setValue] = useState(initialDraft?.input ?? '');
+  const [targetRef, setTargetRef] = useState(initialDraft?.targetRef ?? '');
+  const [logicalModelId, setLogicalModelId] = useState(initialDraft?.logicalModelId ?? '');
+  const [selectedArtifacts, setSelectedArtifacts] = useState<ComposerArtifactOption[]>(() =>
+    (initialDraft?.artifactRefs ?? []).map(
+      (ref) =>
+        artifacts.find(
+          (artifact) => artifact.id === ref.artifactId && artifact.version === ref.artifactVersion
+        ) ?? { id: ref.artifactId, version: ref.artifactVersion, label: ref.artifactId }
+    )
+  );
+  const [selectedEnvironment, setSelectedEnvironment] = useState<SelectedEnvironment | null>(() => {
+    const choice = initialDraft?.workerStorageChoice;
+    return choice
+      ? (workerEnvironments?.items.find(
+          (item) =>
+            item.storageRef === choice.storageRef &&
+            item.expectedRevision === choice.expectedRevision
+        ) ?? choice)
+      : null;
+  });
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingImport, setPendingImport] = useState(false);
-  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  const [requestId, setRequestId] = useState(() => initialDraft?.requestId ?? crypto.randomUUID());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const disabled = Boolean(disabledReason);
+  const disabled = Boolean(disabledReason) || isSubmitting;
   const selectedTarget = targetCatalog?.targets.find((target) => target.targetRef === targetRef);
   const environmentApplicable = isWorkerEnvironmentTarget(selectedTarget?.kind);
   const environmentReady = selectedEnvironment === null || environmentApplicable;
@@ -118,6 +148,18 @@ export function Composer({
       (selectedTarget?.availability === 'available' &&
         (!logicalModelId ||
           selectedTarget.logicalModels.some((model) => model.id === logicalModelId))));
+
+  /** Starts a fresh request after acceptance without resetting agent/model preferences. */
+  const clearSentDraft = useCallback(() => {
+    setValue('');
+    setSelectedArtifacts([]);
+    setSelectedEnvironment(null);
+    setRequestId(crypto.randomUUID());
+  }, []);
+
+  useEffect(() => {
+    if (completedRequestId === requestId) clearSentDraft();
+  }, [clearSentDraft, completedRequestId, requestId]);
 
   useEffect(() => {
     if (targetRef || !targetCatalog) return;
@@ -172,10 +214,7 @@ export function Composer({
             }
           : {}),
       });
-      setValue('');
-      setSelectedArtifacts([]);
-      setSelectedEnvironment(null);
-      setRequestId(crypto.randomUUID());
+      clearSentDraft();
     } catch {
       // The caller owns error presentation; retaining state here preserves exact retry identity.
     } finally {
@@ -233,6 +272,7 @@ export function Composer({
             <button
               key={`${artifact.id}:${artifact.version}`}
               type="button"
+              disabled={disabled}
               onClick={() =>
                 setSelectedArtifacts((current) =>
                   current.filter((candidate) => candidate.id !== artifact.id)
@@ -315,6 +355,7 @@ export function Composer({
           </Popover>
         </DialogTrigger>
         <InlineSelect
+          isDisabled={disabled}
           ariaLabel="Conversation agent"
           selectedKey={targetRef}
           placeholder="Agent"
@@ -323,6 +364,7 @@ export function Composer({
         />
         <span className="min-w-2 flex-1" />
         <InlineSelect
+          isDisabled={disabled}
           ariaLabel="Logical model"
           selectedKey={logicalModelId}
           placeholder="Model"
@@ -340,7 +382,7 @@ export function Composer({
           aria-label="Send message"
           className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent outline-none transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 disabled:bg-disabled-bg disabled:text-disabled-fg"
         >
-          <Icon name={pending ? 'spinner' : 'send'} />
+          <Icon name={pending || isSubmitting ? 'spinner' : 'send'} />
         </AriaButton>
       </div>
       {selectedEnvironment && !environmentApplicable ? (
@@ -373,8 +415,8 @@ function WorkerEnvironmentPicker({
   selected,
 }: {
   environments?: ComposerWorkerEnvironments;
-  onSelect: (environment: ComposerWorkerEnvironmentOption | null) => void;
-  selected: ComposerWorkerEnvironmentOption | null;
+  onSelect: (environment: SelectedEnvironment | null) => void;
+  selected: SelectedEnvironment | null;
 }) {
   const options = retainedEnvironmentOptions(environments?.items ?? [], selected);
   const selectedItem = options.find((item) => item.storageRef === selected?.storageRef) ?? selected;
@@ -415,14 +457,16 @@ function WorkerEnvironmentPicker({
             const listed = options.find((item) => item.storageRef === value);
             if (!listed) return;
             onSelect(listed);
-            environments?.onCheck?.(listed);
+            if ('layoutDigest' in listed) environments?.onCheck?.(listed);
           }}
           className="w-full rounded-ok border border-border bg-card px-2 py-1 text-sm text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
         >
           <option value="new">New environment</option>
           {options.map((item) => (
             <option key={item.storageRef} value={item.storageRef}>
-              {item.sourceLabel} · {item.occupancy} · Created {formatRecordedTime(item.createdAt)}
+              {'sourceLabel' in item
+                ? `${item.sourceLabel} · ${item.occupancy} · Created ${formatRecordedTime(item.createdAt)}`
+                : 'Selected environment'}
             </option>
           ))}
         </select>
@@ -430,7 +474,7 @@ function WorkerEnvironmentPicker({
           <p className="text-xs text-fg-muted">Access denied</p>
         ) : environments?.status === 'error' ? (
           <p className="text-xs text-fg-muted">Couldn't load retained environments.</p>
-        ) : selectedItem ? (
+        ) : selectedItem && 'createdAt' in selectedItem ? (
           <>
             <p className="text-xs text-fg-muted">{selectedItem.lineage}</p>
             <p className="text-xs text-fg-muted">{selectedItem.occupancy}</p>
@@ -451,8 +495,8 @@ function WorkerEnvironmentPicker({
 /** Keeps the exact selected environment available when a later inventory omits it. */
 function retainedEnvironmentOptions(
   items: ComposerWorkerEnvironmentOption[],
-  selected: ComposerWorkerEnvironmentOption | null
-): ComposerWorkerEnvironmentOption[] {
+  selected: SelectedEnvironment | null
+): SelectedEnvironment[] {
   if (!selected || items.some((item) => item.storageRef === selected.storageRef)) {
     return items;
   }
@@ -465,12 +509,14 @@ function formatRecordedTime(value: string): string {
 }
 
 function InlineSelect({
+  isDisabled,
   ariaLabel,
   items,
   onChange,
   placeholder,
   selectedKey,
 }: {
+  isDisabled?: boolean;
   ariaLabel: string;
   items: Array<
     Pick<ConversationTarget, 'targetRef' | 'label' | 'availability' | 'unavailableReason'> &
@@ -482,6 +528,7 @@ function InlineSelect({
 }) {
   return (
     <Select
+      isDisabled={isDisabled}
       aria-label={ariaLabel}
       selectedKey={selectedKey || null}
       onSelectionChange={(key) => key != null && onChange(String(key))}

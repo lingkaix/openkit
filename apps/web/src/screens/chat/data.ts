@@ -10,7 +10,13 @@ import {
   type Thread,
 } from '@openkit/core-client';
 import { ItemSchema } from '@openkit/protocol';
-import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  skipToken,
+  useMutation,
+  useMutationState,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useConnectionFailure, useCoreClient } from '../../app/core-client';
 import type { ComposerWorkerEnvironmentOption, ComposerWorkerEnvironments } from '../../primitives';
@@ -56,6 +62,29 @@ export interface ConversationDraft {
     purpose: 'work';
     storageRef: string;
   };
+}
+
+/** Exact owner and draft retained by the shared conversation submission mutation. */
+interface ConversationSubmission {
+  workspaceId: string;
+  threadId: string;
+  draft: ConversationDraft;
+}
+
+/** Observes a Thread's submission across the starter-to-Thread route transition. */
+export function useConversationSubmission(workspaceId: string | null, threadId: string) {
+  return useMutationState({
+    filters: { exact: true, mutationKey: chatKeys.submitMutation },
+    select: (mutation) => ({
+      status: mutation.state.status,
+      variables: mutation.state.variables as ConversationSubmission | undefined,
+      data: mutation.state.data as
+        | Awaited<ReturnType<CoreClient['app']['submitConversation']>>
+        | undefined,
+    }),
+  }).findLast(
+    (state) => state.variables?.workspaceId === workspaceId && state.variables.threadId === threadId
+  );
 }
 
 /** Maps one retained-environment list page onto Composer Advanced options. */
@@ -628,11 +657,8 @@ export function useSendTurn() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationKey: chatKeys.submitMutation,
-    mutationFn: async (input: {
-      workspaceId: string;
-      threadId: string;
-      draft: ConversationDraft;
-    }) => client.app.submitConversation(input.workspaceId, input.threadId, input.draft),
+    mutationFn: async (input: ConversationSubmission) =>
+      client.app.submitConversation(input.workspaceId, input.threadId, input.draft),
     onSuccess: (response) => {
       void queryClient.invalidateQueries({
         queryKey: chatKeys.items(response.receivingWorkspaceId, response.receivingThreadId),
@@ -790,7 +816,7 @@ export function useInterruptTurn() {
 }
 
 /**
- * Create a thread and enter Chat Mode with its first message.
+ * Create the ordinary Thread before submitting its first conversation message.
  *
  * @returns A mutation whose variables retain the original Workspace identity.
  */
@@ -800,12 +826,11 @@ export function useCreateThread() {
   return useMutation({
     mutationFn: async (input: { workspaceId: string; draft: ConversationDraft }) => {
       const name = input.draft.input.trim().slice(0, 60) || 'Artifact task';
-      const thread = await client.core.createThread({
+      return client.core.createThread({
         workspaceId: input.workspaceId,
         name,
         requestId: input.draft.requestId,
       });
-      return client.app.submitConversation(input.workspaceId, thread.id, input.draft);
     },
     onSettled: (_thread, _error, input) => {
       void queryClient.invalidateQueries({ queryKey: chatKeys.threads(input.workspaceId) });

@@ -549,6 +549,104 @@ describe.each([
   });
 });
 
+describe.each([
+  ['starter', '/chat', 'th-new'],
+  ['starter with immediate acceptance', '/chat', 'th-new'],
+  ['Thread', '/chat/ws1/th1', 'th1'],
+])('successful %s submission selection', (_surface, path, threadId) => {
+  it('retains the chosen agent and model for a fresh second request', async () => {
+    const user = userEvent.setup();
+    const first = createDeferred<typeof CHAT_MODE_RESPONSE>();
+    const selectedTarget = {
+      ...CONVERSATION_TARGET.targets[1],
+      logicalModels: [
+        { id: 'worker-default', label: 'Worker default', capabilities: ['chat'] },
+        { id: 'orcarouter', label: 'OrcaRouter', capabilities: ['chat'] },
+      ],
+      defaultLogicalModelId: 'worker-default',
+    };
+    const submitConversation = vi
+      .fn()
+      .mockReturnValueOnce(
+        _surface.includes('immediate')
+          ? Promise.resolve({
+              ...CHAT_MODE_RESPONSE,
+              originatingThreadId: threadId,
+              receivingThreadId: threadId,
+            })
+          : first.promise
+      )
+      .mockResolvedValue({
+        ...CHAT_MODE_RESPONSE,
+        originatingThreadId: threadId,
+        receivingThreadId: threadId,
+      });
+    renderApp(
+      path,
+      makeClient(
+        {
+          getThread: vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
+          listArtifacts: vi.fn().mockResolvedValue({
+            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+          }),
+        },
+        {
+          submitConversation,
+          getConversationTargets: vi.fn().mockResolvedValue({
+            ...CONVERSATION_TARGET,
+            targets: [CONVERSATION_TARGET.targets[0], selectedTarget],
+          }),
+        }
+      )
+    );
+    await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+    await user.click(await screen.findByRole('option', { name: 'Codex Agent' }));
+    await user.click(screen.getByRole('button', { name: /Logical model/ }));
+    await user.click(await screen.findByRole('option', { name: 'OrcaRouter' }));
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
+    await user.keyboard('{Escape}');
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'First message');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+    const firstDraft = submitConversation.mock.calls[0]?.[2];
+    expect(firstDraft).toMatchObject({
+      targetRef: selectedTarget.targetRef,
+      logicalModelId: 'orcarouter',
+      artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
+    });
+    await act(async () => {
+      first.resolve({
+        ...CHAT_MODE_RESPONSE,
+        originatingThreadId: threadId,
+        receivingThreadId: threadId,
+      });
+      await first.promise;
+    });
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(''));
+    expect(
+      screen.getByRole('button', { name: /Codex Agent.*Conversation agent/ })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /OrcaRouter.*Logical model/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove Existing brief' })).not.toBeInTheDocument();
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Second message');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
+    expect(submitConversation.mock.calls[1]).toEqual([
+      'ws1',
+      threadId,
+      {
+        input: 'Second message',
+        targetRef: selectedTarget.targetRef,
+        logicalModelId: 'orcarouter',
+        artifactRefs: [],
+        requestId: expect.any(String),
+      },
+    ]);
+    expect(submitConversation.mock.calls[1]?.[2].requestId).not.toBe(firstDraft.requestId);
+  });
+});
+
 describe('chat starter (board 01)', () => {
   it('uses Quick Chat when no Workspace is selected', async () => {
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
@@ -885,18 +983,162 @@ describe('chat starter (board 01)', () => {
     expect(await screen.findByText(/doesn't exist/i)).toBeInTheDocument();
   });
 
-  it('keeps the starter draft when the first conversation cannot start', async () => {
+  it('opens the created Chat and exposes its running Turn before first submission settles', async () => {
+    const user = userEvent.setup();
+    const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
+    const createdThread = { ...THREAD, id: 'th-new', name: 'Pending first Chat' };
+    const createThread = vi.fn().mockResolvedValue(createdThread);
+    const getThread = vi.fn().mockResolvedValue(createdThread);
+    const submitConversation = vi.fn().mockReturnValue(started.promise);
+    const getThreadDashboard = vi.fn().mockResolvedValue({
+      turns: [TurnSchema.parse({ ...ACTIVE_TURN, id: 't-new', threadId: createdThread.id })],
+    });
+    renderApp(
+      '/chat',
+      makeClient({ createThread, getThread }, { getThreadDashboard, submitConversation })
+    );
+
+    try {
+      await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Story thread');
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+      await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+
+      expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: createdThread.name })).toBeInTheDocument();
+      expect(getThread).toHaveBeenCalledWith('ws1', createdThread.id);
+      expect(getThreadDashboard).toHaveBeenCalledWith('ws1', createdThread.id);
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Story thread');
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+      expect(createThread).toHaveBeenCalledTimes(1);
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        createdThread.id,
+        expect.objectContaining({ input: 'Story thread', targetRef: 'internal-role:assistant' })
+      );
+    } finally {
+      await act(async () => {
+        started.resolve(STARTER_CHAT_MODE_RESPONSE);
+        await started.promise;
+      });
+    }
+  });
+
+  it.each([
+    'th-worker',
+    'th-new',
+  ])('follows the accepted receiving Workspace and Thread %s after a deferred first submit', async (receivingThreadId) => {
+    const user = userEvent.setup();
+    const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
+    const origin = { ...THREAD, id: 'th-new', name: 'Origin Chat' };
+    const destination = {
+      ...THREAD,
+      workspaceId: 'ws2',
+      id: receivingThreadId,
+      name: 'Receiving Task',
+    };
+    const getThread = vi
+      .fn()
+      .mockImplementation((workspaceId: string) =>
+        Promise.resolve(workspaceId === 'ws2' ? destination : origin)
+      );
+    const submitConversation = vi.fn().mockReturnValue(started.promise);
+    renderApp(
+      '/chat',
+      makeClient(
+        {
+          createThread: vi.fn().mockResolvedValue(origin),
+          getThread,
+          listThreads: vi
+            .fn()
+            .mockImplementation((workspaceId: string) =>
+              Promise.resolve({ items: [workspaceId === 'ws2' ? destination : origin] })
+            ),
+        },
+        { submitConversation }
+      )
+    );
+    await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Hand off this work');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByRole('heading', { name: 'Origin Chat' })).toBeInTheDocument();
+    await act(async () => {
+      started.resolve({
+        ...STARTER_CHAT_MODE_RESPONSE,
+        receivingWorkspaceId: 'ws2',
+        receivingThreadId,
+      });
+      await started.promise;
+    });
+    expect(await screen.findByRole('heading', { name: 'Receiving Task' })).toBeInTheDocument();
+    expect(getThread).toHaveBeenCalledWith('ws2', receivingThreadId);
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
+    expect(submitConversation).toHaveBeenCalledTimes(1);
+    // Revisiting the origin is a history read, not another handoff request.
+    await switchToThread(user, 'Second workspace', 'Market research', 'Origin Chat');
+    expect(await screen.findByRole('heading', { name: 'Origin Chat' })).toBeInTheDocument();
+    expect(submitConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a late first-submit handoff and draft out of another Workspace with a colliding Thread id', async () => {
+    const user = userEvent.setup();
+    const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
+    const origin = { ...THREAD, id: 'th-new', name: 'Origin Chat' };
+    const other = { ...origin, workspaceId: 'ws2', name: 'Other Chat' };
+    const getThread = vi
+      .fn()
+      .mockImplementation((workspaceId: string) =>
+        Promise.resolve(workspaceId === 'ws2' ? other : origin)
+      );
+    const submitConversation = vi.fn().mockReturnValue(started.promise);
+    renderApp(
+      '/chat',
+      makeClient(
+        {
+          createThread: vi.fn().mockResolvedValue(origin),
+          getThread,
+          listThreads: vi
+            .fn()
+            .mockImplementation((workspaceId: string) =>
+              Promise.resolve({ items: [workspaceId === 'ws2' ? other : origin] })
+            ),
+        },
+        { submitConversation }
+      )
+    );
+    await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Original draft');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByRole('heading', { name: 'Origin Chat' })).toBeInTheDocument();
+    await switchToThread(user, 'Market research', 'Second workspace', 'Other Chat');
+    expect(await screen.findByRole('heading', { name: 'Other Chat' })).toBeInTheDocument();
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Unsent other draft');
+    await act(async () => {
+      started.resolve({ ...STARTER_CHAT_MODE_RESPONSE, receivingThreadId: 'th-worker' });
+      await started.promise;
+    });
+    expect(screen.getByRole('heading', { name: 'Other Chat' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Unsent other draft');
+    expect(getThread).not.toHaveBeenCalledWith('ws1', 'th-worker');
+    expect(submitConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the first draft and exact request in the created Thread after submission fails', async () => {
     const user = userEvent.setup();
     const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
     const startTurn = vi.fn();
     const submitConversation = vi.fn().mockRejectedValue(new Error('chat_mode_unavailable'));
     const quickChat = vi.fn();
-    const client = makeClient({ createThread, startTurn }, { quickChat, submitConversation });
+    const client = makeClient(
+      {
+        createThread,
+        startTurn,
+        getThread: vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
+      },
+      { quickChat, submitConversation }
+    );
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Story thread');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(await screen.findByText("Couldn't start that chat. Try again.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         'ws1',
@@ -907,7 +1149,12 @@ describe('chat starter (board 01)', () => {
         })
       )
     );
-    expect(input).toHaveValue('Story thread');
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Story thread');
+    const submitted = submitConversation.mock.calls[0];
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
+    expect(submitConversation.mock.calls[1]).toEqual(submitted);
+    expect(createThread).toHaveBeenCalledTimes(1);
     expect(startTurn).not.toHaveBeenCalled();
     expect(quickChat).not.toHaveBeenCalled();
   });
@@ -915,7 +1162,8 @@ describe('chat starter (board 01)', () => {
   it('does not open a workspace A starter result after the current workspace switches to B', async () => {
     const user = userEvent.setup();
     const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
-    const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
+    const created = createDeferred<typeof THREAD>();
+    const createThread = vi.fn().mockReturnValue(created.promise);
     const getThread = vi.fn();
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     const client = makeClient({ createThread, getThread }, { submitConversation });
@@ -924,15 +1172,19 @@ describe('chat starter (board 01)', () => {
 
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Plan for A');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(createThread).toHaveBeenCalledTimes(1));
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await act(async () => {
+      created.resolve({ ...THREAD, id: 'th-new' });
+      await created.promise;
+    });
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
         'ws1',
         'th-new',
-        expect.objectContaining({ input: 'Plan for A', targetRef: 'internal-role:assistant' })
+        expect.objectContaining({ input: 'Plan for A' })
       )
     );
-
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
     await act(async () => {
       started.resolve(STARTER_CHAT_MODE_RESPONSE);
       await started.promise;
@@ -4475,7 +4727,14 @@ describe('Worker environment Advanced choice', () => {
     const selectWorkerEnvironment = vi.fn();
     const submitConversation = vi.fn().mockRejectedValue(new Error('chat_mode_unavailable'));
     const client = makeClient(
-      { createThread, listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }) },
+      {
+        createThread,
+        listArtifacts: vi.fn().mockResolvedValue({
+          items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+        }),
+        getThread: vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
+        listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+      },
       { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
     );
     renderApp('/chat', client);
@@ -4499,22 +4758,24 @@ describe('Worker environment Advanced choice', () => {
     );
     expect(screen.getByText('Permission is checked when you send.')).toBeInTheDocument();
     expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
     await user.keyboard('{Escape}');
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Starter reuse');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(await screen.findByText("Couldn't start that chat. Try again.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
     expect(createThread.mock.invocationCallOrder[0]).toBeLessThan(
       submitConversation.mock.invocationCallOrder[0] ?? 0
     );
     expect(selectWorkerEnvironment).not.toHaveBeenCalled();
     const submitted = submitConversation.mock.calls[0]?.[2] as { requestId: string };
-    expect(input).toHaveValue('Starter reuse');
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Starter reuse');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
     expect(submitConversation.mock.calls[1]?.[2]).toMatchObject({
       input: 'Starter reuse',
+      artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
       requestId: submitted.requestId,
       targetRef: 'new-task-worker',
       workerStorageChoice: {
@@ -4524,6 +4785,8 @@ describe('Worker environment Advanced choice', () => {
         storageRef: WORKER_STORAGE_REF,
       },
     });
+    expect(submitConversation.mock.calls[1]).toEqual(submitConversation.mock.calls[0]);
+    expect(createThread).toHaveBeenCalledTimes(1);
     expect(selectWorkerEnvironment).not.toHaveBeenCalled();
   });
 

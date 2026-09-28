@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
@@ -13,12 +13,12 @@ import { importComposerFile, useArtifacts, useImportWorkspaceArtifact } from '..
 import {
   chatThreadPath,
   conversationThreadPath,
-  taskThreadPath,
   useComposerWorkerEnvironments,
   useConversationNavigation,
   useConversationTargets,
   useCreateThread,
   useCurrentWorkspaceId,
+  useSendTurn,
 } from './data';
 
 /**
@@ -39,28 +39,38 @@ export function ChatStarter() {
   const artifacts = useArtifacts(workspaceId);
   const importArtifact = useImportWorkspaceArtifact();
   const create = useCreateThread();
+  const send = useSendTurn();
+  const currentWorkspace = useRef(workspaceId);
+  currentWorkspace.current = workspaceId;
+  const mounted = useRef(true);
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, null);
   const { failed: disconnected } = useConnection();
   const createOwner = create.variables?.workspaceId === workspaceId;
   const conversations = navigation.data ?? [];
 
   useEffect(() => {
-    if (!createOwner || !create.data) return;
-    const path =
-      create.data.receivingThreadId === create.data.originatingThreadId
-        ? chatThreadPath(create.data.receivingWorkspaceId, create.data.receivingThreadId)
-        : taskThreadPath(create.data.receivingWorkspaceId, create.data.receivingThreadId);
-    navigate(path);
-  }, [create.data, createOwner, navigate]);
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   /**
    * Starts a chat in the current workspace.
    *
-   * @param message - The submitted first message.
+   * @param draft - The exact first-message request retained for visible retry.
    */
-  function start(draft: ComposerDraft) {
+  async function start(draft: ComposerDraft) {
     if (!workspaceId) return;
-    return create.mutateAsync({ workspaceId, draft });
+    const thread = await create.mutateAsync({ workspaceId, draft });
+    const submission = send.mutateAsync({ workspaceId, threadId: thread.id, draft });
+    if (mounted.current && currentWorkspace.current === workspaceId) {
+      navigate(chatThreadPath(workspaceId, thread.id), {
+        state: { submissionRequestId: draft.requestId },
+      });
+    }
+    // Keep failure observable through the mutation cache after this Composer unmounts.
+    await submission;
   }
 
   /** Imports an attachment and starts this starter's list refresh without delaying selection. */
