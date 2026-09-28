@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: superseded
 date: "2026-09-24"
 ---
 # Governance Landing Handoff
@@ -65,3 +65,7 @@ The engineer freezes Goal Mode development and defers both pending decisions, st
 ## Intent Revision — 2026-09-29
 
 The engineer requested current closeout and integration with the remaining PR, then transfer of broader Chat / Task experience, retention stability, export / backup scope work, and this handoff's remaining inventory to [Chat And Task Stability Handoff](../202609290900000001-chat_task_stability_handoff/plan.md). That record is the next colleague's entry point. Goal work remains frozen; earlier active queues do not reactivate it. Queued and recorded-only items are preserved there with their existing activation boundaries.
+
+## Transfer — 2026-09-29
+
+This execution handoff is superseded by docs/changes/202609290900000001-chat_task_stability_handoff/plan.md. Configuration and earlier original-body export are delivered, RCR-FND-010 is repaired, and the new record preserves bounded evaluation, real-use and retention acceptance still owed, queued work, and the Goal freeze. Supersession transfers the unfinished obligations; it does not declare them verified.
