@@ -85,6 +85,8 @@ export interface ComposerProps {
   isSubmitting?: boolean;
   /** Clears only a matching accepted request, preserving the current agent and model. */
   completedRequestId?: string;
+  /** The next explicit Send starts a new attempt only for this definitively cancelled request. */
+  cancelledRequestId?: string;
   placeholder?: string;
   disabledReason?: string;
   targetCatalog?: ConversationTargetCatalog | null;
@@ -99,6 +101,7 @@ export function Composer({
   initialDraft,
   isSubmitting = false,
   completedRequestId,
+  cancelledRequestId,
   placeholder = 'Describe what you need — from a quick question to a whole project',
   disabledReason,
   targetCatalog,
@@ -192,6 +195,9 @@ export function Composer({
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     if (!canSubmit || !onSubmit) return;
+    const submittedRequestId = cancelledRequestId === requestId ? crypto.randomUUID() : requestId;
+    // Retain the new attempt's identity even if dispatch later has an uncertain outcome.
+    if (submittedRequestId !== requestId) setRequestId(submittedRequestId);
     setPending(true);
     try {
       await onSubmit({
@@ -202,7 +208,7 @@ export function Composer({
           artifactId: artifact.id,
           artifactVersion: artifact.version,
         })),
-        requestId,
+        requestId: submittedRequestId,
         ...(selectedEnvironment
           ? {
               workerStorageChoice: {

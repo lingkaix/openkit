@@ -1,3 +1,4 @@
+import { ApiCallError } from '@openkit/core-client';
 import { useMutationState } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -142,6 +143,14 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const importArtifact = useImportWorkspaceArtifact();
   const send = useSendTurn();
   const submission = useConversationSubmission(workspaceId, threadId);
+  const cancelledRequestId =
+    submission?.status === 'error' &&
+    submission.variables?.draft.targetRef === 'internal-role:assistant' &&
+    submission.error instanceof ApiCallError &&
+    submission.error.status === 499 &&
+    submission.error.code === 'provider_call_aborted'
+      ? submission.variables.draft.requestId
+      : undefined;
   useEffect(() => {
     if (
       !submission ||
@@ -516,7 +525,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           <div className="mx-auto w-full max-w-[760px]">
             {submission?.status === 'error' ? (
               <p className="mb-2 text-xs font-medium text-negative-fg">
-                Couldn't send that message. Try again.
+                {cancelledRequestId
+                  ? 'This turn was stopped. Send starts a new turn.'
+                  : "Couldn't send that message. Try again."}
               </p>
             ) : null}
             <Composer
@@ -530,6 +541,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   : submission?.variables?.draft
               }
               isSubmitting={submission?.status === 'pending'}
+              cancelledRequestId={cancelledRequestId}
               completedRequestId={
                 submission?.status === 'success' ? submission.variables?.draft.requestId : undefined
               }

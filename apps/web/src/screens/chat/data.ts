@@ -77,6 +77,7 @@ export function useConversationSubmission(workspaceId: string | null, threadId: 
     filters: { exact: true, mutationKey: chatKeys.submitMutation },
     select: (mutation) => ({
       status: mutation.state.status,
+      error: mutation.state.error,
       variables: mutation.state.variables as ConversationSubmission | undefined,
       data: mutation.state.data as
         | Awaited<ReturnType<CoreClient['app']['submitConversation']>>

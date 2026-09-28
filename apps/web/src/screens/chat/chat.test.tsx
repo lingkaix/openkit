@@ -11,7 +11,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { useWorkspaceStore } from '../workspace-store';
@@ -644,6 +644,44 @@ describe.each([
       },
     ]);
     expect(submitConversation.mock.calls[1]?.[2].requestId).not.toBe(firstDraft.requestId);
+  });
+});
+
+describe('conversation failure identity', () => {
+  it.each([
+    ['network failure', new TypeError('Private network failure'), 'internal-role:assistant'],
+    ['untyped abort', { status: 499, code: 'provider_call_aborted' }, 'internal-role:assistant'],
+    [
+      'wrong status',
+      new ApiCallError(500, 'Private failure', { code: 'provider_call_aborted' }),
+      'internal-role:assistant',
+    ],
+    [
+      'wrong code',
+      new ApiCallError(499, 'Private failure', { code: 'other_abort' }),
+      'internal-role:assistant',
+    ],
+    [
+      'another target',
+      new ApiCallError(499, 'Private failure', { code: 'provider_call_aborted' }),
+      'new-task-worker',
+    ],
+  ])('keeps exact retry for %s', async (_name, error, targetRef) => {
+    const user = userEvent.setup();
+    const submitConversation = vi.fn().mockRejectedValue(error);
+    renderApp('/chat/ws1/th1', makeClient({}, { submitConversation }));
+    if (targetRef === 'new-task-worker') await chooseNewTaskWorker(user);
+    await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Retained request');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+    const first = submitConversation.mock.calls[0];
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
+    expect(submitConversation.mock.calls[1]).toEqual(first);
+    expect(
+      screen.queryByText('This turn was stopped. Send starts a new turn.')
+    ).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('Private');
   });
 });
 
@@ -4788,6 +4826,112 @@ describe('Worker environment Advanced choice', () => {
     expect(submitConversation.mock.calls[1]).toEqual(submitConversation.mock.calls[0]);
     expect(createThread).toHaveBeenCalledTimes(1);
     expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/chat',
+    '/chat/ws1/th1',
+  ])('starts a fresh request only on explicit Send from %s after definitive Chat cancellation and retries that identity after transport uncertainty', async (path) => {
+    const user = userEvent.setup();
+    const threadId = path === '/chat' ? 'th-new' : 'th1';
+    const originalId = '00000000-0000-4000-8000-000000000911';
+    const freshId = '00000000-0000-4000-8000-000000000912';
+    const randomUUID = vi
+      .spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce(originalId)
+      .mockReturnValueOnce(freshId)
+      .mockReturnValue('00000000-0000-4000-8000-000000000913');
+    onTestFinished(() => randomUUID.mockRestore());
+    const submitConversation = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ApiCallError(499, 'Private cancellation detail', { code: 'provider_call_aborted' })
+      )
+      .mockRejectedValue(new TypeError('Private transport detail'));
+    renderApp(
+      path,
+      makeClient(
+        {
+          getThread: vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
+          listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+          listArtifacts: vi.fn().mockResolvedValue({
+            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+          }),
+        },
+        {
+          submitConversation,
+          getConversationTargets: vi.fn().mockResolvedValue({
+            ...CONVERSATION_TARGET,
+            targets: CONVERSATION_TARGET.targets.map((target) => ({
+              ...target,
+              logicalModels: [
+                ...target.logicalModels,
+                { id: 'alternate', label: 'Alternate model', capabilities: ['chat'] },
+              ],
+            })),
+          }),
+          listWorkerEnvironments: vi
+            .fn()
+            .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null }),
+          selectWorkerEnvironment: vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT }),
+        }
+      )
+    );
+    await user.click(await screen.findByRole('button', { name: /Logical model/ }));
+    await user.click(await screen.findByRole('option', { name: 'Alternate model' }));
+    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+    await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
+    await user.keyboard('{Escape}');
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Original Chat draft');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    const cancellationExplanation = (
+      await screen.findByText(/This turn was stopped|Couldn't send that message/)
+    ).textContent;
+    expect(submitConversation).toHaveBeenCalledTimes(1);
+    expect(submitConversation.mock.calls[0]?.[2]).toMatchObject({
+      requestId: originalId,
+      targetRef: 'internal-role:assistant',
+      logicalModelId: 'alternate',
+    });
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Original Chat draft');
+    expect(
+      screen.getByRole('button', { name: /Alternate model.*Logical model/ })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
+    expect(randomUUID).toHaveBeenCalledTimes(1);
+    expect(document.body).not.toHaveTextContent('Private cancellation detail');
+
+    // The cancelled request remains retained while the user prepares different, valid Worker work.
+    await user.clear(screen.getByRole('textbox', { name: 'Message' }));
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Replacement work');
+    await chooseNewTaskWorker(user);
+    await chooseRetainedEnvironment(user);
+    expect(randomUUID).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+    expect(submitConversation).toHaveBeenCalledTimes(2);
+    const freshDraft = {
+      input: 'Replacement work',
+      targetRef: 'new-task-worker',
+      logicalModelId: 'alternate',
+      artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
+      requestId: freshId,
+      workerStorageChoice: {
+        expectedRevision: 4,
+        kind: 'selected',
+        purpose: 'work',
+        storageRef: WORKER_STORAGE_REF,
+      },
+    };
+    expect(submitConversation.mock.calls[1]).toEqual(['ws1', threadId, freshDraft]);
+    expect(cancellationExplanation).toBe('This turn was stopped. Send starts a new turn.');
+    expect(randomUUID).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Replacement work');
+    expect(document.body).not.toHaveTextContent('Private transport detail');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(3));
+    expect(submitConversation.mock.calls[2]).toEqual(['ws1', threadId, freshDraft]);
+    expect(randomUUID).toHaveBeenCalledTimes(2);
   });
 
   it('keeps a stale retained choice after server send denial and does not substitute a new environment', async () => {
