@@ -113,13 +113,7 @@ export async function materializeWorkspaceGitInputs(
       {},
       'Remote Git origin configuration failed.'
     );
-    await requireGitText(
-      target,
-      sessionDir,
-      ['fetch', '--no-tags', '--depth=1', 'origin', input.source.commit],
-      {},
-      'Remote Git commit fetch failed.'
-    );
+    await fetchDeclaredCommit(target, sessionDir, input.source.commit);
     await requireGitText(
       target,
       sessionDir,
@@ -946,6 +940,122 @@ async function requireGitText(
   ).toString('utf8');
 }
 
+/** Private stderr retained only to classify a failed fetch. It never enters a product error. */
+const GIT_STDERR_LIMIT = 4096;
+
+/** How a failed Git subprocess ended. Successful commands leave this null. */
+type GitFailureKind = 'exit' | 'signal' | 'spawn' | 'timeout';
+
+/** Outcome of one bounded Git subprocess. */
+interface GitInvocation {
+  readonly failure: GitFailureKind | null;
+  readonly ok: boolean;
+  readonly stderr: string;
+  readonly stdout: Buffer;
+}
+
+/**
+ * Fetches one exact commit into an empty slot.
+ *
+ * A depth-1 raw object id is the fast path, and both that fetch and the advertised-ref fallback use HTTP/1.1. Any completed nonzero fetch tries advertised branch tips and tags once. A timeout, signal, or spawn failure does not. Checkout continues only when the object type is exactly `commit`. A completed check that reports the object is absent is a distinct refusal. The terminal fetch failure is a certificate failure, a transport failure, or an ordinary fetch failure. Every other object-check failure stays an ordinary fetch failure.
+ *
+ * @param cwd Empty Git workspace root.
+ * @param sessionDir Worker session directory used for the scrubbed Git environment.
+ * @param commit Exact declared commit.
+ */
+async function fetchDeclaredCommit(cwd: string, sessionDir: string, commit: string): Promise<void> {
+  const fetchConfig = ['http.version=HTTP/1.1'];
+  const direct = await gitInvocation(
+    cwd,
+    sessionDir,
+    ['fetch', '--no-tags', '--depth=1', 'origin', commit],
+    {},
+    undefined,
+    fetchConfig
+  );
+  if (direct.ok) {
+    return;
+  }
+  if (direct.failure !== 'exit') {
+    throwTerminalFetchFailure(direct);
+  }
+  const advertised = await gitInvocation(
+    cwd,
+    sessionDir,
+    ['fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*'],
+    {},
+    undefined,
+    fetchConfig
+  );
+  if (!advertised.ok) {
+    throwTerminalFetchFailure(advertised);
+  }
+  const object = await gitInvocation(cwd, sessionDir, ['cat-file', '-t', commit]);
+  if (object.ok) {
+    if (object.stdout.toString('utf8').trim() !== 'commit') {
+      throw new Error('Remote Git commit fetch failed.');
+    }
+    return;
+  }
+  if (
+    object.failure === 'exit' &&
+    object.stderr.toLowerCase().includes('could not get object info')
+  ) {
+    throw new Error('Remote Git commit is not available from the configured remote.');
+  }
+  throw new Error('Remote Git commit fetch failed.');
+}
+
+/** Private stderr phrases that identify a certificate failure without leaving the process. */
+const FETCH_TLS_MARKERS = [
+  'ssl certificate',
+  'certificate problem',
+  'self-signed',
+  'unable to get local issuer',
+  'tls certificate',
+  'certificate signer not trusted',
+  'server certificate verification failed',
+  'certificate verification failed',
+] as const;
+
+/** Private stderr phrases that identify a transport failure without leaving the process. */
+const FETCH_TRANSPORT_MARKERS = [
+  'http/2',
+  'http2 framing',
+  'framing layer',
+  'could not resolve host',
+  'failed to connect',
+  'connection refused',
+  'connection reset',
+  'connection timed out',
+  'early eof',
+  'proxy connect',
+  'connect tunnel failed',
+  'could not resolve proxy',
+  'recv failure',
+] as const;
+
+/**
+ * Refuses the terminal fetch with a closed product message.
+ *
+ * Timeout, signal, and spawn are transport failures. A completed failure is a certificate failure or a transport failure only when its private stderr matches a fixed phrase. Every other completed failure stays ordinary.
+ *
+ * @param invocation Failed fetch invocation.
+ */
+function throwTerminalFetchFailure(invocation: GitInvocation): never {
+  if (invocation.failure !== 'exit') {
+    throw new Error('Remote Git commit fetch transport failed.');
+  }
+  const stderr = invocation.stderr.toLowerCase();
+  if (FETCH_TLS_MARKERS.some((marker) => stderr.includes(marker))) {
+    throw new Error('Remote Git commit fetch TLS failed.');
+  }
+  if (FETCH_TRANSPORT_MARKERS.some((marker) => stderr.includes(marker))) {
+    throw new Error('Remote Git commit fetch transport failed.');
+  }
+  throw new Error('Remote Git commit fetch failed.');
+}
+
 /**
  * Runs one bounded Git subprocess with a scrubbed environment.
  *
@@ -963,48 +1073,124 @@ async function gitBytes(
   environment: NodeJS.ProcessEnv = {},
   stdin?: Buffer
 ): Promise<Buffer | null> {
+  const result = await gitInvocation(cwd, sessionDir, argv, environment, stdin);
+  return result.ok ? result.stdout : null;
+}
+
+/**
+ * Runs one bounded Git subprocess and retains a private stderr prefix.
+ *
+ * @param cwd Git workspace root.
+ * @param sessionDir Worker session directory used to disable ambient config.
+ * @param argv Git argument vector.
+ * @param environment Explicit command-local Git environment overrides.
+ * @param stdin Optional exact stdin bytes.
+ * @param config Git config assignments inserted before the subcommand.
+ * @returns Success, exact stdout, a bounded stderr prefix, and the failure kind.
+ */
+async function gitInvocation(
+  cwd: string,
+  sessionDir: string,
+  argv: readonly string[],
+  environment: NodeJS.ProcessEnv = {},
+  stdin?: Buffer,
+  config: readonly string[] = []
+): Promise<GitInvocation> {
   return new Promise((resolveOutput) => {
     const child = spawn(
       'git',
-      ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...argv],
+      [
+        '--no-pager',
+        '-c',
+        'core.fsmonitor=false',
+        '-c',
+        'core.untrackedCache=false',
+        ...config.flatMap((entry) => ['-c', entry]),
+        ...argv,
+      ],
       {
         cwd,
         env: gitEnvironment(sessionDir, environment),
-        stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'ignore'],
+        stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       }
     );
     const chunks: Buffer[] = [];
+    let stderr = '';
     let settled = false;
-    let aborted = false;
-    const finish = (output: Buffer | null) => {
+    let failure: GitFailureKind | null = null;
+    const finish = (ok: boolean) => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
-      resolveOutput(output);
+      resolveOutput({ failure: ok ? null : failure, ok, stderr, stdout: Buffer.concat(chunks) });
     };
     const abort = () => {
       if (settled) {
         return;
       }
-      aborted = true;
+      failure = 'timeout';
       child.kill('SIGKILL');
     };
-    const timeout = setTimeout(abort, GIT_TIMEOUT_MS);
+    const timeout = setTimeout(abort, gitTimeoutMs());
 
     child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
-    child.stdin?.on('error', abort);
-    child.on('error', () => finish(null));
-    child.on('close', (exitCode) =>
-      finish(!aborted && exitCode === 0 ? Buffer.concat(chunks) : null)
-    );
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderr.length < GIT_STDERR_LIMIT) {
+        stderr += chunk.toString('utf8');
+        if (stderr.length > GIT_STDERR_LIMIT) {
+          stderr = stderr.slice(0, GIT_STDERR_LIMIT);
+        }
+      }
+    });
+    child.stdin?.on('error', () => {
+      if (settled || failure === 'timeout') {
+        return;
+      }
+      failure = 'spawn';
+      child.kill('SIGKILL');
+    });
+    child.on('error', () => {
+      failure = 'spawn';
+      finish(false);
+    });
+    child.on('close', (exitCode, signal) => {
+      if (failure === 'timeout' || failure === 'spawn') {
+        finish(false);
+        return;
+      }
+      if (exitCode === 0 && !signal) {
+        finish(true);
+        return;
+      }
+      failure = signal ? 'signal' : 'exit';
+      finish(false);
+    });
     child.stdin?.end(stdin);
   });
 }
 
 /**
- * Builds the allowlisted Git subprocess environment and explicit safety controls.
+ * Returns the Git subprocess budget.
+ *
+ * Tests may shorten it with `OPENKIT_WORKER_GIT_TIMEOUT_MS`. Production ignores that variable.
+ *
+ * @returns Timeout in milliseconds.
+ */
+function gitTimeoutMs(): number {
+  if (process.env.NODE_ENV !== 'test') {
+    return GIT_TIMEOUT_MS;
+  }
+  const override = Number(process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS);
+  if (Number.isSafeInteger(override) && override > 0) {
+    return override;
+  }
+  return GIT_TIMEOUT_MS;
+}
+
+/**
+ * Builds the allowlisted Git subprocess environment and explicit safety controls. A nonempty `SSL_CERT_FILE` is copied to both `GIT_SSL_CAINFO` and `CURL_CA_BUNDLE`. Ambient CA paths do not win.
  *
  * @param sessionDir Worker session directory reserved for snapshot state.
  * @param overrides Command-local Git environment overrides.
@@ -1029,6 +1215,7 @@ function gitEnvironment(sessionDir: string, overrides: NodeJS.ProcessEnv): NodeJ
     XDG_CONFIG_HOME: sessionDir,
   };
   if (process.env.SSL_CERT_FILE) {
+    environment.CURL_CA_BUNDLE = process.env.SSL_CERT_FILE;
     environment.GIT_SSL_CAINFO = process.env.SSL_CERT_FILE;
   }
 

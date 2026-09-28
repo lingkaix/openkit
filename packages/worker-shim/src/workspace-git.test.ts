@@ -238,9 +238,10 @@ describe('workspace Git materialization', () => {
         ) as Record<string, string>;
         expect(observedEnvironment).toEqual({
           ...proxyEnvironment,
+          CURL_CA_BUNDLE: environmentCanaries.SSL_CERT_FILE,
           GIT_SSL_CAINFO: environmentCanaries.SSL_CERT_FILE,
         });
-        expect(observedEnvironment).not.toHaveProperty('CURL_CA_BUNDLE');
+        expect(observedEnvironment.CURL_CA_BUNDLE).not.toBe(environmentCanaries.CURL_CA_BUNDLE);
         expect(observedEnvironment).not.toHaveProperty('DENO_CERT');
         expect(observedEnvironment).not.toHaveProperty('GITHUB_TOKEN');
         expect(observedEnvironment).not.toHaveProperty('NODE_EXTRA_CA_CERTS');
@@ -352,6 +353,298 @@ describe('workspace Git materialization', () => {
 
     expect(existsSync(target)).toBe(true);
     expect(existsSync(join(target, '.git'))).toBe(true);
+  });
+
+  it('checks out an advertised commit when the remote refuses a raw object want', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Advertised source\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-advertised-fetch-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await withShaRefusingGit(root, false, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Advertised source\n');
+  });
+
+  it('checks out a tag-only commit when the remote refuses a raw object want', async () => {
+    const remote = createTagOnlyGitRemote();
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-tag-fetch-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await withShaRefusingGit(root, false, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Tag only\n');
+  });
+
+  it('keeps an ordinary fetch failure when the advertised fallback fails', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Present source\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-fallback-failed-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withShaRefusingGit(root, true, () =>
+        materializeWorkspaceGitInputs(
+          [createWorkspaceGitInput(target, remote.commit, remote.path)],
+          workspaceRoot,
+          sessionDir
+        )
+      )
+    ).rejects.toThrow('Remote Git commit fetch failed.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('checks out an advertised commit when the direct fetch fails with an unrecognized error', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Unrecognized refusal\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-unrecognized-fetch-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const logPath = join(root, 'git-invocations.log');
+    mkdirSync(sessionDir);
+
+    await withScriptedGit(root, logPath, { shaFetch: 'unrecognized' }, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Unrecognized refusal\n');
+    expect(readFileSync(logPath, 'utf8')).toContain('refs/heads/*');
+    const fetches = readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[])
+      .filter((args) => args.includes('fetch'));
+    expect(fetches).toHaveLength(2);
+    for (const args of fetches) {
+      expect(args.indexOf('http.version=HTTP/1.1')).toBeGreaterThanOrEqual(0);
+      expect(args.indexOf('http.version=HTTP/1.1')).toBeLessThan(args.indexOf('fetch'));
+    }
+  });
+
+  it('does not fetch advertised refs after a direct fetch timeout', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Timeout source\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-fetch-timeout-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const logPath = join(root, 'git-invocations.log');
+    mkdirSync(sessionDir);
+    const previousTimeout = process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;
+    process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS = '200';
+
+    try {
+      await expect(
+        withScriptedGit(root, logPath, { shaFetch: 'hang-after-refusal' }, () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+        )
+      ).rejects.toThrow('Remote Git commit fetch transport failed.');
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;
+      } else {
+        process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS = previousTimeout;
+      }
+    }
+
+    expect(readFileSync(logPath, 'utf8')).not.toContain('refs/heads/*');
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('keeps a fetch failure when object verification fails after a successful fallback', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Present source\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-object-check-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { catFile: 'fail', shaFetch: 'unrecognized' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow('Remote Git commit fetch failed.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('checks out after a certificate failure when the advertised fallback succeeds', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# TLS then advertised\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-tls-fallback-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await withScriptedGit(root, join(root, 'git-invocations.log'), { shaFetch: 'tls' }, () =>
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, remote.commit, remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# TLS then advertised\n');
+  });
+
+  it('classifies a terminal certificate failure and keeps the partial slot', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# TLS failure\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-tls-terminal-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { advertisedFetch: 'tls', shaFetch: 'tls' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow('Remote Git commit fetch TLS failed.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('classifies a terminal transport failure after the advertised fallback', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Transport failure\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-transport-terminal-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { advertisedFetch: 'early-eof', shaFetch: 'unrecognized' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow('Remote Git commit fetch transport failed.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it.each([
+    {
+      advertisedFetch: 'gnutls' as const,
+      message: 'Remote Git commit fetch TLS failed.',
+    },
+    {
+      advertisedFetch: 'gnutls-verify' as const,
+      message: 'Remote Git commit fetch TLS failed.',
+    },
+    {
+      advertisedFetch: 'proxy' as const,
+      message: 'Remote Git commit fetch transport failed.',
+    },
+    {
+      advertisedFetch: 'proxy-resolve' as const,
+      message: 'Remote Git commit fetch transport failed.',
+    },
+  ])('classifies a terminal $advertisedFetch fallback without collapsing it', async ({
+    advertisedFetch,
+    message,
+  }) => {
+    const remote = createBareGitRemote({ 'README.md': '# Classified fallback\n' });
+    const root = mkdtempSync(join(tmpdir(), `openkit-workspace-${advertisedFetch}-`));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      withScriptedGit(
+        root,
+        join(root, 'git-invocations.log'),
+        { advertisedFetch, shaFetch: 'unrecognized' },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      )
+    ).rejects.toThrow(message);
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
+  });
+
+  it('refuses a commit the configured remote does not serve and keeps the partial slot', async () => {
+    const remote = createBareGitRemote({ 'README.md': '# Other commit\n' });
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-missing-commit-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+
+    await expect(
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, 'a'.repeat(40), remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    ).rejects.toThrow('Remote Git commit is not available from the configured remote.');
+
+    expect(existsSync(join(target, '.git'))).toBe(true);
+    expect(existsSync(join(target, 'README.md'))).toBe(false);
   });
 });
 
@@ -737,6 +1030,145 @@ interface PublishedManifest extends Record<string, unknown> {
   base: { commit: string };
   changedPaths: unknown[];
   createdAt: string;
+}
+
+function createTagOnlyGitRemote(): { commit: string; path: string } {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-git-tag-remote-'));
+  const sourceDir = join(root, 'source');
+  const remotePath = join(root, 'remote.git');
+  mkdirSync(sourceDir);
+  git(sourceDir, ['init']);
+  git(sourceDir, ['config', 'user.email', 'worker@example.com']);
+  git(sourceDir, ['config', 'user.name', 'Worker']);
+  writeFixtureFile(sourceDir, 'README.md', '# Branch\n');
+  git(sourceDir, ['add', '.']);
+  git(sourceDir, ['commit', '-m', 'branch']);
+  writeFixtureFile(sourceDir, 'README.md', '# Tag only\n');
+  git(sourceDir, ['add', '.']);
+  git(sourceDir, ['commit', '-m', 'tag']);
+  const commit = gitText(sourceDir, ['rev-parse', 'HEAD']);
+  git(sourceDir, ['tag', 'v1', commit]);
+  git(sourceDir, ['reset', '--hard', 'HEAD~1']);
+  execFileSync('git', ['clone', '--bare', sourceDir, remotePath], { stdio: 'ignore' });
+  return { commit, path: remotePath };
+}
+
+async function withScriptedGit(
+  root: string,
+  logPath: string,
+  behavior: {
+    advertisedFetch?: 'early-eof' | 'gnutls' | 'gnutls-verify' | 'proxy' | 'proxy-resolve' | 'tls';
+    catFile?: 'fail';
+    shaFetch: 'hang-after-refusal' | 'tls' | 'unrecognized' | 'missing-ref';
+  },
+  body: () => Promise<void>
+): Promise<void> {
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  writeFileSync(
+    join(bin, 'git'),
+    `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const { appendFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + '\\n');
+const shaFetch = args.includes('fetch') && args.some((arg) => /^[0-9a-f]{40}$/.test(arg));
+const catFile = args.includes('cat-file');
+if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'hang-after-refusal') {
+  process.stderr.write('fatal: remote error: upload-pack: not our ref ' + args.at(-1) + '\\n');
+  setInterval(() => {}, 1000);
+  return;
+}
+if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'unrecognized') {
+  process.stderr.write('fatal: early EOF\\n');
+  process.exit(128);
+}
+if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'tls') {
+  process.stderr.write('fatal: SSL certificate problem: unable to get local issuer certificate\\n');
+  process.exit(128);
+}
+const advertisedFailure = ${JSON.stringify(
+      behavior.advertisedFetch === 'tls'
+        ? 'fatal: SSL certificate problem: self-signed certificate in certificate chain\n'
+        : behavior.advertisedFetch === 'gnutls'
+          ? "fatal: unable to access 'https://127.0.0.1:9/repo.git/': server verification failed: certificate signer not trusted. (CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none)\n"
+          : behavior.advertisedFetch === 'gnutls-verify'
+            ? 'fatal: server certificate verification failed\n'
+            : behavior.advertisedFetch === 'proxy'
+              ? "fatal: unable to access 'https://example.invalid/repo.git/': CONNECT tunnel failed, response 407\n"
+              : behavior.advertisedFetch === 'proxy-resolve'
+                ? "fatal: unable to access 'https://example.invalid/repo.git/': Could not resolve proxy: example.invalid\n"
+                : behavior.advertisedFetch === 'early-eof'
+                  ? 'fatal: early EOF\n'
+                  : ''
+    )};
+if (advertisedFailure && args.includes('fetch') && args.some((arg) => String(arg).includes('refs/'))) {
+  process.stderr.write(advertisedFailure);
+  process.exit(128);
+}
+if (catFile && ${JSON.stringify(behavior.catFile ?? '')} === 'fail') {
+  process.stderr.write('fatal: unable to access object\\n');
+  process.exit(2);
+}
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
+process.exit(result.status === null ? 1 : result.status);
+`
+  );
+  chmodSync(join(bin, 'git'), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${delimiter}${previousPath ?? ''}`;
+  try {
+    await body();
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  }
+}
+
+async function withShaRefusingGit(
+  root: string,
+  failAdvertisedFetch: boolean,
+  body: () => Promise<void>
+): Promise<void> {
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const advertisedRefusal = failAdvertisedFetch
+    ? `if (args.includes('fetch') && args.some((arg) => String(arg).includes('refs/'))) {
+  process.stderr.write('fatal: unable to access origin\\n');
+  process.exit(128);
+}
+`
+    : '';
+  writeFileSync(
+    join(bin, 'git'),
+    `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args.includes('fetch') && args.some((arg) => /^[0-9a-f]{40}$/.test(arg))) {
+  process.stderr.write('fatal: remote error: upload-pack: not our ref ' + args.at(-1) + '\\n');
+  process.exit(128);
+}
+${advertisedRefusal}const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
+process.exit(result.status === null ? 1 : result.status);
+`
+  );
+  chmodSync(join(bin, 'git'), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${delimiter}${previousPath ?? ''}`;
+  try {
+    await body();
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+  }
 }
 
 function createBareGitRemote(files: Readonly<Record<string, string | Buffer>>): {
