@@ -2916,10 +2916,8 @@ export function registerQuickAndChatModeRoutes({
         });
       };
 
-      /** Runs the existing Workspace Knowledge Manager and projects its answer into this Thread. */
-      const answerFromWorkspaceKnowledge = (
-        caller: 'assistant' | 'app-api'
-      ): ConversationCommandResult | null => {
+      /** Runs the explicitly selected Knowledge Manager and projects its answer into this Thread. */
+      const answerFromWorkspaceKnowledge = (): ConversationCommandResult | null => {
         const dataRoot = store.getDataRoot();
         if (!dataRoot) return null;
         const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
@@ -2939,12 +2937,11 @@ export function registerQuickAndChatModeRoutes({
           dataRoot,
           operationId: `km_answer_${randomUUID()}`,
           workspaceId,
-          caller,
+          caller: 'app-api',
           query: conversationPrompt,
           limit: 3,
           referenceProofs,
         });
-        if (caller === 'assistant' && knowledgeAnswer.outcome !== 'answered') return null;
         const completedAt = new Date().toISOString();
         const turn = createChatTurn(completedAt);
         const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
@@ -3297,7 +3294,7 @@ export function registerQuickAndChatModeRoutes({
       }
 
       if (acceptedTarget.kind === 'knowledge-manager') {
-        const response = answerFromWorkspaceKnowledge('app-api');
+        const response = answerFromWorkspaceKnowledge();
         if (response) return response;
         return {
           body: createRefusedResponse('Workspace Knowledge storage is unavailable.'),
@@ -3518,12 +3515,6 @@ export function registerQuickAndChatModeRoutes({
           resultKind: 'refused',
           status: 200,
         };
-      }
-
-      // Admitted Artifact input must reach the Assistant, not a knowledge-only shortcut.
-      if (artifacts.length === 0) {
-        const knowledgeResponse = answerFromWorkspaceKnowledge('assistant');
-        if (knowledgeResponse) return knowledgeResponse;
       }
 
       if (

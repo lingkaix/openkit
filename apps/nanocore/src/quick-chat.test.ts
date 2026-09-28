@@ -527,7 +527,7 @@ describe('quick chat app API', () => {
     }
   });
 
-  it('answers Chat Mode questions through S61 before calling QuickChatAgent', async () => {
+  it('answers an explicit Knowledge Manager query through S61 without calling QuickChatAgent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-knowledge-'));
     const app = createApp({
       ...createQuickChatProviderOptions(),
@@ -558,7 +558,10 @@ describe('quick chat app API', () => {
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
         method: 'POST',
-        body: JSON.stringify(conversationRequest('Launch cadence', 'req_chat_knowledge_answer')),
+        body: JSON.stringify({
+          ...conversationRequest('Launch cadence', 'req_chat_knowledge_answer'),
+          targetRef: 'internal-role:knowledge-manager',
+        }),
         headers: { 'content-type': 'application/json' },
       }
     );
@@ -583,7 +586,10 @@ describe('quick chat app API', () => {
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
         method: 'POST',
-        body: JSON.stringify(conversationRequest('Launch cadence', 'req_chat_knowledge_answer')),
+        body: JSON.stringify({
+          ...conversationRequest('Launch cadence', 'req_chat_knowledge_answer'),
+          targetRef: 'internal-role:knowledge-manager',
+        }),
         headers: { 'content-type': 'application/json' },
       }
     );
@@ -606,7 +612,7 @@ describe('quick chat app API', () => {
 
     expect(traces).toEqual([
       expect.objectContaining({
-        caller: 'assistant',
+        caller: 'app-api',
         selected: [
           expect.objectContaining({
             knowledgePageId: knowledge.id,
@@ -617,13 +623,14 @@ describe('quick chat app API', () => {
     ]);
   });
 
-  it('does not answer a generic Assistant prompt from a one-token Knowledge overlap', async () => {
+  it('answers a generic Assistant prompt without reading overlapping Workspace Knowledge', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-weak-knowledge-'));
+    const store = createDemoStore({ dataRoot });
     let providerCalls = 0;
     const app = createApp({
       ...createQuickChatProviderOptions(),
       dataRoot,
-      store: createDemoStore({ dataRoot }),
+      store,
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
         createChatCompletion: async (_provider, request) => {
@@ -657,6 +664,9 @@ describe('quick chat app API', () => {
     });
     expect(createRes.status).toBe(201);
 
+    const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
+    onTestFinished(() => listKnowledgeProposals.mockRestore());
+
     const res = await app.request(
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
@@ -674,6 +684,8 @@ describe('quick chat app API', () => {
     expect(res.status, await res.clone().text()).toBe(200);
     const parsed = SubmitConversationResponseSchema.parse(await res.json());
     expect(providerCalls).toBe(1);
+    expect(listKnowledgeProposals).not.toHaveBeenCalled();
+    expect(existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))).toBe(false);
     expect(parsed).toMatchObject({
       outcome: 'answered',
       explanation: 'The Assistant answered directly.',
