@@ -20,7 +20,7 @@ The authorization covers local investigation, governance edits, tests, and clean
 
 ## Scheme And Evidence
 
-The temporary Chinese work bundle is [temp/quality-governance/README.md](../../../temp/quality-governance/README.md). It links the earlier architecture proposal and plan, the new governance proposal, source intent, actual consultation, slice evidence, and independent evaluations. Curated conclusions are retained here so no lasting decision depends on temporary evidence. This record supplies no design authority.
+The temporary Chinese work bundle is `temp/quality-governance/README.md` (uncommitted local evidence, absent from a clean checkout). It links the earlier architecture proposal and plan, the new governance proposal, source intent, actual consultation, slice evidence, and independent evaluations. Curated conclusions are retained here so no lasting decision depends on temporary evidence. This record supplies no design authority.
 
 Select one cohesive existing responsibility per round, record the observable improvement hypothesis before implementation, reuse its behavioral contract and lowest-sufficient tests, and migrate real consumers without compatibility scaffolding. Investigate deletion through consumer closure and proportionate ablation evidence. An unavailable oracle blocks dependent changes. Two disjoint workers may implement one pair with exclusive path ownership; freeze those artifacts for the Auditor before the next pair. Scores describe evidence and uncertainty; they cannot offset a regression or override an owner.
 

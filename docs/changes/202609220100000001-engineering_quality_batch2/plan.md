@@ -12,7 +12,7 @@ The engineer asked whether the audit rules and cleanup method have stabilized, r
 
 ## Owners And Method
 
-[Root execution](../../../AGENTS.md), [Change Execution](../../change-execution.md), [Verification Instruments](../../verification-instruments.md), [Documentation Model](../../documentation-model.md), and [Test Strategy](../../specs/20260529-test_strategy.md) retain authority. The Chinese [working note](../../../temp/quality-governance/working-note.md) freezes the batch observations before implementation. This change record preserves execution and conclusions, never architecture authority.
+[Root execution](../../../AGENTS.md), [Change Execution](../../change-execution.md), [Verification Instruments](../../verification-instruments.md), [Documentation Model](../../documentation-model.md), and [Test Strategy](../../specs/20260529-test_strategy.md) retain authority. The Chinese working note at `temp/quality-governance/working-note.md` (uncommitted local evidence, absent from a clean checkout) freezes the batch observations before implementation. This change record preserves execution and conclusions, never architecture authority.
 
 Continue the existing branch. The accepted previous batch remains uncommitted and is this batch's baseline: 35 dirty/new files are copied under the same-name temp/changes directory, with an initial SHA-256 manifest and patch. Snapshot every additional clean path before its first edit. Compare this batch to those bytes, not cumulatively to HEAD. No changes from the previous batch are discarded.
 

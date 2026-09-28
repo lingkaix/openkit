@@ -90,3 +90,7 @@ Logs are in the temporary directory named above. No full Core suite or live depl
 ## Receiving Next Action
 
 Start with Workstream 1 and the non-Goal producer inventory in Workstream 2 on the merged main revision, first naming the real-use target and the smallest representative Chat / Task journey. Check existing evidence before creating a new test or rebuilding a delivered feature. Finish export / backup design clarification under Workstream 3 with the engineer before implementing unsettled contracts. Carry normalization and framework experiments without silently activating them. Goal redesign and temporary-data deletion remain excluded. This handoff remains planned because those receiving tasks are deliberately unfinished, not because the preparing primary's known Chat correction or PR integration is still pending.
+
+## Clean-Checkout Correction
+
+The first PR #107 CI run failed because two historical pilot records linked to ignored local temp files absent from a clean checkout, while the same validator passed locally with those files present. The records now name those paths as uncommitted evidence without promising resolvable documentation links. The validator and historical observations are unchanged; retain both the initial CI failure and subsequent rerun outcome. This illustrates why a local structural pass is not sufficient evidence of checkout completeness.
