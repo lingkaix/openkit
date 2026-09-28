@@ -106,13 +106,17 @@ export class LLMGatewayProviderDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<OpenAICompatibleChatCompletionResponse> {
     this.assertConfiguredModel(provider, request.model);
-    const transport = this.captureTransport(provider, request, context);
+    const capability = provider.gatewayCapabilities.chatCompletions;
+    const responsesRequest =
+      capability === 'bridged' && provider.gatewayCapabilities.responses === 'native'
+        ? convertChatCompletionToResponsesRequest(request)
+        : undefined;
+    const transport = this.captureTransport(provider, responsesRequest ?? request, context);
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
       context.models
     );
-    const capability = provider.gatewayCapabilities.chatCompletions;
     const endpoint = context.usageEndpoint ?? 'chat_completions';
 
     if (capability === 'native') {
@@ -131,15 +135,15 @@ export class LLMGatewayProviderDispatcher {
 
       return response;
     }
-    if (capability === 'bridged' && provider.gatewayCapabilities.responses === 'native') {
-      const responsesRequest = this.promptCacheKeyResolver.withPromptCacheKey(
+    if (responsesRequest) {
+      const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
         provider,
-        convertChatCompletionToResponsesRequest(request),
+        responsesRequest,
         context.promptCacheScope
       );
       const response = await this.piAiClient.createResponses(
         provider,
-        responsesRequest,
+        keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
         transport,
         models
@@ -164,13 +168,17 @@ export class LLMGatewayProviderDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     this.assertConfiguredModel(provider, request.model);
-    const transport = this.captureTransport(provider, request, context);
+    const capability = provider.gatewayCapabilities.chatCompletions;
+    const responsesRequest =
+      capability === 'bridged' && provider.gatewayCapabilities.responses === 'native'
+        ? convertChatCompletionToResponsesRequest({ ...request, stream: true })
+        : undefined;
+    const transport = this.captureTransport(provider, responsesRequest ?? request, context);
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
       context.models
     );
-    const capability = provider.gatewayCapabilities.chatCompletions;
     const endpoint = context.usageEndpoint ?? 'chat_completions';
 
     if (capability === 'native') {
@@ -187,19 +195,16 @@ export class LLMGatewayProviderDispatcher {
         models
       );
     }
-    if (capability === 'bridged' && provider.gatewayCapabilities.responses === 'native') {
-      const responsesRequest = this.promptCacheKeyResolver.withPromptCacheKey(
+    if (responsesRequest) {
+      const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
         provider,
-        convertChatCompletionToResponsesRequest({
-          ...request,
-          stream: true,
-        }),
+        responsesRequest,
         context.promptCacheScope
       );
       return convertResponsesStreamToChatCompletionStream(
         await this.piAiClient.createResponsesStream(
           provider,
-          responsesRequest,
+          keyedRequest,
           (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
           transport,
           models
@@ -323,7 +328,7 @@ export class LLMGatewayProviderDispatcher {
     }
   }
 
-  /** Creates the private capture observer before adapting the request or contacting a provider. */
+  /** Captures the dispatcher-converted request before cache-key injection, Pi adaptation or provider access. */
   private captureTransport(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest | OpenAICompatibleResponsesRequest,
