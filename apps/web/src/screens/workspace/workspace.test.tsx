@@ -1852,6 +1852,20 @@ describe('Overview / Action Center (board 07)', () => {
 });
 
 describe('Agents (board 08)', () => {
+  it('explains that a disabled agent cannot start work without inferring its private reason', async () => {
+    const client = makeClient({
+      agents: {
+        list: vi.fn().mockResolvedValue({
+          items: [{ ...AGENT_READY, status: 'disabled' }],
+        }),
+      },
+    });
+    renderApp('/agents', client);
+    expect(await screen.findByText('Ledger')).toBeInTheDocument();
+    expect(screen.getByText('This agent is disabled and cannot start work.')).toBeInTheDocument();
+    expect(screen.getByText('Resting')).toBeInTheDocument();
+  });
+
   it('lists agents with plain-language readiness', async () => {
     const client = makeClient({
       agents: {

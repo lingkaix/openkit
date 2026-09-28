@@ -281,12 +281,14 @@ function AgentCard({
             {agentLane(agent.kind)}
           </p>
           <p className="mt-2 min-w-0 break-words text-sm text-fg">
-            {agent.health.message ??
-              (readiness.label === 'Working'
-                ? 'In progress'
-                : readiness.label === 'Ready'
-                  ? '—'
-                  : readiness.label)}
+            {agent.status === 'disabled'
+              ? 'This agent is disabled and cannot start work.'
+              : (agent.health.message ??
+                (readiness.label === 'Working'
+                  ? 'In progress'
+                  : readiness.label === 'Ready'
+                    ? '—'
+                    : readiness.label))}
           </p>
         </div>
       </div>
