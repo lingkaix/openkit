@@ -11,7 +11,7 @@ These items record structural observations about this plan's uncommitted impleme
 
 - [x] `RCR-FND-005` [closed] Preserve partial coverage after a local gap
 - [x] `RCR-FND-006` [closed] Do not announce idle prior-Turn children as newly started
-- [ ] `RCR-FND-007` [open] Reconcile failed Goal revision readback with admitted capture
+- [ ] `RCR-FND-007` [deferred] Reconcile failed Goal revision readback with admitted capture
 - [x] `RCR-FND-008` [closed] Preserve work outcome after a durably recorded collector fault
 - [x] `RCR-FND-009` [closed] Anchor each rejected observation to its exact expected fact
 - [ ] `RCR-FND-010` [open] Identify the existing Quick Chat Knowledge-read divergence
@@ -80,13 +80,13 @@ These items record structural observations about this plan's uncommitted impleme
 - **Closing verdict:** A pre-watermarked idle child emits no new origin; a current-Turn spawn or appended source bytes can emit it. Independent review confirmed the boundary. The wording used for a resumed child remains a separate presentation question.
 - **Closure evidence:** temp/changes/202609220200000001-runtime_child_retention/resume/oracle-m2-red.txt, oracle-m2-green.txt, m2-codex-runtime-capture-green.txt (10 tests), and opus-review-3.txt
 
-## [open] RCR-FND-007 — Reconcile failed Goal revision readback with admitted capture
+## [deferred] RCR-FND-007 — Reconcile failed Goal revision readback with admitted capture
 
 - **Observation:** The broader focused suite reproduces a failed Goal revision readback error on clean 69a60f59: admission now persists a planner Turn before failure, leaving a partial tuple where the existing test expects no new result.
 - **Impact:** Goal Mode handled-failure readback and durable model capture both apply; weakening either contract to make the suite green is not authorized.
 - **Evidence:** apps/nanocore/src/runtime/goal-planning.test.ts failed revision case; independent Opus Consultant source review on 2026-09-24; isolated baseline reported by the context builder.
 - **Owner:** docs/changes/202609220200000001-runtime_child_retention/plan.md, the resumed retention primary.
-- **Next action:** Probe whether the existing revision admission or exact tuple definition permits a correction satisfying both owners; pause dependent Goal edits until the probe settles, otherwise present a concrete owner amendment to the engineer.
+- **Next action:** Probe whether the existing revision admission or exact tuple definition permits a correction satisfying both owners; pause dependent Goal edits until the probe settles, otherwise present a concrete owner amendment to the engineer. On 2026-09-28 the engineer froze Goal development without accepting this behavior; the receiver is the engineer-led Goal Mode product Redesign, activated only by an explicit engineer instruction to resume that design.
 
 
 ## [closed] RCR-FND-008 — Preserve work outcome after a durably recorded collector fault

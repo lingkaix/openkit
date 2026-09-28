@@ -25,8 +25,12 @@ Next action: preserve current artifacts and evidence; resume Goal work only when
 
 ## Handoff And Evaluation
 
-Full-body portable export and tolerant configuration are complete under their own plans and commits, 5d931915 and 2b64298a respectively. Close the remaining retention findings with the independently verified Goal failure/readback correction. Documentation normalization and separate framework experiments remain queued under the handoff. Record direct evaluation of the completed work with exact checks and raw complexity observations, not scores or claims of framework causality. Update the Chinese working note under temp/quality-governance/ with how the engineering principles affected actual decisions and their limits.
+Full-body portable export and tolerant configuration are complete under their own plans and commits, 5d931915 and 2b64298a respectively. The remaining Goal retention finding is deferred by the engineer freeze; do not implement it for closeout. Non-Goal prompt and retention follow-up transfers to [the receiving handoff](../202609290900000001-chat_task_stability_handoff/plan.md). Documentation normalization and separate framework experiments remain queued under the handoff. Record direct evaluation of the completed work with exact checks and raw complexity observations, not scores or claims of framework causality. Update the Chinese working note under temp/quality-governance/ with how the engineering principles affected actual decisions and their limits.
 
 ## Intent Revision — 2026-09-28
 
 The engineer freezes Goal Mode development and defers both pending decisions, storage, flows, and related export structures to complete product Redesign. Export is for external analysis and audit, not lossless re-import; backup / restore will be designed separately. Candidate storage directions do not authorize implementation. See [the recorded decision](../../decisions/20260928-goal_freeze_and_export_backup_boundary.md). This revision supersedes earlier instructions to continue the frozen work until complete.
+
+## Non-Goal Prompt Check — 2026-09-29
+
+The existing builtin-prompts.test.ts guard passes two tests on the integrated-work preparation checkout, covering all three fixed prompt texts and the 3000-code-point bound. Raw output is temp/changes/202609290900000001-chat_task_stability_handoff/builtin-prompts.txt. This is count/source evidence, not final acceptance of Goal behavior or live model quality.

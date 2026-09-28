@@ -61,3 +61,7 @@ After Claude Code capacity was exhausted, the engineer authorized Grok with grok
 ## Intent Revision — 2026-09-28
 
 The engineer freezes Goal Mode development and defers both pending decisions, storage, flows, and related export structures to complete product Redesign. Export is for external analysis and audit, not lossless re-import; backup / restore will be designed separately. Candidate storage directions do not authorize implementation. See [the recorded decision](../../decisions/20260928-goal_freeze_and_export_backup_boundary.md). This revision supersedes earlier instructions to continue the frozen work until complete.
+
+## Intent Revision — 2026-09-29
+
+The engineer requested current closeout and integration with the remaining PR, then transfer of broader Chat / Task experience, retention stability, export / backup scope work, and this handoff's remaining inventory to [Chat And Task Stability Handoff](../202609290900000001-chat_task_stability_handoff/plan.md). That record is the next colleague's entry point. Goal work remains frozen; earlier active queues do not reactivate it. Queued and recorded-only items are preserved there with their existing activation boundaries.
