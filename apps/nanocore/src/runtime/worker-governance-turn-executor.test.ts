@@ -2218,6 +2218,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'stream-failed',
     'truncated',
     'provider-stream-failed',
+    'unsupported-feature',
+    'unsupported-later-success',
+    'unsupported-other-package',
     'later-success',
     'other-package',
     'unknown-code',
@@ -2251,7 +2254,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
               turnId: turn.id,
               agentSessionId,
               packageSnapshotId:
-                inference === 'other-package' ? 'aepsnap_other' : packageSnapshotId,
+                inference === 'other-package' || inference === 'unsupported-other-package'
+                  ? 'aepsnap_other'
+                  : packageSnapshotId,
               authorityActor: null,
               capabilityId: 'llm.responses',
               family: 'llm',
@@ -2264,8 +2269,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
               workspaceDb,
               callId: call.id,
               status: 'failed',
-              errorCode:
-                inference === 'unknown-code'
+              errorCode: inference.startsWith('unsupported-')
+                ? 'unsupported_gateway_feature'
+                : inference === 'unknown-code'
                   ? 'unknown-internal-detail'
                   : inference === 'truncated'
                     ? 'provider_stream_truncated'
@@ -2273,7 +2279,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
                       ? 'provider_stream_failed'
                       : 'worker_inference_stream_failed',
             });
-            if (inference === 'later-success') {
+            if (inference === 'later-success' || inference === 'unsupported-later-success') {
               const retry = startCapabilityCall({
                 ...call.context,
                 callId: 'cap_retry',
@@ -2321,20 +2327,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'cleanupSession',
     ]);
     expect(store.getTurnById(turn.id).status).toBe('failed');
-    expect(store.getTurnById(turn.id).error).toEqual({
-      code: 'worker_governance_turn_failed',
+    const expectedError = {
+      code:
+        inference === 'unsupported-feature'
+          ? 'unsupported_gateway_feature'
+          : 'worker_governance_turn_failed',
       message:
-        'Worker reported terminal status: failed.' +
-        (inference === 'stream-failed' ||
-        inference === 'truncated' ||
-        inference === 'provider-stream-failed'
-          ? ' Last worker inference stream failed before completion.'
-          : ''),
-    });
+        inference === 'unsupported-feature'
+          ? 'The Gateway cannot preserve the requested features for the selected model route. Choose a compatible model route and start a new Task.'
+          : 'Worker reported terminal status: failed.' +
+            (inference === 'stream-failed' ||
+            inference === 'truncated' ||
+            inference === 'provider-stream-failed'
+              ? ' Last worker inference stream failed before completion.'
+              : ''),
+    };
+    expect(store.getTurnById(turn.id).error).toEqual(expectedError);
     expect(store.getTurnEvents(turn.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          data: expect.objectContaining({ stopReason: 'error', type: 'turn-completed' }),
+          data: expect.objectContaining({
+            stopReason: 'error',
+            type: 'turn-completed',
+            turn: expect.objectContaining({ error: expectedError }),
+          }),
           event: 'turn.completed',
         }),
       ])

@@ -420,8 +420,19 @@ describe('governed worker turn failure projection', () => {
     ).toHaveLength(1);
   });
 
-  it('repairs a missing terminal event after turn and session writes persisted', () => {
+  it.each([
+    'worker_governance_restart_recovery',
+    'unsupported_gateway_feature',
+  ])('repairs a missing terminal event after a cold retry of %s without replacing its diagnostic', (errorCode) => {
     const { dataRoot, store } = createFixture();
+    const originalError = {
+      code: errorCode,
+      message:
+        errorCode === 'unsupported_gateway_feature'
+          ? 'The Gateway cannot preserve the requested features for the selected model route. Choose a compatible model route and start a new Task.'
+          : 'Worker execution stopped during NanoCore restart recovery.',
+    };
+    const completedAt = '2026-07-15T00:00:45.000Z';
     const emitTurnEvent = store.emitTurnEvent.bind(store);
     const terminalEventWrite = vi
       .spyOn(store, 'emitTurnEvent')
@@ -432,11 +443,26 @@ describe('governed worker turn failure projection', () => {
         return emitTurnEvent(turnId, event);
       });
 
-    expect(() => projectFailure(store)).toThrow(AggregateError);
+    expect(() =>
+      terminalizeGovernedWorkerTurn({
+        agentSessionId: 'as_worker_failure',
+        completedAt,
+        errorCode,
+        message: originalError.message,
+        outcome: 'failed',
+        requestId: null,
+        store,
+        turnId: 'turn_worker_failure',
+      })
+    ).toThrow(AggregateError);
     terminalEventWrite.mockRestore();
 
     const partial = new FsStore({ dataRoot });
-    expect(partial.getTurnById('turn_worker_failure')).toMatchObject({ status: 'failed' });
+    expect(partial.getTurnById('turn_worker_failure')).toMatchObject({
+      completedAt,
+      error: originalError,
+      status: 'failed',
+    });
     expect(partial.getAgentSession('as_worker_failure')).toMatchObject({ status: 'failed' });
     expect(
       partial
@@ -445,16 +471,33 @@ describe('governed worker turn failure projection', () => {
     ).toEqual([]);
 
     expect(projectFailure(partial)).toMatchObject({ status: 'failed' });
+    const repaired = new FsStore({ dataRoot });
+    expect(repaired.getTurnById('turn_worker_failure')).toMatchObject({
+      completedAt,
+      error: originalError,
+      status: 'failed',
+    });
+    expect(repaired.getAgentSession('as_worker_failure')).toMatchObject({
+      message: originalError.message,
+      status: 'failed',
+    });
+    const terminalEvents = repaired
+      .getTurnEvents('turn_worker_failure')
+      .filter((event) => event.event === 'turn.completed');
+    expect(terminalEvents).toHaveLength(1);
+    expect(SseEventEnvelopeSchema.parse(terminalEvents[0])).toMatchObject({
+      data: {
+        type: 'turn-completed',
+        stopReason: 'error',
+        turn: { completedAt, error: originalError, status: 'failed' },
+      },
+    });
+    projectFailure(repaired);
     expect(
       new FsStore({ dataRoot })
         .getTurnEvents('turn_worker_failure')
-        .filter(
-          (event) =>
-            event.event === 'turn.completed' &&
-            event.data.type === 'turn-completed' &&
-            event.data.stopReason === 'error'
-        )
-    ).toHaveLength(1);
+        .filter((event) => event.event === 'turn.completed')
+    ).toEqual(terminalEvents);
   });
 
   it('repairs a partial normal worker failure during restart without replacing its error', () => {

@@ -1079,7 +1079,7 @@ function asOpenAIGatewayError(error: unknown): Response {
     return Response.json(
       {
         error: {
-          message: error.message,
+          message: 'Requested features are not supported by the Gateway.',
           type: 'invalid_request_error',
           code: error.code,
         },
@@ -1308,7 +1308,11 @@ function finishDurableLlmGatewayFailure(
   finishDurableLlmGatewayCall(
     durableCall,
     cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
-    cancelled ? cancellationCode : failureCode
+    cancelled
+      ? cancellationCode
+      : error instanceof GatewayUnsupportedFeatureError
+        ? error.code
+        : failureCode
   );
   return cancelled;
 }

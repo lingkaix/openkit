@@ -2817,6 +2817,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       return;
     }
     let inferenceDetail = '';
+    let unsupportedInference = false;
     const workspaceDb = packageSnapshotId ? this.openWorkspaceDb(turnScope.workspaceId) : null;
     try {
       const lastInference =
@@ -2839,8 +2840,26 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       ) {
         inferenceDetail = ' Last worker inference stream failed before completion.';
       }
+      unsupportedInference =
+        lastInference?.status === 'failed' &&
+        lastInference.errorCode === 'unsupported_gateway_feature';
     } finally {
       workspaceDb?.sqlite.close();
+    }
+    if (unsupportedInference) {
+      // Project only the known Gateway category, never the request or bridge feature text.
+      terminalizeGovernedWorkerTurn({
+        agentSessionId,
+        completedAt: this.now(),
+        errorCode: 'unsupported_gateway_feature',
+        message:
+          'The Gateway cannot preserve the requested features for the selected model route. Choose a compatible model route and start a new Task.',
+        outcome: 'failed',
+        requestId,
+        store,
+        turnId: turnScope.id,
+      });
+      return;
     }
     this.failTurn(
       store,

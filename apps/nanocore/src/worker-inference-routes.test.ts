@@ -179,6 +179,9 @@ class FakeWorkerInferenceDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     this.responseCalls.push({ context, provider, request });
+    if (this.responseError) {
+      throw this.responseError;
+    }
     context.transport?.onCodexTurnState?.('worker-provider-response-state');
 
     if (this.shouldHoldResponsesStream) {
@@ -1216,6 +1219,14 @@ describe('worker inference routes', () => {
       expectedStatus: 400,
       expectedLedgerStatus: 'failed',
     },
+    {
+      caseName: 'typed unsupported feature after request abort',
+      error: new GatewayUnsupportedFeatureError('pi-ai Responses function tools'),
+      expectedCode: 'unsupported_gateway_feature',
+      expectedLedgerCode: 'unsupported_gateway_feature',
+      expectedStatus: 400,
+      expectedLedgerStatus: 'failed',
+    },
   ])('classifies $caseName by the thrown error cause', async (testCase) => {
     const fixture = createWorkerInferenceRouteFixture();
     const abortController = new AbortController();
@@ -1693,6 +1704,49 @@ describe('worker inference routes', () => {
     expect(readWorkerInferenceCapabilityCalls(serializationFailure)).toEqual([
       expect.objectContaining({ errorCode: 'worker_inference_failed', status: 'failed' }),
     ]);
+  });
+
+  it.each([
+    false,
+    true,
+  ])('preserves typed unsupported feature failures before stream=%s', async (stream) => {
+    const fixture = createWorkerInferenceRouteFixture();
+    const request = { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID, stream };
+    const supported = await postWorkerResponses(fixture, request);
+    expect(supported.status).toBe(200);
+    await supported.text();
+
+    fixture.dispatcher.responseError = new GatewayUnsupportedFeatureError(
+      'pi-ai Responses function tools token=tok_secret'
+    );
+    const rejected = await postWorkerResponses(fixture, request);
+    const body = await rejected.json();
+    const calls = readWorkerInferenceCapabilityCalls(fixture);
+    expect(rejected.status).toBe(400);
+    expect(calls).toEqual([
+      expect.objectContaining({ errorCode: null, status: 'succeeded' }),
+      expect.objectContaining({ errorCode: 'unsupported_gateway_feature', status: 'failed' }),
+    ]);
+    expect(body).toEqual({
+      error: {
+        code: 'unsupported_gateway_feature',
+        message: 'Requested features are not supported by the Gateway.',
+        type: 'invalid_request_error',
+      },
+    });
+    expect(JSON.stringify({ body, calls })).not.toMatch(/pi-ai|tok_secret/);
+
+    fixture.dispatcher.responseError = Object.assign(new Error('private token=tok_secret'), {
+      code: 'unsupported_gateway_feature',
+    });
+    const untyped = await postWorkerResponses(fixture, request);
+    expect(await untyped.json()).toMatchObject({
+      error: { code: 'worker_inference_request_failed' },
+    });
+    expect(readWorkerInferenceCapabilityCalls(fixture).at(-1)).toMatchObject({
+      errorCode: 'worker_inference_failed',
+      status: 'failed',
+    });
   });
 
   it('projects typed provider request failures as generic worker errors', async () => {

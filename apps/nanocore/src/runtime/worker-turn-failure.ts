@@ -359,6 +359,7 @@ function isGovernedWorkerTerminalCode(errorCode: string): boolean {
     errorCode === 'worker_governance_turn_failed' ||
     errorCode === 'worker_governance_restart_recovery' ||
     errorCode === 'worker_governance_turn_cancelled' ||
+    errorCode === 'unsupported_gateway_feature' ||
     errorCode === 'worker_human_gate_unavailable'
   );
 }
