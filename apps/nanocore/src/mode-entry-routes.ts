@@ -315,11 +315,59 @@ function replayConversationCommand(
   record: CommandRequestRecord,
   coreDb?: CoreDb
 ): ConversationCommandResult {
+  if (!record.response.conversationMetadata) {
+    // A failed provider attempt has no successful result kind or result Item to replay.
+    try {
+      const turn = store.getTurn(workspaceId, threadId, record.response.id);
+      const userItemId = `it_chat_user_${turn.id}`;
+      const firstUserItem = store
+        .listWorkspaceItemRevisions(workspaceId)
+        .find((item) => item.id === userItemId);
+      const userItem = turn.items.find((item) => item.id === userItemId);
+      if (
+        record.response.kind !== 'turn' ||
+        turn.id !== providerChatTurnId(actorId, workspaceId, threadId, record.requestId) ||
+        turn.triggerActor.kind !== 'user' ||
+        turn.triggerActor.id !== actorId ||
+        turn.agentId !== QUICK_CHAT_AGENT_ID ||
+        turn.agentSessionId ||
+        turn.status !== 'interrupted' ||
+        !turn.completedAt ||
+        turn.error?.code !== 'provider_call_aborted' ||
+        firstUserItem?.type !== 'user-message' ||
+        firstUserItem.status !== 'completed' ||
+        !firstUserItem.completedAt ||
+        firstUserItem.actor.kind !== 'user' ||
+        firstUserItem.actor.id !== actorId ||
+        firstUserItem.workspaceId !== workspaceId ||
+        firstUserItem.threadId !== threadId ||
+        firstUserItem.turnId !== turn.id ||
+        firstUserItem.createdAt !== turn.startedAt ||
+        userItem?.type !== 'user-message' ||
+        userItem.actor.kind !== 'user' ||
+        userItem.actor.id !== actorId ||
+        userItem.status !== firstUserItem.status ||
+        userItem.completedAt !== firstUserItem.completedAt ||
+        userItem.createdAt !== firstUserItem.createdAt ||
+        userItem.text !== firstUserItem.text ||
+        turn.items.some((item) => item.type === 'assistant-message')
+      )
+        throw new Error('Interrupted Chat lineage is contradictory.');
+    } catch {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The Chat command receipt does not match its durable Turn lineage.',
+        409
+      );
+    }
+    throw new TurnStartValidationError(
+      'provider_call_aborted',
+      'Quick chat provider call was aborted.',
+      499
+    );
+  }
   try {
     const metadata = record.response.conversationMetadata;
-    if (!metadata) {
-      throw new Error('Chat command receipt metadata is missing.');
-    }
     const currentTurn = store.getTurnById(record.response.id);
     const itemRevisions = store.listWorkspaceItemRevisions(workspaceId);
     if (
@@ -680,6 +728,16 @@ function replayConversationCommand(
       409
     );
   }
+}
+
+/** Derives the provider Chat Turn identity from its exact command scope, excluding private input. */
+function providerChatTurnId(
+  actorId: string,
+  workspaceId: string,
+  threadId: string,
+  requestId: string
+): string {
+  return `tu_conversation_${commandInputHash({ command: 'conversation.submit', actorId, workspaceId, threadId, requestId }).slice(-24)}`;
 }
 
 /**
@@ -2140,6 +2198,7 @@ function requireAuthorizedModeThread(
  * Registers Quick Chat and Chat Mode entry routes.
  *
  * @param dependencies Hono app and shared app composition callbacks.
+ * @returns Explicit interrupt control for active internal Chat provider work only.
  */
 export function registerQuickAndChatModeRoutes({
   app,
@@ -2187,7 +2246,12 @@ export function registerQuickAndChatModeRoutes({
     store: FsStore,
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
-}): void {
+}): (store: FsStore, turnId: string) => Promise<boolean> {
+  // These process-local handles stop admitted model work; the Turn remains the durable owner.
+  const activeChatRuns = new WeakMap<
+    FsStore,
+    Map<string, { controller: AbortController; finished: Promise<void> }>
+  >();
   /** Resolves one internal-role profile and logical model for one User and Workspace. */
   function internalRoleSelection(
     roleId: string,
@@ -2661,6 +2725,20 @@ export function registerQuickAndChatModeRoutes({
       workspaceId: string,
       threadId: string
     ): Promise<ConversationCommandResult> {
+      // A missing receipt cannot make an existing provider attempt fresh through changed routing.
+      const providerTurnId = providerChatTurnId(
+        actorId,
+        workspaceId,
+        threadId,
+        chatInput.requestId
+      );
+      if (store.listThreadTurns(workspaceId, threadId).some((turn) => turn.id === providerTurnId)) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The Chat provider attempt is missing its command receipt.',
+          409
+        );
+      }
       const workspace = store.getWorkspace(workspaceId);
       const isQuickChatWorkspace = workspace.kind === 'quick-chat';
       const acceptedTarget = conversationTargetCatalog(
@@ -2751,10 +2829,18 @@ export function registerQuickAndChatModeRoutes({
        * Creates the durable Chat Mode turn and its user-message item.
        *
        * @param completedAt Completion timestamp shared by first-slice Chat Mode items.
+       * @param turnId Request-derived identity for provider work whose receipt may fail to persist.
        * @returns Created turn.
        */
-      const createChatTurn = (completedAt: string) => {
-        const turn = store.createTurn(workspaceId, threadId, chatInput.input, triggerActor);
+      const createChatTurn = (completedAt: string, turnId?: string) => {
+        const turn = store.createTurn(
+          workspaceId,
+          threadId,
+          chatInput.input,
+          triggerActor,
+          null,
+          turnId ? { turnId } : {}
+        );
         store.updateTurn(turn.id, {
           agentId:
             acceptedTarget.kind === 'knowledge-manager' ? 'knowledge-manager' : QUICK_CHAT_AGENT_ID,
@@ -3663,75 +3749,130 @@ export function registerQuickAndChatModeRoutes({
             ? [{ role: item.type === 'user-message' ? 'user' : 'assistant', content: item.text }]
             : []
         );
-      const turn = createChatTurn(new Date().toISOString());
-      let result: Awaited<ReturnType<typeof callQuickChatProvider>>;
-      try {
-        result = await withTurnModelCapture(
-          {
-            store,
-            turn,
-            environment: { systemPrompt: assembleBuiltInSystemPrompt('quick-chat'), tools: [] },
-          },
-          (capture) =>
-            callQuickChatProvider({
-              logicalModel: selection.logicalModel,
-              prompt: conversationPrompt,
-              history,
-              sessionId,
-              workspaceId,
-              signal: c.req.raw.signal,
-              capture,
-            })
-        );
-      } catch (error) {
-        store.updateTurn(turn.id, {
-          status: c.req.raw.signal.aborted ? 'interrupted' : 'failed',
-          completedAt: new Date().toISOString(),
-          error: { code: 'chat_provider_failed', message: 'Chat model work did not complete.' },
+      const turn = createChatTurn(new Date().toISOString(), providerTurnId);
+      const controller = new AbortController();
+      let cancellationPersisted = false;
+      const execution = (async (): Promise<ConversationCommandResult> => {
+        let result: Awaited<ReturnType<typeof callQuickChatProvider>>;
+        try {
+          result = await withTurnModelCapture(
+            {
+              store,
+              turn,
+              environment: { systemPrompt: assembleBuiltInSystemPrompt('quick-chat'), tools: [] },
+            },
+            (capture) =>
+              callQuickChatProvider({
+                logicalModel: selection.logicalModel,
+                prompt: conversationPrompt,
+                history,
+                sessionId,
+                workspaceId,
+                signal: controller.signal,
+                capture,
+              })
+          );
+          if (controller.signal.aborted) {
+            throw new TurnStartValidationError(
+              'provider_call_aborted',
+              'Quick chat provider call was aborted.',
+              499
+            );
+          }
+        } catch (error) {
+          const aborted =
+            error instanceof TurnStartValidationError && error.code === 'provider_call_aborted';
+          try {
+            store.updateTurn(turn.id, {
+              status: aborted ? 'interrupted' : 'failed',
+              completedAt: new Date().toISOString(),
+              error: aborted
+                ? {
+                    code: 'provider_call_aborted',
+                    message: 'Quick chat provider call was aborted.',
+                  }
+                : { code: 'chat_provider_failed', message: 'Chat model work did not complete.' },
+            });
+            if (aborted) {
+              store.recordCommandRequest({
+                command: 'conversation.submit',
+                requestId: chatInput.requestId,
+                scope: { actorId, workspaceId, threadId },
+                inputHash: commandInputHash(conversationCommandInput(chatInput)),
+                response: { kind: 'turn', id: turn.id },
+              });
+            }
+          } catch {
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The Chat terminal failure could not be persisted.',
+              409
+            );
+          }
+          cancellationPersisted = aborted;
+          throw error;
+        }
+        const completedAt = new Date().toISOString();
+        recordQuickChatLlmUsage({
+          ...(coreDb ? { coreDb } : {}),
+          authorityActor: triggerActor,
+          model: selection.logicalModel.id,
+          providerId: result.providerId,
+          requestId: chatInput.requestId,
+          threadId,
+          turnId: turn.id,
+          ...(result.usage === undefined ? {} : { usage: result.usage }),
+          workspaceId,
         });
-        throw error;
+
+        const item = store.createItem({
+          id: `it_chat_answer_${turn.id}`,
+          workspaceId,
+          threadId,
+          turnId: turn.id,
+          type: 'assistant-message',
+          status: 'completed',
+          text: result.content,
+          createdAt: turn.startedAt ?? completedAt,
+          completedAt,
+        });
+        const completedTurn = store.updateTurn(turn.id, {
+          status: 'completed',
+          completedAt,
+        });
+
+        return {
+          body: ConversationCommandBodySchema.parse({
+            outcome: 'answered',
+            explanation: 'The Assistant answered directly.',
+            turn: completedTurn,
+            item,
+            handoff: null,
+          }),
+          downstream: null,
+          resultKind: 'provider-answer',
+          status: 200,
+        };
+      })();
+      const finished = execution.then(
+        () => undefined,
+        (error: unknown) => {
+          if (!cancellationPersisted) throw error;
+        }
+      );
+      // Observe rejection when no interrupt is waiting; the command still propagates the failure.
+      void finished.catch(() => undefined);
+      let runs = activeChatRuns.get(store);
+      if (!runs) {
+        runs = new Map();
+        activeChatRuns.set(store, runs);
       }
-      const completedAt = new Date().toISOString();
-      recordQuickChatLlmUsage({
-        ...(coreDb ? { coreDb } : {}),
-        authorityActor: triggerActor,
-        model: selection.logicalModel.id,
-        providerId: result.providerId,
-        requestId: chatInput.requestId,
-        threadId,
-        turnId: turn.id,
-        ...(result.usage === undefined ? {} : { usage: result.usage }),
-        workspaceId,
-      });
-
-      const item = store.createItem({
-        id: `it_chat_answer_${turn.id}`,
-        workspaceId,
-        threadId,
-        turnId: turn.id,
-        type: 'assistant-message',
-        status: 'completed',
-        text: result.content,
-        createdAt: turn.startedAt ?? completedAt,
-        completedAt,
-      });
-      const completedTurn = store.updateTurn(turn.id, {
-        status: 'completed',
-        completedAt,
-      });
-
-      return {
-        body: ConversationCommandBodySchema.parse({
-          outcome: 'answered',
-          explanation: 'The Assistant answered directly.',
-          turn: completedTurn,
-          item,
-          handoff: null,
-        }),
-        downstream: null,
-        resultKind: 'provider-answer',
-        status: 200,
-      };
+      runs.set(turn.id, { controller, finished });
+      try {
+        return await execution;
+      } finally {
+        runs.delete(turn.id);
+      }
     }
 
     try {
@@ -3842,6 +3983,15 @@ export function registerQuickAndChatModeRoutes({
       return asApiError('Chat Mode failed.', 'chat_mode_failed', 500);
     }
   });
+
+  return async (store, turnId) => {
+    const run = activeChatRuns.get(store)?.get(turnId);
+    if (!run) return false;
+    run.controller.abort();
+    // Success requires the product owner to persist interruption, not just signal the provider.
+    await run.finished;
+    return true;
+  };
 }
 
 /**

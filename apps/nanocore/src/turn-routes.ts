@@ -16,6 +16,7 @@ import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import type { FsStore } from './lib/store.js';
+import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
 import { registerFeedbackRoutes } from './runtime/feedback-routes.js';
 import { GoalPlanApprovalError } from './runtime/goal-plan-approval.js';
@@ -119,6 +120,7 @@ export function registerTurnRoutes({
   app,
   coreDb,
   inflightCommands,
+  interruptInternalChatTurn,
   providerCredentialResolver,
   requestStore,
   repositoryWorkspaceDb,
@@ -130,6 +132,7 @@ export function registerTurnRoutes({
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly interruptInternalChatTurn: (store: FsStore, turnId: string) => Promise<boolean>;
   readonly providerCredentialResolver: ProviderCredentialResolver;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
@@ -519,6 +522,7 @@ export function registerTurnRoutes({
       const turn = await interruptProductTurn({
         store,
         inflightCommands,
+        interruptInternalChatTurn,
         coreDb,
         turnExecutor,
         workspaceId,
@@ -538,6 +542,7 @@ export function registerTurnRoutes({
 export async function interruptProductTurn(input: {
   readonly store: FsStore;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly interruptInternalChatTurn?: (store: FsStore, turnId: string) => Promise<boolean>;
   readonly coreDb: CoreDb | undefined;
   readonly turnExecutor: TurnExecutor;
   readonly workspaceId: string;
@@ -548,6 +553,7 @@ export async function interruptProductTurn(input: {
   const {
     store,
     inflightCommands,
+    interruptInternalChatTurn,
     coreDb,
     turnExecutor,
     workspaceId,
@@ -583,6 +589,10 @@ export async function interruptProductTurn(input: {
         );
       }
 
+      if (await interruptInternalChatTurn?.(store, turnId)) {
+        return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+      }
+
       if (!turnExecutor.capabilities.interrupts) {
         throw new TurnStartValidationError(
           'interrupts_not_supported',
@@ -598,6 +608,56 @@ export async function interruptProductTurn(input: {
     },
     replay: (record) => TurnSchema.parse(store.getTurn(workspaceId, threadId, record.response.id)),
     responseId: (result) => result.id,
+  }).catch((error: unknown) => {
+    if (error instanceof TurnStartValidationError && error.code === 'recovery_required')
+      throw error;
+    const currentTurn = store.getTurn(workspaceId, threadId, turnId);
+    if (
+      interruptInternalChatTurn &&
+      currentTurn.agentId === QUICK_CHAT_AGENT_ID &&
+      !currentTurn.agentSessionId &&
+      currentTurn.status === 'interrupted' &&
+      currentTurn.error?.code === 'provider_call_aborted'
+    ) {
+      if (error instanceof TurnStartValidationError && error.code === 'turn_not_interruptible') {
+        const receipts = store.listCommandRequests();
+        const hasSubmitReceipt = receipts.some(
+          (receipt) =>
+            receipt.command === 'conversation.submit' &&
+            currentTurn.triggerActor.kind === 'user' &&
+            receipt.scope.actorId === currentTurn.triggerActor.id &&
+            receipt.scope.workspaceId === workspaceId &&
+            receipt.scope.threadId === threadId &&
+            receipt.response.kind === 'turn' &&
+            receipt.response.id === turnId &&
+            receipt.response.conversationMetadata === undefined
+        );
+        const hasInterruptReceipt = receipts.some(
+          (receipt) =>
+            receipt.command === 'turn.interrupt' &&
+            receipt.scope.workspaceId === workspaceId &&
+            receipt.scope.threadId === threadId &&
+            receipt.scope.turnId === turnId &&
+            receipt.response.kind === 'turn' &&
+            receipt.response.id === turnId &&
+            receipt.inputHash ===
+              commandInputHash({
+                requestId: receipt.requestId,
+                workspaceId,
+                threadId,
+                turnId,
+              })
+        );
+        // Complete publication makes a fresh Stop an ordinary terminal conflict.
+        if (hasSubmitReceipt && hasInterruptReceipt) throw error;
+      }
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The Chat interruption is missing its required durable records.',
+        409
+      );
+    }
+    throw error;
   });
 
   completeSchedulerLeaseForTerminalTurn(coreDb, turn);

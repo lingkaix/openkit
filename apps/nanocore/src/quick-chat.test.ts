@@ -105,6 +105,370 @@ function conversationRequest(input: string, requestId: string) {
 }
 
 describe('quick chat app API', () => {
+  it.each([
+    'resolve',
+    'reject',
+  ] as const)('interrupts internal Chat without a worker and ignores a late provider %s', async (lateOutcome) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-interrupt-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const store = createDemoStore({ dataRoot });
+    const admitted = Promise.withResolvers<AbortSignal>();
+    const provider = Promise.withResolvers<unknown>();
+    const executor = new ThrowingTurnExecutor();
+    executor.capabilities.interrupts = false;
+    const interruptWorker = vi.spyOn(executor, 'interruptTurn');
+    const answer = {
+      id: 'chatcmpl_cancel_test',
+      object: 'chat.completion',
+      created: 1,
+      model: 'openai/gpt-5.2',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: 'A fresh answer.' },
+          finish_reason: 'stop',
+        },
+      ],
+    };
+    let calls = 0;
+    const appOptions = {
+      ...createQuickChatProviderOptions(),
+      store,
+      turnExecutor: executor,
+      llmPiAiClient: {
+        createChatCompletion: async (_provider, _request, _onUsage, transport) => {
+          calls += 1;
+          if (calls > 1) return answer;
+          admitted.resolve(transport.signal!);
+          return provider.promise;
+        },
+      } as unknown as PiAiGatewayClient,
+    };
+    const app = createApp(appOptions);
+    const submit = (requestId: string) =>
+      app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(conversationRequest('Explain a short concept.', requestId)),
+      });
+    const pending = submit('req_chat_cancel');
+    const signal = await admitted.promise;
+    const turn = store.listThreadTurns('ws_demo', 'th_demo')[0]!;
+    expect(turn.status).toBe('running');
+    const interrupt = (threadId = 'th_demo') =>
+      app.request(`/api/workspaces/ws_demo/threads/${threadId}/turns/${turn.id}/interrupt`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: '00000000-0000-4000-8000-000000000901',
+          workspaceId: 'ws_demo',
+          threadId,
+          turnId: turn.id,
+        }),
+      });
+    try {
+      const wrongThread = await interrupt('th_wrong');
+      expect(wrongThread.status).toBe(404);
+      expect(signal.aborted).toBe(false);
+      const stopped = await interrupt();
+      expect(stopped.status, await stopped.clone().text()).toBe(200);
+      await expect(stopped.json()).resolves.toMatchObject({
+        id: turn.id,
+        status: 'interrupted',
+        error: { code: 'provider_call_aborted' },
+      });
+      expect(signal.aborted).toBe(true);
+      expect(interruptWorker).not.toHaveBeenCalled();
+      const submitted = await pending;
+      expect(submitted.status).toBe(499);
+      await expect(submitted.json()).resolves.toMatchObject({ code: 'provider_call_aborted' });
+      const retained = structuredClone(store.getTurnById(turn.id));
+      const replay = await interrupt();
+      expect(replay.status).toBe(200);
+      const freshStop = await app.request(
+        `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000903',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: turn.id,
+          }),
+        }
+      );
+      expect(freshStop.status).toBe(409);
+      await expect(freshStop.json()).resolves.toMatchObject({ code: 'turn_not_interruptible' });
+      expect(store.getTurnById(turn.id)).toEqual(retained);
+      expect(
+        store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000903', {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: turn.id,
+        })
+      ).toBeNull();
+      expect(interruptWorker).not.toHaveBeenCalled();
+      const submitReplay = await submit('req_chat_cancel');
+      expect(submitReplay.status).toBe(499);
+      await expect(submitReplay.json()).resolves.toMatchObject({ code: 'provider_call_aborted' });
+      const coldReplay = await createApp({
+        ...appOptions,
+        store: new FsStore({ dataRoot }),
+      }).request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(conversationRequest('Explain a short concept.', 'req_chat_cancel')),
+      });
+      expect(coldReplay.status).toBe(499);
+      const coldInterrupt = await createApp({
+        ...appOptions,
+        store: new FsStore({ dataRoot }),
+      }).request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: '00000000-0000-4000-8000-000000000901',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: turn.id,
+        }),
+      });
+      expect(coldInterrupt.status).toBe(200);
+      await expect(coldInterrupt.json()).resolves.toMatchObject({
+        id: turn.id,
+        status: 'interrupted',
+      });
+      const changedInput = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(conversationRequest('A changed request.', 'req_chat_cancel')),
+        }
+      );
+      expect(changedInput.status).toBe(409);
+      await expect(changedInput.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+      const fresh = await submit('req_chat_after_stop');
+      expect(fresh.status).toBe(200);
+      if (lateOutcome === 'resolve') provider.resolve(answer);
+      else provider.reject(new Error('private late provider failure'));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(store.getTurnById(turn.id)).toEqual(retained);
+      expect(
+        store.listThreadItems('ws_demo', 'th_demo').filter((item) => item.turnId === turn.id)
+      ).toEqual([expect.objectContaining({ type: 'user-message' })]);
+      expect(new FsStore({ dataRoot }).getTurnById(turn.id)).toEqual(retained);
+      expect(calls).toBe(2);
+    } finally {
+      provider.resolve(answer);
+      await pending;
+    }
+  });
+
+  it('keeps internal Chat running when its HTTP transport disconnects', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-disconnect-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const store = createDemoStore({ dataRoot });
+    const transport = new AbortController();
+    const admitted = Promise.withResolvers<AbortSignal>();
+    const provider = Promise.withResolvers<unknown>();
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      store,
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async (_provider, _request, _onUsage, options) => {
+          admitted.resolve(options.signal!);
+          return provider.promise;
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+    const pending = app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: transport.signal,
+      body: JSON.stringify(conversationRequest('Explain a short concept.', 'req_chat_disconnect')),
+    });
+    const signal = await admitted.promise;
+    transport.abort(new Error('private transport reason'));
+    const remainedRunning = store.listThreadTurns('ws_demo', 'th_demo')[0]!.status;
+    const aborted = signal.aborted;
+    provider.resolve({
+      id: 'chatcmpl_disconnect',
+      object: 'chat.completion',
+      created: 1,
+      model: 'openai/gpt-5.2',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: 'Finished after disconnect.' },
+          finish_reason: 'stop',
+        },
+      ],
+    });
+    const response = await pending;
+    expect(remainedRunning).toBe('running');
+    expect(aborted).toBe(false);
+    expect(response.status).toBe(200);
+    expect(store.listThreadTurns('ws_demo', 'th_demo')[0]!.status).toBe('completed');
+  });
+
+  it.each([
+    'Turn',
+    'receipt',
+    'interrupt receipt',
+  ] as const)('reports recovery_required when Chat Stop cannot persist its %s', async (failure) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-stop-persistence-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const store = createDemoStore({ dataRoot });
+    const admitted = Promise.withResolvers<void>();
+    const provider = Promise.withResolvers<unknown>();
+    const createChatCompletion = vi.fn(async () => {
+      admitted.resolve();
+      return provider.promise;
+    });
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      store,
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: { createChatCompletion } as unknown as PiAiGatewayClient,
+    });
+    const submit = () =>
+      app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          conversationRequest('Explain a short concept.', 'req_chat_stop_refusal')
+        ),
+      });
+    const pending = submit();
+    await admitted.promise;
+    const turn = store.listThreadTurns('ws_demo', 'th_demo')[0]!;
+    const originalUpdate = store.updateTurn.bind(store);
+    const update = vi.spyOn(store, 'updateTurn').mockImplementation((...args) => {
+      if (failure === 'Turn' && args[1].status === 'interrupted')
+        throw new Error('private persist refusal');
+      return originalUpdate(...args);
+    });
+    const originalRecord = store.recordCommandRequest.bind(store);
+    const record = vi.spyOn(store, 'recordCommandRequest').mockImplementation((...args) => {
+      if (
+        (failure === 'receipt' && args[0].command === 'conversation.submit') ||
+        (failure === 'interrupt receipt' && args[0].command === 'turn.interrupt')
+      )
+        throw new Error('private receipt refusal');
+      return originalRecord(...args);
+    });
+    try {
+      const stop = () =>
+        app.request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000902',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: turn.id,
+          }),
+        });
+      const requests = failure === 'interrupt receipt' ? [stop(), stop()] : [stop()];
+      const [stopped, concurrent] = await Promise.all(requests);
+      expect(stopped.status).toBe(409);
+      const stopBody = await stopped.json();
+      expect(stopBody).toMatchObject({ code: 'recovery_required' });
+      expect(JSON.stringify(stopBody)).not.toContain('private');
+      if (concurrent) {
+        expect(concurrent.status).toBe(409);
+        const concurrentBody = await concurrent.json();
+        expect(concurrentBody).toMatchObject({ code: 'recovery_required' });
+        expect(JSON.stringify(concurrentBody)).not.toContain('private');
+      }
+      const response = await pending;
+      expect(response.status).toBe(failure === 'interrupt receipt' ? 499 : 409);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        code: failure === 'interrupt receipt' ? 'provider_call_aborted' : 'recovery_required',
+      });
+      expect(JSON.stringify(body)).not.toContain('private');
+      expect(
+        store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000902', {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: turn.id,
+        })
+      ).toBeNull();
+      update.mockRestore();
+      record.mockRestore();
+      const replay = await submit();
+      expect(replay.status).toBe(failure === 'interrupt receipt' ? 499 : 409);
+      await expect(replay.json()).resolves.toMatchObject({
+        code: failure === 'interrupt receipt' ? 'provider_call_aborted' : 'recovery_required',
+      });
+      if (failure !== 'interrupt receipt') {
+        const retainedTurns = store.listThreadTurns('ws_demo', 'th_demo');
+        const retainedItems = store.listThreadItems('ws_demo', 'th_demo');
+        for (const change of [
+          { input: 'Search the web for updates' },
+          { targetRef: 'internal-role:knowledge-manager' },
+        ]) {
+          const changed = await app.request(
+            '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                ...conversationRequest('Explain a short concept.', 'req_chat_stop_refusal'),
+                ...change,
+              }),
+            }
+          );
+          expect(changed.status, await changed.clone().text()).toBe(409);
+          await expect(changed.json()).resolves.toMatchObject({ code: 'recovery_required' });
+          expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual(retainedTurns);
+          expect(store.listThreadItems('ws_demo', 'th_demo')).toEqual(retainedItems);
+          expect(
+            store.getCommandRequest('conversation.submit', 'req_chat_stop_refusal', {
+              actorId: 'user_local',
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+            })
+          ).toBeNull();
+        }
+      }
+      if (failure === 'interrupt receipt') {
+        const stopReplay = await app.request(
+          `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000902',
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: turn.id,
+            }),
+          }
+        );
+        expect(stopReplay.status).toBe(409);
+        await expect(stopReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      }
+      expect(createChatCompletion).toHaveBeenCalledTimes(1);
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .every((item) => item.type !== 'assistant-message')
+      ).toBe(true);
+    } finally {
+      update.mockRestore();
+      record.mockRestore();
+      provider.resolve({ choices: [] });
+      await pending;
+    }
+  });
+
   it('scopes existing Worker targets to this conversation and preserves truthful availability', async () => {
     const store = createDemoStore();
     const workerSetup = createTestAgentSetup({

@@ -1559,7 +1559,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfigFiles: runtimeConfigFileService,
   });
 
-  registerQuickAndChatModeRoutes({
+  const interruptInternalChatTurn = registerQuickAndChatModeRoutes({
     app,
     assertProjectWorkspace,
     coreDb: options.coreDb,
@@ -1745,6 +1745,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     coreDb: options.coreDb,
     inflightCommands,
+    interruptInternalChatTurn,
     providerCredentialResolver,
     requestStore,
     repositoryWorkspaceDb,
