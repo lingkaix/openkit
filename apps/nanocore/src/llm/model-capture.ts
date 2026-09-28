@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { FsStore } from '../lib/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -34,17 +35,25 @@ export class ModelCaptureError extends Error {
 
 /**
  * Runs one model effect with the exact admitted Turn binding and owns any Workspace database it opens.
+ * Optional internal-agent environment metadata commits before the effect, independently of full I/O capture.
  *
- * @param input Store-owned Turn and optional borrowed Goal planning database.
+ * @param input Store-owned Turn, optional borrowed database and exact internal-agent prompt/Tool inputs.
  * @param run Model effect that receives the trusted context.
  * @returns The model effect's result.
- * @throws ModelCaptureError when durable lineage or coverage cannot be verified.
+ * @throws ModelCaptureError when durable lineage, coverage or required environment retention cannot be verified.
  */
 export async function withTurnModelCapture<T>(
   input: {
     readonly store: FsStore;
     readonly turn: ReturnType<FsStore['createTurn']>;
     readonly workspaceDb?: WorkspaceDb;
+    readonly environment?: {
+      readonly systemPrompt: string;
+      readonly tools: readonly {
+        readonly name: string;
+        readonly inputSchema: Readonly<Record<string, unknown>>;
+      }[];
+    };
   },
   run: (capture: Omit<ModelCaptureContext, 'corr'>) => Promise<T>
 ): Promise<T> {
@@ -77,6 +86,39 @@ export async function withTurnModelCapture<T>(
       });
       if (!binding.coverage) {
         throw new ModelCaptureError();
+      }
+      if (input.environment) {
+        if (binding.turn.startedAt === null) throw new ModelCaptureError();
+        const { version } = JSON.parse(
+          readFileSync(new URL('../../package.json', import.meta.url), 'utf8')
+        );
+        // Admission time and identity let the existing writer deduplicate exact re-entry and reject rebinding.
+        appendWorkObservation(captureDb, {
+          threadId: turn.threadId,
+          turnId: turn.id,
+          observation: {
+            id: `env:${turn.id}`,
+            ts: binding.turn.startedAt,
+            type: 'env.bound',
+            obs: 'core',
+            ret: 'turn-evidence',
+            payload: {
+              version,
+              workspaceId: captureDb.workspaceId,
+              systemPromptDigest: digestLlmSystemPrompt({
+                endpoint: 'responses',
+                request: { instructions: input.environment.systemPrompt },
+              }),
+              tools: input.environment.tools.map(({ name, inputSchema }) => ({
+                name,
+                inputSchemaDigest: createHash('sha256')
+                  .update(JSON.stringify(inputSchema))
+                  .digest('hex'),
+              })),
+            },
+          },
+          bodies: [],
+        });
       }
     } catch {
       throw new ModelCaptureError();
@@ -124,15 +166,31 @@ export class ModelCapture {
         endpoint: Array.isArray(input.messages) ? 'chat_completions' : 'responses',
         request,
       }),
-      sampling: {
-        temperature: typeof input.temperature === 'number' ? input.temperature : null,
-        topP: typeof input.top_p === 'number' ? input.top_p : null,
-        maxOutputTokens:
-          input.max_output_tokens ?? input.max_completion_tokens ?? input.max_tokens ?? null,
-        reasoningEffort: reasoning.effort ?? input.reasoning_effort ?? null,
-        reasoningSummary: reasoning.summary ?? null,
-        reasoningContext: reasoning.context ?? null,
-      },
+      // Absence is not a default; explicit null and zero remain requested values.
+      sampling: select(
+        {
+          temperature: input.temperature,
+          topP: input.top_p,
+          maxOutputTokens:
+            input.max_output_tokens !== undefined
+              ? input.max_output_tokens
+              : input.max_completion_tokens !== undefined
+                ? input.max_completion_tokens
+                : input.max_tokens,
+          reasoningEffort:
+            reasoning.effort !== undefined ? reasoning.effort : input.reasoning_effort,
+          reasoningSummary: reasoning.summary,
+          reasoningContext: reasoning.context,
+        },
+        [
+          'temperature',
+          'topP',
+          'maxOutputTokens',
+          'reasoningEffort',
+          'reasoningSummary',
+          'reasoningContext',
+        ]
+      ),
     });
   }
 

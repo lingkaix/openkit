@@ -163,14 +163,15 @@ const modelContentSchema = z.discriminatedUnion('state', [
 ]);
 const modelSamplingSchema = z
   .object({
-    temperature: z.number().finite().nullable(),
-    topP: z.number().finite().nullable(),
-    maxOutputTokens: z.number().int().nonnegative().nullable(),
+    temperature: z.number().finite().nullable().optional(),
+    topP: z.number().finite().nullable().optional(),
+    maxOutputTokens: z.number().int().nonnegative().nullable().optional(),
     reasoningEffort: z
       .enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
-      .nullable(),
-    reasoningSummary: z.enum(['auto', 'concise', 'detailed', 'off', 'on']).nullable(),
-    reasoningContext: z.literal('all_turns').nullable(),
+      .nullable()
+      .optional(),
+    reasoningSummary: z.enum(['auto', 'concise', 'detailed', 'off', 'on']).nullable().optional(),
+    reasoningContext: z.literal('all_turns').nullable().optional(),
   })
   .strict();
 const modelPayloadFields = {
@@ -183,6 +184,38 @@ const modelPayloadFields = {
   bodies: z.array(bodyDescriptorSchema.extend({ state: z.literal('expected') })).optional(),
 };
 const payloadSchemas = {
+  'turn.reap': z
+    .object({
+      reason: z.string().min(1),
+      lastObservedTs: z.string().datetime().nullable(),
+      unresolvedCalls: z.array(
+        z
+          .object({
+            corr: z.string().min(1),
+            type: z.string().min(1),
+            name: z.string().min(1).nullable(),
+            ts: z.string().datetime(),
+          })
+          .strict()
+      ),
+      inferredBy: z.string().min(1),
+    })
+    .strict(),
+  'env.bound': z
+    .object({
+      version: z.string().min(1),
+      workspaceId: z.string().min(1),
+      systemPromptDigest: SystemPromptDigestSchema,
+      tools: z.array(
+        z
+          .object({
+            name: z.string().min(1),
+            inputSchemaDigest: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict()
+      ),
+    })
+    .strict(),
   'runtime.observed': WorkerObservationDataSchema,
   'model.observed': z.discriminatedUnion('direction', [
     z
@@ -241,7 +274,8 @@ export function parseWorkObservationRecord(value: unknown): WorkObservationRecor
   schema.parse(row.payload);
   if (
     (row.type.startsWith('model.') && row.obs !== 'gateway') ||
-    (row.type === 'runtime.observed' && row.obs !== 'sidecar')
+    (row.type === 'runtime.observed' && row.obs !== 'sidecar') ||
+    ((row.type === 'env.bound' || row.type === 'turn.reap') && row.obs !== 'core')
   )
     throw new Error('Observation type has the wrong observer');
   if (row.type !== 'content.published' && row.refs?.some((ref) => ref.edge === 'publication'))

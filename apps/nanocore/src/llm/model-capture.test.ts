@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -14,9 +15,13 @@ import { readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { readWorkObservations } from '../storage/work-observations.js';
+import {
+  appendWorkObservation,
+  readWorkObservations,
+  readWorkObservationTurnBinding,
+} from '../storage/work-observations.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
-import { admittedModelRequest, ModelCapture } from './model-capture.js';
+import { admittedModelRequest, ModelCapture, withTurnModelCapture } from './model-capture.js';
 import { admittedModelEvent } from './model-semantic-content.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
@@ -48,7 +53,15 @@ function fixture(value: 'off' | 'on' = 'on') {
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   databases.push(workspaceDb);
   applyScopedMigrations(workspaceDb);
-  return { workspaceDb, threadId: thread.id, turnId: turn.id, corr: 'logical-one', dataRoot };
+  return {
+    store,
+    turn,
+    workspaceDb,
+    threadId: thread.id,
+    turnId: turn.id,
+    corr: 'logical-one',
+    dataRoot,
+  };
 }
 
 /** Reads actual published bytes using their canonical association and digest. */
@@ -81,7 +94,283 @@ const provider = {
   gatewayCapabilities: { chatCompletions: 'native' as const, responses: 'bridged' as const },
 };
 
+describe('Turn environment retention', () => {
+  it.each(['off', 'on'] as const)('retains env.bound before run with capture %s', async (value) => {
+    const f = fixture(value);
+    const environment = {
+      systemPrompt: '  PRIVATE_PROMPT 雪\r\n\t',
+      tools: [
+        {
+          name: 'example.read',
+          description: 'PRIVATE_TOOL_DESCRIPTION',
+          inputSchema: {
+            type: 'object',
+            properties: { query: { type: 'string', description: 'PRIVATE_SCHEMA' } },
+          },
+        },
+      ],
+    };
+    const run = vi.fn(async (capture) => {
+      const rows = readWorkObservations(capture.workspaceDb, capture);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        type: 'env.bound',
+        obs: 'core',
+        turnId: f.turn.id,
+        ret: 'turn-evidence',
+        payload: {
+          version: JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+            .version,
+          workspaceId: f.workspaceDb.workspaceId,
+          systemPromptDigest: digestLlmSystemPrompt({
+            endpoint: 'responses',
+            request: { instructions: environment.systemPrompt },
+          }),
+          tools: environment.tools.map(({ name, inputSchema }) => ({
+            name,
+            inputSchemaDigest: createHash('sha256')
+              .update(JSON.stringify(inputSchema))
+              .digest('hex'),
+          })),
+        },
+      });
+      expect(Object.keys(rows[0]!.payload).sort()).toEqual([
+        'systemPromptDigest',
+        'tools',
+        'version',
+        'workspaceId',
+      ]);
+      expect(JSON.stringify(rows)).not.toContain('PRIVATE_');
+      expect(bodies(f)).toEqual([]);
+      return 'ran';
+    });
+    await expect(withTurnModelCapture({ ...f, environment }, run)).resolves.toBe('ran');
+    expect(run).toHaveBeenCalledOnce();
+    expect(readWorkObservations(f.workspaceDb, f)).toHaveLength(1);
+    expect(f.workspaceDb.sqlite.open).toBe(true);
+  });
+
+  it('retains one immutable empty-tool environment on exact repeated Turn entry', async () => {
+    const f = fixture('off');
+    expect(f.turn.startedAt).toEqual(expect.any(String));
+    expect(readWorkObservationTurnBinding(f.workspaceDb, f).turn.startedAt).toBe(f.turn.startedAt);
+    const environment = { systemPrompt: 'Current prompt', tools: [] };
+    const run = vi.fn(async () => 'ran');
+    await withTurnModelCapture({ ...f, environment }, run);
+    await withTurnModelCapture({ ...f, environment }, run);
+    expect(readWorkObservations(f.workspaceDb, f)).toHaveLength(1);
+    expect(readWorkObservations(f.workspaceDb, f)[0]?.ts).toBe(f.turn.startedAt);
+    expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.tools).toEqual([]);
+    await expect(
+      withTurnModelCapture(
+        { ...f, environment: { ...environment, systemPrompt: 'Changed prompt' } },
+        run
+      )
+    ).rejects.toMatchObject({ code: 'model_capture_unavailable' });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(readWorkObservations(f.workspaceDb, f)).toHaveLength(1);
+  });
+
+  it('rejects a missing admitted start time instead of inventing an environment timestamp', async () => {
+    const f = fixture('off');
+    const path = join(
+      f.dataRoot,
+      'workspaces',
+      f.workspaceDb.workspaceId,
+      'threads',
+      f.threadId,
+      'turns',
+      f.turnId,
+      'turn.json'
+    );
+    const persisted = JSON.parse(readFileSync(path, 'utf8'));
+    persisted.startedAt = null;
+    writeFileSync(path, JSON.stringify(persisted));
+    const run = vi.fn(async () => 'must not run');
+    await expect(
+      withTurnModelCapture({ ...f, environment: { systemPrompt: 'Prompt', tools: [] } }, run)
+    ).rejects.toMatchObject({ code: 'model_capture_unavailable' });
+    expect(run).not.toHaveBeenCalled();
+    expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+    await expect(withTurnModelCapture(f, async () => 'unchanged')).resolves.toBe('unchanged');
+  });
+
+  it('fails required env.bound persistence before running the model effect', async () => {
+    const f = fixture('off');
+    mkdirSync(
+      join(
+        f.dataRoot,
+        'workspaces',
+        f.workspaceDb.workspaceId,
+        'threads',
+        f.threadId,
+        'turns',
+        f.turnId,
+        'observations.jsonl'
+      )
+    );
+    const run = vi.fn(async () => 'must not run');
+    await expect(
+      withTurnModelCapture({ ...f, environment: { systemPrompt: 'Prompt', tools: [] } }, run)
+    ).rejects.toMatchObject({ code: 'model_capture_unavailable' });
+    expect(run).not.toHaveBeenCalled();
+    expect(f.workspaceDb.sqlite.open).toBe(true);
+  });
+
+  it('verifies persisted admission before writing env.bound', async () => {
+    const f = fixture('off');
+    const path = join(
+      f.dataRoot,
+      'workspaces',
+      f.workspaceDb.workspaceId,
+      'threads',
+      f.threadId,
+      'turns',
+      f.turnId,
+      'turn.json'
+    );
+    const persisted = JSON.parse(readFileSync(path, 'utf8'));
+    delete persisted.captureCoverage;
+    writeFileSync(path, JSON.stringify(persisted));
+    const run = vi.fn(async () => 'must not run');
+    await expect(
+      withTurnModelCapture({ ...f, environment: { systemPrompt: 'Prompt', tools: [] } }, run)
+    ).rejects.toMatchObject({ code: 'model_capture_unavailable' });
+    expect(run).not.toHaveBeenCalled();
+    expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+  });
+
+  it('leaves callers without environment input unchanged', async () => {
+    const f = fixture('off');
+    await expect(withTurnModelCapture(f, async () => 'ran')).resolves.toBe('ran');
+    expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+  });
+});
+
 describe('Gateway model retention', () => {
+  it.each(['off', 'on'] as const)('omits unrequested sampling fields with capture %s', (value) => {
+    const f = fixture(value);
+    new ModelCapture(f, [], provider.id).request({ model: 'capture-model', input: 'hello' });
+    const rows = readWorkObservations(f.workspaceDb, f).filter(
+      (row) => row.type === 'model.observed' && row.payload.direction === 'request'
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload.sampling).toEqual({});
+    expect(rows[0]?.payload.content).toEqual({ state: value === 'on' ? 'expected' : 'off' });
+  });
+
+  it.each([
+    'max_output_tokens',
+    'max_completion_tokens',
+    'max_tokens',
+  ])('preserves explicit zero sampling values from %s', (tokenField) => {
+    const f = fixture('off');
+    new ModelCapture(f, [], provider.id).request({
+      model: 'capture-model',
+      input: 'hello',
+      temperature: 0,
+      top_p: 0,
+      [tokenField]: 0,
+    });
+    expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.sampling).toEqual({
+      temperature: 0,
+      topP: 0,
+      maxOutputTokens: 0,
+    });
+  });
+
+  it('retains only supplied reasoning sampling fields', () => {
+    const f = fixture('off');
+    new ModelCapture(f, [], provider.id).request({
+      model: 'capture-model',
+      input: 'hello',
+      reasoning: { effort: 'none', summary: 'off', context: 'all_turns' },
+    });
+    expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.sampling).toEqual({
+      reasoningEffort: 'none',
+      reasoningSummary: 'off',
+      reasoningContext: 'all_turns',
+    });
+  });
+
+  it('preserves explicit null sampling values without substituting another request field', () => {
+    const f = fixture('off');
+    new ModelCapture(f, [], provider.id).request({
+      model: 'capture-model',
+      input: 'hello',
+      temperature: null,
+      top_p: null,
+      max_output_tokens: null,
+      max_completion_tokens: 99,
+      max_tokens: 100,
+      reasoning: { effort: null, summary: null, context: null },
+      reasoning_effort: 'high',
+    });
+    expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.sampling).toEqual({
+      temperature: null,
+      topP: null,
+      maxOutputTokens: null,
+      reasoningEffort: null,
+      reasoningSummary: null,
+      reasoningContext: null,
+    });
+  });
+
+  it('keeps retained null-filled sampling readable while appending omitted fields', () => {
+    const f = fixture('off');
+    const sampling = {
+      temperature: null,
+      topP: null,
+      maxOutputTokens: null,
+      reasoningEffort: null,
+      reasoningSummary: null,
+      reasoningContext: null,
+    };
+    appendWorkObservation(f.workspaceDb, {
+      ...f,
+      observation: {
+        id: 'retained-request',
+        type: 'model.observed',
+        ts: f.turn.startedAt!,
+        obs: 'gateway',
+        ret: 'turn-evidence',
+        payload: {
+          direction: 'request',
+          event: 'request',
+          attempt: 0,
+          runtimeOriginRef: null,
+          providerRef: provider.id,
+          model: 'capture-model',
+          systemPromptDigest: digestLlmSystemPrompt({
+            endpoint: 'responses',
+            request: { model: 'capture-model' },
+          }),
+          sampling,
+          content: { state: 'off' },
+        },
+      },
+      bodies: [],
+    });
+    const path = join(
+      f.dataRoot,
+      'workspaces',
+      f.workspaceDb.workspaceId,
+      'threads',
+      f.threadId,
+      'turns',
+      f.turnId,
+      'observations.jsonl'
+    );
+    const retainedBytes = readFileSync(path, 'utf8');
+    expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.sampling).toEqual(sampling);
+    new ModelCapture(f, [], provider.id).request({ model: 'capture-model', input: 'hello' });
+    const rows = readWorkObservations(f.workspaceDb, f);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.payload.sampling).toEqual(sampling);
+    expect(rows[1]?.payload.sampling).toEqual({});
+    expect(readFileSync(path, 'utf8').startsWith(retainedBytes)).toBe(true);
+  });
+
   for (const streaming of [false, true]) {
     it.each([
       undefined,
@@ -136,11 +425,10 @@ describe('Gateway model retention', () => {
       });
       expect(observation?.payload.sampling).toEqual({
         temperature: adapterRequest.temperature,
-        topP: adapterRequest.top_p ?? null,
-        maxOutputTokens: adapterRequest.max_output_tokens ?? null,
+        ...(adapterRequest.max_output_tokens === undefined
+          ? {}
+          : { maxOutputTokens: adapterRequest.max_output_tokens }),
         reasoningEffort: (adapterRequest.reasoning as { effort: string }).effort,
-        reasoningSummary: null,
-        reasoningContext: null,
       });
       expect(
         rows.some(

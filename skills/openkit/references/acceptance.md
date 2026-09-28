@@ -14,6 +14,8 @@ Search for `thread`, `turn`, `artifact`, `evidence`, `audit` and `usage` as need
 
 With deployment-admin authority, use `diagnostics` discovery for boot/readiness, configuration and available process observations. Missing optional telemetry is a diagnostic limitation, not product failure or success. Do not infer Worker reachability from configured readiness alone. Keep private conversation content separate from shared operational reports.
 
+When authorized retained or exported observations include `env.bound`, it records the internal Chat or Administration environment through its NanoCore version, Workspace identity, prompt digest and Tool-schema digests; it does not contain the prompt or prove complete model-body capture. Requested sampling fields omitted by the caller remain absent, while explicit zero stays zero. A `turn.reap` row records NanoCore restart recovery and unresolved observed calls, not proof that their external effects did not happen. Imported observations preserve correlations within their reminted Turn group; do not join identical correlation strings across different groups. These meanings are shared by Web and Skill/API consumers.
+
 ## Diagnose Without Changing The Verdict
 
 Distinguish product failure, environment failure, tool failure and insufficient evidence. Preserve the returned error and relevant observations before correcting anything. A local timeout stops waiting, not necessarily remote work; read current state before retrying. Never rewrite product state to make a check pass.

@@ -105,6 +105,7 @@ import {
 } from './storage/fs-layout.js';
 import { rebuildExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
+import { appendRecoveredTurnObservation } from './storage/work-observation-recovery.js';
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
 import { shutdownTelemetry, startTelemetry } from './telemetry.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
@@ -359,6 +360,18 @@ const bootResult = await runBootPhases({
               );
             }
 
+            if ('id' in result && result.error?.code === 'worker_governance_restart_recovery') {
+              const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, result.workspaceId);
+              try {
+                appendRecoveredTurnObservation(
+                  workspaceDb,
+                  result,
+                  anchored ? 'anchored-cleanup' : 'pre-anchor'
+                );
+              } finally {
+                workspaceDb.sqlite.close();
+              }
+            }
             return { status: result.status };
           },
           prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,

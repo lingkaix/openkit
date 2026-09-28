@@ -4855,6 +4855,7 @@ function readWorkObservationImportState(
           throw new Error('Work observation parent must precede its child.');
       }
       const refs = row.refs?.map((ref) => remintWorkObservationReference(ref, context, turn));
+      let corr = row.corr;
       const payload = { ...row.payload };
       const sourcePackages = readOptionalImportJsonl(
         context.files,
@@ -4862,7 +4863,14 @@ function readWorkObservationImportState(
       )
         .map((value) => ExportedAgentEnvironmentPackageSnapshotSchema.parse(value))
         .filter((snapshot) => snapshot.turnId === turn.id && snapshot.threadId === turn.threadId);
-      if (row.type === 'runtime.observed') {
+      if (row.type === 'env.bound') {
+        assertPortableWorkspaceOwner(
+          payload.workspaceId as string,
+          context.report.exportedWorkspaceId,
+          'env.bound'
+        );
+        payload.workspaceId = context.targetWorkspaceId;
+      } else if (row.type === 'runtime.observed') {
         if (sourcePackages.length !== 1)
           throw new Error('Runtime observation requires one exact exported AEP.');
         const targetPackageId = requiredMapValue(
@@ -4899,6 +4907,8 @@ function readWorkObservationImportState(
           }
         }
         if (row.type === 'runtime.observed') {
+          // Preserve the recovery pairing key before reminting the runtime fact identity.
+          if (corr === undefined && typeof rewritten.callRef === 'string') corr = rewritten.callRef;
           const targetPackageId = requiredMapValue(
             context.agentEnvironmentPackageSnapshotIds,
             sourcePackages[0]!.snapshotId,
@@ -4962,6 +4972,7 @@ function readWorkObservationImportState(
         ...row,
         id: requiredMapValue(observationIds, row.id, 'observation'),
         turnId: targetTurnId,
+        ...(corr === undefined ? {} : { corr }),
         ...(parent ? { parent } : {}),
         ...(refs ? { refs } : {}),
         payload,

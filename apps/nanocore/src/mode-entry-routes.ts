@@ -3666,16 +3666,22 @@ export function registerQuickAndChatModeRoutes({
       const turn = createChatTurn(new Date().toISOString());
       let result: Awaited<ReturnType<typeof callQuickChatProvider>>;
       try {
-        result = await withTurnModelCapture({ store, turn }, (capture) =>
-          callQuickChatProvider({
-            logicalModel: selection.logicalModel,
-            prompt: conversationPrompt,
-            history,
-            sessionId,
-            workspaceId,
-            signal: c.req.raw.signal,
-            capture,
-          })
+        result = await withTurnModelCapture(
+          {
+            store,
+            turn,
+            environment: { systemPrompt: assembleBuiltInSystemPrompt('quick-chat'), tools: [] },
+          },
+          (capture) =>
+            callQuickChatProvider({
+              logicalModel: selection.logicalModel,
+              prompt: conversationPrompt,
+              history,
+              sessionId,
+              workspaceId,
+              signal: c.req.raw.signal,
+              capture,
+            })
         );
       } catch (error) {
         store.updateTurn(turn.id, {

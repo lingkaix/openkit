@@ -18,6 +18,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { readWorkObservations } from './storage/work-observations.js';
 import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -347,6 +348,22 @@ describe('quick chat app API', () => {
       },
     });
     expect(calls[0]?.request).not.toHaveProperty('metadata');
+    const captureDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    try {
+      const observations = readWorkObservations(captureDb, {
+        threadId: 'th_demo',
+        turnId: parsed.turn.id,
+      });
+      expect(observations[0]).toMatchObject({
+        type: 'env.bound',
+        obs: 'core',
+        payload: { version: expect.any(String), workspaceId: 'ws_demo', tools: [] },
+      });
+      expect(JSON.stringify(observations[0])).not.toContain(EXPECTED_QUICK_CHAT_SYSTEM_PROMPT);
+      expect(observations[1]?.type).toBe('model.observed');
+    } finally {
+      captureDb.sqlite.close();
+    }
     const replayRes = await app.request(
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
@@ -425,12 +442,10 @@ describe('quick chat app API', () => {
       expect(answer.turn.status).toBe('completed');
     }
     expect(calls).toHaveLength(2);
-    const priorTurn = store.createTurn(
-      'ws_demo',
-      'th_demo',
-      'Interrupted worker attempt',
-      { kind: 'user', id: 'user_local' }
-    ).id;
+    const priorTurn = store.createTurn('ws_demo', 'th_demo', 'Interrupted worker attempt', {
+      kind: 'user',
+      id: 'user_local',
+    }).id;
     for (const status of ['in_progress', 'failed'] as const) {
       store.createItem({
         id: `it_partial_${status}`,

@@ -26,7 +26,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 - `../goal-steering-authority.ts` owns the Thread-unique pending input and immutable terminal outcome rows; callers own Item, Context Package, follow-up Turn, and body-free receipt effects around its exact transaction fences.
 - `workspace-export.ts` owns the V2 export tree, manifest, exact-byte inventory, and offline verification.
 - `workspace-archive.ts` owns strict USTAR path representability shared by export creation, offline verification, and archive production, plus bounded one-shot extraction into private request-local staging.
-- `workspace-import.ts` parses only verified bytes, validates and remints the import graph, and reconstructs importable records.
+- `workspace-import.ts` parses only verified bytes, validates and remints the import graph, and reconstructs importable records. It remints `env.bound.payload.workspaceId` to the imported Workspace identity while `importedFrom` preserves source provenance. Package version, prompt and Tool digests, and `turn.reap` correlation remain unchanged. When a runtime row lacks header correlation, import preserves its source call reference in `corr` before reminting the fact identity, keeping recovery joins inside the reminted group.
 - Native Knowledge Page import remints string-only `source_refs` through the parsed YAML document so block sequences and unknown nested metadata survive.
 - `workspace-portable-file-state.ts` owns portable Knowledge ledgers, workspace config and schema, native OKF pages, S61 retrieval traces, and retained S39 worker Context Package files.
 - Standalone Knowledge context traces and materializations are unsupported; worker delivery belongs only to the S39 Context Package owner.
@@ -39,6 +39,8 @@ One record family must have one durable authority. Do not add aggregate workspac
 `work-observations.ts` is the entry point for Turn observation append, validated reads and safe timeline projection using the shared App API presentation bounds. It validates immutable capture admission and separates expected facts from successful evidence publication. `../evidence-bundles.ts` owns restricted body staging, retention and expiry; callers never construct content paths or store bodies in control receipts. Portable consumers reuse the observation parser and existing exact reference maps.
 
 Timeline coverage remains partial when a collection gap follows observed runtime activity; unsupported or unavailable collection without observed activity remains unavailable.
+
+`work-observation-recovery.ts` appends `turn.reap` after restart recovery terminalizes a Turn it owns. It uses the historical capture binding and durable completion timestamp, pairs gateway attempts through their request parentage and runtime tool phases through observed opaque call references, and preserves the first committed snapshot on retry. Never-recorded Turns are skipped; ledger read or append failures propagate through the existing scheduler recovery retry loop. The observation records the Core recovery decision without concluding that an unresolved external effect did not happen.
 
 ## File Record Rules
 

@@ -301,56 +301,59 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
               }),
             });
             const priorMessages = administrationMessages(store, workspaceId, thread.id, turn.id);
-            const loopResult = await withTurnModelCapture({ store, turn }, (capture) =>
-              runInternalAgentLoop(
-                {
-                  systemPrompt: assembleBuiltInSystemPrompt('administration', {
-                    workspaceId,
-                    threadId: thread.id,
-                    workspaceKind: 'quick-chat',
-                  }),
-                  messages: priorMessages,
-                  tools,
-                  model: {
-                    logicalModelId: selection.logicalModel.id,
-                    capabilities: selection.logicalModel.capabilities,
-                    modelFamilyId: selection.logicalModel.modelFamilyId,
-                  },
-                  contextManagement: {
-                    ...selection.logicalModel.contextManagement,
-                    authority: 'openkit',
-                  },
-                  limits: selection.profile?.limits ?? DEFAULT_LIMITS,
-                  signal: context.req.raw.signal,
-                },
-                createInternalAgentGatewayProvider({
-                  capture,
-                  logicalModel: selection.logicalModel,
-                  dispatcher: input.llmGatewayDispatcher,
-                  resolveGatewayProvider: input.resolveGatewayProvider,
-                  ...(input.providerSubscriptionAccountManager
-                    ? {
-                        providerSubscriptionAccountManager:
-                          input.providerSubscriptionAccountManager,
-                      }
-                    : {}),
-                  promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
-                  usageEndpoint: 'responses',
-                  onDispatch: ({ providerId, usage }) => {
-                    recordAdministrationLlmUsage({
-                      authorityActor: triggerActor,
-                      coreDb: input.coreDb!,
+            const systemPrompt = assembleBuiltInSystemPrompt('administration', {
+              workspaceId,
+              threadId: thread.id,
+              workspaceKind: 'quick-chat',
+            });
+            const loopResult = await withTurnModelCapture(
+              { store, turn, environment: { systemPrompt, tools } },
+              (capture) =>
+                runInternalAgentLoop(
+                  {
+                    systemPrompt,
+                    messages: priorMessages,
+                    tools,
+                    model: {
                       logicalModelId: selection.logicalModel.id,
-                      providerId,
-                      requestId: request.requestId,
-                      threadId: thread.id,
-                      turnId: turn.id,
-                      usage,
-                      workspaceId,
-                    });
+                      capabilities: selection.logicalModel.capabilities,
+                      modelFamilyId: selection.logicalModel.modelFamilyId,
+                    },
+                    contextManagement: {
+                      ...selection.logicalModel.contextManagement,
+                      authority: 'openkit',
+                    },
+                    limits: selection.profile?.limits ?? DEFAULT_LIMITS,
+                    signal: context.req.raw.signal,
                   },
-                })
-              )
+                  createInternalAgentGatewayProvider({
+                    capture,
+                    logicalModel: selection.logicalModel,
+                    dispatcher: input.llmGatewayDispatcher,
+                    resolveGatewayProvider: input.resolveGatewayProvider,
+                    ...(input.providerSubscriptionAccountManager
+                      ? {
+                          providerSubscriptionAccountManager:
+                            input.providerSubscriptionAccountManager,
+                        }
+                      : {}),
+                    promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
+                    usageEndpoint: 'responses',
+                    onDispatch: ({ providerId, usage }) => {
+                      recordAdministrationLlmUsage({
+                        authorityActor: triggerActor,
+                        coreDb: input.coreDb!,
+                        logicalModelId: selection.logicalModel.id,
+                        providerId,
+                        requestId: request.requestId,
+                        threadId: thread.id,
+                        turnId: turn.id,
+                        usage,
+                        workspaceId,
+                      });
+                    },
+                  })
+                )
             );
             if (loopResult.kind !== 'quiescent') {
               const code =
