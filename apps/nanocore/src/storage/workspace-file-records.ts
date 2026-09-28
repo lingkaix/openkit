@@ -4,6 +4,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -35,6 +36,10 @@ import {
   TurnSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
+import {
+  type CaptureCoverageBinding,
+  CaptureCoverageBindingSchema,
+} from '@openkit/worker-protocol';
 import Database from 'better-sqlite3';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
@@ -63,28 +68,10 @@ type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
 
-/** Capture coverage value fixed at Turn admission. */
-export const CaptureCoverageValueSchema = z.enum(['off', 'on']);
-
-/** Scope that won when the admission-time capture pair was resolved. */
-export const CaptureCoverageScopeSchema = z.enum(['server', 'workspace', 'task']);
-
 /** Admission-time resolved capture pair stored on turn.json. */
-export const CaptureCoverageBindingSchema = z
-  .object({
-    scope: CaptureCoverageScopeSchema,
-    value: CaptureCoverageValueSchema,
-  })
-  .strict();
-
-/** Capture coverage value fixed at Turn admission. */
-export type CaptureCoverageValue = z.infer<typeof CaptureCoverageValueSchema>;
-
-/** Scope that won when the admission-time capture pair was resolved. */
-export type CaptureCoverageScope = z.infer<typeof CaptureCoverageScopeSchema>;
-
+export type { CaptureCoverageBinding };
 /** Admission-time resolved capture pair stored on turn.json. */
-export type CaptureCoverageBinding = z.infer<typeof CaptureCoverageBindingSchema>;
+export { CaptureCoverageBindingSchema };
 
 const THREAD_ENTRY_REQUIRED_FEATURE = 'openkit.thread-entry.v1' as const;
 const THREAD_VISIBILITY_REQUIRED_FEATURE = 'openkit.thread-visibility.v1' as const;
@@ -735,7 +722,7 @@ export function readCanonicalTextFile(path: string): string {
  * @returns Complete file bytes.
  * @throws Error when the path is a symbolic link or not a regular file.
  */
-function readCanonicalFile(path: string): Buffer {
+export function readCanonicalFile(path: string): Buffer {
   assertCanonicalRegularFile(path);
   let descriptor: number;
 
@@ -2267,6 +2254,9 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
         ...turn,
         items: [],
         ...(captureCoverage ? { captureCoverage } : {}),
+        ...(previousRaw?.requiredFeatures
+          ? { requiredFeatures: previousRaw.requiredFeatures }
+          : {}),
       });
       const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
       const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
@@ -2763,9 +2753,11 @@ export function appendCanonicalTextFile(path: string, content: string): void {
       }
       offset += written;
     }
+    fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);
   }
+  syncCanonicalDirectory(dirname(path));
 }
 
 /**
@@ -2774,7 +2766,7 @@ export function appendCanonicalTextFile(path: string, content: string): void {
  * @param path Target file path.
  * @param content Complete file content.
  */
-function writeFileAtomic(path: string, content: string | Uint8Array): void {
+export function writeFileAtomic(path: string, content: string | Uint8Array): void {
   mkdirSync(dirname(path), { recursive: true });
   const existingMetadata = lstatSync(path, { throwIfNoEntry: false });
   if (existingMetadata) {
@@ -2783,8 +2775,19 @@ function writeFileAtomic(path: string, content: string | Uint8Array): void {
   const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
 
   try {
-    writeFileSync(temporaryPath, content);
+    const descriptor = openSync(
+      temporaryPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600
+    );
+    try {
+      writeFileSync(descriptor, content);
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
     renameSync(temporaryPath, path);
+    syncCanonicalDirectory(dirname(path));
   } catch (error) {
     rmSync(temporaryPath, { force: true });
     throw error;
@@ -2897,16 +2900,29 @@ export function assertCanonicalDirectory(path: string): void {
  * @param path Canonical directory path with an already verified parent.
  * @throws Error when the existing or created path is not a real directory.
  */
-function ensureCanonicalDirectory(path: string): void {
+export function ensureCanonicalDirectory(path: string): void {
   const metadata = lstatSync(path, { throwIfNoEntry: false });
 
   if (metadata) {
     assertCanonicalDirectory(path);
+    syncCanonicalDirectory(dirname(path));
     return;
   }
 
-  mkdirSync(path);
+  mkdirSync(path, { mode: 0o700 });
   assertCanonicalDirectory(path);
+  syncCanonicalDirectory(dirname(path));
+}
+
+/** Synchronizes a verified directory entry before acknowledging publication. */
+export function syncCanonicalDirectory(path: string): void {
+  assertCanonicalDirectory(path);
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 /**

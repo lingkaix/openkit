@@ -62,6 +62,7 @@ import { markSchedulerSessionLeaseReleasing } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './store.js';
 
@@ -500,6 +501,20 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           409
         );
       }
+      const captureCoverage =
+        workspaceDb && checkpoint
+          ? readWorkObservationTurnBinding(workspaceDb, {
+              threadId: turn.threadId,
+              turnId: turn.id,
+            }).coverage
+          : null;
+      if (checkpoint && !captureCoverage) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Simulator capture admission is unavailable.',
+          409
+        );
+      }
       const agentSessionId = context.agentSessionId ?? `session_sim_turn_${turn.id}`;
       const preparedContext =
         this.coreDb && workspaceDb && checkpoint && context.sandboxBindingRef
@@ -515,6 +530,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       const environmentBackend = { kind: 'openshell' } as const;
       const resolvedEnvironmentPackage = preparedContext
         ? resolveAgentEnvironmentPackage({
+            captureCoverage: captureCoverage!,
             agentSessionId,
             agentSetup: context.agentSetup,
             backend: environmentBackend,

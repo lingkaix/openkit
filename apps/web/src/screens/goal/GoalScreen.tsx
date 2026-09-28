@@ -15,6 +15,7 @@ import { BoardLens } from './BoardLens';
 import { CompletedView } from './CompletedView';
 import {
   useCurrentWorkspaceId,
+  useGoalPlan,
   useGoalSummary,
   usePauseThreadGoal,
   useResumeThreadGoal,
@@ -46,6 +47,7 @@ export function GoalScreen() {
   const startIntent = useRef<{ objective: string; requestId: string } | null>(null);
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const summary = useGoalSummary(workspaceId, threadId);
+  const plan = useGoalPlan(workspaceId, threadId, summary.data?.goal?.goalId ?? '');
   const { failed: disconnected } = useConnection();
   const start = useStartThreadGoal(workspaceId ?? '', threadId);
   const pause = usePauseThreadGoal(workspaceId ?? '', threadId);
@@ -139,7 +141,7 @@ export function GoalScreen() {
   const atSafeBoundary = goal.currentTask === null && goal.taskCounts.running === 0;
   const canPause = goal.status === 'running' && atSafeBoundary;
   const canResume = goal.status === 'paused' && atSafeBoundary;
-  const canStep = canPause && goal.taskCounts.ready > 0;
+  const canStep = canPause && plan.isSuccess && !plan.isFetching && plan.data.canRunStep;
   const phaseView = mapGoalPhase(goal.status);
   const lens = resolveLens(searchParams.get('lens'), phaseView.defaultLens);
   function setLens(next: GoalLens) {
@@ -189,6 +191,14 @@ export function GoalScreen() {
 
   return (
     <div className="flex h-full flex-col">
+      {plan.isError && lens !== 'plan' ? (
+        <div className="px-6 pt-3">
+          <ErrorBanner
+            message="Couldn't load Goal planning status."
+            onRetry={() => void plan.refetch()}
+          />
+        </div>
+      ) : null}
       {pause.isError || resume.isError || step.isError ? (
         <div className="px-6 pt-3">
           <ErrorBanner message="Couldn't update Goal Mode. Try again." />

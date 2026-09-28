@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import type {
   RuntimeConfigChangeSchema,
@@ -24,6 +24,7 @@ import {
   type WorkspaceDataSourceCatalog,
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
+import type { CaptureCoverageBinding } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import {
@@ -45,6 +46,11 @@ import {
   type OpenKitConfig,
   type OpenKitConfigDiagnostic,
 } from './openkit-config.js';
+import {
+  type TolerantConfigKind,
+  unknownConfigKeyMessage,
+  unknownConfigKeys,
+} from './unknown-config-keys.js';
 
 type RuntimeConfigChange = z.infer<typeof RuntimeConfigChangeSchema>;
 type RuntimeConfigReloadPlan = z.infer<typeof RuntimeConfigReloadPlanSchema>;
@@ -206,10 +212,7 @@ interface RuntimeConfigManagerOptions {
   initialSnapshot?: RuntimeConfigSnapshot;
   /** Live capture-coverage sink updated on load and applied reload. */
   captureCoverage?: {
-    setLiveCaptureCoverage(binding: {
-      readonly scope: 'server' | 'workspace' | 'task';
-      readonly value: 'off' | 'on';
-    }): void;
+    setLiveCaptureCoverage(binding: CaptureCoverageBinding): void;
   };
 }
 
@@ -270,10 +273,9 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
  * @param config Parsed server.jsonc OpenKit config.
  * @returns Admission-time pair; omitted policy is off.
  */
-export function captureCoverageBindingFromOpenKitConfig(config: OpenKitConfig): {
-  readonly scope: 'server';
-  readonly value: 'off' | 'on';
-} {
+export function captureCoverageBindingFromOpenKitConfig(
+  config: OpenKitConfig
+): CaptureCoverageBinding {
   return {
     scope: 'server',
     value: config.policy?.workDataCapture?.value ?? 'off',
@@ -304,9 +306,13 @@ export function loadRuntimeConfig(
     InternalRoleProfilesConfigSchema,
     { schemaVersion: 1, profiles: [] }
   );
-  const userConfigs = loadUserConfigs(dataRoot);
-  const workspaceConfigs = loadWorkspaceConfigs(dataRoot);
-  const workspaceDataSourceCatalogs = loadWorkspaceDataSourceCatalogs(dataRoot);
+  const authoredDiagnostics: RuntimeConfigDiagnostic[] = [];
+  const userConfigs = loadUserConfigs(dataRoot, authoredDiagnostics);
+  const workspaceConfigs = loadWorkspaceConfigs(dataRoot, authoredDiagnostics);
+  const workspaceDataSourceCatalogs = loadWorkspaceDataSourceCatalogs(
+    dataRoot,
+    authoredDiagnostics
+  );
   const workspaceMcpServerCatalogs = loadWorkspaceMcpServerCatalogs(dataRoot);
   const gatewayDiagnostics: RuntimeConfigDiagnostic[] = [];
   try {
@@ -332,6 +338,7 @@ export function loadRuntimeConfig(
   }
   const diagnostics: RuntimeConfigDiagnostic[] = [
     ...configLoadResult.diagnostics.map(configDiagnostic),
+    ...authoredDiagnostics,
     ...providerLoadResult.providerDiagnostics.summaries.map((diagnostic) => ({
       code: diagnostic.code,
       message: diagnostic.message,
@@ -503,7 +510,7 @@ export function createRuntimeConfigManager(
         };
       } catch (error) {
         const message = redactRuntimeConfigReloadError(error, options.dataRoot);
-        const plan = failedReloadPlan(current.version, nextVersion, message);
+        const plan = failedReloadPlan(current, nextVersion, message);
 
         lastFailedReload = reloadSummary(
           startedAt,
@@ -909,7 +916,7 @@ export function diffRuntimeConfig(
     deferred,
     requiresRestart,
     rejected,
-    warnings: [],
+    warnings: runtimeConfigWarnings(next),
   };
 }
 
@@ -1029,6 +1036,26 @@ function configDiagnostic(diagnostic: OpenKitConfigDiagnostic): RuntimeConfigDia
   };
 }
 
+/** Adds located, value-free warnings for ignored fields in one authored file. */
+function addUnknownConfigDiagnostics(
+  diagnostics: RuntimeConfigDiagnostic[],
+  kind: TolerantConfigKind,
+  raw: unknown,
+  parsed: unknown,
+  dataRoot: string,
+  path: string
+): void {
+  const source = `DATA_ROOT/${relative(dataRoot, path)}`;
+  for (const key of unknownConfigKeys(kind, raw, parsed)) {
+    diagnostics.push({
+      code: 'authored_config.unknown_key',
+      message: unknownConfigKeyMessage(key),
+      severity: 'warning',
+      source,
+    });
+  }
+}
+
 /**
  * Creates one reload summary.
  */
@@ -1055,12 +1082,12 @@ function reloadSummary(
  * Creates one failed reload plan.
  */
 function failedReloadPlan(
-  previousVersion: number,
+  current: RuntimeConfigSnapshot,
   nextVersion: number,
   message: string
 ): RuntimeConfigReloadPlan {
   return {
-    previousVersion,
+    previousVersion: current.version,
     nextVersion,
     applied: [],
     deferred: [],
@@ -1068,8 +1095,20 @@ function failedReloadPlan(
     rejected: [
       change('config', 'rejected', 'rejected', `Runtime config reload failed: ${message}`),
     ],
-    warnings: [],
+    warnings: runtimeConfigWarnings(current),
   };
+}
+
+/** Projects warning diagnostics through the existing redacted reload-plan channel. */
+function runtimeConfigWarnings(
+  snapshot: RuntimeConfigSnapshot
+): RuntimeConfigReloadPlan['warnings'] {
+  return snapshot.diagnostics
+    .filter((diagnostic) => diagnostic.severity === 'warning')
+    .map((diagnostic) => ({
+      code: diagnostic.code,
+      message: `${diagnostic.source}: ${diagnostic.message}`,
+    }));
 }
 
 /**
@@ -1171,7 +1210,10 @@ function loadServerScopedConfig<T>(path: string, schema: z.ZodType<T>, empty: un
 }
 
 /** Loads every personal User preference config under DATA_ROOT/users. */
-function loadUserConfigs(dataRoot: string): LoadedUserConfig[] {
+function loadUserConfigs(
+  dataRoot: string,
+  diagnostics: RuntimeConfigDiagnostic[]
+): LoadedUserConfig[] {
   const usersRoot = join(dataRoot, 'users');
   if (!existsSync(usersRoot)) {
     return [];
@@ -1188,10 +1230,12 @@ function loadUserConfigs(dataRoot: string): LoadedUserConfig[] {
     if (!existsSync(path)) {
       continue;
     }
-    const result = UserConfigSchema.safeParse(parseJsoncObject(readFileSync(path, 'utf8'), path));
+    const parsed = parseJsoncObject(readFileSync(path, 'utf8'), path);
+    const result = UserConfigSchema.safeParse(parsed);
     if (!result.success) {
       throw new Error(`Invalid User config ${path}: ${z.prettifyError(result.error)}`);
     }
+    addUnknownConfigDiagnostics(diagnostics, 'user', parsed, result.data, dataRoot, path);
     configs.push({ userId: userEntry.name, path, config: result.data });
   }
   return configs;
@@ -1203,7 +1247,10 @@ function loadUserConfigs(dataRoot: string): LoadedUserConfig[] {
  * @param dataRoot Data root to scan.
  * @returns Parsed workspace configs.
  */
-function loadWorkspaceConfigs(dataRoot: string): LoadedWorkspaceConfig[] {
+function loadWorkspaceConfigs(
+  dataRoot: string,
+  diagnostics: RuntimeConfigDiagnostic[]
+): LoadedWorkspaceConfig[] {
   const workspacesRoot = join(dataRoot, 'workspaces');
 
   if (!existsSync(workspacesRoot)) {
@@ -1231,6 +1278,14 @@ function loadWorkspaceConfigs(dataRoot: string): LoadedWorkspaceConfig[] {
     if (!result.success) {
       throw new Error(`Invalid workspace config ${configPath}: ${z.prettifyError(result.error)}`);
     }
+    addUnknownConfigDiagnostics(
+      diagnostics,
+      'workspace',
+      parsed,
+      result.data,
+      dataRoot,
+      configPath
+    );
 
     configs.push({
       workspaceId: workspaceEntry.name,
@@ -1248,7 +1303,10 @@ function loadWorkspaceConfigs(dataRoot: string): LoadedWorkspaceConfig[] {
  * @param dataRoot Data root to scan.
  * @returns Parsed workspace data source catalogs.
  */
-function loadWorkspaceDataSourceCatalogs(dataRoot: string): LoadedWorkspaceDataSourceCatalog[] {
+function loadWorkspaceDataSourceCatalogs(
+  dataRoot: string,
+  diagnostics: RuntimeConfigDiagnostic[]
+): LoadedWorkspaceDataSourceCatalog[] {
   const workspacesRoot = join(dataRoot, 'workspaces');
 
   if (!existsSync(workspacesRoot)) {
@@ -1271,11 +1329,13 @@ function loadWorkspaceDataSourceCatalogs(dataRoot: string): LoadedWorkspaceDataS
     }
 
     const parsed = parseJsoncObject(readFileSync(catalogPath, 'utf8'), catalogPath);
+    const catalog = parseWorkspaceDataSourceCatalog(parsed);
+    addUnknownConfigDiagnostics(diagnostics, 'data-source', parsed, catalog, dataRoot, catalogPath);
 
     catalogs.push({
       workspaceId: workspaceEntry.name,
       path: catalogPath,
-      catalog: parseWorkspaceDataSourceCatalog(parsed),
+      catalog,
     });
   }
 

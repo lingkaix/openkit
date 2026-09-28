@@ -16,6 +16,8 @@ Worker sandbox filesystem grants must use canonical absolute paths. Authored rea
 
 Authored and resolved build images require exactly one nonempty inline Dockerfile of 1 through 268,435,456 UTF-8 bytes with matching canonical lowercase SHA-256, independently of exact zero-entry `build-context://empty/v1` plus its empty-byte digest, with no locator or compatibility form.
 
+Authored and resolved build-argument checks share only the stateless secret-shape pattern in the package-internal `src/build-argument-pattern.ts`; their schema definitions and refinements remain separate. The pattern is not exported by `src/index.ts`, and the browser-safe App API projection retains its separate pattern.
+
 The closed provider-subscription identities admit only `openai-codex` and `xai`, with bounded account-slot identifiers. Authored OAuth profiles in either normalized family must bind one explicit `extensions.openkit.subscriptionAccount.accountSlotId` and omit `secretRef` and `baseUrl`; other OpenKit extension fields are rejected, while ordinary non-OAuth xAI profiles remain direct provider configurations.
 
 `@openkit/config-schema/provider-subscription` is the browser-safe entry point for provider-subscription identifiers and account-slot schemas. Browser consumers use this subpath instead of the package root, whose complete config surface intentionally includes server-only modules.
@@ -26,15 +28,21 @@ Relay-required Agent Environment Packages use the `trusted-worker-inference-rela
 
 Agent Environment Packages may require `worker.runtime-provenance.v1` only together with `trusted-worker-inference-relay`. That feature requires the fixed restricted raw-stream root, stream manifest path, native-origin index path, and positive byte and stream-count limits beneath `/openkit/session`; NanoCore projects those declarations only when the feature is explicitly requested. The current NanoHost capability declaration does not advertise `worker.runtime-provenance.v1`, so packages that require it fail closed during package validation rather than selecting a legacy runtime path.
 
-`server.ts` owns the strict `server.jsonc` shape, including the optional absolute `vault.encryptedFile.keyFilePath` and the secret-free NanoHost configuration containing `identityId`, `deploymentId`, dedicated `bind`, `rendezvousUrl`, `credentialRef`, and fixed A/B `secretPath` plus `companionPath` pairs. `server.bind` belongs only to the App HTTP/1.1 and SSE listener; the required NanoHost bind belongs to its separate native HTTP/2 listener. NanoCore owns key-file permissions, ownership, bounded loading, authentication, boot behavior, and safe use of the configured NanoHost credential paths.
+`server.ts` owns `server.jsonc`: unknown top-level optional keys are stripped with NanoCore warnings, while known fields and all nested authority sections remain strict. This includes the optional absolute `vault.encryptedFile.keyFilePath` and the secret-free NanoHost configuration containing `identityId`, `deploymentId`, dedicated `bind`, `rendezvousUrl`, `credentialRef`, and fixed A/B `secretPath` plus `companionPath` pairs. `server.bind` belongs only to the App HTTP/1.1 and SSE listener; the required NanoHost bind belongs to its separate native HTTP/2 listener. NanoCore owns key-file permissions, ownership, bounded loading, authentication, boot behavior, and safe use of the configured NanoHost credential paths.
 
 Authored configuration is split by owner: Server resource and fallback files (`server.jsonc`, `gateway.jsonc`, internal-role profiles, Providers, and Agent Manifests), shared Workspace composition (`workspace.jsonc`, data-source catalogs, and the Workspace resource catalog at `catalog/catalog.json`), and lightweight User preferences (`user.jsonc`). Explicit request or Orchestrator selection is most specific, followed by User, Workspace, and Server defaults. Workspace MCP catalogs keep transport topology and Vault grant bindings server-side; AEP supply receives only the selected id, catalog digest, tool rules, approval marks, and schema policy. Workspace configuration owns its name, default Agent, Agent and internal-role bindings, roots, Assistant repository inspection, and extensions; `workspace-record.json` remains the machine-owned record.
+
+The hand-written `server.jsonc`, `user.jsonc`, and `workspace.jsonc` schemas admit top-level `requiredFeatures`; no feature is currently supported by these readers, so every declared feature fails closed after registry classification. User preference objects and Workspace internal-role preferences strip unknown optional keys. Workspace composition and Server authority sections remain strict. NanoCore reports ignored keys and their JSON locations without including values.
 
 NanoCore-created linked-repository roots add a full `sourceCommit` object id before AEP projection. The AEP source, durable input snapshot, and materialization record preserve that exact base so worker change manifests cannot substitute a different repository lineage.
 
 The session workspace planner consumes the pure Worker protocol path projection to bind Context inputs to `/openkit/sessions/<agent-session-id>/context`; authored filesystem grants cannot select this Core-managed namespace.
 
 Optional `server.jsonc.appUpdate` fixes one SSH host, user, port, identity file and known-hosts file. It is deployment configuration requiring App restart, not a Workspace capability or editable request destination. NanoCore checks that the protected files remain outside Data Root; host installation owns the forced command and fixed deployment target.
+
+[`src/tree-digest.ts`](src/tree-digest.ts) owns openkit-tree-v1 framing and validation; its path ordering uses unsigned UTF-8 byte comparison through Node Buffer.compare, not locale or UTF-16 ordering.
+
+AEP `observability.captureCoverage` uses the shared Worker protocol schema as a required admission-bound pair without a default. Runtime construction reads the persisted Turn setting; the shim never resolves configuration precedence. `openkit.work-observations.v1` registers the observation family for explicit reader support and portable reference handling, independently of optional full runtime provenance.
 
 ## Commands
 

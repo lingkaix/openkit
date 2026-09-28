@@ -83,7 +83,7 @@ Rules:
 
 ## Contract Writing Rules
 
-- Do not preserve repository-owned backward compatibility layers for old internal shapes, names, file layouts, route forms, command forms, schema defaults, or runtime selectors. Prefer clean replacement, direct removal, same-change migration, or repair tooling.
+- Do not preserve repository-owned backward compatibility layers for old shapes of first-party surfaces that ship with each release, such as names, repository file layouts, route forms, command forms, schema defaults, or runtime selectors. Prefer clean replacement, direct removal, same-change migration, or repair tooling. Retained data keeps its continuity under `docs/core/contract-evolution.md`; see `README.md`.
 - Prefer verifiable language: `MUST`, `SHOULD`, and `MAY`, or direct equivalents such as "must", "should", and "may".
 - Write normative rules as specific behavior, interface, lifecycle, state, error, permission, data, or recovery requirements.
 - Keep examples clearly subordinate to rules.

@@ -9,9 +9,10 @@ import {
   ListRow,
   Skeleton,
 } from '../../primitives';
-import { createRequestId, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
+import { importComposerFile, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
 import {
   chatThreadPath,
+  conversationThreadPath,
   taskThreadPath,
   useComposerWorkerEnvironments,
   useConversationNavigation,
@@ -62,22 +63,11 @@ export function ChatStarter() {
     return create.mutateAsync({ workspaceId, draft });
   }
 
+  /** Imports an attachment and starts this starter's list refresh without delaying selection. */
   async function importFile(file: File) {
-    if (!workspaceId) throw new Error('Workspace is required.');
-    const mediaType = file.name.endsWith('.md')
-      ? 'text/markdown'
-      : file.name.endsWith('.json')
-        ? 'application/json'
-        : 'text/plain';
-    const imported = await importArtifact.mutateAsync({
-      workspaceId,
-      title: file.name,
-      mediaType,
-      content: await file.text(),
-      requestId: createRequestId(),
-    });
+    const attachment = await importComposerFile(workspaceId, file, importArtifact.mutateAsync);
     void artifacts.refetch();
-    return { id: imported.artifactId, version: imported.artifactVersion, label: file.name };
+    return attachment;
   }
 
   return (
@@ -97,7 +87,6 @@ export function ChatStarter() {
       ) : null}
 
       <Composer
-        size="starter"
         targetCatalog={targets.data ?? null}
         artifacts={(artifacts.data ?? []).map((artifact) => ({
           id: artifact.id,
@@ -132,26 +121,21 @@ export function ChatStarter() {
             hint="Your recent chats will show up here."
           />
         ) : (
-          conversations.map(({ thread, activity }) => {
-            const prefix = activity === 'goal' ? 'goals' : activity === 'task' ? 'tasks' : 'chat';
-            return (
-              <ListRow key={thread.id}>
-                <button
-                  type="button"
-                  onClick={() =>
-                    navigate(
-                      `/${prefix}/${encodeURIComponent(thread.workspaceId)}/${encodeURIComponent(thread.id)}`
-                    )
-                  }
-                  className="flex min-w-0 flex-1 items-center gap-3 rounded-ok px-2 py-1 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
-                >
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
-                    {thread.name ?? thread.preview}
-                  </span>
-                </button>
-              </ListRow>
-            );
-          })
+          conversations.map(({ thread, activity }) => (
+            <ListRow key={thread.id}>
+              <button
+                type="button"
+                onClick={() =>
+                  navigate(conversationThreadPath(thread.workspaceId, thread.id, activity))
+                }
+                className="flex min-w-0 flex-1 items-center gap-3 rounded-ok px-2 py-1 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
+                  {thread.name ?? thread.preview}
+                </span>
+              </button>
+            </ListRow>
+          ))
         )}
       </section>
     </div>

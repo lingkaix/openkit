@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
 import {
   createDeterministicGoalPlanFallback,
   type GoalPlanOutput,
@@ -16,7 +17,12 @@ import {
   readGoalPlanCreation,
   runExclusiveGoalPlanCommand,
 } from './goal-planning.js';
-import { createGoalRecord, getGoalPlanRecord, getGoalRecord } from './goal-store.js';
+import {
+  type CreateGoalRecordInput,
+  createGoalRecord as createStoredGoalRecord,
+  getGoalPlanRecord,
+  getGoalRecord,
+} from './goal-store.js';
 
 const USER_ACTOR = { kind: 'user', id: 'user_demo' } as const;
 const REVISION_INSTRUCTION = 'Split this into two bounded worker tasks.';
@@ -54,25 +60,46 @@ function revisedTwoTaskPlan(previous: GoalPlanOutput, revisionText: string): Goa
 }
 
 /**
- * Opens a migrated workspace database for goal planning tests.
+ * Creates a durable Store and migrated workspace database for goal planning tests.
  *
- * @returns Migrated workspace database handles.
+ * @returns Aligned Store and workspace database handles.
  */
-function createWorkspaceDb(): WorkspaceDb {
+function createPlanningFixture(): {
+  workspaceDb: WorkspaceDb;
+  store: ReturnType<typeof createDemoStore>;
+} {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-planning-'));
+  const store = createDemoStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
-  return workspaceDb;
+  return { workspaceDb, store };
+}
+
+/** Creates one Goal from a real immutable objective Item. */
+function createGoalRecord(
+  store: ReturnType<typeof createDemoStore>,
+  workspaceDb: WorkspaceDb,
+  input: Omit<CreateGoalRecordInput, 'createdByItemId'>
+): ReturnType<typeof createStoredGoalRecord> {
+  return createStoredGoalRecord(workspaceDb, {
+    ...input,
+    createdByItemId: createInitialGoalIntentItem({
+      store,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      objective: input.objective,
+      userId: USER_ACTOR.id,
+    }),
+  });
 }
 
 describe('goal planning path', () => {
   it('stores a successful plan against the goal through one planning path', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Plan goal thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_demo',
         workspaceId: 'ws_demo',
@@ -94,6 +121,7 @@ describe('goal planning path', () => {
       expect(result.status).toBe('awaiting_plan_approval');
       expect(result.plan.tasks).toHaveLength(1);
       expect(store.listThreadItems('ws_demo', thread.id)).toEqual([
+        expect.objectContaining({ type: 'user-message', text: 'Make v0.0.6 ready to publish.' }),
         expect.objectContaining({
           id: result.planItem.id,
           causationId: 'req_goal_plan_create',
@@ -110,7 +138,8 @@ describe('goal planning path', () => {
       ]);
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_demo')).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: result.planItem.id,
+        planItemId: null,
+        pendingPlanItemId: result.planItem.id,
       });
       expect(
         getGoalPlanRecord(workspaceDb, 'ws_demo', thread.id, result.planItem.id)
@@ -127,12 +156,11 @@ describe('goal planning path', () => {
   });
 
   it('fails closed when the Goal loses its planning transition fence', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Plan transition fence thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_fence',
         workspaceId: 'ws_demo',
@@ -172,12 +200,11 @@ describe('goal planning path', () => {
   });
 
   it('emits bounded elicitation questions when the planner requires user input', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Question goal thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_questions',
         workspaceId: 'ws_demo',
@@ -241,12 +268,11 @@ describe('goal planning path', () => {
   });
 
   it('fails closed without a responsible user before writing a question or Gate', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Unassigned question thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_unassigned_question',
         workspaceId: 'ws_demo',
@@ -288,13 +314,12 @@ describe('goal planning path', () => {
     }
   });
 
-  it('turns planner failures into a failed goal state', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+  it('retains planner failures without terminalizing the Goal', async () => {
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Failing goal thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_failure',
         workspaceId: 'ws_demo',
@@ -323,10 +348,10 @@ describe('goal planning path', () => {
         title: 'Goal planning failed',
       });
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_failure')).toMatchObject({
-        status: 'failed',
-        terminalStopReason: 'error',
+        status: 'planning',
+        terminalStopReason: null,
       });
-      expect(() =>
+      expect(
         readGoalPlanCreation({
           triggerActor: USER_ACTOR,
           workspaceDb,
@@ -335,19 +360,18 @@ describe('goal planning path', () => {
           threadId: thread.id,
           requestId: 'req_goal_plan_failure',
         })
-      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      ).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
     }
   });
 
   it('keeps the Goal at awaiting_plan_approval with its Plan pointer after a revision request', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise preserve scene thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_preserve',
         workspaceId: 'ws_demo',
@@ -383,7 +407,8 @@ describe('goal planning path', () => {
         getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_preserve')
       ).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: initial.planItem.id,
+        planItemId: null,
+        pendingPlanItemId: initial.planItem.id,
         currentTaskId: null,
         terminalStopReason: null,
       });
@@ -403,8 +428,7 @@ describe('goal planning path', () => {
   });
 
   it('does not regenerate the unchanged initial draft after a recorded revision', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise ignored thread');
     const unchangedDraft = createDeterministicGoalPlanFallback({
       goalTitle: 'Ship v0.0.6',
@@ -419,7 +443,7 @@ describe('goal planning path', () => {
       | undefined;
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_ignored',
         workspaceId: 'ws_demo',
@@ -490,12 +514,11 @@ describe('goal planning path', () => {
   });
 
   it('does not substitute a deterministic draft when a revision planner is omitted', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise omitted planner thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_omitted',
         workspaceId: 'ws_demo',
@@ -545,7 +568,8 @@ describe('goal planning path', () => {
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_omitted')).toMatchObject(
         {
           status: 'awaiting_plan_approval',
-          planItemId: initialPlanItemId,
+          planItemId: null,
+          pendingPlanItemId: initialPlanItemId,
           terminalStopReason: null,
         }
       );
@@ -576,8 +600,7 @@ describe('goal planning path', () => {
   });
 
   it('creates a revised Plan from the exact prior Plan and recorded instruction', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise consume thread');
     const seen: Array<{
       readonly previousPlan: GoalPlanOutput | undefined;
@@ -586,7 +609,7 @@ describe('goal planning path', () => {
     }> = [];
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_consume',
         workspaceId: 'ws_demo',
@@ -656,7 +679,8 @@ describe('goal planning path', () => {
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_consume')).toMatchObject(
         {
           status: 'awaiting_plan_approval',
-          planItemId: revised.planItem.id,
+          planItemId: null,
+          pendingPlanItemId: revised.planItem.id,
         }
       );
       expect(
@@ -690,12 +714,11 @@ describe('goal planning path', () => {
   });
 
   it('preserves recoverable revision owners when the semantic planner fails', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise fail thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_fail',
         workspaceId: 'ws_demo',
@@ -746,7 +769,8 @@ describe('goal planning path', () => {
       });
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_fail')).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: initial.planItem.id,
+        planItemId: null,
+        pendingPlanItemId: initial.planItem.id,
         terminalStopReason: null,
       });
       expect(getGoalPlanRecord(workspaceDb, 'ws_demo', thread.id, initial.planItem.id)).not.toBe(
@@ -756,7 +780,12 @@ describe('goal planning path', () => {
         store.listThreadItems('ws_demo', thread.id).filter((item) => item.type === 'status')
       ).toEqual([]);
       expect(
-        store.listThreadItems('ws_demo', thread.id).find((item) => item.type === 'user-message')
+        store
+          .listThreadItems('ws_demo', thread.id)
+          .find(
+            (item) =>
+              item.type === 'user-message' && item.causationId === 'req_goal_plan_fail_revise'
+          )
       ).toMatchObject({
         parentItemId: initial.planItem.id,
         causationId: 'req_goal_plan_fail_revise',
@@ -789,12 +818,11 @@ describe('goal planning path', () => {
   });
 
   it('lets the user approve the previous Plan after a revision planner failure', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise fail then approve thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_fail_approve',
         workspaceId: 'ws_demo',
@@ -863,12 +891,11 @@ describe('goal planning path', () => {
   });
 
   it('retries the recorded revision instruction after a planner failure', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise fail then retry thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_fail_retry',
         workspaceId: 'ws_demo',
@@ -931,7 +958,8 @@ describe('goal planning path', () => {
         getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_fail_retry')
       ).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: retried.planItem.id,
+        planItemId: null,
+        pendingPlanItemId: retried.planItem.id,
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -939,12 +967,11 @@ describe('goal planning path', () => {
   });
 
   it('fails closed when a second reviseGoalPlan runs before a successor Plan lands', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise concurrent thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_concurrent',
         workspaceId: 'ws_demo',
@@ -993,7 +1020,8 @@ describe('goal planning path', () => {
         getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_concurrent')
       ).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: initial.planItem.id,
+        planItemId: null,
+        pendingPlanItemId: initial.planItem.id,
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -1001,12 +1029,11 @@ describe('goal planning path', () => {
   });
 
   it('keeps the planning fence after a successful revision create', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise fence thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_fence',
         workspaceId: 'ws_demo',
@@ -1068,7 +1095,8 @@ describe('goal planning path', () => {
         })
       ).rejects.toMatchObject({ code: 'recovery_required' });
       expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_fence')).toMatchObject({
-        planItemId: revised.planItem.id,
+        planItemId: null,
+        pendingPlanItemId: revised.planItem.id,
         status: 'awaiting_plan_approval',
       });
     } finally {
@@ -1076,13 +1104,12 @@ describe('goal planning path', () => {
     }
   });
 
-  it('rejects a revision proposal that is not an approvable draft', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+  it('opens an exact planning question Gate without replacing the previous draft', async () => {
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise questions thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_questions',
         workspaceId: 'ws_demo',
@@ -1114,48 +1141,50 @@ describe('goal planning path', () => {
         revision: REVISION_INSTRUCTION,
       });
 
-      await expect(
-        createGoalPlan({
-          triggerActor: USER_ACTOR,
-          workspaceDb,
-          store,
-          workspaceId: 'ws_demo',
-          threadId: thread.id,
-          goalId: 'goal_revise_questions',
-          requestId: 'req_goal_plan_questions_create',
-          planner: (input) => ({
-            ...revisedTwoTaskPlan(input.previousPlan!, input.revisionText ?? ''),
-            questions: ['Who should own the second task?'],
-          }),
-        })
-      ).rejects.toMatchObject({
-        name: 'GoalPlanRevisionError',
-        code: 'goal_plan_revision_invalid',
+      const questioned = await createGoalPlan({
+        triggerActor: USER_ACTOR,
+        workspaceDb,
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        goalId: 'goal_revise_questions',
+        requestId: 'req_goal_plan_questions_create',
+        planner: (input) => ({
+          ...revisedTwoTaskPlan(input.previousPlan!, input.revisionText ?? ''),
+          questions: ['Who should own the second task?'],
+        }),
       });
+      expect(questioned.status).toBe('awaiting_user');
+      if (questioned.status !== 'awaiting_user') throw new Error('expected Goal question Gate');
       expect(
         getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_questions')
       ).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: initial.planItem.id,
+        planItemId: null,
+        pendingPlanItemId: initial.planItem.id,
         terminalStopReason: null,
       });
       expect(
         store
           .listThreadItems('ws_demo', thread.id)
           .filter((item) => item.type === 'user-input-request')
-      ).toEqual([]);
+      ).toEqual([
+        expect.objectContaining({
+          id: questioned.questionItem.id,
+          parentItemId: initial.planItem.id,
+        }),
+      ]);
     } finally {
       workspaceDb.sqlite.close();
     }
   });
 
   it('rejects a byte-identical previous draft as a revision success', async () => {
-    const workspaceDb = createWorkspaceDb();
-    const store = createDemoStore();
+    const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Revise identical thread');
 
     try {
-      createGoalRecord(workspaceDb, {
+      createGoalRecord(store, workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_revise_identical',
         workspaceId: 'ws_demo',
@@ -1206,7 +1235,8 @@ describe('goal planning path', () => {
         getGoalRecord(workspaceDb, 'ws_demo', thread.id, 'goal_revise_identical')
       ).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: initial.planItem.id,
+        planItemId: null,
+        pendingPlanItemId: initial.planItem.id,
       });
       expect(
         store.listThreadItems('ws_demo', thread.id).filter((item) => item.type === 'plan')

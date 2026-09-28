@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -76,6 +76,7 @@ const PLAN = {
       escalationConditions: ['Escalate if the objective needs decomposition into multiple tasks.'],
     },
   ],
+  taskDispositions: [],
   risks: [],
   questions: [],
   verificationApproach: 'Review worker output.',
@@ -319,16 +320,34 @@ function goalSummary(status: string) {
 
 const ABSENT_PLAN_READ = {
   goal: null,
-  planItemId: null,
-  plan: null,
+  activePlanItemId: null,
+  activePlan: null,
+  pendingPlanItemId: null,
+  pendingPlan: null,
+  pendingPlanItemSummary: null,
+  selectableAffectedTasks: [],
+  planningAction: 'none',
+  draftRevision: null,
+  continuePlanning: null,
+  canRunStep: false,
+  canApprovePendingPlan: false,
 };
 
 /** Current durable Goal Plan read for the latest Goal on the Thread. */
 function currentPlanRead(status = 'awaiting_plan_approval') {
   return {
     goal: goalSummary(status).goal,
-    planItemId: 'it_goal_plan_goal1',
-    plan: PLAN,
+    activePlanItemId: null,
+    activePlan: null,
+    pendingPlanItemId: 'it_goal_plan_goal1',
+    pendingPlan: PLAN,
+    pendingPlanItemSummary: 'Reason: initial Goal plan.\nProposer: Workflow Coordinator.',
+    selectableAffectedTasks: [],
+    planningAction: 'await_approval',
+    draftRevision: null,
+    continuePlanning: null,
+    canRunStep: false,
+    canApprovePendingPlan: true,
   };
 }
 
@@ -399,9 +418,13 @@ function makeClient(
         startsWorkerTurn: false,
       }),
       reviseThreadGoalPlan: vi.fn().mockResolvedValue({
-        goal: goalSummary('planning').goal,
+        goal: goalSummary('running').goal,
         revisionItemId: 'it_goal_plan_revision',
         startsWorkerTurn: false,
+      }),
+      reviseThreadGoalIntent: vi.fn().mockResolvedValue({
+        goal: goalSummary('running').goal,
+        intentItemId: 'it_goal_intent_revision',
       }),
       pauseThreadGoal: vi.fn().mockResolvedValue({
         outcome: 'paused',
@@ -527,6 +550,7 @@ describe('goal surfaces (WP-5)', () => {
         'The GET plan payload is the sole reviewable authority at this gate.',
         'The GET plan payload is the sole reviewable authority at this gate.',
       ],
+      taskDispositions: [],
       risks: ['Title-only approval would hide declared resources and review instructions.'],
       questions: [],
       verificationApproach: 'Compare Plan-card labels with the GET payload before Approve.',
@@ -615,9 +639,9 @@ describe('goal surfaces (WP-5)', () => {
     const reviseThreadGoalPlan = vi.fn();
     const createThreadGoalPlan = vi.fn();
     const getThreadGoalPlan = vi.fn().mockResolvedValue({
-      goal: goalSummary('awaiting_plan_approval').goal,
-      planItemId: 'it_goal_plan_review',
-      plan: reviewablePlan,
+      ...currentPlanRead(),
+      pendingPlanItemId: 'it_goal_plan_review',
+      pendingPlan: reviewablePlan,
     });
     const client = makeClient({
       app: {
@@ -717,6 +741,7 @@ describe('goal surfaces (WP-5)', () => {
       schemaVersion: 1 as const,
       goalSummary: 'Cached plan must not outrank live Goal Task rows after approval.',
       assumptions: ['Stale plan cache is not execution authority.'],
+      taskDispositions: [],
       risks: ['Showing cached Plan tasks would hide current Task status.'],
       questions: [],
       verificationApproach: 'Prefer the Goal summary steps renderer after approval.',
@@ -758,9 +783,15 @@ describe('goal surfaces (WP-5)', () => {
     });
     const queryClient = renderApp('/goals/ws1/th1?lens=plan', client);
     queryClient.setQueryData(goalKeys.plan('ws1', 'th1', 'goal1'), {
-      goal: goalSummary('awaiting_plan_approval').goal,
-      planItemId: 'it_goal_plan_stale',
-      plan: cachedPlan,
+      ...currentPlanRead(),
+      goal: goalSummary('running').goal,
+      activePlanItemId: 'it_goal_plan_stale',
+      activePlan: cachedPlan,
+      pendingPlanItemId: null,
+      pendingPlan: null,
+      pendingPlanItemSummary: null,
+      canApprovePendingPlan: false,
+      planningAction: 'none',
     });
     await waitFor(() => {
       expect(screen.getByText('Run verification')).toBeInTheDocument();
@@ -787,9 +818,8 @@ describe('goal surfaces (WP-5)', () => {
       app: {
         getThreadGoalSummary: vi.fn().mockResolvedValue({ goal: planGoal }),
         getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...currentPlanRead(),
           goal: planGoal,
-          planItemId: 'it_goal_plan_goal1',
-          plan: PLAN,
         }),
       },
     });
@@ -856,11 +886,17 @@ describe('goal surfaces (WP-5)', () => {
       },
       plan: PLAN,
     };
-    const getThreadGoalPlan = vi.fn().mockResolvedValue({
+    const pristineRead = {
+      ...ABSENT_PLAN_READ,
       goal: goalSummary('planning').goal,
-      planItemId: null,
-      plan: null,
-    });
+      planningAction: 'create',
+    };
+    const getThreadGoalPlan = vi
+      .fn()
+      .mockResolvedValueOnce(pristineRead)
+      .mockResolvedValueOnce(pristineRead)
+      .mockResolvedValueOnce(pristineRead)
+      .mockResolvedValue(currentPlanRead());
     const createThreadGoalPlan = vi
       .fn()
       .mockRejectedValueOnce(new Error('network'))
@@ -911,12 +947,46 @@ describe('goal surfaces (WP-5)', () => {
     expect(createThreadGoalPlan).not.toHaveBeenCalled();
   });
 
+  it('waits for a Thread answer after the planner asks a question', async () => {
+    const user = userEvent.setup();
+    const questioningGoal = goalSummary('awaiting_user').goal;
+    const getThreadGoalPlan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...ABSENT_PLAN_READ,
+        goal: goalSummary('planning').goal,
+        planningAction: 'create',
+      })
+      .mockResolvedValue({
+        ...ABSENT_PLAN_READ,
+        goal: questioningGoal,
+        planningAction: 'answer_question',
+      });
+    const createThreadGoalPlan = vi.fn().mockResolvedValue({
+      status: 'awaiting_user',
+      goal: questioningGoal,
+      questionItemId: 'it_planning_question',
+    });
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('planning')),
+        getThreadGoalPlan,
+        createThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByText('Planning question')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Refresh planning status' }));
+    await waitFor(() => expect(getThreadGoalPlan).toHaveBeenCalledTimes(3));
+    expect(createThreadGoalPlan).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Retry planning' })).not.toBeInTheDocument();
+  });
+
   it('does not create from a stale planning prop when GET reports a non-planning Goal', async () => {
     const freshGoal = goalSummary('running').goal;
     const getThreadGoalPlan = vi.fn().mockResolvedValue({
+      ...ABSENT_PLAN_READ,
       goal: freshGoal,
-      planItemId: null,
-      plan: null,
     });
     const createThreadGoalPlan = vi.fn();
     const client = makeClient({
@@ -961,14 +1031,24 @@ describe('goal surfaces (WP-5)', () => {
     const getThreadGoalPlan = vi
       .fn()
       .mockResolvedValueOnce({
+        ...ABSENT_PLAN_READ,
         goal: firstGoal,
-        planItemId: null,
-        plan: null,
+        planningAction: 'create',
+      })
+      .mockResolvedValueOnce({
+        ...ABSENT_PLAN_READ,
+        goal: firstGoal,
+        planningAction: 'create',
+      })
+      .mockResolvedValueOnce({
+        ...ABSENT_PLAN_READ,
+        goal: secondGoal,
+        planningAction: 'create',
       })
       .mockResolvedValue({
+        ...currentPlanRead(),
         goal: secondGoal,
-        planItemId: null,
-        plan: null,
+        pendingPlanItemId: 'it_goal_plan_goal2',
       });
     const createThreadGoalPlan = vi
       .fn()
@@ -1021,6 +1101,434 @@ describe('goal surfaces (WP-5)', () => {
         expect.objectContaining({ planItemId: 'it_goal_plan_goal1' })
       )
     );
+  });
+
+  it('keeps approved work visible while approving only the pending successor Plan', async () => {
+    const user = userEvent.setup();
+    const activePlan = {
+      ...PLAN,
+      tasks: [
+        PLAN.tasks[0],
+        { ...PLAN.tasks[0], taskId: 'task_retired', title: 'Retire old release process' },
+      ],
+    };
+    const pendingPlan = {
+      ...PLAN,
+      tasks: [{ ...PLAN.tasks[0], taskId: 'task_successor', title: 'Verify revised scope' }],
+      taskDispositions: [
+        {
+          taskId: 'task_1',
+          successorTaskId: 'task_successor',
+          reason: 'Carry verification into the revised scope.',
+        },
+        {
+          taskId: 'task_retired',
+          successorTaskId: null,
+          reason: 'The old release process is no longer needed.',
+        },
+      ],
+    };
+    const approveThreadGoalPlan = vi.fn().mockResolvedValue({
+      goal: goalSummary('running').goal,
+      readyTasks: [{ taskId: 'task_successor', status: 'ready' }],
+      startsWorkerTurn: false,
+    });
+    const client = makeClient({
+      app: {
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...currentPlanRead('running'),
+          activePlanItemId: 'it_active',
+          activePlan,
+          pendingPlanItemId: 'it_successor',
+          pendingPlan,
+          pendingPlanItemSummary:
+            'Reason: revised release scope.\nProposer: Goal Orchestrator.\nSource evidence: review_1.\nDiff: retire old process.',
+        }),
+        approveThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByText('Verify revised scope')).toBeInTheDocument();
+    expect(screen.getByText('Current approved work')).toBeInTheDocument();
+    expect(screen.getByText('Retire old release process')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'Proposal context' })).getByText(
+        /Source evidence: review_1/
+      )
+    ).toBeInTheDocument();
+    const dispositions = screen.getByRole('region', { name: 'Remaining work changes' });
+    expect(
+      within(dispositions).getByText('Ship release → Verify revised scope')
+    ).toBeInTheDocument();
+    expect(within(dispositions).getByText('task_1 → task_successor')).toBeInTheDocument();
+    expect(
+      within(dispositions).getByText('Carry verification into the revised scope.')
+    ).toBeInTheDocument();
+    expect(
+      within(dispositions).getByText('Retire old release process → Ends without successor')
+    ).toBeInTheDocument();
+    expect(within(dispositions).getByText('task_retired → none')).toBeInTheDocument();
+    expect(
+      within(dispositions).getByText('The old release process is no longer needed.')
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Approve plan' }));
+    await waitFor(() =>
+      expect(approveThreadGoalPlan).toHaveBeenCalledWith('ws1', 'th1', {
+        planItemId: 'it_successor',
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+  });
+
+  it('reuses the exact Plan approval request after an uncertain response', async () => {
+    const user = userEvent.setup();
+    const approveThreadGoalPlan = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('connection dropped'))
+      .mockResolvedValueOnce({
+        goal: goalSummary('running').goal,
+        readyTasks: [{ taskId: 'task_1', status: 'ready' }],
+        startsWorkerTurn: false,
+      });
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('awaiting_plan_approval')),
+        getThreadGoalPlan: vi.fn().mockResolvedValue(currentPlanRead()),
+        approveThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    await user.click(await screen.findByRole('button', { name: 'Approve plan' }));
+    expect(await screen.findByText(/Couldn't approve this Plan/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Approve plan' }));
+    await waitFor(() => expect(approveThreadGoalPlan).toHaveBeenCalledTimes(2));
+    expect(approveThreadGoalPlan.mock.calls[1]?.[2]).toEqual(
+      approveThreadGoalPlan.mock.calls[0]?.[2]
+    );
+  });
+
+  it('records a same-Goal intent revision with conservative affected-work scope', async () => {
+    const user = userEvent.setup();
+    const reviseThreadGoalIntent = vi.fn().mockResolvedValue({
+      goal: { ...goalSummary('running').goal, objective: 'Ship revised release.' },
+      intentItemId: 'it_intent_2',
+    });
+    const client = makeClient({ app: { reviseThreadGoalIntent } });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    await user.click(await screen.findByRole('button', { name: 'Revise goal intent' }));
+    await user.clear(screen.getByRole('textbox', { name: 'Revised objective' }));
+    await user.type(
+      screen.getByRole('textbox', { name: 'Revised objective' }),
+      'Ship revised release.'
+    );
+    await user.type(
+      screen.getByRole('textbox', { name: 'What changed and why' }),
+      'New release scope.'
+    );
+    await user.click(screen.getByRole('button', { name: 'Save revised intent' }));
+    await waitFor(() =>
+      expect(reviseThreadGoalIntent).toHaveBeenCalledWith('ws1', 'th1', {
+        objective: 'Ship revised release.',
+        revision: 'New release scope.',
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+  });
+
+  it('records an explicit empty affected-work scope without broadening it to all remaining work', async () => {
+    const user = userEvent.setup();
+    const reviseThreadGoalIntent = vi.fn().mockResolvedValue({
+      goal: { ...goalSummary('running').goal, objective: 'Ship revised release.' },
+      intentItemId: 'it_intent_none',
+    });
+    const client = makeClient({ app: { reviseThreadGoalIntent } });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    await user.click(await screen.findByRole('button', { name: 'Revise goal intent' }));
+    await user.clear(screen.getByRole('textbox', { name: 'Revised objective' }));
+    await user.type(
+      screen.getByRole('textbox', { name: 'Revised objective' }),
+      'Ship revised release.'
+    );
+    await user.type(
+      screen.getByRole('textbox', { name: 'What changed and why' }),
+      'Clarify wording.'
+    );
+    await user.click(screen.getByRole('radio', { name: 'No current work' }));
+    await user.click(screen.getByRole('button', { name: 'Save revised intent' }));
+    await waitFor(() =>
+      expect(reviseThreadGoalIntent).toHaveBeenCalledWith('ws1', 'th1', {
+        objective: 'Ship revised release.',
+        revision: 'Clarify wording.',
+        affectedTaskIds: [],
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+  });
+
+  it('offers only current unfinished active Tasks for a named affected-work scope', async () => {
+    const user = userEvent.setup();
+    const reviseThreadGoalIntent = vi.fn().mockResolvedValue({
+      goal: { ...goalSummary('running').goal, objective: 'Ship revised release.' },
+      intentItemId: 'it_intent_named',
+    });
+    const activePlan = {
+      ...PLAN,
+      tasks: [
+        { ...PLAN.tasks[0], taskId: 'task_ready', title: 'Ready verification' },
+        { ...PLAN.tasks[0], taskId: 'task_running', title: 'Running delivery' },
+        { ...PLAN.tasks[0], taskId: 'task_done', title: 'Completed work' },
+      ],
+    };
+    const client = makeClient({
+      app: {
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...ABSENT_PLAN_READ,
+          goal: goalSummary('running').goal,
+          activePlanItemId: 'it_active',
+          activePlan,
+          selectableAffectedTasks: [
+            { taskId: 'task_ready', title: 'Ready verification', status: 'ready' },
+            { taskId: 'task_running', title: 'Running delivery', status: 'running' },
+          ],
+        }),
+        reviseThreadGoalIntent,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    await user.click(await screen.findByRole('button', { name: 'Revise goal intent' }));
+    await user.clear(screen.getByRole('textbox', { name: 'Revised objective' }));
+    await user.type(
+      screen.getByRole('textbox', { name: 'Revised objective' }),
+      'Ship revised release.'
+    );
+    await user.type(
+      screen.getByRole('textbox', { name: 'What changed and why' }),
+      'Delivery changed.'
+    );
+    await user.click(screen.getByRole('radio', { name: 'Named Tasks' }));
+    expect(screen.getByRole('button', { name: 'Save revised intent' })).toBeDisabled();
+    expect(screen.queryByRole('checkbox', { name: /Completed work/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: /Ready verification/ }));
+    await user.click(screen.getByRole('button', { name: 'Save revised intent' }));
+    await waitFor(() =>
+      expect(reviseThreadGoalIntent).toHaveBeenCalledWith('ws1', 'th1', {
+        objective: 'Ship revised release.',
+        revision: 'Delivery changed.',
+        affectedTaskIds: ['task_ready'],
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+  });
+
+  it('requires a user action and a fresh request after a failed planning attempt', async () => {
+    const user = userEvent.setup();
+    const createThreadGoalPlan = vi.fn().mockResolvedValue({
+      status: 'awaiting_plan_approval',
+      goal: goalSummary('awaiting_plan_approval').goal,
+      planItemId: 'it_goal_plan_goal1',
+      plan: PLAN,
+    });
+    const getThreadGoalPlan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...ABSENT_PLAN_READ,
+        goal: goalSummary('planning').goal,
+        planningAction: 'retry',
+      })
+      .mockResolvedValue(currentPlanRead());
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('planning')),
+        getThreadGoalPlan,
+        createThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('button', { name: 'Retry planning' })).toBeInTheDocument();
+    expect(createThreadGoalPlan).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Retry planning' }));
+    await waitFor(() =>
+      expect(createThreadGoalPlan).toHaveBeenCalledWith('ws1', 'th1', {
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+    expect(await screen.findByRole('button', { name: 'Approve plan' })).toBeInTheDocument();
+  });
+
+  it('keeps an eligible older candidate approvable during a failed revision', async () => {
+    const user = userEvent.setup();
+    const approveThreadGoalPlan = vi.fn().mockResolvedValue({
+      goal: goalSummary('running').goal,
+      readyTasks: [{ taskId: 'task_1', status: 'ready' }],
+      startsWorkerTurn: false,
+    });
+    const client = makeClient({
+      app: {
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...currentPlanRead('running'),
+          planningAction: 'retry',
+        }),
+        approveThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('button', { name: 'Retry planning' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Approve plan' }));
+    await waitFor(() =>
+      expect(approveThreadGoalPlan).toHaveBeenCalledWith('ws1', 'th1', {
+        planItemId: 'it_goal_plan_goal1',
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+  });
+
+  it('does not offer approval for a pending candidate invalidated by revised intent', async () => {
+    const client = makeClient({
+      app: {
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...currentPlanRead('running'),
+          planningAction: 'draft_revision',
+          draftRevision: { itemId: 'it_revision', requestId: 'req_revision' },
+          canApprovePendingPlan: false,
+        }),
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('button', { name: 'Draft revised plan' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve plan' })).not.toBeInTheDocument();
+  });
+
+  it('offers an explicit revision for a stale candidate without approval eligibility', async () => {
+    const user = userEvent.setup();
+    const reviseThreadGoalPlan = vi.fn().mockResolvedValue({
+      goal: goalSummary('running').goal,
+      revisionItemId: 'it_revision',
+      startsWorkerTurn: false,
+    });
+    const client = makeClient({
+      app: {
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...currentPlanRead('running'),
+          canApprovePendingPlan: false,
+        }),
+        reviseThreadGoalPlan,
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByText('Plan needs a new draft')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve plan' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Request revised plan' }));
+    await user.type(
+      screen.getByRole('textbox', { name: 'Plan revision' }),
+      'Recheck imported task evidence.'
+    );
+    await user.click(screen.getByRole('button', { name: 'Submit revision' }));
+    await waitFor(() =>
+      expect(reviseThreadGoalPlan).toHaveBeenCalledWith('ws1', 'th1', {
+        revision: 'Recheck imported task evidence.',
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+  });
+
+  it('offers explicit continuation from an answered planning question alongside an eligible candidate', async () => {
+    const user = userEvent.setup();
+    const createThreadGoalPlan = vi.fn().mockResolvedValue({
+      status: 'awaiting_user',
+      goal: goalSummary('awaiting_user').goal,
+      questionItemId: 'it_next_question',
+    });
+    const getThreadGoalPlan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...currentPlanRead('running'),
+        planningAction: 'continue_planning',
+        continuePlanning: {
+          questionItemId: 'it_question',
+          responseItemId: 'it_answer',
+        },
+      })
+      .mockResolvedValue({
+        ...currentPlanRead('awaiting_user'),
+        planningAction: 'answer_question',
+        canApprovePendingPlan: false,
+      });
+    const client = makeClient({ app: { getThreadGoalPlan, createThreadGoalPlan } });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('button', { name: 'Continue planning' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve plan' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Continue planning' }));
+    await waitFor(() =>
+      expect(createThreadGoalPlan).toHaveBeenCalledWith('ws1', 'th1', {
+        requestId: expect.stringMatching(/\S/),
+      })
+    );
+    expect(await screen.findByText('Planning question')).toBeInTheDocument();
+  });
+
+  it('waits for an explicit successor draft after a recorded revision instruction', async () => {
+    const user = userEvent.setup();
+    const runningGoal = goalSummary('running').goal;
+    const getThreadGoalPlan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...ABSENT_PLAN_READ,
+        goal: runningGoal,
+        activePlanItemId: 'it_active',
+        activePlan: PLAN,
+        planningAction: 'draft_revision',
+        draftRevision: { itemId: 'it_revision', requestId: 'req_revision' },
+      })
+      .mockResolvedValue({
+        ...currentPlanRead('running'),
+        goal: runningGoal,
+        activePlanItemId: 'it_active',
+        activePlan: PLAN,
+        pendingPlanItemId: 'it_successor',
+      });
+    const createThreadGoalPlan = vi.fn().mockResolvedValue({
+      status: 'awaiting_plan_approval',
+      goal: runningGoal,
+      planItemId: 'it_successor',
+      plan: PLAN,
+    });
+    const client = makeClient({ app: { getThreadGoalPlan, createThreadGoalPlan } });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('button', { name: 'Draft revised plan' })).toBeInTheDocument();
+    expect(createThreadGoalPlan).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Draft revised plan' }));
+    await waitFor(() => expect(createThreadGoalPlan).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole('button', { name: 'Approve plan' })).toBeInTheDocument();
+  });
+
+  it('accepts a revision question readback when the draft response is lost', async () => {
+    const user = userEvent.setup();
+    const runningGoal = goalSummary('running').goal;
+    const questionGoal = goalSummary('awaiting_user').goal;
+    const getThreadGoalPlan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...ABSENT_PLAN_READ,
+        goal: runningGoal,
+        activePlanItemId: 'it_active',
+        activePlan: PLAN,
+        planningAction: 'draft_revision',
+        draftRevision: { itemId: 'it_revision', requestId: 'req_revision' },
+      })
+      .mockResolvedValue({
+        ...ABSENT_PLAN_READ,
+        goal: questionGoal,
+        activePlanItemId: 'it_active',
+        activePlan: PLAN,
+        planningAction: 'answer_question',
+      });
+    const createThreadGoalPlan = vi.fn().mockRejectedValue(new Error('response lost'));
+    const client = makeClient({ app: { getThreadGoalPlan, createThreadGoalPlan } });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    await user.click(await screen.findByRole('button', { name: 'Draft revised plan' }));
+    expect(await screen.findByText('Planning question')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't draft the Plan.")).not.toBeInTheDocument();
+    expect(createThreadGoalPlan).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -1595,13 +2103,20 @@ describe('goal surfaces (WP-5)', () => {
     const lifecycleClient = makeClient({
       app: {
         getThreadGoalSummary: vi.fn().mockResolvedValue(safeBoundaryGoalSummary('running')),
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...ABSENT_PLAN_READ,
+          goal: safeBoundaryGoalSummary('running').goal,
+          activePlanItemId: 'it_active',
+          activePlan: PLAN,
+          canRunStep: true,
+        }),
         pauseThreadGoal,
         runThreadGoalStep,
       },
     });
     renderApp('/goals/ws1/th1', lifecycleClient);
     const pauseControl = await screen.findByRole('button', { name: /pause goal/i });
-    const stepControl = screen.getByRole('button', { name: /one (?:bounded )?step/i });
+    const stepControl = await screen.findByRole('button', { name: /one (?:bounded )?step/i });
 
     await user.click(pauseControl);
     await waitFor(() => {
@@ -1612,6 +2127,24 @@ describe('goal surfaces (WP-5)', () => {
     await user.click(stepControl);
     expect(pauseThreadGoal).toHaveBeenCalledTimes(1);
     expect(runThreadGoalStep).not.toHaveBeenCalled();
+  });
+
+  it('does not offer a step for ready Tasks held by an intent revision', async () => {
+    const client = makeClient({
+      app: {
+        getThreadGoalSummary: vi.fn().mockResolvedValue(safeBoundaryGoalSummary('running')),
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...ABSENT_PLAN_READ,
+          goal: safeBoundaryGoalSummary('running').goal,
+          activePlanItemId: 'it_active',
+          activePlan: PLAN,
+          canRunStep: false,
+        }),
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=plan', client);
+    expect(await screen.findByRole('button', { name: 'Pause Goal' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /one bounded step/i })).not.toBeInTheDocument();
   });
 
   it('does not allow a failed start retry after the connection becomes disconnected', async () => {
@@ -1709,6 +2242,20 @@ describe('goal surfaces (WP-5)', () => {
     const client = makeClient({
       app: {
         getThreadGoalSummary: vi.fn().mockResolvedValue(initialSummary),
+        getThreadGoalPlan: vi
+          .fn()
+          .mockResolvedValueOnce({
+            ...ABSENT_PLAN_READ,
+            goal: initialSummary.goal,
+            activePlanItemId: 'it_active',
+            activePlan: PLAN,
+            canRunStep: method === 'runThreadGoalStep',
+          })
+          .mockResolvedValue({
+            ...ABSENT_PLAN_READ,
+            goal: response.goal,
+            canRunStep: false,
+          }),
         [method]: mutation,
       },
     });
@@ -1863,13 +2410,20 @@ describe('goal surfaces (WP-5)', () => {
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
       app: {
         getThreadGoalSummary: vi.fn().mockResolvedValue(safeBoundaryGoalSummary('running')),
+        getThreadGoalPlan: vi.fn().mockResolvedValue({
+          ...ABSENT_PLAN_READ,
+          goal: safeBoundaryGoalSummary('running').goal,
+          activePlanItemId: 'it_active',
+          activePlan: PLAN,
+          canRunStep: true,
+        }),
         pauseThreadGoal,
         runThreadGoalStep,
       },
     });
     renderApp('/goals/ws1/th1', runningClient);
     const pauseControl = await screen.findByRole('button', { name: /pause goal/i });
-    const stepControl = screen.getByRole('button', { name: /one (?:bounded )?step/i });
+    const stepControl = await screen.findByRole('button', { name: /one (?:bounded )?step/i });
 
     await waitFor(
       () => {
@@ -1953,6 +2507,99 @@ describe('goal surfaces (WP-5)', () => {
     expect(pathname).toBe('/goals/ws1/th1');
   });
 
+  it('polls observation-only runtime activity in the Goal Thread lens without new Items', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const activity = {
+        turnId: 'turn_worker',
+        contentCapture: 'on',
+        coverage: 'collecting',
+        omittedEntryCount: 0,
+        entries: [],
+      };
+      const dashboard = {
+        turns: [{ id: 'turn_worker', status: 'completed', items: [] }],
+        runtimeActivity: [activity],
+      };
+      const getThreadDashboard = vi.fn().mockResolvedValue(dashboard);
+      const listThreadItems = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
+      renderApp(
+        '/goals/ws1/th1?lens=thread',
+        makeClient({ app: { getThreadDashboard }, core: { listThreadItems } })
+      );
+      expect(await screen.findByText('Activity collection is ongoing.')).toBeInTheDocument();
+      const baselineReads = getThreadDashboard.mock.calls.length;
+      const itemReads = listThreadItems.mock.calls.length;
+      getThreadDashboard.mockResolvedValue({
+        ...dashboard,
+        runtimeActivity: [
+          {
+            ...activity,
+            coverage: 'partial',
+            entries: [
+              {
+                sequence: 9,
+                observedAt: TIMESTAMP,
+                kind: 'result',
+                label: 'Child 2: result reported',
+                text: 'Goal observation arrived without an Item.',
+                textTruncated: false,
+              },
+            ],
+          },
+        ],
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(
+        await screen.findByText('Goal observation arrived without an Item.')
+      ).toBeInTheDocument();
+      expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(baselineReads);
+      expect(listThreadItems.mock.calls.length).toBe(itemReads);
+      expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows authorized runtime activity in the shared Thread lens without Items', async () => {
+    const client = makeClient({
+      app: {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          turns: [{ id: 'turn_worker', status: 'completed', items: [] }],
+          runtimeActivity: [
+            {
+              turnId: 'turn_worker',
+              contentCapture: 'on',
+              coverage: 'partial',
+              omittedEntryCount: 0,
+              entries: [
+                {
+                  sequence: 8,
+                  observedAt: TIMESTAMP,
+                  kind: 'result',
+                  label: 'Child 2: result reported',
+                  text: 'Verification found a missing requirement.',
+                  textTruncated: false,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    });
+    renderApp('/goals/ws1/th1?lens=thread', client);
+    expect(
+      await screen.findByText('Verification found a missing requirement.')
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole('region', { name: 'Runtime activity' })).toHaveLength(1);
+    expect(screen.getByText('Activity coverage is partial.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: 'Runtime activity' }).querySelector('button')
+    ).toBeNull();
+  });
+
   it('opens board cards into the thread lens and offers no Done drop control', async () => {
     const user = userEvent.setup();
     let search = '';
@@ -1961,12 +2608,56 @@ describe('goal surfaces (WP-5)', () => {
       search = s;
     });
     const card = await screen.findByRole('button', { name: /Run verification/i });
+    const board = screen.getByRole('region', { name: 'Goal board' });
+    expect(
+      Array.from(board.children, (column) => column.querySelector('header')?.textContent)
+    ).toEqual(['To do1', 'In progress1', 'Done1']);
+    for (const [title, hue, meta] of [
+      ['1 queued task', 'scout', null],
+      ['Run verification', 'quill', 'running'],
+      ['2 completed', 'ledger', 'Done'],
+    ] as const) {
+      const row = within(board).getByRole('button', { name: new RegExp(title) });
+      expect(within(row).getByRole('img', { name: 'Worker' })).toHaveClass(
+        `bg-worker-${hue}`,
+        `text-worker-${hue}-fg`
+      );
+      expect(within(row).getByText('WK')).toBeInTheDocument();
+      if (meta) expect(within(row).getByText(meta)).toBeInTheDocument();
+    }
     expect(
       screen.queryByRole('button', { name: /move to done|drop.*done/i })
     ).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/drop into done/i)).not.toBeInTheDocument();
     await user.click(card);
     await waitFor(() => expect(search).toContain('lens=thread'));
+  });
+
+  it('preserves plan order within board columns and renders an empty Done column', async () => {
+    const client = makeClient();
+    const queryClient = renderApp('/goals/ws1/th1?lens=board', client);
+    queryClient.setQueryData(goalKeys.plan('ws1', 'th1', 'goal1'), {
+      ...currentPlanRead('running'),
+      activePlanItemId: 'it_goal_plan_goal1',
+      activePlan: {
+        ...PLAN,
+        tasks: [
+          { ...PLAN.tasks[0], taskId: 'task_later', title: 'Queued first' },
+          { ...PLAN.tasks[0], taskId: 'task_demo', title: 'Run verification' },
+          { ...PLAN.tasks[0], taskId: 'task_earlier', title: 'Queued second' },
+        ],
+      },
+    });
+    await screen.findByRole('button', { name: /Queued second/ });
+    const board = screen.getByRole('region', { name: 'Goal board' });
+    expect(
+      Array.from(board.children, (column) => column.querySelector('header')?.textContent)
+    ).toEqual(['To do2', 'In progress1', 'Done0']);
+    expect(
+      within(board)
+        .getAllByRole('button')
+        .map((card) => card.textContent)
+    ).toEqual(['Queued firstWKQueued', 'Queued secondWKQueued', 'Run verificationWKrunning']);
   });
 
   it('shows the completed closeout when the goal is completed', async () => {
@@ -1977,6 +2668,9 @@ describe('goal surfaces (WP-5)', () => {
     expect(await screen.findByText(/Goal completed/i)).toBeInTheDocument();
     expect(screen.getByText('Release verification passed.')).toBeInTheDocument();
     expect(screen.getByText('Publish v0.0.6.')).toBeInTheDocument();
+    const artifact = screen.getByText('artifact1');
+    expect(artifact).toBeVisible();
+    expect(artifact.closest('button, a, [role="button"]')).toBeNull();
   });
 
   it('disables the steer bar when core.meta fails', async () => {

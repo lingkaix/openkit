@@ -14,7 +14,7 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
-import { createRequestId, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
+import { importComposerFile, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
 import {
   chatKeys,
   type ThreadItem,
@@ -233,22 +233,11 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
         ))
       : undefined;
 
+  /** Imports an attachment and starts this Thread's list refresh without delaying selection. */
   async function importFile(file: File) {
-    if (!workspaceId) throw new Error('Workspace is required.');
-    const mediaType = file.name.endsWith('.md')
-      ? 'text/markdown'
-      : file.name.endsWith('.json')
-        ? 'application/json'
-        : 'text/plain';
-    const imported = await importArtifact.mutateAsync({
-      workspaceId,
-      title: file.name,
-      mediaType,
-      content: await file.text(),
-      requestId: createRequestId(),
-    });
+    const attachment = await importComposerFile(workspaceId, file, importArtifact.mutateAsync);
     void workspaceArtifacts.refetch();
-    return { id: imported.artifactId, version: imported.artifactVersion, label: file.name };
+    return attachment;
   }
 
   async function submitConversation(draft: ComposerDraft) {

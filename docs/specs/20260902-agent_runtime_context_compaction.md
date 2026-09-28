@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Not Started
+kind: mechanism
 date: 2026-09-02
 ---
 # Agent Runtime Context Management And Compaction

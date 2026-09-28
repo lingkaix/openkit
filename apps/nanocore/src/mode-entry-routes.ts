@@ -50,6 +50,7 @@ import {
   startGoalModeObjective,
   submitGoalSteeringCommand,
 } from './goal-routes.js';
+import { assembleBuiltInSystemPrompt } from './internal-agents/builtin-prompts.js';
 import {
   createStructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
@@ -77,6 +78,7 @@ import {
 import { dispatchLogicalModel, LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
 import { parseUsage } from './llm/gateway-usage.js';
 import type { ResolvedLogicalModel } from './llm/logical-models.js';
+import { type ModelCaptureContext, withTurnModelCapture } from './llm/model-capture.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
@@ -130,10 +132,6 @@ import {
 
 /** Stable attribution id for the direct Quick Chat provider call. */
 export const QUICK_CHAT_AGENT_ID = 'quick-chat';
-
-/** Fixed role instruction for the bounded Quick Chat provider call. */
-const QUICK_CHAT_SYSTEM_PROMPT =
-  'You are QuickChatAgent, a lightweight OpenKit Core coordination agent. Answer concise user questions without running worker agents, shell commands, browser automation, file edits, or knowledge writes.';
 
 /** Maximum duration of one direct Quick Chat provider call. */
 const QUICK_CHAT_TIMEOUT_MS = 30_000;
@@ -1467,7 +1465,9 @@ function recordQuickChatLlmUsage(input: {
       redactionClass: 'metadata-only',
       requestId: normalizeCapabilityRequestId(input.requestId) ?? randomUUID(),
       serviceRef: 'llm-gateway',
-      summary: 'QuickChatAgent LLM call.',
+      summary: input.turnId
+        ? 'QuickChatAgent LLM call.'
+        : 'QuickChatAgent LLM call. Model capture unavailable: no Turn admission.',
       threadId: input.threadId ?? null,
       turnId: input.turnId ?? null,
       itemId: input.itemId ?? null,
@@ -2433,6 +2433,8 @@ export function registerQuickAndChatModeRoutes({
    * @throws Error when provider resolution or dispatch fails.
    */
   async function callQuickChatProvider(input: {
+    /** Entry-admitted Chat Turn; standalone Quick Chat remains an explicit no-Turn gap. */
+    readonly capture?: Omit<ModelCaptureContext, 'corr'>;
     /** Selected logical-model contract. */
     readonly logicalModel: ResolvedLogicalModel;
     /** User prompt. */
@@ -2468,7 +2470,7 @@ export function registerQuickAndChatModeRoutes({
         signal,
         resolveGatewayProvider,
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-        attempt: async ({ provider, providerModel, subscriptionModels }) => ({
+        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => ({
           providerId: provider.id,
           response: await Promise.race([
             llmGatewayDispatcher.createChatCompletion(
@@ -2476,12 +2478,13 @@ export function registerQuickAndChatModeRoutes({
               {
                 model: providerModel,
                 messages: [
-                  { role: 'system', content: QUICK_CHAT_SYSTEM_PROMPT },
+                  { role: 'system', content: assembleBuiltInSystemPrompt('quick-chat') },
                   { role: 'user', content: input.prompt },
                 ],
               },
               {
-                ...(subscriptionModels ? { subscriptionModels } : {}),
+                ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                ...(input.capture ? { capture: { ...input.capture, corr, attempt } } : {}),
                 promptCacheScope: {
                   sessionId: input.sessionId,
                   workspaceId: input.workspaceId,
@@ -2913,10 +2916,8 @@ export function registerQuickAndChatModeRoutes({
         });
       };
 
-      /** Runs the existing Workspace Knowledge Manager and projects its answer into this Thread. */
-      const answerFromWorkspaceKnowledge = (
-        caller: 'assistant' | 'app-api'
-      ): ConversationCommandResult | null => {
+      /** Runs the explicitly selected Knowledge Manager and projects its answer into this Thread. */
+      const answerFromWorkspaceKnowledge = (): ConversationCommandResult | null => {
         const dataRoot = store.getDataRoot();
         if (!dataRoot) return null;
         const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
@@ -2936,12 +2937,11 @@ export function registerQuickAndChatModeRoutes({
           dataRoot,
           operationId: `km_answer_${randomUUID()}`,
           workspaceId,
-          caller,
+          caller: 'app-api',
           query: conversationPrompt,
           limit: 3,
           referenceProofs,
         });
-        if (caller === 'assistant' && knowledgeAnswer.outcome !== 'answered') return null;
         const completedAt = new Date().toISOString();
         const turn = createChatTurn(completedAt);
         const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
@@ -3294,7 +3294,7 @@ export function registerQuickAndChatModeRoutes({
       }
 
       if (acceptedTarget.kind === 'knowledge-manager') {
-        const response = answerFromWorkspaceKnowledge('app-api');
+        const response = answerFromWorkspaceKnowledge();
         if (response) return response;
         return {
           body: createRefusedResponse('Workspace Knowledge storage is unavailable.'),
@@ -3517,12 +3517,6 @@ export function registerQuickAndChatModeRoutes({
         };
       }
 
-      // Admitted Artifact input must reach the Assistant, not a knowledge-only shortcut.
-      if (artifacts.length === 0) {
-        const knowledgeResponse = answerFromWorkspaceKnowledge('assistant');
-        if (knowledgeResponse) return knowledgeResponse;
-      }
-
       if (
         (isRepositoryFileListChatPrompt(chatInput.input) ||
           isRepositoryFileReadChatPrompt(chatInput.input)) &&
@@ -3654,15 +3648,28 @@ export function registerQuickAndChatModeRoutes({
         );
       }
 
-      const result = await callQuickChatProvider({
-        logicalModel: selection.logicalModel,
-        prompt: conversationPrompt,
-        sessionId,
-        workspaceId,
-        signal: c.req.raw.signal,
-      });
+      const turn = createChatTurn(new Date().toISOString());
+      let result: Awaited<ReturnType<typeof callQuickChatProvider>>;
+      try {
+        result = await withTurnModelCapture({ store, turn }, (capture) =>
+          callQuickChatProvider({
+            logicalModel: selection.logicalModel,
+            prompt: conversationPrompt,
+            sessionId,
+            workspaceId,
+            signal: c.req.raw.signal,
+            capture,
+          })
+        );
+      } catch (error) {
+        store.updateTurn(turn.id, {
+          status: c.req.raw.signal.aborted ? 'interrupted' : 'failed',
+          completedAt: new Date().toISOString(),
+          error: { code: 'chat_provider_failed', message: 'Chat model work did not complete.' },
+        });
+        throw error;
+      }
       const completedAt = new Date().toISOString();
-      const turn = createChatTurn(completedAt);
       recordQuickChatLlmUsage({
         ...(coreDb ? { coreDb } : {}),
         authorityActor: triggerActor,

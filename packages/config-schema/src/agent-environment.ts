@@ -1,12 +1,15 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { ActorRefSchema } from '@openkit/protocol';
-import { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
+import {
+  type CaptureCoverageBinding as AgentEnvironmentCaptureCoverage,
+  CaptureCoverageBindingSchema as AgentEnvironmentCaptureCoverageSchema,
+  WORKER_RUNTIME_PROVENANCE_FEATURE,
+} from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { SECRET_SHAPED_BUILD_ARGUMENT_PATTERN } from './build-argument-pattern.js';
 
 const RAW_SECRET_FIELD_NAMES = new Set(['apiKey', 'clientSecret', 'secret', 'token', 'password']);
-const SECRET_SHAPED_BUILD_ARGUMENT_PATTERN =
-  /(api.?key|authorization|client.?secret|credential|password|secret|token)/i;
 const BACKEND_PRIVATE_FIELD_NAMES = new Set([
   'backendContainerId',
   'backendSessionId',
@@ -1028,11 +1031,17 @@ export const AgentEnvironmentResourcesSchema = z
   })
   .strict();
 
+/** Capture binding supplied by Core; workers never resolve current policy from it. */
+export type { AgentEnvironmentCaptureCoverage };
+/** Immutable projection of the owning Turn's persisted capture admission binding. */
+export { AgentEnvironmentCaptureCoverageSchema };
+
 /**
  * Observability and audit sink expectations.
  */
 export const AgentEnvironmentObservabilitySchema = z
   .object({
+    captureCoverage: AgentEnvironmentCaptureCoverageSchema,
     audit: z
       .object({
         required: z.boolean().default(false),

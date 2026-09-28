@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: process
 ---
 # L6 Story Acceptance Testing
 

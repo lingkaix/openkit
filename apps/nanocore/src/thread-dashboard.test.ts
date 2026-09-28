@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { appendFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,7 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import * as database from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import * as workObservations from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -82,6 +83,15 @@ describe('thread dashboard app API', () => {
       const body = await response.json();
       expect(body.viewerUserId).toBe('user_local');
       expect(body.taskInputs).toEqual([]);
+      expect(body.runtimeActivity).toEqual(
+        store.listThreadTurns('ws_demo', thread.id).map((turn) => ({
+          turnId: turn.id,
+          contentCapture: 'off',
+          coverage: 'unavailable',
+          entries: [],
+          omittedEntryCount: 0,
+        }))
+      );
       expect(openedWorkspaceDb).toHaveBeenCalled();
       expect(openedWorkspaceDb.mock.results.at(-1)?.value.sqlite.open).toBe(false);
       expect(body.participants).toEqual(
@@ -96,6 +106,229 @@ describe('thread dashboard app API', () => {
       expect(JSON.stringify(body.participants)).not.toContain('@example.com');
     } finally {
       openedWorkspaceDb.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('reads durable child activity with capture off and isolates corruption from real approval controls', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-activity-readback-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const thread = store.createThread('ws_demo', 'Retained activity');
+    const turn = store.createTurn('ws_demo', thread.id, 'Work', { kind: 'user', id: 'user_local' });
+    const workspaceDb = database.openWorkspaceDb(dataRoot, 'ws_demo');
+    try {
+      const observedAt = '2026-09-22T00:00:00.000Z';
+      workObservations.appendWorkObservation(workspaceDb, {
+        threadId: thread.id,
+        turnId: turn.id,
+        bodies: [],
+        observation: {
+          id: 'obs_child',
+          type: 'runtime.observed',
+          ts: observedAt,
+          obs: 'sidecar',
+          payload: {
+            observationId: 'obs_child',
+            sourceRef: 'source_child',
+            sourceSequence: 1,
+            observedAt,
+            fact: {
+              kind: 'origin',
+              runtimeOriginRef: 'origin_child',
+              parentRuntimeOriginRef: 'origin_parent',
+              phase: 'started',
+            },
+            content: { state: 'not-applicable' },
+          },
+        },
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const app = createApp({ coreDb, dataRoot, store });
+    try {
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.runtimeActivity).toEqual([
+        expect.objectContaining({
+          turnId: turn.id,
+          contentCapture: 'off',
+          omittedEntryCount: 0,
+          entries: [
+            expect.objectContaining({ sequence: 1, kind: 'child-started', textTruncated: false }),
+          ],
+        }),
+      ]);
+      expect(body.runtimeActivity[0].entries[0]).not.toHaveProperty('text');
+      expect(JSON.stringify(body.runtimeActivity)).not.toMatch(
+        /origin_child|origin_parent|source_child/
+      );
+      expect(body.turns[0].status).toBe('running');
+      const timestamp = '2026-09-22T00:00:01.000Z';
+      const approval = store.createApproval({
+        id: 'ap_activity',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: turn.id,
+        kind: 'permission',
+        status: 'pending',
+        title: 'Approve the real operation',
+        description: 'Formal approval, independent of activity.',
+        createdAt: timestamp,
+        resolvedAt: null,
+      });
+      const item = store.createItem({
+        id: 'it_activity_approval',
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: turn.id,
+        type: 'approval-request',
+        status: 'completed',
+        approvalRequestId: approval.id,
+        title: approval.title,
+        description: approval.description,
+        kind: approval.kind,
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+      store.updateTurn(turn.id, {
+        status: 'awaiting_human',
+        humanGate: {
+          kind: 'approval',
+          approvalRequestId: approval.id,
+          itemId: item.id,
+        },
+      });
+      appendFileSync(
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_demo',
+          'threads',
+          thread.id,
+          'turns',
+          turn.id,
+          'observations.jsonl'
+        ),
+        'corrupt restricted diagnostic\n'
+      );
+      const unavailable = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
+      );
+      expect(unavailable.status).toBe(200);
+      const unavailableBody = await unavailable.json();
+      expect(unavailableBody.runtimeActivity).toEqual([
+        expect.objectContaining({
+          turnId: turn.id,
+          coverage: 'unavailable',
+          entries: [],
+          omittedEntryCount: 0,
+        }),
+      ]);
+      expect(unavailableBody.workStatus.pendingApprovalCount).toBe(1);
+      expect(unavailableBody.composer.disabled).toBe(false);
+      expect(unavailableBody.turns[0]).toMatchObject({
+        status: 'awaiting_human',
+        humanGate: {
+          kind: 'approval',
+          approvalRequestId: approval.id,
+          itemId: item.id,
+        },
+      });
+      expect(JSON.stringify(unavailableBody)).not.toContain('corrupt restricted diagnostic');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('projects only safe activity fields after Thread audience checks and bounds the storage read', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-activity-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const thread = store.createThread('ws_demo', 'Activity');
+    const turn = store.createTurn('ws_demo', thread.id, 'Work', { kind: 'user', id: 'user_local' });
+    const privateThread = store.createThread(
+      'ws_demo',
+      'Other private activity',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'user_other',
+      }
+    );
+    const entry = {
+      sequence: 7,
+      observedAt: '2026-09-22T00:00:00.000Z',
+      kind: 'result' as const,
+      label: 'Reported child result',
+      text: 'Verified the selected change.',
+      textTruncated: false,
+      body: 'restricted body must not be forwarded',
+      runtimeOriginRef: 'native identifier must not be forwarded',
+    };
+    const activity = {
+      turnId: turn.id,
+      contentCapture: 'on' as const,
+      coverage: 'partial' as const,
+      entries: [entry],
+      omittedEntryCount: 4,
+      bodyRef: 'restricted body reference must not be forwarded',
+    };
+    const read = vi
+      .spyOn(workObservations, 'readThreadRuntimeActivity')
+      .mockReturnValue([activity]);
+    const opened = vi.spyOn(database, 'openWorkspaceDb');
+    const app = createApp({ coreDb, dataRoot, store });
+    try {
+      const denied = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${privateThread.id}/dashboard`
+      );
+      expect(denied.status).toBe(404);
+      expect(read).not.toHaveBeenCalled();
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(read).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+        threadId: thread.id,
+        turnIds: [turn.id],
+      });
+      expect(body.runtimeActivity).toEqual([
+        {
+          turnId: turn.id,
+          contentCapture: 'on',
+          coverage: 'partial',
+          omittedEntryCount: 4,
+          entries: [
+            {
+              sequence: 7,
+              observedAt: entry.observedAt,
+              kind: 'result',
+              label: entry.label,
+              text: entry.text,
+              textTruncated: false,
+            },
+          ],
+        },
+      ]);
+      expect(body.turns[0].status).toBe('running');
+      expect(JSON.stringify(body)).not.toContain('must not be forwarded');
+      expect(opened.mock.results.at(-1)?.value.sqlite.open).toBe(false);
+    } finally {
+      read.mockRestore();
+      opened.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -234,7 +467,72 @@ describe('thread dashboard app API', () => {
     const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
 
     expect(res.status).toBe(200);
-    expect(await res.json()).not.toHaveProperty('activeSession');
+    const body = await res.json();
+    expect(body).not.toHaveProperty('activeSession');
+    expect(body.artifacts).toEqual([]);
+    expect(body.workStatus.latestArtifact).toBeNull();
+  });
+
+  it('selects the first equally newest Thread Artifact without reordering the inventory', async () => {
+    const store = createDemoStore();
+    const thread = store.createThread('ws_demo', 'Artifact selection');
+    const turn = store.createTurn('ws_demo', thread.id, 'Select newest output', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const foreignThread = store.createThread('ws_demo', 'Other Thread');
+    const foreignTurn = store.createTurn('ws_demo', foreignThread.id, 'Unrelated output', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const artifacts = [
+      ['ar_old', '2026-07-19T00:00:00.000Z', turn],
+      ['ar_first_newest', '2026-07-19T00:02:00.000Z', turn],
+      ['ar_second_newest', '2026-07-19T00:02:00.000Z', turn],
+      ['ar_foreign', '2026-07-19T00:03:00.000Z', foreignTurn],
+    ] as const;
+    for (const [id, updatedAt, owner] of artifacts) {
+      store.createArtifact({
+        id,
+        workspaceId: 'ws_demo',
+        threadId: owner.threadId,
+        turnId: owner.id,
+        kind: 'summary',
+        title: id,
+        status: 'ready',
+        summary: `Summary for ${id}`,
+        version: 1,
+        content: { format: 'markdown', body: id },
+        contentDigest: `sha256:${createHash('sha256').update(id, 'utf8').digest('hex')}`,
+        lastMutationRequestId: id,
+        origin: { kind: 'turn-output', threadId: owner.threadId, turnId: owner.id, requestId: id },
+        createdAt: '2026-07-19T00:00:00.000Z',
+        updatedAt,
+      });
+    }
+    const inventory = store.listArtifacts('ws_demo');
+    const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
+    const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.workStatus.latestArtifact).toEqual({
+      id: 'ar_first_newest',
+      title: 'ar_first_newest',
+      status: 'ready',
+      summary: 'Summary for ar_first_newest',
+      updatedAt: '2026-07-19T00:02:00.000Z',
+    });
+    expect(body.artifacts.map((artifact: { id: string }) => artifact.id)).toEqual([
+      'ar_old',
+      'ar_first_newest',
+      'ar_second_newest',
+    ]);
+    const after = store.listArtifacts('ws_demo');
+    expect(after).toEqual(inventory);
+    after.forEach((artifact, index) => {
+      expect(artifact).toBe(inventory[index]);
+    });
   });
 
   it('hides pending decision affordances from a readonly actor while preserving shared status', async () => {

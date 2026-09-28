@@ -212,7 +212,11 @@ function readAcceptedRecords(
     } else if (row.operation === 'capability_summary') {
       result.capabilitySummaries.push(record as WorkerCapabilityCallSummary);
     } else if (row.operation === 'event_append') {
-      result.events.push(record as WorkerCanonicalEventRecord);
+      const eventType = (record as { event?: { type?: string } }).event?.type;
+      // Observation transport receipts are not canonical transcript or public session events.
+      // Their existing durable sequence fingerprints remain the replay authority.
+      if (eventType !== 'observation.recorded' && eventType !== 'observation.content.chunk')
+        result.events.push(record as WorkerCanonicalEventRecord);
     }
   }
 

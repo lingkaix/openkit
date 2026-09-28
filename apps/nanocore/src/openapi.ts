@@ -198,6 +198,8 @@ import {
   RetrySchedulerAdmissionResponseSchema,
   ReverseKnowledgeProposalRequestSchema,
   ReverseKnowledgeProposalResponseSchema,
+  ReviseThreadGoalIntentRequestSchema,
+  ReviseThreadGoalIntentResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
   ReviseThreadGoalPlanResponseSchema,
   RevokeNanoHostTransportTokenResponseSchema,
@@ -2664,6 +2666,41 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/ReviseThreadGoalPlanResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/intent/revise': {
+        post: {
+          operationId: 'reviseThreadGoalIntent',
+          tags: ['modes'],
+          summary: 'Revise the current intent of one Goal.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/ReviseThreadGoalIntentRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Recorded Goal intent revision.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ReviseThreadGoalIntentResponse' },
                 },
               },
             },
@@ -6588,6 +6625,8 @@ export function createAppOpenApiDocument() {
         ProviderSubscriptionAutoTopup: toJsonSchema(ProviderSubscriptionAutoTopupSchema),
         ProviderSubscriptionQuota: toJsonSchema(ProviderSubscriptionQuotaSchema),
         ProviderSubscriptionsResponse: toJsonSchema(ProviderSubscriptionsResponseSchema),
+        ReviseThreadGoalIntentRequest: toJsonSchema(ReviseThreadGoalIntentRequestSchema),
+        ReviseThreadGoalIntentResponse: toJsonSchema(ReviseThreadGoalIntentResponseSchema),
         ReviseThreadGoalPlanRequest: toJsonSchema(ReviseThreadGoalPlanRequestSchema),
         ReviseThreadGoalPlanResponse: toJsonSchema(ReviseThreadGoalPlanResponseSchema),
         ResumeThreadGoalRequest: toJsonSchema(ResumeThreadGoalRequestSchema),

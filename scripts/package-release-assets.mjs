@@ -206,15 +206,6 @@ function packageNanoHost(input) {
   const hostManifest = parseNanoHostHostManifest(
     gitFile(input.repoRoot, input.ref, 'apps/nanohost/deploy/host-manifest.json').toString('utf8')
   );
-  if (
-    archiveRelease.name !== 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz' ||
-    gatewayRelease.name !== 'openshell-gateway' ||
-    gatewayRelease.derivedFrom !== archiveRelease.name ||
-    licenseRelease.sourcePath !== 'LICENSE' ||
-    noticesRelease.sourcePath !== 'THIRD-PARTY-NOTICES'
-  ) {
-    throw new Error('OpenShell release artifact lineage is inconsistent.');
-  }
   assertChecksum(input.gatewayArchivePath, archiveRelease.sha256, 'OpenShell Gateway archive');
   assertChecksum(input.openshellLicensePath, licenseRelease.sha256, 'OpenShell license');
   assertChecksum(input.openshellNoticesPath, noticesRelease.sha256, 'OpenShell notices');

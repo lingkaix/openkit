@@ -364,6 +364,7 @@ describe('shared Worker Harness', () => {
             workspaceId: 'workspace-one',
           },
           snapshotId: `package-${turn}`,
+          observability: { captureCoverage: { scope: 'server', value: 'off' } },
           credentials: {
             declarations:
               turn <= 2 ? [{ visibility: 'runtime-env', targetEnvVarName: 'GITHUB_TOKEN' }] : [],
@@ -1008,6 +1009,7 @@ describe('shared Worker Harness', () => {
     writeFileSync(
       packagePath,
       JSON.stringify({
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
         control: {
           adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
           bindings: {

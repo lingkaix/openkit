@@ -73,6 +73,16 @@ describe('schema evolution record envelope', () => {
     expect(() => assertRegisteredRequiredFeatures(['openkit.thread-entry.v1'])).not.toThrow();
   });
 
+  it('registers work observations but requires explicit reader support', () => {
+    const feature = 'openkit.work-observations.v1';
+    expect(() => assertRegisteredRequiredFeatures([feature])).not.toThrow();
+    const envelope = { ...envelopeFixture(), requiredFeatures: [feature] };
+    expect(() => parseRecordEnvelope(envelope)).toThrow(`Unsupported required feature: ${feature}`);
+    expect(
+      parseRecordEnvelope(envelope, { supportedFeatures: [feature] }).requiredFeatures
+    ).toEqual([feature]);
+  });
+
   it('keeps the required-feature registry aligned with the accepted spec table', () => {
     const spec = readFileSync(
       new URL('../../../docs/specs/20260703-schema_evolution_record_envelope.md', import.meta.url),

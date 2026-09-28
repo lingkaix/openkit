@@ -17,6 +17,8 @@ import {
   PauseThreadGoalResponseSchema,
   ResumeThreadGoalRequestSchema,
   ResumeThreadGoalResponseSchema,
+  ReviseThreadGoalIntentRequestSchema,
+  ReviseThreadGoalIntentResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
   ReviseThreadGoalPlanResponseSchema,
   RunThreadGoalStepRequestSchema,
@@ -69,9 +71,7 @@ import { serializeStructuredWorkerDelegationRequest } from './internal-agents/de
 import { redactInternalAgentText } from './internal-agents/redaction.js';
 import {
   createWorkerCoordinatorDecision,
-  createWorkerCoordinatorGoalPlanDraft,
   createWorkerCoordinatorGoalStopDecision,
-  projectWorkerCoordinatorGoalPlanDraft,
   type WorkerCoordinatorCandidate,
   type WorkerCoordinatorDecision,
 } from './internal-agents/worker-coordinator.js';
@@ -83,17 +83,24 @@ import { recordGoalWorkerLaunchDecision } from './policy/permission-decisions.js
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
 import {
+  GoalIntentRevisionError,
+  readGoalIntentRevision,
+  reviseGoalIntent,
+} from './runtime/goal-intent.js';
+import {
   approveGoalPlan,
+  canApproveGoalPlan,
   GoalPlanApprovalError,
   type ReviseGoalPlanResult,
   readGoalPlanRevision,
   reviseGoalPlan,
 } from './runtime/goal-plan-approval.js';
-import { createPreApprovalGoalPlanRevisionPlanner } from './runtime/goal-plan-propose-tool.js';
+import { createGoalPlanPlanner } from './runtime/goal-plan-propose-tool.js';
 import {
   createGoalPlan,
   GoalPlanRevisionError,
   readGoalPlanCreation,
+  readGoalPlanQuestionCreation,
   readPreApprovalGoalPlanRevision,
   runExclusiveGoalPlanCommand,
 } from './runtime/goal-planning.js';
@@ -109,6 +116,8 @@ import {
   type GoalTaskRecord,
   getGoalPlanRecord,
   getGoalRecord,
+  isTerminalGoalStatus,
+  listDispatchableGoalTasks,
   listGoalRecordsForThread,
   listGoalTasks,
   reserveGoalTaskForWorkerTurn,
@@ -141,6 +150,7 @@ import type { TurnExecutor } from './runtime/types.js';
 import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import {
   getWorkerCheckpoint,
+  listThreadWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
   parseWorkerCheckpointEvidence,
   type WorkerCheckpointContextAssemblySummary,
@@ -161,6 +171,7 @@ import {
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { interruptProductTurn } from './turn-routes.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from './workspace-materials.js';
 
 /** Parsed turn read model used by Goal worker lifecycle guards. */
@@ -1121,15 +1132,7 @@ function dedupeStrings(values: readonly string[]): string[] {
  * @returns True when the goal is not terminal.
  */
 function isActiveGoal(goal: GoalRecord): boolean {
-  switch (goal.status) {
-    case 'completed':
-    case 'blocked':
-    case 'aborted':
-    case 'failed':
-      return false;
-    default:
-      return true;
-  }
+  return !isTerminalGoalStatus(goal.status);
 }
 
 /**
@@ -1171,7 +1174,9 @@ function buildThreadGoalSummary(
     return null;
   }
 
-  const tasks = listGoalTasks(workspaceDb, { workspaceId, threadId, goalId: goal.goalId });
+  const tasks = listGoalTasks(workspaceDb, { workspaceId, threadId, goalId: goal.goalId }).filter(
+    (task) => task.planItemId === goal.planItemId
+  );
   const verifications = listGoalVerificationRecordsForGoal(workspaceDb, {
     workspaceId,
     threadId,
@@ -1222,6 +1227,53 @@ function goalStepTurnId(input: {
     .digest('hex')
     .slice(0, 24);
   return `tu_goal_step_${digest}`;
+}
+
+/** Exact request-owned Item id for one applied Goal execution refinement. */
+function goalRefinementItemId(turnId: string): string {
+  return `it_goal_refinement_${turnId}`;
+}
+
+/** Readable projection of the caller's bounded action against one selected approved Task. */
+function goalRefinementSummary(
+  refinement: NonNullable<z.infer<typeof RunThreadGoalStepRequestSchema>['refinement']>
+): string {
+  return [
+    `Active Plan: ${refinement.activePlanItemId}`,
+    `Selected Task: ${refinement.taskId}`,
+    `Reason: ${refinement.reason}`,
+    `Evidence Items: ${refinement.evidenceItemIds.join(', ') || 'none'}`,
+    `Evidence Artifacts: ${refinement.evidenceArtifactIds.join(', ') || 'none'}`,
+    `Bounded changed action: ${refinement.changedAction}`,
+  ].join('\n');
+}
+
+/** Validates the deterministic refinement Item before acknowledging a replayed Goal step. */
+function requireGoalRefinementItem(input: {
+  readonly store: FsStore;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly requestId: string;
+  readonly refinement: z.infer<typeof RunThreadGoalStepRequestSchema>['refinement'];
+}): void {
+  const item = input.store
+    .listThreadItems(input.workspaceId, input.threadId)
+    .find((candidate) => candidate.id === goalRefinementItemId(input.turnId));
+  if (!input.refinement) {
+    if (item) throw goalStepRecoveryError('Goal step has an unexpected refinement Item.');
+    return;
+  }
+  if (
+    !item ||
+    item.type !== 'status' ||
+    item.status !== 'completed' ||
+    item.turnId !== input.turnId ||
+    item.causationId !== input.requestId ||
+    item.summary !== goalRefinementSummary(input.refinement)
+  ) {
+    throw goalStepRecoveryError('Goal step refinement Item is missing or contradictory.');
+  }
 }
 
 /**
@@ -1927,16 +1979,18 @@ function buildGoalPlanCreationResponse(
       'Goal is unavailable for its request-owned Plan.'
     );
   }
-  const planner = projectWorkerCoordinatorGoalPlanDraft(
-    {
-      workspaceId,
-      threadId,
-      goalId: goal.goalId,
-      title: goal.title,
-      objective: goal.objective,
-    },
-    created.plan
-  );
+  const planner = {
+    mode: 'goal' as const,
+    sourceAgentId: 'goal-orchestrator' as const,
+    confidence: null,
+    rationale: 'Goal Orchestrator submitted this exact Plan proposal for approval.',
+    contextRefs: [
+      { kind: 'workspace' as const, id: workspaceId },
+      { kind: 'thread' as const, id: threadId },
+    ],
+    requiredApprovals: ['plan_approval'],
+    plan: created.plan,
+  };
   const summary = buildThreadGoalSummary(workspaceDb, workspaceId, threadId, created.goalId);
   if (!summary) {
     throw new GoalPlanApprovalError(
@@ -1953,6 +2007,27 @@ function buildGoalPlanCreationResponse(
   });
 }
 
+/** Projects an exact planning question Gate as a public command result. */
+function buildGoalPlanQuestionResponse(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  threadId: string,
+  question: NonNullable<ReturnType<typeof readGoalPlanQuestionCreation>>
+): z.output<typeof CreateThreadGoalPlanResponseSchema> {
+  const summary = buildThreadGoalSummary(workspaceDb, workspaceId, threadId, question.goalId);
+  if (!summary) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Goal question has no current Goal summary.'
+    );
+  }
+  return CreateThreadGoalPlanResponseSchema.parse({
+    status: 'awaiting_user',
+    goal: summary,
+    questionItemId: question.questionItem.id,
+  });
+}
+
 /**
  * Projects the current Thread Goal Plan from the latest Goal pointer and owned Plan record.
  *
@@ -1963,6 +2038,7 @@ function buildGoalPlanCreationResponse(
  * @throws GoalPlanApprovalError when the Goal pointer and Plan record contradict.
  */
 function buildThreadGoalPlanReadResponse(
+  store: FsStore,
   workspaceDb: WorkspaceDb,
   workspaceId: string,
   threadId: string
@@ -1971,8 +2047,17 @@ function buildThreadGoalPlanReadResponse(
   if (!summary) {
     return ThreadGoalPlanReadResponseSchema.parse({
       goal: null,
-      planItemId: null,
-      plan: null,
+      activePlanItemId: null,
+      activePlan: null,
+      pendingPlanItemId: null,
+      pendingPlan: null,
+      pendingPlanItemSummary: null,
+      selectableAffectedTasks: [],
+      canRunStep: false,
+      canApprovePendingPlan: false,
+      planningAction: 'none',
+      draftRevision: null,
+      continuePlanning: null,
     });
   }
 
@@ -1983,33 +2068,161 @@ function buildThreadGoalPlanReadResponse(
       'Current Goal summary is unavailable for its Plan read.'
     );
   }
-  if (goalRecord.planItemId === null) {
-    return ThreadGoalPlanReadResponseSchema.parse({
-      goal: summary,
-      planItemId: null,
-      plan: null,
-    });
-  }
-
   try {
-    const record = getGoalPlanRecord(workspaceDb, workspaceId, threadId, goalRecord.planItemId);
+    const readPlan = (planItemId: string | null) => {
+      if (!planItemId) return null;
+      const record = getGoalPlanRecord(workspaceDb, workspaceId, threadId, planItemId);
+      if (
+        !record ||
+        record.goalId !== goalRecord.goalId ||
+        record.planItemId !== planItemId ||
+        record.workspaceId !== workspaceId ||
+        record.threadId !== threadId
+      ) {
+        throw new GoalPlanApprovalError(
+          'recovery_required',
+          'Goal Plan pointer does not match its owned record.'
+        );
+      }
+      return record;
+    };
+    const active = readPlan(goalRecord.planItemId);
+    const pending = readPlan(goalRecord.pendingPlanItemId);
+    const turns = store.listThreadTurns(workspaceId, threadId);
+    const items = store.listThreadItems(workspaceId, threadId);
+    const pendingPlanItem = pending
+      ? items.find((item) => item.id === pending.planItemId && item.type === 'plan')
+      : null;
     if (
-      !record ||
-      record.goalId !== goalRecord.goalId ||
-      record.planItemId !== goalRecord.planItemId ||
-      record.workspaceId !== workspaceId ||
-      record.threadId !== threadId
+      pending &&
+      (!pendingPlanItem || pendingPlanItem.type !== 'plan' || !pendingPlanItem.summary)
     ) {
       throw new GoalPlanApprovalError(
         'recovery_required',
-        'Current Goal Plan pointer does not match its owned record.'
+        'Pending Goal Plan Item summary is missing.'
       );
     }
+    const intentItem = items.find((item) => item.id === goalRecord.currentIntentItemId);
+    if (!intentItem || intentItem.type !== 'user-message' || intentItem.status !== 'completed') {
+      throw new GoalPlanApprovalError('recovery_required', 'Current Goal intent Item is missing.');
+    }
+    const predecessorIds = [goalRecord.pendingPlanItemId, goalRecord.planItemId].filter(
+      (id): id is string => id !== null
+    );
+    const currentIntentIndex = items.findIndex(
+      (item) => item.id === goalRecord.currentIntentItemId
+    );
+    const pendingRevision = [...items]
+      .reverse()
+      .find(
+        (item) =>
+          item.type === 'user-message' &&
+          item.status === 'completed' &&
+          typeof item.parentItemId === 'string' &&
+          predecessorIds.includes(item.parentItemId) &&
+          Boolean(item.causationId) &&
+          items.indexOf(item) > currentIntentIndex
+      );
+    const instruction =
+      pendingRevision ??
+      (goalRecord.currentIntentItemId !== goalRecord.createdByItemId ? intentItem : null);
+    const instructionTurnIndex = instruction
+      ? turns.findIndex((turn) => turn.id === instruction.turnId)
+      : -1;
+    if (instruction && instructionTurnIndex < 0) {
+      throw new GoalPlanApprovalError(
+        'recovery_required',
+        'Goal revision instruction Turn is missing.'
+      );
+    }
+    const attempts = turns
+      .slice(instruction ? instructionTurnIndex + 1 : 0)
+      .filter((turn) => turn.id.startsWith('tu_goal_plan_'));
+    const latestAttempt = attempts.at(-1);
+    const openQuestion =
+      latestAttempt?.status === 'awaiting_human' && latestAttempt.humanGate?.kind === 'user-input';
+    const failedAttempt = latestAttempt?.status === 'failed' && Boolean(latestAttempt.completedAt);
+    const inProgress =
+      latestAttempt &&
+      !['completed', 'failed', 'interrupted', 'awaiting_human'].includes(latestAttempt.status);
+    const answeredRequest =
+      latestAttempt?.status === 'completed' && latestAttempt.humanGate === null
+        ? latestAttempt.items.find((item) => item.type === 'user-input-request')
+        : null;
+    const answeredResponse =
+      answeredRequest?.type === 'user-input-request'
+        ? latestAttempt?.items.find(
+            (item) =>
+              item.type === 'user-input-response' &&
+              item.userInputRequestId === answeredRequest.userInputRequestId
+          )
+        : null;
+    const continuePlanning =
+      answeredRequest?.type === 'user-input-request' &&
+      answeredResponse?.type === 'user-input-response' &&
+      typeof answeredRequest.parentItemId === 'string' &&
+      [goalRecord.currentIntentItemId, ...predecessorIds].includes(answeredRequest.parentItemId)
+        ? { questionItemId: answeredRequest.id, responseItemId: answeredResponse.id }
+        : null;
+    const draftRevision =
+      instruction && !latestAttempt && instruction.causationId
+        ? { itemId: instruction.id, requestId: instruction.causationId }
+        : null;
+    const planningAction = openQuestion
+      ? 'answer_question'
+      : failedAttempt
+        ? 'retry'
+        : inProgress
+          ? 'in_progress'
+          : continuePlanning
+            ? 'continue_planning'
+            : draftRevision
+              ? 'draft_revision'
+              : pending
+                ? 'await_approval'
+                : !active && !latestAttempt
+                  ? 'create'
+                  : 'none';
 
     return ThreadGoalPlanReadResponseSchema.parse({
       goal: summary,
-      planItemId: record.planItemId,
-      plan: ThreadGoalPlanSchema.parse(record),
+      activePlanItemId: active?.planItemId ?? null,
+      activePlan: active ? ThreadGoalPlanSchema.parse(active) : null,
+      pendingPlanItemId: pending?.planItemId ?? null,
+      pendingPlan: pending ? ThreadGoalPlanSchema.parse(pending) : null,
+      pendingPlanItemSummary: pendingPlanItem?.type === 'plan' ? pendingPlanItem.summary : null,
+      selectableAffectedTasks: listGoalTasks(workspaceDb, {
+        workspaceId,
+        threadId,
+        goalId: goalRecord.goalId,
+      })
+        .filter(
+          (task) =>
+            task.planItemId === goalRecord.planItemId &&
+            !['completed', 'blocked', 'failed'].includes(task.status)
+        )
+        .map((task) => ({ taskId: task.taskId, title: task.title, status: task.status })),
+      canRunStep:
+        goalRecord.status === 'running' &&
+        goalRecord.currentTaskId === null &&
+        listDispatchableGoalTasks(workspaceDb, {
+          workspaceId,
+          threadId,
+          goalId: goalRecord.goalId,
+        }).some((task) => task.status === 'ready'),
+      canApprovePendingPlan:
+        pending !== null &&
+        canApproveGoalPlan({
+          store,
+          workspaceDb,
+          workspaceId,
+          threadId,
+          goalId: goalRecord.goalId,
+          planItemId: pending.planItemId,
+        }),
+      planningAction,
+      draftRevision: planningAction === 'draft_revision' ? draftRevision : null,
+      continuePlanning: planningAction === 'continue_planning' ? continuePlanning : null,
     });
   } catch (error) {
     if (error instanceof GoalPlanApprovalError) {
@@ -2735,7 +2948,7 @@ export function registerGoalRoutes({
   readonly coreDb: CoreDb | undefined;
   /** Process-local duplicate collapse for durable Goal commands. */
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  /** Existing logical Gateway dispatcher used by pre-approval revision Turns. */
+  /** Existing logical Gateway dispatcher used by Goal planning Turns. */
   readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   /** Deployment mode that gates deterministic local-only routes. */
   readonly mode: CoreMode;
@@ -2760,6 +2973,7 @@ export function registerGoalRoutes({
     readonly requestedAgentId: string;
     readonly reservedTurnId: string;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   /** Starts and observes governed worker turns. */
   readonly turnExecutor: TurnExecutor;
@@ -2890,7 +3104,7 @@ export function registerGoalRoutes({
 
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
-        return c.json(buildThreadGoalPlanReadResponse(workspaceDb, workspaceId, threadId));
+        return c.json(buildThreadGoalPlanReadResponse(store, workspaceDb, workspaceId, threadId));
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -3132,6 +3346,48 @@ export function registerGoalRoutes({
               goalId: requireLatestActiveGoal(workspaceDb, workspaceId, threadId).goalId,
               requestId: parsed.data.requestId,
               run: async () => {
+                const existingQuestion = readGoalPlanQuestionCreation({
+                  triggerActor: { kind: 'user', id: c.get('actor').userId },
+                  workspaceDb,
+                  store,
+                  workspaceId,
+                  threadId,
+                  requestId: parsed.data.requestId,
+                });
+                if (existingQuestion) {
+                  const questionTurn = store.getTurn(
+                    workspaceId,
+                    threadId,
+                    existingQuestion.questionItem.turnId
+                  );
+                  const current = getGoalRecord(
+                    workspaceDb,
+                    workspaceId,
+                    threadId,
+                    existingQuestion.goalId
+                  );
+                  if (
+                    questionTurn.status !== 'awaiting_human' ||
+                    !current ||
+                    isTerminalGoalStatus(current.status) ||
+                    ![
+                      current.currentIntentItemId,
+                      current.planItemId,
+                      current.pendingPlanItemId,
+                    ].includes(existingQuestion.questionItem.parentItemId ?? null)
+                  ) {
+                    throw new GoalPlanApprovalError(
+                      'recovery_required',
+                      'Goal question cannot recover after its source changed or Gate closed.'
+                    );
+                  }
+                  return buildGoalPlanQuestionResponse(
+                    workspaceDb,
+                    workspaceId,
+                    threadId,
+                    existingQuestion
+                  );
+                }
                 const existing = readGoalPlanCreation({
                   triggerActor: { kind: 'user', id: c.get('actor').userId },
                   workspaceDb,
@@ -3148,7 +3404,6 @@ export function registerGoalRoutes({
                     existing
                   );
                 }
-
                 const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
                 const revision = readPreApprovalGoalPlanRevision({
                   store,
@@ -3157,7 +3412,10 @@ export function registerGoalRoutes({
                   threadId,
                   goalId: goal.goalId,
                 });
-                const initialPlanning = goal.status === 'planning' && goal.planItemId === null;
+                const initialPlanning =
+                  goal.status === 'planning' &&
+                  goal.planItemId === null &&
+                  goal.pendingPlanItemId === null;
                 if (!initialPlanning && !revision) {
                   throw new TurnStartValidationError(
                     'goal_not_planning',
@@ -3169,28 +3427,19 @@ export function registerGoalRoutes({
                   kind: 'user',
                   id: c.get('actor').userId,
                 } as const satisfies ActorRef;
-                const planner = revision
-                  ? createPreApprovalGoalPlanRevisionPlanner({
-                      runtimeConfig,
-                      llmGatewayDispatcher,
-                      resolveGatewayProvider,
-                      workspaceId,
-                      userId: authorityActor.id,
-                      authorityActor,
-                      coreDb,
-                      signal: c.req.raw.signal,
-                      ...(providerSubscriptionAccountManager
-                        ? { providerSubscriptionAccountManager }
-                        : {}),
-                    })
-                  : () =>
-                      createWorkerCoordinatorGoalPlanDraft({
-                        workspaceId,
-                        threadId,
-                        goalId: goal.goalId,
-                        title: goal.title,
-                        objective: goal.objective,
-                      }).plan;
+                const planner = createGoalPlanPlanner({
+                  runtimeConfig,
+                  llmGatewayDispatcher,
+                  resolveGatewayProvider,
+                  workspaceId,
+                  userId: authorityActor.id,
+                  authorityActor,
+                  coreDb,
+                  signal: c.req.raw.signal,
+                  ...(providerSubscriptionAccountManager
+                    ? { providerSubscriptionAccountManager }
+                    : {}),
+                });
                 const result = await createGoalPlan({
                   triggerActor: authorityActor,
                   workspaceDb,
@@ -3201,6 +3450,19 @@ export function registerGoalRoutes({
                   requestId: parsed.data.requestId,
                   planner,
                 });
+                if (result.status === 'awaiting_user') {
+                  return buildGoalPlanQuestionResponse(workspaceDb, workspaceId, threadId, {
+                    goalId: goal.goalId,
+                    status: 'awaiting_user',
+                    questionItem: result.questionItem,
+                  });
+                }
+                if (result.status === 'failed') {
+                  throw new GoalPlanRevisionError(
+                    'goal_plan_revision_unavailable',
+                    result.errorMessage
+                  );
+                }
                 if (result.status !== 'awaiting_plan_approval') {
                   throw new GoalPlanApprovalError(
                     'recovery_required',
@@ -3220,6 +3482,23 @@ export function registerGoalRoutes({
                 'Goal Plan receipt has invalid response lineage.'
               );
             }
+            const question = readGoalPlanQuestionCreation({
+              triggerActor: { kind: 'user', id: c.get('actor').userId },
+              workspaceDb,
+              store,
+              workspaceId,
+              threadId,
+              requestId: parsed.data.requestId,
+            });
+            if (question) {
+              if (question.questionItem.id !== record.response.id) {
+                throw new GoalPlanApprovalError(
+                  'recovery_required',
+                  'Goal question contradicts its command receipt.'
+                );
+              }
+              return buildGoalPlanQuestionResponse(workspaceDb, workspaceId, threadId, question);
+            }
             const existing = readGoalPlanCreation({
               triggerActor: { kind: 'user', id: c.get('actor').userId },
               workspaceDb,
@@ -3228,15 +3507,16 @@ export function registerGoalRoutes({
               threadId,
               requestId: parsed.data.requestId,
             });
-            if (!existing || existing.planItem.id !== record.response.id) {
-              throw new GoalPlanApprovalError(
-                'recovery_required',
-                'Goal Plan owners are missing or contradict the receipt.'
-              );
+            if (existing && existing.planItem.id === record.response.id) {
+              return buildGoalPlanCreationResponse(workspaceDb, workspaceId, threadId, existing);
             }
-            return buildGoalPlanCreationResponse(workspaceDb, workspaceId, threadId, existing);
+            throw new GoalPlanApprovalError(
+              'recovery_required',
+              'Goal Plan owners are missing or contradict the receipt.'
+            );
           },
-          responseId: (result) => result.planItemId,
+          responseId: (result) =>
+            result.status === 'awaiting_user' ? result.questionItemId : result.planItemId,
         }).catch((error) => {
           if (
             error instanceof GoalPlanApprovalError ||
@@ -3324,7 +3604,7 @@ export function registerGoalRoutes({
               assertAuthorizedWorkspaceLineage(workspaceAccess, plan?.workspaceId ?? null);
             }
             const goal = listGoalRecordsForThread(workspaceDb, { workspaceId, threadId }).find(
-              (candidate) => candidate.planItemId === parsed.data.planItemId
+              (candidate) => candidate.pendingPlanItemId === parsed.data.planItemId
             );
             if (!goal) {
               throw new GoalPlanApprovalError(
@@ -3379,7 +3659,9 @@ export function registerGoalRoutes({
               .listThreadItems(workspaceId, threadId)
               .find((item) => item.id === record.response.id && item.type === 'plan');
             const tasks = goal
-              ? listGoalTasks(workspaceDb, { workspaceId, threadId, goalId: goal.goalId })
+              ? listGoalTasks(workspaceDb, { workspaceId, threadId, goalId: goal.goalId }).filter(
+                  (task) => task.planItemId === record.response.id
+                )
               : [];
             const exactTaskSet =
               plan !== null &&
@@ -3391,16 +3673,20 @@ export function registerGoalRoutes({
             const summary = goal
               ? buildThreadGoalSummary(workspaceDb, workspaceId, threadId, goal.goalId)
               : null;
-            if (
-              !goal ||
-              goal.planItemId !== record.response.id ||
-              goal.status === 'planning' ||
-              goal.status === 'awaiting_plan_approval' ||
-              !plan ||
-              !planItem ||
-              !exactTaskSet ||
-              !summary
-            ) {
+            let approvedAncestor = false;
+            let cursor = goal?.planItemId ?? null;
+            const visited = new Set<string>();
+            while (cursor && !visited.has(cursor)) {
+              if (cursor === record.response.id) {
+                approvedAncestor = true;
+                break;
+              }
+              visited.add(cursor);
+              cursor =
+                getGoalPlanRecord(workspaceDb, workspaceId, threadId, cursor)
+                  ?.predecessorPlanItemId ?? null;
+            }
+            if (!goal || !approvedAncestor || !plan || !planItem || !exactTaskSet || !summary) {
               throw new GoalPlanApprovalError(
                 'recovery_required',
                 'Goal Plan approval owners are missing or contradictory.'
@@ -3428,6 +3714,190 @@ export function registerGoalRoutes({
         return asApiError(error.message, error.code, error.status);
       }
       return asCommandError(error, 'goal_plan_approve_failed', 400);
+    }
+  });
+
+  registerAppApiRoute(app, 'reviseThreadGoalIntent', async (c) => {
+    const parsed = ReviseThreadGoalIntentRequestSchema.safeParse(
+      await c.req.json().catch(() => ({}))
+    );
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    try {
+      const workspaceId = c.req.param('workspaceId');
+      const threadId = c.req.param('threadId');
+      const store = requestStore(c);
+      store.getWorkspace(workspaceId);
+      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
+      if (!coreDb) {
+        return asApiError(
+          'Goal storage is unavailable for this NanoCore instance.',
+          'goal_storage_unavailable',
+          503
+        );
+      }
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
+      try {
+        const triggerActor = {
+          kind: 'user',
+          id: c.get('actor').userId,
+        } as const satisfies ActorRef;
+        const readOwners = () =>
+          readGoalIntentRevision({
+            triggerActor,
+            store,
+            workspaceDb,
+            workspaceId,
+            threadId,
+            requestId: parsed.data.requestId,
+          });
+        const interruptHeldTurn = async (goalId: string): Promise<void> => {
+          const current = getGoalRecord(workspaceDb, workspaceId, threadId, goalId);
+          if (!current?.currentTaskId) return;
+          const eligible = listDispatchableGoalTasks(workspaceDb, {
+            workspaceId,
+            threadId,
+            goalId,
+          });
+          if (eligible.some((task) => task.taskId === current.currentTaskId)) return;
+          const selectedTask = listGoalTasks(workspaceDb, { workspaceId, threadId, goalId }).find(
+            (task) => task.taskId === current.currentTaskId
+          );
+          if (selectedTask?.status === 'reviewing') return;
+          if (selectedTask?.status !== 'running') {
+            throw new GoalIntentRevisionError(
+              'recovery_required',
+              'Held current Task has contradictory state.'
+            );
+          }
+          const checkpoints = listThreadWorkerCheckpoints(
+            workspaceDb,
+            workspaceId,
+            threadId
+          ).filter(
+            (checkpoint) =>
+              checkpoint.goalId === goalId && checkpoint.taskId === current.currentTaskId
+          );
+          const active = checkpoints.filter((checkpoint) => {
+            const turn = store.getTurn(workspaceId, threadId, checkpoint.turnId);
+            return !isSealedTurnTerminal(turn.status);
+          });
+          if (active.length > 1 || checkpoints.length === 0) {
+            throw new GoalIntentRevisionError(
+              'recovery_required',
+              'Held Task has contradictory worker Turn lineage.'
+            );
+          }
+          if (active.length === 1) {
+            await interruptProductTurn({
+              store,
+              inflightCommands,
+              coreDb,
+              turnExecutor,
+              workspaceId,
+              threadId,
+              turnId: active[0]!.turnId,
+              requestId: `${parsed.data.requestId}:held-task`,
+            });
+          }
+        };
+        const response = await runIdempotentCommand({
+          store,
+          inflightCommands,
+          command: 'goal.intent.revise',
+          requestId: parsed.data.requestId,
+          scope: { actorId: triggerActor.id, workspaceId, threadId },
+          input: {
+            objective: parsed.data.objective,
+            revision: parsed.data.revision,
+            affectedTaskIds: parsed.data.affectedTaskIds ?? null,
+          },
+          responseKind: 'goal',
+          execute: async () => {
+            const existing = readOwners();
+            if (existing) {
+              throw new GoalIntentRevisionError(
+                'recovery_required',
+                'Goal intent request has retained owners without a command receipt.'
+              );
+            }
+            const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
+            const revised = reviseGoalIntent({
+              triggerActor,
+              store,
+              workspaceDb,
+              workspaceId,
+              threadId,
+              goalId: goal.goalId,
+              requestId: parsed.data.requestId,
+              objective: parsed.data.objective,
+              revision: parsed.data.revision,
+              ...(parsed.data.affectedTaskIds === undefined
+                ? {}
+                : { affectedTaskIds: parsed.data.affectedTaskIds }),
+            });
+            try {
+              await interruptHeldTurn(revised.goalId);
+            } catch {
+              throw new GoalIntentRevisionError(
+                'recovery_required',
+                'Goal intent is retained, but held Task interruption needs inspection.'
+              );
+            }
+            const summary = buildThreadGoalSummary(
+              workspaceDb,
+              workspaceId,
+              threadId,
+              revised.goalId
+            );
+            if (!summary)
+              throw new GoalIntentRevisionError(
+                'recovery_required',
+                'Revised Goal summary is missing.'
+              );
+            return ReviseThreadGoalIntentResponseSchema.parse({
+              goal: summary,
+              intentItemId: revised.intentItem.id,
+            });
+          },
+          replay: (record) => {
+            const owners = readOwners();
+            if (
+              !owners ||
+              record.response.kind !== 'goal' ||
+              owners.goalId !== record.response.id
+            ) {
+              throw new GoalIntentRevisionError(
+                'recovery_required',
+                'Goal intent receipt contradicts durable owners.'
+              );
+            }
+            const summary = buildThreadGoalSummary(
+              workspaceDb,
+              workspaceId,
+              threadId,
+              owners.goalId
+            );
+            if (!summary)
+              throw new GoalIntentRevisionError(
+                'recovery_required',
+                'Revised Goal summary is missing.'
+              );
+            return ReviseThreadGoalIntentResponseSchema.parse({
+              goal: summary,
+              intentItemId: owners.intentItem.id,
+            });
+          },
+          responseId: (result) => result.goal.goalId,
+        });
+        return c.json(response);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } catch (error) {
+      if (error instanceof HTTPException) throw error;
+      if (error instanceof GoalIntentRevisionError)
+        return asApiError(error.message, error.code, error.status);
+      return asCommandError(error, 'goal_intent_revise_failed', 400);
     }
   });
 
@@ -3486,10 +3956,17 @@ export function registerGoalRoutes({
             }
 
             const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-            if (goal.status !== 'awaiting_plan_approval' || !goal.planItemId) {
+            const pendingCandidate = goal.pendingPlanItemId
+              ? getGoalPlanRecord(workspaceDb, workspaceId, threadId, goal.pendingPlanItemId)
+              : null;
+            const predecessorPlanItemId =
+              pendingCandidate?.sourceIntentItemId === goal.currentIntentItemId
+                ? goal.pendingPlanItemId
+                : goal.planItemId;
+            if (!predecessorPlanItemId || isTerminalGoalStatus(goal.status)) {
               throw new TurnStartValidationError(
-                'goal_not_awaiting_plan_approval',
-                'Goal is not awaiting plan approval.',
+                'goal_plan_revision_unavailable',
+                'Goal has no Plan available for revision.',
                 409
               );
             }
@@ -3500,7 +3977,7 @@ export function registerGoalRoutes({
               workspaceId,
               threadId,
               goalId: goal.goalId,
-              planItemId: goal.planItemId,
+              planItemId: predecessorPlanItemId,
               requestId: parsed.data.requestId,
               revision: parsed.data.revision,
             });
@@ -3697,7 +4174,8 @@ export function registerGoalRoutes({
 
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
-        const requestInputHash = commandInputHash({});
+        const commandInput = parsed.data.refinement ? { refinement: parsed.data.refinement } : {};
+        const requestInputHash = commandInputHash(commandInput);
         const reservedTurnId = goalStepTurnId({
           actorId: triggerActor.id,
           workspaceId,
@@ -3711,16 +4189,25 @@ export function registerGoalRoutes({
           command: 'goal.step',
           requestId: parsed.data.requestId,
           scope: { actorId: triggerActor.id, workspaceId, threadId },
-          input: {},
+          input: commandInput,
           responseKind: 'goal',
           responseId: (result) => result.goal.goalId,
-          replay: (record) =>
-            projectGoalStepResponse({
+          replay: (record) => {
+            requireGoalRefinementItem({
+              store,
+              workspaceId,
+              threadId,
+              turnId: reservedTurnId,
+              requestId: parsed.data.requestId,
+              refinement: parsed.data.refinement,
+            });
+            return projectGoalStepResponse({
               workspaceDb,
               workspaceId,
               threadId,
               record,
-            }),
+            });
+          },
           execute: async () => {
             const checkpoint = getWorkerCheckpoint(
               workspaceDb,
@@ -3753,6 +4240,14 @@ export function registerGoalRoutes({
                   'Goal step effects exist without a completed command receipt.'
                 );
               }
+              requireGoalRefinementItem({
+                store,
+                workspaceId,
+                threadId,
+                turnId: reservedTurnId,
+                requestId: parsed.data.requestId,
+                refinement: parsed.data.refinement,
+              });
               return projectGoalStepResponse({
                 workspaceDb,
                 workspaceId,
@@ -3790,7 +4285,7 @@ export function registerGoalRoutes({
               throw new TurnStartValidationError('goal_not_running', 'Goal is not running.', 409);
             }
 
-            const tasks = listGoalTasks(workspaceDb, {
+            const tasks = listDispatchableGoalTasks(workspaceDb, {
               workspaceId,
               threadId,
               goalId: goal.goalId,
@@ -3803,6 +4298,64 @@ export function registerGoalRoutes({
                 'Goal does not have a ready task.',
                 409
               );
+            }
+            const refinement = parsed.data.refinement;
+            if (refinement) {
+              if (
+                refinement.activePlanItemId !== goal.planItemId ||
+                refinement.taskId !== task.taskId
+              ) {
+                throw new TurnStartValidationError(
+                  'stale',
+                  'Goal refinement does not match the selected approved Task.',
+                  409
+                );
+              }
+              if (
+                new Set(refinement.evidenceItemIds).size !== refinement.evidenceItemIds.length ||
+                new Set(refinement.evidenceArtifactIds).size !==
+                  refinement.evidenceArtifactIds.length
+              ) {
+                throw new TurnStartValidationError(
+                  'invalid_request',
+                  'Goal refinement evidence ids must be distinct.',
+                  400
+                );
+              }
+              const visibleItems = new Map(
+                store.listThreadItems(workspaceId, threadId).map((item) => [item.id, item])
+              );
+              if (
+                refinement.evidenceItemIds.some(
+                  (id) => visibleItems.get(id)?.status !== 'completed'
+                )
+              ) {
+                throw new TurnStartValidationError(
+                  'stale',
+                  'Goal refinement Item evidence is unavailable.',
+                  409
+                );
+              }
+              if (
+                refinement.evidenceArtifactIds.some((id) => {
+                  const artifact = store
+                    .listArtifacts(workspaceId)
+                    .find((entry) => entry.id === id);
+                  return (
+                    !artifact ||
+                    (artifact.threadId !== null && artifact.threadId !== threadId) ||
+                    !task.resources.some(
+                      (resource) => resource.kind === 'artifact' && resource.reference === id
+                    )
+                  );
+                })
+              ) {
+                throw new TurnStartValidationError(
+                  'stale',
+                  'Goal refinement Artifact evidence is outside this Task.',
+                  409
+                );
+              }
             }
 
             let workerCoordinator: WorkerCoordinatorDecision | null = null;
@@ -3830,8 +4383,24 @@ export function registerGoalRoutes({
                   taskId: task.taskId,
                   threadItems: store.listThreadItems(workspaceId, threadId),
                 });
+                if (
+                  refinement?.evidenceItemIds.some(
+                    (id) =>
+                      !preparedContext.contextRefs.some(
+                        (ref) => ref.kind === 'item' && ref.id === id
+                      )
+                  )
+                ) {
+                  throw new TurnStartValidationError(
+                    'stale',
+                    'Goal refinement Item evidence is not deliverable in the Task context.',
+                    409
+                  );
+                }
                 const coordinator = createWorkerCoordinatorDecision({
-                  prompt: preparedContext.objective,
+                  prompt: refinement
+                    ? `${preparedContext.objective}\n\nExecution refinement within this approved Task: ${refinement.changedAction}`
+                    : preparedContext.objective,
                   readiness: workerCoordinatorCandidates(store, workspaceId),
                   routingContext: 'goal_step',
                   threadState: { status: 'idle', threadId },
@@ -3953,6 +4522,27 @@ export function registerGoalRoutes({
                   requestedAgentId: worker.agentId,
                   reservedTurnId: turnId,
                   workerStorageChoice,
+                  ...(refinement
+                    ? {
+                        onTurnCreated: (turn) => {
+                          const timestamp = turn.startedAt ?? new Date().toISOString();
+                          store.createItem({
+                            id: goalRefinementItemId(turn.id),
+                            workspaceId,
+                            threadId,
+                            turnId: turn.id,
+                            type: 'status',
+                            status: 'completed',
+                            level: 'info',
+                            title: 'Goal execution refinement',
+                            summary: goalRefinementSummary(refinement),
+                            causationId: parsed.data.requestId,
+                            createdAt: timestamp,
+                            completedAt: timestamp,
+                          });
+                        },
+                      }
+                    : {}),
                 });
                 const session =
                   turnExecutor.getAgentSession?.(store, workspaceId, threadId) ?? null;
@@ -4032,6 +4622,9 @@ export function registerGoalRoutes({
         throw error;
       }
       if (error instanceof GoalReviewResolutionError) {
+        return asApiError(error.message, error.code, error.status);
+      }
+      if (error instanceof IdempotencyKeyConflictError) {
         return asApiError(error.message, error.code, error.status);
       }
       const recoveryRequired = workerLaunchFenced || workerTurnTerminalized;

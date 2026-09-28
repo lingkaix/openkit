@@ -1151,7 +1151,7 @@ export const operationCatalog = [
     appOperationId: 'createThreadGoalPlan',
     clientMethod: 'app.createThreadGoalPlan',
     group: 'goal',
-    summary: 'Create the deterministic plan for one goal.',
+    summary: 'Request a bounded Goal plan proposal or clarification.',
     mutating: true,
     inputSchema: flatRequest(appSchemas.CreateThreadGoalPlanRequestSchema, threadScope),
     handler: ({ client }, input) =>
@@ -1190,6 +1190,23 @@ export const operationCatalog = [
     inputSchema: flatRequest(appSchemas.ReviseThreadGoalPlanRequestSchema, threadScope),
     handler: ({ client }, input) =>
       client.app.reviseThreadGoalPlan(
+        input.workspaceId,
+        input.threadId,
+        bodyWithout(input, 'workspaceId', 'threadId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'goal.intent-revise',
+    source: 'app-api',
+    appOperationId: 'reviseThreadGoalIntent',
+    clientMethod: 'app.reviseThreadGoalIntent',
+    group: 'goal',
+    summary: 'Revise the current Goal intent and identify affected work.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.ReviseThreadGoalIntentRequestSchema, threadScope),
+    handler: ({ client }, input) =>
+      client.app.reviseThreadGoalIntent(
         input.workspaceId,
         input.threadId,
         bodyWithout(input, 'workspaceId', 'threadId')

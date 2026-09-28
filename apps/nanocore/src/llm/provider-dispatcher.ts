@@ -11,6 +11,8 @@ import {
   type GatewayUsageRecordInput,
   GatewayUsageTracker,
 } from './gateway-usage.js';
+import { ModelCapture, type ModelCaptureContext } from './model-capture.js';
+import type { ModelSemanticEvent } from './model-semantic-content.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   type OpenAICompatibleChatCompletionResponse,
@@ -40,6 +42,8 @@ export interface LLMGatewayProviderDispatcherOptions {
  * Provider transport state shared across one gateway dispatch.
  */
 export interface LLMGatewayTransportContext {
+  /** Private observer for admitted semantic events, before public response conversion. */
+  readonly onModelEvent?: (event: ModelSemanticEvent) => void;
   /** Optional caller signal used to abort provider work. */
   readonly signal?: AbortSignal;
   /** Opaque Codex turn state replayed to the next provider request. */
@@ -52,6 +56,8 @@ export interface LLMGatewayTransportContext {
  * Optional per-call context for Gateway dispatch.
  */
 export interface LLMGatewayDispatchContext {
+  /** Exact trusted Turn admission and logical correlation, absent only for the no-Turn gap. */
+  readonly capture?: ModelCaptureContext | undefined;
   /** Usage endpoint family to record for diagnostics. */
   readonly usageEndpoint?: GatewayUsageEndpoint;
   /** Stable OpenKit scope used to derive prompt cache keys. */
@@ -100,6 +106,7 @@ export class LLMGatewayProviderDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<OpenAICompatibleChatCompletionResponse> {
     this.assertConfiguredModel(provider, request.model);
+    const transport = this.captureTransport(provider, request, context);
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
@@ -118,7 +125,7 @@ export class LLMGatewayProviderDispatcher {
         provider,
         keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport,
+        transport,
         models
       );
 
@@ -134,7 +141,7 @@ export class LLMGatewayProviderDispatcher {
         provider,
         responsesRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport,
+        transport,
         models
       );
 
@@ -157,6 +164,7 @@ export class LLMGatewayProviderDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     this.assertConfiguredModel(provider, request.model);
+    const transport = this.captureTransport(provider, request, context);
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
@@ -175,7 +183,7 @@ export class LLMGatewayProviderDispatcher {
         provider,
         keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport,
+        transport,
         models
       );
     }
@@ -193,7 +201,7 @@ export class LLMGatewayProviderDispatcher {
           provider,
           responsesRequest,
           (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-          context.transport,
+          transport,
           models
         ),
         request.model
@@ -219,6 +227,7 @@ export class LLMGatewayProviderDispatcher {
       assertCodexResponsesRequestAdmission(request, false);
     }
     this.assertConfiguredModel(provider, request.model);
+    const transport = this.captureTransport(provider, request, context);
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
@@ -240,7 +249,7 @@ export class LLMGatewayProviderDispatcher {
         provider,
         keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport,
+        transport,
         models
       );
 
@@ -266,6 +275,7 @@ export class LLMGatewayProviderDispatcher {
       assertCodexResponsesRequestAdmission(request, true);
     }
     this.assertConfiguredModel(provider, request.model);
+    const transport = this.captureTransport(provider, request, context);
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
@@ -287,7 +297,7 @@ export class LLMGatewayProviderDispatcher {
         provider,
         keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport,
+        transport,
         models
       );
     }
@@ -311,6 +321,28 @@ export class LLMGatewayProviderDispatcher {
         type: 'invalid_request_error',
       });
     }
+  }
+
+  /** Creates the private capture observer before adapting the request or contacting a provider. */
+  private captureTransport(
+    provider: ResolvedLLMProviderConfig,
+    request: OpenAICompatibleChatCompletionRequest | OpenAICompatibleResponsesRequest,
+    context: LLMGatewayDispatchContext
+  ): LLMGatewayTransportContext | undefined {
+    if (!context.capture) return context.transport;
+    const capture = new ModelCapture(
+      context.capture,
+      provider.apiKey ? [provider.apiKey] : [],
+      provider.id
+    );
+    capture.request(request);
+    return {
+      ...context.transport,
+      onModelEvent: (event) => {
+        capture.event(event);
+        context.transport?.onModelEvent?.(event);
+      },
+    };
   }
 
   private recordUsage(

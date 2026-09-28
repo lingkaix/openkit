@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { createDeterministicGoalPlanFallback } from './goal-plan.js';
+import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
+import { createDeterministicGoalPlanFallback, goalPlanItemSummary } from './goal-plan.js';
 import { approveGoalPlan } from './goal-plan-approval.js';
 import {
   createGoalPlanRecord,
@@ -35,6 +36,13 @@ describe('goal plan approval flow', () => {
     const store = createDemoStore();
 
     try {
+      const intentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        objective: 'Approve the fallback plan.',
+        userId: USER_ACTOR.id,
+      });
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_approval',
@@ -42,6 +50,7 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         title: 'Approve plan',
         objective: 'Approve the fallback plan.',
+        createdByItemId: intentItemId,
       });
       const plan = createDeterministicGoalPlanFallback({
         goalTitle: 'Approve plan',
@@ -68,7 +77,7 @@ describe('goal plan approval flow', () => {
         type: 'plan',
         status: 'completed',
         title: 'Approve plan',
-        summary: approvedPlan.goalSummary,
+        summary: `${goalPlanItemSummary(approvedPlan)}\nProposal reason: Test initial plan.`,
         steps: approvedPlan.tasks.map((task) => ({
           id: task.taskId,
           title: task.title,
@@ -82,6 +91,9 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         goalId: 'goal_approval',
         planItemId: 'it_goal_plan_goal_approval',
+        predecessorPlanItemId: null,
+        sourceIntentItemId: intentItemId,
+        sourceTaskEvidenceDigest: null,
         plan: approvedPlan,
         createdByRequestId: 'req_goal_plan_create',
       });
@@ -90,7 +102,7 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         goalId: 'goal_approval',
         status: 'awaiting_plan_approval',
-        planItemId: 'it_goal_plan_goal_approval',
+        pendingPlanItemId: 'it_goal_plan_goal_approval',
       });
 
       const result = approveGoalPlan({
@@ -148,6 +160,13 @@ describe('goal plan approval flow', () => {
     const store = createDemoStore();
 
     try {
+      const intentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        objective: 'Reject an invalid stored plan.',
+        userId: USER_ACTOR.id,
+      });
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_invalid_plan',
@@ -155,11 +174,16 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         title: 'Reject plan',
         objective: 'Reject an invalid stored plan.',
+        createdByItemId: intentItemId,
       });
       const plan = createDeterministicGoalPlanFallback({
         goalTitle: 'Reject plan',
         objective: 'Reject an invalid stored plan.',
       });
+      const invalidPlan = {
+        ...plan,
+        tasks: [{ ...plan.tasks[0], dependsOnTaskIds: ['task_missing'] }],
+      };
       const planTurn = store.createTurn('ws_demo', 'th_demo', 'Reject plan', USER_ACTOR);
       store.createItem({
         id: 'it_goal_plan_invalid',
@@ -169,7 +193,7 @@ describe('goal plan approval flow', () => {
         type: 'plan',
         status: 'completed',
         title: 'Reject plan',
-        summary: plan.goalSummary,
+        summary: `${goalPlanItemSummary(invalidPlan)}\nProposal reason: Test invalid plan.`,
         steps: plan.tasks.map((task) => ({
           id: task.taskId,
           title: task.title,
@@ -183,10 +207,10 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         goalId: 'goal_invalid_plan',
         planItemId: 'it_goal_plan_invalid',
-        plan: {
-          ...plan,
-          tasks: [{ ...plan.tasks[0], dependsOnTaskIds: ['task_missing'] }],
-        },
+        predecessorPlanItemId: null,
+        sourceIntentItemId: intentItemId,
+        sourceTaskEvidenceDigest: null,
+        plan: invalidPlan,
         createdByRequestId: 'req_goal_plan_invalid',
       });
       updateGoalStatus(workspaceDb, {
@@ -194,7 +218,7 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         goalId: 'goal_invalid_plan',
         status: 'awaiting_plan_approval',
-        planItemId: 'it_goal_plan_invalid',
+        pendingPlanItemId: 'it_goal_plan_invalid',
       });
 
       expect(() =>
@@ -209,7 +233,7 @@ describe('goal plan approval flow', () => {
       ).toThrowError(expect.objectContaining({ code: 'goal_plan_invalid' }));
       expect(getGoalRecord(workspaceDb, 'ws_demo', 'th_demo', 'goal_invalid_plan')).toMatchObject({
         status: 'awaiting_plan_approval',
-        planItemId: 'it_goal_plan_invalid',
+        pendingPlanItemId: 'it_goal_plan_invalid',
       });
       expect(
         listGoalTasks(workspaceDb, {
@@ -242,6 +266,13 @@ describe('goal plan approval flow', () => {
     const store = createDemoStore();
 
     try {
+      const intentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        objective: 'Reject invalid Plan Item lineage.',
+        userId: USER_ACTOR.id,
+      });
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_projection_lineage',
@@ -249,6 +280,7 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         title: 'Verify plan projection',
         objective: 'Reject invalid Plan Item lineage.',
+        createdByItemId: intentItemId,
       });
       const plan = createDeterministicGoalPlanFallback({
         goalTitle: 'Verify plan projection',
@@ -259,6 +291,9 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         goalId: 'goal_projection_lineage',
         planItemId: 'it_goal_plan_missing',
+        predecessorPlanItemId: null,
+        sourceIntentItemId: intentItemId,
+        sourceTaskEvidenceDigest: null,
         plan,
         createdByRequestId: 'req_goal_plan_missing',
       });
@@ -267,7 +302,7 @@ describe('goal plan approval flow', () => {
         threadId: 'th_demo',
         goalId: 'goal_projection_lineage',
         status: 'awaiting_plan_approval',
-        planItemId: 'it_goal_plan_missing',
+        pendingPlanItemId: 'it_goal_plan_missing',
       });
       const approvalInput = {
         workspaceDb,

@@ -12,11 +12,12 @@ import {
   symlinkSync,
   unlinkSync,
   utimesSync,
+  watch,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { WorkerLineage } from './transcript.js';
 import {
   materializeWorkspaceGitInputs,
@@ -459,17 +460,34 @@ describe('workspace Git materialization', () => {
     mkdirSync(sessionDir);
     const previousTimeout = process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;
     process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS = '200';
+    writeFileSync(logPath, '');
+    let observeFetch: () => void = () => {};
+    const fetchStarted = new Promise<void>((resolve) => {
+      observeFetch = resolve;
+    });
+    const watcher = watch(logPath, () => {
+      const invocations = readFileSync(logPath, 'utf8');
+      if (invocations.includes('"fixture.fetch-hanging"')) {
+        observeFetch();
+      }
+    });
+    // Advance the deadline only after real setup and the fixture's hanging-fetch handshake.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     try {
-      await expect(
-        withScriptedGit(root, logPath, { shaFetch: 'hang-after-refusal' }, () =>
+      const materialization = withScriptedGit(
+        root,
+        logPath,
+        { shaFetch: 'hang-after-refusal' },
+        () =>
           materializeWorkspaceGitInputs(
             [createWorkspaceGitInput(target, remote.commit, remote.path)],
             workspaceRoot,
             sessionDir
           )
-        )
-      ).rejects.toMatchObject({
+      );
+      await Promise.race([fetchStarted, materialization]);
+      const timeoutResult = expect(materialization).rejects.toMatchObject({
         message: 'Remote Git commit fetch transport failed.',
         explanation: {
           code: 'git_fetch_transport_failed',
@@ -477,7 +495,11 @@ describe('workspace Git materialization', () => {
           httpStatus: null,
         },
       });
+      await vi.advanceTimersByTimeAsync(200);
+      await timeoutResult;
     } finally {
+      watcher.close();
+      vi.useRealTimers();
       if (previousTimeout === undefined) {
         delete process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;
       } else {
@@ -485,7 +507,14 @@ describe('workspace Git materialization', () => {
       }
     }
 
-    expect(readFileSync(logPath, 'utf8')).not.toContain('refs/heads/*');
+    const fetches = readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[])
+      .filter((args) => args.includes('fetch'));
+    expect(fetches).toHaveLength(1);
+    expect(fetches[0]).toContain(remote.commit);
+    expect(fetches[0]).not.toContain('+refs/heads/*:refs/remotes/origin/*');
     expect(existsSync(join(target, '.git'))).toBe(true);
     expect(existsSync(join(target, 'README.md'))).toBe(false);
   });
@@ -1240,6 +1269,7 @@ const catFile = args.includes('cat-file');
 if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'hang-after-refusal') {
   process.stderr.write('fatal: remote error: upload-pack: not our ref ' + args.at(-1) + '\\n');
   setInterval(() => {}, 1000);
+  appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(['fixture.fetch-hanging']) + '\\n');
   return;
 }
 if (shaFetch && ${JSON.stringify(behavior.shaFetch)} === 'unrecognized') {

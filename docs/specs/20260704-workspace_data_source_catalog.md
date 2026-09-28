@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 updated: 2026-08-22
 ---
 # Workspace Data Source Catalog

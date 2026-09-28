@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 updated: 2026-09-21
 ---
 # Audit, Usage, And Evidence Records
@@ -343,7 +344,7 @@ Unknown or unsupported evidence kinds must remain unpromoted.
 | `ephemeral-diagnostic` | Short-lived health checks, retries, and optional feature negotiation. | Delete or compact aggressively after diagnostics windows close. |
 | `turn-evidence` | Evidence needed to explain one worker turn, artifact, workspace review, or verification result. | Retain with the turn until workspace retention policy compacts or archives it. |
 | `workspace-audit` | Audit, usage, permission, capability, and vault-use rows needed for workspace governance. | Retain according to workspace audit policy and export with workspace audit bundles. |
-| `restricted-raw` | Raw backend logs, raw payload snippets, sensitive operational traces, and quarantined evidence. | Restrict by default, retain for a bounded window, and expose only redacted manifests. |
+| `restricted-raw` | Raw backend logs, raw payload snippets, sensitive operational traces, and quarantined evidence. | Restrict by default, retain for a bounded window, and expose only redacted manifests, except through the portable export exception under Raw restricted evidence. |
 | `legal-hold` | Material explicitly held by policy, administrator action, or external compliance requirement. | Follow the Core deletion block until the hold is removed. |
 
 When a record has both product and restricted evidence, the product-safe record should reference the restricted evidence bundle by id and digest rather than duplicating restricted content.
@@ -431,7 +432,7 @@ Raw restricted evidence:
 
 - backend-native logs, raw request or response payloads, and sensitive operational traces
 
-Product APIs must not expose raw restricted evidence.
+Product APIs must not expose raw restricted evidence. The one exception is the portable Workspace export archive and its import: admitted original bodies of retained work data, restricted originals included, travel intact in the archive and are restored intact, so that a re-imported Workspace keeps complete information. The exception is collected only under the exporting actor's current Thread audience and body-read authorization; it never applies to other users' private Threads or to system-managed Vault, provider, and runtime secret material, and it does not change any other product API. An imported body keeps its retention class, sensitivity classification, hold state, and original expiry; import grants no fresh retention window and no wider visibility, and content already expired or unavailable at export stays so ([decision](../decisions/20260924-restricted_bodies_travel_in_export.md)).
 
 ## Redaction
 

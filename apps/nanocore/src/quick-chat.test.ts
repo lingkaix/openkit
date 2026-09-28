@@ -8,7 +8,7 @@ import {
   ConversationTargetCatalogSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createApp } from './app.js';
 import { FsStore } from './lib/store.js';
@@ -26,7 +26,7 @@ import { listVaultUseRecords } from './vault/vault-use-records.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const EXPECTED_QUICK_CHAT_SYSTEM_PROMPT =
-  'You are QuickChatAgent, a lightweight OpenKit Core coordination agent. Answer concise user questions without running worker agents, shell commands, browser automation, file edits, or knowledge writes.';
+  'You are QuickChatAgent, a lightweight OpenKit Core coordination agent. Answer concise user questions without running worker agents, shell commands, browser automation, file edits, or knowledge writes. Use only the supplied request and admitted context, state uncertainty rather than inventing facts, and end this bounded response with an answer or a clear need for user input.';
 
 class ThrowingTurnExecutor implements TurnExecutor {
   public readonly capabilities = {
@@ -274,13 +274,19 @@ describe('quick chat app API', () => {
   });
 
   it('records a thread-scoped Chat Mode answer without starting a worker turn', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-answer-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
     const calls: Array<{
       providerId: string;
       request: Parameters<PiAiGatewayClient['createChatCompletion']>[1];
     }> = [];
     const app = createApp({
       ...createQuickChatProviderOptions(),
-      store: createDemoStore(),
+      coreDb,
+      dataRoot,
+      store: createDemoStore({ dataRoot }),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
         createChatCompletion: async (provider, request) => {
@@ -301,6 +307,7 @@ describe('quick chat app API', () => {
         },
       } as unknown as PiAiGatewayClient,
     });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
 
     const res = await app.request(
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
@@ -355,8 +362,11 @@ describe('quick chat app API', () => {
   });
 
   it('answers a Chat Mode handoff summary from current input despite incidental review nouns', async () => {
-    const store = createDemoStore();
-    const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-handoff-summary-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
+    const store = createDemoStore({ dataRoot });
     const calls: Array<{
       request: Parameters<PiAiGatewayClient['createChatCompletion']>[1];
     }> = [];
@@ -364,6 +374,8 @@ describe('quick chat app API', () => {
       'Current handoff evidence includes the last review notes and the audit write. For this turn only, do not call tools, start workers, change configuration, approve anything, publish, or deploy. Summarize this handoff from the current input only.';
     const app = createApp({
       ...createQuickChatProviderOptions(),
+      coreDb,
+      dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -385,6 +397,8 @@ describe('quick chat app API', () => {
         },
       } as unknown as PiAiGatewayClient,
     });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
 
     try {
       const res = await app.request(
@@ -513,7 +527,7 @@ describe('quick chat app API', () => {
     }
   });
 
-  it('answers Chat Mode questions through S61 before calling QuickChatAgent', async () => {
+  it('answers an explicit Knowledge Manager query through S61 without calling QuickChatAgent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-knowledge-'));
     const app = createApp({
       ...createQuickChatProviderOptions(),
@@ -544,7 +558,10 @@ describe('quick chat app API', () => {
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
         method: 'POST',
-        body: JSON.stringify(conversationRequest('Launch cadence', 'req_chat_knowledge_answer')),
+        body: JSON.stringify({
+          ...conversationRequest('Launch cadence', 'req_chat_knowledge_answer'),
+          targetRef: 'internal-role:knowledge-manager',
+        }),
         headers: { 'content-type': 'application/json' },
       }
     );
@@ -569,7 +586,10 @@ describe('quick chat app API', () => {
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
         method: 'POST',
-        body: JSON.stringify(conversationRequest('Launch cadence', 'req_chat_knowledge_answer')),
+        body: JSON.stringify({
+          ...conversationRequest('Launch cadence', 'req_chat_knowledge_answer'),
+          targetRef: 'internal-role:knowledge-manager',
+        }),
         headers: { 'content-type': 'application/json' },
       }
     );
@@ -592,7 +612,7 @@ describe('quick chat app API', () => {
 
     expect(traces).toEqual([
       expect.objectContaining({
-        caller: 'assistant',
+        caller: 'app-api',
         selected: [
           expect.objectContaining({
             knowledgePageId: knowledge.id,
@@ -603,13 +623,14 @@ describe('quick chat app API', () => {
     ]);
   });
 
-  it('does not answer a generic Assistant prompt from a one-token Knowledge overlap', async () => {
+  it('answers a generic Assistant prompt without reading overlapping Workspace Knowledge', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-weak-knowledge-'));
+    const store = createDemoStore({ dataRoot });
     let providerCalls = 0;
     const app = createApp({
       ...createQuickChatProviderOptions(),
       dataRoot,
-      store: createDemoStore({ dataRoot }),
+      store,
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
         createChatCompletion: async (_provider, request) => {
@@ -643,6 +664,9 @@ describe('quick chat app API', () => {
     });
     expect(createRes.status).toBe(201);
 
+    const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
+    onTestFinished(() => listKnowledgeProposals.mockRestore());
+
     const res = await app.request(
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
@@ -660,6 +684,8 @@ describe('quick chat app API', () => {
     expect(res.status, await res.clone().text()).toBe(200);
     const parsed = SubmitConversationResponseSchema.parse(await res.json());
     expect(providerCalls).toBe(1);
+    expect(listKnowledgeProposals).not.toHaveBeenCalled();
+    expect(existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))).toBe(false);
     expect(parsed).toMatchObject({
       outcome: 'answered',
       explanation: 'The Assistant answered directly.',

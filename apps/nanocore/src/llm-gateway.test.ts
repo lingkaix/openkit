@@ -1052,11 +1052,69 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
+  it.each([
+    '/v1/chat/completions',
+    '/v1/responses',
+  ])('rejects foreign private Turn capture hints on %s before dispatch', async (path) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-private-capture-'));
+    const coreDb = openCoreDb(dataRoot);
+    const store = createDemoStore({ dataRoot });
+    const workspace = store.createWorkspace('Private capture');
+    const thread = store.createThread(workspace.id, 'Private', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: 'user_other',
+    });
+    const turn = store.createTurn(workspace.id, thread.id, 'Private prompt', {
+      kind: 'user',
+      id: 'user_other',
+    });
+    const upstream = vi.fn();
+    try {
+      applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, workspace.id);
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        store,
+        ...createAnthropicProviderOptions(),
+        llmGatewayDispatcher: {
+          createChatCompletion: upstream,
+          createResponses: upstream,
+        } as unknown as LLMGatewayProviderDispatcher,
+      });
+      const response = await app.request(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5',
+          messages: [{ role: 'user', content: 'spoof' }],
+          input: 'spoof',
+          metadata: {
+            openkit: { workspaceId: workspace.id, threadId: thread.id, turnId: turn.id },
+          },
+        }),
+      });
+      expect(response.status).toBe(403);
+      expect(upstream).not.toHaveBeenCalled();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('records durable usage for attributed Anthropic Chat Completions through pi-ai', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-usage-'));
     const coreDb = openCoreDb(dataRoot);
     const store = createDemoStore({ dataRoot });
     const workspace = store.createWorkspace('Gateway usage');
+    store.createThread(workspace.id, 'Gateway usage', 'thread_1');
+    store.createTurn(
+      workspace.id,
+      'thread_1',
+      'Gateway usage',
+      { kind: 'user', id: 'user_local' },
+      null,
+      { turnId: 'turn_1' }
+    );
     const piAiClient: Pick<PiAiGatewayClient, 'createChatCompletion'> = {
       createChatCompletion: async (_provider, request, onUsage) => {
         onUsage?.({

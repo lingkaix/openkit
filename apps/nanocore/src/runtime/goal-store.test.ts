@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createDeterministicGoalPlanFallback } from './goal-plan.js';
 import {
+  createGoalPlanRecord,
   createGoalRecord,
   createGoalTask,
   getGoalRecord,
@@ -198,6 +200,7 @@ describe('goal store', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_status_audit',
+        createdByItemId: 'it_initial_intent_goal_status_audit',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         title: 'Ship release',
@@ -258,6 +261,7 @@ describe('goal store', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_reservation',
+        createdByItemId: 'it_initial_intent_goal_reservation',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         title: 'Reserve task',
@@ -298,11 +302,46 @@ describe('goal store', () => {
         goalId: 'goal_reservation',
         taskId: 'task_ready',
       };
+      const plan = createDeterministicGoalPlanFallback({
+        goalTitle: 'Reserve task',
+        objective: 'Fence one Goal task reservation.',
+      });
+      const taskSnapshots = listGoalTasks(workspaceDb, input);
+      createGoalPlanRecord(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_reservation',
+        planItemId: 'it_goal_plan_demo',
+        predecessorPlanItemId: null,
+        sourceIntentItemId: 'it_initial_intent_goal_reservation',
+        sourceTaskEvidenceDigest: null,
+        plan: {
+          ...plan,
+          tasks: taskSnapshots.map((task) => ({
+            taskId: task.taskId,
+            title: task.title,
+            objective: task.objective,
+            acceptanceCriteria: task.acceptanceCriteria,
+            contextBudgetTokens: task.contextBudgetTokens,
+            resources: task.resources,
+            expectedArtifacts: task.expectedArtifacts,
+            verificationChecks: task.verificationChecks,
+            reviewPolicy: task.reviewPolicy,
+            dependsOnTaskIds: task.dependsOnTaskIds,
+            escalationConditions: task.escalationConditions,
+          })),
+        },
+        createdByRequestId: 'req_goal_reservation_plan',
+      });
 
       expect(reserveGoalTaskForWorkerTurn(workspaceDb, input)).toBe(false);
       expect(listGoalTasks(workspaceDb, input)[0]?.status).toBe('ready');
 
-      updateGoalStatus(workspaceDb, { ...input, status: 'running' });
+      updateGoalStatus(workspaceDb, {
+        ...input,
+        status: 'running',
+        planItemId: 'it_goal_plan_demo',
+      });
       expect(reserveGoalTaskForWorkerTurn(workspaceDb, { ...input, taskId: 'task_later' })).toBe(
         false
       );
@@ -324,6 +363,7 @@ describe('goal store', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_demo',
+        createdByItemId: 'it_initial_intent_goal_demo',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         title: 'Ship release',
@@ -415,6 +455,7 @@ describe('goal store', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_demo',
+        createdByItemId: 'it_initial_intent_goal_demo',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         title: 'Ship release',
@@ -467,6 +508,7 @@ describe('goal store', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_demo',
+        createdByItemId: 'it_initial_intent_goal_demo',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         title: 'Ship release',
@@ -544,6 +586,7 @@ describe('goal store', () => {
         createGoalRecord(workspaceDb, {
           workspaceExists: () => false,
           goalId: 'goal_missing',
+          createdByItemId: 'it_initial_intent_goal_missing',
           workspaceId: 'ws_missing',
           threadId: 'th_demo',
           title: 'Missing workspace',
@@ -554,6 +597,7 @@ describe('goal store', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_demo',
+        createdByItemId: 'it_initial_intent_goal_demo',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         title: 'Ship release',

@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 ---
 # Provider Subscription Accounts
 
@@ -524,7 +525,7 @@ Acceptance requires all of the following: two account slots can be selected expl
 - The Codex or xAI private quota interface can change without public notice; exact upstream-source review, strict request and response validation, and typed temporary unavailability contain drift without affecting inference.
 - A credential could leak through account or quota errors; fixed public schemas, redaction tests, and Vault-only material storage fail that boundary closed.
 - Pi-ai xAI login may authenticate an account whose entitlement does not permit the requested Grok model; provider rejection remains a typed authentication or entitlement failure and does not imply subscription support beyond verified behavior.
-- Removing legacy Codex homes requires re-login; the clean cut avoids unsafe token import and preserves the repository's no-backward-compatibility rule.
+- Removing legacy Codex homes requires re-login; the clean cut is an explicit credential retirement that avoids unsafe token import.
 
 ## Resolved Decisions
 

@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: topology
 ---
 # NanoCore Bootstrap, Readiness, And Recovery
 
@@ -176,7 +177,7 @@ The active restart slice constructs the durable worker-control gateway and backe
 
 ## Rollout / Migration Plan
 
-This is new machinery replacing the linear boot script; per the internal development compatibility rule there is no dual path. Rollout order: (1) boot orchestrator with typed phase outcomes wrapping the existing config/layout/migration steps, plus the instance lock; (2) liveness/readiness split and the diagnostics read model; (3) boot audit events; (4) integrity checks with derived-index rebuild and authoritative-store fail-closed validation; (5) policy kernel and vault phases; (6) immediate signal registration; (7) local identity initialization; (8) one pre-listen scheduler recovery scan with read-only backend restoration and worker-control rebuild; (9) one normal listener bind, ordinary service start, and ordered shutdown. Existing data roots pass through phase 2 initialization once; no legacy boot path is preserved.
+This is new machinery replacing the linear boot script; there is no dual path. Rollout order: (1) boot orchestrator with typed phase outcomes wrapping the existing config/layout/migration steps, plus the instance lock; (2) liveness/readiness split and the diagnostics read model; (3) boot audit events; (4) integrity checks with derived-index rebuild and authoritative-store fail-closed validation; (5) policy kernel and vault phases; (6) immediate signal registration; (7) local identity initialization; (8) one pre-listen scheduler recovery scan with read-only backend restoration and worker-control rebuild; (9) one normal listener bind, ordinary service start, and ordered shutdown. Existing data roots pass through phase 2 initialization once; no legacy boot path is preserved.
 
 ## Testing Strategy / Acceptance Criteria
 

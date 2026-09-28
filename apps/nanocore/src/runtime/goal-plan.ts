@@ -59,6 +59,15 @@ export const GoalPlanTaskSchema = z
   })
   .strict();
 
+/** Explicit disposition of one unfinished Task from the active predecessor Plan. */
+export const GoalPlanTaskDispositionSchema = z
+  .object({
+    taskId: z.string().min(1).max(120),
+    successorTaskId: z.string().min(1).max(120).nullable(),
+    reason: z.string().min(1).max(2_000),
+  })
+  .strict();
+
 /** Bounded Plan Mode output that can be reviewed before worker execution. */
 export const GoalPlanOutputSchema = z
   .object({
@@ -66,6 +75,7 @@ export const GoalPlanOutputSchema = z
     goalSummary: z.string().min(1).max(2_000),
     assumptions: z.array(z.string().min(1).max(1_000)).max(20),
     tasks: z.array(GoalPlanTaskSchema).min(1).max(50),
+    taskDispositions: z.array(GoalPlanTaskDispositionSchema).max(50),
     risks: z.array(z.string().min(1).max(1_000)).max(20),
     questions: z.array(z.string().min(1).max(1_000)).max(20),
     verificationApproach: z.string().min(1).max(2_000),
@@ -84,7 +94,7 @@ export function computeGoalPlanDigest(input: GoalPlanOutput): string {
 }
 
 /**
- * Selects the exact seven-field Goal Plan payload from a record carrying separate lineage.
+ * Selects the exact digest-bearing Goal Plan payload from a record carrying separate lineage.
  *
  * @param input Goal Plan payload or immutable Plan record.
  * @returns Exact digest-bearing Goal Plan payload.
@@ -95,6 +105,7 @@ export function selectGoalPlanPayload(input: GoalPlanOutput): GoalPlanOutput {
     goalSummary: input.goalSummary,
     assumptions: input.assumptions,
     tasks: input.tasks,
+    taskDispositions: input.taskDispositions,
     risks: input.risks,
     questions: input.questions,
     verificationApproach: input.verificationApproach,
@@ -142,6 +153,43 @@ export function assertValidGoalPlanGraph(tasks: readonly GoalPlanTask[]): void {
       dependencies.delete(readyTaskId);
     }
   }
+}
+
+/** Checks that a successor accounts for every unfinished Task in its admitted predecessor snapshot. */
+export function assertGoalPlanTaskDispositions(
+  plan: GoalPlanOutput,
+  sourceTasks: readonly { readonly taskId: string; readonly status: string }[]
+): void {
+  const unfinished = sourceTasks
+    .filter((task) => task.status !== 'completed')
+    .map((task) => task.taskId);
+  const successorIds = new Set(plan.tasks.map((task) => task.taskId));
+  if (plan.taskDispositions.length !== unfinished.length) {
+    throw new Error('Goal Plan must account for every unfinished predecessor Task.');
+  }
+  for (const [index, disposition] of plan.taskDispositions.entries()) {
+    if (unfinished[index] !== disposition.taskId) {
+      throw new Error(
+        `Goal Plan has an invalid predecessor Task disposition: ${disposition.taskId}.`
+      );
+    }
+    if (disposition.successorTaskId !== null && !successorIds.has(disposition.successorTaskId)) {
+      throw new Error(
+        `Goal Plan disposition names a missing successor Task: ${disposition.successorTaskId}.`
+      );
+    }
+    if (disposition.reason.trim().length === 0) {
+      throw new Error(`Goal Plan disposition needs a reason for Task ${disposition.taskId}.`);
+    }
+  }
+}
+
+/** Renders the exact predecessor disposition proof in the human-visible Plan Item. */
+export function goalPlanItemSummary(plan: GoalPlanOutput): string {
+  if (plan.taskDispositions.length === 0) return plan.goalSummary;
+  return `${plan.goalSummary}\n\nPredecessor Task dispositions:\n${plan.taskDispositions
+    .map((entry) => `- ${entry.taskId} → ${entry.successorTaskId ?? 'ended'}: ${entry.reason}`)
+    .join('\n')}`;
 }
 
 /**
@@ -232,6 +280,7 @@ export function createDeterministicGoalPlanFallback(
         ],
       },
     ],
+    taskDispositions: [],
     risks: [
       'This one-task draft may under-specify work that needs a different decomposition or scope.',
     ],

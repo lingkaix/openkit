@@ -39,7 +39,7 @@ The protocol is not a raw agent-runtime protocol. ACP, A2A, MCP, Codex app-serve
 - Protocol messages that cross process, transport, storage replay, or package boundaries must carry enough version and ID information to be validated and replayed.
 - Commands are semantic operations; endpoints, SDK names, and transport mechanics are projections.
 - Live events should use one explicit envelope so clients can reason about ordering, replay, request correlation, and terminal proof.
-- Strict current schemas are preferred during internal development; removed old wire shapes should fail clearly instead of being silently accepted.
+- Strict current schemas are preferred; removed old wire shapes should fail clearly instead of being silently accepted. Strictness toward live wire shapes does not permit abandoning retained records, which follow Retained Data Continuity in `docs/core/contract-evolution.md`.
 
 ## Primary Model
 
@@ -114,7 +114,7 @@ Protocol messages that cross a process, transport, storage replay, or package bo
 
 `protocolVersion` is a semver string for the OpenKit core protocol, not an application release version.
 
-Accepted protocol specs may define breaking schema changes during internal development. Core protocol docs define the versioning rules, while concrete version deltas belong in specs and schema package change records.
+Accepted protocol specs may define breaking schema changes. A breaking change to a record family that OpenKit persists also keeps its retained records usable under Retained Data Continuity in `docs/core/contract-evolution.md`. Core protocol docs define the versioning rules, while concrete version deltas belong in specs and schema package change records.
 
 Required version surfaces:
 
@@ -131,7 +131,7 @@ Readers SHOULD preserve unknown optional fields for the same major version only 
 
 Patch versions MUST NOT change schema semantics.
 
-Minor versions MAY make breaking schema changes while OpenKit remains in internal development, when an accepted spec records the decision.
+Minor versions MAY make breaking schema changes when an accepted spec records the decision. This openness is permanent, not limited to development before the first release; the reason is recorded in [Compatibility Obligations Rest On Data](../decisions/20260928-compatibility_rests_on_data.md).
 
 ## IDs
 
@@ -188,7 +188,7 @@ A Turn executed by a worker or other schedulable Agent is assigned internally to
 
 A turn can be triggered by user input, system input, automation, retry, handoff, approval resolution, or running-work steering.
 
-The complete Turn terminal-state set is:
+The complete Turn terminal-state set is, as recorded in [Turns Have Four Terminal States](../decisions/20260921-four_turn_terminal_states.md):
 
 - `completed`
 - `interrupted`
@@ -226,7 +226,7 @@ Those two categories are not a general license to write after terminal, and same
 
 The two categories have deliberately different equality rules and MUST NOT be merged into one predicate. Exact repair of an already-decided publication requires deep equality of the already-recorded bytes. A named field-limited refresh of a display projection returns the Item unchanged when its display fields already match and updates only those display fields when they differ. Each admitting path declares its own equality rule; a single shared predicate would be wrong. Completion of an already-decided publication covers Turn events as well as Items; completing a missing terminal event of an already-decided outcome is that category, not a second one.
 
-The resolved effective capture setting is fixed at Turn admission, before any work governed by that setting starts. A later change of the setting takes effect at the next Turn. An already-started Turn is never interrupted for an ordinary capture-setting change, and no mid-Turn interrupt path for that change exists or may be introduced. The switch defaults to off. This section owns when that resolved setting is fixed. It does not own the meaning or values of the setting. The admission-time pair is stored on the Turn directory record the storage owner already rewrites.
+The resolved effective capture setting is fixed at Turn admission, before any work governed by that setting starts. A later change of the setting takes effect at the next Turn. An already-started Turn is never interrupted for an ordinary capture-setting change, and no mid-Turn interrupt path for that change exists or may be introduced. The switch defaults to off ([decision](../decisions/20260921-capture_switch_spares_started_turns.md)). This section owns when that resolved setting is fixed. It does not own the meaning or values of the setting. The admission-time pair is stored on the Turn directory record the storage owner already rewrites.
 
 ### Turn Interruption
 
@@ -739,7 +739,7 @@ Schema authoring rules:
 
 ## Compatibility
 
-OpenKit is currently in internal development, so protocol evolution optimizes for a strict current contract instead of retaining old wire shapes.
+First-party protocol producers and consumers ship together in each OpenKit release, so protocol evolution optimizes for a strict current contract instead of retaining old wire shapes. Retained protocol records are data: a breaking change carries them forward under Retained Data Continuity in `docs/core/contract-evolution.md` rather than through a legacy reader.
 
 Current protocol validators MUST reject removed wire shapes rather than silently accepting them. Concrete retired shapes belong in their owning specifications, change records, and conformance fixtures.
 

@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 
 import { dispatchLogicalModel } from '../llm/gateway-routes.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
+import { type ModelCaptureContext, ModelCaptureError } from '../llm/model-capture.js';
 import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
@@ -15,6 +16,8 @@ import { InternalAgentProviderError } from './internal-agent-loop.js';
 
 /** Dependencies that bind the shared internal Agent loop to the existing logical Gateway. */
 export interface InternalAgentGatewayProviderOptions {
+  /** Exact entry-admitted Turn; internal Agents never use public metadata as authority. */
+  readonly capture: Omit<ModelCaptureContext, 'corr'>;
   readonly logicalModel: ResolvedLogicalModel;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
@@ -39,6 +42,7 @@ export function createInternalAgentGatewayProvider(
   options: InternalAgentGatewayProviderOptions
 ): InternalAgentProviderCall {
   return async (request) => {
+    if (!options.capture) throw new ModelCaptureError();
     if (request.model.logicalModelId !== options.logicalModel.id) {
       throw new Error('Internal Agent logical model changed after admission.');
     }
@@ -74,7 +78,7 @@ export function createInternalAgentGatewayProvider(
       ...(options.providerSubscriptionAccountManager
         ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
         : {}),
-      attempt: async ({ provider, providerModel, subscriptionModels }) => ({
+      attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => ({
         providerId: provider.id,
         response: await options.dispatcher.createResponses(
           provider,
@@ -87,6 +91,7 @@ export function createInternalAgentGatewayProvider(
           },
           {
             ...(subscriptionModels ? { models: subscriptionModels } : {}),
+            capture: { ...options.capture, corr, attempt },
             promptCacheScope: options.promptCacheScope,
             usageEndpoint: options.usageEndpoint,
             transport: { signal: request.signal },

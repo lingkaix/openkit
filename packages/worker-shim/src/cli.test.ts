@@ -241,7 +241,7 @@ describe('worker shim CLI parsing', () => {
     ).toThrow('Unsupported worker shim argument: --artifact-dir');
   });
 
-  it('validates the local Integration bootstrap before completing a dry run', async () => {
+  it('validates local Integration and the exact admitted capture binding before a dry run', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-dry-run-control-'));
     const packagePath = join(sessionDir, 'package.json');
     writeRawFileSync(
@@ -265,6 +265,7 @@ describe('worker shim CLI parsing', () => {
           },
           mode: 'sandbox-integration',
         },
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
         extensions: { openkit: { turnInput: 'Validate the image.' } },
         llm: {
           mode: 'gateway',
@@ -296,6 +297,57 @@ describe('worker shim CLI parsing', () => {
     expect(existsSync(join(sessionDir, 'events.jsonl'))).toBe(false);
     expect(existsSync(join(sessionDir, 'items.jsonl'))).toBe(false);
     expect(existsSync(join(sessionDir, 'artifacts.jsonl'))).toBe(false);
+
+    const admittedPackage = JSON.parse(readFileSync(packagePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    for (const captureCoverage of [
+      undefined,
+      { scope: 'server', value: 'off', mutable: true },
+      { scope: 'thread', value: 'on' },
+      { scope: 'server', value: 'enabled' },
+    ]) {
+      writeRawFileSync(
+        packagePath,
+        JSON.stringify({ ...admittedPackage, observability: { captureCoverage } }),
+        'utf8'
+      );
+      await expect(
+        runWorkerShim({
+          args: parseWorkerShimArgs([
+            '--package',
+            packagePath,
+            '--session-dir',
+            sessionDir,
+            '--dry-run',
+          ]),
+          environment: { OPENKIT_WORKER_INFERENCE_TOKEN: 'image-smoke-placeholder' },
+        })
+      ).rejects.toThrow('Worker observation capture requires the exact admitted coverage binding.');
+      expect(existsSync(join(sessionDir, 'native-state'))).toBe(false);
+    }
+
+    writeRawFileSync(
+      packagePath,
+      JSON.stringify({
+        ...admittedPackage,
+        observability: { captureCoverage: { scope: 'task', value: 'on' } },
+      }),
+      'utf8'
+    );
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs([
+          '--package',
+          packagePath,
+          '--session-dir',
+          sessionDir,
+          '--dry-run',
+        ]),
+        environment: { OPENKIT_WORKER_INFERENCE_TOKEN: 'image-smoke-placeholder' },
+      })
+    ).resolves.toEqual({ exitCode: 0, signal: null, status: 'completed' });
   });
 
   it('rejects missing, direct NanoCore, or shared Integration credentials', async () => {
@@ -2363,27 +2415,43 @@ describe('worker shim CLI parsing', () => {
         streamRef: 'stream-0001.jsonl',
       }),
     ]);
-    expect(readJsonl(join(sessionDir, 'events.jsonl'))).toEqual([
-      expect.objectContaining({
-        event: expect.objectContaining({
-          data: { status: 'starting' },
-          type: 'worker.heartbeat',
-        }),
-        sequence: 0,
-      }),
-      expect.objectContaining({
-        event: expect.objectContaining({ type: 'worker.ready' }),
-        sequence: 1,
-      }),
-      expect.objectContaining({
-        event: expect.objectContaining({ type: 'worker.heartbeat' }),
-        sequence: 2,
-      }),
-      expect.objectContaining({
-        event: expect.objectContaining({ type: 'turn.completed' }),
-        sequence: 3,
-      }),
+    const events = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
+      sequence: number;
+      event: { type: string; data: Record<string, unknown> };
+    }>;
+    expect(events.map((record) => record.sequence)).toEqual(events.map((_, index) => index));
+    expect(
+      events
+        .filter((record) => record.event.type !== 'observation.recorded')
+        .map((record) => record.event)
+    ).toEqual([
+      { type: 'worker.heartbeat', data: { status: 'starting' } },
+      { type: 'worker.ready', data: { adapter: 'codex', status: 'process.started' } },
+      {
+        type: 'worker.heartbeat',
+        data: { adapter: 'codex', status: 'process.exited', exitCode: 0, signal: null },
+      },
+      {
+        type: 'turn.completed',
+        data: { evidenceManifestDigests: {}, status: 'completed', stopReason: 'completed' },
+      },
     ]);
+    const observations = events.filter((record) => record.event.type === 'observation.recorded');
+    expect(observations).toHaveLength(9);
+    expect(observations.map((record) => record.event.data)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fact: expect.objectContaining({ family: 'primary-content', coverage: 'off' }),
+        }),
+        expect.objectContaining({
+          fact: expect.objectContaining({ kind: 'assistant' }),
+          content: { state: 'off' },
+        }),
+        expect.objectContaining({
+          fact: expect.objectContaining({ family: 'child-content', coverage: 'ended' }),
+        }),
+      ])
+    );
   });
 
   it('invalidates a reused provenance manifest before a later capture failure', async () => {
@@ -4152,6 +4220,9 @@ function writeFileSync(path: string, data: string | Buffer, encoding?: BufferEnc
           : 'gpt-5';
       data = JSON.stringify({
         ...parsed,
+        observability: parsed.observability ?? {
+          captureCoverage: { scope: 'server', value: 'off' },
+        },
         control: {
           ...control,
           adapter: control.adapter ?? {

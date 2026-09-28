@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Implemented
+kind: process
 date: "2026-09-09"
 updated: "2026-09-10"
 ---
@@ -43,7 +44,7 @@ Ordinary functional acceptance reuses an explicitly authorized persistent intern
 
 Two complementary paths are admitted. In-product execution submits actual tasks or benchmark workloads to normal Task or Goal Mode and observes the resulting Items, Artifacts, Usage and Evidence. External execution uses a Skill-capable desktop Agent through the same public NanoCore contracts, with separately authorized browser or SSH tools for the user's chosen surface and operator diagnosis. Both use the same installed product and record owners. Internal execution does not require a new evaluation role or a Worker with administrative access to NanoCore.
 
-The engineer's operating premise is that Agent implementation is fast while environment preparation, evidence acquisition and trustworthy adjudication dominate recent acceptance effort. The intended improvement is less repeated preparation and reconstructive scripting, not less reliable proof. A persistent deployment is neither a clean-install proof nor a safe place for every destructive test.
+This specification's operating premise, serving the engineer's 2026-09-09 purpose of reducing repeated environment construction so that pending feature plans can obtain their own real acceptance, is that Agent implementation is fast while environment preparation, evidence acquisition and trustworthy adjudication dominate recent acceptance effort. The intended improvement is less repeated preparation and reconstructive scripting, not less reliable proof. A persistent deployment is neither a clean-install proof nor a safe place for every destructive test.
 
 ## Environment And Authority
 

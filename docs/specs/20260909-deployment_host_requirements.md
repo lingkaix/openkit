@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Not Started
+kind: topology
 date: 2026-09-09
 ---
 # Deployment Host Requirements

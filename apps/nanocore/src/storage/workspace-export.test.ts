@@ -1704,6 +1704,7 @@ describe('workspace export verifier', () => {
       durationMs: 1,
     };
     const workerPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: 'as_1',
       agentSetup,
       backend: { kind: 'openshell' },

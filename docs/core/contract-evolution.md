@@ -16,12 +16,13 @@ This model separates how long a contract must remain meaningful from the mechani
 ## Principles
 
 - Stability is an explicit property of a contract surface, not a consequence of being public, typed, documented, or implemented.
-- The clean current contract wins over legacy compatibility during internal development.
+- Compatibility obligations rest on retained data. Retained canonical data and authored configuration stay usable while features and implementation change, as Retained Data Continuity below states. First-party surfaces that ship with each release carry no compatibility obligation unless a separately accepted contract creates one, so refactoring deletes obsolete implementation instead of adding compatibility layers, deprecated shims, or dual writes.
 - Durable does not mean immutable. A durable contract may change through an explicit design, version transition, data migration when needed, and matching verification.
 - Release-coupled surfaces may break between coordinated OpenKit releases without deprecation windows, aliases, or compatibility adapters.
 - Experimental and private shapes must not become authority-bearing or persistent dependencies by accident.
 - Product projections must preserve promoted Core meaning without becoming the owner of that meaning.
 - Unknown semantics that affect authority, safety, retention, billing, or product meaning must fail closed.
+- Settled mechanisms stay stable, and extension stays open. Deleting obsolete implementation does not license rewriting a settled mechanism, and it does not conflict with an older reader tolerating a newer, safely ignorable extension. The reason is recorded in [Settled Mechanisms Stay Stable And Extension Stays Open](../decisions/20260924-stable_mechanisms_open_extension.md). The rule it qualifies is recorded in [Compatibility Obligations Rest On Data](../decisions/20260928-compatibility_rests_on_data.md).
 
 ## Canonical Terms
 
@@ -70,11 +71,21 @@ A schema is not automatically durable, and a durable semantic contract does not 
 ## Default Classification
 
 - Accepted Core semantics and invariants are `Durable`.
-- Promoted persisted record families, portable formats, authority boundaries, and cross-release protocol families are `Durable` only when an owning document or accepted baseline explicitly identifies them and defines their evolution mechanism.
+- Retained canonical data and authored configuration are `Durable` representations under Retained Data Continuity below. Portable formats, authority boundaries, and cross-release protocol families are `Durable` only when an owning document or accepted baseline explicitly identifies them and defines their evolution mechanism.
 - App APIs, generated API projections, first-party clients, bundled CLIs, unified Skills, Web projections, and other presentation or operation surfaces are `Release-coupled` by default.
 - A surface explicitly labeled experimental is `Experimental` until promotion.
 - Package layout, database engine details, provider-native payloads, adapter-native events, backend handles, local paths, process commands, caches, and diagnostics internals are `Private` unless deliberately promoted.
 - A surface without an intentional owner and classification must not be treated as a contract merely because a consumer can currently observe it.
+
+## Retained Data Continuity
+
+OpenKit's compatibility obligations rest on retained data. Retained canonical data and authored configuration are `Durable` representations: their processing contract keeps them usable while features, implementation, and projections change. The implementation that owns such data may stay `Private`, and a projection of it, such as an App API response or an execution contract delivered to a Worker, stays `Release-coupled`; neither changes the `Durable` contract of the retained representation. The reason is recorded in [Compatibility Obligations Rest On Data](../decisions/20260928-compatibility_rests_on_data.md).
+
+- Retained canonical data means canonical file-backed records, including persisted protocol records, and retained evidence, even when that evidence is non-authorizing or diagnostic. SQLite source-of-truth records carry this obligation from the first release; until then their schemas follow the pre-release consolidation rule recorded in [Schema Migrations Start At First Release](../decisions/20260918-release_schema_migrations.md), which authorizes no automatic deletion or reset.
+- A change keeps retained data usable by extending its format additively or by carrying it forward through a one-way migration under an accepted design. A temporary migration path exists only when that design defines one; no permanent legacy reader or dual write remains. Removing retained data instead requires an explicit data-retirement decision.
+- An older reader tolerates a safely ignorable unknown field only where the owning contract defines a tolerant location, as Hand-Written Configuration below does for authored configuration. Generated configuration, execution contracts, and strict record schemas gain no tolerant location from this section. Unknown required or authority-bearing semantics fail closed.
+- Opaque retained bytes, such as Worker volumes, native agent history, and retained images, survive under `docs/core/storage.md` without an OpenKit format promise. Rebuildable derivatives, caches, disposable diagnostic projections, and operational telemetry that its owner classifies as `Release-coupled` carry no continuity obligation.
+- This obligation is prospective: completed cutovers recorded by their owners stand. It does not relax strict validation or required-feature checks, does not extend a generated execution contract to older launches, does not authorize boot-time rewriting, automatic migration, or data-root replacement beyond what existing owners define, and does not override retention, deletion, revocation, or hold rules.
 
 ## Stabilization Mechanisms
 
@@ -83,7 +94,8 @@ A schema is not automatically durable, and a durable semantic contract does not 
 | Core semantics and lifecycle invariants | One canonical Core owner, normative invariants, explicit promotion, and conformance coverage at every claimed projection. |
 | Durable protocol or schema family | Explicit version identity, strict schemas for known records, generated schema drift checks where applicable, valid and invalid fixtures, and capability or required-feature discovery for additive semantic extensions. |
 | Persisted data and storage ownership | Schema or layout version, source-of-truth declaration, one-way migration for breaking changes, migration report, recovery behavior, and data-continuity verification. |
-| Export, import, backup, and portable manifests | Format version, exact inventory and integrity validation, required-feature handling, import fixtures, round-trip tests, and explicit identity or authority rebinding rules. |
+| Export and portable manifests | Format version, exact inventory and integrity validation, required-feature handling, and import fixtures and explicit identity or authority rebinding rules for any import an owner accepts. Lossless re-import into OpenKit is not an export requirement ([decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md)). |
+| Backup and restore | A mechanism separate from export: consistency and integrity validation, restore round-trip tests, identity handling, and recovery behavior for retained data. |
 | Identity, permission, vault, audit, retention, or other authority-bearing semantics | Strict validation, deny-by-default behavior, required-feature or minimum-contract gating for new authority, redaction, durable attribution, and fail-closed handling for unsupported semantics. |
 | Release-coupled operation and presentation surfaces | One source of truth, exact contract identity or digest, same-release contract coverage, typed incompatibility, and removal of superseded aliases or parallel shapes. |
 | Experimental surfaces | Visible experimental marker, bounded owner and purpose, no authority-bearing use, no exclusive ownership of durable truth, and an explicit promotion or removal decision before release. |
@@ -113,20 +125,20 @@ Promotion from `Experimental` or `Private` is a contract change. Existing accide
 
 ## Boundaries And Non-Goals
 
-This document owns stability classes, stabilization mechanisms, promotion and demotion rules, strictness expectations, conformance dimensions, and the lifecycle of breaking changes.
+This document owns stability classes, stabilization mechanisms, retained data continuity, promotion and demotion rules, strictness expectations, conformance dimensions, and the lifecycle of breaking changes.
 
 This document does not classify the current release's individual contract families. A baseline specification owns that inventory because implementation readiness and current scope change more frequently than Core doctrine.
 
 This document does not define the canonical meaning of `Workspace`, `Thread`, `Turn`, `Item`, protocol envelopes, storage records, permission decisions, capability calls, usage records, audit events, knowledge records, or deployment shapes.
 
-This document does not require migration shims for old internal data. A one-time migration preserves durable truth without keeping an obsolete runtime reader.
+This document does not require migration shims for old data. A one-time migration preserves durable truth without keeping an obsolete runtime reader.
 
 This document does not create a compatibility promise for independently versioned third-party clients. Such a promise requires a separately accepted support policy and an explicit promotion of the relevant API surface.
 
 ## Invariants
 
 - Every supported surface MUST follow its declared stability class and stabilization mechanism.
-- Compatibility shims MUST NOT remain after an accepted design removes an old shape unless that design explicitly defines a temporary migration path.
+- Refactoring MUST remove obsolete implementations rather than add compatibility layers, deprecated shims, or dual writes. A breaking change to retained data MUST keep that data usable under Retained Data Continuity; a temporary migration path exists only when the accepted design defines one. Any transition that a separately accepted contract requires MUST follow that contract's lifecycle; it is not an exception for preserving obsolete code.
 - Product projections, App APIs, adapters, storage layers, runtime bridges, Skills, CLIs, and UI read models MUST NOT redefine Core concepts they only project.
 - Implementation-private payloads, native runtime logs, provider-native events, backend diagnostics, launch commands, absolute local paths, and environment variables MUST NOT become supported contracts by accident.
 - Newly introduced external dependencies MUST use official unmodified releases. Missing stock capability MUST be handled through a bounded local guard, upstream change, or design reconsideration rather than a dependency fork, patch, or monkey-patch; previously authorized vendor snapshots retain their existing governed status.
@@ -186,7 +198,7 @@ Every fixture file that targets a versioned family MUST identify the version or 
 | Remove persisted durable shape | Requires a one-way migration or an explicit data-retirement decision with a migration report; a permanent legacy reader is not required. |
 | Change private implementation detail | Remains inside its owner and must continue to satisfy boundary tests. |
 
-Because OpenKit is in internal development, breaking changes do not require deprecation windows or compatibility adapters unless a separately accepted contract explicitly creates that obligation.
+Breaking changes to surfaces that ship with each release do not require deprecation windows or compatibility adapters unless a separately accepted contract explicitly creates that obligation. Retained data follows Retained Data Continuity.
 
 ## Extension Namespaces
 
@@ -218,6 +230,10 @@ Durable storage and manifest readers may ignore unknown optional non-authority-b
 Storage tolerance never relaxes protocol, App API, CLI, Skill, or UI projection strictness. A projection MUST emit a strictly valid payload for its exact claimed contract identity and MUST drop safely ignorable storage extensions rather than forwarding unknown fields.
 
 Unsupported authority-bearing semantics, required features, canonical record families, or major format versions MUST fail closed or enter the quarantine behavior defined by their owner.
+
+## Hand-Written Configuration
+
+A reader of operator- or user-authored configuration reports an unknown key as a warning diagnostic that names the key and its location, and otherwise ignores it, so that a configuration written for a newer release does not stop an older one. An unknown key inside an authority-bearing section, and a feature the file declares as required, fail closed. A warning is not silent: the diagnostic reaches the operator through the same channel as other configuration errors. Generated and machine-written configuration follows the storage rules above.
 
 ## Relationships To Other Core Aspects
 

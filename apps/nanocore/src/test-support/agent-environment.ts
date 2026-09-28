@@ -165,6 +165,7 @@ export function recordTestAgentEnvironmentPackage(
   seedWritableGitRepository(repositoryPath);
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup(),
       agentSessionId: `as_${input.suffix}`,
       triggerActor: input.triggerActor,

@@ -6,6 +6,8 @@ The authorized Thread dashboard derives taskInputs objective summaries through t
 
 The authorized Thread dashboard projects the authenticated viewer and only recorded Item actors and assigned Turn Agents with current User or Agent display names. It exposes no email or unrelated user directory; absent names retain stable actor ids.
 
+Dashboard newest-Artifact selection stays in `src/app-dashboard.ts`, preserving inventory order and the first equal-timestamp candidate. Completion summaries select the newest exact-Turn Artifact before the Thread fallback, then use its summary or the Thread preview; empty summaries remain empty.
+
 `nanocore` is the tiny real demo core server for the UI-first protocol slice.
 
 NanoCore derives private AEP and Context input paths from the admitted AgentSession, opens or inspects that exact session before importing its complete Turn inputs, and starts the Worker only after all imports succeed. Turn-specific paths and payloads do not partition otherwise compatible shared Sandbox or Harness identities.
@@ -62,6 +64,8 @@ The source commit must already exist in the linked NanoCore repository through t
 
 ## Runtime
 
+Authored manifests and profiles are validated by AuthoredAgentConfigSchema in `@openkit/config-schema`; `src/agents/setup-resolver.ts` owns profile selection and composition. The dispatch retry service calls `src/runtime/scheduler-dispatch-loop.ts` directly; its timer, snapshot refresh, and error handling remain in `src/runtime/scheduler-dispatch-service.ts`.
+
 - `nanocore` admits governed worker sessions only through the configured NanoHost RuntimeTarget and its current native HTTP/2 connection generation.
 - NanoCore persists separate Sandbox runtime, Harness instance, and AgentSession runtime-binding records, and stores only hashes of raw Turn route credentials
 - the selectable NanoHost foundation supports one long-lived Harness, fixed private Harness operations, multiple AgentSessions for distinct Threads, restricted Codex handles, and shared-Sandbox retention
@@ -82,6 +86,8 @@ The source commit must already exist in the linked NanoCore repository through t
 - NanoCore accepts NanoHost admission only on a native HTTP/2 physical connection with a valid dedicated `nanohost-transport` Token; it allocates generation one or durable high-water plus one and binds dispatch authority to that exact server-created connection context
 - synthetic application requests and caller-provided NanoHost connection handles or generations are not selectable runtime paths
 - subscription-backed inference requires a prepared provider-subscription account and bound provider profile; worker-runtime authentication remains a separate adapter concern
+
+Incremental work retention enters through `src/storage/work-observations.ts`; runtime ingress, Gateway capture and the authorized Thread dashboard share that owner. Complete admitted originals remain governed by the Turn-bound capture setting and existing restricted EvidenceBundle lifecycle; runtime activity is a lossy display projection.
 
 ## Commands
 

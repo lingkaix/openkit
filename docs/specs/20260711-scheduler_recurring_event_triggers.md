@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Not Started
+kind: concept
 updated: 2026-09-09
 ---
 # Scheduler Recurring Triggers
@@ -173,7 +174,7 @@ The shared SQLite transaction is a deliberate physical placement constraint. It 
 
 ## Open Questions
 
-There are no unresolved product decisions in the initial fixed-interval slice. The engineer-selected timing, retry and admission boundary and the independently reviewed owner extensions are accepted; production implementation and runtime evidence remain outstanding.
+There are no unresolved product decisions in the initial fixed-interval slice. The timing, retry and admission boundary recorded in [Schedule Admission Numbers Are Empirical Defaults](../decisions/20260924-schedule_admission_numbers_are_empirical.md) and the independently reviewed owner extensions are accepted; production implementation and runtime evidence remain outstanding.
 
 ## Deferred / Future Work
 

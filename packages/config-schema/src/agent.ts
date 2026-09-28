@@ -10,12 +10,11 @@ import {
   WorkerGovernanceBackendKindSchema,
   WorkerSandboxAccessSchema,
 } from './agent-environment.js';
+import { SECRET_SHAPED_BUILD_ARGUMENT_PATTERN } from './build-argument-pattern.js';
 import { ProviderReadinessSchema } from './provider.js';
 import { isRegisteredRequiredFeature } from './schema-evolution.js';
 
 const BUILD_ARGUMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SECRET_SHAPED_BUILD_ARGUMENT_PATTERN =
-  /(api.?key|authorization|client.?secret|credential|password|secret|token)/i;
 
 /** Authored published-image reference. */
 const AuthoredAgentRuntimeImageReferenceSchema = z

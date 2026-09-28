@@ -52,6 +52,18 @@ describe('openkit-tree-v1', () => {
     expect(left).toBe(right);
   });
 
+  it('hashes BMP and non-BMP paths in UTF-8 rather than UTF-16 order', () => {
+    // U+E000 precedes U+10000 in UTF-8; the independently framed vector fixes that order.
+    const expected = 'sha256:6e95d15a91f2669aec1311d15477ad375b305fb810bbbe1f8d13d6b46ddc4058';
+    const entries = [
+      { kind: 0 as const, path: '\u{10000}' },
+      { kind: 0 as const, path: '\uE000' },
+    ];
+
+    expect(hashOpenKitTreeEntries(entries)).toBe(expected);
+    expect(hashOpenKitTreeEntries([...entries].reverse())).toBe(expected);
+  });
+
   it('rejects unsafe, non-NFC, duplicate, and oversized trees', () => {
     expect(() => hashOpenKitTreeEntries([{ kind: 0, path: '../escape' }])).toThrow(
       /parent path segment/

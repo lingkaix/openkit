@@ -30,6 +30,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { computeGoalPlanDigest, GoalPlanOutputSchema } from '../runtime/goal-plan.js';
+import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import {
   type WriteWorkspaceExportTreeInput,
@@ -54,6 +55,7 @@ const source = {
   goalId: 'goal_source',
   grantId: 'grant_source',
   itemId: 'it_source',
+  intentItemId: 'it_goal_intent_source',
   planItemId: 'it_goal_plan_source',
   sessionId: 'as_source',
   taskId: 'task_source',
@@ -80,7 +82,8 @@ function createLineageExportInput(
     | 'sync-artifact'
     | 'usage-session'
     | 'vault-approval'
-    | 'vault-session'
+    | 'vault-session',
+  captureValue: 'off' | 'on' = 'off'
 ): WriteWorkspaceExportTreeInput {
   const agentSetup = createTestAgentSetup();
   const item = {
@@ -106,6 +109,18 @@ function createLineageExportInput(
     title: 'Approve portable lineage',
     description: 'Approve the portable operation.',
     kind: 'permission',
+    createdAt: timestamp,
+    completedAt: timestamp,
+  };
+  const intentItem = {
+    id: source.intentItemId,
+    workspaceId: source.workspaceId,
+    threadId: source.threadId,
+    turnId: source.turnId,
+    type: 'user-message',
+    actor: { kind: 'user', id: 'user_source' },
+    status: 'completed',
+    text: 'Keep lineage portable.',
     createdAt: timestamp,
     completedAt: timestamp,
   };
@@ -164,7 +179,7 @@ function createLineageExportInput(
     workspaceId: source.workspaceId,
     threadId: source.threadId,
     triggerActor: { kind: 'user', id: 'user_local' } as const,
-    items: [item, planItem, artifactReferenceItem, approvalItem],
+    items: [item, planItem, artifactReferenceItem, approvalItem, intentItem],
     status: 'completed',
     humanGate: null,
     error: null,
@@ -174,6 +189,7 @@ function createLineageExportInput(
     durationMs: 1,
   };
   const environmentPackage = resolveAgentEnvironmentPackage({
+    captureCoverage: { scope: 'server', value: captureValue },
     agent: {
       id: 'agent_codex_host',
       name: 'Codex Agent',
@@ -280,6 +296,7 @@ function createLineageExportInput(
         escalationConditions: ['Escalate if portable lineage is incomplete.'],
       },
     ],
+    taskDispositions: [],
     risks: [],
     questions: [],
     verificationApproach: 'Review every reminted reference.',
@@ -347,7 +364,7 @@ function createLineageExportInput(
         },
       ],
     },
-    itemRevisions: [item, planItem, artifactReferenceItem, approvalItem],
+    itemRevisions: [item, planItem, artifactReferenceItem, approvalItem, intentItem],
     artifacts: [artifact],
     artifactReviews: [],
     threadMaterialBindings: [],
@@ -551,7 +568,10 @@ function createLineageExportInput(
         title: 'Portable goal',
         objective: 'Keep lineage portable.',
         createdByItemId: missing === 'goal-item' ? 'it_missing' : source.itemId,
+        currentIntentItemId: source.intentItemId,
+        currentAffectedTaskIds: [],
         planItemId: source.planItemId,
+        pendingPlanItemId: null,
         currentTaskId: source.taskId,
         terminalStopReason: null,
         workerStorageChoice: null,
@@ -567,6 +587,9 @@ function createLineageExportInput(
         goalId: source.goalId,
         planItemId: source.planItemId,
         planDigest: computeGoalPlanDigest(goalPlan),
+        predecessorPlanItemId: null,
+        sourceIntentItemId: source.intentItemId,
+        sourceTaskEvidenceDigest: null,
         createdByRequestId: 'goal-plan-source-1',
         createdAt: timestamp,
       },
@@ -1325,6 +1348,354 @@ function createWorkResourceLineageExportInput(followUp?: {
 }
 
 describe('workspace auxiliary lineage reminting', () => {
+  it('refuses ordinary export containing private Thread history before collecting portable content', () => {
+    const input = createLineageExportInput();
+    input.threads = input.threads.map((thread) => ({
+      ...(thread as Record<string, unknown>),
+      visibility: 'private',
+      privateOwnerUserId: 'another-user',
+    }));
+    expect(() => writeWorkspaceExportTree(input)).toThrow(
+      'Private Thread history requires a separately authorized export.'
+    );
+  });
+
+  it('inventories Turn observations and remints observation and Item anchors without rewriting content identities', () => {
+    const input = createLineageExportInput();
+    const rows = [
+      {
+        v: 1,
+        type: 'runtime.observed',
+        id: 'observation_source',
+        ts: timestamp,
+        seq: 1,
+        obs: 'sidecar',
+        turnId: source.turnId,
+        parent: source.itemId,
+        corr: 'call_source',
+        payload: {
+          observationId: 'observation_source',
+          sourceRef: 'source_1',
+          sourceSequence: 1,
+          observedAt: timestamp,
+          fact: { kind: 'origin', phase: 'started', runtimeOriginRef: `rto_${'a'.repeat(24)}` },
+          content: { state: 'off' },
+        },
+      },
+      {
+        v: 1,
+        type: 'runtime.observed',
+        id: 'observation_followup',
+        ts: timestamp,
+        seq: 2,
+        obs: 'sidecar',
+        turnId: source.turnId,
+        parent: 'observation_source',
+        corr: 'call_source',
+        payload: {
+          observationId: 'observation_followup',
+          sourceRef: 'source_1',
+          sourceSequence: 2,
+          observedAt: timestamp,
+          fact: { kind: 'origin', phase: 'running', runtimeOriginRef: `rto_${'a'.repeat(24)}` },
+          content: { state: 'off' },
+        },
+      },
+    ];
+    const externalRefs = [
+      {
+        kind: 'sandbox-image',
+        scope: { ownerScope: 'server', deploymentId: 'dep_other' },
+        locator: 'sha256:source-image',
+        edge: 'association',
+      },
+      {
+        kind: 'artifact',
+        scope: { workspaceId: source.workspaceId, deploymentId: 'dep_other' },
+        locator: source.artifactId,
+        edge: 'association',
+      },
+    ];
+    const text = `${rows.map((row) => JSON.stringify({ ...row, refs: externalRefs })).join('\n')}\n`;
+    const verified = writeWorkspaceExportTree({
+      ...input,
+      turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'off' }]]),
+      turnObservations: new Map([[source.turnId, text]]),
+    });
+    const path = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/observations.jsonl`;
+    expect(verified.fileContents.get(path)).toBe(text);
+    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    const targetTurnId = imported.turnIds.get(source.turnId)!;
+    expect(imported.turnCaptureCoverage.get(targetTurnId)).toEqual({
+      scope: 'server',
+      value: 'off',
+    });
+    const observations = imported.turnObservations.get(targetTurnId)!;
+    const [first, second] = observations
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(first).toMatchObject({
+      turnId: targetTurnId,
+      parent: imported.itemIds.get(source.itemId),
+      corr: 'call_source',
+      payload: {
+        ...rows[0]!.payload,
+        observationId: expect.stringMatching(/^obs_[a-f0-9]{24}$/),
+        sourceRef: expect.stringMatching(/^rts_[a-f0-9]{24}$/),
+        fact: {
+          ...rows[0]!.payload.fact,
+          runtimeOriginRef: `rto_${createHash('sha256')
+            .update(
+              `${imported.agentEnvironmentPackageSnapshots[0]!.snapshotId}:rto_${'a'.repeat(24)}`
+            )
+            .digest('hex')
+            .slice(0, 24)}`,
+        },
+      },
+    });
+    expect(first.refs).toEqual(externalRefs);
+    expect(first.payload.sourceRef).not.toBe(rows[0]!.payload.sourceRef);
+    expect(second.payload.sourceRef).toBe(first.payload.sourceRef);
+    expect(second.payload.observationId).not.toBe(first.payload.observationId);
+    expect(first.id).not.toBe(rows[0]!.id);
+    expect(second).toMatchObject({ parent: first.id, turnId: targetTurnId, seq: 2 });
+    expect(second.id).not.toBe(rows[1]!.id);
+  });
+
+  it('shares one exact child-origin remint with Gateway calls without a provenance index', () => {
+    const input = createLineageExportInput();
+    const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
+    const rootRef = `rto_${'a'.repeat(24)}`;
+    const childRef = `rto_${'b'.repeat(24)}`;
+    input.capabilityCalls = input.capabilityCalls!.map((call) => ({
+      ...(call as Record<string, unknown>),
+      packageSnapshotId,
+      runtimeOriginRef: childRef,
+    }));
+    const row = {
+      v: 1,
+      id: 'child_observation',
+      type: 'runtime.observed',
+      ts: timestamp,
+      seq: 1,
+      obs: 'sidecar',
+      turnId: source.turnId,
+      payload: {
+        observationId: 'child_observation',
+        sourceRef: 'source_1',
+        sourceSequence: 1,
+        observedAt: timestamp,
+        fact: {
+          kind: 'origin',
+          phase: 'started',
+          runtimeOriginRef: childRef,
+          parentRuntimeOriginRef: rootRef,
+        },
+        content: { state: 'off' },
+      },
+    };
+    const verified = writeWorkspaceExportTree({
+      ...input,
+      turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'off' }]]),
+      turnObservations: new Map([[source.turnId, `${JSON.stringify(row)}\n`]]),
+    });
+    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    expect(imported.runtimeProvenanceIndexes.size).toBe(0);
+    const targetPackageId = imported.agentEnvironmentPackageSnapshots[0]!.snapshotId;
+    const expectedRef = (ref: string) =>
+      `rto_${createHash('sha256').update(`${targetPackageId}:${ref}`).digest('hex').slice(0, 24)}`;
+    const observation = JSON.parse(
+      imported.turnObservations.get(imported.turnIds.get(source.turnId)!)!.trim()
+    );
+    expect(observation.payload.fact).toMatchObject({
+      runtimeOriginRef: expectedRef(childRef),
+      parentRuntimeOriginRef: expectedRef(rootRef),
+    });
+    expect(imported.capabilityCalls[0]).toMatchObject({
+      runtimeOriginRef: expectedRef(childRef),
+      packageSnapshotId: targetPackageId,
+    });
+  });
+
+  it('retains restricted observation bytes while reminting their exact publication references', () => {
+    const input = createLineageExportInput(undefined, 'on');
+    const bytes = Buffer.from('  original é\n');
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    input.evidenceBundles = [
+      {
+        id: 'evb_observation',
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        turnId: source.turnId,
+        goalId: null,
+        agentSessionId: null,
+        backendType: 'internal',
+        sourceKind: 'work-observation-body',
+        summary: 'Restricted observation content.',
+        rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'raw/content' }],
+        redactedEvidenceRefs: [],
+        contentDigests: [digest],
+        retentionClass: 'restricted-raw',
+        sensitivityClass: 'restricted',
+        importStatus: 'promoted',
+        requiredFeatures: ['evidence.bundle.v1', 'openkit.work-observations.v1'],
+        createdAt: timestamp,
+      },
+    ];
+    const initial = {
+      v: 1,
+      id: 'observation_initial',
+      type: 'runtime.observed',
+      ts: timestamp,
+      seq: 1,
+      obs: 'sidecar',
+      turnId: source.turnId,
+      payload: {
+        observationId: 'observation_initial',
+        sourceRef: 'source_1',
+        sourceSequence: 1,
+        observedAt: timestamp,
+        fact: {
+          kind: 'assistant',
+          phase: 'completed',
+          runtimeOriginRef: null,
+          messageRef: 'message_1',
+          representation: 'snapshot',
+        },
+        content: {
+          state: 'expected',
+          sha256: `sha256:${digest}`,
+          bytes: Buffer.byteLength('  original é\n'),
+          mediaType: 'text/plain',
+          boundary: 'assistant.text',
+          chunkCount: 1,
+        },
+      },
+    };
+    const row = {
+      v: 1,
+      id: 'observation_body',
+      type: 'content.published',
+      ts: timestamp,
+      seq: 2,
+      obs: 'sidecar',
+      turnId: source.turnId,
+      parent: initial.id,
+      refs: [
+        {
+          kind: 'evidence-bundle',
+          scope: { workspaceId: source.workspaceId, pathClass: 'backend' },
+          locator: 'evb_observation',
+          digest,
+          edge: 'publication',
+        },
+      ],
+      payload: {
+        bodies: [
+          {
+            id: 'body_1',
+            bundleId: 'evb_observation',
+            sha256: digest,
+            bytes: Buffer.byteLength('  original é\n'),
+            mediaType: 'text/plain',
+            boundary: 'assistant.text',
+          },
+        ],
+      },
+    };
+    const verified = writeWorkspaceExportTree({
+      ...input,
+      restrictedEvidenceFiles: new Map([['evb_observation/raw/content', bytes]]),
+      turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'on' }]]),
+      turnObservations: new Map([
+        [source.turnId, `${JSON.stringify(initial)}\n${JSON.stringify(row)}\n`],
+      ]),
+    });
+    expect(verified.manifest.requiredFeatures).toContain('openkit.work-observations.v1');
+    expect(
+      verified.binaryFileContents.get(
+        'workspace-files/evidence/backend/evb_observation/raw/content'
+      )
+    ).toEqual(bytes);
+    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    const bundle = imported.evidenceBundles[0]!;
+    expect(bundle).toMatchObject({
+      importStatus: 'promoted',
+      rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'raw/content' }],
+      redactedEvidenceRefs: [],
+      contentDigests: [digest],
+    });
+    expect(bundle.id).not.toBe('evb_observation');
+    expect(imported.restrictedEvidenceFiles.get(`${bundle.id}/raw/content`)).toEqual(bytes);
+    const targetTurnId = imported.turnIds.get(source.turnId)!;
+    const observation = JSON.parse(
+      imported.turnObservations.get(targetTurnId)!.trim().split('\n')[1]!
+    );
+    expect(observation.refs).toEqual([
+      {
+        ...row.refs[0],
+        locator: bundle.id,
+        scope: { workspaceId: targetWorkspaceId, pathClass: 'backend' },
+      },
+    ]);
+  });
+
+  it.each([
+    'parent',
+    'sequence',
+    'turn',
+    'bundle',
+    'type',
+  ] as const)('rejects invalid observation %s instead of silently dropping or rebinding it', (defect) => {
+    const input = createLineageExportInput();
+    const row = {
+      v: 1,
+      id: 'observation_source',
+      type: defect === 'type' ? 'future.unknown' : 'runtime.observed',
+      ts: timestamp,
+      seq: defect === 'sequence' ? 2 : 1,
+      obs: 'sidecar',
+      turnId: defect === 'turn' ? 'tu_missing' : source.turnId,
+      parent: defect === 'parent' ? 'missing-parent' : source.itemId,
+      ...(defect === 'bundle'
+        ? {
+            refs: [
+              {
+                kind: 'evidence-bundle',
+                scope: { workspaceId: source.workspaceId, pathClass: 'backend' },
+                locator: 'evb_missing',
+                edge: 'association',
+              },
+            ],
+          }
+        : {}),
+      payload: {
+        observationId: 'observation_source',
+        sourceRef: 'source_1',
+        sourceSequence: 1,
+        observedAt: timestamp,
+        fact: { kind: 'origin', phase: 'started', runtimeOriginRef: null },
+        content: { state: 'off' },
+      },
+    };
+    expect(() => {
+      const verified = writeWorkspaceExportTree({
+        ...input,
+        turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'off' }]]),
+        turnObservations: new Map([[source.turnId, `${JSON.stringify(row)}\n`]]),
+      });
+      readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    }).toThrow(
+      {
+        parent: /parent references missing/,
+        sequence: /sequence or ownership/,
+        turn: /sequence or ownership/,
+        bundle: /evidence bundle references missing/,
+        type: /Unsupported work observation type/,
+      }[defect]
+    );
+  });
   it('remints accepted Knowledge Page Context Package references with the imported digest', () => {
     const input = createWorkResourceLineageExportInput();
     const sourceTraceText = [...input.portableFileState!.workerContextPackageFiles.entries()].find(
@@ -1902,6 +2273,8 @@ describe('workspace auxiliary lineage reminting', () => {
     input.goalRecords = (input.goalRecords ?? []).map((record) => ({
       ...(record as Record<string, unknown>),
       status: 'awaiting_plan_approval',
+      planItemId: null,
+      pendingPlanItemId: source.planItemId,
       currentTaskId: null,
     }));
     input.goalTasks = [];
@@ -1918,6 +2291,134 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(imported.goalPlanRecords[0]?.planDigest).toBe(
       computeGoalPlanDigest(imported.goalPlanRecords[0]!)
     );
+  });
+
+  it('retains an approved Plan and Task beside a pending successor without refreshing its source evidence fence', () => {
+    const input = createLineageExportInput();
+    const pendingPlanItemId = 'it_goal_plan_successor';
+    const pendingTaskId = 'task_successor';
+    const historicalDigest = `sha256:${'a'.repeat(64)}`;
+    const dispositionReason = 'Carry the unfinished review into the successor Task.';
+    const sourcePlanItem = input.itemRevisions.find(
+      (item) => (item as { id?: string }).id === source.planItemId
+    ) as Record<string, unknown>;
+    const pendingPlanItem = {
+      ...sourcePlanItem,
+      id: pendingPlanItemId,
+      steps: [{ id: pendingTaskId, title: 'Successor task', status: 'pending' }],
+    };
+    input.itemRevisions = [...input.itemRevisions, pendingPlanItem];
+    input.turns = input.turns.map((turn) => ({
+      ...(turn as Record<string, unknown>),
+      items: [...(turn as { items: unknown[] }).items, pendingPlanItem],
+    }));
+    input.goalRecords = (input.goalRecords ?? []).map((goal) => ({
+      ...(goal as Record<string, unknown>),
+      pendingPlanItemId,
+      currentAffectedTaskIds: [source.taskId],
+    }));
+    const sourcePlan = input.goalPlanRecords![0] as Record<string, unknown>;
+    const sourceTask = (sourcePlan.tasks as Record<string, unknown>[])[0]!;
+    const successorPayload = GoalPlanOutputSchema.parse({
+      schemaVersion: sourcePlan.schemaVersion,
+      goalSummary: sourcePlan.goalSummary,
+      assumptions: sourcePlan.assumptions,
+      tasks: [{ ...sourceTask, taskId: pendingTaskId, dependsOnTaskIds: [] }],
+      taskDispositions: [
+        {
+          taskId: source.taskId,
+          successorTaskId: pendingTaskId,
+          reason: dispositionReason,
+        },
+      ],
+      risks: sourcePlan.risks,
+      questions: sourcePlan.questions,
+      verificationApproach: sourcePlan.verificationApproach,
+    });
+    input.goalPlanRecords = [
+      sourcePlan,
+      {
+        ...sourcePlan,
+        ...successorPayload,
+        planItemId: pendingPlanItemId,
+        predecessorPlanItemId: source.planItemId,
+        sourceTaskEvidenceDigest: historicalDigest,
+        planDigest: computeGoalPlanDigest(successorPayload),
+      },
+    ];
+
+    const imported = importLineage(input);
+    const goal = imported.goalRecords[0]!;
+    const active = imported.goalPlanRecords.find((plan) => plan.predecessorPlanItemId === null)!;
+    const pending = imported.goalPlanRecords.find((plan) => plan.predecessorPlanItemId !== null)!;
+    const approvedTask = imported.goalTasks[0]!;
+    const intentItem = imported.itemRevisions.find((item) => item.type === 'user-message')!;
+    expect(imported.goalPlanRecords).toHaveLength(2);
+    expect(imported.goalTasks).toHaveLength(1);
+    expect(active.taskDispositions).toEqual([]);
+    expect(goal.planItemId).toBe(active.planItemId);
+    expect(goal.pendingPlanItemId).toBe(pending.planItemId);
+    expect(goal.currentTaskId).toBe(approvedTask.taskId);
+    expect(goal.currentAffectedTaskIds).toEqual([approvedTask.taskId]);
+    expect(approvedTask.planItemId).toBe(active.planItemId);
+    expect(approvedTask.status).toBe('reviewing');
+    expect(pending.predecessorPlanItemId).toBe(active.planItemId);
+    expect(pending.sourceIntentItemId).toBe(intentItem.id);
+    expect(pending.tasks[0]!.taskId).not.toBe(pendingTaskId);
+    expect(pending.taskDispositions).toEqual([
+      {
+        taskId: approvedTask.taskId,
+        successorTaskId: pending.tasks[0]!.taskId,
+        reason: dispositionReason,
+      },
+    ]);
+    expect(pending.sourceTaskEvidenceDigest).toBe(historicalDigest);
+    expect(pending.planDigest).toBe(computeGoalPlanDigest(pending));
+
+    for (const [sourceTaskEvidenceDigest, expectedError] of [
+      [null, /Goal Plan source evidence does not match its approval history/],
+      ['sha256:invalid', /sha256:/],
+    ] as const) {
+      expect(() =>
+        importLineage({
+          ...input,
+          exportRoot: join(
+            mkdtempSync(join(tmpdir(), 'openkit-goal-invalid-successor-')),
+            'export'
+          ),
+          goalPlanRecords: [
+            sourcePlan,
+            { ...(input.goalPlanRecords![1] as Record<string, unknown>), sourceTaskEvidenceDigest },
+          ],
+        })
+      ).toThrow(expectedError);
+    }
+    for (const invalidDisposition of [
+      { taskId: 'task_foreign', successorTaskId: pendingTaskId, reason: dispositionReason },
+      { taskId: source.taskId, successorTaskId: 'task_foreign', reason: dispositionReason },
+    ]) {
+      const malformedPayload = GoalPlanOutputSchema.parse({
+        ...successorPayload,
+        taskDispositions: [invalidDisposition],
+      });
+      expect(() =>
+        importLineage({
+          ...input,
+          exportRoot: join(
+            mkdtempSync(join(tmpdir(), 'openkit-goal-invalid-disposition-')),
+            'export'
+          ),
+          goalPlanRecords: [
+            sourcePlan,
+            {
+              ...(input.goalPlanRecords![1] as Record<string, unknown>),
+              ...malformedPayload,
+              planDigest: computeGoalPlanDigest(malformedPayload),
+            },
+          ],
+        })
+      ).toThrow(/Goal Plan task disposition has invalid lineage/);
+    }
   });
 
   it('rejects approved Task rows while a Goal awaits Plan approval', () => {
@@ -2334,12 +2835,15 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(() => importLineage(createLineageExportInput(missing))).toThrow(error);
   });
 
-  it('exports and remints only the product-safe runtime provenance index', () => {
+  it('exports and remints exact binary runtime provenance alongside its product-safe index', () => {
     const input = createLineageExportInput();
     const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
     const rawBundleId = 'evb_runtime_raw_source';
     const indexBundleId = 'evb_runtime_index_source';
     const runtimeEvidenceId = 'rte_runtime_source';
+    const rawBytes = Buffer.from([0, 255, 128, 10, 13, 0, 254]);
+    const rawDigest = `sha256:${createHash('sha256').update(rawBytes).digest('hex')}`;
+    const rawPath = `workspace-files/evidence/backend/${rawBundleId}/raw/native-canary.bin`;
     const sourceOriginRef = `rto_${'a'.repeat(24)}`;
     const sourceTurnRef = `rtt_${'b'.repeat(24)}`;
     const indexText = `${JSON.stringify({
@@ -2377,10 +2881,10 @@ describe('workspace auxiliary lineage reminting', () => {
         sourceKind: 'worker-runtime-provenance-raw',
         summary: 'Restricted runtime provenance.',
         rawEvidenceRefs: [
-          { kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.jsonl' },
+          { kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.bin' },
         ],
         redactedEvidenceRefs: [],
-        contentDigests: [`sha256:${'2'.repeat(64)}`],
+        contentDigests: [rawDigest],
         retentionClass: 'restricted-raw',
         sensitivityClass: 'restricted',
         importStatus: 'promoted',
@@ -2441,7 +2945,7 @@ describe('workspace auxiliary lineage reminting', () => {
         redactedStdoutSummary: null,
         redactedStderrSummary: null,
         evidenceBundleIds: [rawBundleId, indexBundleId],
-        contentDigests: [`sha256:${'2'.repeat(64)}`, indexDigest],
+        contentDigests: [rawDigest, indexDigest],
         requiredFeatures: ['worker.runtime-provenance.v1'],
         createdAt: timestamp,
         startedAt: null,
@@ -2450,6 +2954,7 @@ describe('workspace auxiliary lineage reminting', () => {
       },
     ];
     input.runtimeProvenanceIndexes = new Map([[indexBundleId, indexText]]);
+    input.restrictedEvidenceFiles = new Map([[`${rawBundleId}/raw/native-canary.bin`, rawBytes]]);
     const sourceCacheLineageRef = `rcl_${'c'.repeat(24)}`;
     input.capabilityCalls = [
       {
@@ -2477,19 +2982,40 @@ describe('workspace auxiliary lineage reminting', () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(exportedBundles.find((bundle) => bundle.id === rawBundleId)).toMatchObject({
       id: rawBundleId,
-      importStatus: 'expired',
-      rawEvidenceRefs: [],
+      importStatus: 'promoted',
+      rawEvidenceRefs: [{ kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.bin' }],
       redactedEvidenceRefs: [],
+      contentDigests: [rawDigest],
     });
-    expect(JSON.stringify([...verified.fileContents])).not.toContain('native-canary');
+    expect(verified.binaryFileContents.get(rawPath)).toEqual(rawBytes);
+    expect(readFileSync(join(input.exportRoot, rawPath))).toEqual(rawBytes);
+    expect(
+      verified.manifest.contentInventory.find((entry) => entry.path === rawPath)
+    ).toMatchObject({
+      bytes: rawBytes.byteLength,
+      digest: rawDigest,
+    });
     expect(
       verified.fileContents.get(
         `workspace-files/evidence/bundles/${indexBundleId}/runtime-origin-index.jsonl`
       )
     ).toBe(indexText);
-    expect(
-      [...verified.fileContents.keys()].some((path) => path.startsWith('evidence/backend/'))
-    ).toBe(false);
+    const missingBinary = new Map(verified.binaryFileContents);
+    missingBinary.delete(rawPath);
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, binaryFileContents: missingBinary },
+        targetWorkspaceId,
+      })
+    ).toThrow(/Restricted evidence bytes are missing or invalid/);
+    const tamperedBinary = new Map(verified.binaryFileContents);
+    tamperedBinary.set(rawPath, Buffer.from([0]));
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, binaryFileContents: tamperedBinary },
+        targetWorkspaceId,
+      })
+    ).toThrow(/Restricted evidence bytes are missing or invalid/);
 
     const imported = readWorkspaceImportSnapshot({
       verified,
@@ -2503,8 +3029,15 @@ describe('workspace auxiliary lineage reminting', () => {
     const importedIndexBundle = imported.evidenceBundles.find(
       (bundle) => bundle.sourceKind === 'worker-runtime-provenance-index'
     );
-    expect(importedRawBundle).toMatchObject({ importStatus: 'expired', rawEvidenceRefs: [] });
+    expect(importedRawBundle).toMatchObject({
+      importStatus: 'promoted',
+      rawEvidenceRefs: [{ kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.bin' }],
+      contentDigests: [rawDigest],
+    });
     expect(importedRawBundle?.id).not.toBe(rawBundleId);
+    expect(
+      imported.restrictedEvidenceFiles.get(`${importedRawBundle?.id}/raw/native-canary.bin`)
+    ).toEqual(rawBytes);
     expect(importedIndexBundle?.id).not.toBe(indexBundleId);
     expect(imported.runtimeEvidence[0]?.id).not.toBe(runtimeEvidenceId);
     expect(imported.runtimeEvidence[0]?.evidenceBundleIds).toEqual([
@@ -2539,6 +3072,104 @@ describe('workspace auxiliary lineage reminting', () => {
         .update(importedIndexText ?? '')
         .digest('hex')}`,
     ]);
+
+    const failedRaw = writeWorkspaceExportTree({
+      ...input,
+      exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-provenance-failed-')), 'export'),
+      evidenceBundles: [
+        { ...(input.evidenceBundles![0] as Record<string, unknown>), importStatus: 'quarantined' },
+      ],
+      runtimeEvidence: [
+        {
+          ...(input.runtimeEvidence![0] as Record<string, unknown>),
+          id: createWorkerRuntimeProvenanceEvidenceId(packageSnapshotId),
+          evidenceBundleIds: [rawBundleId],
+          contentDigests: [rawDigest],
+          outcome: 'failed',
+          errorCode: 'worker_runtime_provenance_invalid',
+          errorMessage: 'Worker runtime provenance verification failed.',
+        },
+      ],
+      runtimeProvenanceIndexes: new Map(),
+      capabilityCalls: createLineageExportInput().capabilityCalls,
+    });
+    expect(failedRaw.binaryFileContents.get(rawPath)).toEqual(rawBytes);
+    const importedFailed = readWorkspaceImportSnapshot({
+      verified: failedRaw,
+      targetWorkspaceId: 'ws_imported_failed_provenance',
+    });
+    const importedFailedRaw = importedFailed.evidenceBundles.find(
+      (bundle) => bundle.sourceKind === 'worker-runtime-provenance-raw'
+    )!;
+    expect(importedFailed.evidenceBundles).toHaveLength(1);
+    expect(importedFailedRaw.importStatus).toBe('quarantined');
+    expect(importedFailedRaw.id).not.toBe(rawBundleId);
+    expect(importedFailed.runtimeEvidence[0]?.evidenceBundleIds).toEqual([importedFailedRaw.id]);
+    expect(
+      importedFailed.restrictedEvidenceFiles.get(`${importedFailedRaw.id}/raw/native-canary.bin`)
+    ).toEqual(rawBytes);
+    const mismatchedOwnerFiles = new Map(failedRaw.fileContents);
+    for (const path of ['records/evidence-bundles.jsonl', 'records/runtime-evidence.jsonl']) {
+      const record = JSON.parse(mismatchedOwnerFiles.get(path)!) as Record<string, unknown>;
+      mismatchedOwnerFiles.set(path, `${JSON.stringify({ ...record, agentSessionId: null })}\n`);
+    }
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...failedRaw, fileContents: mismatchedOwnerFiles },
+        targetWorkspaceId: 'ws_imported_mismatched_provenance',
+      })
+    ).toThrow(/Runtime provenance bundle linkage is incomplete/);
+    for (const mismatch of [
+      { backendType: 'other-backend' },
+      { contentDigests: [`sha256:${'f'.repeat(64)}`] },
+    ]) {
+      const fileContents = new Map(failedRaw.fileContents);
+      const path = 'records/runtime-evidence.jsonl';
+      const record = JSON.parse(fileContents.get(path)!) as Record<string, unknown>;
+      fileContents.set(path, `${JSON.stringify({ ...record, ...mismatch })}\n`);
+      expect(() =>
+        readWorkspaceImportSnapshot({
+          verified: { ...failedRaw, fileContents },
+          targetWorkspaceId: 'ws_imported_mismatched_runtime',
+        })
+      ).toThrow(/Runtime provenance bundle linkage is incomplete/);
+    }
+    const duplicateRawId = 'evb_runtime_raw_source_duplicate';
+    const duplicateFiles = new Map(failedRaw.fileContents);
+    const rawRecord = JSON.parse(duplicateFiles.get('records/evidence-bundles.jsonl')!) as Record<
+      string,
+      unknown
+    >;
+    duplicateFiles.set(
+      'records/evidence-bundles.jsonl',
+      `${JSON.stringify(rawRecord)}\n${JSON.stringify({ ...rawRecord, id: duplicateRawId })}\n`
+    );
+    const runtimeRecord = JSON.parse(
+      duplicateFiles.get('records/runtime-evidence.jsonl')!
+    ) as Record<string, unknown>;
+    duplicateFiles.set(
+      'records/runtime-evidence.jsonl',
+      `${JSON.stringify({
+        ...runtimeRecord,
+        evidenceBundleIds: [rawBundleId, duplicateRawId],
+        contentDigests: [rawDigest, rawDigest],
+      })}\n`
+    );
+    const duplicateBinary = new Map(failedRaw.binaryFileContents);
+    duplicateBinary.set(
+      `workspace-files/evidence/backend/${duplicateRawId}/raw/native-canary.bin`,
+      rawBytes
+    );
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: {
+          ...failedRaw,
+          fileContents: duplicateFiles,
+          binaryFileContents: duplicateBinary,
+        },
+        targetWorkspaceId: 'ws_imported_duplicate_provenance',
+      })
+    ).toThrow(/Runtime provenance bundle linkage is incomplete/);
 
     const unlinkedRoot = join(
       mkdtempSync(join(tmpdir(), 'openkit-workspace-provenance-unlinked-')),

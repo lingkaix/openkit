@@ -3,20 +3,33 @@ import { createHash } from 'node:crypto';
 import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
 
 import type { FsStore } from '../lib/store.js';
+import { type ModelCaptureContext, withTurnModelCapture } from '../llm/model-capture.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
+  assertGoalPlanTaskDispositions,
   computeGoalPlanDigest,
   createDeterministicGoalPlanFallback,
   type GoalPlanOutput,
   GoalPlanOutputSchema,
+  goalPlanItemSummary,
   selectGoalPlanPayload,
 } from './goal-plan.js';
 import { GoalPlanApprovalError } from './goal-plan-approval.js';
+import {
+  assertGoalPlanCompletedResultTreatment,
+  captureGoalTaskEvidenceSnapshot,
+  computeGoalTaskEvidenceDigest,
+  goalPlanSourceEvidenceDigest,
+  resolveGoalPlanResourceEvidence,
+} from './goal-source-evidence.js';
 import {
   createGoalPlanRecord,
   type GoalRecord,
   getGoalPlanRecord,
   getGoalRecord,
+  isTerminalGoalStatus,
+  listGoalRecordsForThread,
+  listGoalTasks,
   updateGoalStatus,
 } from './goal-store.js';
 import type { InflightIdempotentCommand } from './idempotent-command.js';
@@ -60,6 +73,8 @@ export class GoalPlanRevisionError extends Error {
  * Durable pre-approval revision lineage used to assemble one semantic planning Turn.
  */
 export interface PreApprovalGoalPlanRevision {
+  /** Immutable instruction Item that admitted this planning revision. */
+  readonly revisionItemId: string;
   /** Immutable prior Plan Item id. */
   readonly previousPlanItemId: string;
   /** Exact previous Plan payload. */
@@ -72,6 +87,8 @@ export interface PreApprovalGoalPlanRevision {
  * Planner input for one Goal Mode planning run.
  */
 export interface GoalPlannerInput {
+  /** Exact persisted planning Turn supplied before any model-based planner effect. */
+  readonly capture?: Omit<ModelCaptureContext, 'corr'>;
   /** Stored goal record to plan. */
   readonly goal: GoalRecord;
   /** Exact previous Plan when this run follows a recorded pre-approval revision. */
@@ -80,6 +97,15 @@ export interface GoalPlannerInput {
   readonly previousPlanItemId?: string;
   /** Recorded human revision instruction. */
   readonly revisionText?: string;
+  /** Exact active-Plan Task and evidence facts fixed before model admission. */
+  readonly sourceTaskEvidence?: ReturnType<typeof captureGoalTaskEvidenceSnapshot> | null;
+  /** Exact answered planning Gate carried into a fresh model planning Turn. */
+  readonly clarification?: {
+    readonly requestItemId: string;
+    readonly responseItemId: string;
+    readonly questions: readonly { readonly id: string; readonly question: string }[];
+    readonly answers: Readonly<Record<string, readonly string[]>>;
+  } | null;
 }
 
 /**
@@ -175,21 +201,113 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     threadId: input.threadId,
     goalId: input.goalId,
   });
-  const plannerInput: GoalPlannerInput = revision
-    ? {
-        goal,
-        previousPlan: revision.previousPlan,
-        previousPlanItemId: revision.previousPlanItemId,
-        revisionText: revision.revisionText,
-      }
-    : { goal };
+  const existingTurns = input.store.listThreadTurns(input.workspaceId, input.threadId);
+  const currentIntentTurnId = input.store
+    .listThreadItems(input.workspaceId, input.threadId)
+    .find((item) => item.id === goal.currentIntentItemId)?.turnId;
+  const currentIntentTurnIndex = existingTurns.findIndex((turn) => turn.id === currentIntentTurnId);
+  if (
+    existingTurns
+      .slice(currentIntentTurnIndex + 1)
+      .some(
+        (turn) =>
+          turn.id.startsWith('tu_goal_plan_') &&
+          turn.status === 'awaiting_human' &&
+          turn.humanGate?.kind === 'user-input' &&
+          turn.items.some(
+            (item) =>
+              item.type === 'user-input-request' &&
+              [goal.currentIntentItemId, goal.planItemId, goal.pendingPlanItemId].includes(
+                item.parentItemId ?? null
+              )
+          )
+      )
+  ) {
+    throw new GoalPlanRevisionError(
+      'stale',
+      'Goal planning question must be answered before another Plan request.'
+    );
+  }
+  let sourceTaskEvidence: ReturnType<typeof captureGoalTaskEvidenceSnapshot> | null = null;
+  if (goal.planItemId) {
+    try {
+      sourceTaskEvidence = captureGoalTaskEvidenceSnapshot(input.store, input.workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        goalId: input.goalId,
+        planItemId: goal.planItemId,
+      });
+    } catch {
+      throw new GoalPlanRevisionError(
+        'recovery_required',
+        'Goal planning source Task or Review evidence is missing or contradictory.'
+      );
+    }
+  }
   const ids = goalPlanCreationIds(input);
+  if (
+    input.store
+      .listThreadTurns(input.workspaceId, input.threadId)
+      .some((candidate) => candidate.id === ids.turnId)
+  ) {
+    throw new GoalPlanRevisionError(
+      'recovery_required',
+      'Goal Plan request already has a Turn; inspect its retained result before retrying.'
+    );
+  }
+  const turn = input.store.createTurn(
+    input.workspaceId,
+    input.threadId,
+    `Plan goal: ${goal.title}`,
+    input.triggerActor,
+    null,
+    { turnId: ids.turnId }
+  );
+  const timestamp = turn.startedAt ?? new Date().toISOString();
+  const plannerInput: GoalPlannerInput = {
+    goal,
+    sourceTaskEvidence,
+    clarification: readLatestGoalPlanningClarification(
+      input.store,
+      input.workspaceId,
+      input.threadId,
+      [goal.currentIntentItemId, revision?.previousPlanItemId].filter((id): id is string =>
+        Boolean(id)
+      ),
+      [goal.currentIntentItemId, revision?.revisionItemId].filter((id): id is string => Boolean(id))
+    ),
+    ...(revision
+      ? {
+          previousPlan: revision.previousPlan,
+          previousPlanItemId: revision.previousPlanItemId,
+          revisionText: revision.revisionText,
+        }
+      : {}),
+  };
 
   let plan: GoalPlanOutput;
   if (revision) {
     try {
-      plan = await runGoalPlanner(input.planner, plannerInput, false);
+      plan = await runGoalPlanner(
+        input.planner,
+        plannerInput,
+        false,
+        input.store,
+        turn,
+        input.workspaceDb
+      );
+      if (plan.questions.length === 0) {
+        assertApprovableGoalPlanRevision(plan, revision.previousPlan);
+      }
     } catch (error) {
+      input.store.updateTurn(turn.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        error: {
+          code: 'goal_plan_revision_failed',
+          message: 'Goal Plan revision did not complete.',
+        },
+      });
       if (error instanceof GoalPlanRevisionError) {
         throw error;
       }
@@ -198,19 +316,16 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
         'Pre-approval Goal Plan revision planner failed.'
       );
     }
-    assertApprovableGoalPlanRevision(plan, revision.previousPlan);
   } else {
-    const turn = input.store.createTurn(
-      input.workspaceId,
-      input.threadId,
-      `Plan goal: ${goal.title}`,
-      input.triggerActor,
-      null,
-      { turnId: ids.turnId }
-    );
-    const timestamp = turn.startedAt ?? new Date().toISOString();
     try {
-      plan = await runGoalPlanner(input.planner, plannerInput, true);
+      plan = await runGoalPlanner(
+        input.planner,
+        plannerInput,
+        true,
+        input.store,
+        turn,
+        input.workspaceDb
+      );
     } catch {
       const errorMessage = 'Goal planner failed.';
       const errorItem = input.store.createItem({
@@ -237,29 +352,89 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
         completedAt: timestamp,
         durationMs: 0,
       });
-      updateGoalStatus(input.workspaceDb, {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        goalId: goal.goalId,
-        status: 'failed',
-        terminalStopReason: 'error',
-      });
-
       return { status: 'failed', errorMessage, errorItem };
     }
-    return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan, null);
+    try {
+      return persistGoalPlanResult(
+        input,
+        goal,
+        ids,
+        turn,
+        timestamp,
+        plan,
+        null,
+        sourceTaskEvidence
+      );
+    } catch (error) {
+      failUnpublishedPlanningTurn(input.store, turn.id);
+      throw error;
+    }
   }
 
-  const turn = input.store.createTurn(
-    input.workspaceId,
-    input.threadId,
-    `Plan goal: ${goal.title}`,
-    input.triggerActor,
-    null,
-    { turnId: ids.turnId }
-  );
-  const timestamp = turn.startedAt ?? new Date().toISOString();
-  return persistGoalPlanResult(input, goal, ids, turn, timestamp, plan, revision);
+  try {
+    return persistGoalPlanResult(
+      input,
+      goal,
+      ids,
+      turn,
+      timestamp,
+      plan,
+      revision,
+      sourceTaskEvidence
+    );
+  } catch (error) {
+    failUnpublishedPlanningTurn(input.store, turn.id);
+    throw error;
+  }
+}
+
+/** Seals a rejected model output when it published neither a Plan nor a question Gate. */
+function failUnpublishedPlanningTurn(store: FsStore, turnId: string): void {
+  const current = store.getTurnById(turnId);
+  if (current.status === 'running' && current.items.length === 0) {
+    store.updateTurn(turnId, {
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+      error: { code: 'goal_plan_output_rejected', message: 'Goal Plan output was rejected.' },
+    });
+  }
+}
+
+/** Reads the last exact answered planning Gate for a new request-bound planning Turn. */
+function readLatestGoalPlanningClarification(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  admittedParentItemIds: readonly string[],
+  latestInstructionItemIds: readonly string[]
+): NonNullable<GoalPlannerInput['clarification']> | null {
+  const turns = store.listThreadTurns(workspaceId, threadId);
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (turn?.items.some((item) => latestInstructionItemIds.includes(item.id))) return null;
+    if (!turn?.id.startsWith('tu_goal_plan_')) continue;
+    const request = turn.items.find((item) => item.type === 'user-input-request');
+    const response = turn.items.find((item) => item.type === 'user-input-response');
+    if (
+      turn.status === 'completed' &&
+      request?.type === 'user-input-request' &&
+      response?.type === 'user-input-response' &&
+      request.userInputRequestId === response.userInputRequestId &&
+      request.parentItemId &&
+      admittedParentItemIds.includes(request.parentItemId)
+    ) {
+      return {
+        requestItemId: request.id,
+        responseItemId: response.id,
+        questions: request.questions.map(({ id, question }) => ({ id, question })),
+        answers: response.answers,
+      };
+    }
+    if (turn.status === 'completed' && turn.items.some((item) => item.type === 'plan')) {
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -352,9 +527,79 @@ function persistGoalPlanResult(
   turn: ReturnType<FsStore['createTurn']>,
   timestamp: string,
   plan: GoalPlanOutput,
-  revision: PreApprovalGoalPlanRevision | null
+  revision: PreApprovalGoalPlanRevision | null,
+  sourceTaskEvidence: ReturnType<typeof captureGoalTaskEvidenceSnapshot> | null
 ): GoalPlanResult {
+  let sourceTaskEvidenceDigest: string | null = null;
+  if (plan.questions.length === 0) {
+    try {
+      assertGoalPlanTaskDispositions(plan, sourceTaskEvidence?.facts ?? []);
+      if (sourceTaskEvidence) assertGoalPlanCompletedResultTreatment(plan, sourceTaskEvidence);
+      if (sourceTaskEvidence) {
+        const resources = resolveGoalPlanResourceEvidence(
+          input.store,
+          input.workspaceDb,
+          {
+            workspaceId: input.workspaceId,
+            threadId: input.threadId,
+            goalId: goal.goalId,
+            planItemId: goal.planItemId!,
+          },
+          plan,
+          sourceTaskEvidence
+        );
+        sourceTaskEvidenceDigest = goalPlanSourceEvidenceDigest(sourceTaskEvidence, resources);
+      }
+    } catch (error) {
+      throw new GoalPlanRevisionError('goal_plan_revision_invalid', (error as Error).message);
+    }
+    const historicalTaskIds = new Set(
+      listGoalTasks(input.workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        goalId: goal.goalId,
+      }).map((task) => task.taskId)
+    );
+    if (plan.tasks.some((task) => historicalTaskIds.has(task.taskId))) {
+      throw new GoalPlanRevisionError(
+        'goal_plan_revision_invalid',
+        'Goal Plan Task ids must be unique across the Goal.'
+      );
+    }
+  }
+  const current = getGoalRecord(input.workspaceDb, input.workspaceId, input.threadId, input.goalId);
+  const sourceStillCurrent =
+    current !== null &&
+    !isTerminalGoalStatus(current.status) &&
+    current?.currentIntentItemId === goal.currentIntentItemId &&
+    (revision
+      ? current?.pendingPlanItemId === revision.previousPlanItemId ||
+        current?.planItemId === revision.previousPlanItemId
+      : current?.status === 'planning' &&
+        current.planItemId === null &&
+        current.pendingPlanItemId === null);
+  if (!sourceStillCurrent) {
+    throw new GoalPlanRevisionError(
+      'recovery_required',
+      'Goal planning source changed before publication.'
+    );
+  }
   if (plan.questions.length > 0) {
+    if (
+      current.planItemId &&
+      sourceTaskEvidence?.digest !==
+        computeGoalTaskEvidenceDigest(input.store, input.workspaceDb, {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          goalId: input.goalId,
+          planItemId: current.planItemId,
+        })
+    ) {
+      throw new GoalPlanRevisionError(
+        'stale',
+        'Goal Task evidence changed before its planning question.'
+      );
+    }
     const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
     if (responsibleUserId === null) {
       throw new GoalPlanApprovalError(
@@ -369,11 +614,12 @@ function persistGoalPlanResult(
       turnId: turn.id,
       type: 'user-input-request',
       status: 'completed',
+      parentItemId: revision?.previousPlanItemId ?? goal.currentIntentItemId,
       causationId: input.requestId,
       responsibleUserId,
       userInputRequestId: ids.userInputRequestId,
       prompt: 'Goal planning needs more information.',
-      questions: plan.questions.slice(0, 5).map((question, index) => ({
+      questions: plan.questions.map((question, index) => ({
         id: `plan_question_${index + 1}`,
         header: `Question ${index + 1}`,
         question,
@@ -393,12 +639,14 @@ function persistGoalPlanResult(
         itemId: questionItem.id,
       },
     });
-    updateGoalStatus(input.workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      goalId: goal.goalId,
-      status: 'awaiting_user',
-    });
+    if (!revision) {
+      updateGoalStatus(input.workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        goalId: goal.goalId,
+        status: 'awaiting_user',
+      });
+    }
 
     return { status: 'awaiting_user', plan, questionItem };
   }
@@ -412,7 +660,15 @@ function persistGoalPlanResult(
     status: 'completed',
     causationId: input.requestId,
     title: goal.title,
-    summary: plan.goalSummary,
+    summary: goalPlanProposalSummary(
+      plan,
+      revision?.previousPlan ?? null,
+      revision?.revisionText ?? goal.objective,
+      sourceTaskEvidence,
+      sourceTaskEvidenceDigest,
+      goal.currentIntentItemId,
+      input.planner ? 'goal-orchestrator' : 'deterministic-goal-planner'
+    ),
     steps: plan.tasks.map((task) => ({
       id: task.taskId,
       title: task.title,
@@ -434,11 +690,16 @@ function persistGoalPlanResult(
       input.threadId,
       input.goalId
     );
-    const admittedInitialPlanning = current?.status === 'planning' && current.planItemId === null;
+    const admittedInitialPlanning =
+      current?.status === 'planning' &&
+      current.planItemId === null &&
+      current.pendingPlanItemId === null;
     const admittedRevision =
       revision !== null &&
-      current?.status === 'awaiting_plan_approval' &&
-      current.planItemId === revision.previousPlanItemId;
+      current?.currentIntentItemId === goal.currentIntentItemId &&
+      (current?.pendingPlanItemId === revision.previousPlanItemId ||
+        current?.planItemId === revision.previousPlanItemId) &&
+      !isTerminalGoalStatus(current.status);
     if (!admittedInitialPlanning && !admittedRevision) {
       throw new GoalPlanApprovalError(
         'recovery_required',
@@ -450,6 +711,9 @@ function persistGoalPlanResult(
       threadId: input.threadId,
       goalId: goal.goalId,
       planItemId: planItem.id,
+      predecessorPlanItemId: revision?.previousPlanItemId ?? current?.planItemId ?? null,
+      sourceIntentItemId: current?.currentIntentItemId ?? goal.currentIntentItemId,
+      sourceTaskEvidenceDigest,
       plan,
       createdByRequestId: input.requestId,
       now: () => timestamp,
@@ -458,13 +722,96 @@ function persistGoalPlanResult(
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       goalId: goal.goalId,
-      status: 'awaiting_plan_approval',
-      planItemId: planItem.id,
+      status: current?.planItemId ? current.status : 'awaiting_plan_approval',
+      pendingPlanItemId: planItem.id,
     });
   });
   storePlanAuthority();
 
   return { status: 'awaiting_plan_approval', plan, planItem };
+}
+
+/** Renders inspectable proposal provenance without copying a second Plan authority into the Item. */
+function goalPlanProposalSummary(
+  plan: GoalPlanOutput,
+  predecessor: GoalPlanOutput | null,
+  reason: string,
+  sourceTaskEvidence: ReturnType<typeof captureGoalTaskEvidenceSnapshot> | null,
+  sourceTaskEvidenceDigest: string | null,
+  sourceIntentItemId: string,
+  proposer: string
+): string {
+  const exactDiff = predecessor
+    ? (
+        [
+          'goalSummary',
+          'assumptions',
+          'tasks',
+          'taskDispositions',
+          'risks',
+          'verificationApproach',
+        ] as const
+      ).flatMap((field) =>
+        JSON.stringify(predecessor[field]) === JSON.stringify(plan[field])
+          ? []
+          : [{ field, before: predecessor[field], after: plan[field] }]
+      )
+    : [{ field: 'initialPlan', before: null, after: plan }];
+  const evidenceIds =
+    sourceTaskEvidence?.facts.flatMap((task) => [
+      ...task.reviews.flatMap((review) =>
+        review.acceptedEvidence
+          ? [
+              ...review.acceptedEvidence.items.map((item) => item.id),
+              ...review.acceptedEvidence.artifacts.map((artifact) => artifact.id),
+            ]
+          : []
+      ),
+      ...(task.acceptedOutcome?.items.map((item) => item.id) ?? []),
+      ...(task.acceptedOutcome?.artifacts.map((artifact) => artifact.id) ?? []),
+    ]) ?? [];
+  const usedEvidenceIds = new Set(
+    plan.tasks.flatMap((task) =>
+      task.resources
+        .filter((resource) => resource.kind === 'item' || resource.kind === 'artifact')
+        .map((resource) => resource.reference)
+    )
+  );
+  const completedResultTreatments =
+    sourceTaskEvidence?.facts
+      .filter((task) => task.status === 'completed')
+      .map((task) => {
+        const resultIds = [
+          ...task.reviews.flatMap((review) =>
+            review.acceptedEvidence
+              ? [
+                  ...review.acceptedEvidence.items.map((item) => item.id),
+                  ...review.acceptedEvidence.artifacts.map((artifact) => artifact.id),
+                ]
+              : []
+          ),
+          ...(task.acceptedOutcome?.items.map((item) => item.id) ?? []),
+          ...(task.acceptedOutcome?.artifacts.map((artifact) => artifact.id) ?? []),
+        ];
+        const carried = resultIds.filter((id) => usedEvidenceIds.has(id));
+        return carried.length > 0
+          ? `Completed Task ${task.taskId} result carried: ${carried.join(', ')}`
+          : `Completed Task ${task.taskId} result excluded: ${plan.assumptions.find((assumption) => assumption.includes(task.taskId)) ?? 'missing reason'}`;
+      }) ?? [];
+  return [
+    goalPlanItemSummary(plan),
+    `Proposal reason: ${reason}`,
+    `Proposer: ${proposer}`,
+    `Source intent Item: ${sourceIntentItemId}`,
+    `Source Task evidence digest: ${sourceTaskEvidenceDigest ?? 'none'}`,
+    `Carried accepted evidence references: ${
+      evidenceIds.some((id) => usedEvidenceIds.has(id))
+        ? [...new Set(evidenceIds.filter((id) => usedEvidenceIds.has(id)))].join(', ')
+        : 'none'
+    }`,
+    `Completed-result treatment: ${completedResultTreatments.length ? completedResultTreatments.join(' | ') : 'none'}`,
+    `Exact predecessor diff: ${JSON.stringify(exactDiff)}`,
+  ].join('\n');
 }
 
 /**
@@ -496,6 +843,35 @@ export function readGoalPlanCreation(
   }
 
   if (!turn && !planItem && !questionItem && !errorItem && !plan) {
+    return null;
+  }
+  if (
+    turn?.status === 'failed' &&
+    turn.completedAt &&
+    turn.error?.code === 'goal_plan_revision_failed' &&
+    JSON.stringify(turn.triggerActor) === JSON.stringify(input.triggerActor) &&
+    turn.items.length === 0 &&
+    !planItem &&
+    !questionItem &&
+    !errorItem &&
+    !plan
+  ) {
+    return null;
+  }
+  if (
+    turn?.status === 'failed' &&
+    turn.completedAt &&
+    turn.error?.code === 'goal_planner_failed' &&
+    JSON.stringify(turn.triggerActor) === JSON.stringify(input.triggerActor) &&
+    turn.items.length === 1 &&
+    turn.items[0]?.id === errorItem?.id &&
+    errorItem?.type === 'status' &&
+    errorItem.status === 'failed' &&
+    errorItem.causationId === input.requestId &&
+    !planItem &&
+    !questionItem &&
+    !plan
+  ) {
     return null;
   }
   if (
@@ -531,7 +907,7 @@ export function readGoalPlanCreation(
   if (
     !goal ||
     planItem.title !== goal.title ||
-    planItem.summary !== plan.goalSummary ||
+    !planItem.summary?.startsWith(`${goalPlanItemSummary(plan)}\nProposal reason: `) ||
     !exactSteps
   ) {
     throw new GoalPlanApprovalError(
@@ -546,6 +922,249 @@ export function readGoalPlanCreation(
     plan: selectGoalPlanPayload(plan),
     planItem,
   };
+}
+
+/** Reads one request-owned planning question Gate without treating it as an approvable Plan. */
+export function readGoalPlanQuestionCreation(
+  input: Omit<CreateGoalPlanInput, 'goalId' | 'planner'>
+): {
+  readonly goalId: string;
+  readonly status: 'awaiting_user';
+  readonly questionItem: GoalPlanItem;
+} | null {
+  const ids = goalPlanCreationIds(input);
+  const turn = input.store
+    .listThreadTurns(input.workspaceId, input.threadId)
+    .find((candidate) => candidate.id === ids.turnId);
+  const item = input.store
+    .listThreadItems(input.workspaceId, input.threadId)
+    .find((candidate) => candidate.id === ids.questionItemId);
+  if (!item && turn?.status !== 'awaiting_human') return null;
+  if (
+    turn?.items.some((entry) => entry.type === 'plan' || entry.type === 'status') ||
+    getGoalPlanRecord(input.workspaceDb, input.workspaceId, input.threadId, ids.planItemId)
+  ) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Goal planning question conflicts with another result owner.'
+    );
+  }
+  if (
+    !turn ||
+    !item ||
+    item.type !== 'user-input-request' ||
+    item.status !== 'completed' ||
+    item.turnId !== turn.id ||
+    item.causationId !== input.requestId ||
+    item.userInputRequestId !== ids.userInputRequestId ||
+    !item.parentItemId ||
+    JSON.stringify(turn.triggerActor) !== JSON.stringify(input.triggerActor) ||
+    (turn.status !== 'awaiting_human' && turn.status !== 'completed')
+  ) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Goal planning question owners are incomplete.'
+    );
+  }
+  if (
+    turn.status === 'awaiting_human' &&
+    (turn.humanGate.kind !== 'user-input' || turn.humanGate.itemId !== item.id)
+  ) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Goal planning question Gate is contradictory.'
+    );
+  }
+  if (turn.status === 'completed') {
+    const responses = turn.items.filter((entry) => entry.type === 'user-input-response');
+    const response = responses[0];
+    const questionIds = item.questions.map((question) => question.id);
+    if (
+      turn.humanGate !== null ||
+      !turn.completedAt ||
+      responses.length !== 1 ||
+      response?.type !== 'user-input-response' ||
+      response.status !== 'completed' ||
+      response.userInputRequestId !== item.userInputRequestId ||
+      Object.keys(response.answers).length !== questionIds.length ||
+      questionIds.some(
+        (id) => response.answers[id]?.length !== 1 || !response.answers[id]?.[0]?.trim()
+      )
+    ) {
+      throw new GoalPlanApprovalError(
+        'recovery_required',
+        'Answered Goal planning question has an incomplete response tuple.'
+      );
+    }
+  }
+  const items = new Map(
+    input.store.listThreadItems(input.workspaceId, input.threadId).map((entry) => [entry.id, entry])
+  );
+  const goals = listGoalRecordsForThread(input.workspaceDb, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+  }).filter((goal) => {
+    if (goal.planItemId === item.parentItemId || goal.pendingPlanItemId === item.parentItemId)
+      return true;
+    let cursor: string | null = goal.currentIntentItemId;
+    const seen = new Set<string>();
+    while (cursor && !seen.has(cursor)) {
+      if (cursor === item.parentItemId) return true;
+      seen.add(cursor);
+      const previous = items.get(cursor);
+      if (!previous || previous.type !== 'user-message') break;
+      cursor = previous.parentItemId ?? null;
+    }
+    const historicalPlan = getGoalPlanRecord(
+      input.workspaceDb,
+      input.workspaceId,
+      input.threadId,
+      item.parentItemId!
+    );
+    return historicalPlan?.goalId === goal.goalId;
+  });
+  if (goals.length !== 1) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Goal planning question has no exact Goal lineage.'
+    );
+  }
+  return {
+    goalId: goals[0]!.goalId,
+    status: 'awaiting_user',
+    questionItem: item,
+  };
+}
+
+/** Closes one exact Goal planning question Gate on its existing Turn. */
+export function closeGoalPlanningQuestionGate(input: {
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly requestId: string;
+  readonly actorId: string;
+  readonly answers: Readonly<Record<string, readonly string[]>>;
+}): ReturnType<FsStore['getTurn']> {
+  const turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  if (turn.status !== 'awaiting_human') {
+    throw new GoalPlanApprovalError('stale', 'Goal planning question Gate is already closed.');
+  }
+  const gate = turn.humanGate;
+  if (gate?.kind !== 'user-input') {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Goal planning Gate is not a user-input Gate.'
+    );
+  }
+  const request = turn.items.find((item) => item.id === gate.itemId);
+  if (
+    !turn.id.startsWith('tu_goal_plan_') ||
+    request?.type !== 'user-input-request' ||
+    request.status !== 'completed' ||
+    !request.parentItemId ||
+    !request.causationId ||
+    request.responsibleUserId !== input.actorId ||
+    request.userInputRequestId !== gate.userInputRequestId
+  ) {
+    throw new GoalPlanApprovalError('recovery_required', 'Goal planning Gate owner is incomplete.');
+  }
+  const ids = goalPlanCreationIds({
+    triggerActor: turn.triggerActor,
+    store: input.store,
+    workspaceDb: input.workspaceDb,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    requestId: request.causationId,
+  });
+  if (
+    ids.turnId !== turn.id ||
+    ids.questionItemId !== request.id ||
+    ids.userInputRequestId !== request.userInputRequestId
+  ) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Goal planning Gate request lineage is contradictory.'
+    );
+  }
+  const questionIds = request.questions.map((question) => question.id);
+  if (
+    new Set(questionIds).size !== questionIds.length ||
+    Object.keys(input.answers).length !== questionIds.length ||
+    questionIds.some((id) => input.answers[id]?.length !== 1 || !input.answers[id]?.[0]?.trim()) ||
+    Object.keys(input.answers).some((id) => !questionIds.includes(id))
+  ) {
+    throw new GoalPlanApprovalError(
+      'goal_plan_invalid',
+      'Goal planning answers must match every question exactly.'
+    );
+  }
+  const goals = listGoalRecordsForThread(input.workspaceDb, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+  }).filter(
+    (goal) =>
+      goal.currentIntentItemId === request.parentItemId ||
+      goal.pendingPlanItemId === request.parentItemId ||
+      goal.planItemId === request.parentItemId
+  );
+  if (goals.length !== 1) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Goal planning Gate has no exact Goal owner.'
+    );
+  }
+  const goal = goals[0]!;
+  const turns = input.store.listThreadTurns(input.workspaceId, input.threadId);
+  const questionTurnIndex = turns.findIndex((entry) => entry.id === turn.id);
+  const intentTurnId = input.store
+    .listThreadItems(input.workspaceId, input.threadId)
+    .find((entry) => entry.id === goal.currentIntentItemId)?.turnId;
+  if (turns.findIndex((entry) => entry.id === intentTurnId) > questionTurnIndex) {
+    throw new GoalPlanApprovalError(
+      'stale',
+      'Goal planning question belongs to a superseded intent.'
+    );
+  }
+  const initialGate = goal.planItemId === null && goal.pendingPlanItemId === null;
+  if (initialGate && goal.status !== 'awaiting_user') {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Initial Goal planning Gate contradicts Goal status.'
+    );
+  }
+  const timestamp = new Date().toISOString();
+  input.store.createItem({
+    id: `it_user_input_response_${turn.id}`,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: turn.id,
+    type: 'user-input-response',
+    status: 'completed',
+    actor: { kind: 'user', id: input.actorId },
+    causationId: input.requestId,
+    userInputRequestId: gate.userInputRequestId,
+    answers: Object.fromEntries(
+      Object.entries(input.answers).map(([id, values]) => [id, [values[0]!] as [string]])
+    ),
+    createdAt: timestamp,
+    completedAt: timestamp,
+  });
+  const closed = input.store.updateTurn(turn.id, {
+    status: 'completed',
+    humanGate: null,
+    completedAt: timestamp,
+  });
+  if (initialGate) {
+    updateGoalStatus(input.workspaceDb, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      goalId: goal.goalId,
+      status: 'planning',
+    });
+  }
+  return closed;
 }
 
 /**
@@ -563,17 +1182,29 @@ export function readPreApprovalGoalPlanRevision(input: {
   readonly goalId: string;
 }): PreApprovalGoalPlanRevision | null {
   const goal = getGoalRecord(input.workspaceDb, input.workspaceId, input.threadId, input.goalId);
-  if (!goal || goal.status !== 'awaiting_plan_approval' || !goal.planItemId) {
+  if (!goal || isTerminalGoalStatus(goal.status)) {
     return null;
   }
   const items = input.store.listThreadItems(input.workspaceId, input.threadId);
-  for (let index = items.length - 1; index >= 0; index -= 1) {
+  const currentIntentIndex = items.findIndex((item) => item.id === goal.currentIntentItemId);
+  const pendingIndex = goal.pendingPlanItemId
+    ? items.findIndex((item) => item.id === goal.pendingPlanItemId)
+    : -1;
+  const predecessorIds = [goal.pendingPlanItemId, goal.planItemId].filter(
+    (id): id is string => id !== null
+  );
+  for (
+    let index = items.length - 1;
+    index > Math.max(pendingIndex, currentIntentIndex);
+    index -= 1
+  ) {
     const item = items[index];
     if (
       !item ||
       item.type !== 'user-message' ||
       item.status !== 'completed' ||
-      item.parentItemId !== goal.planItemId ||
+      !item.parentItemId ||
+      !predecessorIds.includes(item.parentItemId) ||
       typeof item.text !== 'string' ||
       item.text.trim().length === 0
     ) {
@@ -597,10 +1228,34 @@ export function readPreApprovalGoalPlanRevision(input: {
       continue;
     }
     return {
+      revisionItemId: item.id,
       previousPlanItemId: item.parentItemId,
       previousPlan: selectGoalPlanPayload(record),
       revisionText: item.text,
     };
+  }
+  if (goal.planItemId) {
+    const active = getGoalPlanRecord(
+      input.workspaceDb,
+      input.workspaceId,
+      input.threadId,
+      goal.planItemId
+    );
+    const intentItem = items.find((item) => item.id === goal.currentIntentItemId);
+    if (
+      active &&
+      active.sourceIntentItemId !== goal.currentIntentItemId &&
+      intentItem?.type === 'user-message' &&
+      intentItem.status === 'completed' &&
+      typeof intentItem.text === 'string'
+    ) {
+      return {
+        revisionItemId: intentItem.id,
+        previousPlanItemId: active.planItemId,
+        previousPlan: selectGoalPlanPayload(active),
+        revisionText: intentItem.text,
+      };
+    }
   }
   return null;
 }
@@ -671,13 +1326,19 @@ function goalPlanCreationIds(input: Omit<CreateGoalPlanInput, 'goalId' | 'planne
  * @param planner Optional planner effect.
  * @param input Goal and optional recorded revision lineage.
  * @param allowDeterministicFallback Whether an omitted planner may synthesize the initial draft.
+ * @param store Owner of the admitted planning Turn.
+ * @param turn Exact planning Turn.
+ * @param workspaceDb Borrowed Goal planning database.
  * @returns Validated plan output.
  * @throws GoalPlanRevisionError when a revision run has no semantic planner.
  */
 async function runGoalPlanner(
   planner: GoalPlanner | undefined,
   input: GoalPlannerInput,
-  allowDeterministicFallback: boolean
+  allowDeterministicFallback: boolean,
+  store: FsStore,
+  turn: ReturnType<FsStore['createTurn']>,
+  workspaceDb: WorkspaceDb
 ): Promise<GoalPlanOutput> {
   if (!planner) {
     if (!allowDeterministicFallback) {
@@ -694,5 +1355,9 @@ async function runGoalPlanner(
     );
   }
 
-  return GoalPlanOutputSchema.parse(await planner(input));
+  return GoalPlanOutputSchema.parse(
+    await withTurnModelCapture({ store, turn, workspaceDb }, (capture) =>
+      Promise.resolve(planner({ ...input, capture }))
+    )
+  );
 }

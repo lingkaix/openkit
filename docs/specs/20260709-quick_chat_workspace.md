@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 ---
 # Quick Chat Workspace
 
@@ -67,7 +68,7 @@ implementation: Partial
 - Do not let Quick Chat share knowledge implicitly with project workspaces.
 - Do not let a user invite members to, transfer, or otherwise share Quick Chat in V1.
 - Do not create a separate Chat-only product model outside the normal workspace, thread, turn, and item backbone.
-- Do not preserve compatibility for older seeded workspace order in internal development.
+- Do not preserve compatibility for the older seeded workspace order.
 
 ## Background
 

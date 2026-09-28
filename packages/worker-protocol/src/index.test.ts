@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   buildWorkerCanonicalTerminalEventRecord,
@@ -10,6 +11,9 @@ import {
   WorkerControlResponseEnvelopeSchema,
   WorkerErrorEnvelopeSchema,
   WorkerLineageSchema,
+  WorkerObservationContentChunkDataSchema,
+  WorkerObservationDataSchema,
+  WorkerObservationFactSchema,
   WorkerRuntimeNativeOriginIndexEntrySchema,
   WorkerRuntimeProvenanceFeatureSchema,
   WorkerRuntimeRawStreamManifestSchema,
@@ -25,6 +29,323 @@ const lineage = {
   packageSnapshotId: 'aep_demo',
   requestId: 'req_demo',
 };
+
+describe('worker observation events', () => {
+  const observation = {
+    observationId: 'obs_1',
+    sourceRef: 'source_1',
+    sourceSequence: 0,
+    observedAt: '2026-09-22T00:00:00.000Z',
+    fact: {
+      kind: 'assistant',
+      runtimeOriginRef: 'origin_1',
+      phase: 'updated',
+      messageRef: 'message_1',
+      representation: 'delta',
+    },
+    content: {
+      state: 'expected',
+      mediaType: 'text/plain',
+      boundary: 'assistant.text',
+      bytes: Buffer.byteLength(' 雪\n'),
+      sha256: `sha256:${createHash('sha256').update(' 雪\n').digest('hex')}`,
+      chunkCount: 1,
+    },
+  };
+  const chunk = {
+    observationId: 'obs_1',
+    chunkIndex: 0,
+    byteOffset: 0,
+    encoding: 'base64',
+    data: Buffer.from(' 雪\n').toString('base64'),
+  };
+
+  /** Builds a real append envelope without pre-validating its candidate payload. */
+  function event(type: string, data: unknown) {
+    return { schemaVersion: 1, kind: 'event', lineage, sequence: 7, event: { type, data } };
+  }
+
+  it('accepts typed metadata and exact Unicode content chunks under unchanged outer lineage', () => {
+    for (const record of [
+      event('observation.recorded', observation),
+      event('observation.content.chunk', chunk),
+    ]) {
+      expect(WorkerCanonicalEventRecordSchema.parse(record)).toEqual(record);
+      expect(WorkerTranscriptRecordSchema.parse(record)).toEqual(record);
+    }
+  });
+
+  it.each([
+    {
+      kind: 'origin',
+      runtimeOriginRef: 'origin_2',
+      parentRuntimeOriginRef: 'origin_1',
+      phase: 'started',
+    },
+    {
+      kind: 'tool',
+      runtimeOriginRef: null,
+      phase: 'completed',
+      callRef: 'call_1',
+      toolName: 'functions.exec_command',
+      exitCode: 0,
+    },
+    {
+      kind: 'assistant',
+      runtimeOriginRef: null,
+      phase: 'completed',
+      messageRef: 'message_1',
+      representation: 'snapshot',
+    },
+    { kind: 'coverage', runtimeOriginRef: null, family: 'child-content', coverage: 'unsupported' },
+    {
+      kind: 'coverage',
+      runtimeOriginRef: 'origin_1',
+      family: 'primary-content',
+      coverage: 'unavailable',
+      reason: 'partial-frame',
+    },
+  ])('accepts independently reported facts without granting execution authority: $kind', (fact) => {
+    const record = event('observation.recorded', {
+      ...observation,
+      fact,
+      content: { state: 'not-applicable' },
+    });
+    expect(WorkerCanonicalEventRecordSchema.parse(record)).toEqual(record);
+  });
+
+  it.each([
+    { state: 'off' },
+    { state: 'not-applicable' },
+    { state: 'unavailable', reason: 'unsupported' },
+    { state: 'unavailable', reason: 'capture-failed' },
+    { state: 'unavailable', reason: 'truncated' },
+    { state: 'unavailable', reason: 'credential-excluded' },
+    {
+      ...observation.content,
+      bytes: 0,
+      chunkCount: 0,
+      sha256: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    },
+    { ...observation.content, bytes: 16 * 1024 * 1024, chunkCount: 342 },
+  ])('accepts explicit content admission states: $state', (content) => {
+    const record = event('observation.recorded', { ...observation, content });
+    expect(WorkerCanonicalEventRecordSchema.parse(record)).toEqual(record);
+  });
+
+  it.each([
+    { ...observation, body: 'private body' },
+    { ...observation, sourceRef: '/home/runtime/native.jsonl' },
+    { ...observation, observationId: '' },
+    { ...observation, sourceSequence: -1 },
+    { ...observation, sourceSequence: 0.5 },
+    { ...observation, sourceSequence: Number.MAX_SAFE_INTEGER + 1 },
+    { ...observation, observedAt: 'yesterday' },
+    { ...observation, sourceTimestamp: 'yesterday' },
+    { ...observation, fact: { ...observation.fact, nativeThreadId: 'native_1' } },
+    { ...observation, fact: { ...observation.fact, label: 'user label' } },
+    { ...observation, fact: { ...observation.fact, runtimeOriginRef: undefined } },
+    { ...observation, fact: { ...observation.fact, runtimeOriginRef: '/native/thread' } },
+    { ...observation, fact: { ...observation.fact, toolName: 'exec' } },
+    { ...observation, fact: { ...observation.fact, parentRuntimeOriginRef: 'origin_2' } },
+    { ...observation, fact: { ...observation.fact, coverage: 'ended' } },
+    { ...observation, fact: { ...observation.fact, phase: undefined } },
+    { ...observation, fact: { ...observation.fact, messageRef: undefined } },
+    { ...observation, fact: { ...observation.fact, representation: undefined } },
+    {
+      ...observation,
+      fact: {
+        kind: 'origin',
+        runtimeOriginRef: 'origin_1',
+        parentRuntimeOriginRef: 'origin_1',
+        phase: 'started',
+      },
+    },
+    {
+      ...observation,
+      fact: {
+        kind: 'tool',
+        runtimeOriginRef: null,
+        phase: 'started',
+        callRef: 'call_1',
+        exitCode: 0,
+      },
+    },
+    {
+      ...observation,
+      fact: {
+        kind: 'tool',
+        runtimeOriginRef: null,
+        phase: 'started',
+        callRef: 'call_1',
+        toolName: 'exec failed: secret value',
+      },
+    },
+    {
+      ...observation,
+      fact: {
+        kind: 'tool',
+        runtimeOriginRef: null,
+        phase: 'started',
+        callRef: 'call_1',
+        toolName: 'x'.repeat(129),
+      },
+    },
+    {
+      ...observation,
+      fact: {
+        kind: 'coverage',
+        runtimeOriginRef: null,
+        family: 'child-content',
+        coverage: 'collecting',
+        reason: 'collector-failed',
+      },
+      content: { state: 'not-applicable' },
+    },
+    {
+      ...observation,
+      fact: {
+        kind: 'coverage',
+        runtimeOriginRef: null,
+        family: 'child-content',
+        coverage: 'unavailable',
+      },
+      content: { state: 'not-applicable' },
+    },
+    {
+      ...observation,
+      fact: { kind: 'coverage', runtimeOriginRef: null, coverage: 'ended' },
+      content: { state: 'not-applicable' },
+    },
+    { ...observation, fact: { kind: 'origin', runtimeOriginRef: 'origin_1', phase: 'started' } },
+  ])('rejects malformed metadata and incompatible fact fields %#', (data) => {
+    expect(
+      WorkerCanonicalEventRecordSchema.safeParse(event('observation.recorded', data)).success
+    ).toBe(false);
+  });
+
+  it.each([
+    { state: 'off', body: 'private' },
+    { state: 'unavailable', reason: 'arbitrary exception' },
+    { ...observation.content, bytes: -1 },
+    { ...observation.content, bytes: 0.5 },
+    { ...observation.content, bytes: 16 * 1024 * 1024 + 1 },
+    { ...observation.content, bytes: 0, chunkCount: 1 },
+    { ...observation.content, chunkCount: 0 },
+    { ...observation.content, chunkCount: 7 },
+    { ...observation.content, bytes: 48 * 1024 + 1, chunkCount: 1 },
+    { ...observation.content, sha256: 'sha256:ABC' },
+    { ...observation.content, sha256: `sha256:${'A'.repeat(64)}` },
+    { ...observation.content, mediaType: 'text/html' },
+    { ...observation.content, boundary: '/home/native-file' },
+    { ...observation.content, boundary: '' },
+  ])('rejects invalid or impossible content descriptors %#', (content) => {
+    expect(
+      WorkerCanonicalEventRecordSchema.safeParse(
+        event('observation.recorded', { ...observation, content })
+      ).success
+    ).toBe(false);
+  });
+
+  it('rejects fact conflicts independently of content admission', () => {
+    const origin = { kind: 'origin', runtimeOriginRef: 'origin_1', phase: 'started' };
+    expect(WorkerObservationFactSchema.parse(origin)).toEqual(origin);
+    for (const fact of [
+      { ...origin, parentRuntimeOriginRef: 'origin_1' },
+      { ...origin, runtimeOriginRef: null, parentRuntimeOriginRef: 'origin_2' },
+      { ...origin, callRef: 'call_1' },
+      { ...origin, phase: undefined },
+      { kind: 'tool', runtimeOriginRef: null, phase: 'started' },
+      {
+        kind: 'tool',
+        runtimeOriginRef: null,
+        phase: 'completed',
+        callRef: 'call_1',
+        exitCode: 0.5,
+      },
+      {
+        kind: 'coverage',
+        runtimeOriginRef: null,
+        family: 'child-content',
+        coverage: 'ended',
+        phase: 'completed',
+      },
+    ]) {
+      expect(WorkerObservationFactSchema.safeParse(fact).success).toBe(false);
+    }
+  });
+
+  it('keeps transport sequence distinct from source order and never accepts body text as metadata', () => {
+    expect(WorkerObservationDataSchema.parse(observation).sourceSequence).toBe(0);
+    const record = event('observation.recorded', observation);
+    expect(WorkerCanonicalEventRecordSchema.parse(record).sequence).toBe(7);
+    for (const bodyField of ['body', 'arguments', 'result', 'text', 'reasoning', 'path']) {
+      expect(
+        WorkerObservationDataSchema.safeParse({
+          ...observation,
+          fact: { ...observation.fact, [bodyField]: 'excluded' },
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('accepts canonical padding and later chunk coordinates without imposing fixed chunk sizes', () => {
+    for (const bytes of [
+      Buffer.from([255]),
+      Buffer.from([255, 254]),
+      Buffer.from([255, 254, 253]),
+    ]) {
+      const data = { ...chunk, chunkIndex: 1, byteOffset: 5, data: bytes.toString('base64') };
+      expect(WorkerObservationContentChunkDataSchema.parse(data)).toEqual(data);
+      expect(Buffer.from(data.data, 'base64')).toEqual(bytes);
+    }
+    const finalByte = { ...chunk, chunkIndex: 341, byteOffset: 16 * 1024 * 1024 - 1, data: '/w==' };
+    expect(WorkerObservationContentChunkDataSchema.safeParse(finalByte).success).toBe(false);
+    const validFinalByte = { ...finalByte, chunkIndex: 342 };
+    expect(WorkerObservationContentChunkDataSchema.parse(validFinalByte)).toEqual(validFinalByte);
+    expect(
+      WorkerObservationContentChunkDataSchema.safeParse({ ...validFinalByte, data: '//8=' }).success
+    ).toBe(false);
+  });
+
+  it('accepts a maximum-size chunk and source-local timestamp without rewriting bytes', () => {
+    const record = event('observation.content.chunk', {
+      ...chunk,
+      data: Buffer.alloc(48 * 1024, 255).toString('base64'),
+    });
+    expect(WorkerCanonicalEventRecordSchema.parse(record)).toEqual(record);
+    const metadata = event('observation.recorded', {
+      ...observation,
+      sourceTimestamp: '2026-09-22T01:00:00.000+01:00',
+    });
+    expect(WorkerCanonicalEventRecordSchema.parse(metadata)).toEqual(metadata);
+  });
+
+  it.each([
+    { ...chunk, chunkIndex: -1 },
+    { ...chunk, chunkIndex: 0.5 },
+    { ...chunk, byteOffset: -1 },
+    { ...chunk, byteOffset: 0.5 },
+    { ...chunk, byteOffset: Number.MAX_SAFE_INTEGER + 1 },
+    { ...chunk, byteOffset: 16 * 1024 * 1024 },
+    { ...chunk, byteOffset: 1 },
+    { ...chunk, chunkIndex: 1 },
+    { ...chunk, data: '' },
+    { ...chunk, data: 'YQ' },
+    { ...chunk, data: 'YQ==\n' },
+    { ...chunk, data: 'YR==' },
+    { ...chunk, data: 'YWJ=' },
+    { ...chunk, data: '_w==' },
+    { ...chunk, data: '!!!!' },
+    { ...chunk, data: Buffer.alloc(48 * 1024 + 1).toString('base64') },
+    { ...chunk, encoding: 'utf8' },
+    { ...chunk, secret: 'unexpected' },
+  ])('rejects noncanonical or invalid bounded chunks %#', (data) => {
+    expect(
+      WorkerCanonicalEventRecordSchema.safeParse(event('observation.content.chunk', data)).success
+    ).toBe(false);
+  });
+});
 
 describe('worker protocol schemas', () => {
   it('accepts complete worker lineage and rejects missing scope fields', () => {

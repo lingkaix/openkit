@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Implemented
+kind: mechanism
 ---
 # OpenKit Policy Model
 

@@ -42,6 +42,7 @@ import {
   ModelCatalogSchema,
   OpenKitConfigSchema,
   ProviderProfileSchema,
+  parseWorkspaceDataSourceCatalog,
   UserConfigSchema,
   WorkspaceConfigSchema,
   type WorkspaceDataSource,
@@ -56,6 +57,7 @@ import {
   loadRuntimeConfig,
   type RuntimeConfigManager,
 } from './runtime-config.js';
+import { unknownConfigKeyMessage, unknownConfigKeys } from './unknown-config-keys.js';
 
 const CONFIG_ROOT = 'config';
 const VALID_FILE_NAME = /^[A-Za-z0-9._-]+$/;
@@ -335,10 +337,23 @@ export class RuntimeConfigFileService {
       const runtimeDiagnostics = next.diagnostics.map((diagnostic) =>
         runtimeDiagnosticToFileDiagnostic(diagnostic)
       );
+      const diagnostics = [...singleFileDiagnostics];
+      for (const diagnostic of runtimeDiagnostics) {
+        if (
+          !diagnostics.some(
+            (existing) =>
+              existing.fileId === diagnostic.fileId &&
+              existing.severity === diagnostic.severity &&
+              existing.message === diagnostic.message
+          )
+        ) {
+          diagnostics.push(diagnostic);
+        }
+      }
 
       return RuntimeConfigValidationResponseSchema.parse({
         valid: !hasBlockingDiagnostics(runtimeDiagnostics),
-        diagnostics: [...singleFileDiagnostics, ...runtimeDiagnostics],
+        diagnostics,
         runtimeConfig: this.readRuntimeConfigStatus(),
         plan,
       });
@@ -534,6 +549,39 @@ export class RuntimeConfigFileService {
     const result = schema.safeParse(parsed);
 
     if (result.success) {
+      if (spec.kind === 'data-source') {
+        try {
+          parseWorkspaceDataSourceCatalog(parsed);
+        } catch (error) {
+          return [
+            {
+              fileId: spec.relativePath,
+              severity: 'error',
+              code: 'invalid_data-source_config',
+              message: error instanceof Error ? error.message : 'Unsupported data source catalog.',
+              source: spec.relativePath,
+              jsonPath: '$',
+              range: null,
+            },
+          ];
+        }
+      }
+      if (
+        spec.kind === 'server' ||
+        spec.kind === 'user' ||
+        spec.kind === 'workspace' ||
+        spec.kind === 'data-source'
+      ) {
+        return unknownConfigKeys(spec.kind, parsed, result.data).map((key) => ({
+          fileId: spec.relativePath,
+          severity: 'warning',
+          code: 'authored_config.unknown_key',
+          message: unknownConfigKeyMessage(key),
+          source: spec.relativePath,
+          jsonPath: key.path,
+          range: null,
+        }));
+      }
       return [];
     }
 
@@ -1436,6 +1484,11 @@ function runtimeDiagnosticToFileDiagnostic(diagnostic: {
  * @returns Runtime config file id.
  */
 function sourceToFileId(source: string): string {
+  const scoped = /^DATA_ROOT\/(users|workspaces)\/([^/]+)\/config\/([^/]+)$/.exec(source);
+  if (scoped) {
+    return `${scoped[1]}/${scoped[2]}/${scoped[3]}`;
+  }
+
   const marker = 'config/';
   const markerIndex = source.indexOf(marker);
 

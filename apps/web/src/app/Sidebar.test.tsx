@@ -153,6 +153,9 @@ describe('conversation navigation sidebar', () => {
     expect(screen.getByLabelText('Location')).toHaveTextContent('/tasks/ws1/th1');
     await user.click(buttons[2]!);
     expect(screen.getByLabelText('Location')).toHaveTextContent('/chat/ws1/th2');
+    await user.click(buttons[3]!);
+    expect(screen.getByLabelText('Location')).toHaveTextContent('/chat/ws1/th3');
+    expect(buttons[3]).toHaveAttribute('aria-current', 'page');
 
     list.mockRejectedValueOnce(new Error('offline'));
     await act(async () => {
@@ -189,6 +192,52 @@ describe('conversation navigation sidebar', () => {
     await user.click(screen.getByRole('button', { name: 'Account' }));
     expect(screen.getByLabelText('Location')).toHaveTextContent('/settings/account');
     expect(screen.getByRole('button', { name: 'Account' })).toHaveAttribute('aria-current', 'page');
+    queryClient.clear();
+  });
+
+  it.each([
+    ['/chat/ws%2F1/th%3F%23%25', 'goal', true, '/goals/ws%2F1/th%3F%23%25'],
+    ['/tasks/ws%2F1/th%3F%23%25', 'goal', true, '/goals/ws%2F1/th%3F%23%25'],
+    ['/goals/ws%2F1/th%3F%23%25/artifacts/a', 'task', true, '/tasks/ws%2F1/th%3F%23%25'],
+    ['/goals/ws%2F1/th%3F%23%25-extra', 'task', false, '/tasks/ws%2F1/th%3F%23%25'],
+    ['/chat/other/th%3F%23%25', 'goal', false, '/goals/ws%2F1/th%3F%23%25'],
+  ] as const)('matches encoded Thread identity across modes at %s independently of the %s destination', async (path, activity, active, destination) => {
+    const user = userEvent.setup();
+    const client = {
+      core: {
+        listWorkspaces: async () => ({
+          items: [{ id: 'ws/1', name: 'Encoded workspace', kind: 'general' }],
+        }),
+      },
+      app: {
+        listConversationNavigation: async () => ({
+          items: [
+            {
+              thread: { id: 'th?#%', workspaceId: 'ws/1', name: 'Encoded conversation' },
+              activity,
+              state: 'idle',
+            },
+          ],
+        }),
+      },
+    } as unknown as CoreClient;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>
+          <MemoryRouter initialEntries={[path]}>
+            <Sidebar />
+            <Location />
+          </MemoryRouter>
+        </CoreClientProvider>
+      </QueryClientProvider>
+    );
+    const conversation = await screen.findByRole('button', { name: 'Encoded conversation' });
+    if (active) expect(conversation).toHaveAttribute('aria-current', 'page');
+    else expect(conversation).not.toHaveAttribute('aria-current');
+    await user.click(conversation);
+    expect(screen.getByLabelText('Location').textContent).toBe(destination);
+    expect(conversation).toHaveAttribute('aria-current', 'page');
     queryClient.clear();
   });
 

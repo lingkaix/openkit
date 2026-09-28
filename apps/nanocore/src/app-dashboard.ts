@@ -36,6 +36,7 @@ import { registerAppApiRoute } from './openapi.js';
 import { listGoalRecordsForThread } from './runtime/goal-store.js';
 import { hasExactActiveHumanGate } from './runtime/worker-recovery.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { readThreadRuntimeActivity } from './storage/work-observations.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
@@ -79,13 +80,19 @@ function sortTurns(turns: readonly Turn[]): Turn[] {
 }
 
 /**
- * Sorts artifacts by their update timestamp descending.
+ * Selects the newest Artifact without changing the input order or objects.
  *
- * @param artifacts Artifacts to sort.
- * @returns Artifacts in newest-first order.
+ * @param artifacts Artifacts in the caller's existing order.
+ * @returns The original newest Artifact, retaining the first timestamp tie, or null when empty.
  */
-function sortArtifactsNewestFirst(artifacts: readonly Artifact[]): Artifact[] {
-  return [...artifacts].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+function selectNewestArtifact(artifacts: readonly Artifact[]): Artifact | null {
+  let newest: Artifact | null = null;
+  for (const artifact of artifacts) {
+    if (newest === null || artifact.updatedAt.localeCompare(newest.updatedAt) > 0) {
+      newest = artifact;
+    }
+  }
+  return newest;
 }
 
 /**
@@ -314,7 +321,7 @@ function buildThreadWorkStatus(input: {
 }): ThreadWorkStatus {
   const turns = sortTurns(input.turns);
   const activeTurn = [...turns].reverse().find((turn) => !isSealedTurnTerminal(turn.status));
-  const latestArtifact = sortArtifactsNewestFirst(input.artifacts)[0] ?? null;
+  const latestArtifact = selectNewestArtifact(input.artifacts);
   const pendingApprovals = pendingApprovalItems(
     input.store,
     input.items,
@@ -371,7 +378,7 @@ function buildWorkspaceWorkSections(
     const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
     const items = store.listThreadItems(workspaceId, thread.id);
     const threadArtifacts = artifacts.filter((artifact) => artifact.threadId === thread.id);
-    const newestArtifact = sortArtifactsNewestFirst(threadArtifacts)[0] ?? null;
+    const newestArtifact = selectNewestArtifact(threadArtifacts);
     const activeTurn = [...turns].reverse().find((turn) => isActiveWorkStatus(turn.status));
 
     if (activeTurn) {
@@ -390,7 +397,7 @@ function buildWorkspaceWorkSections(
       // Product projection that differs from sealed terminals: recent completions include completed only.
       if (turn.status === 'completed' && turn.completedAt) {
         const turnArtifacts = threadArtifacts.filter((artifact) => artifact.turnId === turn.id);
-        const latestTurnArtifact = sortArtifactsNewestFirst(turnArtifacts)[0] ?? newestArtifact;
+        const latestTurnArtifact = selectNewestArtifact(turnArtifacts) ?? newestArtifact;
 
         recentCompletions.push({
           threadId: thread.id,
@@ -744,18 +751,34 @@ export function registerDashboardRoutes({
       );
       const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
       let taskInputs: ThreadDashboardResponse['taskInputs'] = [];
+      let runtimeActivity: ThreadDashboardResponse['runtimeActivity'];
       if (coreDb) {
         let workspaceDb: WorkspaceDb | undefined;
         try {
           workspaceDb = repositoryWorkspaceDb(workspaceId);
-          taskInputs = projectThreadTaskInputs({
-            coreDb,
-            store,
+          try {
+            taskInputs = projectThreadTaskInputs({ coreDb, store, threadId, workspaceDb });
+          } catch {
+            taskInputs = [];
+          }
+          // Audience and Workspace lineage were checked before opening any activity or body reader.
+          runtimeActivity = readThreadRuntimeActivity(workspaceDb, {
             threadId,
-            workspaceDb,
-          });
-        } catch {
-          taskInputs = [];
+            turnIds: turns.map((turn) => turn.id),
+          }).map((activity) => ({
+            turnId: activity.turnId,
+            contentCapture: activity.contentCapture,
+            coverage: activity.coverage,
+            entries: activity.entries.map((entry) => ({
+              sequence: entry.sequence,
+              observedAt: entry.observedAt,
+              kind: entry.kind,
+              label: entry.label,
+              text: entry.text,
+              textTruncated: entry.textTruncated,
+            })),
+            omittedEntryCount: activity.omittedEntryCount,
+          }));
         } finally {
           workspaceDb?.sqlite.close();
         }
@@ -786,6 +809,7 @@ export function registerDashboardRoutes({
             href: `/api/app/workspaces/${workspaceId}/threads/${threadId}/items`,
           },
           taskInputs,
+          runtimeActivity,
         })
       );
     } catch (error) {

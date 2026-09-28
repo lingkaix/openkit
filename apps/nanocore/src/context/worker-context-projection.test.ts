@@ -18,6 +18,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
   readWorkerContextPackageTrace,
@@ -286,9 +287,17 @@ describe('worker Context Package read projection', () => {
         const goalId = `goal_pending_effect_${suffix}`;
         const requestId = `request_pending_effect_${suffix}`;
         const effectTurnId = `tu_partial_follow_up_${suffix}`;
+        const initialIntentItemId = createInitialGoalIntentItem({
+          store,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          objective: 'Keep the pending delivery authoritative.',
+          userId: 'user_local',
+        });
         createGoalRecord(workspaceDb, {
           workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
           goalId,
+          createdByItemId: initialIntentItemId,
           workspaceId: 'ws_demo',
           threadId: thread.id,
           title: 'Reject partial follow-up effects',

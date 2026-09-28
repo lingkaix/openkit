@@ -4,13 +4,19 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ensureLocalUser } from './auth/identity.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { createDeterministicGoalPlanFallback } from './runtime/goal-plan.js';
+import {
+  GOAL_ORCHESTRATOR_ROLE_ID,
+  GOAL_PLAN_PROPOSE_TOOL_NAME,
+} from './runtime/goal-plan-propose-tool.js';
 import { createGoalPlanRecord, createGoalRecord, updateGoalStatus } from './runtime/goal-store.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 function createCoreDb(): CoreDb {
@@ -24,6 +30,104 @@ function createCoreDb(): CoreDb {
     workspaceId: 'ws_demo',
   });
   return coreDb;
+}
+
+/** Creates an app whose admitted Goal Orchestrator proposes one model-backed Plan. */
+function createGoalPlannerApp(
+  coreDb: CoreDb,
+  store: ReturnType<typeof createDemoStore>,
+  failSubsequentPlan = false
+) {
+  const providerProfile = {
+    baseUrl: 'https://provider.invalid/v1',
+    displayName: 'Goal Plan test provider',
+    id: 'goal-plan-provider',
+    kind: 'custom' as const,
+    modelMetadata: {
+      model: {
+        family: 'test',
+        limit: { context: 200_000, output: 8_000 },
+        modalities: { input: ['text'], output: ['text'] },
+        tool_call: true,
+      },
+    },
+    models: ['model'],
+  };
+  const plan = createDeterministicGoalPlanFallback({
+    goalTitle: 'Test Goal Plan',
+    objective: 'Make one bounded task for the requested Goal.',
+  });
+  let responseCount = 0;
+  return createApp({
+    coreDb,
+    store,
+    gatewayConfig: {
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: 'reasoning',
+      requiredFeatures: [],
+      logicalModels: [
+        {
+          id: 'reasoning',
+          displayName: 'Reasoning',
+          contextManagement: [{ type: 'compaction', compactThreshold: 50_000 }],
+          routes: [
+            { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
+          ],
+        },
+      ],
+    },
+    internalRoleProfiles: {
+      schemaVersion: 1,
+      defaultLogicalModelId: 'reasoning',
+      profiles: [
+        {
+          id: 'goal-orchestrator-test',
+          roleId: GOAL_ORCHESTRATOR_ROLE_ID,
+          preferredLogicalModelId: 'reasoning',
+          compatibleLogicalModelIds: [],
+          requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
+        },
+      ],
+    },
+    providerRegistry: new ProviderRegistry([providerProfile]),
+    providerCredentialResolver: () => 'unused',
+    llmGatewayDispatcher: {
+      createResponses: vi.fn(async () => {
+        responseCount += 1;
+        if (failSubsequentPlan && responseCount > 2) {
+          throw new Error('Simulated Goal Plan revision provider failure.');
+        }
+        return responseCount % 2 === 1
+          ? {
+              id: `response_proposal_${responseCount}`,
+              object: 'response' as const,
+              status: 'completed' as const,
+              output: [
+                {
+                  type: 'function_call' as const,
+                  call_id: `call_proposal_${responseCount}`,
+                  name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+                  arguments: JSON.stringify(plan),
+                },
+              ],
+            }
+          : {
+              id: `response_completion_${responseCount}`,
+              object: 'response' as const,
+              status: 'completed' as const,
+              output: [
+                {
+                  type: 'message' as const,
+                  role: 'assistant' as const,
+                  status: 'completed' as const,
+                  content: [{ type: 'output_text' as const, text: 'Plan proposed.' }],
+                },
+              ],
+            };
+      }),
+    },
+  });
 }
 
 describe('GET current Goal plan', () => {
@@ -40,7 +144,7 @@ describe('GET current Goal plan', () => {
       'conversation',
       { visibility: 'workspace' }
     );
-    const app = createApp({ coreDb, store });
+    const app = createGoalPlannerApp(coreDb, store);
     const recordCommand = vi.spyOn(store, 'recordCommandRequest');
 
     try {
@@ -61,8 +165,12 @@ describe('GET current Goal plan', () => {
       expect(planningRead.status).toBe(200);
       await expect(planningRead.json()).resolves.toMatchObject({
         goal: { status: 'planning' },
-        planItemId: null,
-        plan: null,
+        activePlanItemId: null,
+        activePlan: null,
+        pendingPlanItemId: null,
+        pendingPlan: null,
+        canRunStep: false,
+        planningAction: 'create',
       });
 
       const planRes = await app.request(
@@ -73,7 +181,7 @@ describe('GET current Goal plan', () => {
           body: JSON.stringify({ requestId: 'goal-plan-read-create' }),
         }
       );
-      expect(planRes.status).toBe(200);
+      expect(planRes.status, await planRes.clone().text()).toBe(200);
       const created = (await planRes.json()) as {
         goal: { goalId: string; status: string };
         planItemId: string;
@@ -91,8 +199,10 @@ describe('GET current Goal plan', () => {
       expect(currentRes.status).toBe(200);
       const current = (await currentRes.json()) as {
         goal: { goalId: string; status: string };
-        planItemId: string;
-        plan: { tasks: readonly [{ taskId: string }]; schemaVersion: number };
+        activePlanItemId: string | null;
+        activePlan: unknown;
+        pendingPlanItemId: string;
+        pendingPlan: { tasks: readonly [{ taskId: string }]; schemaVersion: number };
         planner?: unknown;
         status?: unknown;
       };
@@ -100,8 +210,12 @@ describe('GET current Goal plan', () => {
       expect(current).not.toHaveProperty('status');
       expect(current).toMatchObject({
         goal: { goalId: created.goal.goalId, status: 'awaiting_plan_approval' },
-        planItemId: created.planItemId,
-        plan: created.plan,
+        activePlanItemId: null,
+        activePlan: null,
+        pendingPlanItemId: created.planItemId,
+        pendingPlan: created.plan,
+        canRunStep: false,
+        planningAction: 'await_approval',
       });
       expect(recordCommand.mock.calls).toHaveLength(writeCount);
       expect(store.listThreadItems('ws_demo', thread.id)).toHaveLength(itemCount);
@@ -110,8 +224,16 @@ describe('GET current Goal plan', () => {
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
       applyScopedMigrations(workspaceDb);
       try {
+        const olderIntentItemId = createInitialGoalIntentItem({
+          store,
+          workspaceId: 'ws_demo',
+          threadId: otherThread.id,
+          objective: 'Keep this historical Plan off the current read.',
+          userId: 'user_local',
+        });
         const older = createGoalRecord(workspaceDb, {
           goalId: 'goal_older_plan',
+          createdByItemId: olderIntentItemId,
           objective: 'Keep this historical Plan off the current read.',
           status: 'awaiting_plan_approval',
           threadId: otherThread.id,
@@ -123,6 +245,9 @@ describe('GET current Goal plan', () => {
         createGoalPlanRecord(workspaceDb, {
           createdByRequestId: 'goal-plan-older',
           goalId: older.goalId,
+          predecessorPlanItemId: null,
+          sourceIntentItemId: olderIntentItemId,
+          sourceTaskEvidenceDigest: null,
           plan: createDeterministicGoalPlanFallback({
             goalTitle: older.title,
             objective: older.objective,
@@ -133,14 +258,22 @@ describe('GET current Goal plan', () => {
         });
         updateGoalStatus(workspaceDb, {
           goalId: older.goalId,
-          planItemId: 'it_plan_older',
+          pendingPlanItemId: 'it_plan_older',
           status: 'awaiting_plan_approval',
           threadId: otherThread.id,
           workspaceId: 'ws_demo',
           now: () => '2026-01-01T00:00:00.000Z',
         });
+        const newerIntentItemId = createInitialGoalIntentItem({
+          store,
+          workspaceId: 'ws_demo',
+          threadId: otherThread.id,
+          objective: 'Current Goal has no Plan pointer.',
+          userId: 'user_local',
+        });
         createGoalRecord(workspaceDb, {
           goalId: 'goal_newer_planning',
+          createdByItemId: newerIntentItemId,
           objective: 'Current Goal has no Plan pointer.',
           status: 'planning',
           threadId: otherThread.id,
@@ -156,8 +289,12 @@ describe('GET current Goal plan', () => {
         expect(latestRes.status).toBe(200);
         await expect(latestRes.json()).resolves.toMatchObject({
           goal: { goalId: 'goal_newer_planning', status: 'planning' },
-          planItemId: null,
-          plan: null,
+          activePlanItemId: null,
+          activePlan: null,
+          pendingPlanItemId: null,
+          pendingPlan: null,
+          canRunStep: false,
+          planningAction: 'create',
         });
 
         workspaceDb.sqlite
@@ -220,8 +357,17 @@ describe('GET current Goal plan', () => {
       expect(emptyRes.status).toBe(200);
       await expect(emptyRes.json()).resolves.toEqual({
         goal: null,
-        planItemId: null,
-        plan: null,
+        activePlanItemId: null,
+        activePlan: null,
+        pendingPlanItemId: null,
+        pendingPlan: null,
+        pendingPlanItemSummary: null,
+        selectableAffectedTasks: [],
+        canRunStep: false,
+        canApprovePendingPlan: false,
+        planningAction: 'none',
+        draftRevision: null,
+        continuePlanning: null,
       });
     } finally {
       coreDb.sqlite.close();
@@ -245,8 +391,16 @@ describe('GET current Goal plan', () => {
     applyScopedMigrations(workspaceDb);
 
     try {
+      const activeIntentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        objective: 'Remain the current active Goal.',
+        userId: 'user_local',
+      });
       const active = createGoalRecord(workspaceDb, {
         goalId: 'goal_active_current',
+        createdByItemId: activeIntentItemId,
         objective: 'Remain the current active Goal.',
         status: 'planning',
         threadId: thread.id,
@@ -255,8 +409,16 @@ describe('GET current Goal plan', () => {
         workspaceId: 'ws_demo',
         now: () => '2026-01-01T00:00:00.000Z',
       });
+      const terminalIntentItemId = createInitialGoalIntentItem({
+        store,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        objective: 'Completed Goal updated later must not win.',
+        userId: 'user_local',
+      });
       const terminal = createGoalRecord(workspaceDb, {
         goalId: 'goal_old_terminal',
+        createdByItemId: terminalIntentItemId,
         objective: 'Completed Goal updated later must not win.',
         status: 'completed',
         threadId: thread.id,
@@ -268,6 +430,9 @@ describe('GET current Goal plan', () => {
       createGoalPlanRecord(workspaceDb, {
         createdByRequestId: 'goal-plan-terminal',
         goalId: terminal.goalId,
+        predecessorPlanItemId: null,
+        sourceIntentItemId: terminalIntentItemId,
+        sourceTaskEvidenceDigest: null,
         plan: createDeterministicGoalPlanFallback({
           goalTitle: terminal.title,
           objective: terminal.objective,
@@ -290,14 +455,18 @@ describe('GET current Goal plan', () => {
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`
       );
       expect(summaryRes.status).toBe(200);
-      expect(planRes.status).toBe(200);
+      expect(planRes.status, await planRes.clone().text()).toBe(200);
       await expect(summaryRes.json()).resolves.toMatchObject({
         goal: { goalId: active.goalId, status: 'planning' },
       });
       await expect(planRes.json()).resolves.toMatchObject({
         goal: { goalId: active.goalId, status: 'planning' },
-        planItemId: null,
-        plan: null,
+        activePlanItemId: null,
+        activePlan: null,
+        pendingPlanItemId: null,
+        pendingPlan: null,
+        canRunStep: false,
+        planningAction: 'create',
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -333,7 +502,7 @@ describe('GET current Goal plan', () => {
         visibility: 'workspace',
       }
     );
-    const app = createApp({ coreDb, store });
+    const app = createGoalPlannerApp(coreDb, store);
 
     try {
       const startRes = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/goal`, {
@@ -354,7 +523,7 @@ describe('GET current Goal plan', () => {
           body: JSON.stringify({ requestId: 'goal-plan-malformed-create' }),
         }
       );
-      expect(planRes.status).toBe(200);
+      expect(planRes.status, await planRes.clone().text()).toBe(200);
       const created = (await planRes.json()) as { planItemId: string };
 
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
@@ -426,7 +595,7 @@ describe('GET current Goal plan', () => {
         visibility: 'workspace',
       }
     );
-    const app = createApp({ coreDb, store });
+    const app = createGoalPlannerApp(coreDb, store, true);
 
     try {
       const startRes = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/goal`, {
@@ -448,7 +617,7 @@ describe('GET current Goal plan', () => {
           body: JSON.stringify({ requestId: 'goal-plan-revise-route-create' }),
         }
       );
-      expect(createRes.status).toBe(200);
+      expect(createRes.status, await createRes.clone().text()).toBe(200);
       const created = (await createRes.json()) as {
         planItemId: string;
         plan: { tasks: readonly unknown[] };
@@ -487,8 +656,12 @@ describe('GET current Goal plan', () => {
       expect(currentRes.status).toBe(200);
       await expect(currentRes.json()).resolves.toMatchObject({
         goal: { status: 'awaiting_plan_approval' },
-        planItemId: created.planItemId,
-        plan: { tasks: created.plan.tasks },
+        activePlanItemId: null,
+        activePlan: null,
+        pendingPlanItemId: created.planItemId,
+        pendingPlan: { tasks: created.plan.tasks },
+        canRunStep: false,
+        planningAction: 'retry',
       });
     } finally {
       coreDb.sqlite.close();

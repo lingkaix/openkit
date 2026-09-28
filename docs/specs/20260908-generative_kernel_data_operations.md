@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 date: 2026-09-08
 updated: 2026-09-09
 ---
@@ -147,7 +148,7 @@ The first probes are independent: a headless cross-system ID mapping with create
 
 ## Current Implementation Projection
 
-As of 2026-09-09, NanoCore implements the initial Kernel contract in `apps/nanocore/src/generative-kernel/`: per-app SQLite under `workspaces/<workspaceId>/light-apps/<appId>/`, file-authored admitted definitions, native DDL, bounded list/create/update/batch commands, app-local receipts, and Workspace catalog projection. Built-in Worker tools live on `openkit-generative`; App API and Skill/CLI expose the ten `kernel.*` operations. Live selected-Worker journey, crash/restart, and browser proofs remain deferred under the MVP engineer exception. Equal active-member eligibility is unmet for editor/viewer role ceilings and is recorded rather than claimed. The existing Material slice in [Work Resource Interaction](20260713-work_resource_interaction_model.md) remains Markdown/plain text only and is not a general module store.
+As of 2026-09-09, NanoCore implements the initial Kernel contract in `apps/nanocore/src/generative-kernel/`: per-app SQLite under `workspaces/<workspaceId>/light-apps/<appId>/`, file-authored admitted definitions, native DDL, bounded list/create/update/batch commands, app-local receipts, and Workspace catalog projection. Built-in Worker tools live on `openkit-generative`; App API and Skill/CLI expose the ten `kernel.*` operations. Live selected-Worker journey, crash/restart, and browser proofs remain deferred under the MVP exception recorded in [The Generative Apps MVP Defers Live, Browser, And Restart Proofs](../decisions/20260909-generative_mvp_deferred_proofs.md). Equal active-member eligibility is unmet for editor/viewer role ceilings and is recorded rather than claimed. The existing Material slice in [Work Resource Interaction](20260713-work_resource_interaction_model.md) remains Markdown/plain text only and is not a general module store.
 
 ## Acceptance Predicates
 

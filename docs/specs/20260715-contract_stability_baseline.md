@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: process
 date: 2026-07-15
 ---
 # Contract Stability Baseline
@@ -58,7 +59,7 @@ Business World Model and Meta-Skill theory must not shape or delay the OpenKit k
 ## Non-Goals
 
 - Do not declare a general public API support window.
-- Do not keep old routes, fields, aliases, payloads, config shapes, or internal data readers for compatibility.
+- Do not keep old routes, fields, aliases, or payloads of release-coupled surfaces for compatibility. Retained data and authored configuration stay usable through additive evolution or one-way migration, not permanent legacy readers.
 - Do not add tenant, organization, or legal-isolation placeholders.
 - Do not design independently deployed clients or SDKs.
 - Do not define Federation or P2P contracts.
@@ -67,7 +68,7 @@ Business World Model and Meta-Skill theory must not shape or delay the OpenKit k
 
 ## Background
 
-The previous root-level freeze report mixed three different concerns: contract lifetime, implementation readiness, and a list of speculative Business World Model and tenancy obligations. It also treated a user-facing API as if it needed deprecation windows and proposed compatibility windows that conflict with the repository's internal-development posture.
+The previous root-level freeze report mixed three different concerns: contract lifetime, implementation readiness, and a list of speculative Business World Model and tenancy obligations. It also treated a user-facing API as if it needed deprecation windows and proposed compatibility windows that conflict with the release-coupled posture of first-party surfaces.
 
 The accepted contract-evolution model now separates stability class from stabilization mechanism. This specification applies that model to the current OpenKit product direction.
 
@@ -110,14 +111,15 @@ The following families are `Durable` once their readiness gates pass.
 | Stable identity and lineage | Opaque IDs, workspace/thread/turn/item lineage, request IDs, causation, actor attribution, responsible-user context, and content digests where records depend on them. | Shared schemas, uniqueness and lineage constraints, idempotency tests, attribution tests, and migration mapping for changed identities or digests. |
 | Persisted product truth | Workspace records, history, knowledge, artifacts, approvals, policy decisions, audit, usage, evidence, vault reference metadata, and other authoritative record families. | Source-of-truth declaration, schema version, strict writes, bounded tolerant reads, one-way migration, migration report, and recovery tests. |
 | Storage ownership | Server, user, and workspace ownership boundaries; workspace independence from a current human owner; layout version; and database homing rules. | Layout marker, path and symlink guards, migration preflight, one-way migration, recovery report, backup verification, and ownership tests. |
-| Workspace portability | Workspace export, import, backup, restore, and data-root migration semantics, including inventory, integrity, rebinding, and identity handling. | Format version, exact manifest inventory, required features, round-trip fixtures, tamper tests, migration matrix, and recovery behavior. |
+| Workspace export | Export of admitted work data for use outside OpenKit, such as analysis, evaluation, and audit, including inventory, integrity, identity handling, and the authority boundary of what leaves OpenKit. Lossless re-import into an OpenKit Workspace is not an export requirement; existing import behavior, including its rebinding rules, and its regression tests remain the historical implementation baseline, and Goal-related export structures stay frozen with Goal Mode ([decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md)). | Format version, exact manifest inventory, required features, tamper tests, and export-boundary fixtures. |
+| Backup, restore, and data-root migration | Workspace and whole-server backup and restore, and data-root migration, as a mechanism separate from export whose detailed design is deferred ([decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md)), including consistency, integrity, identity, and recovery of retained data. | Round-trip restore fixtures, migration matrix, backup verification, and recovery behavior, defined in detail by that later design. |
 | Identity and membership | User identity, workspace owner, membership, invitation, token intersection, actor context, disable/remove/transfer semantics, and credential separation. | Strict schemas, database constraints, per-request access resolution, lifecycle transition tests, and durable actor attribution. |
 | Permission and approval | NGAC-aligned policy vocabulary, product-action mapping, decision semantics, enforcement points, approval linkage, and fail-closed behavior. | Policy fixtures, deterministic decision tests, explicit operation mapping, atomic terminal transitions, required features for new authority, and audit linkage. |
 | Vault and secret boundaries | Secret references, grants, non-secret metadata, injection authority, redaction, and the rule that raw secret material stays outside ordinary product records. | Strict schemas, backend isolation, fail-closed binding, secret scanning, redaction tests, and audited use records. |
 | Audit and accountability | Auditable event categories, actor or subject attribution, resource and decision linkage, outcome, redaction, and required producer coverage. | Versioned schema, actor-safe fields, producer coverage matrix, retention rules, export behavior, and completeness diagnostics. |
 | Shared-write correctness | Append ordering, immutable history, expected-revision behavior for mutable shared records, atomic first-writer transitions, conflict-safe workspace apply, and the central command-idempotency default. | Single-writer or atomic append, revision compare-and-swap, transaction tests, typed conflicts, and receipt-backed replay; request-owned effects without a receipt default to `recovery_required` without inference, synthesis, settlement, or repair. |
 
-Durable classification does not freeze one TypeScript type, route, table, or directory forever. It freezes the contract's meaning and requires an explicit transition when the representation changes.
+Durable classification does not freeze one TypeScript type, route, table, or directory forever. It freezes the contract's meaning and requires an explicit transition when the representation changes. Retained data carries its continuity obligation under Retained Data Continuity in `docs/core/contract-evolution.md` before its family's readiness gate passes; the gate governs contract precision, not whether retained data may be abandoned.
 
 ## Release-Coupled Baseline
 
@@ -176,7 +178,8 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 | Core semantics | Strong promoted documentation with owner-independent Workspace storage, centralized request authorization, lifecycle, attribution, and current-effect authority. Equal active-member eligibility is the promoted target; fixed-role fields and ceilings are release-coupled pre-cutover implementation. | Retain these promoted boundaries while the remaining independently owned contract families finish. |
 | Promoted protocol families | Strict schemas, generated schema coverage, protocol identity, and many conformance tests exist. | Retain strict current-schema gates and classify each newly promoted family explicitly. |
 | Persisted data and storage ownership | Canonical Workspace data is top-level and owner-independent, with one verified stopped-process migration, external cold-backup evidence, and no compatibility reader. | Retain the v2 layout, migration report, and fail-closed boot admission. |
-| Workspace portability | V2 export/import excludes source access authority, creates the importer as sole target owner/member, preserves non-authorizing history, and full backup preserves same-deployment users and relationships. | Ready for the current multi-user baseline; later portability owners must preserve these authority boundaries. |
+| Workspace export | V2 export excludes source access authority and preserves non-authorizing history; the existing import creates the importer as sole target owner/member. | Ready for the current multi-user baseline; later export owners must preserve these authority boundaries, and export is not extended into backup. |
+| Backup, restore, and data-root migration | The existing full backup preserves same-deployment users and relationships, and data-root migration has one verified stopped-process path. | Retain the existing backup verification and authority boundaries; Workspace and whole-server backup and restore await their separate design. |
 | Identity and membership | Better Auth, scoped tokens, fixed owner/editor/viewer projection, centralized authorization, invitation and membership lifecycle, ownership transfer/recovery, and one-way disable are implemented. | The existing role-based release is implemented; the equal-member target requires coherent schema/API/policy/test cutover. Re-enable, hard deletion, organizations, and another token system remain outside V1. |
 | Permission and approval | The NGAC-aligned kernel, exact operation mapping, centralized resolver, child lineage, current-effect reauthorization, and named eligible-principal projections are active. | Ready for the current multi-user baseline without a second permission engine; unrelated operation families retain their own plans. |
 | Audit and accountability | Shared lifecycle, human Item, Turn, policy Approval, governed runtime, usage, and decision families preserve their specified actor, responsible-user, request, subject, and revision lineage. | Ready for the bounded current producer set; this does not claim every S59 producer outside that set is complete. |

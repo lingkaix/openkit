@@ -14,7 +14,13 @@ import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
+import { createDeterministicGoalPlanFallback } from './runtime/goal-plan.js';
+import {
+  createGoalPlanRecord,
+  createGoalRecord,
+  createGoalTask,
+  updateGoalStatus,
+} from './runtime/goal-store.js';
 import { inspectNanoHostAgentSessionContinuity } from './runtime/nanohost-harness-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
@@ -40,6 +46,7 @@ import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -135,7 +142,7 @@ describe('NanoCore deployment mode matrix', () => {
     });
 
     try {
-      seedRepositoryAndGoal(coreDb, thread.id, repositoryPath);
+      seedRepositoryAndGoal(coreDb, store, thread.id, repositoryPath);
       seedThreadContext(store, thread.id);
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
@@ -272,10 +279,23 @@ function createCoreDb(): CoreDb {
  * Seeds a repository resource and one ready Goal Mode task.
  *
  * @param coreDb Core database to mutate.
+ * @param store Product store that owns the initial objective Item.
  * @param threadId Thread that owns the goal.
  * @param repositoryPath Host-local temporary repository path.
  */
-function seedRepositoryAndGoal(coreDb: CoreDb, threadId: string, repositoryPath: string): void {
+function seedRepositoryAndGoal(
+  coreDb: CoreDb,
+  store: FsStore,
+  threadId: string,
+  repositoryPath: string
+): void {
+  const initialIntentItemId = createInitialGoalIntentItem({
+    store,
+    workspaceId: 'ws_demo',
+    threadId,
+    objective: 'Run one loop step through NanoHost.',
+    userId: LOCAL_USER_ID,
+  });
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   try {
     applyScopedMigrations(workspaceDb);
@@ -289,6 +309,7 @@ function seedRepositoryAndGoal(coreDb: CoreDb, threadId: string, repositoryPath:
     createGoalRecord(workspaceDb, {
       workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
       goalId: 'goal_loop_nanohost',
+      createdByItemId: initialIntentItemId,
       workspaceId: 'ws_demo',
       threadId,
       title: 'Loop NanoHost',
@@ -296,7 +317,7 @@ function seedRepositoryAndGoal(coreDb: CoreDb, threadId: string, repositoryPath:
       status: 'running',
       now: () => '2026-06-28T00:00:00.000Z',
     });
-    createGoalTask(workspaceDb, {
+    const task = createGoalTask(workspaceDb, {
       workspaceId: 'ws_demo',
       threadId,
       goalId: 'goal_loop_nanohost',
@@ -318,6 +339,39 @@ function seedRepositoryAndGoal(coreDb: CoreDb, threadId: string, repositoryPath:
       },
       escalationConditions: [],
       status: 'ready',
+      now: () => '2026-06-28T00:00:00.000Z',
+    });
+    const plan = createDeterministicGoalPlanFallback({
+      goalTitle: 'Loop NanoHost',
+      objective: 'Run one loop step through NanoHost.',
+    });
+    createGoalPlanRecord(workspaceDb, {
+      workspaceId: 'ws_demo',
+      threadId,
+      goalId: 'goal_loop_nanohost',
+      planItemId: 'it_goal_plan_nanohost',
+      predecessorPlanItemId: null,
+      sourceIntentItemId: initialIntentItemId,
+      sourceTaskEvidenceDigest: null,
+      plan: {
+        ...plan,
+        tasks: [
+          {
+            taskId: task.taskId,
+            title: task.title,
+            objective: task.objective,
+            acceptanceCriteria: task.acceptanceCriteria,
+            contextBudgetTokens: task.contextBudgetTokens,
+            resources: task.resources,
+            expectedArtifacts: task.expectedArtifacts,
+            verificationChecks: task.verificationChecks,
+            reviewPolicy: task.reviewPolicy,
+            dependsOnTaskIds: task.dependsOnTaskIds,
+            escalationConditions: task.escalationConditions,
+          },
+        ],
+      },
+      createdByRequestId: 'goal-loop-matrix-plan',
       now: () => '2026-06-28T00:00:00.000Z',
     });
     updateGoalStatus(workspaceDb, {

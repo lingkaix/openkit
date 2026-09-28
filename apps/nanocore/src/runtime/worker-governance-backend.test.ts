@@ -150,6 +150,7 @@ describe('NanoHost worker governance helpers', () => {
       });
       const environmentPackage = AgentEnvironmentPackageSchema.parse(
         resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
           agentSessionId: 'as_nanohost_1',
           backend: { kind: 'openshell' },
@@ -192,6 +193,7 @@ function createNanoHostPackage(): AgentEnvironmentPackage {
 
   return AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup({
         imageRef: 'ghcr.io/openkit/codex-worker:test',
       }),

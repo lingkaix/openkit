@@ -39,6 +39,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Thread records preserve the immutable server-authored conversation or administration entry path.',
   },
+  'openkit.work-observations.v1': {
+    id: 'openkit.work-observations.v1',
+    status: 'active',
+    description:
+      'Turn-scoped work observations, restricted content publication and exact portable reference closure.',
+  },
   'workspace.mount.fuse': {
     id: 'workspace.mount.fuse',
     status: 'active',
@@ -182,6 +188,19 @@ export function listRequiredFeatureDefinitions(): RequiredFeatureDefinition[] {
 export function isRegisteredRequiredFeature(feature: string): feature is RequiredFeatureId {
   return Object.hasOwn(REQUIRED_FEATURE_REGISTRY, feature);
 }
+
+/** Declared requirements for authored Server, User, and Workspace config readers, which support no required features yet. */
+export const AuthoredConfigRequiredFeaturesSchema = z
+  .array(z.string().min(1))
+  .superRefine((features, ctx) => {
+    for (const [index, feature] of features.entries()) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `${isRegisteredRequiredFeature(feature) ? 'Unsupported' : 'Unregistered'} required feature: ${feature}`,
+        path: [index],
+      });
+    }
+  });
 
 /**
  * Verifies that writers only emit registered required features.

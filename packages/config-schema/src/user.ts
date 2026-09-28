@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Personal preference for one internal Core role in one Workspace. */
 export const UserInternalRolePreferenceSchema = z
@@ -7,7 +8,7 @@ export const UserInternalRolePreferenceSchema = z
     profileId: z.string().min(1).optional(),
     logicalModelId: z.string().min(1).optional(),
   })
-  .strict();
+  .strip();
 
 /** Personal preferences applied only while the User is in one Workspace. */
 export const UserWorkspacePreferenceSchema = z
@@ -18,16 +19,17 @@ export const UserWorkspacePreferenceSchema = z
     logicalModelId: z.string().min(1).optional(),
     internalRoles: z.array(UserInternalRolePreferenceSchema).default([]),
   })
-  .strict();
+  .strip();
 
-/** Strict User-scoped preference configuration. */
+/** User-scoped preference configuration with optional unknown fields stripped. */
 export const UserConfigSchema = z
   .object({
     schemaVersion: z.literal(1),
+    requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
     workspaces: z.array(UserWorkspacePreferenceSchema).default([]),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     const workspaceIds = new Set<string>();
     for (const [index, workspace] of value.workspaces.entries()) {

@@ -41,7 +41,7 @@ App API may expose sign-in, invitation, and profile endpoints, but those endpoin
 
 User is also the subject of personal persistent preferences. A personal Agent, profile, logical-model, or applicable internal-role preference is scoped to that User and the addressed Workspace, wins over the Workspace and Server defaults for that User, and never rewrites either shared scope. Core Concepts owns the cross-scope precedence and composition relationship; Identity owns the User subject and attribution of the preference.
 
-`WorkspaceMember` is a user's membership in one workspace.
+`WorkspaceMember` is a user's membership in one workspace. Membership is currently defined for users. The accepted direction is that an agent woken into or joining a Workspace, including a worker and the product Orchestrator, also becomes a member with its own permission scope under the Policy Kernel, so current membership design must not preclude agent members ([decision](../decisions/20260924-agents_are_workspace_members.md)).
 
 `Role` is a named membership or policy grouping. Role semantics belong to permission policy.
 

@@ -14,9 +14,9 @@ function read(path) {
 
 const contract = read('docs/change-execution.md');
 const documentationModel = read('docs/documentation-model.md');
-const consultantRole = read('.codex/agents/consultant.toml');
-const auditorRole = read('.codex/agents/auditor.toml');
-const roleRegistry = read('.codex/config.toml');
+const consultantRole = read('docs/roles/consultant.md');
+const auditorRole = read('docs/roles/auditor.md');
+const roleIndex = read('docs/roles/README.md');
 const changesReadme = read('docs/changes/README.md');
 const changesGuide = read('docs/changes/AGENTS.md');
 const OUTCOMES = ['Continue', 'Reframe', 'Ask Human', 'Close'];
@@ -111,12 +111,10 @@ test('keeps fresh direction scrutiny at consequential commitments rather than ro
   for (const outcome of OUTCOMES) assert.ok(consultantRole.includes(outcome));
 });
 
-test('registers Consultant and preserves bounded Auditor judgment and human invitation', () => {
-  assert.match(roleRegistry, /\[agents\.consultant\]/u);
-  assert.match(roleRegistry, /config_file = "agents\/consultant\.toml"/u);
-  assert.match(consultantRole, /^name = "consultant"/mu);
-  assert.doesNotMatch(roleRegistry, /\[agents\.verifier\]/u);
-  assert.equal(existsSync(new URL('../.codex/agents/verifier.toml', import.meta.url)), false);
+test('indexes Consultant and preserves bounded Auditor judgment and human invitation', () => {
+  assert.match(roleIndex, /\[consultant\]\(consultant\.md\)/u);
+  assert.doesNotMatch(roleIndex, /verifier/u);
+  assert.equal(existsSync(new URL('../docs/roles/verifier.md', import.meta.url)), false);
   assert.match(consultantRole, /Do not duplicate Reviewer implementation acceptance/u);
   assert.match(
     consultantRole,
@@ -331,15 +329,15 @@ test('keeps every route-log and trigger projection aligned with its owner', () =
   // records only that a check happened settles nothing.
   assert.match(contract, /with its outcome and reason/u);
 
-  for (const projection of [consultantRole, roleRegistry]) {
+  for (const projection of [consultantRole, roleIndex]) {
     assert.match(projection, /direction-bearing commitment/u);
   }
   assert.match(consultantRole, /Coverage belongs to the primary-context identity and plan/u);
 });
 
-test('appends Intent epochs and rewrites the working checkpoint', () => {
+test('appends Intent revisions and rewrites the working checkpoint', () => {
   const persistence = paragraphWith(contract, [
-    /Intent Epoch/u,
+    /Intent Revision/u,
     /append/iu,
     /checkpoint/iu,
     /rewrit/iu,
@@ -348,6 +346,6 @@ test('appends Intent epochs and rewrites the working checkpoint', () => {
   assert.notEqual(persistence, '', 'missing append-Intent/rewrite-checkpoint ownership');
   assert.ok(
     /(?:must not|never)[^.\n]*(?:modify|rewrite|delete)/iu.test(persistence),
-    'a recorded Intent Epoch must not be modified or deleted'
+    'a recorded Intent Revision must not be modified or deleted'
   );
 });

@@ -1,10 +1,15 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
+kind: concept
 date: "2026-09-21"
-updated: "2026-09-21"
+updated: "2026-09-22"
 ---
 # Work Data Retention Format
+
+## Export Purpose Clarification
+
+Export preserves admitted work data for external analysis, evaluation, audit, and other external use. Lossless re-import into OpenKit is not an export requirement; backup / restore is separately deferred under [Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md). Goal-specific storage and export redesign are frozen pending the engineer's product Redesign. This changes neither existing retention and access boundaries nor the facts of prior implementation checks. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
 
 ## Summary
 
@@ -27,7 +32,7 @@ The unique first-release criterion is: for every class of information that will 
 - Physical `DATA_ROOT` layout, source-of-truth decisions for file-backed versus SQLite records, the Workspace SQLite transaction boundary, storage-structure extension rules, or what `turn.json` is as a file. Those remain with `docs/specs/20260703-storage_layout_record_ownership.md` (`Owns`). This spec owns observation-ledger semantics and the meaning of coverage and identity fields that `turn.json` already carries; it MUST NOT restate directory trees or invent a second transaction owner.
 - Core definitions of Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, or AgentSession.
 - Table DDL, ORM layout, or query design.
-- Indexing, BM25, or multimodal semantic search. The engineer placed those out of scope.
+- Indexing, BM25, or multimodal semantic search ([decision](../decisions/20260920-retention_excludes_indexing.md)).
 - Architecture and technology-stack selection (step 3 of the work-data lock; not started).
 - CapabilityCall, AuditEvent, UsageRecord, PermissionDecision, VaultUse, EvidenceBundle, and RuntimeEvidence as second truths. Observation records MAY `refs` their ids; they MUST NOT become a competing ledger.
 - Delayed user-input protocol (blocking versus non-blocking gates, `expired`/`superseded`/`withdrawn` writers, cross-owner attention aggregation). That line has a separate owner.
@@ -82,7 +87,7 @@ The unique first-release criterion is: for every class of information that will 
 
 An Agent is a model plus a runtime. Work records therefore equal agent observations (model-side interactions that pass through Gateway, plus runtime kind, version, and environment) plus external intervention and Core decisions (user input, interrupt, approval, product acceptance). Agents are cheap scheduling units: the system does not restore an interrupted execution in place. The environment is not deterministic; reversed tool-call order from network jitter is an accepted outcome, and a perfectly recorded outbound call still does not prove that a third party processed it.
 
-The six uses are succession/resume, audit, multi-dimensional eval/analysis/optimization, fine-tuning/post-training, knowledge extraction, and workflow improvement. Resume needs a subset of the other three high-intensity uses and MUST NOT set the floor. Multi-dimensional eval is a product capability and requires complete resolved configuration fingerprints, a task-instance identity orthogonal to Thread/Turn, and outcome labels with provenance. Fine-tuning requires lossless model I/O and separation of "what the model saw" from "what actually happened"; the engineer ruled that the architecture MUST cover that I/O while this release does not implement it, behind a task/workspace/server switch that defaults to off.
+The six uses are succession/resume, audit, multi-dimensional eval/analysis/optimization, fine-tuning/post-training, knowledge extraction, and workflow improvement. Resume needs a subset of the other three high-intensity uses and MUST NOT set the floor. Multi-dimensional eval is a product capability and requires complete resolved configuration fingerprints, a task-instance identity orthogonal to Thread/Turn, and outcome labels with provenance. Fine-tuning requires lossless model I/O and separation of "what the model saw" from "what actually happened"; the architecture MUST cover that I/O behind a task/workspace/server switch that defaults to off ([decision](../decisions/20260921-full_model_io_switch_default_off.md)). The 2026-09-22 implementation authorization includes complete admitted model/tool content and runtime-internal children; availability is limited by the actual collector boundary and must remain explicit.
 
 ## Decision
 
@@ -129,7 +134,7 @@ Multi-dimensional eval requires, as format slots even when empty: provider plus 
 
 ### First-Release Capture Matrix
 
-Implementation topology (who writes which collector) is deferred to architecture/technology selection. The table is the first-release byte-meaning contract. Empty unsupported slots are allowed only for cells this table marks Unsupported or Deferred. A Collect cell remains a required first-release producer even while its writer is unimplemented: absence is a missing producer, not permission to omit the cell. Real collection failures still record unknown or unavailable outcomes; those outcomes MUST NOT be used to reclassify a Collect cell as unsupported. Required metadata collection (the Collect rows) is independent of later switched full model I/O. The coverage switch governs full I/O families (model request/response bodies and other restricted originals), not these metadata cells.
+The incremental runtime/model collector topology is admitted below; collection points outside that slice retain their stated implementation obligations, with their remaining topology decisions still deferred to architecture/technology selection under their accepted owners. The table is the first-release byte-meaning contract. Empty unsupported slots are allowed only for cells this table marks Unsupported or Deferred. A Collect cell remains a required first-release producer even while its writer is unimplemented: absence is a missing producer, not permission to omit the cell. Real collection failures still record unknown or unavailable outcomes; those outcomes MUST NOT be used to reclassify a Collect cell as unsupported. Required metadata collection (the Collect rows) is independent of later switched full model I/O. The coverage switch governs full I/O families (model request/response bodies and other restricted originals), not these metadata cells.
 
 | Cell | First release | Observation boundary | In-row | MUST NOT |
 | --- | --- | --- | --- | --- |
@@ -144,6 +149,22 @@ Implementation topology (who writes which collector) is deferred to architecture
 | Layer-3 runtime context manifest | Unsupported | — | — | Treat as first-release data |
 | System-prompt digest | Collect | Pre-adapter semantic boundary | Digest only | Use `workerRequestDigest`; promise one hook; treat as full I/O |
 | Harness identity | Collect | Bind and reuse | Authored `runtimeVersion` label plus copied image-digest value | Treat authored `runtime.image` or AEP `runtimeVersion` as measured version |
+
+### Incremental Runtime And Model Content
+
+The engineer required on 2026-09-22 that complete admitted content be retained and that users get a decision-useful timeline ([decision](../decisions/20260921-full_model_io_switch_default_off.md)), and delegated the concrete implementation to the primary and an independent Consultant; the observation append path and the parentage evidence rules below are that delegated design. Runtime-internal children remain origins within the outer Thread, Turn, AgentSession and AEP, never additional Core execution identities. Required metadata records collector availability, observed origins and causal parentage, tool/activity phases, source coordinates and coverage failures independently of the full-I/O switch. A native spawn edge or parent declaration is parentage evidence; send/wait receivers are not. Completion of a spawn operation is not completion of the child.
+
+Sidecar metadata and admitted content use the existing authenticated worker-control event append transport. Metadata is durably recorded before body transfer and declares expected content without a publication reference. Restricted chunks are staged incrementally; a chunk receipt proves staging only. After complete length/digest verification, the evidence owner publishes the body and Core appends a separate observation anchored to the initial observation with the exact publication reference. Missing chunks leave the initial fact and an expected-but-unpublished gap. A stopped collector is not complete collection. Retry preserves identity and content; divergent replay is recovery_required. The common append operation applies this same expected-then-publication order to directly supplied Gateway bodies, so producers do not implement two persistence protocols. Server receipt/fingerprint ledgers must not duplicate restricted bytes. No cross-store atomicity or reconstruction from summaries is claimed.
+
+Complete admitted bodies are retained externally through the existing EvidenceBundle restricted-raw lifecycle regardless of size. Gateway bytes represent UTF-8 serialization of admitted semantic requests and response events at the pre-Pi-adapter and semantic response boundaries, not original wire formatting. Content strings are lossless. Private reasoning carriers, encrypted reasoning, credentials, authentication headers and provider configuration are excluded. Tool arguments/results and outward assistant text exposed by a supported runtime are collected incrementally when the immutable Turn binding is on. Off still requires structural facts. Sources unavailable to a runtime are explicit gaps; unsupported must not relabel a failed required producer. Streaming cancellation and errors retain the committed prefix without asserting success. Capture failure cannot trigger another provider call.
+
+Credential admission scans decoded string values and their logical outward concatenation within one semantic unit (an assistant message or tool argument/result), not each delta independently. Structural observations commit immediately; original event bodies wait in bounded collector memory until the unit passes admission, then publish unchanged. The existing semantic ceiling bounds that buffer. Rejected content leaves expected-but-unpublished observations plus an anchored unavailability fact. Interruption scans and retains the admitted prefix with an explicit incomplete outcome; a collector crash may leave an unpublished gap. This guard covers known credential patterns within a unit, not arbitrary encodings or reconstruction across independent units, and is not universal DLP. The residual is not removed at capture, retention, or export: the system keeps the original data, and processing sensitive information before a particular use is outside this system's scope ([decision](../decisions/20260924-sensitive_data_handled_outside_the_system.md)).
+
+One shim parser owns native structural interpretation for incremental collection and optional provenance; the independent Core provenance verifier retains its own oracle. Codex source discovery is bounded by the existing provenance guards, tails reachable nested streams while the parent is running, and excludes prior-Turn bytes using pre-launch watermarks. A semantic frame over the existing 16 MiB parser ceiling is an explicit limit failure, never a complete-looking retained prefix. The typed worker transport uses the decoded chunk bound owned by `20260703-worker_control_protocol.md`. Optional full-provenance capability is not inferred from the incremental collector.
+
+The UI projection is lossy and carries fixed structural labels plus bounded explicitly outward assistant text only when its source remains available and disclosure-safe. It is not a new retained content tier and cannot replace originals. The existing ThreadDashboard read enforces current Thread audience before reading source bodies, excludes native identifiers, raw tool bodies, credentials, reasoning and diagnostics, and cites source observation sequence. Its presentation bounds are owned by `20260628-web_product_surface_projection.md`, with omitted/truncated presentation declared. Historical absence is unavailable; collecting and partial describe the structural observation boundary, not Turn status. The coverage-state mapping belongs to the same Web projection owner. The projection separately carries contentCapture as off, on or unknown from the immutable binding; missing history is unknown. Full-content off never suppresses required metadata or gets presented as full-content collection. Existing approval, input and correction owners remain authoritative; child text cannot manufacture a human gate.
+
+**Acceptance.** Multiple and nested child facts survive a parent crash after Core receipt; missing terminal evidence stays missing. Full capture on preserves exact admitted bytes and off does not retain them. Restart replay cannot duplicate, overwrite, falsely publish or resurrect lawfully expired content. A private Thread cannot leak through timeline or evidence listing. A user can follow reported progress and actual human gates without reading restricted bodies or inferring completion from parent success.
 
 ### Two Record Families
 
@@ -214,7 +235,7 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 
 **Exclusions.** `perc`, `span`, and `aud` are not fields. `payload` is not a lossless dump of arbitrary content. `refs` is not an array of bare digest strings. `parent` is a single id, never a list.
 
-**Open `type`.** New kinds are new string values. Readers MUST NOT treat unknown canonical types as processed (`docs/specs/20260703-schema_evolution_record_envelope.md`, `Reader Contract`). Authority-bearing new behavior MUST also gate on `requiredFeatures`. Product UI MUST have a generic fallback renderer so a closed switch over types cannot crash on a new kind. Payload shape is per `type`; a type MUST NOT carry restricted or time-bounded bodies in-row (B′). Concrete payload fields for first-release types are the First-Release Capture Matrix. Canonical extra header names beyond the split-envelope minimum are a pending admission of the envelope or storage-layout owner (C8); this spec states the intended set, not an already-admitted wire schema.
+**Open `type`.** New kinds are new string values. Readers MUST NOT treat unknown canonical types as processed (`docs/specs/20260703-schema_evolution_record_envelope.md`, `Reader Contract`). Authority-bearing new behavior MUST also gate on `requiredFeatures`. Product UI MUST have a generic fallback renderer so a closed switch over types cannot crash on a new kind. Payload shape is per `type`; a type MUST NOT carry restricted or time-bounded bodies in-row (B′). Concrete payload fields for first-release types are the First-Release Capture Matrix. The storage-layout owner admits these concrete header names (C8); the directory-level manifest gates the family with `openkit.work-observations.v1`.
 
 **Lifecycle.** Append only. Identity fields that naturally exist in `payload` are also in the header and MUST cross-check on decode; mismatch is corrupt, not a pick-one merge. Same `id` with different content is a conflict, not an overwrite.
 
@@ -266,7 +287,7 @@ A `publication` edge, produced by the owner after successful commit and pointing
 
 **Resolution result.** A successful resolution attempt yields exactly one of `resolved-and-verified`, `absent`, or `mismatch`. `mismatch` MUST be detectable and MUST NOT be treated as success. Permission denial, owner unavailability, and I/O error remain the target owner's existing refusal or unavailable outcomes; they are not a fourth stored resolver state and MUST NOT masquerade as `absent`. Material under legal hold or revoked access is exists-but-unreadable through that owner's access rule, not `absent`. An intentionally unresolved external or `scope: 'server'` reference stays unresolved under source identity.
 
-**Engineer ruling.** A reference MAY fail to resolve. A reference MUST NEVER be wrong: it MUST NOT bind to a different object than the one cited.
+A reference MAY fail to resolve. A reference MUST NEVER be wrong: it MUST NOT bind to a different object than the one cited ([decision](../decisions/20260921-references_may_miss_never_mislead.md)).
 
 **`corr` versus `parent`.** `corr` pairs one logical call's request and response inside that call's owning group and namespace. It is not an external referent and MUST NOT globally pair by the bare key. `parent` is the scalar anchor (observation or Item). One logical call has one `corr` even if several route attempts occurred; attempts hang off `parent`. A failed attempt MAY record its own failure fact; that fact is not the logical response and MUST NOT mint a second `corr`. Decision records are linked with an `association` ref, not with `corr`.
 
@@ -304,7 +325,7 @@ A `publication` edge, produced by the owner after successful commit and pointing
 
 **Lifecycle.** Create at admission. Unchanged for provider retry, human-gate wait, and proved exact reconnect of that Turn. Restart MUST NOT recompute a historical binding from current server config. A later Turn, including a sealed Turn's new attempt, re-resolves. Task-level override selects where to resolve; Turn stores which resolution this execution used. `(goalId, taskId)` when applicable is written on the Turn at creation, not on the Thread. Turns that are not Goal-task executions MUST omit the task tuple; planning Turns MAY carry Goal identity without inventing a Task.
 
-**Failure.** Collector unsupported, fault, or missing data uses unavailable/failure facts. Changing a bound setting MUST NOT hide an execution gap. Records outside any Turn carry the bound setting only inside an already-named existing owner; they MUST NOT borrow a past or future Turn. Crash after the admission write fails is missing binding: governed collection MUST NOT start, and the Turn is not silently given current server policy. A conflicting existing binding on the same Turn is `recovery_required` for that Turn, not an overwrite. Historical Turns with no field remain distinguishable as never-recorded, not as `off`.
+**Failure.** Collector unsupported, fault, or missing data uses unavailable/failure facts. For Worker and Gateway collectors, a source or parser fault that is durably recorded as such a fact does not by itself change the actual work outcome or trigger another execution. Failure to persist required observations or failure facts remains fail-closed under the existing transport and execution owners; authorization, revocation, lineage and durable receipt requirements remain binding ([decision](../decisions/20260924-recorded_collector_fault_preserves_work_outcome.md)). Changing a bound setting MUST NOT hide an execution gap. Records outside any Turn carry the bound setting only inside an already-named existing owner; they MUST NOT borrow a past or future Turn. Crash after the admission write fails is missing binding: governed collection MUST NOT start, and the Turn is not silently given current server policy. A conflicting existing binding on the same Turn is `recovery_required` for that Turn, not an overwrite. Historical Turns with no field remain distinguishable as never-recorded, not as `off`.
 
 **Acceptance.** After default-off production, a reader can still tell then-off from never-recorded from did-not-happen. Fine-tuning I/O is unavailable under the default until a user turns the switch on and a collector exists; that is an accepted operational consequence, not a cancellation of the architectural slot. Under that same default, the Collect metadata cells (configured provider and physical model, provider-reported snapshot when a response exists, requested sampling, internal-agent `env.bound`, task-instance pairing when applicable, `turn.reap` when recovery runs, system-prompt digest, harness identity) are present or recorded as a failed required collection, not omitted as unsupported.
 
@@ -407,7 +428,9 @@ Missing evidence stays unknown.
 
 ### Import, Remint, And Resolution Closure
 
-**Definition.** Portable import remints in-package owner identities through exact maps. Classifying observation files into the portable inventory is a pending requirement of `docs/specs/20260704-workspace_backup_export_import.md` (C6). Until that owner admits the family, this spec MUST NOT treat export listing as already accepted. Cold whole-tree backup does not process the family and MUST NOT fail closed solely for an observation `requiredFeatures` gate.
+**Export posture.** Exporting work data does only simple, necessary processing, such as the identity remapping and reference closure below, and then exports every retained work-data family completely, restricted original bodies included ([decision](../decisions/20260924-restricted_bodies_travel_in_export.md)); it adds no further security or privacy filtering, including for the credential residual above, because exported work data is used for the team's internal backup or outside the system and is not expected to be published or reused for other purposes. The backup/export owner's existing exclusions, such as other users' private Threads and system-managed Vault, provider, and runtime secret material, still apply ([decision](../decisions/20260921-export_simple_and_complete.md)).
+
+**Definition.** Portable import remints in-package owner identities through exact maps. The Work Observation Portability section of `docs/specs/20260704-workspace_backup_export_import.md` admits the family to the portable inventory (C6). Cold whole-tree backup does not process the family and MUST NOT fail closed solely for an observation `requiredFeatures` gate.
 
 Pre-import two-hop example. Turn `T` already exists at admission with bound coverage. First hop has a route fallback; second hop joins an Item `I`.
 
@@ -425,14 +448,14 @@ After export into another Workspace:
 | Field | Before | After | Remap | Why |
 | --- | --- | --- | --- | --- |
 | `turnId` | `T` | `T'` | Turn map | In-package owner |
-| `parent` observation→observation | `o3` | `o3'` | Observation-family remint | Pending `requiredFeatures` recognition (C8/C6) |
+| `parent` observation→observation | `o3` | `o3'` | Observation-family remint | `openkit.work-observations.v1` recognition (C8/C6) |
 | `parent` observation→Item | `I` | `I'` | Item map | In-package owner |
 | `corr` | `c1`/`c2` | unchanged inside the reminted group | none | Pairing key; MUST NOT globally pair two imported groups that both contain `c1` |
 | `refs` blob | digest of blob bytes | unchanged | none | Content-addressed; verify those bytes before import; do not rehash |
 | `refs` AEP snapshot | `snapshotId` plus optional historical source-byte digest | `snapshotId'` | AEP map | Identity is the map. A historical digest MAY travel with declared byte coverage; it MUST NOT be the post-remint identity criterion |
 | `refs` image digest `scope:'server'` | value plus source identity | unchanged, unresolved | none | Out of package. MUST NOT rebind by the same id on the destination |
 
-**Lifecycle.** Private Threads of other users remain excluded under the backup/export owner. Observation-family portable listing waits on C6.
+**Lifecycle.** Private Threads of other users remain excluded under the backup/export owner. Observation-family portable listing follows the admitted C6 inventory and reference closure.
 
 **Failure.** A wrong remint is a wrong reference. Using a pre-remint record digest as post-remint identity is forbidden.
 
@@ -450,13 +473,13 @@ After export into another Workspace:
 
 ## Current Implementation Projection
 
-Implementation alignment is `Not Started` for this contract. Existing pieces this contract uses rather than replaces:
+Implementation alignment is `Partial`: immutable Turn capture binding, copied image-digest values and system-prompt digest producers exist. Incremental observation and admitted-content implementation is in progress; the obligations below are not a completion claim. Existing pieces this contract uses rather than replaces:
 
 - Protocol Items persist as `ItemSchema.parse` then `JSON.stringify` into `items.jsonl` via `appendWorkspaceItemRevision` (`apps/nanocore/src/storage/workspace-file-records.ts:846-870`). The canonical append helper (`:2450-2488`) does not fsync.
 - Turn terminals in Core are the four-value set (`docs/core/protocol.md`, `Turn Semantics`, after `968f5a4e`). `TurnStatusSchema` already includes `cancelled` (`packages/protocol/src/models/turn.ts:21-29`).
 - CapabilityCall already has `unknown` (`docs/core/agent-capability.md:70-84`).
 - Storage layout already names observation-ledger split headers (`docs/specs/20260703-storage_layout_record_ownership.md:287`, `Structure Evolution Rules`) and the `turn.json` file in the Turn directory (`:352`, `Workspace Storage Layout`).
-- Coverage binding, observation writers, copied image-digest values, system-prompt digest producers, and observation `requiredFeatures` import recognition are not implemented.
+- Observation writers and `requiredFeatures` import recognition are being implemented in the admitted incremental runtime/model slice; unsupported cells and other required producers remain separately accountable.
 - Gateway CapabilityCall rows today use `redactionClass: 'metadata-only'` (`apps/nanocore/src/llm/gateway-routes.ts:162`, `:665`) and do not persist bodies; that matches default-off I/O collection, not a claim that bodies were collected.
 
 ### Evidence Strength
@@ -513,7 +536,7 @@ Listing an alignment is not approval of a change to another owner's document. Ea
 
 **What this format needs.** Observation files that live under a Thread directory need classification into the portable inventory so a Thread's work-data files cannot drop an unclassified family. Cold whole-root backup remains a separate path.
 
-**Disposition.** Live pending owner admission. This spec does not edit the backup/export owner and does not treat export listing as already accepted.
+**Disposition.** Admitted on 2026-09-22 in the backup/export owner, including inventory, audience and exact remint/reference closure.
 
 ### C7 — Item-log persistence invariants
 
@@ -529,7 +552,7 @@ Listing an alignment is not approval of a change to another owner's document. Ea
 
 **What this format needs.** Observation lines add `seq`, `obs`, `ret`, `parent`, `corr`, `outcome`, `cert`, `turnId`, `refs`, and `ext` beyond the split-envelope minimum. `perc` and `span` are absent; audience is not a field; `parent` is observation-only; `seq` is per-file truncation detection. `payload` is the body, not a header slot.
 
-**Disposition.** Live pending owner admission. The intended header is the envelope table in Observation Ledger Envelope. Implementation MUST NOT treat those extra names as canonical until the envelope or storage-layout owner admits them.
+**Disposition.** Admitted on 2026-09-22 by Turn Observation Placement in the storage-layout owner, using the header above and the registered required feature.
 
 ### C9 — Kernel operations on the narrative axis
 
@@ -583,7 +606,7 @@ Listing an alignment is not approval of a change to another owner's document. Ea
 - Whether the two live denial paths that write Turn `cancelled` versus `interrupted` should unify is a product-owner decision, not a format field.
 - Whether a mandatory UUIDv7 filter helper plus failing test is required, versus a review checklist, is not closed; this spec states the consumption rules and the present lack of a parser.
 - Adding `actor` to `StatusItem` was proposed so "who interrupted" is on the narrative axis; it is not authority to implement now. Until protocol admits it, structured interrupter identity stays on the observation row or an existing owner, not a silently dropped requirement.
-- Envelope extra header names (C8), observation portable inventory (C6), Kernel typed Item (C9), and quarantine `restricted-evidence` mapping remain pending their owners.
+- Envelope extra header names (C8) and portable inventory (C6) are admitted by their existing owners. Kernel typed Item (C9) and quarantine `restricted-evidence` mapping remain pending their owners.
 
 ## Risks & Mitigations
 

@@ -33,6 +33,7 @@ import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import {
   copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
@@ -947,7 +948,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Plans a durable identity against the one configured RuntimeTarget without effects. */
   public planSession(
-    environmentPackage: AgentEnvironmentPackage
+    environmentPackage: AgentEnvironmentPackagePreview
   ): WorkerGovernanceBackendSessionIdentity {
     const target = this.coreDb.sqlite
       .prepare(
@@ -978,7 +979,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Projects the exact selected-storage authorization used before one Sandbox replacement. */
   private workerStorageReplacementSelection(
-    environmentPackage: AgentEnvironmentPackage,
+    environmentPackage: AgentEnvironmentPackagePreview,
     choice: SchedulerWorkerStorageChoice | undefined,
     responsibleUserId: string,
     authorizeContributor: WorkerStorageSelectionInput['authorizeContributor']
@@ -1008,7 +1009,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Validates an explicit selection before effects; attachment admission still performs its own CAS. */
   private validateWorkerStorageSelection(
-    environmentPackage: AgentEnvironmentPackage,
+    environmentPackage: AgentEnvironmentPackagePreview,
     sandboxBindingRef: string,
     selection: Omit<WorkerStorageSelectionInput, 'layout'> & {
       readonly reuseWorkSlotRef?: string;
@@ -1156,7 +1157,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * @param environmentPackage Current package whose sandbox and harness keys must match the surviving row.
    * @throws When a matching same-Epoch row exists but cannot restore its attachment or Harness.
    */
-  private restoreSameEpochIdleHarness(environmentPackage: AgentEnvironmentPackage): void {
+  private restoreSameEpochIdleHarness(environmentPackage: AgentEnvironmentPackagePreview): void {
     const sandboxCompatibilityKey = nanoHostSandboxCompatibilityKey(environmentPackage);
     const row = this.coreDb.sqlite
       .prepare(
@@ -1188,7 +1189,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Resolves a retained work slot only from one compatible resident Sandbox attachment. */
   public resolveResidentWorkerStorageWorkSlotRef(
-    environmentPackage: AgentEnvironmentPackage
+    environmentPackage: AgentEnvironmentPackagePreview
   ): string | null {
     const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
     if (!responsibleUserId) return null;
@@ -1547,7 +1548,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Reports one-Sandbox capacity without changing durable or physical runtime state. */
   public inspectMaterializationCapacity(
-    environmentPackage: AgentEnvironmentPackage
+    environmentPackage: AgentEnvironmentPackagePreview
   ): 'available' | 'capacity-saturated' {
     return this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated'
       ? 'capacity-saturated'
@@ -1556,7 +1557,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Finds an idle replacement, including fenced failed residents proved absent in a fresh Epoch. */
   private inspectIncompatibleIdleSandbox(
-    environmentPackage: AgentEnvironmentPackage,
+    environmentPackage: AgentEnvironmentPackagePreview,
     forceRetirement = false
   ): NanoHostIdleSandboxEviction | 'capacity-saturated' | null {
     const desiredKey = nanoHostSandboxCompatibilityKey(environmentPackage);
@@ -1756,7 +1757,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Claims and cleanly deletes one proved-idle resident after replacement dispatch. */
   private async evictIncompatibleIdleSandbox(
-    environmentPackage: AgentEnvironmentPackage,
+    environmentPackage: AgentEnvironmentPackagePreview,
     identity: WorkerGovernanceBackendSessionIdentity,
     leaseId: string,
     forceRetirement = false,
@@ -3261,7 +3262,7 @@ function requireAttachedWorkerStorageBinding(
 /** Rechecks exact live Worker authority and every retained contributor's current Thread audience. */
 function currentWorkerStorageAudienceAuthorizer(
   coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackage
+  environmentPackage: AgentEnvironmentPackagePreview
 ): (contributor: WorkerStorageContributor) => boolean {
   const { scope } = environmentPackage;
   const requesterUserId = responsibleUserIdForActor(scope.triggerActor);
@@ -3330,7 +3331,9 @@ function requireWorkerStorageWorkSlot(
 }
 
 /** Reads the exact work slot already validated into one Agent Environment Package. */
-function packageWorkerStorageWorkSlotRef(environmentPackage: AgentEnvironmentPackage): string {
+function packageWorkerStorageWorkSlotRef(
+  environmentPackage: AgentEnvironmentPackagePreview
+): string {
   return (
     environmentPackage.extensions.openkit as {
       workerStorage: { workSlotRef: string };
@@ -3465,7 +3468,9 @@ function nanoHostRuntimeCredentialImports(
 }
 
 /** Hashes only the exact inputs that decide physical Sandbox reuse. */
-function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
+function nanoHostSandboxCompatibilityKey(
+  environmentPackage: AgentEnvironmentPackagePreview
+): string {
   const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
   const { contextRoot, packagePath } = workerSessionInputPaths(
     environmentPackage.scope.agentSessionId
@@ -3571,7 +3576,9 @@ function nanoHostSandboxIdFromBackendSessionId(backendSessionId: string): string
 }
 
 /** Hashes the process-static adapter and Integration configuration of one Harness. */
-function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
+function nanoHostHarnessCompatibilityKey(
+  environmentPackage: AgentEnvironmentPackagePreview
+): string {
   const { openkit, ...extensions } = environmentPackage.extensions ?? {};
   const openkitRecord =
     openkit && typeof openkit === 'object' && !Array.isArray(openkit)
@@ -3615,7 +3622,7 @@ function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPac
 
 /** Selects one adapter already admitted by the static worker registry. */
 function nanoHostAdapterId(
-  environmentPackage: AgentEnvironmentPackage
+  environmentPackage: AgentEnvironmentPackagePreview
 ): 'codex' | 'opencode' | 'pi' {
   const adapterId = environmentPackage.control.adapter.targetRuntime;
   if (adapterId !== 'codex' && adapterId !== 'opencode' && adapterId !== 'pi') {
@@ -3656,7 +3663,9 @@ function nanoHostStaticWorkspaceInput(
 }
 
 /** Hashes only the exact inputs that decide one AgentSession's native continuity. */
-function nanoHostAgentSessionCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
+function nanoHostAgentSessionCompatibilityKey(
+  environmentPackage: AgentEnvironmentPackagePreview
+): string {
   const sessionCompatibilityKey = planSessionWorkspaceMaterialization({ environmentPackage })
     .compatibilityKey.digest;
   return deriveNanoHostAgentSessionCompatibilityKey({

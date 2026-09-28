@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { type WorkerObservationData, WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
 import type { WorkerAdapterPrepareInput, WorkerNativeProcessResult } from '../adapter-registry.js';
 import { opencodeAdapter } from './opencode.js';
@@ -14,6 +15,12 @@ function opencodeInput(): WorkerAdapterPrepareInput {
   const root = mkdtempSync(join(tmpdir(), 'openkit-opencode-adapter-'));
 
   return {
+    runtimeCapture: {
+      captureCoverage: { scope: 'server', value: 'off' },
+      packageSnapshotId: 'aep_test',
+      credentialValues: [],
+      emit: async () => undefined,
+    },
     childEnvironment: {
       OPENKIT_WORKER_INFERENCE_TOKEN: 'openshell-placeholder-value',
       PATH: process.env.PATH ?? '',
@@ -92,6 +99,64 @@ const stepFinish = {
 };
 
 describe('OpenCode worker adapter', () => {
+  it.each([
+    'on',
+    'off',
+  ] as const)('streams exposed tool and text content with capture %s and honest child coverage', async (value) => {
+    const recorded: Array<{ record: WorkerObservationData; body?: Uint8Array }> = [];
+    const base = opencodeInput();
+    const plan = await opencodeAdapter.prepare({
+      ...base,
+      runtimeCapture: {
+        ...base.runtimeCapture,
+        captureCoverage: { scope: 'server', value },
+        emit: async (record, body) => {
+          recorded.push({
+            record: WorkerObservationDataSchema.parse(record),
+            ...(body ? { body } : {}),
+          });
+        },
+      },
+    });
+    const text = '  outward 💡\n';
+    const records = [
+      {
+        type: 'tool_use',
+        sessionID: 'native-private',
+        part: {
+          type: 'tool',
+          id: 'part-tool',
+          callID: 'call-1',
+          tool: 'read',
+          state: {
+            status: 'completed',
+            input: { file: 'file.txt' },
+            output: ' exact tool result\n',
+          },
+        },
+      },
+      { ...firstText, part: { ...firstText.part, text } },
+      { type: 'reasoning', part: { text: 'unpublished-reasoning-canary' } },
+    ];
+    await plan.writeStdout!(nativeResult(records).stdout);
+    expect(
+      recorded.some(
+        ({ record }) => record.fact.kind === 'tool' && record.fact.phase === 'completed'
+      )
+    ).toBe(true);
+    expect(
+      recorded
+        .filter(({ record }) => record.fact.coverage === 'unsupported')
+        .map(({ record }) => record.fact.family)
+    ).toEqual(['child-metadata', 'child-content']);
+    if (value === 'on')
+      expect(recorded.map(({ body }) => body && Buffer.from(body).toString())).toEqual(
+        expect.arrayContaining([text, ' exact tool result\n', '{"file":"file.txt"}'])
+      );
+    else expect(recorded.every(({ body }) => body === undefined)).toBe(true);
+    expect(JSON.stringify(recorded)).not.toContain('unpublished-reasoning-canary');
+    await plan.finalize!();
+  });
   it('prepares the pinned one-shot command and isolated native state', async () => {
     const input = opencodeInput();
     const plan = await opencodeAdapter.prepare(input);

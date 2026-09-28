@@ -194,6 +194,25 @@ describe('LLM gateway format converters', () => {
     });
   });
 
+  it('continues past filtered and fragmented SSE chunks while a read is pending', async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n',
+      '\n',
+      'data: [DONE]\n\n',
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk === undefined) controller.close();
+        else controller.enqueue(new TextEncoder().encode(chunk));
+      },
+    });
+    expect(
+      await new Response(convertChatCompletionStreamToResponsesStream(source)).text()
+    ).toContain('"delta":"Hi"');
+  }, 1_000);
+
   it.each([
     {
       endpoint: 'Chat Completions to Responses',

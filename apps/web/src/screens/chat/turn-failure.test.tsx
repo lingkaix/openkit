@@ -197,6 +197,98 @@ beforeEach(() => {
   useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
 });
 
+describe('task runtime activity', () => {
+  it('shows activity once after the last interleaved group without inventing actions', async () => {
+    renderTask(
+      makeClient(
+        {
+          listThreadItems: vi.fn().mockResolvedValue({
+            items: [HISTORICAL_USER_MESSAGE, USER_MESSAGE, HISTORICAL_ACCEPTED_STATUS_ITEM],
+            nextCursor: null,
+          }),
+        },
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            turns: [HISTORICAL_FAILED_TURN, COMPLETED_DASHBOARD_TURN],
+            runtimeActivity: [
+              {
+                turnId: 'tu_81',
+                contentCapture: 'on',
+                coverage: 'partial',
+                entries: [
+                  {
+                    sequence: 4,
+                    observedAt: '2026-09-16T05:20:02.000Z',
+                    kind: 'failure',
+                    label: 'Child activity failed',
+                    text: '<button>Approve child</button> **not a gate**',
+                    textTruncated: true,
+                  },
+                ],
+                omittedEntryCount: 3,
+              },
+            ],
+          }),
+        }
+      )
+    );
+    const activity = await screen.findByRole('region', { name: 'Runtime activity' });
+    expect(screen.getAllByRole('region', { name: 'Runtime activity' })).toHaveLength(1);
+    expect(activity).toHaveTextContent('Child activity failed');
+    expect(activity).toHaveTextContent('<button>Approve child</button> **not a gate**');
+    expect(activity.querySelector('button, strong')).toBeNull();
+    expect(activity).toHaveTextContent('Activity coverage is partial.');
+    expect(activity).toHaveTextContent('Full-content capture was enabled for this Turn.');
+    expect(activity).toHaveTextContent('3 earlier activity entries not shown.');
+    expect(activity).toHaveTextContent('Text shortened for this timeline.');
+    expect(
+      screen.getByText('Worker Turn accepted').compareDocumentPosition(activity) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(screen.getAllByText(HISTORICAL_FAILURE_MESSAGE)).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Approve child' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    'collecting',
+    'partial',
+    'unavailable',
+  ] as const)('shows %s coverage for historical and latest Turns without Items', async (coverage) => {
+    renderTask(
+      makeClient(
+        { listThreadItems: vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            turns: [
+              { ...HISTORICAL_FAILED_TURN, items: [], status: 'completed', error: null },
+              { ...COMPLETED_DASHBOARD_TURN, items: [] },
+            ],
+            runtimeActivity: ['tu_81', 'tu_82'].map((turnId) => ({
+              turnId,
+              coverage,
+              contentCapture: turnId === 'tu_81' ? 'off' : 'unknown',
+              entries: [],
+              omittedEntryCount: 0,
+            })),
+          }),
+        }
+      )
+    );
+    expect(await screen.findAllByRole('region', { name: 'Runtime activity' })).toHaveLength(2);
+    const message =
+      coverage === 'collecting'
+        ? 'Activity collection is ongoing.'
+        : coverage === 'partial'
+          ? 'Activity coverage is partial.'
+          : 'Activity coverage is unavailable.';
+    expect(screen.getAllByText(message)).toHaveLength(2);
+    expect(screen.getByText('Full-content capture was off for this Turn.')).toBeInTheDocument();
+    expect(screen.getByText('Full-content capture setting is unknown.')).toBeInTheDocument();
+    expect(screen.queryByText('No messages yet')).not.toBeInTheDocument();
+    expect(screen.queryByText(/no children|complete coverage/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('task turn failure (dashboard reload)', () => {
   it('shows the dashboard failed Turn error on a fresh Task route without retrying', async () => {
     const client = renderTask(makeClient());

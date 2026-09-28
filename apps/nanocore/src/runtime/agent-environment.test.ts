@@ -202,9 +202,74 @@ function leaseCredentialFixture(
 }
 
 describe('agent environment package resolver', () => {
+  it('previews a future Turn without fabricating admitted capture coverage', () => {
+    const input = {
+      agentSetup: createTestSetup(),
+      agentSessionId: 'session_unadmitted',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('Plan without capture admission'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    const preview = resolveAgentEnvironmentPackageMetadata(input);
+    expect(preview).not.toHaveProperty('observability');
+    expect(AgentEnvironmentPackageSchema.safeParse(preview).success).toBe(false);
+    expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
+  it('projects exact admitted capture coverage without partitioning session compatibility', () => {
+    const input = {
+      agentSetup: createTestSetup(),
+      agentSessionId: 'session_capture',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('Use immutable capture admission'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    const key = resolveAgentSessionCompatibilityKey(input);
+    for (const scope of ['server', 'workspace', 'task'] as const) {
+      for (const value of ['off', 'on'] as const) {
+        const captureCoverage = { scope, value };
+        const environmentPackage = resolveAgentEnvironmentPackage({ ...input, captureCoverage });
+        expect(environmentPackage.observability.captureCoverage).toEqual(captureCoverage);
+        expect(
+          (
+            environmentPackage.extensions.openkit as {
+              sessionWorkspace: SessionWorkspaceMaterializationPlan;
+            }
+          ).sessionWorkspace.compatibilityKey.digest
+        ).toBe(key);
+      }
+    }
+  });
+
+  it('rejects missing capture admission before credential authority resolution', () => {
+    const input = {
+      agentSetup: createTestSetup({
+        credentialDeclarations: [
+          {
+            id: 'test_key',
+            targetEnvVarName: 'TEST_KEY',
+            vaultGrantId: 'grant_missing',
+            visibility: 'runtime-env',
+          },
+        ],
+      }),
+      agentSessionId: 'session_missing_capture',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('Reject missing capture admission'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    expect(() =>
+      resolveAgentEnvironmentPackage(input as Parameters<typeof resolveAgentEnvironmentPackage>[0])
+    ).toThrow('expected object');
+  });
+
   it('selects the built-in repository MCP only by an explicit manifest id', () => {
     const resolve = (mcpIds: string[]) =>
       resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ mcpIds }),
         agentSessionId: 'session_repository',
         backend: { kind: 'openshell' },
@@ -232,6 +297,7 @@ describe('agent environment package resolver', () => {
   it('requires one explicit container backend', () => {
     const turn = createTurnFixture('Use the repository');
     const common = {
+      captureCoverage: { scope: 'server', value: 'off' } as const,
       agentSetup: createTestSetup(),
       agentSessionId: 'session_1',
       createdAt: '2026-07-18T00:00:00.000Z',
@@ -252,6 +318,7 @@ describe('agent environment package resolver', () => {
 
   it('projects the exact trigger actor into V2 scope without legacy identity fields', () => {
     const resolved = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
       agentSessionId: 'session_actor_1',
       backend: {
@@ -314,6 +381,7 @@ describe('agent environment package resolver', () => {
 
     const resolved = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: setupResult.setup,
         agentSessionId: 'session_future_1',
         backend: {
@@ -362,6 +430,7 @@ describe('agent environment package resolver', () => {
     const turn = createTurnFixture('Run remotely');
     expect(() =>
       resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup(),
         agentSessionId: 'session_remote_1',
         backend: {
@@ -383,6 +452,7 @@ describe('agent environment package resolver', () => {
   it('preserves authored development grants with trusted inference and rejects incomplete provenance', () => {
     const turn = createTurnFixture('Reject authority conflict');
     const common = {
+      captureCoverage: { scope: 'server', value: 'off' } as const,
       agentSessionId: 'session_reject_1',
       backend: {
         kind: 'openshell' as const,
@@ -548,6 +618,7 @@ describe('agent environment package resolver', () => {
         workspaceId: turn.workspaceId,
       });
       const resolved = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ skillIds: ['repo-guidelines'] }),
         agentSessionId: 'session_skill_1',
         backend: { kind: 'openshell' },
@@ -622,6 +693,7 @@ describe('agent environment package resolver', () => {
         workspaceId: turn.workspaceId,
       });
       const resolved = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ skillIds: ['repo-guidelines'] }),
         agentSessionId: 'session_skill_pin',
         backend: { kind: 'openshell' },
@@ -643,6 +715,7 @@ describe('agent environment package resolver', () => {
   it('resolves selected MCP supply without exposing its server topology', () => {
     const turn = createTurnFixture('Use static supply');
     const resolved = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup({
         mcpIds: ['github'],
         skillIds: [],
@@ -710,6 +783,7 @@ describe('agent environment package resolver', () => {
     const turn = createTurnFixture('Use the prepared Context Package');
     const contentDigest = `sha256:${'a'.repeat(64)}`;
     const resolved = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
       agentSessionId: 'session_context_1',
       backend: {
@@ -769,6 +843,7 @@ describe('agent environment package resolver', () => {
     const turn = createTurnFixture('Use catalog source');
 
     const resolved = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
       agentSessionId: 'session_source_1',
       backend: {
@@ -889,6 +964,7 @@ describe('agent environment package resolver', () => {
       leaseCredentialFixture(coreDb, turn, 'session_direct_1');
       const resolve = () =>
         resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             adapter: 'pi',
             credentialDeclarations: [declaration],
@@ -1028,6 +1104,7 @@ describe('agent environment package resolver', () => {
       const turn = createTurnFixture('Use the Workspace GitHub account', coreDb);
       leaseCredentialFixture(coreDb, turn, 'session_workspace_binding');
       const resolved = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({
           credentialDeclarations: [
             {
@@ -1134,6 +1211,7 @@ describe('agent environment package resolver', () => {
       leaseCredentialFixture(coreDb, turn, 'session_public_github');
       expect(() =>
         resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             credentialDeclarations: [
               {
@@ -1309,6 +1387,7 @@ describe('agent environment package resolver', () => {
       expect(listVaultUseRecords(coreDb)).toEqual([]);
       const keyForContextDigest = (character: string) => {
         const environmentPackage = resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSessionId: 'session_context_digest',
           agentSetup: createTestSetup(),
           backend: { kind: 'openshell' },
@@ -1382,6 +1461,7 @@ describe('agent environment package resolver', () => {
       let error: unknown;
       try {
         resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             credentialDeclarations: [
               {
@@ -1515,6 +1595,7 @@ describe('agent environment package resolver', () => {
     try {
       expect(() =>
         resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             credentialDeclarations: [
               {
@@ -1611,6 +1692,7 @@ describe('agent environment package resolver', () => {
       leaseCredentialFixture(coreDb, turn, 'session_missing_sink');
       expect(() =>
         resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             adapter: 'pi',
             credentialDeclarations: [
@@ -1662,6 +1744,7 @@ describe('agent environment package resolver', () => {
   it('rejects retired backend-local inference inputs', () => {
     const turn = createTurnFixture('Reject backend-local inference');
     const common = {
+      captureCoverage: { scope: 'server', value: 'off' } as const,
       agentSessionId: 'session_backend_local_1',
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_backend_local_1',
@@ -1699,6 +1782,7 @@ describe('agent environment package resolver', () => {
       requiredCapabilities: ['backend-local-inference'],
     });
     const resolved = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: 'session_network_defaults_1',
       agentSetup: setup,
       backend: {

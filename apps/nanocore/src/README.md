@@ -17,6 +17,7 @@ This directory contains NanoCore's composition root and feature owners. `app.ts`
 - `index.ts` owns process boot and shutdown.
 - `telemetry.ts` owns optional stock-SDK request spans and bounded exporter lifecycle; canonical work, audit and evidence remain with their existing owners.
 - `openapi.ts` owns the explicit App API operation catalog and generated projection.
+- `mode-entry-routes.ts` keeps ordinary Assistant answers on current input and admitted context without ambient Workspace Knowledge pre-reads; the explicitly selected Knowledge Manager target retains source-traceable retrieval and replay. Provider answers retain Turn-bound model capture. See [the Chat owner](../../../docs/specs/20260704-chat_mode_assistant.md) for the information-source contract.
 - `*-routes.ts` files own cohesive public feature paths. `repository-routes.ts` also exposes its concrete Git push request and execution owners to the selected built-in MCP route, preserving the same host executor and command receipts.
 - `lib/store.ts` exposes the app-local product store while `storage/` owns durable record placement. After a Turn is a sealed terminal, `updateTurn`, `createItem`, `emitTurnEvent`, and `updateItem` admit only completion of an already-decided publication or a named field-limited display-projection refresh, judged by identity and content.
 

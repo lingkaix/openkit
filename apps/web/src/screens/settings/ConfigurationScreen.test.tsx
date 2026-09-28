@@ -102,6 +102,20 @@ beforeEach(() => {
 });
 
 describe('Configuration settings', () => {
+  it('shows located warnings after applying otherwise valid configuration', async () => {
+    const client = makeClient(vi.fn().mockResolvedValue(FILES));
+    const message = 'DATA_ROOT/config/server.jsonc: Unknown key futureOption is ignored.';
+    vi.mocked(client.runtimeConfig.reload).mockResolvedValue({
+      status: 'applied',
+      plan: { ...PLAN, warnings: [{ code: 'authored_config.unknown_key', message }] },
+      runtimeConfig: RUNTIME_CONFIG,
+    });
+    renderScreen(client);
+    await userEvent.click(await screen.findByRole('button', { name: 'Apply saved configuration' }));
+    expect(await screen.findByText('Configuration applied')).toBeInTheDocument();
+    expect(screen.getByText(message)).toBeInTheDocument();
+  });
+
   it('lists config files as a tree and validates, saves, and applies one JSONC draft', async () => {
     const user = userEvent.setup();
     const client = makeClient(vi.fn().mockResolvedValue(FILES));

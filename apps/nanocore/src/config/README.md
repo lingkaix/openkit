@@ -7,7 +7,7 @@ This directory owns NanoCore-specific configuration discovery, loading, preceden
 - Keep environment, mode, bind-host, data-root, server, workspace, agent, and provider configuration loading here.
 - Load Server resources and fallbacks, shared Workspace composition, and User preferences as distinct owners; resolve explicit selection, User, Workspace, then Server without treating Server supply as a Workspace ceiling.
 - Keep `gateway.jsonc`, `internal-role-profiles.jsonc`, `providers/*.provider.jsonc`, `agents/*.agent.jsonc`, `workspaces/*/config/workspace.jsonc`, `workspaces/*/config/data-sources.jsonc`, `workspaces/*/catalog/catalog.json`, and `users/*/config/user.jsonc` distinct in snapshots and diagnostics.
-- Accept only configuration that has a current runtime consumer; bind, CORS, public URL, sign-up, and gateway policy are startup-owned, while unsupported proxy, route-selection, or diagnostic toggles must be rejected instead of silently ignored.
+- Accept only configuration that has a current runtime consumer; bind, CORS, public URL, sign-up, and gateway policy are startup-owned. Unknown optional keys in the owner-approved Server, User, Workspace preference, and data-source locations produce located warnings; unknown authority-section keys and unsupported required features still fail closed.
 - Cross-package contract schemas remain in their owning packages; this directory performs NanoCore-specific file I/O and runtime projection.
 - `../agents/` and `../providers/` own resolved runtime concepts after loading, so configuration code must not introduce parallel registries.
 - Secret values must remain behind explicit references or backend-private state and must not enter snapshots, diagnostics, or generated configuration.

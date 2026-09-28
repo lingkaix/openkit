@@ -56,6 +56,37 @@ test('Goal plan recovery uses the read operation without invoking plan creation'
   );
 });
 
+test('Goal intent revision forwards the exact new intent and affected Task selection', async () => {
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find((entry) => entry.id === 'goal.intent-revise');
+  assert.ok(operation);
+  const input = operation.inputSchema.parse({
+    workspaceId: 'ws_test',
+    threadId: 'th_test',
+    requestId: '10000000-0000-4000-8000-000000000001',
+    objective: 'Revised outcome',
+    revision: 'Clarify the delivery boundary',
+    affectedTaskIds: [],
+  });
+  let observed;
+  await operation.handler(
+    {
+      client: {
+        app: {
+          reviseThreadGoalIntent: async (...args) => {
+            observed = args;
+            return { accepted: true };
+          },
+        },
+      },
+    },
+    input
+  );
+  const { workspaceId, threadId, ...body } = input;
+  assert.deepEqual(observed, [workspaceId, threadId, body]);
+  assert.deepEqual(body.affectedTaskIds, []);
+});
+
 test('Worker environment discovery preserves admin scope and exact target routing', async () => {
   const { operationCatalog } = await operations();
   const status = operationCatalog.find((entry) => entry.id === 'worker-environment.status');

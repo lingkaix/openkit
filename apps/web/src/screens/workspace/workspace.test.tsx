@@ -1533,6 +1533,36 @@ describe('Overview / Action Center (board 07)', () => {
     expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(8);
   });
 
+  it.each([
+    ['task', 'Open task', '/tasks/ws%2Fspace%20%3F%23%25/th%2Fspace%20%3F%23%25'],
+    ['goal', 'Open goal', '/goals/ws%2Fspace%20%3F%23%25/th%2Fspace%20%3F%23%25'],
+  ] as const)('encodes ongoing %s owner identifiers in its registered destination', async (activity, label, href) => {
+    const workspaceId = 'ws/space ?#%';
+    const item = overviewConversation({
+      id: 'th/space ?#%',
+      name: 'Encoded work',
+      preview: '',
+      activity,
+      state: 'working',
+    });
+    renderApp(
+      '/',
+      makeClient({
+        core: {
+          listWorkspaces: vi.fn().mockResolvedValue({
+            items: [{ ...WORKSPACE_A, id: workspaceId }],
+          }),
+        },
+        app: {
+          listConversationNavigation: vi.fn().mockResolvedValue({
+            items: [{ ...item, thread: { ...item.thread, workspaceId } }],
+          }),
+        },
+      })
+    );
+    expect(await screen.findByRole('link', { name: label })).toHaveAttribute('href', href);
+  });
+
   it('does not use an unnamed Task raw input as its display title', async () => {
     const item = overviewConversation({
       id: 'unnamed',

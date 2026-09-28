@@ -1,10 +1,17 @@
 ---
 status: Accepted
 implementation: Partial
+kind: mechanism
 updated: 2026-09-09
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V2
+
+## Current Product Boundary And Deferred Redesign
+
+Workspace export is for use outside OpenKit, including analysis, evaluation, audit, and ingestion into external analytical software. Lossless re-import into an OpenKit Workspace is not an export acceptance requirement. Workspace and whole-server backup / restore are a separate mechanism whose detailed design is deferred. These scope decisions override contrary round-trip requirements below; existing import and recovery descriptions remain the historical implementation baseline, not a mandate to extend export into backup. This clarification does not authorize deleting existing import behavior or weakening its regression tests.
+
+Goal-related export structures remain frozen with Goal Mode pending product Redesign. Filesystem backup to S3-compatible storage or cloud drives and possible later Litestream use are candidate directions only; no backend, snapshot protocol, or restore guarantee is selected here. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
 
 ## Execution-Host Volume Coverage
 
@@ -139,6 +146,14 @@ Portable workspace-scope database rows MUST be emitted as strict line-oriented r
 Workspace Export V2 MUST serialize the complete non-secret plan and receipt families at exactly `records/vault-injection-plans.jsonl` and `records/vault-injection-receipts.jsonl`. Both paths are present even when empty. The verifier and importer MUST reject `records/injection-plans.jsonl` and `records/injection-receipts.jsonl` as unsupported old paths; they MUST NOT translate, merge, ignore, or dual-read them.
 
 The accepted Skill, MCP, and Agent Plugin catalog owners introduce the bounded portable projection below. Evaluation mechanisms remain outside export scope. Any later accepted design creating Workspace-owned durable records MUST classify them here, and the change implementing those records MUST update the existing file/state and SQLite coverage guards together with export/import; no implemented record family may be silently omitted.
+
+### Work Observation Portability
+
+Exports containing Turn work observations declare `openkit.work-observations.v1`. Each included Turn retains its `observations.jsonl` beside its Item file, with the directory-level required-feature marker and immutable capture binding preserved. This is distinct from Knowledge observations. Export/import classify the file in existing exact inventory and coverage guards; an unknown observation type or unsupported required feature cannot be silently processed or dropped. Cold whole-root backup retains the file without interpreting its feature.
+
+Current Thread audience policy and body-read authorization apply before collecting portable bytes, and the restricted-evidence export exception of docs/specs/20260703-audit_usage_evidence_records.md governs restricted originals. Other users' private Threads and their observations/content remain excluded. Admitted original bodies of retained work data, including restricted originals, travel intact in the portable export and import restores them intact, so that a re-imported Workspace keeps the complete information it was exported with, rather than being exported as expired, reference-free records; existing evidence policy still governs held, unavailable, and already expired content, and an observation reference never grants content access ([decision](../decisions/20260924-restricted_bodies_travel_in_export.md)). Unpublished restricted chunk staging is non-portable runtime state, while complete committed content follows its EvidenceBundle owner.
+
+Import remints observation IDs, their observation/Item parent anchors and owning Thread/Turn, and rewrites in-package reference scope/locators through exact existing maps. Existing AEP and origin-reference remapping stays consistent with the imported package; source-native identities are restricted provenance only. A body content digest continues to describe the unchanged body bytes. Digests of legitimately reminted owner records cannot substitute for identity maps. `corr` remains scoped to the reminted logical group, never a cross-import join. Server and excluded-owner references remain explicitly unresolved under source identity, never rebound by bare ID. Same-identity replay cannot resurrect lawfully expired bytes.
 
 ### Recurring Work Portability
 

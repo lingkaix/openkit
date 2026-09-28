@@ -12,6 +12,16 @@ and are not listed here.
 - `docs/documentation-model.md` — This document owns the OpenKit documentation type system: the closed set of document types, each type's scope, authority, lifecycle, naming, and location, the…
 - `docs/verification-instruments.md` — `docs/verification-instruments.md` owns the evidence layer: which evidence to go and get and what it costs, and whether the verdict it yields can be believed.
 
+## Role Contracts
+
+- `docs/roles/auditor.md` — Use this role for incremental fidelity or discretionary assurance scrutiny under docs/change-execution.md, an engineer-directed or owning-rule repository-integ…
+- `docs/roles/builder.md` — Use this role to implement a repository change.
+- `docs/roles/consultant.md` — Use this role for early scrutiny of an uncertain or consequential proposal, an unresolved route, or fresh direction observation under docs/change-execution.md.
+- `docs/roles/researcher.md` — Use this role to collect independent external evidence that may inform an OpenKit decision.
+- `docs/roles/reviewer.md` — Use this role as the normal independent review for a material feature, bugfix, refactor, or documentation change before acceptance or commit, and whenever cons…
+- `docs/roles/test-author.md` — Use this role when an independent test design would materially reduce uncertainty.
+- `docs/roles/writer.md` — Use this role to draft the text of a documentation-led change, or to edit a documentation diff for clarity and consistency.
+
 ## Intent
 
 - `docs/change-execution-rationale.md` — This intent document preserves observations behind `docs/change-execution.md`.
@@ -134,7 +144,7 @@ and are not listed here.
 - `docs/specs/20260910-app_update_delivery.md` — Accepted, Partial — This specification owns explicitly administrator-directed NanoCore and Web replacement on one configured deployment: the bounded public update command, process…
 - `docs/specs/20260910-persistent_worker_volumes.md` — Accepted, Implemented — This specification owns retained Worker working files and native runtime data on the execution host, their exact scoped association, attachment and removal, in…
 - `docs/specs/20260921-delayed_user_input.md` — Draft, Not Started — This Draft owns the problem statement, the gathered 2026-09-21 evidence, the constraints inherited from the work-data retention line, the confirmed blocking-ga…
-- `docs/specs/20260921-work_data_retention_format.md` — Accepted, Not Started — The purpose of retained work data and the judgement that admits a fact into the work-data record.
+- `docs/specs/20260921-work_data_retention_format.md` — Accepted, Partial — The purpose of retained work data and the judgement that admits a fact into the work-data record.
 - `docs/specs/20260922-delegated_worker_policy_maintenance.md` — Draft, Not Started — The proposed bounded class of non-secret worker sandbox/network configuration that an internal operator may inspect, compare, validate and apply under a respon…
 
 ## Terminal Specifications
@@ -205,6 +215,10 @@ and are not listed here.
 
 Change plans are not indexed. List `docs/changes/` to see them.
 
+## Decision Records
+
+Decision records are not indexed. Owners link them; list `docs/decisions/` to see them.
+
 ## Audit Records
 
 - `docs/audits/20260821-agent_coordination_playbook.md` — Agent Coordination Playbook Audit
@@ -212,9 +226,12 @@ Change plans are not indexed. List `docs/changes/` to see them.
 
 ## Platform References
 
+- `docs/agent-harnesses.md` — This reference says which agent harnesses can run the repository's roles, how a role is dispatched to them, which model realizes each capability tier in each h…
 - `docs/app-api.md` — This guide answers one cross-cutting question: where does an App API contract live, and what may the App API layer decide for itself.
 - `docs/deployment.md` — Calibrated premises about scope and optimization target, formed from team shape and current operating conditions rather than derived from a contract.
+- `docs/glossary.md` — This glossary is the Ubiquitous Language of the engineering process: the words that root AGENTS.md, the governance documents, the role contracts, and change re…
 - `docs/toolchain.md` — This guide answers one cross-cutting question: which tools does this repository use, and where is each version pinned.
+- `docs/writing.md` — This reference states how repository documents are written so that a reader, human or agent, finds the owner quickly, reads only what the task needs, and can r…
 
 ## User Manuals
 

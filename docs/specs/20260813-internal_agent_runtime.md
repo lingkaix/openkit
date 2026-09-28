@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: topology
 date: 2026-08-13
 ---
 # Internal Agent Runtime
@@ -233,6 +234,8 @@ Acceptance requires identical final messages and exit with the observer present,
 
 ## Prompt Contract
 
+All NanoCore built-in agents keep their fixed System Prompt text in one source location, including callers outside the shared loop and internal model-based helpers. An agent's complete fixed text, including shared preambles, separators, and fixed assembly guidance, MUST contain at most 3000 Unicode code points including whitespace. A test enumerates all built-in prompt assemblies and enforces this limit. Dynamic Tool definitions and current structured context are assembled separately at admission and do not count toward the fixed-text limit. Fixed behavioral instructions MUST NOT be moved into dynamic context or Tool descriptions to evade the limit. Tool descriptions describe the Tool's own contract. A new built-in agent must use the same fixed-text source and be covered by the test. The decision and reason are recorded in [Centralized And Bounded Built-In Prompts](../decisions/20260924-centralized_bounded_builtin_prompts.md).
+
 Every internal-role base prompt contains exactly four semantic parts:
 
 1. A concise role, current responsibility, and expected response form.
@@ -243,6 +246,8 @@ Every internal-role base prompt contains exactly four semantic parts:
 The parts need not be separate paragraphs. Tool descriptions and schemas are the primary model-facing operational documentation, and the prompt MUST NOT duplicate complete schemas, lifecycle rules, authorization policy, budget tables, recovery algorithms, or NanoCore architecture.
 
 Trusted assembly proceeds conceptually in this deterministic order: role core, current facts from their exact owners, active Tool definitions, optional bounded cross-Tool guidance, optional progressively disclosed Skill index, bounded conversation or work messages, and provider serialization. The order does not require every layer to be concatenated into the system string, and optional layers MAY be absent.
+
+Authored cross-Tool guidance is fixed text and counts toward the same limit. Selecting or interpolating that guidance at admission does not make its instructions dynamic data.
 
 The caller rebuilds the effective prompt and Tool definitions from current trusted inputs for every new run. An in-progress run remains pinned to its admitted prompt, Tool definitions, model, context policy and limits while its transcript evolves; only a newly admitted run receives configuration changes.
 
@@ -327,5 +332,7 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 - `docs/specs/20260909-internal_agent_resource_integration.md`
 
 ## Implementation Reference
+
+`apps/nanocore/src/internal-agents/builtin-prompts.ts` owns the current fixed assemblies for Quick Chat, Administration, and Goal Orchestrator. Their production callers assemble these texts before model dispatch; the catalog test enforces the fixed-text bound, and caller tests inspect the actual provider input. The Goal caller currently admits the bounded planning proposal Tool, not the full autonomous progression Tool set specified by its role owner.
 
 Pi source at `6160683a4a8012f0d1cd30c145df18b4ca6f5176`, especially [message types](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/ai/src/types.ts#L422) and [agent-loop ordering](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/src/agent-loop.ts#L215), informs the small content union and ordered execution. Its harness/session exports, generic hooks, default parallel Tools, argument normalization and raw error feedback are not part of this contract. Existing role-profile helpers and pi-ai transport are implementation foundations; the shared bounded loop and these resource-aware callers remain work to implement, not proof supplied by upstream source.

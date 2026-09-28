@@ -3486,6 +3486,50 @@ describe('app api schemas', () => {
     }
   });
 
+  it('preserves bounded optional runtime activity without claiming complete coverage', () => {
+    const activity = {
+      turnId: 'tu_demo',
+      contentCapture: 'off',
+      coverage: 'partial',
+      entries: [
+        {
+          sequence: 1,
+          observedAt: timestamp,
+          kind: 'result',
+          label: 'Reported child result',
+          text: 'Verified the selected change.',
+          textTruncated: false,
+        },
+      ],
+      omittedEntryCount: 2,
+    };
+    const schema = appApiSchemas.ThreadDashboardResponseSchema.partial();
+    expect(schema.parse({ runtimeActivity: [activity] })).toEqual({ runtimeActivity: [activity] });
+    expect(schema.parse({})).not.toHaveProperty('runtimeActivity');
+    for (const coverage of ['collecting', 'partial', 'unavailable']) {
+      expect(schema.safeParse({ runtimeActivity: [{ ...activity, coverage }] }).success).toBe(true);
+    }
+    for (const invalid of [
+      { ...activity, coverage: 'complete' },
+      { ...activity, contentCapture: undefined },
+      { ...activity, contentCapture: 'collecting' },
+      { ...activity, omittedEntryCount: -1 },
+      { ...activity, entries: Array.from({ length: 51 }, () => activity.entries[0]) },
+      ...[
+        { text: 'x'.repeat(1001) },
+        { label: 'x'.repeat(81) },
+        { sequence: -1 },
+        { observedAt: 'not-a-timestamp' },
+        { kind: 'approval-required' },
+        { body: 'restricted content' },
+        { runtimeOriginRef: 'native-child-id' },
+        { approvalRequestId: 'ap_fake' },
+      ].map((fields) => ({ ...activity, entries: [{ ...activity.entries[0], ...fields }] })),
+    ]) {
+      expect(schema.safeParse({ runtimeActivity: [invalid] }).success).toBe(false);
+    }
+  });
+
   it('keeps AgentSession continuity out of ordinary App API schemas', () => {
     expect(appApiSchemas.ThreadDashboardResponseSchema.shape).not.toHaveProperty('activeSession');
     expect(appApiSchemas.ThreadDashboardResponseSchema.shape).toHaveProperty('taskInputs');
@@ -5360,6 +5404,7 @@ describe('app api schemas', () => {
           ],
         },
       ],
+      taskDispositions: [],
       risks: [
         'Deterministic fallback output is intentionally generic and may need human refinement.',
       ],

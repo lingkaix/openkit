@@ -5,9 +5,6 @@ import {
   type SchedulerDispatchLoopResult,
 } from './scheduler-dispatch-loop.js';
 
-/** Input for one background scheduler dispatch retry. */
-export type RunSchedulerDispatchRetryOnceInput = RunSchedulerDispatchLoopInput;
-
 type RuntimeConfigDispatchInput =
   | 'agentManifests'
   | 'configVersion'
@@ -28,7 +25,7 @@ export interface SchedulerDispatchRetryTimerHooks {
 
 /** Input used to start the dispatch retry service. */
 export interface StartSchedulerDispatchRetryServiceInput
-  extends Omit<RunSchedulerDispatchRetryOnceInput, RuntimeConfigDispatchInput>,
+  extends Omit<RunSchedulerDispatchLoopInput, RuntimeConfigDispatchInput>,
     SchedulerDispatchRetryTimerHooks {
   /** Repeated dispatch retry interval. */
   readonly intervalMs: number;
@@ -44,18 +41,6 @@ export interface SchedulerDispatchRetryService {
   readonly runOnce: () => Promise<SchedulerDispatchLoopResult | null>;
   /** Stops future scheduled dispatch retries. */
   readonly stop: () => void;
-}
-
-/**
- * Runs one background dispatch retry through the shared Workspace store.
- *
- * @param input Dispatch retry dependencies.
- * @returns Dispatch loop result.
- */
-export function runSchedulerDispatchRetryOnce(
-  input: RunSchedulerDispatchRetryOnceInput
-): Promise<SchedulerDispatchLoopResult> {
-  return runSchedulerDispatchLoop(input);
 }
 
 /**
@@ -79,7 +64,7 @@ export function startSchedulerDispatchRetryService(
 
     try {
       const snapshot = input.runtimeConfigSnapshot();
-      return await runSchedulerDispatchRetryOnce({
+      return await runSchedulerDispatchLoop({
         ...input,
         agentManifests: snapshot.agentManifests,
         configVersion: snapshot.version,

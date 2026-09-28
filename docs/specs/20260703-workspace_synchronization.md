@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: boundary
 updated: 2026-08-13
 ---
 # Workspace Synchronization
@@ -690,7 +691,7 @@ The active restart slice adds bounded awaiting-reconnect gating, same-handle con
 
 ## Rollout / Migration Plan
 
-No legacy preservation is required for internal development data shapes.
+No legacy preservation is required for data shapes from before the storage baseline; later changes keep retained data usable under Retained Data Continuity in `docs/core/contract-evolution.md`.
 
 Phase 1: Git strategy for OpenKit self-improvement. Support clone or fetch in
 the worker runtime, patch collection, host-side staging, and review evidence.

@@ -96,8 +96,13 @@ function buildBoardCards(
  * into Done via drag (keyboard/button Skip stays conceptual for v1).
  */
 export function BoardLens({ workspaceId, threadId, goal, onOpenThread }: BoardLensProps) {
-  const planQuery = useGoalPlan(workspaceId, threadId, goal.goalId, goal.status);
-  const cards = buildBoardCards(goal, planQuery.data?.plan?.tasks);
+  const planQuery = useGoalPlan(workspaceId, threadId, goal.goalId);
+  const cards = buildBoardCards(
+    goal,
+    goal.status === 'awaiting_plan_approval'
+      ? planQuery.data?.pendingPlan?.tasks
+      : planQuery.data?.activePlan?.tasks
+  );
   const todo = cards.filter((c) => c.column === 'todo');
   const progress = cards.filter((c) => c.column === 'progress');
   const done = cards.filter((c) => c.column === 'done');
@@ -105,45 +110,27 @@ export function BoardLens({ workspaceId, threadId, goal, onOpenThread }: BoardLe
   return [
     <GoalReviewGate key="review" workspaceId={workspaceId} threadId={threadId} goal={goal} />,
     <section key="board" className="mt-5 flex gap-3 overflow-x-auto pb-2" aria-label="Goal board">
-      <KanbanColumn title="To do" count={todo.length}>
-        {todo.map((card) => (
-          <KanbanCard
-            key={card.id}
-            title={card.title}
-            hue="scout"
-            initials="WK"
-            worker="Worker"
-            meta={card.meta}
-            onOpen={onOpenThread}
-          />
-        ))}
-      </KanbanColumn>
-      <KanbanColumn title="In progress" count={progress.length}>
-        {progress.map((card) => (
-          <KanbanCard
-            key={card.id}
-            title={card.title}
-            hue="quill"
-            initials="WK"
-            worker="Worker"
-            meta={card.meta}
-            onOpen={onOpenThread}
-          />
-        ))}
-      </KanbanColumn>
-      <KanbanColumn title="Done" count={done.length}>
-        {done.map((card) => (
-          <KanbanCard
-            key={card.id}
-            title={card.title}
-            hue="ledger"
-            initials="WK"
-            worker="Worker"
-            meta={card.meta}
-            onOpen={onOpenThread}
-          />
-        ))}
-      </KanbanColumn>
+      {(
+        [
+          { title: 'To do', cards: todo, hue: 'scout' },
+          { title: 'In progress', cards: progress, hue: 'quill' },
+          { title: 'Done', cards: done, hue: 'ledger' },
+        ] as const
+      ).map(({ title, cards, hue }) => (
+        <KanbanColumn key={title} title={title} count={cards.length}>
+          {cards.map((card) => (
+            <KanbanCard
+              key={card.id}
+              title={card.title}
+              hue={hue}
+              initials="WK"
+              worker="Worker"
+              meta={card.meta}
+              onOpen={onOpenThread}
+            />
+          ))}
+        </KanbanColumn>
+      ))}
     </section>,
   ];
 }

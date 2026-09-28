@@ -18,6 +18,8 @@ import { StructuredWorkerDelegationRequestSchema } from './internal-agents/deleg
 import type { FsStore } from './lib/store.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
 import { registerFeedbackRoutes } from './runtime/feedback-routes.js';
+import { GoalPlanApprovalError } from './runtime/goal-plan-approval.js';
+import { closeGoalPlanningQuestionGate } from './runtime/goal-planning.js';
 import {
   getGoalRecord,
   listGoalTasks,
@@ -268,6 +270,63 @@ export function registerTurnRoutes({
             workspaceDb.sqlite.close();
           }
         }
+        if (activeTurn.id.startsWith('tu_goal_plan_')) {
+          const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+          try {
+            const turn = await runIdempotentCommand({
+              store,
+              inflightCommands,
+              command: 'turn.input.submit',
+              requestId: input.requestId,
+              scope: commandScope,
+              input,
+              responseKind: 'turn',
+              execute: () =>
+                closeGoalPlanningQuestionGate({
+                  store,
+                  workspaceDb,
+                  workspaceId: input.workspaceId,
+                  threadId: input.threadId,
+                  turnId,
+                  requestId: input.requestId,
+                  actorId: responseActor.id,
+                  answers: input.answers,
+                }),
+              replay: (record) => {
+                const current = store.getTurn(
+                  input.workspaceId,
+                  input.threadId,
+                  record.response.id
+                );
+                const request = current.items.find((item) => item.type === 'user-input-request');
+                const response = current.items.find(
+                  (item) =>
+                    item.type === 'user-input-response' && item.causationId === input.requestId
+                );
+                if (
+                  current.status !== 'completed' ||
+                  request?.type !== 'user-input-request' ||
+                  response?.type !== 'user-input-response' ||
+                  request.userInputRequestId !== response.userInputRequestId ||
+                  response.actor.kind !== 'user' ||
+                  response.actor.id !== responseActor.id ||
+                  JSON.stringify(response.answers) !== JSON.stringify(input.answers)
+                ) {
+                  throw new TurnStartValidationError(
+                    'recovery_required',
+                    'Goal planning response owners contradict their receipt.',
+                    409
+                  );
+                }
+                return TurnSchema.parse(current);
+              },
+              responseId: (result) => result.id,
+            });
+            return c.json(projectOrdinaryTurn(turn), 202);
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        }
         const turn = await runIdempotentCommand({
           store,
           inflightCommands,
@@ -366,6 +425,9 @@ export function registerTurnRoutes({
       }
 
       if (error instanceof TurnStartValidationError) {
+        return asApiError(error.message, error.code, error.status);
+      }
+      if (error instanceof GoalPlanApprovalError) {
         return asApiError(error.message, error.code, error.status);
       }
 

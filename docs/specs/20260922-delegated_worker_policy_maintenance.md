@@ -1,6 +1,7 @@
 ---
 status: Draft
 implementation: Not Started
+kind: concept
 date: 2026-09-22
 ---
 # Delegated Worker Policy Maintenance

@@ -28,9 +28,19 @@ For one read-write Git workspace input, the shared supervisor validates the clos
 
 ## Codex Runtime Provenance
 
-Runtime provenance is opt-in through `control.transcript.runtimeProvenance`. The Codex adapter streams primary `codex exec --json` output with backpressure and incrementally copies the stable Codex 0.153.4 rollout forest reachable from the primary thread. It writes only the fixed package-declared outputs under `/openkit/session/runtime`, subject to the declared byte and stream limits and the adapter's pinned discovery guards.
+Runtime provenance is opt-in through `control.transcript.runtimeProvenance`. The optional provenance path streams primary `codex exec --json` output with backpressure and finalizes the stable Codex 0.153.4 rollout forest reachable from the primary thread. It writes only the fixed package-declared outputs under `/openkit/session/runtime`, subject to the declared byte and stream limits and the adapter's pinned discovery guards.
 
 Missing root evidence is `failed`; missing, contradictory, or changing reachable evidence is `unstable`; and partial or limit-bounded evidence is `truncated`. Malformed physical frames remain explicitly indexed instead of being silently attributed. A new capture removes any prior manifest commit marker before touching raw files, and provenance-enabled failures do not copy native output into ordinary transcript diagnostics.
+
+## Incremental Work Capture
+
+`src/runtime-capture.ts` supplies bounded source framing, exact admitted body selection and opaque references; `src/codex-runtime-capture.ts` tails reachable Codex rollout activity while the parent is running. The existing provenance module owns shared Codex structural interpretation. The AEP supplies immutable capture coverage; off preserves required facts, while on permits complete admitted bodies. Restricted chunks bypass ordinary local transcript payloads and are sent with backpressure through the existing control client. Explicit source/version/parse gaps do not imply zero children or complete coverage; optional provenance retains its stronger separate verifier.
+
+A pre-launch watermarked child is reported as current Turn activity only after appended source bytes or a current Turn spawn edge. Its retained parent declaration still supports nested reachability without replaying historical activity.
+
+When a semantic unit fails credential or size admission after expected metadata was emitted, the shim emits an unavailability fact for each expected observation ID without forwarding rejected body bytes.
+
+The shim validates the AEP capture pair with the shared Worker protocol schema when it reads the package, then passes that typed pair to adapters without resolving policy again.
 
 ## Commands
 

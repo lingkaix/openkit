@@ -1,4 +1,7 @@
-import type { WorkerEnvironmentSummary } from '@openkit/app-api-schemas';
+import type {
+  ConversationNavigationResponse,
+  WorkerEnvironmentSummary,
+} from '@openkit/app-api-schemas';
 import {
   ApiCallError,
   type CoreClient,
@@ -246,6 +249,26 @@ export function taskThreadPath(workspaceId: string, threadId: string): string {
   return `/tasks/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
 }
 
+/**
+ * Builds the existing destination for server-projected conversation activity.
+ *
+ * @param workspaceId Workspace that owns the Thread.
+ * @param threadId Thread to open, encoded as one route segment.
+ * @param activity Current/latest navigation activity; unknown opens Chat without reclassifying it.
+ * @returns A Chat, Task, or Goal route, not a rule for matching the active sidebar row.
+ */
+export function conversationThreadPath(
+  workspaceId: string,
+  threadId: string,
+  activity: ConversationNavigationResponse['items'][number]['activity']
+): string {
+  if (activity === 'goal') {
+    return `/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
+  }
+  if (activity === 'task') return taskThreadPath(workspaceId, threadId);
+  return chatThreadPath(workspaceId, threadId);
+}
+
 /** List the workspaces the user can act in. */
 export function useWorkspaces() {
   const client = useCoreClient();
@@ -380,6 +403,8 @@ export function useThreadDashboard(
     queryKey: chatKeys.dashboard(workspaceId ?? '', threadId),
     queryFn: () => client.app.getThreadDashboard(workspaceId as string, threadId),
     enabled: Boolean(workspaceId) && enabled,
+    // Shared stream and workbench observers reuse a fresh dashboard until the next poll.
+    staleTime: poll ? 5_000 : 0,
     refetchInterval: poll ? 5_000 : false,
     refetchIntervalInBackground: false,
   });
@@ -448,7 +473,7 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
 /**
  * Subscribes once to the authoritative running Turn, folds item events into the
  * item cache, and projects its matching updated or terminal Turn into the dashboard cache.
- * Chat/Task dashboards refresh in the foreground; Item observers refresh only while idle.
+ * Every mounted Thread stream keeps its dashboard observer polling in the foreground, including observation-only updates; Chat/Task Item observers refresh only while idle.
  * Latest dashboard Turn id/status changes invalidate this Thread's conversation-target catalog.
  * Returns the dashboard query for message attribution and authoritative action readiness.
  *
@@ -467,11 +492,7 @@ export function useLiveThreadItems(
   const queryClient = useQueryClient();
   const { clear, report } = useConnectionFailure();
   const [attempt, setAttempt] = useState(0);
-  const dashboard = useThreadDashboard(
-    workspaceId,
-    threadId,
-    enabled && !queryClient.getQueryData(chatKeys.dashboard(workspaceId ?? '', threadId))
-  );
+  const dashboard = useThreadDashboard(workspaceId, threadId, enabled, true);
   const turnId = dashboard.data?.turns.findLast((turn) => turn.status === 'running')?.id;
   const latestTurnId = dashboard.data?.turns.at(-1)?.id;
   const latestTurnStatus = dashboard.data?.turns.at(-1)?.status;

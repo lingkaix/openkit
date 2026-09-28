@@ -11,7 +11,7 @@ This document does not own the content rules inside the body of any single type:
 
 ## Purpose
 
-Engineers own current user intent. Documentation durably records interpreted intent and accepted decisions; it does not prove that the interpretation matches its source. Preserve consequential source statements and decision provenance, distinguish agent inference from engineer acceptance, and compare affected authority with those sources during work. Code and running systems establish implementation facts, not permission to redefine intent. Rationale lives in `docs/engineering-doctrine.md`.
+Engineers own current user intent. Documentation durably records interpreted intent and accepted decisions; it does not prove that the interpretation matches its source. Preserve consequential source statements and decision provenance, distinguish agent inference from engineer acceptance, and compare affected authority with those sources during work. Decision records under Decision Records below keep the reason, decider, and rejected alternatives of a durable decision outside the owner that states the rule. Code and running systems establish implementation facts, not permission to redefine intent. Rationale lives in `docs/engineering-doctrine.md`.
 
 ## Document Types
 
@@ -27,7 +27,11 @@ The following types are the complete set at any moment, and a file under `docs/`
 
 `docs/documentation-model.md` (this document), `docs/change-execution.md`, and `docs/verification-instruments.md`. This document owns types and precedence, change execution owns adaptive coordination and change-record content, and verification instruments owns whether a deciding observation can be believed. Amending the type system means amending this document first.
 
-The third member was extracted after oracle and effect-domain rules had been scattered among workflow and testing documents; a fourth member is the event that promotes it to a `docs/governance/` directory rather than another filename exception. This type system governs Markdown documents; opaque legacy machine-readable evidence is not a documentation type.
+The third member was extracted after oracle and effect-domain rules had been scattered among workflow and testing documents; a fourth member is the event that promotes it to a `docs/governance/` directory rather than another filename exception. Role contracts, the engineering glossary, and the writing and harness references below are separate types and do not count as governance members. The decision and its reason are recorded in [a decision record](decisions/20260924-role_contracts_and_glossary_types.md). This type system governs Markdown documents; opaque legacy machine-readable evidence is not a documentation type.
+
+### Role Contracts
+
+Files under `docs/roles/`, one per role. One harness-neutral operating contract per registered agent role: the question the role answers, what it reads, what it may write, its independence limits, and what it cannot accept. `docs/change-execution.md` owns which roles exist, when they are composed, and the position and function model; each role contract owns only its role-specific operation and ranks below the governance documents it applies, so a conflict is corrected in the role contract. The directory README indexes the roles. Roles are dispatched by a prompt that names the contract, and no harness keeps its own copy or adapter of a role; `docs/agent-harnesses.md` owns the dispatch template and the model bound to each tier.
 
 ### Core Model Documents
 
@@ -38,6 +42,16 @@ An active Core document uses `status: Accepted`. When an accepted retirement dec
 ### Specifications
 
 `docs/specs/YYYYMMDD-short_name.md`. Precise, narrow design decisions with a validated lifecycle, whose values and per-type field requirements are stated under Field Contract below. A `Draft` specification proposes a design contract; it is distinct from an optional change-bundle `proposal.md`, which records a work scheme's rationale without design authority. Exploration that has not converged stays in uncommitted working space. `scripts/validate-spec-lifecycle.mjs` enforces header and lifecycle rules.
+
+Every active specification declares one `kind`, which names the role its decisions play and decides where a statement belongs:
+
+- concept: what a product thing is, with its definition, lifecycle, invariants, and failure semantics.
+- boundary: an agreement between components, such as a protocol, wire format, or API.
+- mechanism: a cross-cutting mechanism that every member concept must answer to, such as portability, storage layout, or schema evolution.
+- topology: how the system is deployed, hosted, or run as processes.
+- process: an engineering, verification, evaluation, or documentation method.
+
+Concept-specific semantics belong in the concept's specification. A mechanism specification owns the questions every member answers and a registry of its members, not each member's semantics, so a new concept adds its answers to its own specification and one registry line per mechanism. A Draft may be organized by feature or problem; the division into kinds happens when it is promoted to Accepted, and that promotion receives an independent check that every criterion still exists under DOC-015. The specifications README owns the writing guidance that applies these rules. The decision and its reason are recorded in [a decision record](decisions/20260923-specification_kinds_and_promotion.md).
 
 ### Change Records
 
@@ -50,6 +64,14 @@ Optional members are evidence, not authority. A legacy state file is retained un
 ### Audit Records
 
 `docs/audits/YYYYMMDD-short_name.md`. Dated observation records for durable cross-task integrity audits, calibration, load-bearing maps, detection trends, Core retirement, and specification terminal archives. Incremental Auditor findings and case-local assurance rulings use the current task context, retained in a change record when one exists or the context independently needs to survive under `docs/change-execution.md`; invoking the role alone requires neither record. Records carry no authority; any permitted ruling derives from existing governance, never from its report. Each dated audit links its owning rule. Past records are never edited; a new observation is a new record.
+
+### Decision Records
+
+Files under `docs/decisions/` named by decision date and a short name. One file per durable decision: every engineer ruling, every approved agent-initiated change to governing design, and every design decision whose rejected alternatives are likely to be proposed again. The test is whether someone may later want to reverse it; ordinary implementation choices are not recorded. A record states who decided, when, what was decided, why, which alternatives were rejected and why, what observation would justify revisiting it, and which owners it affects. It has the authority of an intent document: it records why and by whom a decision was made, it is not a behavioral contract, and no implementation choice may cite it as its sole authority. The rule itself lives in its owning document, which links the record beside the rule it supports instead of writing an inline ruling marker. The decision and its reason are recorded in [a decision record](decisions/20260923-decision_records.md).
+
+Record a new decision in the same change that lands its rule. Past decisions are backfilled when needed: an agent about to change a rule whose reason is not recorded asks the engineer and records the answer before changing it. Keep the engineer's wording close to its source and state when it is translated. An owner statement that accepts a Safety Kernel limitation or residual risk links the decision record that accepted it; an unlinked one is a finding.
+
+A record is not edited after acceptance except for an editorial correction that changes no decision, reason, alternative, or trigger, and except to set its status to Superseded with `superseded-by` when a later record replaces it; the replacing record names it in `supersedes`. Decision records are self-contained: they may name their source change record as plain text but never link it, because change records are removable. The body uses exactly these level-two headings in this order: Decision, Reason, Rejected Alternatives, Revisit When, and Affected Owners. `scripts/validate-doc-model.mjs` checks the fields and headings only; it does not judge whether a reason is true or sufficient.
 
 ### Terminal Archive Audit And Archive Immutability
 
@@ -67,7 +89,7 @@ This rule is prospective. Documents already under a terminal specification archi
 
 ### Platform References
 
-Enumerated root documents: `docs/deployment.md`, `docs/app-api.md`, and `docs/toolchain.md`. Each takes one angle on the system — where Core and agents run, where an App API contract lives, which tools are default — and states the principles and shape of that angle while summarizing the contracts that already own its details. They live at the repository documentation root so that an agent or a human finds them without searching.
+Enumerated root documents: `docs/deployment.md`, `docs/app-api.md`, `docs/toolchain.md`, `docs/glossary.md`, `docs/writing.md`, and `docs/agent-harnesses.md`. Each takes one angle on the system — where Core and agents run, where an App API contract lives, which tools are default, which words the engineering process uses, how repository documents are written, which harnesses and models realize the roles — and states the principles and shape of that angle while summarizing the contracts that already own its details. They live at the repository documentation root so that an agent or a human finds them without searching.
 
 They own no behavioral contract. Stable design belongs to core documents, technical detail belongs to specifications, and executable fact belongs to code and configuration. Every platform reference has exactly one `## Owns` section and one `## Does Not Own` section, including when `## Owns` states that the guide owns no decision. A platform reference may own narrow repository-operation decisions that no Core document or specification owns, such as the default toolchain and the setup and dependency procedure that realizes it in `docs/toolchain.md`; each owned decision MUST be stated inside that document's `## Owns` section, and the exception does not authorize product behavior, architecture, or a broader guide authority. A repository-operation decision that root `AGENTS.md` routes to a platform reference is owned there and MUST NOT also be stated in root, so the route and the owner never disagree. A platform reference is otherwise a slice and projection across those owners, plus the judgments described below.
 
@@ -150,7 +172,11 @@ The vocabulary is closed. A field not listed here is a validation error.
 
 | Field | Shape | Canonical values |
 | --- | --- | --- |
-| `status` | string | Per type. Specifications: `Draft`, `Accepted`, `Deprecated` in the root; `Superseded`, `Retired`, `Rejected` in their matching subdirectories. Active Core documents: `Accepted`; archived Core documents under `docs/core/retired/`: `Retired`. Change records: `planned`, `in-progress`, `blocked`, `implemented`, `verified`, `superseded`. Governance, intent, platform references, and manuals: `Accepted`. |
+| `status` | string | Per type. Specifications: `Draft`, `Accepted`, `Deprecated` in the root; `Superseded`, `Retired`, `Rejected` in their matching subdirectories. Active Core documents: `Accepted`; archived Core documents under `docs/core/retired/`: `Retired`. Change records: `planned`, `in-progress`, `blocked`, `implemented`, `verified`, `superseded`. Decision records: `Accepted`, `Superseded`. Governance, role contracts, intent, platform references, and manuals: `Accepted`. |
+| `kind` | string | concept, boundary, mechanism, topology, process. |
+| `decider` | string | Free text naming who made the decision. |
+| `supersedes` | string | Repository-relative path of the decision record this one replaces. |
+| `superseded-by` | string | Repository-relative path of the decision record that replaced this one. |
 | `implementation` | string | `Not Started`, `In Progress`, `Partial`, `Implemented`, `Diverged`, `N/A`. |
 | `type` | string | `change-plan`, `pr-summary`, `standalone-change`, `release-summary`. |
 | `date` | string | `YYYY-MM-DD`. |
@@ -166,10 +192,11 @@ Per-type requirements:
 
 | Type | Required | Optional |
 | --- | --- | --- |
-| Specification, active | `status`, `implementation` | `date`, `updated` |
-| Specification, Deprecated-or-terminal | `status`, `implementation`, `status-changed`, `current-guidance`, `decision-evidence` | `date`, `updated` |
+| Specification, active | `status`, `implementation`, `kind` | `date`, `updated` |
+| Specification, Deprecated-or-terminal | `status`, `implementation`, `status-changed`, `current-guidance`, `decision-evidence` | `date`, `kind`, `updated` |
 | Change record | `type`, `status` | `date`, `started`, `completed`, `branch` |
-| Core model, active; governance; intent; platform reference; manual | `status` | `date`, `updated` |
+| Decision record | `status`, `date`, `decider` | `supersedes`; `superseded-by`, which a Superseded record requires and no other record carries |
+| Core model, active; governance; role contract; intent; platform reference; manual | `status` | `date`, `updated` |
 | Audit record, change-bundle evidence, cookbook, external snapshot, local guide | none | `status`, `date` |
 | Generated projection | none | none |
 
@@ -179,13 +206,15 @@ A field is optional only where its absence changes no decision. Adding a field, 
 
 Authority is inversely proportional to change rate. When documents conflict, precedence is: core model documents, then accepted specifications, then platform references, manuals, cookbooks, and other projections. On one owned surface, a later accepted specification supersedes the document it names. Change records and audit records never outrank any of the above regardless of recency.
 
-Intent documents do not compete in this ordering: they govern direction and premises, and a behavioral question must resolve to a core document or specification. The `## Judgments` section of a platform reference holds premises under the same terms, so citing one is not a claim of contract authority. Its `## Owns` section is different: a narrow repository-operation decision marked there is authoritative for that decision, outranked by no document because none other owns it, and it never reaches product behavior or architecture.
+Intent documents and decision records do not compete in this ordering: they govern direction, premises, and reasons, and a behavioral question must resolve to a core document or specification. Role contracts rank below the governance documents they apply. The `## Judgments` section of a platform reference holds premises under the same terms, so citing one is not a claim of contract authority. Its `## Owns` section is different: a narrow repository-operation decision marked there is authoritative for that decision, outranked by no document because none other owns it, and it never reaches product behavior or architecture.
 
 A conflict between documents is a defect: report it in the current task context and retain it under `docs/change-execution.md` when the context must survive. Correct a lower-authority projection when the accepted decision is clear; a same-concern authority conflict or ambiguous governing intent goes to the engineer under root `AGENTS.md`. An Auditor may adjudicate assurance within existing discretion, but cannot amend design, waive a requirement, or settle that governing conflict through a report.
 
 ## Reading Protocol
 
-At task start an agent loads root `AGENTS.md`, then `docs/change-execution.md` for material coordination or a change record, and `docs/INDEX.md` to locate the owner. It loads `docs/verification-instruments.md` only when an instrument will decide acceptance or a harness must be admitted. It then reads the owning specification, its Core References, and local guides for modified directories. Wider loading occurs only when an owner, documentation-governance task, or conflict investigation requires it.
+At task start an agent loads root `AGENTS.md`, then `docs/change-execution.md` for material coordination or a change record, and `docs/INDEX.md` to locate the owner. It loads `docs/verification-instruments.md` only when an instrument will decide acceptance or a harness must be admitted. It then reads the owning specification, its Core References, and local guides for modified directories. A delegated role reads its contract under `docs/roles/`. Wider loading occurs only when an owner, documentation-governance task, or conflict investigation requires it. Writing or reviewing governance or specification text also loads `docs/glossary.md` and `docs/writing.md`; a decision record is read when a rule it supports is about to change.
+
+Reading is tiered by capability. The primary, Consultant, Auditor, and Reviewer read the judgment documents their work needs. A fast-tier delegate reads root `AGENTS.md`, its role contract, and the bounded task contract the primary writes for it, which states its inputs, writable paths, completion check, prohibitions, and return shape; it is not expected to apply the full governance corpus, and the primary does not delegate work to it that needs that corpus.
 
 An independent context receives the question, source intent and decisions, relevant owners, artifact and evidence references, and unresolved objections. It loads the material needed to form its own judgment rather than inheriting the producer's full implementation narrative. A proposal explains the candidate route; a change plan records execution; neither replaces an accepted owner. Routine work and incremental fidelity checks do not require a new document type or a full-corpus reading.
 
@@ -193,17 +222,18 @@ An independent context receives the question, source intent and decisions, relev
 
 Documentation dependency direction is a hard rule. Authority flows one way; change records are removable evidence under Change Records And Retention in `docs/change-execution.md`, not stable link targets.
 
-| From → To | Core | Specification | Change record |
-| --- | --- | --- | --- |
-| **Core** | allowed | **forbidden** | **forbidden** |
-| **Specification** | allowed | allowed | **forbidden** |
-| **Change record** | required | required | n/a |
+| From → To | Core | Specification | Decision record | Change record |
+| --- | --- | --- | --- | --- |
+| **Core** | allowed | **forbidden** | allowed | **forbidden** |
+| **Specification** | allowed | allowed | allowed | **forbidden** |
+| **Decision record** | allowed | allowed | allowed | **forbidden** |
+| **Change record** | required | required | allowed | n/a |
 
-Neither a Core document nor a specification may link to a change record in prose or metadata. Change records link the owning core, product, and specification documents for their change; authority never links back. Audit records link the specification or governance document whose rule produced them and the documents or surfaces they observed. Platform references and manuals link the contracts they project and do not restate rules another document owns: under Authority And Precedence a restated copy carries no authority, so it adds nothing while it agrees and misleads once it drifts. A platform reference path may not appear in a specification's `Core References` section, because that section names contract dependencies and a reference owns no behavioral contract; naming one in prose or Related Docs as a premise remains allowed. Specifications name their core dependencies in a Core References section and their peers in Related Docs. Repository documents use repository-relative links so they are mechanically checkable; every resolved link must name a file that exists. Packaged operator references use sibling links for required installed material and may cite optional source authority through its public repository URL. An executable procedure cannot require an unresolved checkout-relative link; source-build procedures explicitly acquire the selected checkout before using its files.
+Neither a Core document, a specification, nor a decision record may link to a change record in prose or metadata. Change records link the owning core, product, and specification documents for their change; authority never links back. Audit records link the specification or governance document whose rule produced them and the documents or surfaces they observed. Platform references and manuals link the contracts they project and do not restate rules another document owns: under Authority And Precedence a restated copy carries no authority, so it adds nothing while it agrees and misleads once it drifts. A platform reference path may not appear in a specification's `Core References` section, because that section names contract dependencies and a reference owns no behavioral contract; naming one in prose or Related Docs as a premise remains allowed. Specifications name their core dependencies in a Core References section and their peers in Related Docs. Repository documents use repository-relative links so they are mechanically checkable; every resolved link must name a file that exists. Packaged operator references use sibling links for required installed material and may cite optional source authority through its public repository URL. An executable procedure cannot require an unresolved checkout-relative link; source-build procedures explicitly acquire the selected checkout before using its files.
 
 ## Index Contract
 
-`docs/INDEX.md` lists the documents used to locate owners: every document of every type above except local guides, the index itself, and change records, grouped by type, one line per document: path, the lifecycle fields the type requires under Field Contract, and a one-line summary extracted from the document itself. Change records are not enumerated. The generated index states that they live under `docs/changes/` and are discovered by listing that directory. The generator is `scripts/generate-doc-index.mjs`; `scripts/validate-doc-model.mjs` enforces closed-set membership and per-type record rules; the repository check runs both, and an index that does not match regeneration fails the check.
+`docs/INDEX.md` lists the documents used to locate owners: every document of every type above except local guides, the index itself, change records, and decision records, grouped by type, one line per document: path, the lifecycle fields the type requires under Field Contract, and a one-line summary extracted from the document itself. Change records and decision records are not enumerated. The generated index states that they live under `docs/changes/` and `docs/decisions/`; decision records are reached from the owners that link them. The generator is `scripts/generate-doc-index.mjs`; `scripts/validate-doc-model.mjs` enforces closed-set membership and per-type record rules; the repository check runs both, and an index that does not match regeneration fails the check.
 
 ## Type Induction
 

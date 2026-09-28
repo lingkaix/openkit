@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: mechanism
 updated: 2026-09-21
 ---
 # Storage Layout And Record Ownership
@@ -228,7 +229,7 @@ Derived records must be rebuildable from file-backed records or authoritative SQ
 
 Each Core, User, Workspace, and Light App database owns its applied-migration ledger independently. Packaged, ordered SQL migrations define changes to that scope; they do not migrate another scope, canonical file formats, external Vaults, or Worker storage. The implementation uses Drizzle migration execution and its native ledger rather than a second setup-only ledger. Diagnostics and the public storage layout report project actually recorded migrations as scope-qualified migration names; they do not create migration authority or infer an applied migration from a later timestamp alone.
 
-Before the first release, schema changes may be consolidated into each scope's initial `0000` baseline. Once released, an applied migration is immutable: each release with schema changes adds a new SQL migration in each affected scope. Deploying an unpublished baseline for testing does not freeze that baseline or require a migration for every development commit. An existing test database built from a different unpublished baseline needs an explicit operator cutover or recreation; ordinary startup neither adopts an old setup ledger nor resets data automatically.
+Before the first release, schema changes may be consolidated into each scope's initial `0000` baseline. Once released, an applied migration is immutable ([decision](../decisions/20260918-release_schema_migrations.md)): each release with schema changes adds a new SQL migration in each affected scope. Deploying an unpublished baseline for testing does not freeze that baseline or require a migration for every development commit. An existing test database built from a different unpublished baseline needs an explicit operator cutover or recreation; ordinary startup neither adopts an old setup ledger nor resets data automatically.
 
 After integrity validation, startup executes pending Core migrations and scans existing User and Workspace databases through the same scoped migration path before product admission. Newly created scoped databases execute their complete journal. Light App databases execute their own migrations through their existing open lifecycle and retain their separately owned failure boundary. Only one process may own the writable Data Root. Pending SQL and ledger publication are transactional within each database; there is no cross-database transaction or automatic rollback of previously committed scopes. Failure leaves the failing database's pending migration batch unapplied, prevents admission dependent on that database, and requires correction or explicit stopped-process recovery before retry. Missing migration files or journals are failures, not an empty migration set. Restart skips already applied migrations and retries unapplied work; it does not silently repair a contradictory database history.
 
@@ -455,6 +456,12 @@ OpenShell ids, gateway ids, provider handles, supervisor logs, process ids, and 
 
 Runtime-internal sub-agent streams and their native origin indexes follow the restricted evidence and product-safe normalization contract in `docs/specs/20260711-worker_runtime_subagent_provenance.md`; they do not create additional OpenKit thread, turn, or AgentSession storage trees.
 
+### Turn Observation Placement
+
+The work-data observation family lives in `threads/<threadId>/turns/<turnId>/observations.jsonl` beside the existing Item stream. The admitted header is `v`, `type`, `id`, `ts`, `seq`, `obs`, `ret`, `parent`, `corr`, `outcome`, `cert`, `turnId`, `refs`, and `ext`, with required `payload`; requiredness and meanings follow the work-data owner. Directory-level `turn.json` carries `requiredFeatures: [openkit.work-observations.v1]` when this family is present, alongside existing lineage and immutable capture binding. Its append order is local to that file; the two families do not share order. `20260921-work_data_retention_format.md` owns the header and byte admission. One storage append owner validates persisted Workspace/Thread/Turn lineage and immutable capture binding, assigns contiguous sequence, and publishes references only after existing EvidenceBundle body and metadata durability. Restricted body staging and final bytes remain within that existing evidence owner, never a new Turn blob lifecycle or server transcript copy.
+
+Observation recovery discards every unterminated tail after the last LF, including parseable JSON, and rejects corrupt interior records or conflicting identities. Body and owner metadata durability precede observation file and required directory fsync. Receipt replay must verify the publication boundary after interruption; SQLite receipts and file publication remain separate stores. Lawful body expiry is not undone by replay. Observation rows follow existing Thread/Workspace history retention; referenced bytes follow evidence retention, hold, access revocation and disposal. Portable export/import must include the family, preserve unresolved references truthfully, remint in-package owner identities through exact maps and reject unsupported required features before activating imported data.
+
 ## Server Storage Layout
 
 `server/db/core.sqlite` owns:
@@ -517,7 +524,7 @@ Records without sufficient lineage may be stored as quarantined evidence but mus
 
 ## Migration Posture
 
-Because OpenKit is in active internal development, the clean target should win over legacy preservation.
+This migration moves pre-baseline storage, so the clean target should win over legacy preservation.
 
 The current migration does not need old-version compatibility.
 
@@ -560,7 +567,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - Workspace runtime, review, evidence, and log subdirectories are materialized by the layout helper, so later worker-session, review, evidence-import, and log writers do not invent private directory roots.
 - Workspace `sources/` should copy material when replay, audit, review, or user upload semantics require local evidence. It should store references when an external system remains the source of truth or copying would be unsafe, excessive, or policy-forbidden.
 - Future storage additions are additive by default. Unknown optional fields and derived directories may be ignored, but unsupported required features and unknown authority-bearing canonical record families must fail closed.
-- Current internal migration does not require compatibility with old internal storage layouts.
+- The current pre-baseline migration does not require compatibility with old internal storage layouts; changes after the baseline keep retained data usable under Retained Data Continuity in `docs/core/contract-evolution.md`.
 
 ## Deferred / Future Work
 

@@ -17,6 +17,7 @@ function validPlanOutput(): unknown {
     schemaVersion: 1,
     goalSummary: 'Ship OpenKit v0.0.6 with a bounded Goal Mode loop.',
     assumptions: ['The workspace repository has already been linked.'],
+    taskDispositions: [],
     tasks: [
       {
         taskId: 'task_plan_schema',
@@ -117,6 +118,7 @@ describe('goal plan output schema', () => {
       questions: plan.questions,
       risks: plan.risks,
       tasks: plan.tasks,
+      taskDispositions: plan.taskDispositions,
       assumptions: plan.assumptions,
       goalSummary: plan.goalSummary,
       schemaVersion: plan.schemaVersion,

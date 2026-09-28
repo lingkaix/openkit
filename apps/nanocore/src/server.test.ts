@@ -203,6 +203,7 @@ import { readWorkspaceKnowledgeRetrievalTrace } from './storage/workspace-portab
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp as createDeterministicTestApp } from './test-support/app.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
@@ -4132,6 +4133,13 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Interrupted worker retry route');
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      objective: 'Recover interrupted work.',
+      userId: 'user_local',
+    });
     const turn = store.createTurn('ws_demo', thread.id, 'Interrupted worker', {
       kind: 'user',
       id: 'user_local',
@@ -4160,6 +4168,7 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         goalId: 'goal_retry',
         objective: 'Recover interrupted work.',
         status: 'running',
@@ -4466,6 +4475,7 @@ describe('nanocore server', () => {
       schemaVersion: 1,
       goalSummary: 'Import this goal.',
       assumptions: [],
+      taskDispositions: [],
       tasks: [
         {
           taskId: 'task_import_1',
@@ -4554,6 +4564,9 @@ describe('nanocore server', () => {
         goalId: 'goal_import_1',
         planItemId: 'item_goal_plan_import_1',
         plan: sourcePlan,
+        predecessorPlanItemId: null,
+        sourceIntentItemId: 'item_goal_import_1',
+        sourceTaskEvidenceDigest: null,
         createdByRequestId: 'goal-plan-import-1',
         now: () => '2026-07-06T00:05:00.000Z',
       });
@@ -4670,6 +4683,7 @@ describe('nanocore server', () => {
       schemaVersion: 1,
       goalSummary: 'Import goal evidence.',
       assumptions: [],
+      taskDispositions: [],
       tasks: [
         {
           taskId: 'task_evidence_1',
@@ -4692,6 +4706,13 @@ describe('nanocore server', () => {
       risks: [],
       questions: [],
       verificationApproach: 'Import and inspect the evidence records.',
+    });
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      objective: 'Import goal evidence.',
+      userId: 'user_local',
     });
     const sourceTurn = store.createTurn(
       'ws_demo',
@@ -4756,6 +4777,7 @@ describe('nanocore server', () => {
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       const sourceGoal = createGoalRecord(sourceDb, {
+        createdByItemId: initialIntentItemId,
         goalId: 'goal_evidence_1',
         objective: 'Import goal evidence.',
         status: 'reviewing',
@@ -4772,6 +4794,9 @@ describe('nanocore server', () => {
         goalId: 'goal_evidence_1',
         planItemId: 'item_goal_plan_evidence_1',
         plan: sourceEvidencePlan,
+        predecessorPlanItemId: null,
+        sourceIntentItemId: initialIntentItemId,
+        sourceTaskEvidenceDigest: null,
         createdByRequestId: 'goal-plan-evidence-1',
         now: () => '2026-07-06T00:06:00.000Z',
       });
@@ -4869,8 +4894,8 @@ describe('nanocore server', () => {
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
     const importedThreadId = `th_imported_${body.importedWorkspaceId}_1`;
-    const importedTurnId = `tu_imported_${body.importedWorkspaceId}_1`;
-    const importedItemId = `it_imported_${body.importedWorkspaceId}_1`;
+    const importedTurnId = `tu_imported_${body.importedWorkspaceId}_2`;
+    const importedItemId = `it_imported_${body.importedWorkspaceId}_2`;
     const importedArtifactId = `ar_imported_${body.importedWorkspaceId}_1`;
     const importedGoalId = `goal_imported_${body.importedWorkspaceId}_1`;
     const importedTaskId = `task_imported_${body.importedWorkspaceId}_1`;
@@ -12598,6 +12623,13 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal review decision');
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      objective: 'Resolve a Goal Review attention row.',
+      userId: 'user_local',
+    });
     const turn = store.createTurn('ws_demo', thread.id, 'Review the first Goal Task', {
       kind: 'user',
       id: 'user_local',
@@ -12606,6 +12638,7 @@ describe('nanocore server', () => {
 
     try {
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_route',
         workspaceId: 'ws_demo',
@@ -12801,6 +12834,13 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Final goal review decision');
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      objective: 'Complete a goal after its final task is accepted.',
+      userId: 'user_local',
+    });
     const turn = store.createTurn('ws_demo', thread.id, 'Review the final Goal Task', {
       kind: 'user',
       id: 'user_local',
@@ -12809,6 +12849,7 @@ describe('nanocore server', () => {
 
     try {
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_final_review',
         workspaceId: 'ws_demo',
@@ -12916,6 +12957,13 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Goal review rollback');
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      objective: 'Roll back all state when review resolution fails.',
+      userId: 'user_local',
+    });
     const turn = store.createTurn('ws_demo', thread.id, 'Review the rollback Goal Task', {
       kind: 'user',
       id: 'user_local',
@@ -12924,6 +12972,7 @@ describe('nanocore server', () => {
 
     try {
       createGoalRecord(workspaceDb, {
+        createdByItemId: initialIntentItemId,
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_review_rollback',
         workspaceId: 'ws_demo',

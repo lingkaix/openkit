@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { parseJsoncObject } from './jsonc.js';
 import { BootConfigError } from './mode.js';
+import { unknownConfigKeyMessage, unknownConfigKeys } from './unknown-config-keys.js';
 
 export type { OpenKitConfig };
 export { OpenKitConfigSchema };
@@ -58,15 +59,8 @@ export function openKitConfigPath(dataRoot = 'data'): string {
  */
 export function loadOpenKitConfigWithDiagnostics(dataRoot = 'data'): OpenKitConfigLoadResult {
   const configPath = openKitConfigPath(dataRoot);
-
-  return existsSync(configPath)
-    ? {
-        config: loadConfigFile(configPath),
-        diagnostics: [],
-        path: configPath,
-        source: 'config',
-      }
-    : { config: {}, diagnostics: [], source: 'absent' };
+  if (!existsSync(configPath)) return { config: {}, diagnostics: [], source: 'absent' };
+  return { ...loadConfigFile(configPath), path: configPath, source: 'config' };
 }
 
 /**
@@ -87,7 +81,9 @@ export function loadOpenKitConfig(dataRoot = 'data'): OpenKitConfig {
  * @returns Parsed OpenKit config.
  * @throws BootConfigError when validation fails.
  */
-function loadConfigFile(configPath: string): OpenKitConfig {
+function loadConfigFile(
+  configPath: string
+): Pick<OpenKitConfigLoadResult, 'config' | 'diagnostics'> {
   const parsedJsonc = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
   const parsedConfig = OpenKitConfigSchema.safeParse(parsedJsonc);
 
@@ -98,5 +94,11 @@ function loadConfigFile(configPath: string): OpenKitConfig {
     );
   }
 
-  return parsedConfig.data;
+  return {
+    config: parsedConfig.data,
+    diagnostics: unknownConfigKeys('server', parsedJsonc, parsedConfig.data).map((key) => ({
+      message: unknownConfigKeyMessage(key),
+      severity: 'warning',
+    })),
+  };
 }

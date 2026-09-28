@@ -52,18 +52,8 @@ describe('server config schema', () => {
     { auth: { enabled: true } },
     { auth: { localModeUserId: 'user_local' } },
     { auth: { provider: 'better-auth' } },
-    { data: { layoutVersion: 1 } },
     { defaults: { agentId: 'agent_codex_host' } },
     { defaults: { workspaceId: 'ws_default' } },
-    { diagnostics: { redactSecrets: true } },
-    { extensions: { experimental: true } },
-    { features: { internalOpenAICompatFacade: { enabled: true } } },
-    { gateway: { openaiCompatible: { auth: 'agent-session' } } },
-    { gateway: { openaiCompatible: { defaultModel: 'gpt-5' } } },
-    { gateway: { openaiCompatible: { defaultProviderId: 'openai' } } },
-    { gateway: { openaiCompatible: { route: '/v1' } } },
-    { internal: { openaiCompatFacade: { enabled: true } } },
-    { providers: [] },
     { server: { cors: { origins: ['ftp://console.openkit.example'] } } },
     { server: { publicBaseUrl: 'https://core.openkit.example/path' } },
     { server: { trustedProxies: ['127.0.0.1'] } },
@@ -71,20 +61,11 @@ describe('server config schema', () => {
     expect(() => OpenKitConfigSchema.parse(config)).toThrow();
   });
 
-  it('rejects removed data-root and unknown top-level fields', () => {
-    expect(() =>
-      OpenKitConfigSchema.parse({
-        schemaVersion: 1,
-        dataRoot: './data',
-      })
-    ).toThrow();
-
-    expect(() =>
-      OpenKitConfigSchema.parse({
-        schemaVersion: 1,
-        unknownTopLevel: true,
-      })
-    ).toThrow();
+  it('strips unknown top-level fields while retaining strict known sections', () => {
+    expect(
+      OpenKitConfigSchema.parse({ schemaVersion: 1, dataRoot: './data', unknownTopLevel: true })
+    ).toEqual({ schemaVersion: 1 });
+    expect(() => OpenKitConfigSchema.parse({ auth: { unknownTopLevel: true } })).toThrow();
   });
 
   it('keeps the config policy catalog free of inline secret modes', () => {
@@ -256,13 +237,13 @@ describe('server config schema', () => {
     ).toThrow();
   });
 
-  it('rejects Cell topology keys and raw NanoHost token material in server config', () => {
-    expect(() =>
+  it('ignores unknown top-level Cell topology keys and rejects raw NanoHost token material', () => {
+    expect(
       OpenKitConfigSchema.parse({
         schemaVersion: 1,
         openshellCellSshTarget: 'root@127.0.0.1',
       })
-    ).toThrow();
+    ).toEqual({ schemaVersion: 1 });
 
     expect(() =>
       OpenKitConfigSchema.parse({

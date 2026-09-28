@@ -1,3 +1,5 @@
+import { STATUS_CLASS } from './status';
+
 export type GoalPhase = 'draft' | 'plan' | 'execute' | 'review';
 
 const PHASE_ORDER: GoalPhase[] = ['draft', 'plan', 'execute', 'review'];
@@ -31,8 +33,8 @@ export function PhaseStepper({ current, gate = false }: PhaseStepperProps) {
         const isDone = i < currentIndex;
         const lit = isCurrent
           ? gate
-            ? 'bg-notice-bg text-notice-fg'
-            : 'bg-info-bg text-info-fg'
+            ? STATUS_CLASS.notice
+            : STATUS_CLASS.informative
           : isDone
             ? 'text-positive-fg'
             : 'text-fg-muted';

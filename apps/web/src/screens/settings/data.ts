@@ -1,4 +1,4 @@
-import type { CoreClient, MetaResponse, WorkspaceRecord } from '@openkit/core-client';
+import type { CoreClient, WorkspaceRecord } from '@openkit/core-client';
 import { createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
@@ -12,8 +12,6 @@ import { projectSafeValue } from './secret-safe';
  */
 export const settingsKeys = {
   workspace: (workspaceId: string) => ['settings', 'workspace', workspaceId] as const,
-  workspaceResources: (workspaceId: string) =>
-    ['settings', 'workspace-resources', workspaceId] as const,
   vault: (workspaceId: string) => ['settings', 'vault', workspaceId] as const,
   vaultInjectionPlans: (workspaceId: string) =>
     ['settings', 'vault-injection-plans', workspaceId] as const,
@@ -25,7 +23,6 @@ export const settingsKeys = {
   aepSnapshot: (workspaceId: string, snapshotId: string) =>
     ['settings', 'aep-snapshot', workspaceId, snapshotId] as const,
   usage: (workspaceId: string) => ['settings', 'usage', workspaceId] as const,
-  meta: ['core', 'meta'] as const,
   aiInterface: ['settings', 'ai-interface'] as const,
 };
 
@@ -97,14 +94,6 @@ export interface ConnectedAppProviderRow {
   subscriptionProviderId: ProviderSubscriptionDescriptor['subscriptionProviderId'];
   displayName: string;
   accounts: ConnectedAppRow[];
-}
-
-/** Safe control-channel status derived from meta + connection. */
-export interface ControlChannelStatus {
-  protocolVersion: string;
-  capabilityCount: number;
-  capabilities: string[];
-  reachable: boolean;
 }
 
 /** Secret-safe Vault reference metadata exposed to the Settings screen. */
@@ -686,27 +675,6 @@ export function projectConnectedApps(
   };
 }
 
-/**
- * Projects meta into control-channel status (no secrets).
- *
- * @param meta `core.meta` response.
- * @param reachable Whether the connection probe succeeded.
- * @returns Control-channel status for board 20.
- */
-export function projectControlChannel(
-  meta: MetaResponse | undefined,
-  reachable: boolean
-): ControlChannelStatus | null {
-  if (!meta) return null;
-  const safe = projectSafeValue(meta) as MetaResponse;
-  return {
-    protocolVersion: safe.protocolVersion,
-    capabilityCount: safe.capabilities.length,
-    capabilities: [...safe.capabilities],
-    reachable,
-  };
-}
-
 /** Load the active workspace for General settings. */
 export function useSettingsWorkspace(workspaceId: string | null) {
   const client = useCoreClient();
@@ -714,25 +682,6 @@ export function useSettingsWorkspace(workspaceId: string | null) {
     queryKey: settingsKeys.workspace(workspaceId ?? ''),
     queryFn: async () => projectWorkspace(await client.core.getWorkspace(workspaceId as string)),
     enabled: Boolean(workspaceId),
-  });
-}
-
-/** Load the selectable models, agents, and skills for General settings. */
-export function useSettingsWorkspaceResources(workspaceId: string | null) {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: settingsKeys.workspaceResources(workspaceId ?? ''),
-    queryFn: () => client.core.getWorkspaceResources(workspaceId as string),
-    enabled: Boolean(workspaceId),
-  });
-}
-
-/** Load meta for control-channel / capability status. */
-export function useMetaStatus() {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: settingsKeys.meta,
-    queryFn: async () => projectSafeValue(await client.core.meta()) as MetaResponse,
   });
 }
 

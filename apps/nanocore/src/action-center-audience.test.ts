@@ -12,6 +12,7 @@ import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const timestamp = '2026-05-31T00:00:00.000Z';
@@ -64,6 +65,13 @@ describe('action center thread audience', () => {
       priorityClass: 'interactive',
       requiredPoolConstraints: ['openshell.local'],
     });
+    const initialIntentItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: privateThread.id,
+      objective: 'Must not project into Action Center.',
+      userId: 'user_outsider',
+    });
     const privateTurn = store.createTurn('ws_demo', privateThread.id, 'SECRET_PRIVATE_TURN', {
       kind: 'user',
       id: 'user_outsider',
@@ -96,6 +104,7 @@ describe('action center thread audience', () => {
       goalStore.createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_private_hidden',
+        createdByItemId: initialIntentItemId,
         workspaceId: 'ws_demo',
         threadId: privateThread.id,
         title: 'SECRET_PRIVATE_GOAL_TITLE',

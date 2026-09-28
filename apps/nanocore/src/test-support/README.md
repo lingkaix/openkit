@@ -7,6 +7,7 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 - `demo-store.ts` creates an isolated `FsStore` and explicitly seeds the Demo Workspace fixture.
 - `git-repository.ts` seeds a writable Git repository with one resolvable HEAD commit.
 - `agent-environment.ts` records deterministic production-shaped AEP snapshots for scheduler recovery fixtures.
+- `goal-intent.ts` creates a completed user Turn and initial objective Item so Goal fixtures bind a real `createdByItemId` and `currentIntentItemId` lineage.
 - `app.ts` creates an app with an explicit simulated executor unless a test supplies another executor.
 - `workspace-sync.ts` records deterministic trusted input and materialization lineage for review fixtures.
 - `mcp-stdio-stub.mjs` publishes a descendant-written PID and credential digest receipt so MCP process cleanup tests verify inherited credentials on supported POSIX hosts without Linux-specific process inspection.

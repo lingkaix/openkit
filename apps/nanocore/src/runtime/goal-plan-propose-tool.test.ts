@@ -18,13 +18,14 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { createDeterministicGoalPlanFallback, type GoalPlanOutput } from './goal-plan.js';
 import {
+  createGoalPlanPlanner,
   createGoalPlanProposeTool,
-  createPreApprovalGoalPlanRevisionPlanner,
   GOAL_ORCHESTRATOR_ROLE_ID,
   GOAL_PLAN_PROPOSE_TOOL_NAME,
-  runPreApprovalGoalPlanRevision,
+  runGoalPlanProposal,
 } from './goal-plan-propose-tool.js';
 import { GoalPlanRevisionError } from './goal-planning.js';
 import type { GoalRecord } from './goal-store.js';
@@ -74,6 +75,10 @@ function openRevisionUsageStorage(): { coreDb: CoreDb; workspaceDb: WorkspaceDb 
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-plan-revision-usage-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  const store = createDemoStore({ dataRoot });
+  store.createTurn(GOAL.workspaceId, GOAL.threadId, 'Revise Plan', REVISION_ACTOR, null, {
+    turnId: 'tu_revision_capture',
+  });
   const workspaceDb = openWorkspaceDb(dataRoot, GOAL.workspaceId);
   applyScopedMigrations(workspaceDb);
   return { coreDb, workspaceDb };
@@ -201,7 +206,7 @@ describe('goal.plan.propose Tool', () => {
     expect(tool.name).toBe(GOAL_PLAN_PROPOSE_TOOL_NAME);
     expect(result.isError).not.toBe(true);
     expect(result.content).toEqual([
-      { type: 'text', text: 'Proposed Goal Plan passed revision checks.' },
+      { type: 'text', text: 'Proposed Goal Plan passed validation.' },
     ]);
     expect(submitted).toEqual([plan]);
   });
@@ -271,7 +276,7 @@ describe('pre-approval Goal Plan revision Turn', () => {
         message: assistantMessage([{ type: 'text', text: 'Proposed.' }]),
       });
 
-    const plan = await runPreApprovalGoalPlanRevision({
+    const plan = await runGoalPlanProposal({
       goal: GOAL,
       previousPlan: PREVIOUS_PLAN,
       previousPlanItemId: 'it_goal_plan_prior',
@@ -302,17 +307,18 @@ describe('pre-approval Goal Plan revision Turn', () => {
       previousPlan: PREVIOUS_PLAN,
       revision: REVISION,
     });
-    expect(firstCall?.systemPrompt).toContain('no unresolved questions');
-    expect(firstCall?.systemPrompt).toContain('differ materially from the previous Plan');
-    expect(firstCall?.systemPrompt).toMatch(/[Dd]o not invent/);
+    expect(firstCall?.systemPrompt).toContain(
+      'Propose the initial Plan and every material Plan revision'
+    );
+    expect(firstCall?.systemPrompt).toContain('approval of its exact version');
+    expect(firstCall?.systemPrompt).not.toContain(REVISION);
   });
 
-  it('returns a Tool error for a questioned proposal then accepts a corrected two-task Plan in the same loop', async () => {
+  it('accepts a questioned proposal as a planning Gate result', async () => {
     const questioned = {
       ...twoTaskPlan(PREVIOUS_PLAN),
       questions: ['Who should own the second task?'],
     };
-    const proposed = twoTaskPlan(PREVIOUS_PLAN);
     const callProvider = vi
       .fn<InternalAgentProviderCall>()
       .mockResolvedValueOnce({
@@ -332,30 +338,19 @@ describe('pre-approval Goal Plan revision Turn', () => {
         expect(toolMessage).toMatchObject({
           role: 'tool',
           callId: 'call_questions',
-          isError: true,
           content: [
             {
               type: 'text',
-              text: 'Pre-approval Goal Plan revision must propose an approvable draft.',
+              text: 'Proposed Goal Plan passed validation.',
             },
           ],
         });
         return {
-          message: assistantMessage([
-            {
-              type: 'toolCall',
-              callId: 'call_corrected',
-              name: GOAL_PLAN_PROPOSE_TOOL_NAME,
-              arguments: proposed,
-            },
-          ]),
+          message: assistantMessage([{ type: 'text', text: 'Question submitted.' }]),
         };
-      })
-      .mockResolvedValueOnce({
-        message: assistantMessage([{ type: 'text', text: 'Proposed.' }]),
       });
 
-    const plan = await runPreApprovalGoalPlanRevision({
+    const plan = await runGoalPlanProposal({
       goal: GOAL,
       previousPlan: PREVIOUS_PLAN,
       previousPlanItemId: 'it_goal_plan_prior',
@@ -367,8 +362,8 @@ describe('pre-approval Goal Plan revision Turn', () => {
       signal: new AbortController().signal,
     });
 
-    expect(plan).toEqual(proposed);
-    expect(callProvider).toHaveBeenCalledTimes(3);
+    expect(plan).toEqual(questioned);
+    expect(callProvider).toHaveBeenCalledTimes(2);
   });
 
   it('fails closed when the model never proposes a Plan', async () => {
@@ -377,7 +372,7 @@ describe('pre-approval Goal Plan revision Turn', () => {
     });
 
     await expect(
-      runPreApprovalGoalPlanRevision({
+      runGoalPlanProposal({
         goal: GOAL,
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
@@ -398,7 +393,7 @@ describe('pre-approval Goal Plan revision Turn', () => {
     const callProvider = vi.fn<InternalAgentProviderCall>().mockRejectedValue(new Error('down'));
 
     await expect(
-      runPreApprovalGoalPlanRevision({
+      runGoalPlanProposal({
         goal: GOAL,
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
@@ -432,7 +427,7 @@ describe('pre-approval Goal Plan revision Turn', () => {
       .mockRejectedValueOnce(new Error('down'));
 
     await expect(
-      runPreApprovalGoalPlanRevision({
+      runGoalPlanProposal({
         goal: GOAL,
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
@@ -460,7 +455,7 @@ describe('pre-approval Goal Plan revision Turn', () => {
     });
 
     await expect(
-      runPreApprovalGoalPlanRevision({
+      runGoalPlanProposal({
         goal: GOAL,
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
@@ -498,7 +493,7 @@ describe('pre-approval Goal Plan revision Turn', () => {
       });
 
     await expect(
-      runPreApprovalGoalPlanRevision({
+      runGoalPlanProposal({
         goal: GOAL,
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
@@ -550,7 +545,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
         ],
       });
     try {
-      const planner = createPreApprovalGoalPlanRevisionPlanner({
+      const planner = createGoalPlanPlanner({
         runtimeConfig: () => snapshot,
         llmGatewayDispatcher: { createResponses },
         resolveGatewayProvider,
@@ -563,6 +558,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
 
       const plan = await planner({
         goal: GOAL,
+        capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
         revisionText: REVISION,
@@ -654,7 +650,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
         usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
       });
     try {
-      const planner = createPreApprovalGoalPlanRevisionPlanner({
+      const planner = createGoalPlanPlanner({
         runtimeConfig: () => snapshot,
         llmGatewayDispatcher: { createResponses },
         resolveGatewayProvider,
@@ -667,6 +663,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
 
       const plan = await planner({
         goal: GOAL,
+        capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
         previousPlan: PREVIOUS_PLAN,
         previousPlanItemId: 'it_goal_plan_prior',
         revisionText: REVISION,
@@ -718,7 +715,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
   it('throws a typed unavailable error when Goal Orchestrator has no admitted model', async () => {
     const { coreDb, workspaceDb } = openRevisionUsageStorage();
     try {
-      const planner = createPreApprovalGoalPlanRevisionPlanner({
+      const planner = createGoalPlanPlanner({
         runtimeConfig: () =>
           ({
             gatewayConfig: {
@@ -746,6 +743,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
       await expect(
         planner({
           goal: GOAL,
+          capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
           previousPlan: PREVIOUS_PLAN,
           previousPlanItemId: 'it_goal_plan_prior',
           revisionText: REVISION,
@@ -754,6 +752,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
       await expect(
         planner({
           goal: GOAL,
+          capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
           previousPlan: PREVIOUS_PLAN,
           previousPlanItemId: 'it_goal_plan_prior',
           revisionText: REVISION,

@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Implemented
+kind: boundary
 ---
 # App API OpenAPI Projection
 
@@ -111,7 +112,7 @@ What remains valuable from the OpenAPI ecosystem is the document itself — as a
 
 ### Migration discipline
 
-- Route conversion to registered form proceeds route-group by route-group, but per the internal development compatibility rule the end state is total: once the coverage check is enabled, no public route may bypass registration, and no parallel unregistered route style remains.
+- Route conversion to registered form proceeds route-group by route-group, but the end state is total: once the coverage check is enabled, no public route may bypass registration, and no parallel unregistered route style remains.
 
 ## Accepted Design
 

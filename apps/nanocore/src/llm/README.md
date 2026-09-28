@@ -25,6 +25,8 @@ This directory owns LLM Gateway behavior, provider dispatch, upstream clients an
 - `codex-quota.ts` implements the current strict direct Codex quota reader; `xai-quota.ts` implements the strict xAI account/credits reader and independent lazy auto-top-up read; [Provider Subscription Accounts](../../../../docs/specs/20260721-provider_subscription_accounts.md) owns their behavior.
 - `provider-subscription-routes.ts` exposes the deployment-admin App API for both supported provider families, and every production Gateway path dispatches through `PiAiGatewayClient`.
 
+`model-capture.ts` verifies the Store-admitted Turn and persisted coverage before internal model work, owns the scoped Workspace database lifetime, and sends admitted semantic request/response content to the shared work-observation writer. Quick Chat, Goal planning, and Administration pass its trusted context through their existing provider calls. Public and Worker Gateway calls derive their capture context from authenticated CapabilityCall and Worker lineage instead of a Store entry; both paths verify the persisted Turn binding through `ModelCapture`. `model-semantic-content.ts` selects outward text and tool events before public conversion can defer or discard partial results. Capture failure is distinct from provider failure and must not trigger fallback; CapabilityCall and usage remain their existing owners.
+
 ## Verification
 
 Run the focused Gateway, dispatcher, upstream client, provider-subscription, usage, converter, and prompt-cache tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).

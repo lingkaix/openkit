@@ -1,15 +1,26 @@
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { type StopReason, StopReasonSchema, type TurnStatus } from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
   WorkerCanonicalTerminalStatusSchema,
+  WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
+import { stageWorkObservationChunk, workObservationBodyBundleId } from '../evidence-bundles.js';
 import {
   requireSchedulerSessionLeaseAdmissionContext,
   resolveSchedulerLeaseTokenBinding,
 } from '../scheduler-records.js';
-import type { CoreDb } from '../storage/db.js';
+import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
+import {
+  appendWorkObservation,
+  readWorkObservations,
+  readWorkObservationTurnBinding,
+  type WorkObservationDraft,
+} from '../storage/work-observations.js';
 import type {
   WorkerControlAcceptedRecordRecorder,
   WorkerControlAcceptedRecordRecorderInput,
@@ -18,6 +29,7 @@ import type {
   WorkerControlLineage,
   WorkerControlTokenBindingInput,
 } from './worker-control-gateway.js';
+import { workerControlEventReceipt } from './worker-control-gateway.js';
 
 /** Default interval for observing one scheduler-owned durable final status. */
 const WORKER_FINAL_STATUS_POLL_INTERVAL_MS = 100;
@@ -122,6 +134,23 @@ export function recordWorkerControlAcceptedRecord(
   coreDb: CoreDb,
   input: WorkerControlAcceptedRecordRecorderInput
 ): void {
+  const event =
+    input.operation === 'event_append'
+      ? WorkerCanonicalEventRecordSchema.parse(input.record)
+      : null;
+  const receipt = event ? workerControlEventReceipt(event) : input.record;
+  const existing = coreDb.sqlite
+    .prepare(`SELECT record_json AS recordJson FROM worker_control_records
+    WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = ? AND record_key = ?`)
+    .get(
+      input.lineage.agentSessionId,
+      input.lineage.packageSnapshotId,
+      input.operation,
+      input.recordKey
+    ) as { recordJson: string } | undefined;
+  if (existing && !isDeepStrictEqual(JSON.parse(existing.recordJson), receipt))
+    throw new Error('recovery_required: worker receipt identity conflict');
+  if (event) recordWorkerObservation(coreDb, event, existing !== undefined);
   coreDb.sqlite
     .prepare(
       `
@@ -151,9 +180,156 @@ export function recordWorkerControlAcceptedRecord(
       input.operation,
       input.recordKey,
       input.sequence ?? null,
-      JSON.stringify(input.record),
+      JSON.stringify(receipt),
       input.acceptedAt
     );
+}
+
+/** Retains one observation under verified outer lineage before a sanitized control receipt can be acknowledged. */
+function recordWorkerObservation(
+  coreDb: CoreDb,
+  event: WorkerCanonicalEventRecord,
+  replay: boolean
+): void {
+  if (
+    event.event.type !== 'observation.recorded' &&
+    event.event.type !== 'observation.content.chunk'
+  )
+    return;
+  const { lineage } = event;
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
+  const owner = { threadId: lineage.threadId, turnId: lineage.turnId };
+  const recordId = (observationId: string) =>
+    `obs_runtime_${createHash('sha256')
+      .update(JSON.stringify([lineage.packageSnapshotId, observationId]))
+      .digest('hex')}`;
+  const id = recordId(event.event.data.observationId);
+  try {
+    applyScopedMigrations(workspaceDb);
+    const binding = readWorkObservationTurnBinding(workspaceDb, owner);
+    if (!binding.coverage)
+      throw new Error('recovery_required: observation capture binding is missing');
+    if (binding.turn.agentSessionId !== lineage.agentSessionId)
+      throw new Error('recovery_required: observation AgentSession mismatch');
+    if (event.event.type === 'observation.recorded') {
+      const data = event.event.data;
+      if (data.content.state === 'expected' && binding.coverage.value !== 'on')
+        throw new Error('Observation content is not admitted by this Turn');
+      let parent: string | undefined;
+      if (data.content.state === 'unavailable' && data.content.expectedObservationId) {
+        parent = recordId(data.content.expectedObservationId);
+        const rows = readWorkObservations(workspaceDb, owner);
+        const expected = rows.find((row) => row.id === parent);
+        const current = rows.find((row) => row.id === id);
+        if (
+          !expected ||
+          expected.type !== 'runtime.observed' ||
+          (current && expected.seq >= current.seq) ||
+          !expected.refs?.some(
+            (ref) =>
+              ref.kind === 'aep-snapshot' &&
+              ref.edge === 'association' &&
+              ref.locator === lineage.packageSnapshotId &&
+              ref.scope.workspaceId === lineage.workspaceId
+          )
+        )
+          throw new Error('Observation unavailability lacks earlier same-package metadata');
+        const declaration = WorkerObservationDataSchema.parse(expected.payload);
+        if (
+          declaration.observationId !== data.content.expectedObservationId ||
+          declaration.content.state !== 'expected' ||
+          declaration.sourceRef !== data.sourceRef ||
+          declaration.sourceSequence >= data.sourceSequence ||
+          declaration.fact.kind !== data.fact.kind ||
+          declaration.fact.runtimeOriginRef !== data.fact.runtimeOriginRef ||
+          declaration.fact.callRef !== data.fact.callRef ||
+          declaration.fact.messageRef !== data.fact.messageRef
+        )
+          throw new Error('Observation unavailability lacks earlier expected content');
+      }
+      const observation: WorkObservationDraft = {
+        id,
+        type: 'runtime.observed',
+        ts: data.observedAt,
+        obs: 'sidecar',
+        ...(parent ? { parent } : {}),
+        ret: 'turn-evidence',
+        refs: [
+          {
+            kind: 'aep-snapshot',
+            scope: { workspaceId: lineage.workspaceId },
+            locator: lineage.packageSnapshotId,
+            edge: 'association',
+          },
+        ],
+        payload: data,
+      };
+      appendWorkObservation(workspaceDb, {
+        ...owner,
+        observation,
+        bodies:
+          data.content.state === 'expected' && data.content.bytes === 0
+            ? [
+                {
+                  id: 'content',
+                  bytes: new Uint8Array(),
+                  mediaType: data.content.mediaType,
+                  boundary: data.content.boundary,
+                },
+              ]
+            : [],
+      });
+      return;
+    }
+    if (binding.coverage.value !== 'on')
+      throw new Error('Observation content is not admitted by this Turn');
+    const initial = readWorkObservations(workspaceDb, owner).find((row) => row.id === id);
+    if (!initial) throw new Error('Observation content arrived without durable metadata');
+    const declaration = WorkerObservationDataSchema.parse(initial.payload);
+    if (declaration.content.state !== 'expected')
+      throw new Error('Observation has no expected content');
+    const expected = declaration.content;
+    const chunk = event.event.data;
+    const bytes = Buffer.from(chunk.data, 'base64');
+    if (bytes.toString('base64') !== chunk.data)
+      throw new Error('Observation chunk encoding is not canonical');
+    const staged = stageWorkObservationChunk(workspaceDb, {
+      ...owner,
+      bundleId: workObservationBodyBundleId(
+        lineage.workspaceId,
+        owner.threadId,
+        owner.turnId,
+        id,
+        'content'
+      ),
+      createdAt: initial.ts,
+      sha256: expected.sha256.replace(/^sha256:/, ''),
+      totalBytes: expected.bytes,
+      chunkCount: expected.chunkCount,
+      chunkIndex: chunk.chunkIndex,
+      byteOffset: chunk.byteOffset,
+      bytes,
+    });
+    if (staged.state === 'expired' && !replay)
+      throw new Error('Expired observation evidence cannot accept new content');
+    if (staged.state === 'complete') {
+      const { v: _v, seq: _seq, turnId: _turnId, ...observation } = initial;
+      appendWorkObservation(workspaceDb, {
+        ...owner,
+        observation,
+        bodies: [
+          {
+            id: 'content',
+            bytes: staged.bytes,
+            mediaType: expected.mediaType,
+            boundary: expected.boundary,
+          },
+        ],
+      });
+    }
+  } finally {
+    workspaceDb.sqlite.close();
+  }
 }
 
 /**
@@ -192,14 +368,16 @@ export function listWorkerControlAcceptedEvents(
       lineage.requestId ?? null
     ) as Array<{ readonly recordJson: string }>;
 
-  return rows.map((row) => {
-    const record = WorkerCanonicalEventRecordSchema.parse(JSON.parse(row.recordJson));
+  return rows.flatMap((row) => {
+    const value = JSON.parse(row.recordJson) as { event?: { type?: string } };
+    if (value.event?.type === 'observation.content.chunk') return [];
+    const record = WorkerCanonicalEventRecordSchema.parse(value);
 
     if (!sameWorkerControlLineage(record.lineage, lineage)) {
       throw new Error('Durable worker event record contradicts its indexed package lineage.');
     }
 
-    return record;
+    return [record];
   });
 }
 

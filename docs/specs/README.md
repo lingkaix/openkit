@@ -45,6 +45,26 @@ Do not put these in specs:
 - Detailed code walkthroughs unless they are needed as a current implementation projection.
 - Repeated explanations of concepts already covered by another active spec; use cross-references instead.
 
+## Kinds And Placement
+
+Every active spec declares a `kind` in its frontmatter; `docs/documentation-model.md` defines the five kinds and owns the field. Use the kind to decide where a statement belongs:
+
+- A `concept` spec answers every question about its concept, including how the concept behaves under each cross-cutting mechanism: its portability, storage ownership, audience, retention, and schema evolution.
+- A `mechanism` spec owns the questions every member must answer and a registry of its members, one line per member that links the member's own spec. It states the general rule once and does not describe each member's semantics. Adding a concept should cost its own spec plus one registry line per mechanism, not a paragraph in every mechanism spec.
+- A `boundary` spec states the agreement between two sides as preconditions, postconditions, and invariants, with examples where a reader could misapply a rule; its conformance tests are part of the executable specification.
+- A `topology` spec states how the system is deployed and run, and gives the reason for each technology choice that is a decision.
+- A `process` spec states an engineering, verification, evaluation, or documentation method.
+
+A Draft may be organized around the feature or problem it explores. When it is promoted to Accepted, divide it: concept semantics stay in the spec or move into an existing concept spec, answers to mechanism questions become registry lines in the mechanism specs, reasons and rejected alternatives become decision records under `docs/decisions/`, execution detail goes to the change record, and implementation status goes to the Current Implementation Projection section or the local guide. A reviewer other than the author checks the promotion diff so that every criterion still exists.
+
+## Normative Text And Implementation Pointers
+
+Write the contract so that an agent could rebuild a conforming implementation from it in another language or stack. Contract sentences use domain terms and do not depend on file paths, function names, or line citations; those pointers go under `Current Implementation Projection`, a local guide, or code comments, because they drift within one change and mean nothing after a rebuild. Constrain boundaries and invariants rather than internal method unless an internal decision carries weight, such as the ordering that durability depends on.
+
+Do not add revision or amendment sections: Git keeps edit history, and a decision record keeps each decision's reason. Where a rule rests on an engineer ruling, link its decision record beside the rule instead of writing an inline ruling marker. A spec that accepts a Safety Kernel limitation or residual risk links the decision record that accepted it.
+
+A spec longer than about 6,000 words triggers a split review under `docs/writing.md`. Split by concept into an entry spec and child specs, never into chapter files, and treat the split as its own change.
+
 ## When To Write A Spec
 
 Write or update a spec when a change has meaningful alternatives, long-term consequences, removal or migration concerns, rollout concerns, protocol or API impact, data layout impact, or developer workflow impact.
@@ -295,13 +315,15 @@ Only an auditor may perform the final terminal metadata update and move into `do
 
 The auditor-owned terminal-archive rule is not a separate migration mandate. Files already under a terminal archive before adoption require no audit backfill; any authorized evidence corrections included in the rule-adoption change land first, and those resulting bytes are then frozen. Do not create `docs/specs/rejected/` or its validator branch before the first real rejected archive requires it.
 
-## Internal Development Compatibility Rule
+## Compatibility Rests On Retained Data
 
-OpenKit is in active internal development. Specs must not preserve repository-owned backward compatibility layers for old internal shapes, names, file layouts, route forms, command forms, schema defaults, or runtime selectors.
+Specs must not preserve repository-owned backward compatibility layers for old shapes of first-party surfaces that ship with each release: names, repository file layouts, route forms, command forms, schema defaults, or runtime selectors.
 
-When an internal contract changes, the clean target wins. Specs should describe direct removal, same-change migration, repair tooling, or replacement links rather than permanent compatibility readers, aliases, shims, or fallback behavior.
+When such a contract changes, the clean target wins. Specs should describe direct removal, same-change migration, repair tooling, or replacement links rather than permanent compatibility readers, aliases, shims, or fallback behavior.
 
-Compatibility language is allowed only when it describes intentional external interoperability, temporary operator migration evidence, or a historical spec that has been moved out of the active root.
+Retained data is the exception that carries an obligation. A spec that changes the shape of retained canonical data or authored configuration keeps that data usable under Retained Data Continuity in `docs/core/contract-evolution.md`, by additive evolution or a one-way migration; completed cutovers recorded by their owners stand.
+
+Compatibility language is allowed only when it describes intentional external interoperability, temporary operator migration evidence, retained data continuity, or a historical spec that has been moved out of the active root.
 
 ## Filename Convention
 
@@ -410,6 +432,7 @@ Do not use `Open Questions` for:
 - Mark unresolved design decisions as `Open Questions` and out-of-scope future material as `Deferred / Future Work` instead of mixing them into accepted contract text.
 - Distinguish target design from current implementation.
 - Cross-reference other specs or core documents instead of copying their definitions.
+- Use the vocabulary of `docs/glossary.md` for engineering-process terms and `docs/core/core-concepts.md` for product terms, and follow `docs/writing.md`.
 
 ## Local Agent Rules
 

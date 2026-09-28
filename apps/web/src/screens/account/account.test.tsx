@@ -1306,6 +1306,7 @@ describe('email/password session operations', () => {
       actorAInvitation.workspaceId,
       'ws-actor-a-cached-catalog',
       'user-actor-a-dashboard-viewer',
+      'actor-a-only-outward-activity',
     ];
     const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
     let actorBMountStarted = false;
@@ -1362,6 +1363,23 @@ describe('email/password session operations', () => {
     queryClient.setQueryData(['thread-dashboard', 'ws1', 'th1'], {
       viewerUserId: 'user-actor-a-dashboard-viewer',
       participants: [],
+      runtimeActivity: [
+        {
+          turnId: 'tu_actor_a',
+          contentCapture: 'on',
+          coverage: 'partial',
+          omittedEntryCount: 0,
+          entries: [
+            {
+              sequence: 1,
+              observedAt: '2026-09-22T00:00:00.000Z',
+              kind: 'result',
+              text: 'actor-a-only-outward-activity',
+              textTruncated: false,
+            },
+          ],
+        },
+      ],
     });
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws-actor-a-cached-catalog' });
     const guards = guardSensitiveSinks(actorAValues);

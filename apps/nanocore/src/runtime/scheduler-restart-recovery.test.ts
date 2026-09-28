@@ -46,7 +46,7 @@ import type {
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
-import { runSchedulerDispatchRetryOnce } from './scheduler-dispatch-service.js';
+import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
   type RunSchedulerRestartRecoveryInput,
   runSchedulerRecoveryMaintenance,
@@ -1654,7 +1654,7 @@ describe('scheduler restart recovery', () => {
       ).toEqual({ inUseCount: 0, queueStatus: 'cancelled', status: 'failed' });
 
       const turnExecutor = new RejectRecoveredTurnExecutor();
-      const retry = await runSchedulerDispatchRetryOnce({
+      const retry = await runSchedulerDispatchLoop({
         agentManifests: [
           {
             adapter: 'custom-http',

@@ -36,6 +36,10 @@ One record family must have one durable authority. Do not add aggregate workspac
 - Secret material belongs to `../vault/` backends and credential consumers; storage may retain only explicitly allowed non-secret metadata and redacted evidence.
 - The scheduler lease is the narrow exception for worker route authentication: it retains exactly three nullable lowercase SHA-256 projections for the control, inference, and capability families, never a raw token or a derived sandbox-binding credential.
 
+`work-observations.ts` is the entry point for Turn observation append, validated reads and safe timeline projection using the shared App API presentation bounds. It validates immutable capture admission and separates expected facts from successful evidence publication. `../evidence-bundles.ts` owns restricted body staging, retention and expiry; callers never construct content paths or store bodies in control receipts. Portable consumers reuse the observation parser and existing exact reference maps.
+
+Timeline coverage remains partial when a collection gap follows observed runtime activity; unsupported or unavailable collection without observed activity remains unavailable.
+
 ## File Record Rules
 
 - Replace JSON records through a same-directory temporary file and rename.
@@ -43,6 +47,8 @@ One record family must have one durable authority. Do not add aggregate workspac
 - Fail closed on malformed canonical records, invalid lineage, unsupported required features, path escapes, and legacy authority files.
 - `ensureLayout` rejects absolute DATA_ROOT paths only in canonical product-record locations. Verbatim exceptions are anchored to `server/` or `workspaces/<workspaceId>/`: backend streams under `evidence/backend/<bundleId>/raw/`, and Skill or Plugin snapshot trees under `catalog/skill-snapshots/` and `catalog/plugin-snapshots/`. Backend bundle manifest and native-index siblings remain scanned; nested misleading names, unsafe links, ownership, envelope, and canonical-path checks still apply.
 - Export V2 preserves complete canonical history and exact portable file bytes; V1 exports are intentionally rejected.
+- Portable evidence keeps admitted restricted originals as verified binary bytes under their EvidenceBundle, separate from canonical UTF-8 records. Import remints owner references, preserves body digests and retention, and stages bytes before publishing the Workspace. Unpublished observation chunks and expired body bytes stay excluded.
+- Goal portability preserves active and pending Plan pointers, intent Item lineage, historical approved Tasks, and source evidence fingerprints. Reminting does not silently refresh an imported pending successor: stale source evidence requires a fresh draft.
 - Import writes the complete workspace tree and workspace database under `.staging`, publishes with one same-filesystem rename inside the Core transaction, and removes the published workspace when synchronous Core replay fails; this is coordinated rollback, not crash-atomic filesystem and SQLite commit.
 - Deletion removes the canonical file or directory so restart cannot resurrect stale state.
 

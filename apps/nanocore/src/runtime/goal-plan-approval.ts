@@ -4,8 +4,25 @@ import type { ActorRef } from '@openkit/protocol';
 
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { assertValidGoalPlanGraph, selectGoalPlanPayload } from './goal-plan.js';
-import { getGoalPlanRecord, getGoalRecord, listGoalTasks, updateGoalStatus } from './goal-store.js';
+import {
+  assertGoalPlanTaskDispositions,
+  assertValidGoalPlanGraph,
+  goalPlanItemSummary,
+  selectGoalPlanPayload,
+} from './goal-plan.js';
+import {
+  assertGoalPlanCompletedResultTreatment,
+  captureGoalTaskEvidenceSnapshot,
+  goalPlanSourceEvidenceDigest,
+  resolveGoalPlanResourceEvidence,
+} from './goal-source-evidence.js';
+import {
+  getGoalPlanRecord,
+  getGoalRecord,
+  isTerminalGoalStatus,
+  listGoalTasks,
+  updateGoalStatus,
+} from './goal-store.js';
 import { persistApprovedGoalTasks } from './goal-task-persistence.js';
 
 /** User-message Item that owns one Goal Plan revision request. */
@@ -114,15 +131,15 @@ type ReadGoalPlanRevisionInput = Omit<ReviseGoalPlanInput, 'goalId' | 'planItemI
  * @returns Ready task state derived from the approved plan.
  * @throws Error when the active Plan authority or its Item projection is invalid.
  */
-export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanResult {
+function validateGoalPlanApproval(input: ApproveGoalPlanInput) {
   const goal = getGoalRecord(input.workspaceDb, input.workspaceId, input.threadId, input.goalId);
-  if (!goal || goal.planItemId !== input.planItemId) {
-    throw new GoalPlanApprovalError('stale', 'Goal Plan is not the active approval authority.');
+  if (!goal || goal.pendingPlanItemId !== input.planItemId) {
+    throw new GoalPlanApprovalError('stale', 'Goal Plan is not the pending approval authority.');
   }
-  if (goal.status !== 'awaiting_plan_approval') {
+  if (isTerminalGoalStatus(goal.status)) {
     throw new GoalPlanApprovalError(
       'recovery_required',
-      'Goal Plan approval state is complete or contradictory without this command receipt.'
+      'Goal Plan approval state is terminal or contradictory without this command receipt.'
     );
   }
   let plan: ReturnType<typeof getGoalPlanRecord>;
@@ -145,6 +162,123 @@ export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanRes
       'Goal Plan authority is missing or belongs to another Goal.'
     );
   }
+  if (plan.sourceIntentItemId !== goal.currentIntentItemId) {
+    throw new GoalPlanApprovalError('stale', 'Pending Goal Plan addresses an older Goal intent.');
+  }
+  if (goal.planItemId) {
+    let predecessorId = plan.predecessorPlanItemId;
+    const visited = new Set<string>();
+    while (predecessorId && predecessorId !== goal.planItemId && !visited.has(predecessorId)) {
+      visited.add(predecessorId);
+      const predecessor = getGoalPlanRecord(
+        input.workspaceDb,
+        input.workspaceId,
+        input.threadId,
+        predecessorId
+      );
+      if (
+        !predecessor ||
+        predecessor.goalId !== goal.goalId ||
+        predecessor.sourceIntentItemId !== goal.currentIntentItemId
+      )
+        break;
+      predecessorId = predecessor.predecessorPlanItemId;
+    }
+    if (predecessorId !== goal.planItemId) {
+      throw new GoalPlanApprovalError('stale', 'Pending Goal Plan has an older predecessor.');
+    }
+  }
+  if (!goal.planItemId && plan.predecessorPlanItemId) {
+    const predecessor = getGoalPlanRecord(
+      input.workspaceDb,
+      input.workspaceId,
+      input.threadId,
+      plan.predecessorPlanItemId
+    );
+    if (
+      !predecessor ||
+      predecessor.goalId !== goal.goalId ||
+      predecessor.sourceIntentItemId !== goal.currentIntentItemId
+    ) {
+      throw new GoalPlanApprovalError(
+        'stale',
+        'Pending Goal Plan has an invalid pre-approval predecessor.'
+      );
+    }
+  }
+  if (goal.planItemId) {
+    if (goal.currentTaskId !== null) {
+      throw new GoalPlanApprovalError(
+        'stale',
+        'A running Task must reach a safe point before Plan activation.'
+      );
+    }
+    if (!plan.sourceTaskEvidenceDigest) {
+      throw new GoalPlanApprovalError(
+        'recovery_required',
+        'Pending successor has no source Task snapshot.'
+      );
+    }
+    let currentSnapshot: ReturnType<typeof captureGoalTaskEvidenceSnapshot>;
+    try {
+      currentSnapshot = captureGoalTaskEvidenceSnapshot(input.store, input.workspaceDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        goalId: input.goalId,
+        planItemId: goal.planItemId,
+      });
+    } catch {
+      throw new GoalPlanApprovalError(
+        'recovery_required',
+        'Pending successor source Task or Review evidence is missing or contradictory.'
+      );
+    }
+    let resources: ReturnType<typeof resolveGoalPlanResourceEvidence>;
+    try {
+      resources = resolveGoalPlanResourceEvidence(
+        input.store,
+        input.workspaceDb,
+        {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          goalId: input.goalId,
+          planItemId: goal.planItemId,
+        },
+        plan,
+        currentSnapshot
+      );
+    } catch {
+      throw new GoalPlanApprovalError(
+        'stale',
+        'Pending successor resource evidence changed after proposal.'
+      );
+    }
+    if (
+      plan.sourceTaskEvidenceDigest !== goalPlanSourceEvidenceDigest(currentSnapshot, resources)
+    ) {
+      throw new GoalPlanApprovalError(
+        'stale',
+        'Pending successor was drafted from an older Task or evidence snapshot.'
+      );
+    }
+    try {
+      assertGoalPlanTaskDispositions(plan, currentSnapshot.facts);
+      assertGoalPlanCompletedResultTreatment(plan, currentSnapshot);
+    } catch (error) {
+      throw new GoalPlanApprovalError('goal_plan_invalid', (error as Error).message);
+    }
+  } else if (plan.sourceTaskEvidenceDigest !== null) {
+    throw new GoalPlanApprovalError(
+      'recovery_required',
+      'Initial Goal Plan has unexpected Task evidence.'
+    );
+  } else {
+    try {
+      assertGoalPlanTaskDispositions(plan, []);
+    } catch (error) {
+      throw new GoalPlanApprovalError('goal_plan_invalid', (error as Error).message);
+    }
+  }
   const planItem = input.store
     .listThreadItems(input.workspaceId, input.threadId)
     .find((item) => item.id === input.planItemId);
@@ -154,16 +288,25 @@ export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanRes
       'Goal Plan Item projection is missing or has invalid lineage.'
     );
   }
-  if (
-    listGoalTasks(input.workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      goalId: input.goalId,
-    }).length > 0
-  ) {
+  if (!planItem.summary?.startsWith(`${goalPlanItemSummary(plan)}\nProposal reason: `)) {
     throw new GoalPlanApprovalError(
       'recovery_required',
-      'Goal Plan approval found a partial or contradictory Task set.'
+      'Goal Plan Item omits its predecessor disposition proof.'
+    );
+  }
+  const historicalTasks = listGoalTasks(input.workspaceDb, {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    goalId: input.goalId,
+  });
+  if (historicalTasks.some((task) => task.planItemId === input.planItemId)) {
+    throw new GoalPlanApprovalError('recovery_required', 'Pending Goal Plan already has Tasks.');
+  }
+  const historicalTaskIds = new Set(historicalTasks.map((task) => task.taskId));
+  if (plan.tasks.some((task) => historicalTaskIds.has(task.taskId))) {
+    throw new GoalPlanApprovalError(
+      'goal_plan_invalid',
+      'Goal Plan Task ids must be unique across the Goal.'
     );
   }
   try {
@@ -172,6 +315,23 @@ export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanRes
     throw new GoalPlanApprovalError('goal_plan_invalid', (error as Error).message);
   }
 
+  return { goal, plan };
+}
+
+/** Reports whether the exact pending candidate passes the same pre-mutation approval checks. */
+export function canApproveGoalPlan(input: ApproveGoalPlanInput): boolean {
+  try {
+    validateGoalPlanApproval(input);
+    return true;
+  } catch (error) {
+    if (error instanceof GoalPlanApprovalError) return false;
+    throw error;
+  }
+}
+
+/** Approves one exact validated Plan and creates only its newly authorized Tasks. */
+export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanResult {
+  const { goal, plan } = validateGoalPlanApproval(input);
   const approve = input.workspaceDb.sqlite.transaction((): ApproveGoalPlanResult => {
     const { tasks } = persistApprovedGoalTasks({
       workspaceDb: input.workspaceDb,
@@ -185,8 +345,10 @@ export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanRes
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       goalId: input.goalId,
-      status: 'running',
+      status: goal.planItemId ? goal.status : 'running',
       planItemId: input.planItemId,
+      pendingPlanItemId: null,
+      currentAffectedTaskIds: [],
       currentTaskId: null,
       terminalStopReason: null,
     });
@@ -210,13 +372,26 @@ export function approveGoalPlan(input: ApproveGoalPlanInput): ApproveGoalPlanRes
  */
 export function reviseGoalPlan(input: ReviseGoalPlanInput): ReviseGoalPlanResult {
   const goal = getGoalRecord(input.workspaceDb, input.workspaceId, input.threadId, input.goalId);
-  if (!goal || goal.planItemId !== input.planItemId) {
-    throw new GoalPlanApprovalError('stale', 'Goal Plan is not the active revision authority.');
+  if (
+    !goal ||
+    (goal.pendingPlanItemId !== input.planItemId &&
+      !(
+        goal.planItemId === input.planItemId &&
+        (goal.pendingPlanItemId === null ||
+          getGoalPlanRecord(
+            input.workspaceDb,
+            input.workspaceId,
+            input.threadId,
+            goal.pendingPlanItemId
+          )?.sourceIntentItemId !== goal.currentIntentItemId)
+      ))
+  ) {
+    throw new GoalPlanApprovalError('stale', 'Goal Plan is not the current revision predecessor.');
   }
-  if (goal.status !== 'awaiting_plan_approval') {
+  if (isTerminalGoalStatus(goal.status)) {
     throw new GoalPlanApprovalError(
       'recovery_required',
-      'Goal Plan revision state is complete or contradictory without this command receipt.'
+      'Goal Plan revision state is terminal or contradictory without this command receipt.'
     );
   }
   if (
@@ -299,7 +474,12 @@ export function reviseGoalPlan(input: ReviseGoalPlanInput): ReviseGoalPlanResult
       input.threadId,
       input.goalId
     );
-    return current?.status === 'awaiting_plan_approval' && current.planItemId === input.planItemId;
+    return (
+      current !== null &&
+      !isTerminalGoalStatus(current.status) &&
+      (current.pendingPlanItemId === input.planItemId ||
+        (current.pendingPlanItemId === null && current.planItemId === input.planItemId))
+    );
   });
   let transitioned = false;
   try {
@@ -408,16 +588,26 @@ function hasInFlightGoalPlanRevisionRequest(
   threadId: string,
   planItemId: string
 ): boolean {
-  return store
+  const latest = store
     .listThreadItems(workspaceId, threadId)
-    .some(
+    .filter(
       (item) =>
         item.type === 'user-message' &&
         item.status === 'completed' &&
         item.parentItemId === planItemId &&
         typeof item.text === 'string' &&
         item.text.trim().length > 0
-    );
+    )
+    .at(-1);
+  if (!latest) return false;
+  const turns = store.listThreadTurns(workspaceId, threadId);
+  const instructionIndex = turns.findIndex((turn) => turn.id === latest.turnId);
+  if (instructionIndex < 0) return true;
+  const latestAttempt = turns
+    .slice(instructionIndex + 1)
+    .filter((turn) => turn.id.startsWith('tu_goal_plan_'))
+    .at(-1);
+  return !latestAttempt || !['completed', 'failed', 'interrupted'].includes(latestAttempt.status);
 }
 
 /**

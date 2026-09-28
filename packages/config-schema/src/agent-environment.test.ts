@@ -229,6 +229,7 @@ function openshellPackageFixture(): unknown {
       wallClock: { maxSeconds: 3600 },
     },
     observability: {
+      captureCoverage: { scope: 'server', value: 'off' },
       audit: { required: true, formats: { preferred: 'ocsf-json' } },
       evidence: { collectBackendLogs: true, collectSessionFiles: true },
     },
@@ -344,6 +345,53 @@ function runtimeProvenancePackageFixture(): Record<string, unknown> {
 }
 
 describe('agent environment package schema', () => {
+  it.each([
+    'server',
+    'workspace',
+    'task',
+  ])('preserves the admitted %s capture binding independently of provenance', (scope) => {
+    const fixture = openshellPackageFixture() as Record<string, unknown>;
+    const observability = fixture.observability as Record<string, unknown>;
+    for (const value of ['off', 'on']) {
+      const captureCoverage = { scope, value };
+      const parsed = AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        observability: { ...observability, captureCoverage },
+      });
+      expect(parsed.observability).toMatchObject({ captureCoverage });
+      expect(parsed.backend.requiredCapabilities).not.toContain(WORKER_RUNTIME_PROVENANCE_FEATURE);
+    }
+  });
+
+  it('rejects an omitted capture binding rather than defaulting historical coverage to off', () => {
+    const fixture = openshellPackageFixture() as Record<string, unknown>;
+    const observability = { ...(fixture.observability as Record<string, unknown>) };
+    delete observability.captureCoverage;
+    expect(AgentEnvironmentPackageSchema.safeParse({ ...fixture, observability }).success).toBe(
+      false
+    );
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { scope: 'server' },
+    { value: 'off' },
+    { scope: 'thread', value: 'on' },
+    { scope: 'server', value: 'enabled' },
+    { scope: 'server', value: 'off', mutable: true },
+  ])('rejects a missing or malformed immutable capture binding %#', (captureCoverage) => {
+    const fixture = openshellPackageFixture() as Record<string, unknown>;
+    const observability = fixture.observability as Record<string, unknown>;
+    expect(
+      AgentEnvironmentPackageSchema.safeParse({
+        ...fixture,
+        observability: { ...observability, captureCoverage },
+      }).success
+    ).toBe(false);
+  });
+
   it('accepts only strict AEP version 4', () => {
     const versionFour = openshellPackageFixture() as Record<string, unknown>;
 

@@ -312,6 +312,7 @@ function createWorkerInferenceRouteFixture(
   });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
+      captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup,
       agentSessionId: trustedRelay ? 'as_worker_inference_1' : 'as_direct_worker_1',
       backend: {
@@ -627,10 +628,11 @@ describe('worker inference routes', () => {
     expect(JSON.stringify(fixture.dispatcher.responseCalls[0]?.context.transport)).not.toContain(
       'private-provider-request-id'
     );
-    expect(JSON.stringify(fixture.dispatcher.responseCalls[0])).not.toContain(
-      'raw-worker-cache-key'
+    const serializedCall = JSON.stringify(fixture.dispatcher.responseCalls[0], (key, value) =>
+      key === 'workspaceDb' ? undefined : value
     );
-    expect(JSON.stringify(fixture.dispatcher.responseCalls[0])).not.toContain(fixture.token);
+    expect(serializedCall).not.toContain('raw-worker-cache-key');
+    expect(serializedCall).not.toContain(fixture.token);
     expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
       expect.objectContaining({
         packageSnapshotId: fixture.environmentPackage.snapshotId,
@@ -758,8 +760,11 @@ describe('worker inference routes', () => {
     });
   });
 
-  it('consumes canonical Codex runtime hints before shared provider dispatch', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, true);
+  it.each([
+    false,
+    true,
+  ])('consumes canonical Codex runtime hints with provenance required=%s', async (required) => {
+    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, required);
     const turnMetadata = {
       parent_thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e04',
       request_kind: 'turn',
@@ -811,19 +816,18 @@ describe('worker inference routes', () => {
         runtimeOriginRef: expect.stringMatching(/^rto_[a-f0-9]{24}$/),
       }),
     ]);
-    expect(JSON.stringify(fixture.dispatcher.responseCalls[0])).not.toContain(
-      turnMetadata.thread_id
+    const serializedCall = JSON.stringify(fixture.dispatcher.responseCalls[0], (key, value) =>
+      key === 'workspaceDb' ? undefined : value
     );
-    expect(JSON.stringify(fixture.dispatcher.responseCalls[0])).not.toContain(
-      'private-runtime-cache-lineage'
-    );
+    expect(serializedCall).not.toContain(turnMetadata.thread_id);
+    expect(serializedCall).not.toContain('private-runtime-cache-lineage');
     for (const nativeValue of [
       turnMetadata.session_id,
       turnMetadata.turn_id,
       turnMetadata.parent_thread_id,
       'collab_spawn',
     ]) {
-      expect(JSON.stringify(fixture.dispatcher.responseCalls[0])).not.toContain(nativeValue);
+      expect(serializedCall).not.toContain(nativeValue);
       expect(JSON.stringify(readWorkerInferenceCapabilityCalls(fixture))).not.toContain(
         nativeValue
       );

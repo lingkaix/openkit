@@ -597,6 +597,9 @@ function ReloadResult({ result }: { result: RuntimeConfigReload }) {
       }`}
     >
       <p className="font-bold">{applied ? 'Configuration applied' : `Reload ${result.status}`}</p>
+      {result.plan.warnings.map((warning) => (
+        <p key={`${warning.code}:${warning.message}`}>{warning.message}</p>
+      ))}
       <p>
         Runtime version {result.runtimeConfig.currentVersion} · {result.plan.requiresRestart.length}{' '}
         changes require restart

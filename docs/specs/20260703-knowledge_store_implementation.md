@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: mechanism
 ---
 # Knowledge Store Implementation Contract
 
@@ -263,7 +264,7 @@ The removed `@openkit/mcp` facade must not be restored through compatibility or 
 - Track live OKF upstream instead of pinning: rejected; upstream is a draft that can change conformance semantics under us, which is exactly the drift this spec exists to prevent.
 - SQLite as source of truth with file export: rejected; contradicts the file-system-first storage principle and makes user inspection, git-friendly backup, and external editing second-class.
 - Vector-first retrieval in v1: rejected; the v1 knowledge posture is retrieval and governance first, deterministic ranking is explainable and testable, and embeddings can be added later behind the same interface without contract changes.
-- Compatibility aliases from `memory.*` to `knowledge.*`: rejected under the internal development rule; a direct rename with one migration is cheaper than maintaining dual vocabularies.
+- Compatibility aliases from `memory.*` to `knowledge.*`: rejected; a direct rename with one migration is cheaper than maintaining dual vocabularies.
 
 ## Consequences
 

@@ -799,6 +799,7 @@ function createImportFixture(prefix: string): ImportFixture {
       },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_runtime_provenance_import_1',
+      captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       turn,
       turnInput: 'Import runtime provenance',
       userId: 'user_local',

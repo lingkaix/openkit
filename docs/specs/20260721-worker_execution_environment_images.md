@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: topology
 updated: 2026-09-10
 ---
 # Worker Execution Environment Images

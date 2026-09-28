@@ -4,7 +4,9 @@ Thread dashboard reads validate the authenticated viewer id and bounded particip
 
 The same dashboard preserves NanoCore's verified `taskInputs` objective summaries for Web and Skill consumers; the client does not infer summaries from message JSON.
 
-`client.app.getThreadGoalPlan` reads the current durable Goal plan without generating or approving it. Reconnecting clients use this read instead of replaying plan creation or selecting an older plan Item from Thread history.
+`client.app.getThreadGoalPlan` reads separate active and pending durable Goal Plans, the next planning action and answered-question lineage, whether a pending candidate is currently approvable, and whether an unheld ready Task may run without generating or approving one. The Plan payload includes exact remaining-work dispositions for a successor. `client.app.reviseThreadGoalIntent` records an exact same-Goal objective and revision instruction; `reviseThreadGoalPlan` records a Plan revision instruction, while `createThreadGoalPlan` drafts or continues its successor. Reconnecting clients use the read action rather than inferring a fresh draft from a missing Plan Item.
+
+The Plan read also carries the pending Item's proposal summary and the selectable unfinished active Tasks for named intent scope. An omitted `affectedTaskIds` value and an explicit empty array remain distinct command inputs.
 
 `@openkit/core-client` is the composed typed HTTP and SSE client used by the SPA and protocol integration tests.
 
@@ -15,6 +17,14 @@ It does not own NanoCore App API schemas.
 Core protocol payloads come from `@openkit/protocol`.
 
 NanoCore App API payloads come from `@openkit/app-api-schemas`.
+
+## Implementation Entry Points
+
+[`src/transport.ts`](src/transport.ts) owns HTTP request construction, configured headers, cookie credentials, and response validation through [`src/http.ts`](src/http.ts). JSON POST, PUT, and PATCH operations share that wire policy; stream and empty-response operations retain their distinct semantics. [`src/transport.test.ts`](src/transport.test.ts) checks the wire boundary and failure propagation without a live server.
+
+[`src/request-id.ts`](src/request-id.ts) owns missing request identity insertion. Sub-clients use `withRequestId` for body-carried command identities; explicit header-carried identities remain at the routes that own that contract.
+
+[`src/events.ts`](src/events.ts) shares event URL construction between Fetch and EventSource while each transport retains its own streaming, cursor, and reconnect lifecycle.
 
 ## Client Shape
 

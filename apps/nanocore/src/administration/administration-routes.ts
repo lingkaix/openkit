@@ -28,12 +28,14 @@ import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { RuntimeConfigFileServiceError } from '../config/runtime-config-files.js';
+import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
 import { type AgentMessage, runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
 import { parseUsage } from '../llm/gateway-usage.js';
+import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -54,15 +56,6 @@ import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtim
 
 const ADMINISTRATION_AGENT_ID = 'assistant';
 const ADMINISTRATION_TARGET_REF = 'internal-role:administration';
-const ADMINISTRATION_SYSTEM_PROMPT_BASE = [
-  'You are the private OpenKit administration entry of the Personal Assistant.',
-  'Use only the seven supplied Tools. Treat Tool results as current owner observations and state uncertainty explicitly.',
-  'Configuration Tools inspect and propose existing Provider/Gateway catalog changes; a proposal does not apply them. Worker environment preparation never activates, purges, interrupts, mounts, or restarts work.',
-  'NanoHost is the execution host, not an LLM Provider.',
-  'Use nanohost.runtime-target to read host RuntimeTarget readiness; it accepts only an empty object, cannot select a host, and returns Core stored projection at observedAt rather than a live host probe.',
-  'Never infer that NanoHost is unconfigured or unready from Provider catalog absence or zero Worker environments.',
-  'Never request or reveal credentials, host paths, shell commands, Docker socket access, raw policy, or authorization tokens. A human applies confirmed effects through the owning public command.',
-].join(' ');
 const DEFAULT_LIMITS = { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 } as const;
 
 class AdministrationRecoveryRequiredError extends Error {
@@ -308,46 +301,56 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
               }),
             });
             const priorMessages = administrationMessages(store, workspaceId, thread.id, turn.id);
-            const loopResult = await runInternalAgentLoop(
-              {
-                systemPrompt: administrationSystemPrompt(workspaceId, thread.id),
-                messages: priorMessages,
-                tools,
-                model: {
-                  logicalModelId: selection.logicalModel.id,
-                  capabilities: selection.logicalModel.capabilities,
-                  modelFamilyId: selection.logicalModel.modelFamilyId,
-                },
-                contextManagement: {
-                  ...selection.logicalModel.contextManagement,
-                  authority: 'openkit',
-                },
-                limits: selection.profile?.limits ?? DEFAULT_LIMITS,
-                signal: context.req.raw.signal,
-              },
-              createInternalAgentGatewayProvider({
-                logicalModel: selection.logicalModel,
-                dispatcher: input.llmGatewayDispatcher,
-                resolveGatewayProvider: input.resolveGatewayProvider,
-                ...(input.providerSubscriptionAccountManager
-                  ? { providerSubscriptionAccountManager: input.providerSubscriptionAccountManager }
-                  : {}),
-                promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
-                usageEndpoint: 'responses',
-                onDispatch: ({ providerId, usage }) => {
-                  recordAdministrationLlmUsage({
-                    authorityActor: triggerActor,
-                    coreDb: input.coreDb!,
-                    logicalModelId: selection.logicalModel.id,
-                    providerId,
-                    requestId: request.requestId,
-                    threadId: thread.id,
-                    turnId: turn.id,
-                    usage,
+            const loopResult = await withTurnModelCapture({ store, turn }, (capture) =>
+              runInternalAgentLoop(
+                {
+                  systemPrompt: assembleBuiltInSystemPrompt('administration', {
                     workspaceId,
-                  });
+                    threadId: thread.id,
+                    workspaceKind: 'quick-chat',
+                  }),
+                  messages: priorMessages,
+                  tools,
+                  model: {
+                    logicalModelId: selection.logicalModel.id,
+                    capabilities: selection.logicalModel.capabilities,
+                    modelFamilyId: selection.logicalModel.modelFamilyId,
+                  },
+                  contextManagement: {
+                    ...selection.logicalModel.contextManagement,
+                    authority: 'openkit',
+                  },
+                  limits: selection.profile?.limits ?? DEFAULT_LIMITS,
+                  signal: context.req.raw.signal,
                 },
-              })
+                createInternalAgentGatewayProvider({
+                  capture,
+                  logicalModel: selection.logicalModel,
+                  dispatcher: input.llmGatewayDispatcher,
+                  resolveGatewayProvider: input.resolveGatewayProvider,
+                  ...(input.providerSubscriptionAccountManager
+                    ? {
+                        providerSubscriptionAccountManager:
+                          input.providerSubscriptionAccountManager,
+                      }
+                    : {}),
+                  promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
+                  usageEndpoint: 'responses',
+                  onDispatch: ({ providerId, usage }) => {
+                    recordAdministrationLlmUsage({
+                      authorityActor: triggerActor,
+                      coreDb: input.coreDb!,
+                      logicalModelId: selection.logicalModel.id,
+                      providerId,
+                      requestId: request.requestId,
+                      threadId: thread.id,
+                      turnId: turn.id,
+                      usage,
+                      workspaceId,
+                    });
+                  },
+                })
+              )
             );
             if (loopResult.kind !== 'quiescent') {
               const code =
@@ -505,17 +508,6 @@ function administrationMessages(
       }
       return [];
     });
-}
-
-/** Builds the trusted private entry context without accepting model-selected routing authority. */
-function administrationSystemPrompt(workspaceId: string, threadId: string): string {
-  const privateContext = JSON.stringify({ workspaceId, threadId, workspaceKind: 'quick-chat' });
-  return [
-    ADMINISTRATION_SYSTEM_PROMPT_BASE,
-    `Server-authored current private administration context: ${privateContext}.`,
-    'When the user refers to their current Quick Chat Workspace or equivalent current private context, use this exact workspaceId.',
-    'These identifiers describe only the current private entry and grant no access to another Workspace.',
-  ].join(' ');
 }
 
 /** Reads publishable text only from the final response of a quiescent loop. */

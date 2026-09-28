@@ -16,6 +16,7 @@ import {
   CountBadge,
   ErrorBanner,
   NavRow,
+  PhaseStepper,
   Select,
   StatusChip,
   Switch,
@@ -1189,6 +1190,32 @@ describe('primitive tier — behavior', () => {
     expect(screen.getByText('3')).toBeInTheDocument();
     rerender(<CountBadge count={0} label="need you" />);
     expect(screen.queryByText('0')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['notice', 'bg-notice-bg', 'text-notice-fg'],
+    ['neutral', 'bg-neutral-bg', 'text-neutral-fg'],
+    ['accent', 'bg-accent', 'text-on-accent'],
+  ] as const)('CountBadge preserves the %s color pair', (tone, background, foreground) => {
+    render(<CountBadge count={103} label="need you" tone={tone} />);
+    expect(screen.getByText('103 need you').parentElement).toHaveClass(background, foreground);
+    expect(screen.getByText('99+')).toBeInTheDocument();
+  });
+
+  it.each([
+    [false, 'bg-info-bg', 'text-info-fg'],
+    [true, 'bg-notice-bg', 'text-notice-fg'],
+  ] as const)('PhaseStepper preserves current and surrounding tones with gate=%s', (gate, background, foreground) => {
+    render(<PhaseStepper current="execute" gate={gate} />);
+    expect(screen.getByRole('list', { name: 'Goal phase: Execute' })).toBeInTheDocument();
+    expect(screen.getByText('Execute')).toHaveAttribute('aria-current', 'step');
+    expect(screen.getByText('Execute')).toHaveClass(background, foreground);
+    for (const phase of ['Draft', 'Plan']) {
+      expect(screen.getByText(phase)).toHaveClass('text-positive-fg');
+      expect(screen.getByText(phase)).not.toHaveAttribute('aria-current');
+    }
+    expect(screen.getByText('Review')).toHaveClass('text-fg-muted');
+    expect(screen.getByText('Review')).not.toHaveAttribute('aria-current');
   });
 
   it('Avatar exposes the worker name to assistive tech', () => {

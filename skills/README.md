@@ -36,4 +36,6 @@ Public Vault secret administration exposes `vault.secret-create`, `vault.secret-
 
 The public administration reference distinguishes host repository diagnostics and operator-owned container mount repair from revision-bound Worker Git source configuration for future sessions, and explains exact input-resource identity when repairing a missing review target. It also documents preserving repository identity and Git policy when enabling commit-on-apply through the existing public operation. Web and Skill use the same public configuration/reload operations; neither grants host privileges.
 
+Goal operations distinguish current intent from Plan approval. `goal.intent-revise` updates the same Goal through its exact command owner; `goal.plan-read` projects active and pending Plans and the next planning action. The [bounded loop reference](openkit/references/loop.md) describes clarification, material revisions and exact approval.
+
 The recovery reference explains normalized Git HTTP-refusal evidence from the existing Turn read surface: unavailable attribution remains explicit, and a new Task still requires current authority and cleanup/storage admission. It does not promise delegated policy writes or whole-service recovery.

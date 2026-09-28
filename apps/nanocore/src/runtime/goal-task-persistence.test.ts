@@ -29,6 +29,7 @@ describe('approved goal task persistence', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_tasks',
+        createdByItemId: 'it_initial_intent_goal_tasks',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         title: 'Persist tasks',
@@ -120,6 +121,7 @@ describe('approved goal task persistence', () => {
         createGoalRecord(workspaceDb, {
           workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
           goalId: 'goal_1',
+          createdByItemId: `it_initial_intent_${threadId}_goal_1`,
           workspaceId: 'ws_demo',
           threadId,
           title: `Persist tasks for ${threadId}`,
@@ -167,6 +169,7 @@ describe('approved goal task persistence', () => {
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_bad_dep',
+        createdByItemId: 'it_initial_intent_goal_bad_dep',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         title: 'Reject dependencies',

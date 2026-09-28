@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: concept
 updated: 2026-09-08
 ---
 # MCP Catalog Management

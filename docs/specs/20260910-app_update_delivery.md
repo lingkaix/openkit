@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: boundary
 date: "2026-09-10"
 ---
 # App Update Delivery

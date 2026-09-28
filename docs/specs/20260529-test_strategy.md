@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+kind: process
 ---
 # OpenKit Test Strategy
 
@@ -71,7 +72,7 @@ Verification depth is risk-proportional:
 
 Unit tests should catch pure logic, parser, reducer, component, schema, and adapter behavior.
 
-Contract tests should catch drift between packages before browser or process tests become the first signal.
+Contract tests should catch drift and behavioral disagreement between packages before browser or process tests become the first signal.
 
 Integration and e2e tests should prove boundaries that unit tests cannot represent: process boot, HTTP status, SSE replay, persistence, authentication, browser rendering, and user interaction.
 
@@ -89,7 +90,7 @@ Opt-in tests may use real providers or real local host tools, but they must be e
 | --- | --- | --- | --- | --- |
 | L0 | Static and repository checks | Is the repository structurally valid before runtime behavior is tested? | PR and release | Biome, TypeScript, repo scripts, generated-schema drift checks |
 | L1 | Package and app unit tests | Does one package or app module behave correctly in isolation? | PR and release | Vitest, jsdom, Solid Testing Library |
-| L2 | Contract and conformance tests | Do shared schemas, route payloads, clients, and protocol events agree? | PR and release | Zod, Vitest, generated JSON Schema, fixture conformance |
+| L2 | Contract and conformance tests | Do the two sides of a boundary agree in shape and in behavior at the crossing, including under failure? | PR and release | Zod, Vitest, generated JSON Schema, fixture conformance, in-process composition of real producers and consumers |
 | L3 | NanoCore black-box integration and e2e | Does NanoCore boot and satisfy its API, SSE, storage, auth, and worker contracts as a process? | Release, selected PRs | Vitest e2e harness, temporary data roots, HTTP clients, built NanoCore |
 | L4 | Web browser e2e | Can a real user complete visible UI workflows in a browser? | Release, selected PRs | Playwright, Vite, NanoCore test server, browser traces |
 | L5 | Smoke and artifact health tests | Do built packages, staging routes, and containers start and expose minimum health? | Release and deployment | Build scripts, Docker/staging scripts, health probes, packaged-route Playwright |
@@ -162,7 +163,14 @@ Unit tests may use mocks, fakes, and in-memory stores, but they must not assert 
 
 ## L2 Contract And Conformance Tests
 
-Contract tests are the main guardrail against cross-package drift.
+Contract tests are the main guardrail against cross-package drift. L2 asks whether the two sides of a boundary agree, in shape and in behavior at the crossing, including under failure. It answers with two forms, and both are core parts of the layer:
+
+- Shared schema and fixture conformance proves shape: both sides are checked against one schema or fixture.
+- Composition proves behavior: the real producer and the real consumer run together in process, with no double on either side of the crossing; a double may stand only further out, such as a fake runtime beyond a collector. The test injects faults at the crossing, such as a failure between two steps, a restart that reopens storage, duplicate delivery, reordering, and splitting, and asserts invariants of the crossing rather than single examples.
+
+Fixture conformance alone does not prove that two sides behave the same, because one author wrote the fixture from intent and both sides can agree with it while disagreeing with each other. When a change alters a representation that crosses different owners, such as encoding and serialization, chunking, identity and order, or a durability handoff, the primary regression for that crossing's invariants is a composition test, not one test on each side. Composition tests stay deterministic and in process and do not boot NanoCore, which keeps them at L2 and suitable for pull-request gates. `docs/change-execution.md` owns naming the seam and dispatching a test author who reads the owning contract of each side; the reason for this definition is recorded in [L2 Proves Boundary Behavior With Real Producers And Consumers](../decisions/20260923-l2_includes_composition_tests.md).
+
+Tests at a module's public seam protect its contract and observable consequences, observing internals only where a return value cannot prove a responsibility such as recovery; they do not freeze incidental helper order.
 
 Protocol schema changes must start in `packages/protocol`, including parser tests, conformance fixtures, and generated JSON Schema updates.
 
@@ -174,9 +182,9 @@ NanoCore route tests must prove emitted payloads match shared schemas instead of
 
 Web tests must prove the UI consumes current shapes without preserving removed fallbacks.
 
-For behavior crossing package boundaries, update every affected producer and consumer, but test each distinct invariant only where it can fail. A schema fixture may prove a shared shape for several consumers; add NanoCore, client, Web, or browser tests only when that layer adds behavior or a distinct failure boundary.
+For behavior crossing package boundaries, update every affected producer and consumer, but test each distinct invariant only where it can fail; for a crossing between different owners, that place is the composition test above. A schema fixture may prove a shared shape for several consumers; add NanoCore, client, Web, or browser tests only when that layer adds behavior or a distinct failure boundary.
 
-When a contract intentionally breaks during internal development, tests should reject the removed shape instead of preserving compatibility coverage.
+When a contract of a first-party surface that ships with each release intentionally breaks, tests should reject the removed shape instead of preserving compatibility coverage. A change to retained data instead carries the migration and data-continuity evidence named in `docs/core/contract-evolution.md`.
 
 ## L3 NanoCore Black-box Integration And E2E
 

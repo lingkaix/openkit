@@ -3,15 +3,13 @@ import type { ThreadGoalSummary } from './data';
 
 export interface CompletedViewProps {
   goal: ThreadGoalSummary;
-  /** Open an artifact into the review route when provided. */
-  onOpenArtifact?: (artifactId: string) => void;
 }
 
 /**
  * Goal completed closeout (board 21) — terminal summary with verification
  * evidence, artifacts produced, and suggested next work.
  */
-export function CompletedView({ goal, onOpenArtifact }: CompletedViewProps) {
+export function CompletedView({ goal }: CompletedViewProps) {
   const summary = goal.terminalSummary;
 
   return (
@@ -66,11 +64,7 @@ export function CompletedView({ goal, onOpenArtifact }: CompletedViewProps) {
               <Eyebrow>Artifacts</Eyebrow>
               <div className="flex flex-col gap-1">
                 {summary.artifactIds.map((id) => (
-                  <ArtifactRow
-                    key={id}
-                    name={id}
-                    onOpen={onOpenArtifact ? () => onOpenArtifact(id) : undefined}
-                  />
+                  <ArtifactRow key={id} name={id} />
                 ))}
               </div>
             </section>
