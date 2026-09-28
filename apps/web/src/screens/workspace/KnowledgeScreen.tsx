@@ -1,6 +1,7 @@
 import { createRequestId } from '@openkit/core-client';
 import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { Link } from 'react-aria-components';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
@@ -163,6 +164,11 @@ function splitReferences(value: string): string[] {
     .split(/\s+/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+/** Scope the existing full-content fragment to its Workspace and page identity. */
+function knowledgeContentId(workspaceId: string | null, knowledgePageId: string): string {
+  return `knowledge-content-${encodeURIComponent(workspaceId ?? '')}-${encodeURIComponent(knowledgePageId)}`;
 }
 
 function matchesWorkspace(
@@ -574,7 +580,11 @@ export function KnowledgeScreen() {
                 <Card className="p-0 px-4">
                   {items.map((entry) => (
                     <ListRow key={entry.id}>
-                      <div className="min-w-0 flex-1 py-1">
+                      <div
+                        id={knowledgeContentId(workspaceId, entry.id)}
+                        tabIndex={-1}
+                        className="min-w-0 flex-1 rounded-ok py-1 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                      >
                         <div className="flex items-start gap-3">
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-bold text-fg-strong">{entry.title}</p>
@@ -682,7 +692,11 @@ export function KnowledgeScreen() {
 
         <KnowledgeSourcesPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
         <KnowledgeLedgerPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
-        <KnowledgeRetrievalPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
+        <KnowledgeRetrievalPanel
+          connectionBlocked={connectionBlocked}
+          workspaceId={workspaceId}
+          currentEntries={knowledge.isSuccess ? entries : []}
+        />
         <KnowledgeManagerPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
 
         {attention.isLoading ? (
@@ -1509,12 +1523,15 @@ function KnowledgeLedgerPanel({
   );
 }
 
+/** Compose recorded selected hits with authorized current content, never snapshot bytes. */
 function KnowledgeRetrievalPanel({
   workspaceId,
   connectionBlocked,
+  currentEntries,
 }: {
   workspaceId: string | null;
   connectionBlocked: boolean;
+  currentEntries: KnowledgeItem[];
 }) {
   const indexes = useKnowledgeIndexes(workspaceId);
   const retrieve = useRetrieveKnowledge();
@@ -1617,11 +1634,40 @@ function KnowledgeRetrievalPanel({
       {retrieveResult ? (
         <Card className="flex flex-col gap-2">
           <p className="text-sm text-fg-strong">{retrieveResult.traceId}</p>
-          {retrieveResult.selected.map((row) => (
-            <p key={row.knowledgePageId} className="text-sm text-fg">
-              {row.knowledgePageId}
-            </p>
-          ))}
+          <p className="text-xs text-fg-muted">
+            Current content; may differ from the recorded retrieval.
+          </p>
+          <ol className="flex flex-col gap-3">
+            {retrieveResult.selected.map((row) => {
+              const entry = currentEntries.find(
+                (candidate) => candidate.id === row.knowledgePageId
+              );
+              return (
+                <li key={row.knowledgePageId} className="flex flex-col gap-1">
+                  <p className="text-xs text-fg-muted">{row.knowledgePageId}</p>
+                  {entry ? (
+                    <>
+                      <p className="text-sm font-bold text-fg-strong">{entry.title}</p>
+                      <p className="text-sm text-fg">
+                        {entry.content.length > 240
+                          ? `${entry.content.slice(0, 240)}…`
+                          : entry.content}
+                      </p>
+                      <Link
+                        aria-label={`View current content: ${entry.title}`}
+                        href={`#${encodeURIComponent(knowledgeContentId(workspaceId, entry.id))}`}
+                        className="text-sm text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                      >
+                        View current content
+                      </Link>
+                    </>
+                  ) : (
+                    <p className="text-sm text-fg-muted">Current content unavailable.</p>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
           {retrieveResult.excluded.map((row) => (
             <p key={`${row.knowledgePageId}:${row.reason}`} className="text-xs text-fg-muted">
               {EXCLUSION_REASON_LABEL[row.reason]}

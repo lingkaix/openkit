@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { useWorkspaceStore } from '../workspace-store';
+import { workspaceKeys } from './data';
 import knowledgeDataSource from './data.ts?raw';
 import knowledgeScreenSource from './KnowledgeScreen.tsx?raw';
 
@@ -4091,6 +4092,185 @@ describe('Knowledge (board 14)', () => {
     expect(readKnowledgeIndexes).toHaveBeenCalledTimes(1);
     expect(retrieveKnowledge).toHaveBeenCalledTimes(1);
     expect(prepareKnowledgeContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows selected retrieval titles, bounded current previews, and content links without excluded content', async () => {
+    const user = userEvent.setup();
+    const first = {
+      ...KNOWLEDGE_ENTRY,
+      content: `${'Current knowledge. '.repeat(30)}Full ending.`,
+    };
+    const second = { ...KNOWLEDGE_ENTRY_B, id: 'mem2', title: 'Second selected page' };
+    const excluded = {
+      ...KNOWLEDGE_ENTRY,
+      id: 'old-plan',
+      title: 'Excluded private plan',
+      content: 'Excluded plan content must not become a retrieval preview.',
+    };
+    const trace = {
+      ...KNOWLEDGE_RETRIEVAL,
+      selected: [
+        KNOWLEDGE_RETRIEVAL.selected[0],
+        { ...KNOWLEDGE_RETRIEVAL.selected[0], knowledgePageId: second.id },
+        { ...KNOWLEDGE_RETRIEVAL.selected[0], knowledgePageId: 'missing-page' },
+      ],
+    };
+    const listKnowledge = vi.fn().mockResolvedValue({ items: [excluded, second, first] });
+    const retrieveKnowledge = vi.fn().mockResolvedValue(trace);
+    renderApp('/knowledge', makeClient({ core: { listKnowledge }, app: { retrieveKnowledge } }));
+    await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
+    const retrieval = knowledgePanel('Retrieval');
+    await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
+    await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
+    await within(retrieval).findByText(trace.traceId);
+
+    expect(within(retrieval).getByText(first.title)).toBeInTheDocument();
+    expect(within(retrieval).getByText(`${first.content.slice(0, 240)}…`)).toBeInTheDocument();
+    expect(within(retrieval).queryByText(first.content)).not.toBeInTheDocument();
+    expect(within(retrieval).getByText(second.title)).toBeInTheDocument();
+    expect(within(retrieval).getByText(second.content)).toBeInTheDocument();
+    expect(
+      within(retrieval).getByText('Current content; may differ from the recorded retrieval.')
+    ).toBeInTheDocument();
+    const hits = within(retrieval).getAllByRole('listitem');
+    expect(hits).toHaveLength(3);
+    for (const [index, selected] of trace.selected.entries()) {
+      expect(within(hits[index]).getByText(selected.knowledgePageId)).toBeInTheDocument();
+    }
+    expect(within(hits[2]).getByText('Current content unavailable.')).toBeInTheDocument();
+    expect(within(hits[2]).queryByRole('link')).not.toBeInTheDocument();
+    for (const entry of [first, second]) {
+      const link = within(retrieval).getByRole('link', {
+        name: `View current content: ${entry.title}`,
+      });
+      const target = document.getElementById(
+        decodeURIComponent(link.getAttribute('href')?.slice(1) ?? '')
+      );
+      expect(target).not.toBeNull();
+      expect(target).toHaveTextContent(entry.title);
+      expect(target).toHaveTextContent(entry.content);
+      expect(target).toHaveAttribute('tabindex', '-1');
+      expect(retrieval).not.toContainElement(target);
+    }
+    expect(within(retrieval).queryByText(excluded.title)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(excluded.content)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(excluded.id)).not.toBeInTheDocument();
+    expect(within(retrieval).getByText('Sensitive content')).toBeInTheDocument();
+    expect(listKnowledge.mock.calls).toEqual([[WORKSPACE_A.id]]);
+    expect(retrieveKnowledge.mock.calls).toEqual([[WORKSPACE_A.id, { query: RETRIEVAL_QUERY }]]);
+  });
+
+  it('keeps the retrieval trace while current content changes or becomes unavailable', async () => {
+    const user = userEvent.setup();
+    const listKnowledge = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
+      .mockResolvedValueOnce({ items: [UPDATED_KNOWLEDGE_ENTRY] })
+      .mockResolvedValue({ items: [] });
+    const retrieveKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL);
+    const queryClient = renderApp(
+      '/knowledge',
+      makeClient({ core: { listKnowledge }, app: { retrieveKnowledge } })
+    );
+    await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
+    const retrieval = knowledgePanel('Retrieval');
+    await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
+    await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
+    expect(await within(retrieval).findByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: workspaceKeys.knowledge(WORKSPACE_A.id) });
+    });
+    expect(await within(retrieval).findByText(UPDATED_KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
+    expect(within(retrieval).getByText(UPDATED_KNOWLEDGE_ENTRY.content)).toBeInTheDocument();
+    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: workspaceKeys.knowledge(WORKSPACE_A.id) });
+    });
+    expect(await within(retrieval).findByText('Current content unavailable.')).toBeInTheDocument();
+    expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(UPDATED_KNOWLEDGE_ENTRY.content)).not.toBeInTheDocument();
+    expect(within(retrieval).getByText(RETRIEVAL_TRACE_ID)).toBeInTheDocument();
+    expect(within(retrieval).getByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
+    expect(retrieveKnowledge).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: 'access denial', error: accessDenied('Private permission details') },
+    { name: 'read failure', error: operationFailed('Private storage details') },
+  ])('does not compose cached retrieval content after current Knowledge $name', async ({
+    error,
+  }) => {
+    const user = userEvent.setup();
+    const listKnowledge = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
+      .mockRejectedValue(error);
+    const queryClient = renderApp(
+      '/knowledge',
+      makeClient({
+        core: { listKnowledge },
+        app: { retrieveKnowledge: vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL) },
+      })
+    );
+    await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
+    const retrieval = knowledgePanel('Retrieval');
+    await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
+    await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
+    expect(await within(retrieval).findByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: workspaceKeys.knowledge(WORKSPACE_A.id) });
+    });
+
+    // TanStack retains the previous data on a failed refetch; it is not current read authority.
+    expect(queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_A.id))).toEqual([
+      KNOWLEDGE_ENTRY,
+    ]);
+    expect(await within(retrieval).findByText('Current content unavailable.')).toBeInTheDocument();
+    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.content)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
+    expect(within(retrieval).getByText(RETRIEVAL_TRACE_ID)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(error.message);
+  });
+
+  it('does not compose a late Workspace A retrieval with Workspace B current content', async () => {
+    const user = userEvent.setup();
+    const pending = createDeferred<typeof KNOWLEDGE_RETRIEVAL>();
+    const collidingB = { ...KNOWLEDGE_ENTRY_B, id: KNOWLEDGE_ENTRY.id };
+    const retrieveKnowledge = vi.fn().mockReturnValue(pending.promise);
+    const queryClient = renderApp(
+      '/knowledge',
+      makeClient({
+        core: {
+          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
+          listKnowledge: vi.fn().mockImplementation(async (workspaceId: string) => ({
+            items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_ENTRY] : [collidingB],
+          })),
+        },
+        app: { retrieveKnowledge },
+      })
+    );
+    await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
+    await fillKnowledgeFields(user, knowledgePanel('Retrieval'), [['Query', RETRIEVAL_QUERY]]);
+    await user.click(within(knowledgePanel('Retrieval')).getByRole('button', { name: 'Retrieve' }));
+    await waitFor(() => expect(retrieveKnowledge).toHaveBeenCalledTimes(1));
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
+    await screen.findByText(collidingB.title);
+    await act(async () => {
+      pending.resolve(KNOWLEDGE_RETRIEVAL);
+    });
+    await waitFor(() =>
+      expect(queryClient.getMutationCache().getAll()[0].state.status).toBe('success')
+    );
+
+    const retrieval = knowledgePanel('Retrieval');
+    expect(within(retrieval).queryByText(RETRIEVAL_TRACE_ID)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(collidingB.title)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(collidingB.content)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
+    expect(retrieveKnowledge.mock.calls).toEqual([[WORKSPACE_A.id, { query: RETRIEVAL_QUERY }]]);
   });
 
   it('answers, suggests repairs, and inspects health from the Manager panel', async () => {

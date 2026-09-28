@@ -318,6 +318,10 @@ Approval decision cards show the recorded user display name or system actor, mat
 
 Failed Turns retain their recorded dashboard errors in conversation history after later Turns finish, including failures with no Items. Interleaved Items keep their log order; each historical error appears once after that Turn’s last Item group. Latest failures remain in the header and do not offer an automatic retry.
 
+### Knowledge retrieval
+
+Retrieval preserves the recorded trace identity and selected-hit order while composing titles and previews of at most 240 characters from the selected Workspace's existing authorized Knowledge read. These are explicitly labeled current content and may differ from the recorded retrieval; they are not a retrieval-time snapshot. Each available hit links to the existing full-content display. Missing entries and failed current reads show content as unavailable, including when a failed refetch retains cached data. Workspace changes hide results from another Workspace, and excluded hits retain only their existing reason labels without content enrichment.
+
 ### Artifacts and typography
 
 Chat and Task Artifact references share an on-demand View content dialog in the stream and side panel. It uses the existing exact Artifact read, requires the message version to match, and renders recorded workspace-change paths and patch bytes with a full-content disclosure. Failed reads expose retry; inspection never applies or decides changes.
