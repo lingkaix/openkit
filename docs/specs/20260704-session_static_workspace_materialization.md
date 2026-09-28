@@ -5,6 +5,10 @@ updated: 2026-09-10
 ---
 # AgentSession Static Workspace Materialization
 
+## Git Fetch Refusal Observation
+
+The terminal remote fetch attempt reports bounded private subprocess facts through the [durable Git fetch explanation](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation). Git's completed HTTP 401/403 refusal is `git_fetch_http_refused`; its source remains unattributed without separately trusted enforcement evidence. Earlier direct-fetch observations do not override the terminal advertised-ref attempt. Local object-type checks keep their existing classification. Fixed safe explanations never publish private stderr, alter credential-free Git environment rules, clean an incomplete slot or prove cleanup/storage reuse. Host-local repository diagnostics do not establish sandbox remote access.
+
 ## Persistent Working Volumes Amendment
 
 [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) separates generic retained volumes from the existing per-Turn generated input/control slots. Persistence is whole-volume and does not enumerate file kinds. Existing slot examples with `retention: session` describe execution-local materialization; writable working data is retained under its storageRef across session/Sandbox replacement. A successor never inherits old route credentials, authority, a claimed successful outcome or an unproved native handle, but may use the same authorized working bytes after predecessor fencing.

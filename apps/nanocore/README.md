@@ -470,3 +470,5 @@ The actor-authorized conversation navigation App read model derives current/late
 Synchronous product Turn start reports `scheduler_admission_denied` when the scheduler rejects that exact submitted queue entry. A different queue entry's denial remains a deferred dispatch result for the caller. Existing authority checks and unstarted-admission cleanup are unchanged.
 
 Workspace deletion distinguishes containment from historical result uncertainty: a failed `needs-evidence` lease is quiescent only with an exact matching cleaned backend and recorded physical cleanup. Missing or mismatched proof continues to fence deletion, and the recovery flag remains unchanged in Core.
+
+Worker Git fetch failures retain a closed `Turn.error.explanation` alongside fixed recovery guidance. HTTP 401/403 is an unattributed refusal, not proof of sandbox enforcement. After Turn persistence, authorized reads/lists and terminal events retain the same facts across restart; cleanup failures preserve the primary explanation without claiming successful cleanup.

@@ -18,6 +18,7 @@
     "format": "biome check --write ."
   },
   "dependencies": {
+    "@openkit/protocol": "workspace:*",
     "zod": "^4.3.6"
   },
   "devDependencies": {

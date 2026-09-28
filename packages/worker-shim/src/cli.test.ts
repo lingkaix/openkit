@@ -3497,6 +3497,12 @@ describe('worker shim CLI parsing', () => {
       reason: 'git_fetch_transport_failed',
       stderr: 'fatal: early EOF\n',
     },
+    {
+      message: 'Remote Git commit fetch HTTP refused.',
+      reason: 'git_fetch_http_refused',
+      stderr:
+        'fatal: unable to access https://canary-secret@example.invalid/: The requested URL returned error: 403\n',
+    },
   ])('reports $reason when the terminal Git fetch matches that private failure', async ({
     message,
     reason,
@@ -3554,7 +3560,14 @@ process.exit(result.status === null ? 1 : result.status);
     expect(onStartupFailure).toHaveBeenCalledWith({
       stage: 'workspace_materialization',
       reason,
+      explanation: expect.objectContaining({
+        code: reason,
+        subprocess: 'exit',
+        httpStatus: reason === 'git_fetch_http_refused' ? 403 : null,
+        enforcement: 'unavailable',
+      }),
     });
+    expect(JSON.stringify(onStartupFailure.mock.calls)).not.toContain('canary-secret');
     expect(runner.run).not.toHaveBeenCalled();
     expect(existsSync(join(target, '.git'))).toBe(true);
   });

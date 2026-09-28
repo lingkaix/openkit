@@ -13,6 +13,7 @@ import {
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import {
   WorkerRuntimeRawStreamManifestSchema,
+  type WorkerStartupFailure,
   WorkerStartupFailureSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
@@ -443,7 +444,7 @@ function workspaceMaterializationRefusalExplanation(
   operation: string,
   disposition: string,
   reason: unknown,
-  startup: { readonly stage: string; readonly reason: string } | null
+  startup: WorkerStartupFailure | null
 ): string {
   if (
     operation !== 'turn.start' ||
@@ -458,6 +459,9 @@ function workspaceMaterializationRefusalExplanation(
   }
   if (startup.reason === 'git_fetch_commit_unavailable') {
     return ' The configured Git remote does not serve the requested commit; publish that commit or select one the remote serves, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
+  }
+  if (startup.reason === 'git_fetch_http_refused') {
+    return ` Repository access returned HTTP ${startup.explanation?.httpStatus}; the source of the refusal is not established. Ask an authorized operator to inspect sandbox network policy and upstream access separately, then start a new Task only after cleanup and storage admission allow it. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.`;
   }
   if (startup.reason === 'git_fetch_tls_failed') {
     return ' The worker could not trust the configured Git remote during fetch. Repair the sandbox trust bundle, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
@@ -634,8 +638,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       startup.success ? startup.data : null
     );
     pending.reject(
-      new Error(
-        `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.${explanation}`
+      Object.assign(
+        new Error(
+          `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.${explanation}`
+        ),
+        startup.success && startup.data.explanation ? { explanation: startup.data.explanation } : {}
       )
     );
   }

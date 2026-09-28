@@ -1961,6 +1961,107 @@
             {
               "type": "object",
               "properties": {
+                "explanation": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "git_fetch_failed",
+                        "git_fetch_tls_failed",
+                        "git_fetch_transport_failed",
+                        "git_fetch_http_refused"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "const": "workspace_materialization"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "const": "git.fetch"
+                    },
+                    "dependency": {
+                      "type": "string",
+                      "const": "git_remote"
+                    },
+                    "producer": {
+                      "type": "string",
+                      "const": "worker-shim"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 24,
+                      "maxLength": 24,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+                    },
+                    "basis": {
+                      "type": "string",
+                      "const": "direct_observation"
+                    },
+                    "subprocess": {
+                      "type": "string",
+                      "enum": [
+                        "exit",
+                        "signal",
+                        "spawn",
+                        "timeout"
+                      ]
+                    },
+                    "httpStatus": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 401
+                        },
+                        {
+                          "type": "number",
+                          "const": 403
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "enforcement": {
+                      "type": "string",
+                      "const": "unavailable"
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "type": "string",
+                          "const": "partial"
+                        },
+                        "outputTruncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "outputTruncated"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "stage",
+                    "operation",
+                    "dependency",
+                    "producer",
+                    "observedAt",
+                    "basis",
+                    "subprocess",
+                    "httpStatus",
+                    "enforcement",
+                    "evidence"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Closed Git fetch observation. Canonical Zod validation additionally requires HTTP status iff code is git_fetch_http_refused and a completed failed subprocess for every non-transport code."
+                },
                 "code": {
                   "anyOf": [
                     {
@@ -4091,6 +4192,107 @@
             {
               "type": "object",
               "properties": {
+                "explanation": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "git_fetch_failed",
+                        "git_fetch_tls_failed",
+                        "git_fetch_transport_failed",
+                        "git_fetch_http_refused"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "const": "workspace_materialization"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "const": "git.fetch"
+                    },
+                    "dependency": {
+                      "type": "string",
+                      "const": "git_remote"
+                    },
+                    "producer": {
+                      "type": "string",
+                      "const": "worker-shim"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 24,
+                      "maxLength": 24,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+                    },
+                    "basis": {
+                      "type": "string",
+                      "const": "direct_observation"
+                    },
+                    "subprocess": {
+                      "type": "string",
+                      "enum": [
+                        "exit",
+                        "signal",
+                        "spawn",
+                        "timeout"
+                      ]
+                    },
+                    "httpStatus": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 401
+                        },
+                        {
+                          "type": "number",
+                          "const": 403
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "enforcement": {
+                      "type": "string",
+                      "const": "unavailable"
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "type": "string",
+                          "const": "partial"
+                        },
+                        "outputTruncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "outputTruncated"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "stage",
+                    "operation",
+                    "dependency",
+                    "producer",
+                    "observedAt",
+                    "basis",
+                    "subprocess",
+                    "httpStatus",
+                    "enforcement",
+                    "evidence"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Closed Git fetch observation. Canonical Zod validation additionally requires HTTP status iff code is git_fetch_http_refused and a completed failed subprocess for every non-transport code."
+                },
                 "code": {
                   "anyOf": [
                     {
@@ -6221,6 +6423,107 @@
             {
               "type": "object",
               "properties": {
+                "explanation": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "git_fetch_failed",
+                        "git_fetch_tls_failed",
+                        "git_fetch_transport_failed",
+                        "git_fetch_http_refused"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "const": "workspace_materialization"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "const": "git.fetch"
+                    },
+                    "dependency": {
+                      "type": "string",
+                      "const": "git_remote"
+                    },
+                    "producer": {
+                      "type": "string",
+                      "const": "worker-shim"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 24,
+                      "maxLength": 24,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+                    },
+                    "basis": {
+                      "type": "string",
+                      "const": "direct_observation"
+                    },
+                    "subprocess": {
+                      "type": "string",
+                      "enum": [
+                        "exit",
+                        "signal",
+                        "spawn",
+                        "timeout"
+                      ]
+                    },
+                    "httpStatus": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 401
+                        },
+                        {
+                          "type": "number",
+                          "const": 403
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "enforcement": {
+                      "type": "string",
+                      "const": "unavailable"
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "type": "string",
+                          "const": "partial"
+                        },
+                        "outputTruncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "outputTruncated"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "stage",
+                    "operation",
+                    "dependency",
+                    "producer",
+                    "observedAt",
+                    "basis",
+                    "subprocess",
+                    "httpStatus",
+                    "enforcement",
+                    "evidence"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Closed Git fetch observation. Canonical Zod validation additionally requires HTTP status iff code is git_fetch_http_refused and a completed failed subprocess for every non-transport code."
+                },
                 "code": {
                   "anyOf": [
                     {
@@ -8398,6 +8701,107 @@
             {
               "type": "object",
               "properties": {
+                "explanation": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "git_fetch_failed",
+                        "git_fetch_tls_failed",
+                        "git_fetch_transport_failed",
+                        "git_fetch_http_refused"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "const": "workspace_materialization"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "const": "git.fetch"
+                    },
+                    "dependency": {
+                      "type": "string",
+                      "const": "git_remote"
+                    },
+                    "producer": {
+                      "type": "string",
+                      "const": "worker-shim"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 24,
+                      "maxLength": 24,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+                    },
+                    "basis": {
+                      "type": "string",
+                      "const": "direct_observation"
+                    },
+                    "subprocess": {
+                      "type": "string",
+                      "enum": [
+                        "exit",
+                        "signal",
+                        "spawn",
+                        "timeout"
+                      ]
+                    },
+                    "httpStatus": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 401
+                        },
+                        {
+                          "type": "number",
+                          "const": 403
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "enforcement": {
+                      "type": "string",
+                      "const": "unavailable"
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "type": "string",
+                          "const": "partial"
+                        },
+                        "outputTruncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "outputTruncated"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "stage",
+                    "operation",
+                    "dependency",
+                    "producer",
+                    "observedAt",
+                    "basis",
+                    "subprocess",
+                    "httpStatus",
+                    "enforcement",
+                    "evidence"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Closed Git fetch observation. Canonical Zod validation additionally requires HTTP status iff code is git_fetch_http_refused and a completed failed subprocess for every non-transport code."
+                },
                 "code": {
                   "anyOf": [
                     {
@@ -10528,6 +10932,107 @@
             {
               "type": "object",
               "properties": {
+                "explanation": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "git_fetch_failed",
+                        "git_fetch_tls_failed",
+                        "git_fetch_transport_failed",
+                        "git_fetch_http_refused"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "const": "workspace_materialization"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "const": "git.fetch"
+                    },
+                    "dependency": {
+                      "type": "string",
+                      "const": "git_remote"
+                    },
+                    "producer": {
+                      "type": "string",
+                      "const": "worker-shim"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 24,
+                      "maxLength": 24,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+                    },
+                    "basis": {
+                      "type": "string",
+                      "const": "direct_observation"
+                    },
+                    "subprocess": {
+                      "type": "string",
+                      "enum": [
+                        "exit",
+                        "signal",
+                        "spawn",
+                        "timeout"
+                      ]
+                    },
+                    "httpStatus": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 401
+                        },
+                        {
+                          "type": "number",
+                          "const": 403
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "enforcement": {
+                      "type": "string",
+                      "const": "unavailable"
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "type": "string",
+                          "const": "partial"
+                        },
+                        "outputTruncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "outputTruncated"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "stage",
+                    "operation",
+                    "dependency",
+                    "producer",
+                    "observedAt",
+                    "basis",
+                    "subprocess",
+                    "httpStatus",
+                    "enforcement",
+                    "evidence"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Closed Git fetch observation. Canonical Zod validation additionally requires HTTP status iff code is git_fetch_http_refused and a completed failed subprocess for every non-transport code."
+                },
                 "code": {
                   "anyOf": [
                     {
@@ -12658,6 +13163,107 @@
             {
               "type": "object",
               "properties": {
+                "explanation": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "git_fetch_failed",
+                        "git_fetch_tls_failed",
+                        "git_fetch_transport_failed",
+                        "git_fetch_http_refused"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "const": "workspace_materialization"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "const": "git.fetch"
+                    },
+                    "dependency": {
+                      "type": "string",
+                      "const": "git_remote"
+                    },
+                    "producer": {
+                      "type": "string",
+                      "const": "worker-shim"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 24,
+                      "maxLength": 24,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+                    },
+                    "basis": {
+                      "type": "string",
+                      "const": "direct_observation"
+                    },
+                    "subprocess": {
+                      "type": "string",
+                      "enum": [
+                        "exit",
+                        "signal",
+                        "spawn",
+                        "timeout"
+                      ]
+                    },
+                    "httpStatus": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 401
+                        },
+                        {
+                          "type": "number",
+                          "const": 403
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "enforcement": {
+                      "type": "string",
+                      "const": "unavailable"
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "type": "string",
+                          "const": "partial"
+                        },
+                        "outputTruncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "outputTruncated"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "stage",
+                    "operation",
+                    "dependency",
+                    "producer",
+                    "observedAt",
+                    "basis",
+                    "subprocess",
+                    "httpStatus",
+                    "enforcement",
+                    "evidence"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Closed Git fetch observation. Canonical Zod validation additionally requires HTTP status iff code is git_fetch_http_refused and a completed failed subprocess for every non-transport code."
+                },
                 "code": {
                   "anyOf": [
                     {
@@ -14788,6 +15394,107 @@
             {
               "type": "object",
               "properties": {
+                "explanation": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "git_fetch_failed",
+                        "git_fetch_tls_failed",
+                        "git_fetch_transport_failed",
+                        "git_fetch_http_refused"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "const": "workspace_materialization"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "const": "git.fetch"
+                    },
+                    "dependency": {
+                      "type": "string",
+                      "const": "git_remote"
+                    },
+                    "producer": {
+                      "type": "string",
+                      "const": "worker-shim"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 24,
+                      "maxLength": 24,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+                    },
+                    "basis": {
+                      "type": "string",
+                      "const": "direct_observation"
+                    },
+                    "subprocess": {
+                      "type": "string",
+                      "enum": [
+                        "exit",
+                        "signal",
+                        "spawn",
+                        "timeout"
+                      ]
+                    },
+                    "httpStatus": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 401
+                        },
+                        {
+                          "type": "number",
+                          "const": 403
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "enforcement": {
+                      "type": "string",
+                      "const": "unavailable"
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "type": "string",
+                          "const": "partial"
+                        },
+                        "outputTruncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "outputTruncated"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "stage",
+                    "operation",
+                    "dependency",
+                    "producer",
+                    "observedAt",
+                    "basis",
+                    "subprocess",
+                    "httpStatus",
+                    "enforcement",
+                    "evidence"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Closed Git fetch observation. Canonical Zod validation additionally requires HTTP status iff code is git_fetch_http_refused and a completed failed subprocess for every non-transport code."
+                },
                 "code": {
                   "anyOf": [
                     {
