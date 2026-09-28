@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
@@ -14,6 +15,7 @@ import {
   compactWorkspaceEvidenceBundles,
   listWorkspaceEvidenceBundles,
   readWorkObservationBody,
+  workObservationBodyBundleId,
 } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
@@ -114,6 +116,139 @@ function assistant(bytes: Uint8Array): WorkObservationDraft {
 }
 
 describe('durable work observations', () => {
+  it.skipIf(process.platform === 'win32').each(['before-publication', 'after-publication'])(
+    'preserves the blob/reference boundary after SIGKILL %s and reopen',
+    (boundary) => {
+      const f = fixture();
+      const workspaceId = f.db.workspaceId;
+      const bytes = Buffer.from('  crash boundary 世界\n\tfinal\r\n');
+      const observation = assistant(bytes);
+      const body = {
+        id: 'assistant',
+        bytes,
+        mediaType: 'text/plain',
+        boundary: 'outward-assistant-v1',
+      };
+      const input = { ...f.owner, observation, bodies: [body] };
+      const bundleId = workObservationBodyBundleId(
+        workspaceId,
+        f.owner.threadId,
+        f.owner.turnId,
+        observation.id,
+        body.id
+      );
+      f.db.sqlite.close();
+
+      // Exercise the real writers in a process that cannot run database or filesystem cleanup.
+      // The pre-publication stop is after body retention, before opening the publication append.
+      // SIGKILL removes process state; it does not discard the kernel cache or emulate power loss.
+      const exited = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '-e',
+          `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { join } from 'node:path';
+const input = JSON.parse(process.argv[1]);
+const path = join(input.dataRoot, 'workspaces', input.workspaceId, 'threads', input.owner.threadId, 'turns', input.owner.turnId, 'observations.jsonl');
+const openSync = fs.openSync;
+let appends = 0;
+fs.openSync = (target, flags, mode) => {
+  if (String(target) === path && typeof flags === 'number' && (flags & fs.constants.O_APPEND) !== 0 && ++appends === 2 && input.boundary === 'before-publication') {
+    fs.writeSync(1, 'before-publication');
+    process.kill(process.pid, 'SIGKILL');
+  }
+  return openSync(target, flags, mode);
+};
+syncBuiltinESMExports();
+const { openWorkspaceDb } = await import(input.dbModule);
+const { appendWorkObservation } = await import(input.observationModule);
+const db = openWorkspaceDb(input.dataRoot, input.workspaceId);
+appendWorkObservation(db, { ...input.owner, observation: input.observation, bodies: [{ ...input.body, bytes: Buffer.from(input.body.bytes) }] });
+fs.writeSync(1, 'after-publication');
+process.kill(process.pid, 'SIGKILL');`,
+          JSON.stringify({
+            dataRoot: f.dataRoot,
+            workspaceId,
+            owner: f.owner,
+            observation,
+            body: { ...body, bytes: [...bytes] },
+            boundary,
+            dbModule: new URL('./db.ts', import.meta.url).href,
+            observationModule: new URL('./work-observations.ts', import.meta.url).href,
+          }),
+        ],
+        { encoding: 'utf8', timeout: 15_000 }
+      );
+      expect(exited.error).toBeUndefined();
+      expect(exited.stderr).toBe('');
+      expect(exited.signal).toBe('SIGKILL');
+      expect(exited.stdout).toBe(boundary);
+
+      const reopened = openWorkspaceDb(f.dataRoot, workspaceId);
+      databases.push(reopened);
+      const blobPath = join(
+        f.dataRoot,
+        'workspaces',
+        workspaceId,
+        'evidence',
+        'backend',
+        bundleId,
+        'raw',
+        'content'
+      );
+      expect(readFileSync(blobPath)).toEqual(bytes);
+      const rows = readWorkObservations(reopened, f.owner);
+      expect(rows.map((row) => row.type)).toEqual(
+        boundary === 'before-publication'
+          ? ['runtime.observed']
+          : ['runtime.observed', 'content.published']
+      );
+      expect(rows[0]?.refs).toBeUndefined();
+      expect(appendWorkObservation(reopened, { ...input, bodies: [] }).disposition).toBe(
+        'duplicate'
+      );
+      expect(readWorkObservations(reopened, f.owner)).toEqual(rows);
+      if (boundary === 'before-publication') {
+        expect(
+          readThreadRuntimeActivity(reopened, {
+            threadId: f.owner.threadId,
+            turnIds: [f.owner.turnId],
+          })[0]?.entries.some((entry) => entry.text)
+        ).toBe(false);
+      }
+
+      // Only an exact-content retry may endorse the orphan; metadata replay must not do so.
+      appendWorkObservation(reopened, input);
+      const published = readWorkObservations(reopened, f.owner);
+      expect(published).toHaveLength(2);
+      const publication = published[1]!;
+      expect(publication.parent).toBe(observation.id);
+      expect(publication.refs).toEqual([
+        {
+          kind: 'evidence-bundle',
+          scope: { workspaceId, pathClass: 'backend' },
+          locator: bundleId,
+          digest: createHash('sha256').update(bytes).digest('hex'),
+          edge: 'publication',
+        },
+      ]);
+      expect(
+        readWorkObservationBody(reopened, {
+          ...f.owner,
+          bundleId,
+          createdAt: observation.ts,
+          sha256: publication.refs![0]!.digest!,
+        })
+      ).toEqual(bytes);
+      expect(appendWorkObservation(reopened, input).disposition).toBe('duplicate');
+      expect(readWorkObservations(reopened, f.owner)).toEqual(published);
+    }
+  );
+
   it('retains exact Unicode/whitespace separately, then publishes; reload and replay preserve identity', () => {
     const f = fixture();
     const bytes = Buffer.from('  hello 世界\n\tfinal\r\n');

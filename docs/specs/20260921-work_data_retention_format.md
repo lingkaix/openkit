@@ -382,7 +382,7 @@ Missing evidence stays unknown.
 
 **Lifecycle.** Blob recycle leaves digest and byte-count on the row so the reader sees "there was content, now cleared", not "nothing was there".
 
-**Failure.** The current canonical append writer does not fsync; see Durability. Until that defect is closed, publication commit is not purchased.
+**Failure.** Failed blob or observation-line synchronization leaves the publication uncommitted; see Durability.
 
 **Acceptance.** A reader never has to ask "complete or incomplete"; only "inline or external". Size changes do not invalidate old rows. A committed line never names a blob that was not fsynced first; leftover unendorsed blobs are ignored, not treated as missing collection.
 
@@ -463,19 +463,17 @@ After export into another Workspace:
 
 ### Durability
 
-**Definition.** Publication commit is the fsync return of the observation line that cites already-fsynced blob bytes (and, when a new file is created, parent-directory fsync). Un-fsynced tail is uncommitted missing data, not committed wrong data. Turn terminal, blob-referencing lines, and coverage changes are commit points. Default is fsync per observation line unless a later measured change redefines the commit point first. Coverage and Turn-manifest persistence failure blocks governed collection before it starts; that persistence is the storage owner's `turn.json` rewrite, which today also lacks fsync (`writeFileAtomic` at `apps/nanocore/src/storage/workspace-file-records.ts:2498-2512`).
-
-**Present defect.** `appendCanonicalTextFile` (`apps/nanocore/src/storage/workspace-file-records.ts:2450-2488`) opens `O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW|O_NONBLOCK`, `writeSync`s, and `closeSync`s. It does not `fsync` the file or the parent directory. Closing the fd hands bytes to the kernel only. This is a verified present defect of the canonical writer, not the durability contract. The same storage tree already fsyncs file and directory in other paths; the append log does not.
+**Definition.** Publication commit is the fsync return of the observation line that cites already-fsynced blob bytes (and, when a new file is created, parent-directory fsync). Un-fsynced tail is uncommitted missing data, not committed wrong data. Turn terminal, blob-referencing lines, and coverage changes are commit points. Default is fsync per observation line unless a later measured change redefines the commit point first. Coverage and Turn-manifest persistence failure blocks governed collection before it starts; that persistence is the storage owner's `turn.json` rewrite.
 
 **Failure.** Power loss after a non-fsynced append can drop lines the writer believed committed, which is wrong data under the missing-versus-wrong rule. Power loss after blob fsync and before line fsync MAY leave orphan blobs; they are unendorsed and ignored, not a committed publication.
 
-**Acceptance.** After the writer defect is closed, a crash-boundary observation must show: a committed publication never cites unpublished bytes; unendorsed orphan blobs may exist and are ignored; missing `turn.json` coverage persistence blocks governed work. Observing that `fsync` was called is not by itself that observation.
+**Acceptance.** A crash-boundary observation must show: a committed publication never cites unpublished bytes; unendorsed orphan blobs may exist and are ignored; missing `turn.json` coverage persistence blocks governed work. Observing that `fsync` was called is not by itself that observation.
 
 ## Current Implementation Projection
 
 Implementation alignment is `Partial`: immutable Turn capture binding, copied image-digest values and system-prompt digest producers exist. Incremental observation and admitted-content implementation is in progress; the obligations below are not a completion claim. Existing pieces this contract uses rather than replaces:
 
-- Protocol Items persist as `ItemSchema.parse` then `JSON.stringify` into `items.jsonl` via `appendWorkspaceItemRevision` (`apps/nanocore/src/storage/workspace-file-records.ts:846-870`). The canonical append helper (`:2450-2488`) does not fsync.
+- Protocol Items persist as `ItemSchema.parse` then `JSON.stringify` into `items.jsonl` via `appendWorkspaceItemRevision` in `apps/nanocore/src/storage/workspace-file-records.ts`. Its `appendCanonicalTextFile` helper completes partial writes, fsyncs the file, then syncs the parent directory. `writeFileAtomic` fsyncs its temporary file before rename and syncs the parent directory afterward. These implementation facts do not establish the crash-boundary acceptance above.
 - Turn terminals in Core are the four-value set (`docs/core/protocol.md`, `Turn Semantics`, after `968f5a4e`). `TurnStatusSchema` already includes `cancelled` (`packages/protocol/src/models/turn.ts:21-29`).
 - CapabilityCall already has `unknown` (`docs/core/agent-capability.md:70-84`).
 - Storage layout already names observation-ledger split headers (`docs/specs/20260703-storage_layout_record_ownership.md:287`, `Structure Evolution Rules`) and the `turn.json` file in the Turn directory (`:352`, `Workspace Storage Layout`).
@@ -596,7 +594,7 @@ Listing an alignment is not approval of a change to another owner's document. Ea
 - Indexing, BM25, and semantic search.
 - Evaluation Harness.
 - Delayed user-input specification.
-- Closing the `appendCanonicalTextFile` fsync defect.
+- Crash-boundary durability verification beyond the implemented file and directory synchronization.
 - Optional unique UUIDv7 filter helper plus a failing test, if chosen over the review-obligation form.
 
 ## Open Questions
