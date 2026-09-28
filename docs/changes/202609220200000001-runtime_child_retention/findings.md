@@ -14,7 +14,7 @@ These items record structural observations about this plan's uncommitted impleme
 - [ ] `RCR-FND-007` [deferred] Reconcile failed Goal revision readback with admitted capture
 - [x] `RCR-FND-008` [closed] Preserve work outcome after a durably recorded collector fault
 - [x] `RCR-FND-009` [closed] Anchor each rejected observation to its exact expected fact
-- [ ] `RCR-FND-010` [open] Identify the existing Quick Chat Knowledge-read divergence
+- [x] `RCR-FND-010` [closed] Identify the existing Quick Chat Knowledge-read divergence
 
 ## [closed] RCR-FND-001 — Bind capture coverage once and pass it opaquely
 
@@ -111,10 +111,12 @@ These items record structural observations about this plan's uncommitted impleme
 - **Closing verdict:** Closed after per-observation anchors, Core ingress validation, and interrupted-outcome retention. Independent review withdrew a proposed permanent unavailable/publication exclusion because the owner treats them as independent facts; no new content lifecycle was introduced.
 - **Closure evidence:** temp/changes/202609220200000001-runtime_child_retention/resume/opus-review-bounded-closeout.txt; oracle-review3-worker-capture-green.txt (26 tests), oracle-review3-core-gateway-green.txt (40 tests), and repo-b-final.txt (exit 0) in the same directory. B1 deciding failure is oracle-b1-ablation-red.txt, followed by oracle-b1-restored-green.txt; oracle-b1-red.txt contains a later green run and is not failure evidence.
 
-## [open] RCR-FND-010 — Identify the existing Quick Chat Knowledge-read divergence
+## [closed] RCR-FND-010 — Identify the existing Quick Chat Knowledge-read divergence
 
 - **Observation:** A durable fixture correction exposed the existing unconditional Knowledge pre-read on the direct-answer path. The normative Chat Mode information-source contract requires zero such reads for a general question. Initial triage mistook the Current Implementation Projection describing the pre-read for a competing criterion; independent Consultant scrutiny corrected that classification.
 - **Impact:** The implementation diverges from accepted intent, and a test also pins that older implementation. This is not an unresolved governing decision and does not authorize weakening the zero-read regression. The broader shared-loop correction is outside the retention change.
 - **Evidence:** docs/specs/20260704-chat_mode_assistant.md, current-input admission and direct-answer criteria; apps/nanocore/src/quick-chat.test.ts, current-input handoff-summary case and S61-before-provider case; mode-entry-routes.ts unconditional answerFromWorkspaceKnowledge call.
 - **Owner:** docs/changes/202609220200000001-runtime_child_retention/plan.md, the resumed retention primary.
 - **Next action:** Preserve the observed baseline failure in retention closeout, and address the accepted information-source contract in its owning Chat change without inventing a query classifier or bypassing capture. No engineer ruling is needed to identify a non-authoritative implementation projection as a divergence; an exception allowing ambient reads would require one.
+- **Closing verdict:** Closed by 44119012, removing the ordinary Assistant ambient Knowledge pre-read while retaining explicit Knowledge Manager selection and exact replay. Independent reviewer inspected the implementation and strengthened zero-read oracle against the accepted Chat owner; no query classifier or capture bypass was introduced.
+- **Closure evidence:** temp/changes/202609290900000001-chat_task_stability_handoff/rcr-fnd-010-focused-green.log records four files and 72 passing tests; deciding-green records three cases and the combined core-integration.txt independently passes quick-chat.test.ts. Typecheck and focused lint pass. The captured deciding-red log is a transcription of the terminal result, not a raw saved execution log. Real-user experience validation remains in the receiving handoff.

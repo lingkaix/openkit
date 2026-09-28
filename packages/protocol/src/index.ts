@@ -3,6 +3,7 @@ export * from './common/item-delta.js';
 export * from './common/timestamps.js';
 export * from './common/version.js';
 export * from './errors/error.js';
+export * from './errors/failure-explanation.js';
 export * from './events/envelope.js';
 export * from './models/actor.js';
 export * from './models/agent.js';

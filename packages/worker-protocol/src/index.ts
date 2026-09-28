@@ -1,3 +1,7 @@
+import { GitFailureExplanationSchema } from '@openkit/protocol';
+
+export { type GitFailureExplanation, GitFailureExplanationSchema } from '@openkit/protocol';
+
 import { z } from 'zod';
 
 /**
@@ -22,6 +26,7 @@ export type CaptureCoverageBinding = Readonly<z.infer<typeof CaptureCoverageBind
 /** Value-free pre-native startup diagnostics carried by a private Harness refusal. */
 export const WorkerStartupFailureSchema = z
   .object({
+    explanation: GitFailureExplanationSchema.optional(),
     stage: z.enum([
       'package_validation',
       'runtime_supply',
@@ -44,12 +49,27 @@ export const WorkerStartupFailureSchema = z
       'git_fetch_failed',
       'git_fetch_commit_unavailable',
       'git_fetch_tls_failed',
+      'git_fetch_http_refused',
       'git_fetch_transport_failed',
       'git_checkout_failed',
       'control_timeout',
     ]),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.explanation &&
+      (value.stage !== value.explanation.stage || value.reason !== value.explanation.code)
+    ) {
+      context.addIssue({ code: 'custom', message: 'Startup failure and explanation must agree.' });
+    }
+    if (value.reason === 'git_fetch_http_refused' && !value.explanation) {
+      context.addIssue({
+        code: 'custom',
+        message: 'HTTP refusal requires a normalized observation.',
+      });
+    }
+  });
 
 /** Closed startup failure metadata; arbitrary exception text is never transport data. */
 export type WorkerStartupFailure = z.infer<typeof WorkerStartupFailureSchema>;

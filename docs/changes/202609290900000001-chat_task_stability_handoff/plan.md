@@ -25,7 +25,7 @@ Start from the merged implementation rather than recreating it. Exercise ordinar
 
 Derive focused regressions from each reproduced fault, repair through existing owners, and re-exercise the affected real journey. Capture the exact build, environment, model/runtime, scenario, public work identifiers, observed outcome, and remaining limits. A unit pass does not stand in for browser or real-provider evidence. Done means the selected supported journeys have actual evidence, no unresolved blocking defects, and independent review of the repairs; do not convert subjective experience quality into an invented score.
 
-The known RCR-FND-010 direct-answer Knowledge pre-read is being corrected before handoff; the final checkpoint below must state its exact disposition and evidence so the colleague does not duplicate or assume its repair.
+RCR-FND-010 is corrected in 44119012 and independently accepted: ordinary answers do not pre-read Knowledge, while explicit Knowledge Manager selection and replay remain. Four focused files passed 72 tests; the merged quick-chat suite also passed. Reuse this regression and verify the actual user journey rather than reimplementing the fix.
 
 ## Workstream 2 — Retained Work Data Stability
 
@@ -60,10 +60,29 @@ The earlier [documentation normalization plan](../202609241200000002-documentati
 
 ## Working Checkpoint
 
-Preparation is in progress on 2026-09-29. The engineer's governance revisions are committed as 70b81fb3 and ee8a59bd. Configuration tolerance is already independently verified in 2b64298a. Original-body export is already implemented and verified within its earlier bounded round-trip scope in 5d931915; neither needs to be rebuilt. Current-branch checkpoint cba4e11a contains frozen Goal work and its known failing regression.
+The engineer's governance revisions are committed as 70b81fb3 and ee8a59bd. Configuration tolerance is already independently verified in 2b64298a. Original-body export is implemented and verified within its earlier bounded scope in 5d931915; neither needs rebuilding. Checkpoint cba4e11a contains frozen Goal work and its known failing regression.
 
-The preparing primary is correcting RCR-FND-010, reconciling stale execution records, and reviewing PR #106 (06bb1d2b9733f0ae20cb1fe758e1fa986ec1be6c) before integration. Final commit identities, direct checks, review findings, merge outcomes, and remaining limitations will replace this preparation checkpoint before delivery. No current-build real-user or complete retention-stability PASS is claimed.
+The preparing primary fixed the Chat ambient Knowledge pre-read in 44119012 and integrated origin/main's Git-fetch fixes. PR #106 at 06bb1d2b9733f0ae20cb1fe758e1fa986ec1be6c is being integrated, preserving capture and typed failure explanations together. Conflicts required retaining both schema imports and guide paragraphs and regenerating the index and bundled CLI. Integration also required regenerating OpenAPI, classifying the imported Draft as concept under current documentation governance, and binding a new PR test fixture to the persistent Store needed by capture admission. A Git-timeout regression required separating setup latency from the target timeout without weakening its deadline or no-fallback assertion.
+
+Fresh independent review accepted the combined Chat and PR implementation after inspecting the actual diff and outputs; the separate handoff review accepted the corrected obligations. No current-build real-user, full-suite, Goal acceptance, or complete retention-stability PASS is claimed. Temporary raw output is under temp/changes/202609290900000001-chat_task_stability_handoff/; the Chinese working note remains temp/quality-governance/runtime-retention-working-note.md.
+
+## Bounded Governance Evaluation
+
+The earlier independent retention review supports concrete structural observations: four capture-binding definitions became one schema, three timeline-limit owners became one, and three Store-admitted internal callers share capture construction while Gateway keeps its distinct authenticated admission. No new universal factory or policy engine was needed. The Chat correction removes ambient work and caller branching instead of adding a query classifier or compatibility path. These observations illustrate reduced duplicate responsibility and smaller implicit caller obligations; they do not prove the framework caused better productivity or experience.
+
+Independent handoff review detected and corrected omitted matrix coverage, crash/expiry obligations, old findings requiring evidence reconciliation, and the distinction between already-authorized closeout evaluation and separately gated experiments. The receiving colleague still owes real-use and complete retained-data evidence. No discovery/rebuild replay, comparative score, live deployment, or broad stability claim is supplied by this closeout. PR #106 contributes 38 changed paths before integration; Chat's bounded fix changes three paths, no normative owner, and no closed set or registry. The PR retains its own accepted failure-schema owners and no policy-write authority is introduced by integration.
 
 ## Verification And Delivery
 
 The receiving colleague should keep these workstreams in this shared handoff, selecting the smallest cohesive seam and recording defects, repairs, exact evidence, and next action as work progresses. Preserve engineer intent in append-only revisions. Independent review inspects actual diffs and outputs. Close each bounded scope only when its observed acceptance is satisfied; distinguish completed code from real-use evidence still owed. The primary reports externally visible effects and all unresolved findings.
+
+## Combined Verification — 2026-09-29
+
+- Build and typecheck: 16 successful tasks; frozen install passed.
+- Core integration: five files passed 152 tests; the sixth initially failed two new PR fixtures before target execution because the Store lacked capture admission. Correcting that fixture to the existing persistent data root preserves production checks; its complete 132-test file then passed.
+- Worker shim: workspace-git and CLI passed 154 tests after making target-fetch timeout independent of setup latency. The initial run's timeout during Git initialization is retained as failure evidence. A separate file named shim-timeout-oracle-completed-refusal-red.log contains a passing run and is not red or mutation-proof evidence.
+- Protocol failure explanations: 16 passed; Worker startup-failure schema: six passed; rebuilt Skill interface: 44 passed. Fixed prompt guard: two passed.
+- Repository check passed with three warnings and 18 informational diagnostics. Final changed-source Biome, documentation model (367 documents), lifecycle, index and diff checks passed. Protocol schemas, OpenAPI and CLI were regenerated; OpenAPI validation passed.
+- An isolated production package deployment loaded WorkerHarness and its Worker Protocol / Protocol dependency chain from inside that deployment. This is package proof, not Docker/image or real-enforcement proof.
+
+Logs are in the temporary directory named above. No full Core suite or live deployment was run; frozen Goal failures remain unaccepted. Current engineering principles affected the result through reuse of existing owners, removal of ambient behavior, direct regression evidence, independent review, and explicit unresolved dispositions. These are bounded observations, not a comparative framework experiment.

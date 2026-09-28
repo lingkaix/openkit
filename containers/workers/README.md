@@ -9,3 +9,5 @@ This directory owns the published `worker-common` base plus the three independen
 Deriving from `worker-common` confers the tool and filesystem baseline and confers no network, credential, or filesystem authority. A derived Dockerfile must regain `USER root` and then return to `USER 1000:1000`; it inherits the volume, WorkingDir, and descriptive storage-family labels unless it deliberately declares a different layout. `test-env` is not that derivation. Build through `scripts/docker/build-image.sh <image-id>` so `containers/images.json` selects the correct target.
 
 The owning design is `docs/specs/20260721-worker_execution_environment_images.md`.
+
+The shim build copies and builds `@openkit/protocol` before `@openkit/worker-protocol` so the deployed production dependency closure includes the shared product-safe failure schema. This adds no runtime network or credential authority.
