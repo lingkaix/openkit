@@ -69,3 +69,15 @@ test('Pi smoke opens a pending binding and selects its exact absent session path
   assert.match(smoke, /piAdapter\.closeSession\(\{ controlRoot, sessionDirectory: turnRoot \}\)/);
   assert.doesNotMatch(smoke, /--no-session|piAdapter\.prepare\(/);
 });
+
+test('Pi smoke verifies required collector metadata without accepting raw bodies', () => {
+  assert.match(smoke, /assert\.equal\(body, undefined/);
+  assert.match(smoke, /observations\.push\(record\)/);
+  assert.match(smoke, /await plan\.finalize\(\)/);
+  assert.match(smoke, /assert\.deepEqual\(observations\.map\(/);
+  assert.match(smoke, /family: 'primary-content', coverage: 'off'/);
+  assert.match(smoke, /family: 'child-metadata', coverage: 'unsupported'/);
+  assert.match(smoke, /family: 'child-content', coverage: 'unsupported'/);
+  assert.match(smoke, /family: 'primary-content', coverage: 'ended'/);
+  assert.doesNotMatch(smoke, /Image smoke cannot publish observations/);
+});

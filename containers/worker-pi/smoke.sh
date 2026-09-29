@@ -50,6 +50,7 @@ const root = process.env.PI_SMOKE_ROOT;
 const controlRoot = join(root, 'control');
 const stateRoot = join(root, 'retained');
 const turnRoot = join(root, 'turn');
+const observations = [];
 assert.equal(piAdapter.mode, 'session-continuity');
 assert.deepEqual(await piAdapter.openSession({ controlRoot, stateRoot }), {
   nativeHandle: null,
@@ -64,7 +65,10 @@ const plan = await piAdapter.prepareTurn({
     captureCoverage: fixture.observability.captureCoverage,
     packageSnapshotId: 'image-smoke',
     credentialValues: [process.env.OPENKIT_WORKER_INFERENCE_TOKEN],
-    emit: async () => { throw new Error('Image smoke cannot publish observations.'); },
+    emit: async (record, body) => {
+      assert.equal(body, undefined, 'Image smoke cannot publish raw bodies.');
+      observations.push(record);
+    },
   },
   nativeTurnDirectory: turnRoot,
   sessionDirectory: turnRoot,
@@ -116,6 +120,21 @@ assert.deepEqual(await piAdapter.inspectSession({ controlRoot, stateRoot }), {
   nativeHandleState: 'pending',
 });
 await plan.finalize();
+// Finalization reports collector availability even with full-content capture off.
+assert.deepEqual(observations.map(({ fact, content, sourceSequence }) => ({ fact, content, sourceSequence })), [
+  { fact: { kind: 'coverage', runtimeOriginRef: null, family: 'primary-content', coverage: 'off' }, content: { state: 'not-applicable' }, sourceSequence: 0 },
+  { fact: { kind: 'coverage', runtimeOriginRef: null, family: 'child-metadata', coverage: 'unsupported' }, content: { state: 'not-applicable' }, sourceSequence: 1 },
+  { fact: { kind: 'coverage', runtimeOriginRef: null, family: 'child-content', coverage: 'unsupported' }, content: { state: 'not-applicable' }, sourceSequence: 2 },
+  { fact: { kind: 'coverage', runtimeOriginRef: null, family: 'primary-content', coverage: 'ended' }, content: { state: 'not-applicable' }, sourceSequence: 3 },
+]);
+assert.equal(new Set(observations.map(({ observationId }) => observationId)).size, 4);
+for (const record of observations) {
+  assert.deepEqual(Object.keys(record).sort(), ['content', 'fact', 'observationId', 'observedAt', 'sourceRef', 'sourceSequence']);
+  assert.match(record.observationId, /^obs_[a-f0-9]{24}$/);
+  assert.match(record.sourceRef, /^rts_[a-f0-9]{24}$/);
+  assert.equal(record.sourceRef, observations[0].sourceRef);
+  assert.equal(new Date(record.observedAt).toISOString(), record.observedAt);
+}
 await piAdapter.closeSession({ controlRoot, sessionDirectory: turnRoot });
 assert.equal(existsSync(controlRoot), false);
 assert.equal(existsSync(stateRoot), true);
