@@ -2,12 +2,15 @@
 status: Accepted
 implementation: Partial
 kind: concept
+updated: 2026-09-30
 ---
 # Workflow Coordinator Internal Core Role
 
 ## Goal Development Freeze
 
 Further Goal Mode development, including its storage, execution flow, and associated export structures, is frozen by the engineer pending complete product Redesign. The existing clauses preserve the prior design baseline, not authorization to complete pending Goal amendments or acceptance of the checkpoint implementation. The planning-authority and completedOutcome proposals remain deferred. Non-Goal responsibilities are unaffected. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
+
+While Goal step is unavailable under [Goal Mode Coordination](20260704-goal_mode_coordination.md#availability-during-the-agent-communication-redesign), the Goal worker-step conversion in Stop decisions, with its lower-level `remainingWorkerIterations=0` and worker `ask_user` outcome, is not a live execution path. It remains the frozen design baseline for the Goal redesign, with its predicates unchanged. It is not the Task rule, which lets a Task span several Turns of its Thread, and it is not rewritten as a pending-request delivery. A test of new work requires neither `remainingWorkerIterations=0` nor a worker `ask_user` stop.
 
 ## Owns
 

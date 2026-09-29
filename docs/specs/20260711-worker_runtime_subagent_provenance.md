@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-09-05
+updated: "2026-09-30"
 ---
 # Worker Runtime Sub-Agent Provenance And Inference Identity
 
@@ -77,9 +77,9 @@ The implementation reuses the existing worker protocol, capability ledger, Evide
 
 The current worker contract binds every worker transcript record to one outer lineage containing `workspaceId`, `threadId`, `turnId`, `agentSessionId`, `packageSnapshotId`, and an optional request id. This is correct for authority and product ownership, but it cannot distinguish multiple runtime-native threads inside that one worker execution.
 
-The Codex adapter attached to the generic worker shim streams `codex exec --json` stdout into the restricted primary stream when the AEP opts into runtime provenance, retains only bounded process-output diagnostic prefixes, copies the stable reachable rollout forest, and writes the restricted stream manifest and native-origin index while preserving the normalized worker lifecycle events and final assistant message. NanoCore now collects and verifies those files, retains restricted evidence separately, and publishes only a product-safe normalized index; runtime-native activity remains outside canonical product history by design.
+The Codex adapter attached to the generic worker shim streams the Codex App Server v2 event stream into the restricted primary stream when the AEP opts into runtime provenance, retains only bounded process-output diagnostic prefixes, copies the stable reachable rollout forest, and writes the restricted stream manifest and native-origin index while preserving the normalized worker lifecycle events and final assistant message. [Codex Worker Adapter](20260716-codex_worker_adapter.md) owns that stream's fields. NanoCore now collects and verifies those files, retains restricted evidence separately, and publishes only a product-safe normalized index; runtime-native activity remains outside canonical product history by design.
 
-Current Codex `exec --json` output is also not a complete multi-agent transcript. It emits the primary thread stream and collab tool items that carry sender and receiver thread ids, while child thread activity remains in separate runtime-native per-thread records such as Codex rollout JSONL. Capturing only exec stdout would preserve the spawn edges but still lose each child's raw turns, so complete provenance must collect a bounded set of reachable native streams rather than assume one process stream contains the whole runtime forest.
+The Codex App Server v2 primary event stream is also not a complete multi-agent transcript. Child thread activity remains in separate runtime-native per-thread records such as Codex rollout JSONL. Capturing only that primary stream would preserve the spawn edges but still lose each child's raw turns, so complete provenance must collect a bounded set of reachable native streams rather than assume one process stream contains the whole runtime forest. This specification does not define that stream's fields.
 
 The vendored Codex app-server schemas already distinguish runtime-native thread ids, parent thread ids, depth, role or nickname metadata, and sub-agent activity. Those fields are useful evidence inputs, but they remain adapter-native and must not redefine the OpenKit work model.
 
@@ -103,7 +103,7 @@ One runtime-internal parent and all of its runtime-internal children share the s
 
 NanoCore will not create a `SubAgent` entity, a child `AgentSession`, a child OpenKit `Thread`, or a child OpenKit `Turn` for runtime-internal children. If a child needs independent permission, budget, scheduling, retry, recovery, review, or user-visible ownership, NanoCore must launch it as a separate bounded worker execution with its own Core lineage instead of treating it as a hidden runtime child.
 
-For the first governed Codex adapter, the worker image, generated app-server schema snapshot, pinned fixtures, and adapter capability declaration MUST all target Codex 0.153.4. A parser tested against another version MUST NOT advertise `worker.runtime-provenance.v1`.
+For the first governed Codex adapter, the worker image, generated app-server schema snapshot, pinned fixtures, and adapter capability declaration MUST all target the one Codex version that [Codex Worker Adapter](20260716-codex_worker_adapter.md) pins. A parser tested against another version MUST NOT advertise `worker.runtime-provenance.v1`. Codex `0.153.4` is the current fixture and parser, which the Codex adapter slice replaces with its pin. The accepted runtime is Codex App Server v2.
 
 ## Relationship To The Worker Adapter Boundary
 
@@ -138,7 +138,7 @@ Sub-agent-capable runtime adapters MUST produce a bounded raw stream set plus tw
 /openkit/session/runtime/native-origin-index.jsonl
 ```
 
-`raw/stream-0000.jsonl` is the byte-preserved primary runtime stream, such as `codex exec --json` stdout. The shim MUST stream this output to disk while the process runs and MUST NOT retain the complete stream in memory.
+`raw/stream-0000.jsonl` is the byte-preserved primary runtime stream, the Codex App Server v2 event stream. The shim MUST stream this output to disk while the process runs and MUST NOT retain the complete stream in memory.
 
 Additional `raw/stream-*.jsonl` files are byte-preserved runtime-native per-thread streams reachable from the primary runtime thread. For the first Codex adapter, these are the root and child rollout JSONL files selected by runtime-native thread metadata and spawn edges. The adapter MUST copy them under synthetic stream names so native ids and backend paths do not leak through product-safe filenames.
 
@@ -415,7 +415,7 @@ Rejected. Two concrete needs do not justify a new framework. A bounded raw strea
 The worker path ships with each release, so the clean target replaces the incomplete worker path without compatibility aliases.
 
 1. Add failing AEP, route-token separation, `inference.local`, `/inference/*`, cancellation, compression, flow-control, and direct-egress tests for the authenticated worker inference path.
-2. Align the worker image and generated schema evidence on Codex 0.153.4, then stop implementation if the separately governed stock RelayStream plus nested standard HTTP/2 feasibility proof fails or is indeterminate.
+2. Align the worker image and generated schema evidence on the one Codex version that [Codex Worker Adapter](20260716-codex_worker_adapter.md) pins. Codex `0.153.4` is the current fixture and parser, which the Codex adapter slice replaces with its pin. Stop implementation if the separately governed stock RelayStream plus nested standard HTTP/2 feasibility proof fails or is indeterminate.
 3. Add the Sandbox Integration `inference.local` projection and distinct inference-token package/lease binding while sharing the existing provider dispatcher and usage recorder; do not enable provenance capture or correlation fields in this transport-foundation slice.
 4. Add runtime provenance output declarations, limits, and required-feature negotiation without enabling the feature, then stream primary Codex JSON output, discover the reachable child graph, snapshot each stable child rollout under a synthetic stream ref, and generate the restricted stream manifest and native origin index from pinned fixtures and schema evidence.
 5. Collect, verify, normalize, retain, and automatically index runtime provenance through separate restricted-raw and product-safe EvidenceBundle producers plus the new transcript-collection RuntimeEvidence producer.
@@ -437,8 +437,8 @@ Testing follows `docs/specs/20260529-test_strategy.md`.
 
 ### L1: Unit Tests
 
-- The Codex adapter maps the primary exec stream, collab spawn edges, root and child rollout streams, parent links, role, depth, and frame coordinates from pinned fixtures.
-- Raw capture preserves exact bytes, uses bounded streaming for primary stdout and bounded stream copying for child rollouts, and never loads the complete stream set in memory.
+- The Codex adapter maps the selected pin's App Server v2 event stream as the primary stream, plus root and child rollout streams, parent links, role, depth, and frame coordinates from pinned fixtures. Spawn-edge and parent/child reconstruction stay. Native field names remain with the adapter's pinned evidence.
+- Raw capture preserves exact bytes, uses bounded streaming for that primary event stream and bounded stream copying for child rollouts, and never loads the complete stream set in memory.
 - The importer detects missing manifest streams, unlisted streams, missing reachable children, unstable children, missing frames, digest mismatch, range overlap, parent cycles, malformed lines, truncation, and lineage mismatch.
 - The importer rejects an index whose declared origin, parent, turn, role, depth, or event kind disagrees with the corresponding pinned raw frame.
 - Runtime-origin ref minting is deterministic for the same registered session and native origin while remaining opaque in product-safe output.
@@ -447,7 +447,7 @@ Testing follows `docs/specs/20260529-test_strategy.md`.
 
 ### L2: Contract And Conformance Tests
 
-- A fixture containing one primary exec stream plus separate parent, child A, and child B rollout streams reconstructs the exact runtime forest and returns the correct raw frame set for each `runtimeOriginRef`.
+- A fixture containing one primary App Server v2 event stream for the selected pin, plus separate parent, child A, and child B rollout streams, reconstructs the exact runtime forest and returns the correct raw frame set for each `runtimeOriginRef`.
 - Canonical item import remains one coherent outer turn and does not flatten child messages into product history.
 - Spoofed `metadata.openkit`, runtime headers, package snapshot ids, and inactive lease bindings fail closed.
 - Public `/v1` routes retain their generic contract, while worker-local inference uses authenticated lineage and the same provider dispatcher and preserves streaming, cancellation, retention, and supported compression semantics.
@@ -469,7 +469,7 @@ Testing follows `docs/specs/20260529-test_strategy.md`.
 ### L5 And L6
 
 - Packaged NanoCore and the worker shim complete one governed Codex task that spawns at least two sub-agents without losing or flattening native provenance.
-- The skip-aware real Codex story passed the opt-in acceptance gate for the parent-child runtime tree, outer turn coherence, trusted worker Gateway attribution, separated cache lineage, and cached-token telemetry. Default test runs still do not consume provider quota and cannot claim or replace that executable proof.
+- The skip-aware real Codex story passed the opt-in acceptance gate for the parent-child runtime tree, outer turn coherence, trusted worker Gateway attribution, separated cache lineage, and cached-token telemetry. That run is historical `codex exec` evidence and does not qualify the App Server v2 replacement. Default test runs still do not consume provider quota and cannot claim or replace that executable proof.
 
 Acceptance is complete only when all of the following are true:
 

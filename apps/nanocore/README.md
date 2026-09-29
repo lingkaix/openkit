@@ -278,7 +278,11 @@ curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo
 
 Pause is accepted only for a running Goal when the Thread has no pending, running, or human-gated worker Turn; resume applies the same safe-boundary check to a paused Goal. Each response separates the historical command result from current resource truth through `outcome: "paused" | "resumed"` and the current `goal` projection, so replay after a later opposite transition remains truthful. While the Goal is paused, `/goal/step` returns `goal_paused`; explicit resume changes only the same durable Goal to `running` and does not resume a Turn, AgentSession, Sandbox, lease, or worker.
 
+The accepted design keeps pause and resume, as [Goal Mode Coordination](../../docs/specs/20260704-goal_mode_coordination.md) states, and does not use a human-gated worker Turn as a live status.
+
 Goal steering at `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/steering` accepts one exact message or current non-restricted Material revision only for a checkpoint-backed active Goal Turn and returns `202 queued` after its Item, Thread-unique pending owner, and body-free receipt are durable. The consuming Goal step may mark it applied only through the exact verified S39 Context Package trace; an unavailable delivery path or over-budget required Material returns `goal_steering_delivery_unavailable` before Turn reservation and leaves the pending input queued. Terminal follow-up and cancellation preserve the original Goal lineage and never mutate a live worker filesystem.
+
+The accepted design makes a new Goal steering submission unavailable with `409 goal_mode_unavailable` and no write, as [Goal Mode Coordination](../../docs/specs/20260704-goal_mode_coordination.md) states. The queued and consuming-step behavior above is the frozen baseline, and terminal follow-up and cancellation of existing steering stay.
 
 Run one real bounded worker step with:
 
@@ -401,6 +405,8 @@ Use the returned session cookie for protected APIs such as `/api/workspaces`. Si
 NanoCore runs real Worker Agent Turns only through one configured NanoHost RuntimeTarget. NanoHost owns the stock OpenShell Gateway `0.0.99`, its private container backend, the shared Harness and Sandbox, and the private Harness operations; NanoCore owns product admission, Turn leases, AgentSession continuity, and durable runtime projections.
 
 Codex and Pi use the existing session-continuity mode: successful terminal inspection retains the exact ready AgentSession binding for compatible later Turns and interruption uses private Harness control. OpenCode stays bounded-turn and closes its binding at terminal collection. Failed or interrupted execution and failed closeout do not grant reuse authority.
+
+The accepted design replaces session-continuity versus bounded-turn with one resident binding per AgentSession; reuse after failure is owned by [AgentSession Continuity](../../docs/specs/20260704-agent_session_continuity.md) and [AgentSession](../../docs/core/agent-session.md), so this guide does not keep "failed execution grants no reuse" as an independent rule.
 
 Worker-control requests, responses, and private Harness envelopes use version 2 while canonical worker records retain version 1. NanoCore derives interrupt command ids from complete Turn lineage, admits at most one exact command through the live scheduler lease, compares delivery and acknowledgement transitions against that lineage, restores the command high-water mark after restart, and drains unfinished commands atomically when the lease starts terminal release.
 

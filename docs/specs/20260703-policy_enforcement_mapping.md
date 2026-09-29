@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
+updated: 2026-09-30
 ---
 # Policy Enforcement Mapping
 
@@ -58,7 +59,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 - Do not make OpenShell policy artifacts canonical.
 - Do not define UI copy for policy decisions.
 - Do not add organizations, tenants, custom roles, groups, or a second RBAC engine; the target projects current active membership into the Policy Kernel, with the full registered Workspace operation set and no per-Light-App ACL.
-- Do not preserve runtime-native approval prompts as the long-term permission model.
+- Runtime-native approval prompts are not part of the permission model: worker runtimes run without them inside the Sandbox, and a native request that still arrives is refused.
 
 ## Policy Fact Vocabulary
 
@@ -254,7 +255,7 @@ Policy outcome to product behavior:
 | --- | --- |
 | `allow` | Execute and audit. |
 | `deny` | Reject, audit, and optionally create a blocked Action Center row. |
-| `require_approval` | Create an approval gate and pause the operation. |
+| `require_approval` | Raise a pending approval for the exact effect and do not execute it; the requesting work continues, and the effect runs only after a grant and a current re-evaluation. |
 | `require_escalation` | Create a higher-authority attention row and do not execute. |
 | `defer` | Mark the operation pending because required context is missing. |
 | `not_applicable` | Continue evaluation in another mandatory policy domain; if none applies, retain `not_applicable` and block because no authority allowed the effect. |
@@ -278,7 +279,7 @@ When approval resolves, NanoCore records:
 - policy requirement satisfied or denied
 - follow-up permission decision when execution resumes
 
-Runtime-native approval prompts may still be imported as item-backed requests, but the target model is policy-originated approval.
+Approval is policy-originated only; runtime-native approval prompts are never imported as requests.
 
 ## Current Implementation Projection
 
@@ -290,12 +291,12 @@ The V1 enforcement bridge exists, but full alignment with the standard-aligned p
 - `apps/nanocore/src/bootstrap/policy.ts` maps the baseline NanoCore process to an NGAC user, loads a baseline boot policy kernel from `@openkit/policy-kernel`, and verifies minimum allow and restriction-deny behavior during NanoCore boot. A failed self-check fails the critical policy subsystem before product work is admitted.
 - `apps/nanocore/src/policy/permission-decisions.ts` records the first durable product-level `PermissionDecision` rows. The current producer records boot policy self-check decisions for Core API allow and baseline vault-use deny in the server-scope `permission_decisions` table, linking low-level policy-kernel effects to product-shaped result, reason code, subject summary, resource summary, context summary, and enforcement point.
 - `apps/nanocore/src/llm/gateway-routes.ts` enforces the runtime config's LLM Gateway enabled flag and provider allowlist directly, without a parallel process-local policy store. The routes record durable `PermissionDecision` rows for enabled/disabled and provider allowlist allow/deny outcomes through the same recorder; migration of that route-local evaluation to `@openkit/policy-kernel` remains future work.
-- The local deterministic Goal Mode supervise route records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` before starting its worker turn through `startGoalTaskWorkerTurn`, giving the worker-launch path its first product permission-decision producer.
+- The local deterministic Goal Mode supervise route records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` before starting its worker turn through `startGoalTaskWorkerTurn`, giving the worker-launch path its first product permission-decision producer. That Goal route is unavailable until the Goal redesign; its retained decisions stay readable.
 - `runWorkerTurnLoop` now records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` after creating the worker turn and before starting the worker boundary, so the real bounded worker loop also leaves a product permission-decision row.
 - The governed worker executor stores the same first worker-launch policy snapshot id on the created AgentSession and the resolved AEP policy block, binding the durable session lineage and backend launch snapshot to the `runtime.launch` decision snapshot for that turn.
 - `apps/nanocore/src/runtime/openshell-policy.ts` validates NanoCore-authored filesystem and network intent and projects it as the structured policy consumed by NanoHost. NanoHost strictly parses that input into the current OpenShell SDK type before requesting a sandbox, so malformed, unknown, or unsupported policy fails before an OpenShell effect.
 - `recordProductPermissionDecision` persists the accepted seven-value product decision result set, including `require_approval` and `require_escalation`, fails closed when a `require_approval` decision does not name the required approval kind, and emits linked server- or workspace-scoped `AuditEvent` rows with `permissionDecisionId` filled. Current producers record individual outcomes; no shared implementation currently combines multiple mandatory results under the Core precedence, so a future multi-input enforcement point must add that conformance before admitting effects. Server-owned decisions are exposed through `GET /api/app/permission-decisions`, `client.app.listServerPermissionDecisions`, and the unified Skill/CLI `permission.server-list` operation; workspace-owned decisions are exposed through `GET /api/app/workspaces/:workspaceId/permission-decisions`, `client.app.listWorkspacePermissionDecisions`, and the unified Skill/CLI `permission.workspace-list` operation.
-- `apps/nanocore/src/policy/approval-gates.ts` creates the first policy-originated approval gate by recording a `require_approval` permission decision, creating the matching `ApprovalRequest`, creating the item-backed `approval-request`, and pausing the turn with `humanGate.kind: "approval"` so the existing Action Center projection can surface it. For `repo.push`, the deployment-owned per-Workspace mode in `20260704-git_write_workflow.md` may instead record a direct audited `allow` and granted Approval without a human Gate; other actions keep their existing approval requirements. No current enforcement point produces a `require_escalation` workflow or higher-authority Action Center row.
+- `apps/nanocore/src/policy/approval-gates.ts` creates the first policy-originated approval gate by recording a `require_approval` permission decision, creating the matching `ApprovalRequest`, creating the item-backed `approval-request`, and pausing the turn with `humanGate.kind: "approval"` so the existing Action Center projection can surface it; the agent communication redesign replaces the pause with a pending request that leaves the turn running. For `repo.push`, the deployment-owned per-Workspace mode in `20260704-git_write_workflow.md` may instead record a direct audited `allow` and granted Approval without a human Gate; other actions keep their existing approval requirements. No current enforcement point produces a `require_escalation` workflow or higher-authority Action Center row.
 - The Git push executor now treats durable target-issued `repo.push` permission decisions as target-bound authority. Before invoking the Git command runner, `executeGitPushAttempt` requires an immutable workspace-scoped `allow` decision whose resource summary matches the current workspace id, repository resource id, and target branch and whose linked Approval id is not the portable-import remint; it records a terminal `refused-policy` push record when the selected decision is missing, imported, or belongs to a different push target. Secret-injection plan creation applies the same target-issuance predicate to the VaultGrant id, so Vault-reference re-binding cannot reactivate an imported grant.
 - `ApprovalStatus` in `packages/protocol/src/models/approval.ts` and `ApprovalDecision` in `apps/nanocore/src/runtime/types.ts` represent current approval states and decisions.
 - App and runtime code already emits approval requests, approval decisions, and Action Center rows for human attention.
@@ -375,7 +376,7 @@ The active-member association is adapter vocabulary; fixed owner/editor/viewer c
 - Policy snapshots should be file-backed for inspectability and replay, while immutable `PermissionDecision` rows may be SQLite source-of-truth ledgers for query and transactional enforcement.
 - Launch must be blocked for denied runtime placement, workspace root access, secret injection, vault grant, sandbox containment, or required capability routing. Optional capability degradation may produce degraded readiness instead of blocking launch when policy marks the capability optional.
 - Product diagnostics may include decision id, result, reason code, enforcement point, redacted subject/resource/context summaries, policy snapshot id, and matched policy ids. They must not expose secret values, unrestricted path lists, raw membership graphs, raw provider payloads, or sensitive source contents.
-- Policy changes during an active worker session should update future checks when safe, mark the session stale when setup or resource assumptions changed, and interrupt or recycle the session when a newly denied high-risk action would otherwise remain possible.
+- Policy changes during an active worker session should update future gateway checks, including the re-evaluation of a captured call before it executes; mark the session stale when setup or resource assumptions changed, so a successor applies them at the next Turn; and interrupt or recycle the session only when a newly denied high-risk external action would otherwise remain possible. A change to in-Sandbox tools is not a reason to interrupt a Turn.
 - Server mode requires explicit actor, responsible user, Workspace membership, exact principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing Workspace policy. Missing required facts deny ordinary requests; only an owning governed workflow may use its explicitly accepted `defer` outcome.
 - Current active membership supplies the full Workspace operation association through the NGAC-aligned kernel; finer constraints use that same owner rather than a second authorization engine.
 - Deployment-administrator authority and Workspace content authority are separate; `server-admin` has no implicit content bypass.
@@ -386,7 +387,7 @@ The active-member association is adapter vocabulary; fixed owner/editor/viewer c
 - Add broader product fact mapping from NanoCore objects to `@openkit/policy-kernel` policy state and access requests outside the active-membership Workspace authorization slice.
 - Extend or wrap the policy kernel itself to produce `require_approval`, `require_escalation`, `defer`, `not_applicable`, and policy errors instead of mapping those product outcomes in NanoCore helper code.
 - Bind future worker-session families and future AEP snapshot producers to policy snapshot ids as they ship.
-- Replace remaining runtime-native approval prompts with policy-originated approval gates when their owning runtime surfaces are migrated.
+- Keep every adapter free of runtime-native approval prompts; policy-originated pending approvals are the only approval mechanism.
 - Add policy-change handling for stale, interrupted, or recycled worker sessions.
 - Compile complete backend enforcement material from canonical policy-kernel outcomes once full fact mapping exists.
 

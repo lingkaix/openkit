@@ -550,7 +550,7 @@ export const DISPLAY_PROJECTION_REFRESH_ADMISSION = {
 
 /**
  * Configuration-apply marker Item on the Turn that executes the apply.
- * Pending docs/specs/20260921-delayed_user_input.md; this category stays admitted.
+ * Pending docs/specs/20260930-pending_requests.md; this category stays admitted.
  */
 export const CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION = {
   category: 'configuration-apply-pending-delayed-user-input',
@@ -2848,7 +2848,7 @@ export class FsStore {
       const missingDisplayProjection =
         admission?.category === 'display-projection-refresh' && !existing && item.type === 'status';
       if (pendingConfigurationApply) {
-        // Pending docs/specs/20260921-delayed_user_input.md: configuration apply is a new authorized command, not post-terminal repair.
+        // Pending docs/specs/20260930-pending_requests.md: configuration apply is a new authorized command, not post-terminal repair.
       } else if (missingAlreadyDecided || missingDisplayProjection) {
         // Complete a missing publication of an already-decided outcome, or create a missing display projection.
       } else if (existing) {

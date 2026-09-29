@@ -16,18 +16,19 @@ Real Worker Agent execution uses one configured NanoHost RuntimeTarget in both m
 
 OpenKit-owned container images are cataloged in `containers/images.json`.
 
-The normal release images are:
+Current artifact selection uses the shipped catalog. That catalog lists `app`, the published base `worker-common`, and the leaf worker images `worker-codex`, `worker-opencode`, and `worker-pi`.
 
 - `app` contains NanoCore, the public HTTP entrypoint, Web assets, migrations, and data-root templates.
-- Runtime-specific `worker-*` images contain the generic `openkit-worker-shim`, one static adapter, and one pinned native runtime.
+- `worker-common` is the published base with an empty runtime set.
+- `worker-runtimes`, including the local tag `openkit/worker-runtimes:dev`, is the accepted replacement and is not yet available. It is not an executable current deployment instruction. The shipped leaf images are not that future contract.
 
 `test-env` is the repository test image and is not a deployment artifact.
 
-Local development uses local tags:
+Local development uses the local tags of the shipped catalog entries:
 
 ```text
 openkit/app:dev
-openkit/worker-codex:dev
+openkit/worker-common:dev
 ```
 
 Production-style deployments should use an exact version tag or digest-pinned image reference and should not use `latest`.

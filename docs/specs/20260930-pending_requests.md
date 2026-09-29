@@ -44,7 +44,7 @@ updated: "2026-09-30"
 - [Git Write Workflow](20260704-git_write_workflow.md)
 - [Chat Mode Assistant](20260704-chat_mode_assistant.md)
 - [Work Data Retention Format](20260921-work_data_retention_format.md)
-- [Delayed User Input](20260921-delayed_user_input.md), the Draft this specification supersedes
+- [Delayed User Input](superseded/20260921-delayed_user_input.md), historical evidence from the Draft this specification supersedes
 - [Earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)
 
 ## Summary

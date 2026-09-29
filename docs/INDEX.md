@@ -83,7 +83,7 @@ and are not listed here.
 - `docs/specs/20260703-worker_context_package.md` — Accepted, Partial — Worker-facing context package inputs, manifest shape, materialized file layout, trace records, and replay requirements.
 - `docs/specs/20260703-worker_control_protocol.md` — Accepted, Partial — The worker-visible end-to-end control-plane protocol between Sandbox Integration and NanoCore.
 - `docs/specs/20260703-workspace_synchronization.md` — Accepted, Partial — This spec owns the backend-portable workspace synchronization contract for
-- `docs/specs/20260704-agent_session_continuity.md` — Accepted, Partial — The current durable AgentSession identity, one-current-per-Thread selection, historical replacement lineage, and relationship to one worker Turn and scheduler…
+- `docs/specs/20260704-agent_session_continuity.md` — Accepted, Partial — The current durable AgentSession identity, one-current-per-Thread selection, historical replacement lineage, and the relationship of one AgentSession to one Th…
 - `docs/specs/20260704-app_api_openapi_projection.md` — Accepted, Implemented — The rule that the shared Zod schema packages remain the single contract source for the App API, and that OpenAPI is a generated projection, never a source.
 - `docs/specs/20260704-capability_usage_gateway_foundation.md` — Accepted, Partial — The shared ledger foundation used by every current NanoCore `CapabilityCall` producer, including the selected Worker MCP producer.
 - `docs/specs/20260704-chat_mode_assistant.md` — Accepted, Partial — Chat Mode as the lightweight user interaction path before delegated worker work starts.
@@ -115,9 +115,9 @@ and are not listed here.
 - `docs/specs/20260715-contract_stability_baseline.md` — Accepted, Partial — The current OpenKit stability classification for contract families that matter before a product release.
 - `docs/specs/20260715-multi_user_workspace_system.md` — Accepted, Partial — The target design for several authenticated users sharing one canonical Workspace inside one NanoCore deployment.
 - `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` — Deprecated, Partial — The per-AgentSession disposable Cell contract is deprecated because the accepted target moves all OpenShell lifecycle effects onto one configured NanoHost and…
-- `docs/specs/20260716-codex_worker_adapter.md` — Accepted, Partial — Codex session-local state and restricted native conversation-handle lifecycle
-- `docs/specs/20260716-opencode_worker_adapter.md` — Accepted, Partial — OpenCode command construction for one bounded worker turn
-- `docs/specs/20260716-pi_worker_adapter.md` — Accepted, Partial — Pi command construction for one bounded worker turn
+- `docs/specs/20260716-codex_worker_adapter.md` — Accepted, Partial — Codex session-local state, native thread identity, and the restricted resume reference outside the disposable control root
+- `docs/specs/20260716-opencode_worker_adapter.md` — Accepted, Partial — OpenCode V2 server configuration, native session identity, and event translation for one resident binding
+- `docs/specs/20260716-pi_worker_adapter.md` — Accepted, Partial — Exact native-session identity, inspection, and close proof for one resident SDK host
 - `docs/specs/20260719-verification_calibration.md` — Accepted, Not Started — This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineeri…
 - `docs/specs/20260721-provider_subscription_accounts.md` — Accepted, Partial — This spec owns deployment-admin management of server-owned LLM subscription account slots, the binding from one provider profile to one slot, the slot-scoped b…
 - `docs/specs/20260721-worker_execution_environment_images.md` — Accepted, Partial — This specification owns the common execution-environment baseline for the supported Worker Agent images, the published common base artifact and what extending…
@@ -143,9 +143,9 @@ and are not listed here.
 - `docs/specs/20260910-agent_operator_skill.md` — Accepted, Partial — This specification owns the independently distributable `openkit-ops` Skill: its installation, configuration, upgrade, diagnosis and recovery guidance; its hos…
 - `docs/specs/20260910-app_update_delivery.md` — Accepted, Partial — This specification owns explicitly administrator-directed NanoCore and Web replacement on one configured deployment: the bounded public update command, process…
 - `docs/specs/20260910-persistent_worker_volumes.md` — Accepted, Implemented — This specification owns retained Worker working files and native runtime data on the execution host, their exact scoped association, attachment and removal, in…
-- `docs/specs/20260921-delayed_user_input.md` — Draft, Not Started — This Draft owns the problem statement, the gathered 2026-09-21 evidence, the constraints inherited from the work-data retention line, the confirmed blocking-ga…
 - `docs/specs/20260921-work_data_retention_format.md` — Accepted, Partial — The purpose of retained work data and the judgement that admits a fact into the work-data record.
 - `docs/specs/20260922-delegated_worker_policy_maintenance.md` — Draft, Not Started — The proposed bounded class of non-secret worker sandbox/network configuration that an internal operator may inspect, compare, validate and apply under a respon…
+- `docs/specs/20260930-deepseek_worker_adapter.md` — Accepted, Not Started — Native ACP session identity, prompt, cancellation, and close for one DeepSeek binding
 - `docs/specs/20260930-pending_requests.md` — Accepted, Not Started — The pending request concept for approval requests and user-input requests: its definition, its durable record, and its lifecycle of raise, resolve, end, and de…
 
 ## Terminal Specifications
@@ -176,6 +176,7 @@ and are not listed here.
 - `docs/specs/superseded/20260628-agent_setup_runtime_supply_contract.md` — Superseded
 - `docs/specs/superseded/20260628-protocol_contract_consolidation.md` — Superseded
 - `docs/specs/superseded/20260702-worker_context_taxonomy.md` — Superseded
+- `docs/specs/superseded/20260921-delayed_user_input.md` — Superseded
 - `docs/specs/superseded/agent-setup-runtime-supply/20260416-unified_agent_setup_manifest.md` — Superseded
 - `docs/specs/superseded/agent-setup-runtime-supply/20260517-agent_manifest_loader.md` — Superseded
 - `docs/specs/superseded/agent-setup-runtime-supply/20260519-agent_profile_config.md` — Superseded
@@ -224,6 +225,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 
 - `docs/audits/20260821-agent_coordination_playbook.md` — Agent Coordination Playbook Audit
 - `docs/audits/20260905-delegated_engineering_governance.md` — Delegated Engineering Governance Audit
+- `docs/audits/20260930-delayed_user_input_terminal_archive.md` — Delayed User Input Terminal Archive
 
 ## Platform References
 

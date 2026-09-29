@@ -27,5 +27,5 @@ When an owner is admitted for delayed input and the exact expiry producer is des
 
 ## Affected Owners
 
-- docs/specs/20260921-delayed_user_input.md
+- [Historical Delayed User Input Draft](../specs/superseded/20260921-delayed_user_input.md)
 - docs/core/protocol.md

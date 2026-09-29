@@ -121,7 +121,6 @@ Workflow, human attention, and verification:
 - [`20260531-worker_turn_reliability_envelope.md`](./20260531-worker_turn_reliability_envelope.md)
 - [`20260531-human_attention_intervention_model.md`](./20260531-human_attention_intervention_model.md)
 - [`20260930-pending_requests.md`](./20260930-pending_requests.md) — pending approval and user-input requests, their captured calls, and their delivery on later Turns.
-- [`20260921-delayed_user_input.md`](./20260921-delayed_user_input.md) — Draft superseded by the pending requests specification; awaiting archive.
 - [`20260713-work_resource_interaction_model.md`](./20260713-work_resource_interaction_model.md)
 - [`20260529-test_strategy.md`](./20260529-test_strategy.md)
 - [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)
@@ -139,6 +138,7 @@ Worker runtime, supply, and synchronization:
 - [`20260716-codex_worker_adapter.md`](./20260716-codex_worker_adapter.md)
 - [`20260716-opencode_worker_adapter.md`](./20260716-opencode_worker_adapter.md)
 - [`20260716-pi_worker_adapter.md`](./20260716-pi_worker_adapter.md)
+- [`20260930-deepseek_worker_adapter.md`](./20260930-deepseek_worker_adapter.md) — DeepSeek Harness through its ACP agent, the only runtime reached over ACP.
 - [`20260708-container_image_packaging.md`](./20260708-container_image_packaging.md)
 - [`20260721-worker_execution_environment_images.md`](./20260721-worker_execution_environment_images.md)
 - [`20260704-session_static_workspace_materialization.md`](./20260704-session_static_workspace_materialization.md)

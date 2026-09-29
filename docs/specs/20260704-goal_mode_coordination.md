@@ -2,13 +2,23 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: 2026-09-24
+updated: 2026-09-30
 ---
 # Goal Mode Coordination
 
 ## Goal Development Freeze
 
 Further Goal Mode development, including its storage, execution flow, and associated export structures, is frozen by the engineer pending complete product Redesign. The existing clauses preserve the prior design baseline, not authorization to complete pending Goal amendments or acceptance of the checkpoint implementation. The planning-authority and completedOutcome proposals remain deferred. Non-Goal responsibilities are unaffected. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
+
+## Availability During The Agent Communication Redesign
+
+The agent communication redesign removes the mechanisms that Goal execution depends on: the `awaiting_human` Turn status, `Turn.humanGate`, the `human-gate` worker stop, the worker `blocked/ask_user` final status, the suspended source AgentSession, and the single worker Turn per step with lower-level `remainingWorkerIterations=0`. It does not carry Goal onto pending requests or resident AgentSessions, as [the engineer decided](../decisions/20260930-goal_entry_unavailable_until_redesign.md). Until the Goal redesign:
+- **Unavailable.** Goal entry (`startThreadGoal`), planning, including its planning question Gate (`createThreadGoalPlan`, `reviseThreadGoalIntent`, and `reviseThreadGoalPlan`), step (`runThreadGoalStep` and the local test supervise step), and steering submission (`submitThreadGoalSteering`) return `409 goal_mode_unavailable` before any write. They create no Turn, AgentSession, Gate, pending request, checkpoint, or scheduler admission.
+- **Available.** Goal reads (`getThreadGoalSummary` and `getThreadGoalPlan`), pause, resume, plan approval, and the terminal handling of existing steering (`convertGoalSteeringToFollowUp` and `cancelGoalSteering`) stay, because they reach no removed mechanism. An operation found in implementation to reach one joins the unavailable set, and this section is amended with it.
+- **Stored records.** Goal, Goal Task, Goal Review, checkpoint, and Gate records keep their current owners and read operations. This version starts from a new data root and carries no earlier-version data, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md). Contradictory checkpoints stay `recovery_required` and are not repaired by launching a worker.
+- **Reading this specification.** The clauses below that describe worker Gates, `awaiting_human`, `Turn.humanGate`, the `human-gate` stop, `blocked/ask_user`, `waiting_for_user`, the suspended source AgentSession, and `remainingWorkerIterations=0` are the frozen design baseline for the Goal redesign. They describe no live execution path, and they are not retargeted onto pending requests.
+
+Acceptance: each unavailable operation returns `409 goal_mode_unavailable` with no write, a read of an existing Goal returns its stored record, and pause and resume keep their receipt behavior.
 
 ## Owns
 

@@ -1,11 +1,22 @@
 ---
-status: Draft
-implementation: Not Started
+status: Superseded
+implementation: N/A
 kind: concept
 date: "2026-09-21"
-updated: "2026-09-21"
+updated: "2026-09-30"
+status-changed: "2026-09-30"
+current-guidance: docs/specs/20260930-pending_requests.md
+decision-evidence: docs/audits/20260930-delayed_user_input_terminal_archive.md
 ---
 # Delayed User Input
+
+## Lifecycle Reason
+
+The accepted [Pending Requests](../20260930-pending_requests.md) specification explicitly supersedes this Draft and absorbs its delayed-response problem, gathered evidence, link-back constraints, configuration-apply placement, and single Action Center projection. It resolves the open owner, request lifecycle, and ending-evidence representation. The accepted [pending-tool-call decision](../../decisions/20260930-pending_tool_calls.md) replaces the blocking-gate expiry cancellation direction: requests no longer pause Turns, blocking is presentation only, and no expiry cancels a Turn. The [deadline decision](../../decisions/20260930-pending_requests_have_no_deadline.md) replaces time-based expiry with explicit invalidating events and leaves configurable deadlines deferred. This is supersession of a substantive proposal, not implementation completion. The [terminal-archive audit](../../audits/20260930-delayed_user_input_terminal_archive.md) records each criterion's disposition and the transition evidence.
+
+## Retention Reason
+
+The 2026-09-21 forensic findings preserve the eight-owner inventory, source-reading evidence for late-answer failures versus exact replay, and the absence of expiry-status producers. The Draft also preserves why Item ids rather than per-file sequence numbers carry causation, why configuration apply must not backfill a terminal proposing Turn, and why an ordinary status Item alone could not hold structured ending evidence. Keeping those observations and the bounded, now-replaced blocking-expiry direction avoids repeating the investigation or mistaking historical implementation facts for current contracts. The body below is the historical Draft, not current guidance; its open questions and implementation pointers describe that observation date.
 
 ## Owns
 
@@ -31,7 +42,7 @@ This Draft does not own Turn lifecycle, human-gate semantics, approval status, I
 
 ## Summary
 
-User input can arrive after a long delay. A Turn can wait on approval while the user continues other work and returns after several Turns, or after months; by then a stale approval or other pending message is already stale product information, and a late reply may have little remaining value. This Draft records that problem, the direction recorded in [Delayed User Input Is Its Own Design Line](../decisions/20260921-blocking_gate_expiry_cancels_turn.md), evidence that must not be gathered again, and constraints this line must not overturn. A future blocking-gate expiry producer maps the Turn to `cancelled`, with the owning workflow able to withdraw authorization and with the reason recorded on an expiry Item; that mapping is not a universal cancellation rule and does not change current worker-gate closeout. Owner admission, the exact producer, request lifecycle, and structured expiry representation remain open. This document authorizes no Core, specification, or production change.
+User input can arrive after a long delay. A Turn can wait on approval while the user continues other work and returns after several Turns, or after months; by then a stale approval or other pending message is already stale product information, and a late reply may have little remaining value. This Draft records that problem, the direction recorded in [Delayed User Input Is Its Own Design Line](../../decisions/20260921-blocking_gate_expiry_cancels_turn.md), evidence that must not be gathered again, and constraints this line must not overturn. A future blocking-gate expiry producer maps the Turn to `cancelled`, with the owning workflow able to withdraw authorization and with the reason recorded on an expiry Item; that mapping is not a universal cancellation rule and does not change current worker-gate closeout. Owner admission, the exact producer, request lifecycle, and structured expiry representation remain open. This document authorizes no Core, specification, or production change.
 
 ## Goals
 
@@ -53,7 +64,7 @@ The engineer opened this line on 2026-09-21 from the work-data retention discuss
 
 ## Recorded Direction
 
-The following direction comes from that working session, including later confirmations that overturned part of the first write-up; its decided parts are recorded in [Delayed User Input Is Its Own Design Line](../decisions/20260921-blocking_gate_expiry_cancels_turn.md), which also notes that extending the Action Center projection was the author's adoption of review rather than an engineer confirmation.
+The following direction comes from that working session, including later confirmations that overturned part of the first write-up; its decided parts are recorded in [Delayed User Input Is Its Own Design Line](../../decisions/20260921-blocking_gate_expiry_cancels_turn.md), which also notes that extending the Action Center projection was the author's adoption of review rather than an engineer confirmation.
 
 Approvals should distinguish blocking from non-blocking forms: a blocking approval stops and waits; a non-blocking approval continues. When the user responds, the response is written in place on the Turn and timeline where the user gave it, and it is not backfilled onto the Turn where the approval was opened. The record must be complete enough that a later reader can tell what happened, and it must link back to the Item that initiated the request. Some requests expire or become invalid, including when the task was completed another way or the Goal was abandoned. In that case the system produces an Item that records the handling and the reason, after which the request is no longer needed and the user is no longer allowed to act on it.
 

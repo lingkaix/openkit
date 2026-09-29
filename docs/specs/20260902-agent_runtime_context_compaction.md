@@ -3,6 +3,7 @@ status: Accepted
 implementation: Not Started
 kind: mechanism
 date: 2026-09-02
+updated: "2026-09-30"
 ---
 # Agent Runtime Context Management And Compaction
 
@@ -238,9 +239,9 @@ The central threshold and normalized evidence remain mandatory. For `runtime-nat
 
 For `openkit`, the adapter preserves the exact OpenKit Compaction Item in its private active context and submits it on the next Gateway request. It disables native automatic compaction for the same execution. An adapter that cannot preserve the item losslessly cannot claim this authority.
 
-Pi Coding Agent `0.85.1` and OpenCode `1.18.1` currently have usable native compaction but no first-class generic Responses compaction-item path. Pi's full-result extension makes a future translation adapter feasible; OpenCode requires a new native adapter or protocol path. The current Pi Worker is also unavailable on the accepted Gateway route, and both Pi and OpenCode adapters remain bounded-turn implementations, so neither is an immediate implementation blocker for the internal-loop slice.
+Pi Coding Agent `0.85.1` and OpenCode `1.18.1` currently have usable native compaction but no first-class generic Responses compaction-item path. Pi's full-result extension makes a future translation adapter feasible; OpenCode requires a new native adapter or protocol path. The internal-loop slice runs inside NanoCore and does not depend on whether a worker runtime is resident, so neither the Pi nor the OpenCode worker adapter is an implementation blocker for that slice.
 
-Codex `0.153.4` is the only current session-continuity Worker adapter, and current repository evidence proves only a native `compaction` request classification, not a configurable exact threshold. OpenKit does not yet project the central threshold or normalized compaction evidence. Its first conformance task must verify from the pinned runtime whether the exact threshold can be controlled: retain Codex as `runtime-native` only if that proof passes, otherwise implement and prove the OpenKit-item path before admitting a context-managed Worker package.
+Current repository evidence for Codex `0.153.4` proves only a native `compaction` request classification, not a configurable exact threshold. OpenKit does not yet project the central threshold or normalized compaction evidence. Its first conformance task must verify from the pinned runtime whether the exact threshold can be controlled: retain Codex as `runtime-native` only if that proof passes, otherwise implement and prove the OpenKit-item path before admitting a context-managed Worker package.
 
 ## Quality Control And Optimization
 

@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
+updated: 2026-09-30
 ---
 # Human Attention And Intervention Model
 
@@ -31,7 +32,7 @@ The product should treat human involvement as `human attention` first, then rout
 
 The core protocol should stay small.
 
-It should keep `awaiting_human` as the single blocking human turn state, keep `humanGate.kind` as the branch point for blocking gates, keep steering as ordinary user input accepted only where an exact delivery owner exists, and keep review, redo, and refinement attached to their exact owning records and ordinary Turns.
+It should keep approval and user-input requests as pending requests that never pause a Turn, with blocking derived from Thread state as [Pending Requests](20260930-pending_requests.md) defines, keep the request kind as the branch point between approval and question UI, keep steering as ordinary user input accepted only where an exact delivery owner exists, and keep review, redo, and refinement attached to their exact owning records and ordinary Turns.
 
 The app layer may expose a richer Action Center that combines pending approvals, questions, blocked work, accepted Goal pending input, artifact reviews, authorized budget decisions, recovery choices, and authorized follow-up conversions into one product surface.
 
@@ -43,7 +44,7 @@ The V1 NanoCore implementation exposes the main app-local surfaces through unifi
 
 The current Goal Review path exposes one unresolved evidence row with explicit `accept`, `refine`, `retry`, and `abort` decisions and no verdict in its projection. Applying one decision resolves the Review, updates the addressed Goal Task, unlocks dependency-satisfied Tasks when applicable, and always leaves `currentTaskId=null` in one Workspace transaction; when every Task is complete, that same transaction terminalizes the Goal. Immutable `GoalTask.reviewPolicy` is now the sole review decision: `required=true` creates exactly one unresolved Goal Review, `required=false` takes the same closeout path without a Review, and Goal step requests reject caller-selected overrides.
 
-The core protocol still stays small. `awaiting_human`, approval gates, elicitation gates, ordinary steering input, and review turns remain the stable mapping. Action Center rows remain App API projections until dogfooding proves which fields should become long-term contracts.
+The core protocol still stays small. Pending approval and user-input requests, ordinary steering input, and review turns remain the stable mapping. Action Center rows remain App API projections until dogfooding proves which fields should become long-term contracts.
 
 Current implementation gaps include budget decisions, vault grants, adapter-native checkpoint resume, the Stage 5 Artifact Review client dispatcher, and broader cross-channel review semantics.
 
@@ -78,7 +79,7 @@ The current core model already has the right foundation.
 
 `docs/core/communication.md` says there is no separate Core concept for steer messages and that clients never own routing, pending delivery, retry promotion, or safe-point rules. Core applies those mechanics only where an owning specification authorizes them.
 
-`docs/core/protocol.md` defines approval and user-input gates as item-backed pauses that share the `awaiting_human` turn state and branch by `humanGate.kind`.
+`docs/core/protocol.md` defines approval and user-input requests as item-backed pending requests that do not change the status of the Turn that raised them; clients branch by the request kind and item type.
 
 `docs/specs/superseded/human-attention/20260515-codex_user_input_bridge.md` records the original separate `user-input-request` and `user-input-response` item types for Codex app-server questions.
 
@@ -100,9 +101,9 @@ The four modes are product semantics, not four new core protocol objects.
 
 Core protocol keeps these stable rules:
 
-- Blocking human pauses use `Turn.status: "awaiting_human"`.
-- Blocking approval pauses use `humanGate.kind: "approval"` and an `approval-request` item.
-- Blocking elicitation pauses use `humanGate.kind: "user-input"` and a `user-input-request` item.
+- No Turn status pauses for a person. A request is blocking when the requesting agent ended its Turn while it was outstanding and no later Turn has run.
+- An approval request uses an `approval-request` item and a pending `ApprovalRequest`.
+- An elicitation request uses a `user-input-request` item.
 - Active-turn steering is submitted as ordinary input and recorded as normal user-message or equivalent item history.
 - Review, redo, and refinement use the exact Review owner and create ordinary traceable Turns where its specification authorizes follow-up work; this rule does not authorize a generic review loop.
 - The S16 Goal delivery owner decides safe-point application; UI clients and adapters submit or transport intent and render authoritative Items and Turn events without inventing delivery state.
@@ -115,9 +116,9 @@ The app layer may expose an `Action Center` read model that groups pending human
 
 `Human intervention` is human attention that changes execution by approving, denying, answering, steering, accepting, rejecting, retrying, or changing direction.
 
-`Human gate` is a blocking pause in a turn.
+`Human gate` is a pending approval or user-input request: the governed effect, or the requesting agent's use of the answer, waits for it, and the Turn that raised it does not.
 
-Only approval gates and elicitation gates are human gates in the current core protocol.
+Only approval requests and elicitation requests are human gates in the current core protocol.
 
 `Delivery policy` is the authoritative outcome for steering input accepted through an owning delivery contract. V1 accepts only the Goal-owned safe-point path defined by S16; other delivery ideas are not implementation authority.
 
@@ -167,7 +168,7 @@ An elicitation answer can produce steering.
 
 A budget extension can require approval.
 
-An approval decision can authorize the owning workflow to continue; it does not by itself authorize adapter-native AgentSession resume.
+An approval grant authorizes the gateway or effect owner to re-evaluate and execute the exact captured effect once; it is not by itself authority to execute. It does not resume a paused Turn, because none is paused, and it neither closes nor resumes the requesting AgentSession. Its outcome is delivered on a later Turn of the same Thread; when the requesting binding has ended, that Turn uses the ordinary successor resume, which is not the approval's effect.
 
 The model should support these compositions without adding one-off concepts for each scenario.
 
@@ -187,17 +188,17 @@ The model should support these compositions without adding one-off concepts for 
 
 ### Protocol Mapping
 
-The turn emits an `approval-request` item and transitions to `awaiting_human`.
+The raising Turn emits an `approval-request` item and continues; its status does not change.
 
-The turn carries `humanGate.kind: "approval"`.
+The pending request record names the request, its raising Turn, and its responsible user.
 
 The user responds through the approval response command.
 
 Core records an `approval-decision` item.
 
-The owning workflow then follows its documented continuation, failure, cancellation, or recovery predicate. A delivered Codex Worker MCP approval first persists the exact Gate, immediately changing the Product Turn to `awaiting_human` and blocking later same-Turn capability admission, then persists the denied `CapabilityCall` and uses the existing session-continuity private interrupt with typed `purpose="human-gate"`. The handler returns denial after durable enqueue, and only the resulting accepted `blocked/ask_user` plus backend cleanup, Workspace handoff, `waiting_for_user` checkpoint, and suspended source AgentSession make this Worker Gate actionable. An enqueue-unproved or contradictory Worker Gate is inspect-only `recovery_required`, accepts no approval response, and remains with the existing final-status, scheduler, backend cleanup, reconnect, and fencing owners through restart. Grant closes the waiting Product Turn and source AgentSession as `completed` and `closed`; denial closes them as `interrupted` and `interrupted` with checkpoint `aborted`. Task and Goal worker V1 then require a new command, Turn, and successor AgentSession for any further work; the approval record alone never resumes an AgentSession.
+The response is recorded in the pending request at once. For an approval that governs a call, the gateway re-evaluates and executes the captured call inside the response command and records its disposition. A later Turn on the same Thread delivers the decision and the disposition to the requesting agent. Grant and denial never close the requesting AgentSession and never terminalize the raising Turn. An unproved or contradictory request is inspect-only `recovery_required` and accepts no approval response; the approval record alone never resumes an AgentSession.
 
-The internal Assistant MCP branch is owned by `20260909-internal_agent_resource_integration.md` and its conversation outcome by `20260704-chat_mode_assistant.md`. It has no Worker AgentSession, AEP, Harness interrupt or waiting checkpoint. Its invoking conversation or turn-input command receipt acknowledges an exact approval-request/Approval/no-contact denied CapabilityCall tuple only after the bounded internal run returns; that exact receipt, identified by Gate/request causation, is required for Gate actionability. An earlier clarification receipt remains immutable and supplies no stop proof for a later invocation. Missing or contradictory evidence is inspect-only `recovery_required`. Grant or denial closes the waiting Assistant Turn and records the decision; neither invokes a provider. A separately requested new Assistant Turn may claim the exact granted operation once through current authorization. Elicitation keeps its distinct same-Turn input continuation.
+The internal Assistant MCP branch is owned by `20260909-internal_agent_resource_integration.md` and its conversation outcome by `20260704-chat_mode_assistant.md`. It has no Worker AgentSession, AEP, Harness interrupt, or waiting checkpoint. A pending request is actionable from the durable request, captured binding, request Item, no-contact denied CapabilityCall, and current authority in [Pending Requests](20260930-pending_requests.md); it does not require a stopped invocation or an `approval-required` `conversation.submit` receipt. A command that exists keeps its own receipt and immutable replay, and a completed receipt is not rewritten. Missing or contradictory evidence is inspect-only `recovery_required`. This branch is not implemented. When it is, an approval-required call returns a pending result immediately, the Assistant run may continue and complete with its ordinary result, a grant executes the captured operation once through the pending owner's single synchronous re-evaluation, grant, and claim inside the response command, and the outcome is delivered on a later Assistant Turn; the decision itself invokes no provider, and the model never re-issues the call. A Chat clarification is a pending user-input request whose answer is recorded by `user_input.answer` and starts a later Assistant Turn.
 
 ### Product Requirements
 
@@ -205,7 +206,7 @@ The UI should present approval as a clear authorization decision, not as a gener
 
 The approval copy should explain what action is being authorized, which agent or session requested it, which workspace or resource is affected, why policy requires approval, and what happens if the user denies it.
 
-Approval cards should support grant and deny first. A request with a matching decision remains visible with its closed outcome and no decision controls; a terminal Turn or disconnected surface explains why controls are unavailable. Controls remain unavailable while the owning Turn status is unknown, its read failed, or the completed request does not match that Turn’s exact active approval Gate. The conversation follows authoritative Turn updates when work enters or leaves the Gate. A pending command disables duplicate submission, a failure is visible with an explicit retry, and a retry preserves the exact original request identity. Only authoritative refreshed Items settle the displayed outcome.
+Approval cards should support grant and deny first, plus withdrawal by the responsible user. A request with a matching decision remains visible with its closed outcome and no decision controls; an ended request shows its reason, and a disconnected surface explains why controls are unavailable. A pending request stays decidable after its raising Turn has completed. Controls remain unavailable while the request's state is unknown, its read failed, or the request Item does not match its pending request record. The card shows the request's age, the number of Turns since it was raised, whether it is blocking, and what changed since, so the approver can judge a stale request; staleness is enforced by re-evaluation at execution, never by a clock. A pending command disables duplicate submission, a failure is visible with an explicit retry, and a retry preserves the exact original request identity. Only authoritative refreshed Items settle the displayed outcome.
 
 Additional choices such as grant once, grant for this turn, grant for this workspace policy, or deny and explain can be added later only when backed by explicit policy semantics.
 
@@ -216,7 +217,7 @@ Additional choices such as grant once, grant for this turn, grant for this works
 - The planner needs the user to choose among viable approaches.
 - The worker lacks required business context.
 - The task has ambiguous scope or conflicting goals.
-- The active turn is paused because the runtime cannot continue without a user answer.
+- The agent needs a user answer before later work can use it, and records that need as a pending user-input request without pausing the Turn.
 - A checkpoint recovery path needs the user to inspect, use the request-bound retry-after-interruption command, review partial Artifacts, or request guidance.
 - A provider, agent, or config problem needs the user to choose a fallback.
 - An automation produced a draft that needs a human choice before follow-up.
@@ -224,15 +225,15 @@ Additional choices such as grant once, grant for this turn, grant for this works
 
 ### Protocol Mapping
 
-The turn emits a `user-input-request` item and transitions to `awaiting_human`.
+The raising Turn emits a `user-input-request` item and continues; its status does not change.
 
-The turn carries `humanGate.kind: "user-input"`.
+The pending request record names the request, its raising Turn, and its responsible user.
 
-The user responds through ordinary turn input scoped to the paused turn.
+The user responds through the `user_input.answer` command addressed to the pending request, as [Pending Requests](20260930-pending_requests.md) defines. The command persists the answer without changing the raising Turn.
 
 Core records a `user-input-response` item.
 
-The owning workflow then follows its documented transition. A non-worker flow may continue the same Turn when its contract permits; a worker `ask_user` response remains attached to that Turn but resumes it only to close the waiting envelope under S05. Task Mode requires a new `task.start` for further execution, while Goal Mode returns the Goal Task to `ready` and requires a new `goal.step`; neither implies AgentSession resume.
+The answer is recorded in the pending request at once and delivered to the requester on a later Turn of the same Thread, which for a worker is the next Turn of the same Task and for the Assistant is its next Chat Turn. The answer never attaches to the raising Turn and never closes the requesting AgentSession. Goal Mode worker execution is unavailable until the Goal redesign, so a retained Goal question is readable but starts no step.
 
 ### Plan Mode
 
@@ -256,9 +257,9 @@ Question UI should support free-form `Other` without losing the original options
 
 Secret answers must not be written to prompts, Knowledge Store records, normal item payloads, or diagnostics unless a future secret-answer protocol explicitly defines a safe vault path.
 
-Until that safe path exists, a gate containing any `isSecret=true` question is visible but not answerable through ordinary turn input; submission returns `400 secret_input_not_supported` before a response Item or command write.
+Until that safe path exists, a pending user-input request containing any `isSecret=true` question is visible but not answerable through `user_input.answer`; submission returns `400 secret_input_not_supported` before a response Item or command write.
 
-Question responses use an exact structured map rather than flattened text: `answers` is `{ [questionId]: [string] }`, and the one array member is non-empty. V1 has no multi-select question mode, so zero or multiple values are `400 invalid_request`. A request producer MUST reject duplicate question ids as `400 invalid_request` before creating the request Item. The answer keys MUST equal every and only question id in the referenced completed request Item; missing or extra answer keys are `400 invalid_request`. If an already durable request Item contains duplicate ids or contradicts the Turn gate, response submission returns `409 recovery_required` rather than blaming caller input. The same Turn's `humanGate` and the absence of a response Item own waiting state; the request Item itself is completed once its immutable payload is durable. Every failure occurs before business mutation.
+Question responses use an exact structured map rather than flattened text: `answers` is `{ [questionId]: [string] }`, and the one array member is non-empty. V1 has no multi-select question mode, so zero or multiple values are `400 invalid_request`. A request producer MUST reject duplicate question ids as `400 invalid_request` before creating the request Item. The answer keys MUST equal every and only question id in the referenced completed request Item; missing or extra answer keys are `400 invalid_request`. If an already durable request Item contains duplicate ids or contradicts its pending request record, response submission returns `409 recovery_required` rather than blaming caller input. The pending request record owns waiting state; the request Item itself is completed once its immutable payload is durable, and the response Item references it by id on the delivering Turn, anywhere later in the same Thread. Every failure occurs before business mutation.
 
 ## Steering Input Mapping
 
@@ -278,9 +279,9 @@ Question responses use an exact structured map rather than flattened text: `answ
 
 Steering uses ordinary user Items and the existing Goal pending owner; there is no `steer` Core object.
 
-If the active turn is paused on `humanGate.kind: "user-input"`, the input answers the elicitation gate.
+An answer to a pending user-input request uses the answer command addressed to that request, whether or not a Turn is active.
 
-If the active turn is paused on `humanGate.kind: "approval"`, the approval response command must be used instead.
+A pending approval is answered only by the approval response command, never by user input.
 
 Otherwise, input may be accepted only when an exact active Goal and worker Turn have the durable later-delivery owner required by S16. Admission is serialized by S16's single Thread-level pending-row constraint: exactly one competing transaction may create the input Item plus `PendingUserTurnRecord`, and every loser returns `conflict` without a second row or ordering claim. The accepted input remains `queued` until a matching immutable Context Package trace proves application.
 
@@ -434,11 +435,11 @@ The following scenarios should guide implementation, tests, and product review.
 
 | Scenario | Trigger | Primary mode | Secondary mode | Expected handling |
 | --- | --- | --- | --- | --- |
-| Approve shell command outside policy | Worker requests command escalation | Approval Gate | None | Create approval request, pause turn, resume or fail after decision. |
+| Approve shell command outside policy | Worker requests command escalation | Approval Gate | None | Create a pending approval with the captured command; the worker continues; after a grant the effect is re-evaluated and executed once, and a later Turn delivers the outcome. |
 | Confirm destructive file deletion | Worker plans irreversible delete | Approval Gate | Review And Acceptance | Show affected paths and reason, deny should stop or reroute safely. |
 | Use vault-backed credential | Agent needs a secret reference | Approval Gate | Elicitation Gate | Ask only if policy requires approval, never expose secret value. |
 | Plan Mode asks for implementation strategy | Planner has multiple viable paths | Elicitation Gate | Review And Acceptance | Render the accepted bounded choices and allow user override, without an unowned recommendation field. |
-| Agent asks which branch to target | Worker lacks required context | Elicitation Gate | None | Record the answer on the paused Turn; a Goal worker closes that envelope and continues only through a new step request and Turn carrying the answer lineage. |
+| Agent asks which branch to target | Worker lacks required context | Elicitation Gate | None | Record the answer on the pending request and deliver it on the next Turn of the same Thread; Goal worker steps are unavailable until the Goal redesign. |
 | User notices wrong direction during an active Goal worker Turn with a proven later-delivery owner | User sends correction | Steering Input | None | Preserve the exact Goal and Turn lineage, accept as queued, and claim application only from the durable Context Package trace. Otherwise return `thread_busy` or the typed delivery-unavailable error before writes. |
 | User wants immediate correction | User requests interrupt and correct | Steering Input | Elicitation Gate | V1 does not accept interrupt-then-apply; keep any already accepted Goal pending input unchanged and offer only the S16-authorized delivery, follow-up conversion, or cancellation path. |
 | User adds extra requirements while an eligible Goal worker Turn is busy | New input arrives | Steering Input | None | Preserve the input Item plus pending row only when the Goal delivery owner is available; generic busy input returns `thread_busy` before writes. |
@@ -512,11 +513,11 @@ This should begin as `@openkit/app-api-schemas` and NanoCore read-model work.
 
 Only rows backed by stable product concepts should expose their product-visible Core IDs. AgentSession identity is excluded from this ordinary App API projection.
 
-An approval row is actionable only when the referenced Turn is `awaiting_human`, its approval gate names the exact request Item and Approval record, that Item is a completed `approval-request`, and the Approval remains `pending`. A question row is actionable only when the referenced Turn is `awaiting_human`, its user-input gate names the exact completed request Item and request id, that Item has unique question ids and no secret question, and no matching response Item exists. A valid secret-question gate remains visible only as an inspect-only or disabled row with reason `Secret answers require a future Vault-backed input contract.` An internal Assistant MCP Approval Gate additionally requires its exact stopped-run invoking command receipt and no-contact denied CapabilityCall as defined above. Every AEP-backed Task or Goal Worker Gate additionally requires the exact `waiting_for_user` checkpoint, accepted Gate-owned `blocked/ask_user` final status, complete backend cleanup and Workspace handoff, suspended source AgentSession, and matching mode lineage; Goal worker gates also require the matching Goal and Goal Task. The existing non-AEP in-process adapter compromise retains its own bounded predicate. Missing or contradictory owners may produce an inspect-only recovery row when an owning specification authorizes it, but they MUST NOT produce approval or answer actions. Item absence alone, identifier prefixes, or a missing response projection never proves actionability.
+An approval row is actionable only when its pending request is `pending`, its request Item is a completed `approval-request` matching the record, and the Approval remains `pending`. A question row is actionable only when its pending request is `pending`, its request Item is a completed `user-input-request` matching the record with unique question ids and no secret question, and no response is recorded. A valid secret question remains visible only as an inspect-only or disabled row with reason `Secret answers require a future Vault-backed input contract.` Actionability never depends on the status of the raising Turn, on a checkpoint, on a worker stop, or on the state of the requesting AgentSession. Missing or contradictory owners may produce an inspect-only recovery row when an owning specification authorizes it, but they MUST NOT produce approval or answer actions. Item absence alone, identifier prefixes, or a missing response projection never proves actionability. This version starts from a new data root and reads no earlier-version gate, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md); that cutover leaves the later data-continuity obligation in place.
 
 Rows backed by app-local runtime state should expose opaque app-local IDs until the shape stabilizes.
 
-Decision cards identify the recorded actor and matching request, distinguish human responses from system recovery and repository-policy grants, and expose the recorded time with its provenance. A boot-reconciliation timestamp inherited from a terminal Turn or request MUST NOT be labelled as the actual recovery time. Missing human reasons and client/channel evidence remain explicitly unrecorded; the current browser session cannot supply historical attribution. These are read-only Item projections under the protocol and audit owners, not a new decision ledger.
+Decision cards identify the recorded actor and matching request, distinguish a human decision from a repository-policy grant, and expose the recorded time with its provenance. A request whose raising Turn ended stays pending. An incomplete current-version record stays inspect-only `recovery_required` and is not repaired into a decision. Missing human reasons and client/channel evidence remain explicitly unrecorded; the current browser session cannot supply historical attribution. These are read-only Item projections under the protocol and audit owners, not a new decision ledger.
 
 ## Implementation Mapping
 
@@ -534,13 +535,13 @@ The canonical target row kind for reusable knowledge proposal review is `knowled
 
 S16 Goal steering now uses only the exact Thread-unique `PendingUserTurnRecord`, original Item, immutable S39 Context Package proof, terminal outcome, and command receipt owners. It accepts input only for the original Goal and checkpoint-backed active Turn, reports queued or applied state from durable proof, and supports only the specified terminal follow-up conversion or cancellation. The deleted generic queue, delivery engine, recovery routes, import/export family, runner, and user-facing MCP facade remain absent; missing delivery capability returns the bounded fail-closed result without live worker mutation or substitute authority.
 
-`apps/nanocore/src/policy/approval-gates.ts` creates the current `repo.push` policy approval Gate using the existing permission decision, `ApprovalRequest`, completed `approval-request` Item, and Turn `humanGate.kind: "approval"` owners. Its deterministic route identity and central receipt lookup replay the exact active Gate, reject changed input, and return `recovery_required` when Gate effects exist without a receipt. `require_escalation` remains a durable permission-decision outcome, but no current enforcement point produces an escalation workflow or higher-authority Action Center row.
+`apps/nanocore/src/policy/approval-gates.ts` creates the current `repo.push` policy approval Gate using the existing permission decision, `ApprovalRequest`, completed `approval-request` Item, and Turn `humanGate.kind: "approval"` owners; the redesign moves it onto the pending request record. Its deterministic route identity and central receipt lookup replay the exact active Gate, reject changed input, and return `recovery_required` when Gate effects exist without a receipt. `require_escalation` remains a durable permission-decision outcome, but no current enforcement point produces an escalation workflow or higher-authority Action Center row.
 
 `apps/nanocore/src/app.ts` serves the unified Action Center endpoint, lists version-owned Artifact Reviews under `GET /api/app/workspaces/:workspaceId/artifacts/:artifactId/reviews`, records their exact decisions under `POST /api/app/workspaces/:workspaceId/artifacts/:artifactId/versions/:artifactVersion/review/decision`, records durable Workspace Sync Review decisions under `POST /api/app/workspaces/:workspaceId/workspace-sync/reviews/:reviewId/decision`, resolves knowledge proposal decisions, and resolves Goal Review rows. The generic unversioned Artifact Review route, Artifact-to-Workspace Review fallback, and verdict translation remain deleted.
 
 `apps/web/src/App.tsx` renders a first-class Action Center page, keeps inline thread approval/question cards for local context, links Goal Mode human attention warnings to the Action Center, and dispatches enabled approval, agent-readiness, durable Workspace Sync Review, and Goal Review actions through `@openkit/core-client`.
 
-Knowledge proposal accept, reject, and defer decisions are the accepted Action Center projection. Changing a proposal title, summary, or content requires a new proposal; there is no `edited` decision and no mutation of a pending proposal. Claim-promotion and worker-control proposal-summary producers remain absent, and accepted Claims may guide only the ordinary complete `knowledge.proposal-draft` command. Durable Workspace Sync Review rows expose executable `accepted`, `needs_refinement`, `rejected`, and `blocked` decisions through App API, `@openkit/core-client`, and OpenAPI even when the backing Artifact is unavailable; no Artifact route can decide or apply them. Live Goal Review rows created by human-reviewed steps expose executable accept, refinement, retry, and abort actions with no preselected verdict; Core Client, Web, and the unified Skill's `goal.review-decide` CLI operation submit the canonical decision, and cancelling required text collection leaves the Review unresolved. Direct Task and Goal Gate response closeout, exact replay, and boot checkpoint classification use the existing Item, Turn, AgentSession, checkpoint, mode, backend, lease, capacity, and receipt owners; complete exact tuples close once, while incomplete or contradictory tuples remain `recovery_required`. If an AEP worker reports accepted `blocked` plus `ask_user` without a transport that names an exact Core Gate, NanoCore preserves that worker outcome, completes backend cleanup, marks the Product Turn and AgentSession `interrupted` with `worker_human_gate_unavailable`, and returns `recovery_required`; it does not synthesize a Gate or Action Center row. The mode checkpoint stays `preparing` with null `stopReason` and `workerSessionId`, so boot leaves it discoverable as `recovery_required` instead of claiming `waiting_for_user`. Capacity is released with `needs-evidence` only when that exact interruption, accepted final status, cleaned backend session, and releasing lease lineage agree, and restart uses the same bounded interruption projection. Interrupted-worker checkpoint rows expose inspection, request-human guidance, and retry-to-ready, while caller-selected terminal checkpoint cleanup remains absent because caller input cannot replace final-status and complete closeout proof. Retry remains unavailable while the scheduler lease is `awaiting-reconnect` or retains `needs-evidence`. Adapter-native in-flight AgentSession resume remains disabled because the checkpoint read model is not a replay instruction. Generic pending-user-turn persistence and every generic mutation or recovery projection remain absent; the exact S16 Goal pending owner, verified S39 delivery projection, terminal follow-up, and cancellation are implemented without restoring that platform. Scheduler admission rows expose retry for denied admissions and cancellation for queued or denied admissions through the same public surfaces. Known non-goals for this implementation are checkpoint AgentSession resume execution and Agent switching execution from the Action Center; those actions remain disabled with explicit reasons when projected.
+Knowledge proposal accept, reject, and defer decisions are the accepted Action Center projection. Changing a proposal title, summary, or content requires a new proposal; there is no `edited` decision and no mutation of a pending proposal. Claim-promotion and worker-control proposal-summary producers remain absent, and accepted Claims may guide only the ordinary complete `knowledge.proposal-draft` command. Durable Workspace Sync Review rows expose executable `accepted`, `needs_refinement`, `rejected`, and `blocked` decisions through App API, `@openkit/core-client`, and OpenAPI even when the backing Artifact is unavailable; no Artifact route can decide or apply them. Live Goal Review rows created by human-reviewed steps expose executable accept, refinement, retry, and abort actions with no preselected verdict; Core Client, Web, and the unified Skill's `goal.review-decide` CLI operation submit the canonical decision, and cancelling required text collection leaves the Review unresolved. Direct Task and Goal Gate response closeout, exact replay, and boot checkpoint classification use the existing Item, Turn, AgentSession, checkpoint, mode, backend, lease, capacity, and receipt owners; complete exact tuples close once, while incomplete or contradictory tuples remain `recovery_required`. If an AEP worker reports accepted `blocked` plus `ask_user` without a transport that names an exact Core Gate, NanoCore preserves that worker outcome, completes backend cleanup, marks the Product Turn and AgentSession `interrupted` with `worker_human_gate_unavailable`, and returns `recovery_required`; it does not synthesize a Gate or Action Center row. The mode checkpoint stays `preparing` with null `stopReason` and `workerSessionId`, so boot leaves it discoverable as `recovery_required` instead of claiming `waiting_for_user`. Capacity is released with `needs-evidence` only when that exact interruption, accepted final status, cleaned backend session, and releasing lease lineage agree, and restart uses the same bounded interruption projection. Interrupted-worker checkpoint rows expose inspection, request-human guidance, and retry-to-ready, while caller-selected terminal checkpoint cleanup remains absent because caller input cannot replace final-status and complete closeout proof. Retry remains unavailable while the scheduler lease is `awaiting-reconnect` or retains `needs-evidence`. Adapter-native in-flight AgentSession resume remains disabled because the checkpoint read model is not a replay instruction. Generic pending-user-turn persistence and every generic mutation or recovery projection remain absent; the exact S16 Goal pending owner, verified S39 delivery projection, terminal follow-up, and cancellation are implemented without restoring that platform. Scheduler admission rows expose retry for denied admissions and cancellation for queued or denied admissions through the same public surfaces. Known non-goals for this implementation are checkpoint AgentSession resume execution and Agent switching execution from the Action Center; those actions remain disabled with explicit reasons when projected. The agent communication redesign replaces Task Gate closeout with pending requests and removes the old `ask_user` fallback and `waiting_for_user` checkpoint without a compatibility path. Goal execution paths that depend on those mechanisms are unavailable under [Goal Mode Coordination](20260704-goal_mode_coordination.md); their clauses remain the frozen design baseline and are not migrated onto pending requests.
 
 ## Layer Ownership
 
@@ -550,15 +551,14 @@ Core docs own the durable semantic rules:
 
 - Steering is active-turn input, not a separate object.
 - Review and refinement are normal turns in a thread.
-- Approval and user-input gates share `awaiting_human`.
-- Human gate UI branches by `humanGate.kind` and item type.
+- Approval and user-input requests are pending requests that pause no Turn.
+- Human gate UI branches by the request kind and item type.
 
 ### `packages/protocol`
 
 The protocol package owns stable schemas for:
 
 - Turn status.
-- Turn human gate.
 - Approval request and decision items.
 - User-input request and response items.
 - Artifact reference items.
@@ -600,7 +600,7 @@ Web owns product rendering:
 
 ## Testing Strategy
 
-Protocol tests should continue to assert that `awaiting_human` requires a valid human gate and that approval and user-input gates stay distinct.
+Protocol tests should assert that no Turn status pauses for a request, that a request stays decidable after its raising Turn ends, and that approval and user-input requests stay distinct.
 
 NanoCore unit tests prove exact S16 Goal steering acceptance, pending preservation, S39-derived applied state, terminal follow-up and cancellation, generic busy-input rejection before writes, checkpoint recovery projection, and Workspace-scoped Action Center filtering. Every deleted generic route, queue, and recovery action remains absent; the tests use the exact pending owner rather than a generic queue fixture.
 

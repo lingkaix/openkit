@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
+updated: 2026-09-30
 ---
 # Worker Credential Access Declarations
 
@@ -229,7 +230,7 @@ Runtime-file materialization MUST override any legacy host-file credential uploa
 
 Revocation of an already-running runtime-file credential MUST mark affected receipts and sessions stale when the backend cannot remove or mutate the running process-visible file safely.
 
-Adding or changing a runtime-file value never rewrites the active process file view unless the selected runtime and backend prove safe in-place replacement. The value enters a later AEP; the current per-Turn Codex path reads it when the next child starts and resumes the same AgentSession and native conversation through its existing private handle. An adapter that retains a native process between Turns must refuse reuse until its accepted replacement behavior completes; no replacement Thread or product-visible restart action is created.
+Adding or changing a runtime-file value never rewrites the active process file view unless the selected runtime and backend prove safe in-place replacement. A declared runtime-file credential is session-static inside a resident binding. A changed declaration or value is installed by a successor AgentSession at the next Turn, which resumes the retained native conversation. Revocation interrupts and closes the binding at once and marks the affected receipts stale. No replacement Thread or product-visible restart action is created. These declared credentials are not the session loopback credentials, whose lifecycle [Worker Agent Capability](20260703-worker_agent_capability.md) owns.
 
 ### Runtime Environment Visibility
 
@@ -243,9 +244,9 @@ Runtime-env declarations MUST be treated as higher risk than sandbox-provider an
 
 Runtime-env values MUST NOT appear in AEP snapshots, sandbox summaries, product logs, command summaries, transcripts, or diagnostics.
 
-Revocation of an already-running runtime-env credential MUST mark affected receipts and sessions stale because process environments cannot be safely mutated in place.
+Revocation of an already-running runtime-env credential MUST mark affected receipts stale and MUST interrupt and close the resident binding at once, because process environments cannot be safely mutated in place.
 
-Adding or changing a runtime-env value never rewrites a running process environment. It enters a later AEP and therefore the next per-Turn Codex child; any adapter that retains a native process between Turns must refuse reuse until its accepted post-Turn replacement behavior completes.
+Adding or changing a runtime-env value never rewrites a running process environment. Declared runtime-env credentials are session-static inside a resident binding. A changed declaration or value gives a successor AgentSession at the next Turn, and that successor resumes natively. No replacement Thread or product-visible restart action is created. These declared credentials are not the session loopback credentials, whose lifecycle [Worker Agent Capability](20260703-worker_agent_capability.md) owns.
 
 ### Worker Consumption Model
 
@@ -349,7 +350,7 @@ The shared worker resolver creates the plan, performs audited Vault resolution, 
 
 The durable GitHub MCP and Codex auth JSON materialization paths have already moved to the shared declaration resolver.
 
-`apps/nanocore/src/runtime/worker-governance-backend.ts` defines backend-private credential materialization, and the production worker-turn path carries runtime-env values through the private NanoHost Harness route into the native child environment. It still rejects backend-private Provider credentials before any OpenShell Provider or Sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference Provider remains. The persistent Worker image path rejects runtime-file credentials. Runtime-env values travel only with the exact private per-Turn Harness dispatch, never Sandbox creation or durable Harness records, and native-start acknowledgement precedes success receipts. The shim admits all declared runtime-env credentials independently of the inference route and refuses missing or mismatched values before spawning. Sandbox-provider receipt support remains unavailable rather than overstated.
+`apps/nanocore/src/runtime/worker-governance-backend.ts` defines backend-private credential materialization, and the production worker-turn path carries runtime-env values through the private NanoHost Harness route into the native child environment. It still rejects backend-private Provider credentials before any OpenShell Provider or Sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference Provider remains. The persistent Worker image path rejects runtime-file credentials. Runtime-env values travel only with the exact private per-Turn Harness dispatch, never Sandbox creation or durable Harness records, and native-start acknowledgement precedes success receipts. The shim admits all declared runtime-env credentials independently of the inference route and refuses missing or mismatched values before spawning. Sandbox-provider receipt support remains unavailable rather than overstated. The accepted design replaces per-Turn dispatch of runtime-env values into a fresh native child. Declared runtime-env credentials are session-static for the resident binding.
 
 `apps/nanocore/src/vault/vault-use-audited-backend.ts` already records vault resolve success and typed failure without storing secret material.
 
@@ -411,7 +412,7 @@ The next step should be one shared declaration resolver.
 9. Remove replaced hard-coded helper paths in the same change.
 10. Add reusable requirement declarations, Workspace grant bindings, strict scope validation, and focused two-Workspace fixtures using one manifest with different grants.
 11. Carry the resolved backend-private credential arrays through the production NanoHost materialization seam and prove real sink effects before writing a success receipt.
-12. Implement and prove dynamic existing-provider replacement, next-Turn activation of newly added or process-static credentials on the current per-Turn runtime, and refusal or accepted post-Turn replacement for any implemented adapter that retains a native process between Turns.
+12. Implement and prove dynamic existing-provider replacement, and prove that a changed runtime-file or runtime-env declaration or value gives a successor AgentSession at the next Turn. Revocation interrupts and closes the binding at once.
 
 ## Testing Strategy / Acceptance Criteria
 
@@ -423,7 +424,7 @@ The next step should be one shared declaration resolver.
 - L2 contract tests prove the generated schemas, OpenAPI, and end-user CLI projections expose only non-secret metadata when those surfaces are updated.
 - L3 NanoCore black-box tests prove a worker package can launch with one generic sandbox-provider credential and one generic runtime-file credential through a deterministic OpenShell stub.
 - L3 composition tests prove the same reusable Agent Manifest requirement resolves to different Workspace-scope grants in two Workspaces, fails before effects when one required binding is absent, and exposes the same non-secret worker target in both cases.
-- L3 lifecycle tests prove an existing OpenShell Provider value can be replaced in place when the backend supports it, while a newly added runtime-file or runtime-env credential waits for the active Turn barrier, replaces only the native process, and resumes the same Thread and AgentSession.
+- L3 lifecycle tests prove an existing OpenShell Provider value can be replaced in place when the backend supports it, while a newly added or changed runtime-file or runtime-env credential waits for the active Turn barrier and is installed by a successor AgentSession that resumes the same Thread. Revocation interrupts and closes the binding at once.
 - L6 story acceptance can later prove a real OpenShell sandbox uses a provider placeholder to call an external HTTP API while NanoCore records the plan, receipt, vault-use, and redacted evidence chain.
 
 Acceptance requires that GitHub MCP and Codex auth JSON no longer need bespoke credential material resolver branches, reusable requirements bind independently per Workspace, successful receipts follow actual backend sink completion, documented replacement behavior is observed, and all current secret-leak redaction tests continue to pass.

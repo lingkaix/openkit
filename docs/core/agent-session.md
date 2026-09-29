@@ -64,7 +64,7 @@ A Thread's retained native conversation is the runtime-maintained conversation s
 
 Its native resume reference identifies the runtime kind and the exact native conversation. It is restricted adapter metadata associated with the Thread:
 - The raw reference stays inside the retained Sandbox storage boundary.
-- Core retains only a non-secret digest, and a successor's resume must match that digest exactly.
+- Core retains only the reference's non-secret locator and digest. A successor's `session.open` presents that locator, and the reference it resumes must match that digest exactly.
 - The reference selects context and grants no execution authority. Possession of retained files does not authorize resume.
 - It MUST NOT become a Thread identifier, public AgentSession field, authorization input, Workspace truth, or ordinary diagnostic value.
 
