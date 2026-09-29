@@ -4196,12 +4196,16 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it.each([
-    'human-gate',
-    'interrupt',
-    'failed-closeout',
-    'failed-closeout-refused',
-    'completed',
-  ] as const)('settles %s before terminal Harness inspection', async (purpose) => {
+    ['codex', 'human-gate'],
+    ['codex', 'interrupt'],
+    ['codex', 'failed-closeout'],
+    ['codex', 'failed-closeout-refused'],
+    ['codex', 'completed'],
+    ['pi', 'interrupt'],
+    ['pi', 'failed-closeout'],
+    ['pi', 'failed-closeout-refused'],
+    ['pi', 'completed'],
+  ] as const)('settles %s %s before terminal Harness inspection', async (adapterId, purpose) => {
     const completed =
       purpose === 'failed-closeout' ||
       purpose === 'failed-closeout-refused' ||
@@ -4245,6 +4249,16 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run('2026-09-03T00:00:00.000Z');
       const environmentPackage = completeNanoHostPackage({
+        extensions: {
+          openkit: {
+            workerStorage: {
+              workSlotRef: workerStorageDefaultWorkSlotRef(
+                'workspace_human_gate',
+                'thread_human_gate'
+              ),
+            },
+          },
+        },
         scope: {
           agentSessionId: 'as_human_gate',
           threadId: 'thread_human_gate',
@@ -4253,6 +4267,8 @@ describe('createConfiguredTurnExecutor', () => {
         },
         snapshotId: 'aepsnap_human_gate',
       });
+      environmentPackage.control.adapter.targetRuntime = adapterId;
+      environmentPackage.agent.runtimeVersion = adapterId === 'pi' ? '0.85.1' : '0.153.4';
       authorizeNanoHostPackage(coreDb, environmentPackage);
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
         leaseId: 'lease_human_gate',
@@ -4292,6 +4308,7 @@ describe('createConfiguredTurnExecutor', () => {
            LIMIT 1`
         )
         .get() as { integrationRef: string };
+      let startedTurns = 0;
       const settleNext = async (
         operation:
           | 'session.open'
@@ -4316,11 +4333,12 @@ describe('createConfiguredTurnExecutor', () => {
           expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
         }
         if (operation === 'turn.start') {
+          startedTurns += 1;
           expect(
             effects
               .filter((effect) => effect.kind === 'reference.import')
               .map((effect) => effect.input.slot)
-          ).toEqual(['package-config']);
+          ).toEqual(Array(startedTurns).fill('package-config'));
           expect(command.body).toMatchObject({
             aepRef: '/openkit/sessions/as_human_gate/config/package.json',
             contextRef: '/openkit/sessions/as_human_gate/context',
@@ -4487,6 +4505,75 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
       ).toEqual({ count: 1 });
+      if (purpose === 'completed') {
+        coreDb.sqlite
+          .prepare("UPDATE scheduler_session_leases SET status = 'released' WHERE lease_id = ?")
+          .run('lease_human_gate');
+        const nextPackage = {
+          ...environmentPackage,
+          scope: { ...environmentPackage.scope, turnId: 'turn_human_gate_next' },
+          snapshotId: 'aepsnap_human_gate_next',
+        };
+        await expect(
+          backend.prepareAgentSessionContinuity?.({
+            agentSessionCompatibilityKey: planSessionWorkspaceMaterialization({
+              environmentPackage: nextPackage,
+            }).compatibilityKey.digest,
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            environmentPackage: nextPackage,
+            reuseAllowed: true,
+            threadId: environmentPackage.scope.threadId,
+            workspaceId: environmentPackage.scope.workspaceId,
+          })
+        ).resolves.toBe('reusable');
+        bindNanoHostWorkerLineage(coreDb, nextPackage, {
+          leaseId: 'lease_human_gate_next',
+          selectedPoolId: 'pool_human_gate',
+          selectedTargetId: 'target_human_gate',
+          sandboxBindingRef: 'sandbox-binding:human-gate-next',
+        });
+        anchorNanoHostMaterialization(coreDb, backend, nextPackage);
+        const nextMaterialization = await backend.materialize(nextPackage, {
+          runtimeEnvCredentials: [
+            { targetEnvVarName: 'GITHUB_TOKEN', credentialValue: 'private-dispatch-env-canary' },
+          ],
+          workspaceRoots: [],
+        });
+        const nextLaunch = backend.launch(nextMaterialization);
+        const resume = await settleNext('session.inspect', {
+          childState: 'absent',
+          cleanupState: 'clean',
+          nativeHandleDigest: 'a'.repeat(64),
+          nativeHandleState: 'ready',
+          state: 'open',
+        });
+        expect(resume.body.agentSessionId).toBe(environmentPackage.scope.agentSessionId);
+        const nextStart = await settleNext('turn.start', {
+          nativeHandleDigest: 'a'.repeat(64),
+          nativeHandleState: 'ready',
+          state: 'started',
+        });
+        await nextLaunch;
+        expect(nextStart.body).toMatchObject({
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          turnId: nextPackage.scope.turnId,
+          turnSequence: 1,
+        });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT agent_session_id AS agentSessionId, native_handle_digest AS digest,
+                      current_turn_id AS turnId FROM agent_session_runtime_bindings`
+            )
+            .all()
+        ).toEqual([
+          {
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            digest: 'a'.repeat(64),
+            turnId: nextPackage.scope.turnId,
+          },
+        ]);
+      }
     } finally {
       coreDb.sqlite.close();
     }

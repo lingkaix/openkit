@@ -14,6 +14,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   createNanoHostHarnessRuntime,
+  deriveNanoHostAgentSessionCompatibilityKey,
   dispatchNanoHostHarnessOperation,
   listNanoHostMeasuredHarnessIdentities,
   markNanoHostHarnessOperationUnknown,
@@ -34,7 +35,7 @@ const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
 describe('private NanoHost Harness records', () => {
-  it('retains two compatibility-keyed Harnesses in one Sandbox', () => {
+  it('retains three compatibility-keyed Harnesses with their accepted adapter modes in one Sandbox', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-multi-harness-records-')));
     try {
       applyMigrations(coreDb);
@@ -42,6 +43,7 @@ describe('private NanoHost Harness records', () => {
       for (const [adapterId, adapterVersion, harnessInstanceId, compatibilityKey] of [
         ['codex', '0.153.4', 'harness-codex', 'b'.repeat(64)],
         ['opencode', '1.18.1', 'harness-opencode', 'c'.repeat(64)],
+        ['pi', '0.85.1', 'harness-pi', 'd'.repeat(64)],
       ] as const) {
         createNanoHostHarnessRuntime(coreDb, {
           adapterId,
@@ -69,6 +71,18 @@ describe('private NanoHost Harness records', () => {
       ).toEqual([
         { adapterId: 'codex', harnessCompatibilityKey: 'b'.repeat(64) },
         { adapterId: 'opencode', harnessCompatibilityKey: 'c'.repeat(64) },
+        { adapterId: 'pi', harnessCompatibilityKey: 'd'.repeat(64) },
+      ]);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT adapter_id AS adapterId, capabilities_json AS capabilities FROM harness_instance_records ORDER BY adapter_id'
+          )
+          .all()
+      ).toEqual([
+        { adapterId: 'codex', capabilities: '["session-continuity"]' },
+        { adapterId: 'opencode', capabilities: '["bounded-turn"]' },
+        { adapterId: 'pi', capabilities: '["session-continuity"]' },
       ]);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
@@ -76,6 +90,35 @@ describe('private NanoHost Harness records', () => {
     } finally {
       coreDb.sqlite.close();
     }
+  });
+
+  it.each([
+    ['codex', 'session-continuity'],
+    ['pi', 'session-continuity'],
+    ['opencode', 'bounded-turn'],
+  ] as const)('keys %s native continuity by its accepted %s mode', (adapterId, mode) => {
+    const input = {
+      adapterId,
+      adapterVersion: 'fixture-version',
+      harnessCompatibilityKey: 'b'.repeat(64),
+      sessionCompatibilityKey: `sha256:${'c'.repeat(64)}`,
+      threadId: 'thread-mode-fixture',
+    };
+    const expected = createHash('sha256')
+      .update(
+        JSON.stringify({
+          nativeConversation: {
+            adapterId,
+            adapterVersion: input.adapterVersion,
+            harnessCompatibilityKey: input.harnessCompatibilityKey,
+            mode,
+          },
+          sessionCompatibilityKey: input.sessionCompatibilityKey,
+          threadId: input.threadId,
+        })
+      )
+      .digest('hex');
+    expect(deriveNanoHostAgentSessionCompatibilityKey(input)).toBe(expected);
   });
 
   it('expires a never-polled command from its enqueue time and never delivers it late', () => {

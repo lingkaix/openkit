@@ -133,6 +133,11 @@ export interface NanoHostAgentSessionContinuityInspection {
   readonly reusable: boolean;
 }
 
+/** Projects the accepted mode shared by durable records and live dispatch. @param adapterId Admitted adapter identity. @returns Its shared Harness mode. */
+export function nanoHostAdapterMode(adapterId: string): 'session-continuity' | 'bounded-turn' {
+  return adapterId === 'codex' || adapterId === 'pi' ? 'session-continuity' : 'bounded-turn';
+}
+
 /** Derives the private native-continuity key from the owning SessionCompatibilityKey. */
 export function deriveNanoHostAgentSessionCompatibilityKey(input: {
   readonly adapterId: string;
@@ -155,7 +160,7 @@ export function deriveNanoHostAgentSessionCompatibilityKey(input: {
           adapterId: input.adapterId,
           adapterVersion: input.adapterVersion,
           harnessCompatibilityKey: input.harnessCompatibilityKey,
-          mode: input.adapterId === 'codex' ? 'session-continuity' : 'bounded-turn',
+          mode: nanoHostAdapterMode(input.adapterId),
         },
         sessionCompatibilityKey: input.sessionCompatibilityKey,
         threadId: input.threadId,
@@ -292,7 +297,7 @@ export function createNanoHostHarnessRuntime(
         throw new Error('NanoHost retained Sandbox has no Harness capacity.');
       }
     }
-    const mode = input.adapterId === 'codex' ? 'session-continuity' : 'bounded-turn';
+    const mode = nanoHostAdapterMode(input.adapterId);
     coreDb.sqlite
       .prepare(
         `INSERT INTO harness_instance_records (

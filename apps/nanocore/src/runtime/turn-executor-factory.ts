@@ -47,6 +47,7 @@ import {
   type NanoHostHarnessCommand,
   type NanoHostHarnessOperation,
   type NanoHostHarnessResult,
+  nanoHostAdapterMode,
   openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
   readNanoHostThreadAgentSessionBinding,
@@ -2363,7 +2364,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
       session.sharedHarness.bindings.set(session.environmentPackage.scope.agentSessionId, binding);
     } else {
-      if (session.sharedHarness.adapterId !== 'codex') {
+      if (nanoHostAdapterMode(session.sharedHarness.adapterId) !== 'session-continuity') {
         throw new Error('NanoHost bounded-turn AgentSession bindings are not reusable.');
       }
       copyNanoHostMeasuredHarnessIdentity(this.coreDb, {
@@ -2440,7 +2441,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Delivers one interrupt through the sole owner selected by immutable adapter mode. */
   public async interruptTurn(packageSnapshotId: string): Promise<void> {
     const session = this.requireSession(packageSnapshotId);
-    if (session.sharedHarness.adapterId !== 'codex') {
+    if (nanoHostAdapterMode(session.sharedHarness.adapterId) !== 'session-continuity') {
       if (!this.workerControlGateway) {
         throw new Error('NanoHost bounded-turn interruption requires the worker-control gateway.');
       }
@@ -3168,7 +3169,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return;
     }
     await session.turnStopSettlement;
-    if (session.sharedHarness.adapterId !== 'codex') {
+    if (nanoHostAdapterMode(session.sharedHarness.adapterId) !== 'session-continuity') {
       const closed = await this.queueAndWaitForHarnessOperation(session, 'session.close', {
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
