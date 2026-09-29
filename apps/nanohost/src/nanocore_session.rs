@@ -1576,7 +1576,8 @@ pub async fn poll_effect_command(
     let operation = OuterSessionOperation::from(kind);
     let index = *cursor % EFFECT_PATHS.len();
     let (path, _, _) = EFFECT_PATHS[index];
-    *cursor = (index + 1) % EFFECT_PATHS.len();
+    // Reserve zero for the first poll so a completed cycle cannot reopen its terminal window.
+    *cursor = index + 1;
     if kind == RuntimeEffectKind::ImportReference {
         return poll_reference_import(authority, sender, path).await;
     }
@@ -3761,6 +3762,93 @@ mod tests {
             later_poll_loss.disposition(),
             OuterSessionDisposition::Reconnect,
             "a complete first poll closes the successor-only terminal response window"
+        );
+    }
+
+    #[tokio::test]
+    async fn nhc_imp_5c_successor_post_cycle_poll_close_remains_reconnectable() {
+        let (context, presentation) = test_outer_credentials();
+        let command = PolledEffectCommand {
+            kind: RuntimeEffectKind::CreateSandbox,
+            request_id: "a".repeat(64),
+            input: serde_json::json!({}),
+            file_data: None,
+        };
+        let mut dispositions = Vec::new();
+        for has_retained_result in [false, true] {
+            let mut effects = Vec::new();
+            if has_retained_result {
+                effects.push((
+                    "/api/nanohost/transport/effects/sandbox.create/result",
+                    TestEffectResponse::NoContent,
+                ));
+            }
+            effects.extend(
+                EFFECT_PATHS
+                    .iter()
+                    .map(|(path, _, _)| (*path, TestEffectResponse::NoContent)),
+            );
+            effects.push((
+                "/api/nanohost/transport/effects/sandbox.create",
+                TestEffectResponse::PhysicalClose,
+            ));
+            let (client_io, server) = scripted_outer_server(
+                8,
+                TestReadinessResponse::Status(StatusCode::NO_CONTENT),
+                None,
+                effects,
+            );
+            let command = &command;
+            let failure = run_outer_session(
+                client_io,
+                "http://nanocore.test",
+                &context,
+                &presentation,
+                Some(7),
+                (TEST_PHYSICAL_EPOCH, || Ok(None)),
+                |_, mut sender| async move {
+                    let mut cursor = effect_cursor_start(has_retained_result);
+                    if has_retained_result {
+                        submit_effect_result(
+                            "http://nanocore.test",
+                            &mut sender,
+                            command,
+                            serde_json::json!({ "sandboxId": "sandbox-a" }),
+                        )
+                        .await?;
+                    }
+                    for _ in 0..EFFECT_PATHS.len() {
+                        assert!(
+                            poll_effect_command(
+                                "http://nanocore.test",
+                                &mut sender,
+                                &mut cursor,
+                                false,
+                            )
+                            .await?
+                            .is_none()
+                        );
+                    }
+                    poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
+                        .await
+                        .map(|_| ())
+                },
+            )
+            .await
+            .expect_err("post-cycle physical close must fail the physical session");
+            server.await.expect("post-cycle server task");
+            assert_eq!(failure.stage, OuterSessionStage::Poll);
+            assert_eq!(failure.operation, OuterSessionOperation::CreateSandbox);
+            assert_eq!(failure.status, None);
+            dispositions.push((has_retained_result, failure.disposition()));
+        }
+        assert_eq!(
+            dispositions,
+            vec![
+                (false, OuterSessionDisposition::Reconnect),
+                (true, OuterSessionDisposition::Reconnect),
+            ],
+            "a completed polling cycle must not reopen the successor first-poll terminal window, with or without a delivered retained result"
         );
     }
 

@@ -54,6 +54,8 @@ Containerd creates one recursively private mount namespace with a single read-on
 
 The readiness witness is the SHA-256 of the actual fresh `EpochPlan` name, retained by the live coordinator across reconnects and lost acknowledgements. A new physical Epoch gets a new witness; connection generation and readiness timestamps do not identify it. NanoCore binds physical handles to their originating witness and requires current authenticated readiness before reuse or retirement. Upgrading a predecessor without this witness requires the coordinated cold conversion described in the [operations reference](../../skills/openkit-ops/references/nanocore-operations.en.md#convert-a-pre-witness-deployment); ordinary App-only updates preserve the running Host.
 
+On an authoritative successor without a delivered retained result, loss before the complete first effect-poll response is terminal because NanoCore may already have committed poll-first unknown. Completing that response or delivering the retained result closes this window for the rest of the physical session; later round-robin cycles never reopen it. Operation-specific uncertainty rules still apply.
+
 ## Distribution
 
 Tagged releases include `openkit-nanohost-<tag>-linux-arm64.tar.gz` and the shared `SHA256SUMS`. The archive contains the NanoHost binary, the exact pinned stock OpenShell Gateway and license files, the service unit, generated manifest, inner checksums, and `install.sh`.
