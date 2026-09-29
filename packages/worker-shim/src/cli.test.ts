@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkerNativeProcessResult } from './adapter-registry.js';
+import { piAdapter } from './adapters/pi.js';
 import {
   parseWorkerShimArgs,
   runWorkerShimCli,
@@ -480,8 +481,10 @@ describe('worker shim CLI parsing', () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-pi-shim-'));
     const packagePath = join(sessionDir, 'package.json');
     const stateRoot = join(sessionDir, 'retained');
+    const controlRoot = join(sessionDir, 'control');
     mkdirSync(stateRoot);
     writeRawFileSync(join(stateRoot, 'keep'), 'retained-native-data');
+    await piAdapter.openSession({ controlRoot, stateRoot });
     const parameters = {
       contextWindow: 360000,
       maxOutputTokens: 32000,
@@ -534,12 +537,27 @@ describe('worker shim CLI parsing', () => {
           contextWindow: 360000,
           maxTokens: 32000,
         });
+        if (exitCode === 0) {
+          const call = runner.calls[0]!;
+          const sessionPath = call.argv[call.argv.indexOf('--session') + 1]!;
+          writeRawFileSync(
+            sessionPath,
+            `${JSON.stringify({
+              type: 'session',
+              version: 3,
+              id: 'pi-session-1',
+              timestamp: '2026-09-29T00:00:00.000Z',
+              cwd: call.cwd,
+            })}\n`
+          );
+        }
       }
     );
     const result = await runWorkerShim({
       args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
       environment: workerShimEnvironment(),
       sessionStateRoot: stateRoot,
+      sessionControlRoot: controlRoot,
       nativeTurnDirectory: join(sessionDir, 'turn-private'),
       fetch: async (url) => ({
         ok: true,
