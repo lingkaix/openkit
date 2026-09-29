@@ -19,7 +19,7 @@ pi_help="$(PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 pi --help)"
 for flag in \
   --mode \
   --no-approve \
-  --no-session \
+  --session \
   --no-extensions \
   --no-skills \
   --no-prompt-templates \
@@ -39,16 +39,26 @@ printf '%s\n' '{"schemaVersion":3,"observability":{"captureCoverage":{"scope":"s
 OPENKIT_WORKER_INFERENCE_TOKEN=smoke-inference-only SHIM_PACKAGE="${shim_package}" PI_SMOKE_ROOT="${pi_root}" node --input-type=module <<'JS'
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { piAdapter } from '/usr/local/lib/openkit/worker-shim/dist/adapters/pi.js';
 import { runWorkerShimCli } from '/usr/local/lib/openkit/worker-shim/dist/index.js';
 
 const fixture = JSON.parse(await readFile(process.env.SHIM_PACKAGE, 'utf8'));
 const root = process.env.PI_SMOKE_ROOT;
-const plan = await piAdapter.prepare({
+const controlRoot = join(root, 'control');
+const stateRoot = join(root, 'retained');
+const turnRoot = join(root, 'turn');
+assert.equal(piAdapter.mode, 'session-continuity');
+assert.deepEqual(await piAdapter.openSession({ controlRoot, stateRoot }), {
+  nativeHandle: null,
+  nativeHandleDigest: null,
+  nativeHandleState: 'pending',
+});
+const plan = await piAdapter.prepareTurn({
   childEnvironment: { OPENKIT_WORKER_INFERENCE_TOKEN: process.env.OPENKIT_WORKER_INFERENCE_TOKEN },
-  controlRoot: root,
+  controlRoot,
   llmRoute: fixture.llm.routes[0],
   runtimeCapture: {
     captureCoverage: fixture.observability.captureCoverage,
@@ -56,19 +66,27 @@ const plan = await piAdapter.prepare({
     credentialValues: [process.env.OPENKIT_WORKER_INFERENCE_TOKEN],
     emit: async () => { throw new Error('Image smoke cannot publish observations.'); },
   },
-  sessionDirectory: root,
-  stateRoot: join(root, 'retained'),
+  nativeTurnDirectory: turnRoot,
+  sessionDirectory: turnRoot,
+  stateRoot,
   turnInput: fixture.extensions.openkit.turnInput,
   workingDirectory: '/workspace',
 });
+const nativeSessionPath = plan.argv[plan.argv.indexOf('--session') + 1];
+assert.equal(typeof nativeSessionPath, 'string');
+assert.equal(isAbsolute(nativeSessionPath), true);
+const relativeSessionPath = relative(stateRoot, nativeSessionPath);
+assert.equal(isAbsolute(relativeSessionPath), false);
+assert.doesNotMatch(relativeSessionPath, /^(?:\.\.(?:\/|$)|$)/);
+assert.equal(existsSync(nativeSessionPath), false);
 assert.deepEqual(plan.argv, [
-  'pi', '--mode', 'json', '--no-approve', '--no-session', '--no-extensions', '--no-skills',
+  'pi', '--mode', 'json', '--no-approve', '--session', nativeSessionPath, '--no-extensions', '--no-skills',
   '--no-prompt-templates', '--no-themes', '--no-context-files', '--offline',
   '--provider', 'openkit-worker-inference', '--model', 'grok', fixture.extensions.openkit.turnInput,
 ]);
 assert.equal(plan.environment.PI_SKIP_VERSION_CHECK, '1');
 assert.equal(plan.environment.PI_TELEMETRY, '0');
-assert.match(relative(root, plan.environment.PI_CODING_AGENT_DIR), /^pi-[^/]+$/);
+assert.match(relative(turnRoot, plan.environment.PI_CODING_AGENT_DIR), /^pi-[^/]+$/);
 const descriptorPath = join(plan.environment.PI_CODING_AGENT_DIR, 'models.json');
 assert.equal((await stat(descriptorPath)).mode & 0o777, 0o600);
 const descriptorBytes = await readFile(descriptorPath, 'utf8');
@@ -93,6 +111,15 @@ const listed = spawnSync('pi', ['--offline', '--list-models', 'grok'], {
 });
 assert.equal(listed.status, 0, 'Pi must load the adapter-produced model descriptor.');
 assert.match(listed.stdout, /openkit-worker-inference([/\s]+)grok(\s|$)/);
+assert.deepEqual(await piAdapter.inspectSession({ controlRoot, stateRoot }), {
+  nativeHandleDigest: null,
+  nativeHandleState: 'pending',
+});
+await plan.finalize();
+await piAdapter.closeSession({ controlRoot, sessionDirectory: turnRoot });
+assert.equal(existsSync(controlRoot), false);
+assert.equal(existsSync(stateRoot), true);
+assert.equal(existsSync(nativeSessionPath), false);
 await runWorkerShimCli(['--package', process.env.SHIM_PACKAGE, '--session-dir', join(root, 'dry-run'), '--dry-run']);
 JS
 

@@ -52,9 +52,20 @@ test('Pi smoke admits a Gateway logical route and verifies adapter-produced mode
   assert.equal(fixture.llm.routes[0].model, 'grok');
   assert.equal(fixture.llm.routes[0].credentialVisibility, 'placeholder');
   assert.deepEqual(fixture.credentials.declarations, []);
-  assert.match(smoke, /piAdapter\.prepare\(/);
+  assert.match(smoke, /piAdapter\.prepareTurn\(/);
   assert.match(smoke, /models\.json/);
   assert.match(smoke, /--list-models/);
   assert.match(smoke, /--dry-run/);
   assert.doesNotMatch(smoke, /ANTHROPIC_API_KEY|claude-sonnet-4-5|--api-key/);
+});
+
+test('Pi smoke opens a pending binding and selects its exact absent session path', () => {
+  assert.match(smoke, /await piAdapter\.openSession\(\{ controlRoot, stateRoot \}\)/);
+  assert.match(smoke, /nativeTurnDirectory: turnRoot/);
+  assert.match(smoke, /relative\(turnRoot, plan\.environment\.PI_CODING_AGENT_DIR\)/);
+  assert.match(smoke, /'--session', nativeSessionPath/);
+  assert.match(smoke, /assert\.equal\(existsSync\(nativeSessionPath\), false\)/);
+  assert.match(smoke, /piAdapter\.inspectSession\(/);
+  assert.match(smoke, /piAdapter\.closeSession\(\{ controlRoot, sessionDirectory: turnRoot \}\)/);
+  assert.doesNotMatch(smoke, /--no-session|piAdapter\.prepare\(/);
 });
