@@ -36,6 +36,9 @@ import {
 const WORKER_CONTROL_READINESS_TIMEOUT_MS = 10_000;
 const WORKER_CONTROL_TOKEN_MAX_BYTES = 4096;
 const NATIVE_STDOUT_MAX_BYTES = 16 * 1024 * 1024;
+/** Fixed assertion text shared with the temporary value-free failure probe. */
+const PROCESS_GROUP_ADDRESSABLE_ASSERTION =
+  'Worker process group remained addressable after SIGKILL.';
 const WORKER_MCP_CAPABILITY_ROUTES = [
   'mcp.list_servers',
   'mcp.list_tools',
@@ -717,7 +720,12 @@ async function runWorkerShimImplementation(
   // Match the winning error by identity so sibling aborts cannot replace its classification.
   const failureOrigins = new Map<
     unknown,
-    'stdout_sink' | 'stdout_limit' | 'worker_control' | 'ready_event' | 'native_process'
+    | 'stdout_sink'
+    | 'stdout_limit'
+    | 'worker_control'
+    | 'ready_event'
+    | 'native_process'
+    | 'native_process_group_addressable'
   >();
   let observedStdoutBytes = 0;
   let supervisionFailureOrigin: string | null = null;
@@ -866,7 +874,14 @@ async function runWorkerShimImplementation(
           ...(launchPlan.captureStdout || launchPlan.writeStdout ? { writeStdout } : {}),
         })
         .catch((error: unknown) => {
-          if (!failureOrigins.has(error)) failureOrigins.set(error, 'native_process');
+          if (!failureOrigins.has(error)) {
+            failureOrigins.set(
+              error,
+              error instanceof Error && error.message === PROCESS_GROUP_ADDRESSABLE_ASSERTION
+                ? 'native_process_group_addressable'
+                : 'native_process'
+            );
+          }
           throw error;
         });
       await Promise.race([
@@ -1440,7 +1455,7 @@ async function terminateChildProcess(
   if (!graceful || !(await waitForProcessGroupExit(groupId, 1000))) {
     signalProcessGroup(groupId, 'SIGKILL');
     if (!(await waitForProcessGroupExit(groupId, 1000))) {
-      throw new Error('Worker process group remained addressable after SIGKILL.');
+      throw new Error(PROCESS_GROUP_ADDRESSABLE_ASSERTION);
     }
   }
 

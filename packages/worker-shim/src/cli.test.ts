@@ -1107,10 +1107,26 @@ describe('worker shim CLI parsing', () => {
     }
   });
 
-  it('preserves a process failure while the sibling control stops from supervisor abort', async () => {
+  it.each([
+    {
+      message: 'process-failed-before-control-abort secret-canary',
+      origin: 'native_process',
+    },
+    {
+      message: 'Worker process group remained addressable after SIGKILL.',
+      origin: 'native_process_group_addressable',
+    },
+    {
+      message: 'Worker process group remained addressable after SIGKILL. secret-canary',
+      origin: 'native_process',
+    },
+  ])('preserves a process failure while the sibling control stops from supervisor abort ($origin)', async ({
+    message,
+    origin,
+  }) => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-process-abort-first-'));
     const packagePath = join(sessionDir, 'package.json');
-    const processError = new Error('process-failed-before-control-abort secret-canary');
+    const processError = new Error(message);
     const onStartupFailure = vi.fn();
     writeFileSync(
       packagePath,
@@ -1138,7 +1154,7 @@ describe('worker shim CLI parsing', () => {
             type: 'turn.failed',
             data: expect.objectContaining({
               diagnostics: {
-                failureOrigin: 'native_process',
+                failureOrigin: origin,
                 stdoutBytes: '0',
                 stdoutLimitBytes: '16777216',
               },
@@ -1152,6 +1168,9 @@ describe('worker shim CLI parsing', () => {
         expect.objectContaining({ event: expect.objectContaining({ type: 'worker.ready' }) }),
       ])
     );
+    const transcript = readFileSync(join(sessionDir, 'events.jsonl'), 'utf8');
+    expect(transcript).not.toContain(processError.message);
+    expect(transcript).not.toContain('secret-canary');
   });
 
   it('waits for a started native process to stop when worker.ready persistence fails', async () => {
