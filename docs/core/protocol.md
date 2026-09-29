@@ -22,7 +22,7 @@ It must support:
 - thread lifecycle
 - turn lifecycle
 - item streaming
-- approval requests and decisions
+- pending approval and user-input requests, their decisions, and their delivery
 - artifact events and artifact references
 - Agent definitions and internal AgentSession lineage
 - cancellation and interruption
@@ -186,7 +186,7 @@ Thread is not AgentSession and must not be coupled to exactly one runtime handle
 
 A Turn executed by a worker or other schedulable Agent is assigned internally to exactly one AgentSession. A Core-local service Turn may execute with `agentSessionId=null` only when its owning accepted workflow contract forbids worker, scheduler, Sandbox, and AgentSession effects and names the app-local service and durable result owners; a provider capability call alone does not create an AgentSession.
 
-A turn can be triggered by user input, system input, automation, retry, handoff, approval resolution, or running-work steering.
+A turn can be triggered by user input, system input, automation, retry, handoff, approval resolution, or running-work steering. Approval resolution and user input also start the Turn that delivers resolved pending requests, as defined in Pending Request Semantics; neither resumes an earlier Turn.
 
 The complete Turn terminal-state set is, as recorded in [Turns Have Four Terminal States](../decisions/20260921-four_turn_terminal_states.md):
 
@@ -195,16 +195,16 @@ The complete Turn terminal-state set is, as recorded in [Turns Have Four Termina
 - `cancelled`
 - `failed`
 
-Non-terminal states may include:
+The non-terminal states are:
 
 - `pending`
 - `running`
-- `awaiting_human`
 
-The four named derived sets, not one undifferentiated finished predicate, are:
+No Turn state pauses for a person. A request that waits for a person is a pending request, which does not change the status of the Turn that raised it.
 
-- Sealed terminals: `completed`, `interrupted`, `cancelled`, and `failed`.
-- Settled for waiters: the sealed terminals plus `awaiting_human`, because that state does not advance on its own but can still be moved by an outside actor and therefore MUST NOT be read as a guarantee that the system will write nothing further.
+The three named derived sets, not one undifferentiated finished predicate, are:
+
+- Sealed terminals: `completed`, `interrupted`, `cancelled`, and `failed`. A waiter that needs to know that nothing further will be written to a Turn's status uses this set.
 - Checkpoint collectable: the sealed terminals minus `interrupted`, because the recovery path may still own those Turns.
 - Recovery rewritable: `pending` and `running` only.
 
@@ -216,7 +216,7 @@ Interrupt and cancellation commands asynchronously request interruption. A Turn 
 
 New input should use the same core input semantics across web UI, desktop UI, chat channels, and future transports.
 
-If a Thread has an active non-terminal Turn, follow-up user input is accepted only through that Turn's exact human gate or an owning active-work delivery contract. The gate attaches its response to the same Turn. A delivery contract may queue, apply, convert, or reject input only as its accepted specification defines; without either owner, Core returns the typed busy or unavailable error before Item, queue, command, Turn, or scheduler writes.
+If a Thread has an active non-terminal Turn, follow-up user input is accepted only through an owning active-work delivery contract. A delivery contract may queue, apply, convert, or reject input only as its accepted specification defines; without one, Core returns the typed busy or unavailable error before Item, queue, command, Turn, or scheduler writes. A response to a pending request is not follow-up input to the active Turn: it addresses the request, its owner accepts it whether or not a Turn is active, and it reaches the requesting agent on a later Turn.
 
 If a thread has no active turn, new user input starts a new turn.
 
@@ -402,50 +402,73 @@ If an agent emits an undeclared item type and delta kind combination, Core MUST 
 
 Protocol violations SHOULD be dropped from the product item log, recorded as audit events, and reported through a stable `core.protocol.*` error code where feedback to the caller or adapter is available.
 
+## Pending Request Semantics
+
+A pending request is an approval request or a user-input request that waits for a person while work continues. An agent raises it through a governed tool call, or Core raises it for an actor's own governed command. It names its Thread, the Turn that raised it, its requester, and the responsible user who may resolve it. It is not a Turn status. Raising it does not pause, stop, or close the Turn or the AgentSession that raised it, and that Turn continues and may end while the request is outstanding.
+
+A request is blocking when the requesting agent ended its Turn while the request was outstanding and no later Turn has run on its Thread. Blocking is derived from those facts and is not stored. It changes how the request is shown, never its lifecycle.
+
+Lifecycle:
+- **Raised.** The request is durable before the raising call returns its pending result. The request Item is written on the Turn that raised it.
+- **Resolved.** The responsible user grants or denies an approval, or answers a user-input request. One response wins. An exact replay returns the recorded outcome, and a conflicting response fails without writes.
+- **Executed.** For a granted approval that governs a call, the governed effect is claimed and executed at most once, and its disposition is recorded: executed, denied and not executed, execution error, or outcome unknown. For an agent's captured call, the grant is recorded in one write with either its claim or its non-execution, so such a grant never waits unclaimed. A person's grant waits for the person's own governed command, and an invalidating event before that command keeps the grant and records that it was not executed. The claim excludes withdrawal and invalidation: a claimed request can no longer end, and an ended request can no longer be claimed. A claim whose execution did not finish before a restart becomes outcome unknown and is never executed again.
+- **Ended.** A request ends without resolution when the responsible user withdraws it, or on an invalidating event: archive or deletion of its Thread, deletion of its Workspace, or loss of the requester's or responsible user's membership or authority. An agent may later be allowed to withdraw its own request; that path is defined but not enabled. Ending records its reason, actor, and time durably, after which the request cannot be resolved.
+- **No deadline.** A request has no default time limit. Release or replacement of the AgentSession that raised it does not end it.
+- **Bounded accumulation.** The number of outstanding requests on one Thread is bounded; a request over the bound is refused before it is recorded.
+
+Delivery:
+- An outcome is ready when its result is final: an answer, a denial, an ending, a granted approval whose disposition is recorded, or a person's grant. A granted approval whose execution has not finished is not ready.
+- A ready outcome is delivered to its requester by a later Turn on the same Thread. A Turn admitted for any cause freezes into its input the ready, undelivered outcomes whose requester is that Turn's executor, within the bound the owning specification defines, and keeps its own trigger. When ready outcomes wait and no Turn is being admitted, Core admits a Turn for them whose trigger is `approval-resolution` when it carries an approval outcome, and `user-input` otherwise.
+- Core attempts that admission when an outcome becomes ready while the Thread has no non-terminal Turn, when a Turn on the Thread terminates, and after restart. The one exception is the terminal barrier of an outcome-initiated worker Turn refused before native submission, whose released outcomes wait for another trigger so that a Thread whose agent cannot start does not loop. No background process polls for this. An outcome that becomes ready after a Turn's admission waits for the next Turn.
+- Delivery is proved by the executor's own boundary: native submission for a worker, the internal service's durable acceptance of the input for the Assistant, and the Turn's completion with its Items for a Core-local Turn. Only a worker delivery waits for worker scheduler capacity. A refusal proved before that boundary releases the frozen outcomes. When the boundary is unknown, those outcomes are marked delivery-unknown and are never resubmitted automatically; the Turn follows ordinary recovery.
+- The decision, answer, disposition, or ending is written as an Item on the delivering Turn, as its input, and records who decided and when. An outcome's Items are written once; a later delivery attempt after a refusal references them and writes none. The disposition of every granted approval that governs an agent's captured call is delivered, whether or not the call was executed; a person's grant is delivered as a decision, and the result of the person's later command belongs to that command's owner. It is never back-filled onto the Turn that raised the request.
+- When the requester is a person rather than an agent, the delivering Turn is Core-local: it records the Items and runs no agent.
+- When no requester can receive an outcome, because its Thread is archived or its requesting Agent is removed or loses its authority, the outcome is closed out: its Items, if not yet written, are written on a completed Core-local Turn that runs no agent, never on the Turn that raised the request or on another run's Turn, and it is never delivered afterwards. Archive writes this before the Thread's archived status, so no Turn is admitted after archive; it is refused while a granted call on the Thread is still executing, and while the Thread has a non-terminal Turn and something to close out. Deleting a Thread or Workspace deletes its requests with its history and writes no Item.
+
+Core's durable pending-request record holds the request, its resolution or ending, any captured call it governs with its claim and disposition, and its delivery association, and it is the source of the Approval status; the owning specification defines that record and the predicates that command admission and canonical load check against its Items and receipts. A record that fails them is inspect-only, and neither load nor a command picks a winner or reconstructs authority from Items. Items remain the communication record of the request and its outcome. Reload never denies, ends, or re-pauses a request because the Turn that raised it has ended, and never reopens a terminal Turn. Missing, stale, or contradictory commands fail before they create or terminalize a Turn, and an incomplete receipt returns `recovery_required`.
+
 ## Approval Semantics
 
-An approval request is represented by an item-backed `ApprovalRequest` record.
+An approval request is represented by an item-backed `ApprovalRequest` record and follows Pending Request Semantics.
 
 Approval flow:
 
 ```text
-approval-request item -> turn awaiting_human approval gate -> approval-decision item -> owning contract chooses continuation or terminal closeout
+governed call -> approval-request item and pending result -> the raising Turn continues
+approval response -> for a grant, the governed effect is re-evaluated and executed at most once
+later Turn -> approval-decision item and outcome delivered to the requester
 ```
 
-When a turn waits on approval, `Turn.humanGate` MUST be `{ kind: "approval", approvalRequestId, itemId }`.
+An approval request that governs a tool call binds the exact captured call: the tool, its full arguments, and the originating authorization context. The requester never re-issues the call to use a grant. After a grant, the owning gateway re-evaluates current authority, credentials, policy, and schema against the captured call, executes it at most once, and records one disposition: executed, denied and not executed, execution error, or outcome unknown. A grant is not by itself authority to execute, and a denial or ended request never executes.
 
-Approval decisions should be explicit and auditable.
-
-On canonical reload, an undecided approval request whose owning Turn is already terminal is durably denied by one system-authored approval-decision Item. Its actor is `nanocore-boot-reconciliation`, its causation is the canonical request Item, and its timestamp is the Turn completion time when available. Reload preserves the terminal Turn status and clears a stale approval Gate. This denial is a boot reconciliation audit trail, never a human approval or permission to retry the terminated work. Live Turn Gate contradictions still fail closed.
-
-Approval decisions transition the Turn only through the owning accepted contract; protocol does not infer resume, cancellation, or failure from the status alone.
+Approval decisions should be explicit and auditable. Approval decisions never transition the Turn that raised the request; protocol does not infer resume, cancellation, or failure from an approval status.
 
 Approval status values should include:
 
-- `pending`
-- `granted`
-- `denied`
-- `expired`
-- `superseded`
-- `withdrawn`
+- `pending`: awaiting a decision
+- `granted`: approved by the responsible user, or granted by an accepted automatic policy, which is recorded as a policy grant and never as a human decision
+- `denied`: refused by the responsible user
+- `expired`: ended by an invalidating event without a decision; there is no default time limit
+- `withdrawn`: withdrawn by the responsible user, or by the requesting agent once that path is enabled
+- `superseded`: reserved, with no current producer
+
+Implementations MAY support only a subset of approval statuses, but clients should tolerate the full status family once advertised by protocol version or capability flag.
+
 
 ## User Input Semantics
 
-Agent questions and elicitations are represented by `user-input-request` items followed by `user-input-response` items.
+Agent questions and elicitations are represented by `user-input-request` items followed by `user-input-response` items, and follow Pending Request Semantics.
 
 Question flow:
 
 ```text
-user-input-request item -> turn awaiting_human user-input gate -> user-input-response item -> owning contract chooses continuation or terminal closeout
+agent question -> user-input-request item and pending result -> the raising Turn continues
+answer -> later Turn -> user-input-response item delivered to the requester
 ```
 
-When a turn waits on a question or elicitation, `Turn.humanGate` MUST be `{ kind: "user-input", userInputRequestId, itemId }`.
+A `user-input-response` Item references its request by id and may appear on any later Turn of the same Thread. A retained response that sits on the Turn of its own request remains valid.
 
-`awaiting_human` is the only core turn state for human-gated pauses. Clients MUST choose approval UI or user-input UI from `humanGate.kind` and the referenced item type, not from the turn status string alone.
-
-When Core receives user input for a Turn that is paused on `user-input-request`, Core MUST attach that input to the same Turn instead of creating a new Turn. The owning accepted contract then decides whether that Turn continues `running` or closes as `completed`, `interrupted`, `cancelled`, or `failed`.
-
-Implementations MAY support only a subset of approval statuses, but clients should tolerate the full status family once advertised by protocol version or capability flag.
+Clients MUST choose approval UI or user-input UI from the request kind and the referenced item type, never from a Turn status.
 
 ## Artifact Semantics
 
@@ -566,9 +589,11 @@ Required command families include:
 - list or read workspace resources
 - create, list, read, or archive threads
 - start a turn
-- submit input through an exact user-input human gate or an active-work delivery command defined by an accepted owning specification
+- submit input through an active-work delivery command defined by an accepted owning specification
 - interrupt or cancel a turn
 - respond to an approval request
+- answer a pending user-input request
+- withdraw a pending request
 - list or read artifacts
 - invoke an Artifact mutation command only where an accepted owning specification defines it
 - list or read item history
@@ -584,9 +609,11 @@ Required `requestId` command families include:
 - create or update workspace
 - create, update, or archive thread
 - start turn
-- submit input through an exact user-input human gate or an accepted active-work delivery command
+- submit input through an accepted active-work delivery command
 - interrupt or cancel turn
 - respond to approval request
+- answer a pending user-input request
+- withdraw a pending request
 - create, update, or delete knowledge
 - invoke an Artifact mutation command only where an accepted owning specification defines it
 
@@ -722,6 +749,8 @@ Secret values and provider-native sensitive payloads must not appear in protocol
 - Mutating and asynchronous commands MUST carry a caller-provided `requestId`.
 - Command replay MUST use the central receipt-and-current-owner policy; without a completed receipt, Core MUST NOT repeat completed effects or infer or synthesize success, and only an explicit accepted in-progress owner may resume its exact request. Every other incomplete or contradictory state MUST fail as `recovery_required`.
 - A Thread MUST NOT have more than one non-terminal Turn.
+- A pending request MUST NOT change the status of the Turn that raised it, MUST NOT end because that Turn or its AgentSession ended, and MUST be delivered to its requester only by a later Turn on the same Thread, or closed out on a Core-local Turn when no requester can receive it.
+- A call that requires approval MUST NOT execute before that approval is granted, and a granted call MUST execute at most once, after current re-evaluation. A call that policy allows without approval is not a pending request.
 - A Turn MUST terminate only as `completed`, `interrupted`, `cancelled`, or `failed`, and a terminal Turn MUST NOT be reopened; the admitted writes against it are completion of an already-decided publication and a named field-limited refresh of a display projection that changes no decided content, both judged by identity and content and never by elapsed time.
 - Interruption MUST preserve finalized Items and finalize server-accumulated in-flight content as truncated without claiming unsupported media delivery.
 - Protocol errors MUST use stable machine-readable codes and MUST NOT leak secret values or provider-native sensitive payloads.
@@ -776,7 +805,6 @@ Turn status:
 ```text
 pending
 running
-awaiting_human
 completed
 interrupted
 cancelled
@@ -819,13 +847,12 @@ ready
 busy
 idle
 degraded
-suspended
 interrupted
 failed
 closed
 ```
 
-`created`, `initializing`, `ready`, `busy`, `idle`, `degraded`, and `suspended` are non-terminal AgentSession statuses and therefore identify current continuity for the bound Thread. `interrupted`, `failed`, and `closed` are terminal and historical; a terminal AgentSession MUST NOT transition back to a non-terminal status. Successor creation requires no non-terminal AgentSession for that Thread.
+`created`, `initializing`, `ready`, `busy`, `idle`, and `degraded` are non-terminal AgentSession statuses and therefore identify current continuity for the bound Thread. `interrupted`, `failed`, and `closed` are terminal and historical; a terminal AgentSession MUST NOT transition back to a non-terminal status. Successor creation requires no non-terminal AgentSession for that Thread.
 
 ## Related Docs
 

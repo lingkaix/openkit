@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-09-10
+updated: 2026-09-30
 ---
 # Sandbox Model
 
@@ -26,6 +26,7 @@ Unless a rule explicitly names conversation-context or Workspace-write isolation
 - Stronger backends may provide security and adjudication isolation beyond a shared Sandbox, but only when their OS-user, namespace, mount, process, credential, and traversal proofs support that named level; backend feature differences must be summarized as capabilities or clear launch failures rather than leaking raw backend state.
 - Runtime capacity must not be released until the owning backend teardown boundary has fenced every previously accepted effect; a resource-level delete or point-in-time empty probe is insufficient when the backend cannot prove that an older create has terminated.
 - An accepted sandbox create or delete whose completion cannot be proved MUST invalidate the owning execution-substrate epoch. The runtime MUST fence that epoch's capacity until the complete prior effect domain is terminated and a fresh epoch is proved ready and free of prior mutable execution state.
+- A worker has full permission inside its Sandbox, and restrictions sit at the Sandbox boundary: storage and network policy, and integrated external systems reached only through the MCP Gateway, where approval and audit apply. Worker runtimes run without native permission prompts; a native permission request that still arrives is refused and never allowed, and turning prompts off grants nothing beyond what the Sandbox enforces. Configuration, tools, and MCP servers inside the Sandbox, such as a code index configured for software development, are the worker's to use and are not restricted by OpenKit ([decision](../decisions/20260930-full_permission_inside_the_sandbox.md)).
 - A Sandbox MAY permit broad ordinary process execution inside its boundary. That freedom MUST NOT relax host-to-Sandbox security and adjudication isolation for filesystem, network, credential, secret, or resource containment; network egress MUST be denied by default and opened only by explicit governed authority.
 - Confirmed loss or inability to prove the host-to-Sandbox security and adjudication isolation boundary has the same immediate fail-closed response. Core MUST deny the owning execution-substrate epoch's new admissions, external effects, and egress; interrupt every affected Turn and AgentSession; withhold unaccepted output; revoke runtime control handles; invalidate the complete epoch; route potentially exposed Vault material to its existing revocation or rotation owner; and retain only redacted audit evidence. Cleanup MUST terminate the complete effect-capable failure domain rather than delete one process or Sandbox or reuse the old environment. After cleanup, only inspection or a fresh authorized request is permitted, and reuse requires a fresh epoch with fresh containment proof at that level. This rule does not claim automatic escape detection or authorize an incident-response state machine.
 
@@ -253,6 +254,7 @@ Implementations may expose stable summaries, redacted labels, or Core-issued IDs
 ## Invariants
 
 - Sandbox MUST remain separate from permission and capability.
+- Work inside the Sandbox MUST NOT require OpenKit approval. A worker's operations on an integrated external system MUST go through the governed gateway, and network policy additionally constrains every connection that crosses the Sandbox boundary; permitted network reachability never substitutes for that mediation.
 - Sandbox summaries MUST NOT expose absolute local paths, raw provider handles, container IDs, process IDs, environment variables, secret values, temporary credentials, private network topology, or backend-private payloads.
 - Workspace inputs SHOULD be workspace-relative or Core-issued references rather than absolute local paths.
 - Secret values MUST NOT be persisted in sandbox snapshots.

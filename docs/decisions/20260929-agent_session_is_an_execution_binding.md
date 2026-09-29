@@ -15,7 +15,7 @@ A Thread is the persistent user conversation and work context, with its retained
 
 ## Reason
 
-The engineer approved this model on 2026-09-29 in the lifecycle proposal, and refined it by noting that Codex and OpenCode host multiple conversations in one shared server. In Round 13 on 2026-09-30 the engineer restated it, translated from Chinese: the proposal solves the problem that the current design binds agent sessions, process lifetime, and per-Turn delivery too tightly, which is an unreasonable design; AgentSession has been redesigned and is no longer bound to Turns. In Round 15 the engineer added that the old flow, in which approval required starting a new Task, came from that tight binding and was unreasonable.
+The engineer approved this model on 2026-09-29 in the lifecycle proposal, and refined it by noting that Codex and OpenCode host multiple conversations in one shared server. In Round 13 on 2026-09-30 the engineer restated it, translated from Chinese: the proposal solves the problem that the current design binds AgentSessions, process lifetime, and per-Turn delivery too tightly, which is an unreasonable design; AgentSession has been redesigned and is no longer bound to Turns. In Round 15 the engineer added that the old flow, in which approval required starting a new Task, came from that tight binding and was unreasonable.
 
 Agent analysis, from the lifecycle proposal: the old binding forced a runtime restart after every reply, and it made human decisions close the AgentSession and require a new Task.
 

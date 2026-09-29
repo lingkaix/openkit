@@ -120,7 +120,8 @@ Workflow, human attention, and verification:
 - [`20260902-agent_runtime_context_compaction.md`](./20260902-agent_runtime_context_compaction.md)
 - [`20260531-worker_turn_reliability_envelope.md`](./20260531-worker_turn_reliability_envelope.md)
 - [`20260531-human_attention_intervention_model.md`](./20260531-human_attention_intervention_model.md)
-- [`20260921-delayed_user_input.md`](./20260921-delayed_user_input.md) — Draft; problem statement, gathered evidence, and the open design question only.
+- [`20260930-pending_requests.md`](./20260930-pending_requests.md) — pending approval and user-input requests, their captured calls, and their delivery on later Turns.
+- [`20260921-delayed_user_input.md`](./20260921-delayed_user_input.md) — Draft superseded by the pending requests specification; awaiting archive.
 - [`20260713-work_resource_interaction_model.md`](./20260713-work_resource_interaction_model.md)
 - [`20260529-test_strategy.md`](./20260529-test_strategy.md)
 - [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)

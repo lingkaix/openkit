@@ -39,6 +39,7 @@ Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's d
 - Treat channels as projections. Web UI, the unified end-user Agent Skill Interface, desktop apps, automations, and future integrations may operate the same workflow mechanisms, but they do not redefine them.
 - Keep agent-private loops private until Core needs them. Tool retries, model self-reflection, private planner traces, and runtime-native task graphs should not become core records unless Core must schedule, retry, show, approve, audit, or attach artifacts to them.
 - Avoid a `Core Agent` concept by default. Workflow orchestration is a Core responsibility, not a separate canonical agent unless a future design proves that abstraction is necessary.
+- Delegated work is a tree, not a mesh ([decision](../decisions/20260929-delegated_work_is_a_tree.md)). Threads are its nodes and delegations its edges. Control, such as dispatching work, answering a pending request, or cancelling, flows only between a parent and its child through Core. Each scope has one orchestrator, which today is a person in Task Mode. Worker execution is always a leaf: a worker cannot spawn Threads, start other workers, or control a sibling. Read-only views of peers create no control edge.
 
 ## Canonical Terms
 
@@ -193,13 +194,15 @@ Goal Mode must not become a hidden autonomous loop. It should advance through ex
 
 Goal Mode may be operated by Web UI, the unified end-user Agent Skill Interface, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal Mode state.
 
+Goal Mode entry, and each Goal operation that reaches a mechanism this redesign removed, is unavailable until the Goal redesign ([decision](../decisions/20260930-goal_entry_unavailable_until_redesign.md)). Existing Goal data stays readable. The Goal Mode specifications remain the frozen record of the earlier design, and this redesign gives them no execution path.
+
 ## Chat And Task Modes
 
 Chat Mode and Task Mode are product or channel projections over workflow decisions. `work-model.md` owns their user-facing meaning.
 
 Chat Mode is the quick-reply path. It may be handled by the Core Assistant when the request only needs lightweight response, clarification, or state lookup.
 
-Task Mode is a non-trivial work path. It should route to a Workflow Coordinator, choose a workflow mode or recipe, and use bounded worker steps when worker-agent execution is required.
+Task Mode is a non-trivial work path. It should route to a Workflow Coordinator, choose a workflow mode or recipe, and use bounded worker steps when worker-agent execution is required. A Task is its Thread and all of its Turns: a pending request's outcome, or a later user message, continues the same Task on a new Turn.
 
 Core should keep the routing decision explicit enough to explain why a request stayed in quick reply or moved into worker-agent workflow.
 
@@ -256,7 +259,7 @@ After a bounded step, Core should read the resulting items, artifacts, evidence,
 
 Gates are part of workflow composition.
 
-An agent workflow may pause for:
+An agent workflow may wait for the following. A pending approval or user-input request makes the governed effect or the requesting agent wait, never the Turn that raised it:
 
 - plan approval
 - sensitive action approval
@@ -303,6 +306,7 @@ Agent-private task graphs should stay private unless Core needs to schedule, ret
 - A channel MUST NOT advance workflow state by mutating worker runtime internals, storage internals, or agent-private state directly.
 - A worker agent MUST NOT be treated as the canonical owner of workflow state merely because it executed a step.
 - A bounded step MUST return observable status to Core before the next bounded step is run.
+- A worker MUST NOT hold a control edge to another worker; control edges run only between a parent and its child through Core.
 - Human decisions MUST be represented through visible workflow state, approval records, user-input records, review records, or other promoted human-attention projections.
 - Agent-private graphs, traces, retries, and hidden reasoning MUST NOT become core records unless Core needs them for scheduling, retry, visibility, approval, audit, artifact lineage, or recovery.
 

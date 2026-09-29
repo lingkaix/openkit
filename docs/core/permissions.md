@@ -25,7 +25,7 @@ The permission model gives Core a stable way to decide whether those actions are
 
 - Permission is separate from identity, capability, sandbox, and audit.
 - Authorization decisions should be explainable, immutable, and attributable to a subject, action, resource, context, policy, and enforcement point.
-- Approval is a human gate that may satisfy a policy requirement; it is not the entire permission model.
+- Approval is one mechanism for every approval, whose approver may vary, that may satisfy a policy requirement; it is not the entire permission model. The responsible human is the only activated approver. An accepted automatic policy may grant an approval without a person, and that grant is recorded as a policy grant, never as a human decision and not as an agent approver. An agent approver for non-sensitive requests is a possible later extension and is not activated.
 - Multiple layers may enforce the same decision, but Core should remain able to explain the policy result.
 - Policy details may evolve, but permission vocabulary should remain stable enough for audit, UI summaries, and agent capability control.
 - OpenKit may implement only a subset of NGAC, but every implemented NGAC concept MUST match NGAC definitions, standard terminology, and described semantics. Product adapters MAY expose friendlier names, but Core policy doctrine MUST preserve NGAC as the long-term standard rather than creating a parallel OpenKit-specific authorization model.
@@ -45,7 +45,7 @@ Thread placement inside a Workspace does not grant other members access to its p
 
 User Memory is readable and mutable only by the current owning User through governed operations. Workspace Knowledge uses active membership and current resource policy. Server Knowledge uses deployment authority and is not an automatic corpus for every Workspace. A selected personal preference may influence authorized private work across Workspaces, but protected source facts retain their original restrictions. Sharing a Memory, Knowledge Page or Skill is an explicit source-to-destination promotion, not an effect of summary generation or installation.
 
-Memory, Skill instructions, recalled decisions and AI assessments cannot grant permissions, bypass current target validation or answer a human gate. Every management effect uses the requesting user's current authority. Optional AI evidence assessment is distinct from authorization and human Knowledge Review. Removal, forgetting or source revocation invalidates affected future reads, candidates and publication before deferred cache cleanup; separately published material retains its existing ownership and retention.
+Memory, Skill instructions, recalled decisions and AI assessments cannot grant permissions, bypass current target validation or resolve a pending approval or user-input request. Every management effect uses the requesting user's current authority. Optional AI evidence assessment is distinct from authorization and human Knowledge Review. Removal, forgetting or source revocation invalidates affected future reads, candidates and publication before deferred cache cleanup; separately published material retains its existing ownership and retention.
 
 ## Technical Administration
 
@@ -65,7 +65,7 @@ Sandbox constrains what the runtime can actually reach.
 
 Identity supplies the subject.
 
-Approval is a human decision step that may satisfy or override a permission requirement under policy.
+Approval is a decision step by the approver, today the responsible human, that may satisfy or override a permission requirement under policy. Requiring approval does not pause the requesting work: the request stays pending, without a default deadline, until it is resolved or ended, as `docs/core/protocol.md` defines.
 
 The product UI may display permission summaries, but it should not become the policy engine.
 
@@ -232,7 +232,7 @@ Examples:
 - filesystem operation boundary
 - sandbox startup boundary
 
-The same policy decision may be enforced at multiple layers. Sandbox enforcement is still valuable even when permission policy already denies an action.
+The same policy decision may be enforced at multiple layers. Sandbox enforcement is still valuable even when permission policy already denies an action. Inside its Sandbox a worker has full permission; approval and audit apply to its interaction with external systems at the Sandbox boundary and the gateway, not to in-Sandbox tools or configuration, and native runtime permission prompts are not part of the permission model.
 
 ## Approval Gates
 
@@ -248,9 +248,9 @@ Approval strength MUST follow reversibility and blast radius rather than the ope
 | Materially consequential but recoverable | Explicit preview of the exact target and resulting state before commitment. |
 | Irreversible, externally visible, credential-bearing, authorization-changing, or cost-material | Distinct explicit confirmation that states what cannot be undone, plus every additional decision required by the owning safety, permission, cost, credential, or external-effect contract. |
 
-Ambiguity about the target or effect raises the required decision by one level. Approval does not bypass current authorization, and an approval that satisfied an earlier evaluation does not authorize a later call after the actor, target, policy, resource, or relevant state changes.
+Ambiguity about the target or effect raises the required decision by one level. Approval does not bypass current authorization, and an approval that satisfied an earlier evaluation does not authorize an effect after the actor, target, policy, resource, or relevant state changes. A granted governed call is re-evaluated against current facts immediately before it executes, and the requester does not re-issue the call to use the grant.
 
-The required decision exists for one proposed effect and terminates when the effect is accepted, rejected, expires, becomes stale, or is replaced. Retry after rejection, expiry, staleness, conflict, restart, or dependency failure requires a new current authorization evaluation and, when still required, a new approval; Core MUST NOT replay the earlier approval as ambient authority.
+The required decision exists for one proposed effect and terminates when the effect is accepted or rejected, when an invalidating event ends the request, or when it is replaced. It has no default time expiry; staleness is disclosed to the approver and enforced by re-evaluation at execution. Retry after rejection, invalidation, staleness, conflict, restart, or dependency failure requires a new current authorization evaluation and, when still required, a new approval; Core MUST NOT replay the earlier approval as ambient authority.
 
 Conformance is observable when low-consequence reversible effects can complete through the one-step form, materially consequential recoverable effects expose their preview before commitment, and irreversible or authority-changing effects cannot apply without the distinct confirmation and every owner-required additional gate.
 
@@ -272,7 +272,7 @@ Retrieved material MUST retain source identity, provenance, visibility, freshnes
 
 Immediately before a durable or shared output is published, Core MUST reauthorize the destination and material as a defense-in-depth publication guard. The guard may publish the eligible answer, require an explicit typed promotion or sharing decision, redirect the result to an authorized owner-private destination, or fail closed. It MUST NOT silently remove a material restriction and publish the remainder as though the original answer had been authorized.
 
-A Tool's presence means only that the model may request its operation. It is never evidence that the current actor, source, target, audience, or effect is authorized. Every Tool call MUST perform the current owning permission and resource checks, including after approval, warm-provider reuse, retry, or restart. A present Tool whose call is refused returns a product-safe typed refusal reason through its owning Tool result; permission denial MUST NOT be represented by removing that Tool from an otherwise reachable entry path.
+A Tool's presence means only that the model may request its operation. It is never evidence that the current actor, source, target, audience, or effect is authorized. Every Tool call MUST perform the current owning permission and resource checks, including when a granted call is executed after approval, and after warm-provider reuse, retry, or restart. A call that needs approval returns a pending result through its Tool result rather than executing. A present Tool whose call is refused returns a product-safe typed refusal reason through its owning Tool result; permission denial MUST NOT be represented by removing that Tool from an otherwise reachable entry path.
 
 Any transfer from an owner-private or otherwise restricted source into a durable or broader audience MUST use an explicit typed promotion that identifies the selected source material, destination, audience, provenance, required confirmation, and authoritative outcome. A generated summary is not declassification, and the actor's authority to read the source is not authority to promote it.
 

@@ -146,7 +146,7 @@ Contradictory human intent is not a communication arbitration problem. The authe
 
 ## Active-Turn Input Projection
 
-Communication does not define a generic active-turn input route or safe-point policy. A transport may carry input to an active Turn only through that Turn's exact human gate or an active-work delivery contract defined by an accepted owning specification.
+Communication does not define a generic active-turn input route or safe-point policy. A transport may carry input to an active Turn only through an active-work delivery contract defined by an accepted owning specification. A response to a pending approval or user-input request is not active-Turn input: it addresses the request, and its outcome reaches the requesting agent on a later Turn, as defined in `docs/core/protocol.md`.
 
 The transport MUST preserve the contract's target identifiers, request correlation, result, and typed failure. Clients, channel adapters, and transport bridges MUST NOT infer queueing, application, follow-up creation, or safe points.
 
@@ -222,21 +222,26 @@ Compaction MAY replace fine-grained deltas with a completed item snapshot when t
 
 ## Approval Communication Flow
 
-Approvals are item-backed protocol records defined in `docs/core/protocol.md`.
+Approvals and user-input requests are item-backed pending requests defined in `docs/core/protocol.md`.
 
-Conceptual flow:
+Conceptual flow for a worker's governed tool call:
 
 ```text
-Core -> Client: item.created approval-request
-Core -> Client: turn.updated awaiting_human with approval gate
+Worker -> Core: MCP tools/call for a governed tool
+Core -> Worker: pending result with a request handle; the Turn continues
+Core -> Client: item.created approval-request on the raising Turn
+(the raising Turn may end while the request is outstanding)
 Client -> Core: respond to approval
-Core -> Client: item.created approval-decision
-Core -> Client: turn.updated running | failed | interrupted; denial remains distinguishable through the approval-decision Item and terminal stopReason
+Core: records the decision; for a grant, re-evaluates and executes the captured call at most once
+Core -> Client: when the Thread is idle, a new Turn with trigger approval-resolution and item.created approval-decision
+Core -> Worker: that Turn delivers the decision and the execution outcome
 ```
+
+A user-input request follows the same flow with `user-input-request`, an answer command, and a delivering Turn whose trigger is `user-input`.
 
 Approval decisions must be auditable.
 
-Communication projections MUST deliver approval requests and decisions through the same ordered item stream used for the surrounding turn.
+Communication projections MUST deliver each request Item through the item stream of the Turn that raised it, and each decision or answer Item through the item stream of its publication Turn: the first Turn that freezes it for delivery, or the Core-local Turn that closes it out. A client MUST NOT infer from a request that its raising Turn is paused.
 
 ## Artifact Communication Flow
 
@@ -275,6 +280,17 @@ Capability - LLM, MCP, vault, knowledge base, external APIs, network proxy
 These planes have different owners, authorization scopes, payload bounds, ordering needs, retry rules, and failure semantics. They MUST remain logically distinct, but two or more planes MAY share one physical connection, process, or transport session when the projection preserves those differences and prevents traffic from being interpreted under another plane's authority.
 
 The adapter chooses a transport projection for each plane based on the owning `AgentManifest` defined by `docs/core/agent-supply.md`, deployment mode, runtime capability, and workspace policy. One projection MAY carry multiple planes, but shared carriage MUST NOT create a shared token, permission scope, payload limit, retry rule, failure meaning, or protocol owner.
+
+## Agent Communication Directions
+
+Communication with agents has three directions, each with one standard interface:
+- **Downward, NanoCore to worker.** NanoCore controls a worker through the worker-control contract: it opens, inspects, and closes an AgentSession, starts and interrupts a Turn, and drains the Harness. The Harness inside the Sandbox maps those operations onto the runtime's own native interface. ACP is used only where a runtime's native interface is ACP. NanoCore controls agents; it is not an agent harness.
+- **Upward, worker to NanoCore.** A worker reaches Core operations and integrated external systems as MCP tools that NanoCore serves through its gateway and that the runtime loads as MCP servers. A runtime that cannot speak MCP is not supported. A worker's approval and user-input requests use the same path, and the tool returns a pending result at once. Model inference keeps its own governed inference route, and worker-control traffic keeps the worker-control contract; neither becomes an MCP tool.
+- **Between workers.** Workers never communicate directly, and no worker holds a control edge to another. Delegated work is a tree whose control edges, such as dispatch, answer, and cancel, run only between a parent and its child through Core. A worker may read, and only read, a bounded, product-safe projection of Core's records about the other AgentSessions in its own Sandbox, through NanoCore-served tools. The projection never exposes AgentSession identity or native runtime state, co-residency neither widens it nor changes shared-Sandbox admission, and the read creates no control edge. Same-Sandbox relatedness is an interim boundary, replaced when relatedness must cross Sandboxes or depend on permissions.
+
+The tool surface a worker sees changes only at a Turn boundary, never inside a Turn.
+
+Inside the Sandbox, the worker's own configuration and tools, including MCP servers configured there, are the worker's. These directions govern only traffic that crosses the Sandbox boundary.
 
 ## Control Plane
 
@@ -425,7 +441,9 @@ Audit is a cross-cutting communication requirement, not a separate transport.
 
 - Communication transports MUST preserve stable command semantics, event ordering, IDs, lifecycle states, error shape, and redaction requirements.
 - Raw heterogeneous streaming payloads MUST NOT replace the core event envelope for live product events.
-- Client and channel adapters MUST NOT infer active-turn delivery outcomes beyond the exact human-gate or accepted active-work delivery result returned by Core.
+- Client and channel adapters MUST NOT infer active-turn delivery outcomes beyond the accepted active-work delivery result returned by Core, and MUST NOT infer a paused Turn from a pending request.
+- Workers MUST NOT communicate with each other directly; a control edge between workers exists only as a parent-child edge through Core.
+- A worker's upward access to Core operations and integrated external systems MUST use NanoCore-served MCP through the gateway, and its visible tool surface MUST change only at a Turn boundary. Inference and worker-control traffic keep their own interfaces and owners.
 - Workspace bytes and artifact bytes SHOULD NOT travel through the control stream except for intentionally small inline previews.
 - Capability mediation responsibilities MUST NOT own, inspect, authorize, synthesize, retry, or reinterpret worker-control traffic; choose models; decide provider fallback; own rate limits; decide tool visibility or capability availability; persist sensitive responses; own credentials, metering, or usage attribution; decide permission policy; own product or workflow state; or implement business logic. A shared outer transport or process may carry the separately authenticated control plane without transferring those responsibilities.
 - Transport and deployment-mode choices MUST preserve the deployment-semantic invariant owned by `docs/core/architecture.md`.

@@ -80,12 +80,12 @@ OpenKit uses four composable product modes for human attention:
 
 | Mode | Stable product meaning |
 | --- | --- |
-| Approval Gate | A blocking authorization decision for safety, policy, budget, credential use, irreversible operations, or external side effects. |
-| Elicitation Gate | A blocking answer to a question, missing input, planning choice, or recovery choice. It is not authorization. |
+| Approval Gate | A pending authorization decision for safety, policy, budget, credential use, irreversible operations, or external side effects. The governed effect waits for it; the requesting work does not pause. |
+| Elicitation Gate | A pending answer to a question, missing input, planning choice, or recovery choice. It is not authorization. |
 | Steering Input | Non-terminal user input that corrects or extends active work only through a delivery contract accepted by the owning workflow. Unsupported active-work input is rejected rather than assigned an inferred delivery behavior. |
 | Review And Acceptance | Human or agent evaluation of plans, artifacts, diffs, knowledge proposals, evidence, or outcomes that may lead to acceptance, refinement, redo, rejection, deferral, escalation, or stop. |
 
-Only Approval Gate and Elicitation Gate are blocking human gates. The four modes may compose without becoming four new Core objects or a parallel workflow engine.
+Only Approval Gate and Elicitation Gate are pending human requests. Neither pauses a Turn or expires by time. A request is blocking only when the requesting agent ended its Turn while the request was outstanding and no later Turn has run, and its outcome reaches the agent on a later Turn, as `docs/core/protocol.md` defines. The four modes may compose without becoming four new Core objects or a parallel workflow engine.
 
 Action Center is a product and App API projection over pending human attention across these modes. It helps users find required attention but must not replace Thread narrative, Item history, or the owning decision records.
 

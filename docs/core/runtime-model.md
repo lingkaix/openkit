@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-09-10
+updated: 2026-09-30
 ---
 # Runtime Model
 
@@ -22,7 +22,7 @@ The runtime model keeps those workflows inside the stable `Workspace -> Thread -
 
 ## Principles
 
-- Worker-executed Turns are agent-bound execution units; AgentSessions are reusable runtime handles distinct from the private execution-substrate epochs that may host them. Core-local service Turns may remain sessionless only under the narrow protocol exception.
+- Worker-executed Turns are agent-bound execution units; AgentSessions are execution bindings that stay bound across the sequential Turns of their Thread, distinct from the private execution-substrate epochs that may host them. Core-local service Turns may remain sessionless only under the narrow protocol exception.
 - Runtime details may be observed through items, artifacts, audit, and summaries, but private runtime state is not the user-facing work model.
 - Core schedules work at thread and turn boundaries before it reasons over runtime-native task graphs.
 - Runtime placement and backend selection are projections; they must not change the stable `Workspace -> Thread -> Turn -> Item[]` backbone.
@@ -82,7 +82,7 @@ The communication and storage relationship remains:
 Workspace -> Thread -> Turn -> Item[]
 ```
 
-These two relationships meet at a worker-executed `Turn`. AgentSession is the hidden runtime-continuity identity for one independently governed worker conversation, is bound to one Thread, and executes at most one worker Turn at a time. A Thread may retain historical AgentSessions but has at most one current AgentSession. A Core-local workflow or Assistant service that owns no worker, scheduler, Sandbox, or runtime effect may produce a Turn without AgentSession under `protocol.md`; that Turn does not enter the runtime relationship above.
+These two relationships meet at a worker-executed `Turn`. AgentSession is the hidden runtime-continuity identity for one independently governed worker conversation, is bound to one Thread, and executes at most one worker Turn at a time. It stays bound while no Turn is active, and Turn completion does not end it. A Thread may retain historical AgentSessions but has at most one current AgentSession. A Core-local workflow or Assistant service that owns no worker, scheduler, Sandbox, or runtime effect may produce a Turn without AgentSession under `protocol.md`; that Turn does not enter the runtime relationship above.
 
 ## Agent
 
@@ -111,7 +111,7 @@ A runtime may execute agents:
 - through a managed sandbox provider
 - through a future runtime service
 
-Runtime owns execution lifecycle and infrastructure concerns such as startup, liveness, interruption, recovery, sandbox attachment, workspace materialization, artifact collection, and capability-plane connectivity.
+Runtime owns execution lifecycle and infrastructure concerns such as startup, liveness, interruption, recovery, sandbox attachment, workspace materialization, artifact and workspace-change collection, and capability-plane connectivity. Workspace changes are collected by a read-only scan from outside the Sandbox, at Turn end, at AgentSession release, and before a successor uses the same work volume, without stopping the running worker.
 
 Runtime is separate from permission. Runtime may enforce sandbox constraints, but authorization decisions belong to the permission model.
 
@@ -127,16 +127,16 @@ Runtime placement decomposes into four distinct private projections:
 
 - a Sandbox runtime projection identifies one containment and aggregate-resource boundary whose conversation-context, Workspace-write, or security and adjudication isolation level remains owned by `sandbox.md`;
 - a Harness runtime projection identifies one declared native-runtime adapter, its liveness, supported AgentSession operations, and bounded open-session and active-Turn capacity inside that Sandbox;
-- an AgentSession runtime binding maps one Core AgentSession to one exact Harness and restricted native conversation handle;
-- an execution lease binds one active Turn, its fresh authority and inputs, and one active-Turn capacity unit to that AgentSession, Harness, and Sandbox.
+- an AgentSession runtime binding maps one Core AgentSession to one exact Harness, one runtime host instance, and one restricted native conversation handle. The host instance is either a process dedicated to that binding or a native server that carries several bindings;
+- an execution lease binds one active Turn, its fresh authority and inputs, and one active-Turn capacity unit to that AgentSession, Harness, and Sandbox. The lease does not authorize the idle binding, and the runtime host never holds the Turn's upstream route credentials.
 
 These projections MUST NOT be collapsed into one backend record. A Sandbox MAY host multiple compatibility-keyed Harnesses, and a Harness MAY host multiple AgentSessions only for distinct Threads, but sharing placement MUST NOT merge Core identity, Thread affinity, native conversation context, authorization, sequence, interruption, output, evidence, or terminal outcome. Bounded active Turns may execute concurrently only across distinct AgentSessions and Threads under Harness and Sandbox capacity; a Harness is not an Agent, Thread, workflow owner, scheduling authority, or product conversation.
 
 Creation proceeds from Sandbox and Harness readiness, through exact AgentSession binding, to a separately admitted Turn lease. An idle AgentSession may retain continuity and open-session capacity without retaining an execution lease or authority to start work. Each new Turn receives current admission independently of any warm placement.
 
-Normal Turn termination releases its active-Turn capacity only after the Turn's output, evidence, route-revocation, and cleanup barriers settle. Normal AgentSession termination releases its open-session capacity after exact local cleanup and leaves compatible siblings resident. Harness or Sandbox termination drains new admission and settles each resident AgentSession independently before its complete effect boundary is fenced.
+Normal Turn termination releases its active-Turn capacity only after the Turn's output, evidence, workspace-collection, route-revocation, and cleanup barriers settle; it does not end the AgentSession. Normal AgentSession termination releases its open-session capacity after exact local cleanup and leaves compatible siblings resident, including other bindings on a shared runtime host. Closing a binding on a shared host leaves the host running. Ending a dedicated host ends its binding, and ending a shared host ends every binding it carries, each with its own outcome. Harness or Sandbox termination drains new admission and settles each resident AgentSession independently before its complete effect boundary is fenced.
 
-A missing, stale, conflicting, or unprovable binding blocks admission or reuse. Restart may adopt only the exact surviving Sandbox, Harness, AgentSession, native conversation, Turn, lease, authority snapshot, and sequence under an accepted proof contract; otherwise cleanup and a fresh authorized request replace continuity without rewriting the prior attempt. Failure to prove local cleanup widens the fence to the Harness, Sandbox, or execution-substrate epoch boundary that can be proved complete.
+A missing, stale, conflicting, or unprovable binding blocks admission or reuse. Restart may adopt only the exact surviving Sandbox, Harness, runtime host instance, AgentSession, native conversation, Turn, lease, authority snapshot, and sequence under an accepted proof contract. A restarted host is not the surviving instance. Otherwise cleanup and a fresh authorized request replace continuity without rewriting the prior attempt, and the successor AgentSession resumes the retained native conversation or fails explicitly. Failure to prove local cleanup widens the fence to the Harness, Sandbox, or execution-substrate epoch boundary that can be proved complete.
 
 Observable conformance requires one runtime inventory to distinguish all four projections, one Sandbox to distinguish compatibility-different Harnesses, an idle AgentSession to hold no active-Turn lease, exact local close to preserve compatible siblings, and every concurrently active Turn to retain its own Thread, AgentSession, lease, authority, and terminal outcome.
 
@@ -198,7 +198,7 @@ This keeps implementation-review loops visible without creating a special run mo
 
 NanoCore remains the orchestration and governance center. A container, VM or other admitted backend is an execution resource, not the center of the product model. Healthy compatible Sandboxes SHOULD remain reusable; routine NanoCore/Web delivery MUST NOT require NanoHost delivery or destruction of healthy execution resources. A bounded Core disconnect may preserve exact execution only under the existing lease, identity, sequence and continuity proofs; it does not guarantee every in-flight inference or external call survives.
 
-[Storage](storage.md) owns retained working volumes independently of execution lifetime. Planned environment replacement prepares and validates the candidate before draining affected work, fences every old writer before reattachment, refreshes current authority, and proves the new environment before admitting execution. Replacement may occur during a long-running logical task, but it does not move an active Turn between identities or restore process memory. Failed continuity retains the truthful result the Turn's lifecycle owner determined and permits only new authorized work. Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen. Image rollback is not data rollback.
+[Storage](storage.md) owns retained working volumes independently of execution lifetime. Planned environment replacement prepares and validates the candidate before draining affected work, fences every old writer before reattachment, refreshes current authority, and proves the new environment before admitting execution. Replacement may occur during a long-running logical task, but it does not move an active Turn between identities or restore process memory; a successor AgentSession may resume the exact retained native conversation. Failed continuity retains the truthful result the Turn's lifecycle owner determined and permits only new authorized work. Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen. Image rollback is not data rollback.
 
 ## Execution-Substrate Lifecycle
 
@@ -216,9 +216,9 @@ The substrate lifecycle has these responsibilities:
 6. Recovery may adopt only the exact surviving execution under an accepted proof contract. Otherwise it completes existing cleanup and preserves interruption or uncertainty. An invalid epoch may return capacity only after the prior effect domain is fenced and a fresh compatible epoch is proved ready and free of prior mutable execution state; separately retained working volumes are not live execution state and remain subject to fresh authorized attachment. Replacement and retry require a fresh authorized request and do not rewrite the prior attempt.
 7. Dependency failure before admission blocks launch. Dependency failure after admission follows the same interruption, evidence, cleanup, and fresh-request boundaries; runtime must not synthesize authority or a successful terminal result.
 
-A gate response always attaches to the same Turn, but only the owning accepted contract chooses its next status. Chat clarification may continue that Turn as `running`; a Task or Goal worker gate closes the old execution envelope and any later worker execution uses a new Turn.
+A pending approval or user-input request never pauses the Turn that raised it and never closes its AgentSession. A worker's outcome is delivered on a later Turn of the same Thread, which the current AgentSession executes, or a successor that resumes the native conversation when that binding has ended. Outcomes for the internal Assistant or for a person are delivered by their own owners without an AgentSession. Goal Mode worker execution is unavailable until the Goal redesign and is given no path here.
 
-An execution substrate can fail while a Turn remains inspectable or eligible for a separately authorized retry, and a Turn can fail while an AgentSession remains reusable only when the owning runtime can prove that reuse is safe. Failure of one shared epoch may interrupt multiple AgentSessions, but it MUST NOT merge their identities, lineages, evidence, or terminal outcomes.
+An execution substrate can fail while a Turn remains inspectable or eligible for a separately authorized retry, and after a Turn completes, is cancelled, or fails, its AgentSession remains reusable only when the owning runtime can prove that continuity and reuse are safe. Failure of one shared epoch may interrupt multiple AgentSessions, but it MUST NOT merge their identities, lineages, evidence, or terminal outcomes.
 
 ## Runtime Setup
 
