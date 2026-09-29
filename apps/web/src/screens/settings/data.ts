@@ -50,6 +50,8 @@ type AvailableQuotaPayload = Extract<
 /** Safe quota window copied from the public available payload. */
 export interface ConnectedAppQuotaWindow {
   id: string;
+  /** Positive provider-reported duration, omitted when absent. */
+  limitWindowSeconds?: number;
   usedPercent: number | null;
   remainingPercent: number | null;
   periodType: 'weekly' | 'monthly' | null;
@@ -553,6 +555,9 @@ function projectQuotaWindow(
 ): ConnectedAppQuotaWindow {
   return {
     id: projectSafeValue(window.id) as string,
+    ...(window.limitWindowSeconds === undefined
+      ? {}
+      : { limitWindowSeconds: window.limitWindowSeconds }),
     usedPercent: window.usedPercent ?? null,
     remainingPercent: window.remainingPercent ?? null,
     periodType: window.periodType ?? null,

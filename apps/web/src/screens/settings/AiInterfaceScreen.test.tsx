@@ -342,6 +342,40 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(codex).queryByRole('button', { name: 'Sign in again' })).not.toBeInTheDocument();
   });
 
+  it.each([
+    { seconds: 18_000, label: '5-hour' },
+    { seconds: 604_800, label: 'Weekly' },
+    { seconds: 900, label: '15-minute' },
+    { seconds: 937, label: '937-second' },
+    { seconds: undefined, label: 'Primary' },
+  ])('labels Codex with only the supplied duration ($label)', async ({ seconds, label }) => {
+    const client = makeClient({
+      providerSubscriptions: {
+        getAccountQuota: vi.fn().mockResolvedValue({
+          ...CODEX_QUOTA,
+          windows: [
+            {
+              ...CODEX_QUOTA.windows[0],
+              ...(seconds === undefined ? {} : { limitWindowSeconds: seconds }),
+            },
+            CODEX_QUOTA.windows[1],
+          ],
+        }),
+      },
+    });
+    renderScreen(client);
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    expect(within(codex).getByText(`${label} 59.6% remaining`)).toBeInTheDocument();
+    expect(
+      within(codex).getByRole('meter', { name: `${label} remaining 59.6%` })
+    ).toBeInTheDocument();
+    expect(within(codex).getByText('Secondary 0.4% remaining')).toBeInTheDocument();
+    expect(within(codex).getByText('Resets').querySelector('time')).toHaveAttribute(
+      'datetime',
+      TIMESTAMP
+    );
+  });
+
   it('shows one percentage per quota window for Codex and xAI', async () => {
     const client = makeClient({
       providerSubscriptions: {

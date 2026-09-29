@@ -157,6 +157,7 @@ const SubscriptionAccountObservationShape = {
 const QuotaWindowSchema = z
   .object({
     id: z.string().min(1),
+    limitWindowSeconds: z.number().int().positive().optional(),
     usedPercent: z.number().finite().min(0).max(100).optional(),
     remainingPercent: z.number().finite().min(0).max(100).optional(),
     periodType: z.enum(['weekly', 'monthly']).optional(),

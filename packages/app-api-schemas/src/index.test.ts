@@ -4651,6 +4651,30 @@ describe('app api schemas', () => {
     }
   });
 
+  it('accepts only positive integer provider-subscription window durations when supplied', () => {
+    const quota = {
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'work',
+      availability: 'available',
+      observedAt: timestamp,
+      windows: [{ id: 'primary', limitWindowSeconds: 18_000 }],
+    };
+    const schema = appApiSchemas.ProviderSubscriptionQuotaSchema;
+    expect(schema.parse(quota)).toEqual(quota);
+    expect(schema.parse({ ...quota, windows: [{ id: 'secondary' }] })).toEqual({
+      ...quota,
+      windows: [{ id: 'secondary' }],
+    });
+    for (const duration of [0, -1, 1.5, '18000', null]) {
+      expect(
+        schema.safeParse({
+          ...quota,
+          windows: [{ id: 'primary', limitWindowSeconds: duration }],
+        }).success
+      ).toBe(false);
+    }
+  });
+
   it('accepts only the declared provider-subscription quota dispositions', () => {
     const quotaSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionQuotaSchema') as
       | typeof AppDiagnosticsResponseSchema

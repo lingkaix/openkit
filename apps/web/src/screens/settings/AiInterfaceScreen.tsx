@@ -750,9 +750,17 @@ function overlayAccount(
   };
 }
 
-/** Maps frozen OpenKit quota window ids to readable labels without inventing durations. */
-function subscriptionQuotaWindowLabel(id: string): string {
-  switch (id) {
+/** Labels Codex windows by exact reported duration, falling back to stable window ids. */
+function subscriptionQuotaWindowLabel(window: ConnectedAppQuotaWindow): string {
+  const seconds = window.limitWindowSeconds;
+  if ((window.id === 'primary' || window.id === 'secondary') && seconds !== undefined) {
+    if (seconds === 604_800) return 'Weekly';
+    if (seconds % 86_400 === 0) return `${seconds / 86_400}-day`;
+    if (seconds % 3_600 === 0) return `${seconds / 3_600}-hour`;
+    if (seconds % 60 === 0) return `${seconds / 60}-minute`;
+    return `${seconds}-second`;
+  }
+  switch (window.id) {
     case 'primary':
       return 'Primary';
     case 'secondary':
@@ -760,7 +768,7 @@ function subscriptionQuotaWindowLabel(id: string): string {
     case 'included':
       return 'Included';
     default:
-      return id;
+      return window.id;
   }
 }
 
@@ -796,7 +804,7 @@ function formatQuotaPercent(value: number): string {
 
 /** Renders one quota window with remaining as the prominent labeled meter. */
 function QuotaWindow({ window }: { window: ConnectedAppQuotaWindow }) {
-  const label = subscriptionQuotaWindowLabel(window.id);
+  const label = subscriptionQuotaWindowLabel(window);
   const remaining =
     window.remainingPercent === null ? null : formatQuotaPercent(window.remainingPercent);
   return (

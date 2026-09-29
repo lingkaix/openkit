@@ -1852,7 +1852,7 @@ describe('AI interface (board 20)', () => {
     expect(screen.getByText('Included 87.5% remaining')).toBeInTheDocument();
     expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
     expect(screen.getByRole('meter', { name: 'Included remaining 87.5%' })).toBeInTheDocument();
-    expect(screen.getByText('40.4% used')).toBeInTheDocument();
+    expect(screen.queryByText('40.4% used')).not.toBeInTheDocument();
     expect(screen.getByText('Resets unknown')).toBeInTheDocument();
     expect(screen.queryByText('Quota unsupported')).not.toBeInTheDocument();
     expect(screen.queryByText(/5h|\bweekly\b/i)).not.toBeInTheDocument();
@@ -1923,7 +1923,8 @@ describe('AI interface (board 20)', () => {
     );
     renderApp('/settings/ai-interface', makeClient({ providerSubscriptions: { getAccountQuota } }));
     expect(await screen.findByText('Quota query failed')).toBeInTheDocument();
-    expect(screen.getAllByText('Connected')).toHaveLength(2);
+    expect(screen.getByText('Login saved')).toBeInTheDocument();
+    expect(screen.getAllByText('Connected')).toHaveLength(1);
   });
 
   it('never renders credential or provider-private values from poisoned payloads', async () => {
@@ -1985,7 +1986,7 @@ describe('AI interface (board 20)', () => {
     expect(screen.getByText('Included 87.5% remaining')).toBeInTheDocument();
     expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
     expect(screen.getByRole('meter', { name: 'Included remaining 87.5%' })).toBeInTheDocument();
-    expect(screen.getByText('40.4% used')).toBeInTheDocument();
+    expect(screen.queryByText('40.4% used')).not.toBeInTheDocument();
     expect(screen.getByText('Resets unknown')).toBeInTheDocument();
     expect(screen.queryByText('Quota unsupported')).not.toBeInTheDocument();
     expect(screen.queryByText(/5h|\bweekly\b/i)).not.toBeInTheDocument();

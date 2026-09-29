@@ -131,12 +131,14 @@ const CODEX_USAGE = {
 } as const;
 const PRIMARY_QUOTA_WINDOW = {
   id: 'primary',
+  limitWindowSeconds: 18_000,
   remainingPercent: 69,
   resetsAt: '2026-08-01T00:00:00.000Z',
   usedPercent: 31,
 } as const;
 const SECONDARY_QUOTA_WINDOW = {
   id: 'secondary',
+  limitWindowSeconds: 604_800,
   remainingPercent: 0,
   resetsAt: '2026-08-08T00:00:00.000Z',
   usedPercent: 100,
@@ -1392,6 +1394,44 @@ describe('provider-subscription app API', () => {
         subscriptionProviderId: 'openai-codex',
         windows,
       });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it.each([
+    900, 18_000, 604_800, 0, -1,
+  ])('projects only a positive reported Codex window duration (%s)', async (seconds) => {
+    const fixture = createFixture();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...CODEX_USAGE,
+          rate_limit: {
+            ...CODEX_USAGE.rate_limit,
+            primary_window: {
+              ...CODEX_USAGE.rate_limit.primary_window,
+              limit_window_seconds: seconds,
+            },
+          },
+        })
+      )
+    );
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+      );
+      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+      expect(response.status).toBe(200);
+      expect(quota).toMatchObject({ availability: 'available' });
+      if (quota.availability !== 'available') throw new Error('Expected available quota.');
+      const { limitWindowSeconds: _defaultDuration, ...primary } = PRIMARY_QUOTA_WINDOW;
+      expect(quota.windows).toEqual([
+        { ...primary, ...(seconds > 0 ? { limitWindowSeconds: seconds } : {}) },
+        SECONDARY_QUOTA_WINDOW,
+      ]);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     } finally {
       fetchSpy.mockRestore();

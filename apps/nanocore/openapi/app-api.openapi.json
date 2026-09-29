@@ -44510,6 +44510,11 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "limitWindowSeconds": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "usedPercent": {
                       "type": "number",
                       "minimum": 0,
@@ -122440,5 +122445,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:38f2c4223902a0aa1acfaedd01d4434bb0a2b5f6ea7055ecac9cf31c12574f66"
+  "x-openkit-source-digest": "sha256:bc345fa91ee345b91ba499da174e350d708017c8fce6f0d20ebf3a4020f7680c"
 }
