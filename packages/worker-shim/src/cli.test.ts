@@ -15,6 +15,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WorkerNativeProcessResult } from './adapter-registry.js';
 import {
   parseWorkerShimArgs,
   runWorkerShimCli,
@@ -1130,6 +1131,22 @@ describe('worker shim CLI parsing', () => {
       })
     ).rejects.toBe(processError);
     expect(onStartupFailure).toHaveBeenCalledWith({ stage: 'native_spawn', reason: 'failed' });
+    expect(readJsonl(join(sessionDir, 'events.jsonl'))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'turn.failed',
+            data: expect.objectContaining({
+              diagnostics: {
+                failureOrigin: 'native_process',
+                stdoutBytes: '0',
+                stdoutLimitBytes: '16777216',
+              },
+            }),
+          }),
+        }),
+      ])
+    );
     expect(readJsonl(join(sessionDir, 'events.jsonl'))).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ event: expect.objectContaining({ type: 'worker.ready' }) }),
@@ -1226,6 +1243,7 @@ describe('worker shim CLI parsing', () => {
     const packagePath = join(sessionDir, 'package.json');
     const controller = new AbortController();
     const controlError = new Error('control-failed-before-parent-abort');
+    const finalStatuses: Record<string, unknown>[] = [];
     let heartbeatCount = 0;
     let markWorkerAborted: (() => void) | undefined;
     let releaseWorker: (() => void) | undefined;
@@ -1261,12 +1279,15 @@ describe('worker shim CLI parsing', () => {
     const run = runWorkerShim({
       args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
       environment: workerShimEnvironment(),
-      fetch: async (url) => {
+      fetch: async (url, init) => {
         if (url.endsWith('/heartbeat')) {
           heartbeatCount += 1;
           if (heartbeatCount > 1) {
             throw controlError;
           }
+        }
+        if (url.endsWith('/final-status')) {
+          finalStatuses.push(JSON.parse(String(init?.body ?? '{}')).body);
         }
         return {
           ok: true,
@@ -1284,6 +1305,13 @@ describe('worker shim CLI parsing', () => {
       releaseWorker?.();
 
       await expect(run).rejects.toBe(controlError);
+      expect(finalStatuses).toHaveLength(1);
+      expect(finalStatuses[0]?.diagnostics).toEqual({
+        failureOrigin: 'worker_control',
+        stdoutBytes: '0',
+        stdoutLimitBytes: '16777216',
+      });
+      expect(JSON.stringify(finalStatuses)).not.toContain(controlError.message);
     } finally {
       controller.abort();
       releaseWorker?.();
@@ -2644,6 +2672,197 @@ describe('worker shim CLI parsing', () => {
     expect(completed).toBe(false);
     releaseWrite?.();
     await expect(run).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it.each([
+    {
+      origin: 'stdout_sink',
+      chunkSizes: [8, 12],
+      expectedBytes: '20',
+      cleanupFails: false,
+    },
+    {
+      origin: 'stdout_sink',
+      chunkSizes: [8, 12],
+      expectedBytes: '20',
+      cleanupFails: true,
+    },
+    {
+      origin: 'stdout_limit',
+      chunkSizes: [8_388_608, 8_388_608, 1],
+      expectedBytes: '16777217',
+      cleanupFails: false,
+    },
+  ])('publishes only safe temporary diagnostics for a midstream $origin failure (cleanup failure: $cleanupFails)', async ({
+    origin,
+    chunkSizes,
+    expectedBytes,
+    cleanupFails,
+  }) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-failure-probe-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const secretCanary = 'private-sink-exception-secret-canary';
+    const sinkError = new Error(secretCanary);
+    const cleanupError = new Error('private-cleanup-exception-secret-canary');
+    let sinkWrites = 0;
+    let markReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      markReady = resolve;
+    });
+    const finalStatuses: Record<string, unknown>[] = [];
+    const prepare = processFixtureAdapter.prepare;
+    const prepareSpy = vi
+      .spyOn(processFixtureAdapter, 'prepare')
+      .mockImplementationOnce(async (input) => ({
+        ...(await prepare(input)),
+        captureStdout: true,
+        suppressFailureDiagnostics: true,
+        writeStdout: async () => {
+          sinkWrites += 1;
+          if (origin === 'stdout_sink' && sinkWrites === 2) throw sinkError;
+        },
+        invalidate: async () => {
+          if (cleanupFails) throw cleanupError;
+        },
+      }));
+    writeFileSync(
+      packagePath,
+      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
+      'utf8'
+    );
+    try {
+      const run = runWorkerShim({
+        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: workerShimEnvironment(),
+        fetch: async (url, init) => {
+          const payload = JSON.parse(String(init?.body ?? '{}'));
+          if (url.endsWith('/events/append') && payload.record?.event?.type === 'worker.ready') {
+            markReady();
+          }
+          if (url.endsWith('/final-status')) finalStatuses.push(payload.body);
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(workerControlSuccessBody(url)),
+          };
+        },
+        runner: {
+          async run(input) {
+            input.onStart?.();
+            await ready;
+            for (const size of chunkSizes) await input.writeStdout?.(Buffer.alloc(size));
+            throw new Error('Overflow must fail before the runner returns.');
+          },
+        },
+      });
+      // The temporary probe preserves the existing cleanup rejection while diagnosing its predecessor.
+      if (origin === 'stdout_sink') {
+        await expect(run).rejects.toBe(cleanupFails ? cleanupError : sinkError);
+      } else await expect(run).rejects.toThrow('Native stdout exceeds 16777216 bytes.');
+      const events = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
+        event: { type: string; data: Record<string, unknown> };
+      }>;
+      const diagnostics = {
+        failureOrigin: origin,
+        stdoutBytes: expectedBytes,
+        stdoutLimitBytes: '16777216',
+      };
+      expect(events.find((record) => record.event.type === 'turn.failed')?.event.data).toEqual({
+        diagnostics,
+        evidenceManifestDigests: {},
+        status: 'failed',
+        stopReason: 'error',
+      });
+      expect(finalStatuses).toHaveLength(1);
+      expect(finalStatuses[0]?.diagnostics).toEqual(diagnostics);
+      expect(events.some((record) => record.event.data.status === 'process.exited')).toBe(false);
+      expect(JSON.stringify({ events, finalStatuses })).not.toContain(secretCanary);
+      expect(JSON.stringify({ events, finalStatuses })).not.toContain(cleanupError.message);
+    } finally {
+      prepareSpy.mockRestore();
+    }
+  });
+
+  it('keeps sink-rejected bytes out of retained stdout when interruption wins', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-interrupted-sink-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const controller = new AbortController();
+    let sinkWrites = 0;
+    let collectedBytes = 0;
+    let markReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      markReady = resolve;
+    });
+    const prepare = processFixtureAdapter.prepare;
+    const prepareSpy = vi
+      .spyOn(processFixtureAdapter, 'prepare')
+      .mockImplementationOnce(async (input) => ({
+        ...(await prepare(input)),
+        captureStdout: true,
+        suppressFailureDiagnostics: true,
+        writeStdout: async () => {
+          sinkWrites += 1;
+          if (sinkWrites === 2) {
+            controller.abort();
+            throw new Error('private-interrupted-sink-secret-canary');
+          }
+        },
+      }));
+    const collectSpy = vi
+      .spyOn(processFixtureAdapter, 'collect')
+      .mockImplementationOnce(async (input) => {
+        const result = input.processResult as WorkerNativeProcessResult;
+        expect(result.interrupted).toBe(true);
+        collectedBytes = result.stdout.byteLength;
+        return { assistantText: null, status: 'interrupted', stopReason: 'aborted' };
+      });
+    writeFileSync(
+      packagePath,
+      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
+      'utf8'
+    );
+    try {
+      await expect(
+        runWorkerShim({
+          args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+          environment: workerShimEnvironment(),
+          fetch: async (url, init) => {
+            const payload = JSON.parse(init.body);
+            if (payload.record?.event?.type === 'worker.ready') markReady();
+            return {
+              ok: true,
+              status: 200,
+              text: async () => JSON.stringify(workerControlSuccessBody(url)),
+            };
+          },
+          runner: {
+            async run(input) {
+              input.onStart?.();
+              await ready;
+              await input.writeStdout?.(Buffer.alloc(8_388_608));
+              await input.writeStdout?.(Buffer.alloc(8_388_609));
+              throw new Error('The second sink write must reject.');
+            },
+          },
+          signal: controller.signal,
+        })
+      ).resolves.toMatchObject({ status: 'interrupted' });
+      expect(collectedBytes).toBe(8_388_608);
+      expect(readJsonl(join(sessionDir, 'events.jsonl'))).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: expect.objectContaining({
+              type: 'turn.failed',
+              data: expect.objectContaining({ status: 'interrupted', stopReason: 'aborted' }),
+            }),
+          }),
+        ])
+      );
+    } finally {
+      controller.abort();
+      prepareSpy.mockRestore();
+      collectSpy.mockRestore();
+    }
   });
 
   it.each([

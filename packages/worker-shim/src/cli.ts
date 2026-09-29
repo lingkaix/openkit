@@ -712,6 +712,16 @@ async function runWorkerShimImplementation(
   /** Propagates the exact parent cancellation reason to both supervised children. */
   const abortForParent = () => abortChildren(options.signal?.reason);
 
+  // Temporary chat_task_stability_handoff probe; remove after one Task identifies the failing origin.
+  // Only fixed origins and decimal byte counts may be published.
+  // Match the winning error by identity so sibling aborts cannot replace its classification.
+  const failureOrigins = new Map<
+    unknown,
+    'stdout_sink' | 'stdout_limit' | 'worker_control' | 'ready_event' | 'native_process'
+  >();
+  let observedStdoutBytes = 0;
+  let supervisionFailureOrigin: string | null = null;
+
   if (options.signal?.aborted) {
     abortForParent();
   } else {
@@ -811,11 +821,19 @@ async function runWorkerShimImplementation(
     let stdoutBytes = 0;
     /** Retains exact adapter stdout under the shared 16 MiB bound and forwards adapter-local sinks. */
     const writeStdout = async (chunk: Uint8Array) => {
-      await launchPlan.writeStdout?.(chunk);
+      observedStdoutBytes += chunk.byteLength;
+      try {
+        await launchPlan.writeStdout?.(chunk);
+      } catch (error) {
+        if (!failureOrigins.has(error)) failureOrigins.set(error, 'stdout_sink');
+        throw error;
+      }
       if (launchPlan.captureStdout) {
         stdoutBytes += chunk.byteLength;
         if (stdoutBytes > NATIVE_STDOUT_MAX_BYTES) {
-          throw new Error(`Native stdout exceeds ${NATIVE_STDOUT_MAX_BYTES} bytes.`);
+          const error = new Error(`Native stdout exceeds ${NATIVE_STDOUT_MAX_BYTES} bytes.`);
+          failureOrigins.set(error, 'stdout_limit');
+          throw error;
         }
         stdoutChunks.push(Buffer.from(chunk));
       }
@@ -838,14 +856,19 @@ async function runWorkerShimImplementation(
           throw new Error('Runtime environment credential materialization is invalid.');
         }
       }
-      processPromise = (options.runner ?? new ChildProcessWorkerProcessRunner()).run({
-        argv: launchPlan.argv,
-        cwd,
-        env: launchPlan.environment,
-        onStart: () => acknowledgeProcessStart?.(),
-        signal: workerAbortController.signal,
-        ...(launchPlan.captureStdout || launchPlan.writeStdout ? { writeStdout } : {}),
-      });
+      processPromise = (options.runner ?? new ChildProcessWorkerProcessRunner())
+        .run({
+          argv: launchPlan.argv,
+          cwd,
+          env: launchPlan.environment,
+          onStart: () => acknowledgeProcessStart?.(),
+          signal: workerAbortController.signal,
+          ...(launchPlan.captureStdout || launchPlan.writeStdout ? { writeStdout } : {}),
+        })
+        .catch((error: unknown) => {
+          if (!failureOrigins.has(error)) failureOrigins.set(error, 'native_process');
+          throw error;
+        });
       await Promise.race([
         processStart,
         processPromise.then(
@@ -856,13 +879,18 @@ async function runWorkerShimImplementation(
       progress.stage = null;
       options.onNativeStart?.();
       session.enablePostLaunchRecovery();
-      await writer.writeAndAppendEvent({
-        data: {
-          adapter: adapterId,
-          status: 'process.started',
-        },
-        type: 'worker.ready',
-      });
+      await writer
+        .writeAndAppendEvent({
+          data: {
+            adapter: adapterId,
+            status: 'process.started',
+          },
+          type: 'worker.ready',
+        })
+        .catch((error: unknown) => {
+          if (!failureOrigins.has(error)) failureOrigins.set(error, 'ready_event');
+          throw error;
+        });
       controlPromise = runWorkerControlLoop(
         session,
         writer,
@@ -871,7 +899,10 @@ async function runWorkerShimImplementation(
         seenCommandIds,
         () => acceptsWorkerCommands,
         interruptWorker
-      );
+      ).catch((error: unknown) => {
+        if (!failureOrigins.has(error)) failureOrigins.set(error, 'worker_control');
+        throw error;
+      });
 
       result = await superviseWorkerProcess(processPromise, controlPromise, {
         workerAbortController,
@@ -879,6 +910,7 @@ async function runWorkerShimImplementation(
         controlAbortController,
       });
     } catch (error) {
+      supervisionFailureOrigin = failureOrigins.get(error) ?? 'unclassified';
       abortChildren(error);
       await processPromise?.catch(() => undefined);
       await controlPromise?.catch(() => undefined);
@@ -900,7 +932,10 @@ async function runWorkerShimImplementation(
       stdoutChunks.length > 0 ? Buffer.concat(stdoutChunks, stdoutBytes) : returnedStdout;
     if (launchPlan.captureStdout && stdout.byteLength > NATIVE_STDOUT_MAX_BYTES) {
       await launchPlan.invalidate?.();
-      throw new Error(`Native stdout exceeds ${NATIVE_STDOUT_MAX_BYTES} bytes.`);
+      const error = new Error(`Native stdout exceeds ${NATIVE_STDOUT_MAX_BYTES} bytes.`);
+      failureOrigins.set(error, 'stdout_limit');
+      observedStdoutBytes = stdout.byteLength;
+      throw error;
     }
     const nativeResult: WorkerNativeProcessResult = {
       exitCode: result.exitCode,
@@ -1018,6 +1053,16 @@ async function runWorkerShimImplementation(
     if (!terminalOutcomeAttempted) {
       terminalOutcomeAttempted = true;
       await writeAndReportTerminalOutcome(writer, workerControlReady ? controlSession : null, {
+        ...(supervisionFailureOrigin !== null || progress.stage === null
+          ? {
+              diagnostics: {
+                failureOrigin:
+                  supervisionFailureOrigin ?? failureOrigins.get(error) ?? 'unclassified',
+                stdoutBytes: String(observedStdoutBytes),
+                stdoutLimitBytes: String(NATIVE_STDOUT_MAX_BYTES),
+              },
+            }
+          : {}),
         status: 'failed',
         stopReason: 'error',
       }).catch(() => undefined);
