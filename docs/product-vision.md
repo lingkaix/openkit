@@ -24,6 +24,8 @@ OpenKit 持久的产品护城河，是在不让自身成为垂直领域工具的
 
 OpenKit 是一个面向 `agent workflow` 的个人与小团队工作系统，目标是提供一个友好、清晰、可扩展的统一入口，让用户像管理真实团队一样管理 agents。
 
+OpenKit 是一个 `agent-native` 系统：agent 能力是平台建设的基础与前提，而不是平台功能中的一项。传统软件、系统和平台把 agent 或 AI 功能当作其中一部分；OpenKit 则不同，去掉 agents，它无论在产品设计上还是在运转与使用上都不成立。因此，OpenKit 的每一项功能和接口都首先以 agent 的使用方式来思考与设计，作为 teammates 的 agents 应当能像调用一个 tool 那样自然、容易地使用它。落到设计上的规范规则由 [Foundation](./core/foundation.md) 所有。
+
 它首先可以以 `SPA` 形态实现，后续再封装到 `Tauri` desktop app 中；产品重点不是自研完整 `agent runtime`，而是把成熟 runtimes 组织起来，形成轻量的 `App + Core + Agent` 体系。
 
 OpenKit 的核心价值不是“能调度 agents”本身，而是在真实工作中持续提升 human + agents 团队的协作能力，逐步优化 knowledge、context supply、agent configuration、skills 和 handoff patterns。
