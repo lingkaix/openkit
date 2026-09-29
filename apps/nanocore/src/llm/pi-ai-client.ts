@@ -539,7 +539,11 @@ export class PiAiGatewayClient {
           : undefined;
       const pairModel = exact ?? stripped;
 
-      if (!pairModel && providerId === 'openai-codex' && provider.models.includes(modelId)) {
+      if (
+        !pairModel &&
+        (providerId === 'openai-codex' || providerId === 'xai') &&
+        provider.models.includes(modelId)
+      ) {
         const pairProvider = models.getProvider(providerId);
         const effective = resolveEffectiveModelMetadata(metadataProfile(provider), modelId);
         if (pairProvider?.baseUrl && effective.limit?.context) {
@@ -549,7 +553,7 @@ export class PiAiGatewayClient {
             provider,
             modelId,
             {
-              api: 'openai-codex-responses',
+              api: providerId === 'openai-codex' ? 'openai-codex-responses' : 'openai-completions',
               baseUrl: pairProvider.baseUrl,
               contextWindow: effective.limit.context,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

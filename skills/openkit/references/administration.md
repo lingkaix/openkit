@@ -116,6 +116,8 @@ Web administrators can use **Settings → Vault backend**, unlock if needed, sel
 
 Keep upstream facts in the vendored models.dev snapshot and deployment policy or missing-model metadata in `model-catalog.jsonc`. Its outer key is the exact Provider vendor (or profile ID when vendor is absent), and its inner key is the exact native model ID listed by that Provider. Effective leaves compose snapshot, extension, then profile; remove superseded profile leaves when centralizing limits, or they will continue to override the extension. No subscription-family cap overrides the composed context. Preserve subscription slot bindings and API-key references. Validate the complete candidate, inspect revision-checked writes, and honor the returned restart requirement; a stored file alone is not evidence of active metadata. Check that logical-model compaction threshold plus its output reserve fits the effective context, then verify a bounded real request and its recorded route.
 
+Explicitly configured Codex and xAI subscription models may be newer than the bundled model inventory. Supply the exact model ID and effective context limit in the existing Provider/catalog configuration; dispatch keeps the selected account slot and its authenticated transport, and unknown pricing remains unknown. Catalog presence alone does not prove inference.
+
 Internal Chat and administration or Goal planning calls use the selected subscription model through the same Gateway. A connected account or a successful quota read alone does not prove inference: confirm a completed answer and its actual Gateway usage. Private session attribution belongs to OpenKit dispatch context, not an extra provider-native request field.
 
 ## Inspect subscription quota and costs

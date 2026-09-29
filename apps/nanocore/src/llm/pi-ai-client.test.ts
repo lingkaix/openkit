@@ -1070,6 +1070,113 @@ describe('PiAiGatewayClient', () => {
     ).rejects.toThrow('does not expose model');
   });
 
+  it.each([
+    'grok-4.7',
+    'xai/grok-4.7',
+  ])('dispatches configured uncatalogued xAI model %s through its authenticated pair', async (modelId) => {
+    const stock = xaiProvider();
+    expect(stock.getModels().some((model) => model.id === 'grok-4.7')).toBe(false);
+    const credential: OAuthCredential = {
+      type: 'oauth',
+      access: 'work-pair-access',
+      refresh: 'work-pair-refresh',
+      expires: Date.now() + 3_600_000,
+    };
+    const read = vi.fn(async (providerId: string) =>
+      providerId === 'xai' ? credential : undefined
+    );
+    const credentials: CredentialStore = {
+      async list() {
+        return [{ providerId: 'xai', type: 'oauth' }];
+      },
+      read,
+      async modify() {
+        throw new Error('The unexpired test credential must not refresh.');
+      },
+      async delete() {},
+    };
+    let seenModel: Model<string> | undefined;
+    let seenOptions: StreamOptions | undefined;
+    const faux = fauxProvider({
+      api: 'openai-completions',
+      provider: 'xai',
+      models: [{ id: 'grok-4.3' }],
+    });
+    const pairModels = createModels({ credentials });
+    pairModels.setProvider({
+      ...faux.provider,
+      baseUrl: stock.baseUrl,
+      auth: { oauth: stock.auth.oauth! },
+    });
+    const originalModels = structuredClone(pairModels.getModels('xai'));
+    faux.setResponses([
+      (_context, options, _state, model) => {
+        seenModel = model;
+        seenOptions = options;
+        return fauxAssistantMessage('Grok response');
+      },
+    ]);
+    const config = providerConfig({
+      accountSlotId: 'work',
+      adapterId: 'xai',
+      subscriptionProviderId: 'xai',
+      id: 'xai-work',
+      apiKey: null,
+      requiresApiKey: false,
+      models: [modelId],
+      modelMetadata: {
+        [modelId]: {
+          limit: { context: 360_000 },
+          reasoning: true,
+          modalities: { input: ['text', 'image'], output: ['text'] },
+        },
+      },
+    });
+    const request = { messages: [{ content: 'Hello', role: 'user' as const }], model: modelId };
+    const observed: unknown[] = [];
+    const client = new PiAiGatewayClient();
+    const response = await client.createChatCompletion(
+      config,
+      request,
+      (usage) => observed.push(usage),
+      {},
+      pairModels
+    );
+
+    expect(response.choices[0]?.message.content).toBe('Grok response');
+    expect(seenModel).toMatchObject({
+      id: 'grok-4.7',
+      provider: 'xai',
+      api: 'openai-completions',
+      baseUrl: stock.baseUrl,
+      contextWindow: 360_000,
+      reasoning: true,
+      input: ['text', 'image'],
+    });
+    expect(seenOptions?.apiKey).toBe('work-pair-access');
+    expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
+    expect(pairModels.getModels('xai')).toEqual(originalModels);
+    expect(pairModels.getModel('xai', 'grok-4.7')).toBeUndefined();
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).not.toHaveProperty('cost');
+
+    await expect(
+      client.createChatCompletion({ ...config, models: [] }, request, undefined, {}, pairModels)
+    ).rejects.toThrow('does not expose model');
+    await expect(
+      client.createChatCompletion(
+        { ...config, modelMetadata: {} },
+        request,
+        undefined,
+        {},
+        pairModels
+      )
+    ).rejects.toThrow('does not expose model');
+    await expect(
+      client.createChatCompletion(config, request, undefined, {}, createModels())
+    ).rejects.toThrow('does not expose model');
+  });
+
   it('clones a subscription pair model without mutating nested pair objects', async () => {
     const nestedCost = { cacheRead: 0.1, cacheWrite: 1, input: 1, output: 2 };
     const nestedInput: Array<'text'> = ['text'];
