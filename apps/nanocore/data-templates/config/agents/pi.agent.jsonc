@@ -5,7 +5,7 @@
   "displayName": "Pi Agent",
   "readiness": {
     "status": "disabled",
-    "message": "Pi 0.85.1 requires a direct Provider route and is disabled until its adapter supports the Gateway relay."
+    "message": "Pi 0.85.1 remains disabled until a live bounded inference Turn proves its Gateway route."
   },
   "runtime": {
     "kind": "pi",
@@ -34,7 +34,7 @@
     ]
   },
   "models": {
-    "preferredLogicalModelId": "claude",
+    "preferredLogicalModelId": "grok",
     "allowedLogicalModelIds": "all"
   },
   "profiles": [
@@ -124,7 +124,7 @@
     "backend": {
       "allowedKinds": ["openshell"],
       "preferred": "openshell",
-      "requiredCapabilities": []
+      "requiredCapabilities": ["trusted-worker-inference-relay"]
     }
   },
   "extensions": {}

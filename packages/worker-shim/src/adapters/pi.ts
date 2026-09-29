@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   WorkerAdapter,
@@ -12,10 +14,8 @@ import {
   runtimeToolName,
 } from '../runtime-capture.js';
 
-/** Exact resolved provider instance preserved as upstream authority. */
-const PI_PROVIDER_INSTANCE = 'anthropic';
-/** Exact model supported by the pinned Pi image. */
-const PI_MODEL = 'claude-sonnet-4-5';
+/** Pi-native alias for the sole admitted internal inference route. */
+const PI_PROVIDER_INSTANCE = 'openkit-worker-inference';
 /** Pi assistant-message subset needed for terminal correlation. */
 interface PiAssistantMessage extends Record<string, unknown> {
   /** Native message content blocks. */
@@ -35,24 +35,57 @@ interface PiAssistantMessage extends Record<string, unknown> {
  *
  * @param input Resolved adapter input.
  * @returns Native Pi launch plan.
- * @throws Error when the route is not the accepted legacy direct provider pair.
+ * @throws Error when the route or effective model parameters cannot be represented by Pi.
  */
 async function preparePi(input: WorkerAdapterPrepareInput) {
   const route = input.llmRoute;
-  const credential = input.childEnvironment.ANTHROPIC_API_KEY;
-  const supported =
-    route.credentialVisibility === 'environment' &&
-    route.endpoint.kind === 'provider-compatible' &&
-    route.endpoint.upstream?.kind === 'direct-provider' &&
-    route.endpoint.workerBaseUrl === undefined &&
-    route.providerInstanceId === PI_PROVIDER_INSTANCE &&
-    route.model === PI_MODEL &&
-    Boolean(credential) &&
-    !input.childEnvironment.OPENKIT_WORKER_INFERENCE_TOKEN;
-
-  if (!supported) {
-    throw new Error('Unsupported Pi provider route.');
+  const parameters = route.modelParameters;
+  if (
+    route.credentialVisibility !== 'placeholder' ||
+    route.endpoint.kind !== 'openai-compatible' ||
+    route.endpoint.upstream?.kind !== 'nanocore-gateway' ||
+    route.endpoint.workerBaseUrl !== undefined ||
+    !route.model ||
+    !input.childEnvironment.OPENKIT_WORKER_INFERENCE_TOKEN ||
+    !parameters ||
+    !Number.isSafeInteger(parameters.contextWindow) ||
+    parameters.contextWindow <= 0 ||
+    !Number.isSafeInteger(parameters.maxOutputTokens) ||
+    parameters.maxOutputTokens <= 0 ||
+    parameters.maxOutputTokens > parameters.contextWindow ||
+    typeof parameters.reasoning !== 'boolean' ||
+    !Array.isArray(parameters.inputModalities) ||
+    !parameters.inputModalities.includes('text') ||
+    parameters.inputModalities.some((value) => value !== 'text' && value !== 'image')
+  ) {
+    throw new Error('Unsupported Pi provider route or model parameters.');
   }
+  // Existing Turn-control cleanup owns this directory; retained native files are never loaded.
+  const turnRoot = input.nativeTurnDirectory ?? input.controlRoot;
+  await mkdir(turnRoot, { recursive: true });
+  const configRoot = await mkdtemp(join(turnRoot, 'pi-'));
+  await writeFile(
+    join(configRoot, 'models.json'),
+    JSON.stringify({
+      providers: {
+        [PI_PROVIDER_INSTANCE]: {
+          baseUrl: 'http://127.0.0.1:17892/inference/v1',
+          api: 'openai-completions',
+          apiKey: '$OPENKIT_WORKER_INFERENCE_TOKEN',
+          models: [
+            {
+              id: route.model,
+              contextWindow: parameters.contextWindow,
+              maxTokens: parameters.maxOutputTokens,
+              input: parameters.inputModalities,
+              reasoning: parameters.reasoning,
+            },
+          ],
+        },
+      },
+    }),
+    { mode: 0o600 }
+  );
   let nativeOrigin: string | undefined;
   let messageOrdinal = 0;
   const capture = new ParentRuntimeCapture(input.runtimeCapture, async (event, emit) => {
@@ -218,7 +251,7 @@ async function preparePi(input: WorkerAdapterPrepareInput) {
       '--provider',
       PI_PROVIDER_INSTANCE,
       '--model',
-      PI_MODEL,
+      route.model,
       input.turnInput,
     ],
     captureStdout: true,
@@ -228,7 +261,7 @@ async function preparePi(input: WorkerAdapterPrepareInput) {
     suppressFailureDiagnostics: true,
     environment: {
       ...input.childEnvironment,
-      PI_CODING_AGENT_DIR: `${input.stateRoot}/pi`,
+      PI_CODING_AGENT_DIR: configRoot,
       PI_SKIP_VERSION_CHECK: '1',
       PI_TELEMETRY: '0',
     },
@@ -309,7 +342,10 @@ async function collectPi(input: {
   if (!settled || !candidate || !turnMatched || !agentMatched) {
     return failedPiResult('failed', 'pi-terminal-correlation-failed');
   }
-  if (candidate.provider !== PI_PROVIDER_INSTANCE || candidate.model !== PI_MODEL) {
+  if (
+    candidate.provider !== PI_PROVIDER_INSTANCE ||
+    candidate.model !== input.launchPlan.argv[input.launchPlan.argv.indexOf('--model') + 1]
+  ) {
     return failedPiResult('failed', 'pi-route-mismatch');
   }
 

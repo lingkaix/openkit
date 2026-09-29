@@ -6,6 +6,7 @@ This directory owns accepted-turn execution, scheduler dispatch integration, wor
 
 ## Boundaries
 
+- AEP LLM routes preserve optional complete effective `modelParameters` from the admitted setup. The producer copies no private Provider identity or current configuration lookup into this projection; incomplete or conflicting authored-route metadata stays absent, and the native adapter owns whether that absence prevents launch.
 - Scheduler records and capacity transitions live in `../scheduler-records.ts`; runtime code consumes that owner instead of duplicating lease state.
 - Product turn HTTP ownership lives in `../turn-routes.ts`; `product-turn-start.ts` owns scheduler admission and dispatch after route validation.
 - `goal-intent.ts` retains each same-Goal objective revision as a user Item and updates the Goal's current intent and affected-Task hold. Running worker Turns remain pinned to their admitted Task and are interrupted when held; an uncertain stop remains an inspectable recovery boundary.

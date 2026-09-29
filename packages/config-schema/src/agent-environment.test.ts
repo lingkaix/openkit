@@ -1055,6 +1055,41 @@ describe('agent environment package schema', () => {
     ).toBe(false);
   });
 
+  it('accepts optional strict model parameters with the full canonical modality vocabulary', () => {
+    const llm = (openshellPackageFixture() as Record<string, unknown>).llm as {
+      routes: Record<string, unknown>[];
+    };
+    const modelParameters = {
+      contextWindow: 128_000,
+      maxOutputTokens: 16_000,
+      inputModalities: ['text', 'image', 'audio', 'video', 'pdf'],
+      reasoning: false,
+    };
+    const parsed = AgentEnvironmentLlmSchema.safeParse({
+      ...llm,
+      routes: [{ ...llm.routes[0], modelParameters }],
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw parsed.error;
+    expect(parsed.data.routes[0]).toHaveProperty('modelParameters', modelParameters);
+    expect(AgentEnvironmentLlmSchema.safeParse(llm).success).toBe(true);
+
+    for (const invalid of [
+      { ...modelParameters, contextWindow: 0 },
+      { ...modelParameters, maxOutputTokens: 1.5 },
+      { ...modelParameters, inputModalities: ['unknown'] },
+      { ...modelParameters, reasoning: undefined },
+      { ...modelParameters, cost: 0 },
+    ]) {
+      expect(
+        AgentEnvironmentLlmSchema.safeParse({
+          ...llm,
+          routes: [{ ...llm.routes[0], modelParameters: invalid }],
+        }).success
+      ).toBe(false);
+    }
+  });
+
   it('requires a nonempty uniquely identified resolved LLM route list', () => {
     const llm = (openshellPackageFixture() as Record<string, unknown>).llm as {
       routes: unknown[];

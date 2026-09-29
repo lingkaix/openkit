@@ -471,6 +471,91 @@ describe('worker shim CLI parsing', () => {
     expect(runner.calls).toHaveLength(expectedRunnerCalls);
   });
 
+  it.each([
+    0,
+    1,
+    'interrupted',
+  ])('projects Pi model parameters and cleans temporary configuration after exit %s', async (exitCode) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-pi-shim-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const stateRoot = join(sessionDir, 'retained');
+    mkdirSync(stateRoot);
+    writeRawFileSync(join(stateRoot, 'keep'), 'retained-native-data');
+    const parameters = {
+      contextWindow: 360000,
+      maxOutputTokens: 32000,
+      inputModalities: ['text', 'image'],
+      reasoning: true,
+    };
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: { adapter: { kind: 'openkit-worker-shim', targetRuntime: 'pi' } },
+        extensions: { openkit: { turnInput: 'Use the admitted route.' } },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: 'grok',
+          routes: [{ ...workerLlmRoute(), model: 'grok', modelParameters: parameters }],
+        },
+        runtime: { command: { workingDirectory: sessionDir } },
+      })
+    );
+    const message = {
+      role: 'assistant',
+      stopReason: 'stop',
+      provider: 'openkit-worker-inference',
+      model: 'grok',
+      content: [{ type: 'text', text: 'verified' }],
+    };
+    const stdout = [
+      { type: 'message_end', message },
+      { type: 'turn_end', message },
+      { type: 'agent_end', messages: [message], willRetry: false },
+      { type: 'agent_settled' },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+    const controller = new AbortController();
+    let configRoot = '';
+    const runner = new FakeWorkerProcessRunner(
+      {
+        exitCode: exitCode === 'interrupted' ? null : exitCode,
+        signal: exitCode === 'interrupted' ? 'SIGTERM' : null,
+        stderr: '',
+        stdout,
+      },
+      () => {
+        if (exitCode === 'interrupted') controller.abort();
+        configRoot = runner.calls[0]!.env.PI_CODING_AGENT_DIR!;
+        const config = JSON.parse(readFileSync(join(configRoot, 'models.json'), 'utf8'));
+        expect(config.providers['openkit-worker-inference'].models[0]).toMatchObject({
+          id: 'grok',
+          contextWindow: 360000,
+          maxTokens: 32000,
+        });
+      }
+    );
+    const result = await runWorkerShim({
+      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: workerShimEnvironment(),
+      sessionStateRoot: stateRoot,
+      nativeTurnDirectory: join(sessionDir, 'turn-private'),
+      fetch: async (url) => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
+      }),
+      runner,
+      signal: controller.signal,
+    });
+    expect(result.status).toBe(
+      exitCode === 'interrupted' ? 'interrupted' : exitCode === 0 ? 'completed' : 'failed'
+    );
+    expect(configRoot).not.toBe('');
+    expect(existsSync(configRoot)).toBe(false);
+    expect(readFileSync(join(stateRoot, 'keep'), 'utf8')).toBe('retained-native-data');
+  });
+
   it('selects the preferred route from a multi-route Gateway package', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-preferred-route-'));
     const packagePath = join(sessionDir, 'package.json');

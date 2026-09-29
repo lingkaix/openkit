@@ -1817,6 +1817,9 @@ function resolveWorkerLlmRoute(packageManifest: WorkerShimPackageManifest): Work
     },
     id: route.id,
     model: route.model,
+    ...(route.modelParameters !== undefined
+      ? { modelParameters: route.modelParameters as WorkerAdapterLlmRoute['modelParameters'] }
+      : {}),
     providerInstanceId: route.providerInstanceId,
   };
 }

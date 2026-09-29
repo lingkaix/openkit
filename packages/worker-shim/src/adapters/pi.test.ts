@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type WorkerObservationData, WorkerObservationDataSchema } from '@openkit/worker-protocol';
@@ -22,19 +22,25 @@ function piInput(): WorkerAdapterPrepareInput {
       emit: async () => undefined,
     },
     childEnvironment: {
-      ANTHROPIC_API_KEY: 'provider-credential-value',
+      OPENKIT_WORKER_INFERENCE_TOKEN: 'inference-credential-value',
       PATH: process.env.PATH ?? '',
     },
     controlRoot: join(root, 'control'),
     llmRoute: {
-      credentialVisibility: 'environment',
+      credentialVisibility: 'placeholder',
       endpoint: {
-        kind: 'provider-compatible',
-        upstream: { kind: 'direct-provider' },
+        kind: 'openai-compatible',
+        upstream: { kind: 'nanocore-gateway' },
       },
       id: 'worker-inference',
-      model: 'claude-sonnet-4-5',
-      providerInstanceId: 'anthropic',
+      model: 'grok',
+      providerInstanceId: 'gateway',
+      modelParameters: {
+        contextWindow: 360000,
+        maxOutputTokens: 32000,
+        inputModalities: ['text', 'image'],
+        reasoning: true,
+      },
     },
     sessionDirectory: join(root, 'session'),
     stateRoot: join(root, 'state'),
@@ -76,14 +82,14 @@ function nativeResult(
  */
 function assistantMessage(stopReason = 'stop'): Record<string, unknown> {
   return {
-    api: 'anthropic-messages',
+    api: 'openai-completions',
     content: [
       { text: ' First', type: 'text' },
       { thinking: 'not final output', type: 'thinking' },
       { text: ' answer. ', type: 'text' },
     ],
-    model: 'claude-sonnet-4-5',
-    provider: 'anthropic',
+    model: 'grok',
+    provider: 'openkit-worker-inference',
     role: 'assistant',
     stopReason,
     timestamp: 1,
@@ -114,6 +120,35 @@ function settledEvents(message: Record<string, unknown>): Array<Record<string, u
 }
 
 describe('Pi worker adapter', () => {
+  it('projects only the admitted Gateway model into ephemeral native configuration', async () => {
+    const input = piInput();
+    const retained = join(input.stateRoot, 'pi');
+    mkdirSync(retained, { recursive: true });
+    writeFileSync(join(retained, 'models.json'), '{"retained":"unchanged"}');
+    const plan = await piAdapter.prepare({
+      ...input,
+      childEnvironment: { OPENKIT_WORKER_INFERENCE_TOKEN: 'private-inference-canary' },
+      llmRoute: {
+        ...input.llmRoute,
+        credentialVisibility: 'placeholder',
+        endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+        model: 'grok',
+        providerInstanceId: 'gateway',
+      },
+    });
+    const configRoot = plan.environment.PI_CODING_AGENT_DIR!;
+    expect(configRoot).not.toContain(input.stateRoot);
+    const configBytes = readFileSync(join(configRoot, 'models.json'), 'utf8');
+    expect(configBytes).not.toContain('private-inference-canary');
+    expect(configBytes).toContain('$OPENKIT_WORKER_INFERENCE_TOKEN');
+    expect(JSON.parse(configBytes).providers['openkit-worker-inference']).toMatchObject({
+      baseUrl: 'http://127.0.0.1:17892/inference/v1',
+      api: 'openai-completions',
+      models: [{ id: 'grok' }],
+    });
+    expect(readFileSync(join(retained, 'models.json'), 'utf8')).toBe('{"retained":"unchanged"}');
+  });
+
   it.each([
     'on',
     'off',
@@ -195,21 +230,21 @@ describe('Pi worker adapter', () => {
       '--no-context-files',
       '--offline',
       '--provider',
-      'anthropic',
+      'openkit-worker-inference',
       '--model',
-      'claude-sonnet-4-5',
+      'grok',
       input.turnInput,
     ]);
     expect(plan.captureStdout).toBe(true);
     expect(plan.environment).toMatchObject({
-      ANTHROPIC_API_KEY: 'provider-credential-value',
+      OPENKIT_WORKER_INFERENCE_TOKEN: 'inference-credential-value',
       PI_SKIP_VERSION_CHECK: '1',
       PI_TELEMETRY: '0',
     });
     expect(plan.environment).not.toHaveProperty('OPENAI_API_KEY');
     expect(plan.environment).not.toHaveProperty('OPENAI_BASE_URL');
-    expect(plan.environment).not.toHaveProperty('OPENKIT_WORKER_INFERENCE_TOKEN');
-    expect(plan.environment.PI_CODING_AGENT_DIR).toContain(input.stateRoot);
+    expect(plan.environment).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(plan.environment.PI_CODING_AGENT_DIR).toContain(input.controlRoot);
     expect(plan.argv).not.toContain('openshell-placeholder-value');
     expect(plan.argv).not.toContain('--api-key');
     expect(plan).not.toHaveProperty('configArtifacts');
@@ -217,62 +252,108 @@ describe('Pi worker adapter', () => {
 
   it.each([
     {
+      name: 'environment credential visibility',
       change: (input: WorkerAdapterPrepareInput) => ({
         ...input,
-        llmRoute: { ...input.llmRoute, model: 'unproved-model' },
+        llmRoute: { ...input.llmRoute, credentialVisibility: 'environment' as const },
       }),
-      name: 'an unproved provider and model pair',
     },
     {
+      name: 'non-Gateway upstream',
       change: (input: WorkerAdapterPrepareInput) => ({
         ...input,
-        childEnvironment: { PATH: process.env.PATH ?? '' },
-      }),
-      name: 'a missing direct-provider credential',
-    },
-    {
-      change: (input: WorkerAdapterPrepareInput) => ({
-        ...input,
-        childEnvironment: {
-          OPENAI_API_KEY: 'wrong-provider-credential',
-          PATH: process.env.PATH ?? '',
-        },
-      }),
-      name: 'the wrong direct provider credential',
-    },
-    {
-      change: (input: WorkerAdapterPrepareInput) => ({
-        ...input,
-        childEnvironment: {
-          ANTHROPIC_API_KEY: 'provider-credential-value',
-          OPENKIT_WORKER_INFERENCE_TOKEN: 'extra-relay-authority',
-          PATH: process.env.PATH ?? '',
-        },
-      }),
-      name: 'extra relay authority on the direct-provider route',
-    },
-    {
-      change: (input: WorkerAdapterPrepareInput) => ({
-        ...input,
-        childEnvironment: {
-          OPENKIT_WORKER_INFERENCE_TOKEN: 'relay-placeholder',
-          PATH: process.env.PATH ?? '',
-        },
         llmRoute: {
-          credentialVisibility: 'placeholder' as const,
+          ...input.llmRoute,
           endpoint: {
             kind: 'openai-compatible' as const,
-            upstream: { kind: 'nanocore-gateway' as const },
+            upstream: { kind: 'backend-local' as const },
           },
-          id: 'worker-inference',
-          model: 'claude-sonnet-4-5',
-          providerInstanceId: 'anthropic',
         },
       }),
-      name: 'placeholder NanoCore-gateway authority',
+    },
+    ...[
+      { contextWindow: 0 },
+      { maxOutputTokens: -1 },
+      { maxOutputTokens: 360001 },
+      { reasoning: undefined },
+      { inputModalities: ['image'] },
+      { inputModalities: ['text', 'audio'] },
+      { inputModalities: ['text', 'video'] },
+      { inputModalities: ['text', 'pdf'] },
+    ].map((change) => ({
+      name: `unsupported model parameters ${JSON.stringify(change)}`,
+      change: (input: WorkerAdapterPrepareInput) => ({
+        ...input,
+        llmRoute: {
+          ...input.llmRoute,
+          modelParameters: {
+            ...input.llmRoute.modelParameters,
+            ...change,
+          } as WorkerAdapterPrepareInput['llmRoute']['modelParameters'],
+        },
+      }),
+    })),
+    {
+      name: 'direct provider authority',
+      change: (input: WorkerAdapterPrepareInput) => ({
+        ...input,
+        llmRoute: {
+          ...input.llmRoute,
+          endpoint: {
+            kind: 'provider-compatible' as const,
+            upstream: { kind: 'direct-provider' as const },
+          },
+        },
+      }),
+    },
+    {
+      name: 'missing inference credential',
+      change: (input: WorkerAdapterPrepareInput) => ({ ...input, childEnvironment: {} }),
+    },
+    {
+      name: 'missing effective model parameters',
+      change: (input: WorkerAdapterPrepareInput) => ({
+        ...input,
+        llmRoute: { ...input.llmRoute, modelParameters: undefined },
+      }),
+    },
+    {
+      name: 'caller endpoint',
+      change: (input: WorkerAdapterPrepareInput) => ({
+        ...input,
+        llmRoute: {
+          ...input.llmRoute,
+          endpoint: { ...input.llmRoute.endpoint, workerBaseUrl: 'https://other.invalid' },
+        },
+      }),
     },
   ])('rejects $name before launch', async ({ change }) => {
     await expect(piAdapter.prepare(change(piInput()))).rejects.toThrow(/unsupported/i);
+  });
+
+  it('creates fresh configuration per attempt and preserves admitted non-default model identity', async () => {
+    const base = piInput();
+    const input = { ...base, llmRoute: { ...base.llmRoute, model: 'other-logical-model' } };
+    const first = await piAdapter.prepare(input);
+    const next = await piAdapter.prepare(input);
+    expect(next.environment.PI_CODING_AGENT_DIR).not.toBe(first.environment.PI_CODING_AGENT_DIR);
+    const message = { ...assistantMessage(), model: 'other-logical-model' };
+    await expect(
+      piAdapter.collect({ launchPlan: next, processResult: nativeResult(settledEvents(message)) })
+    ).resolves.toMatchObject({ status: 'completed' });
+    await expect(
+      piAdapter.collect({
+        launchPlan: next,
+        processResult: nativeResult(settledEvents(assistantMessage())),
+      })
+    ).resolves.toMatchObject({ status: 'failed', stopReason: 'pi-route-mismatch' });
+  });
+
+  it('fails preparation when the ephemeral directory cannot be written', async () => {
+    const input = piInput();
+    writeFileSync(input.controlRoot, 'occupied');
+    await expect(piAdapter.prepare(input)).rejects.toThrow();
+    expect(readFileSync(input.controlRoot, 'utf8')).toBe('occupied');
   });
 
   it('accepts ordered text only after exact final settlement correlation', async () => {

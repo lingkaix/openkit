@@ -694,6 +694,7 @@ function resolveOpenShellAgentEnvironmentPackage(
         },
         id: logicalModel.id,
         model: logicalModel.id,
+        ...(logicalModel.modelParameters ? { modelParameters: logicalModel.modelParameters } : {}),
         providerInstanceId: workerProviderId,
       })),
     },

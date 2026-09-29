@@ -311,8 +311,7 @@ RUN export HOME=/tmp/pi-home \
     XDG_STATE_HOME=/tmp/pi-state \
   && npm install --global --omit=dev --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
   && pi --version \
-  && rm -rf /tmp/npm-cache /tmp/pi-agent /tmp/pi-cache /tmp/pi-config /tmp/pi-data /tmp/pi-home /tmp/pi-state \
-  && touch /usr/local/lib/openkit/allow-anthropic-api-key
+  && rm -rf /tmp/npm-cache /tmp/pi-agent /tmp/pi-cache /tmp/pi-config /tmp/pi-data /tmp/pi-home /tmp/pi-state
 
 COPY containers/worker-pi/smoke.sh /usr/local/bin/openkit-worker-pi-smoke
 

@@ -44,4 +44,6 @@ Synthetic text and reasoning item ids use one UUID namespace per response, share
 
 Deployment extension metadata reaches the shared resolver through loaded Provider metadata. Snapshot → extension → profile leaf precedence applies equally to Gateway contracts and request-local adapter models. Missing context still fails closed; the resolver does not impose a second context cap.
 
+The logical-model resolver carries optional complete `modelParameters` into admitted worker supply only when every authored route agrees on effective context, output, input modalities and reasoning. Missing or conflicting leaves omit the projection without changing ordinary Gateway eligibility. Explicit false and the complete canonical modality vocabulary remain intact; adapters decide whether they can consume the admitted parameters.
+
 The xAI observation preserves missing usage, explicit zero, actual current periods, and optional signed USD-cent balances. Successful same-call user discovery may remain visible when billing fails. Auto-top-up requires its own bounded discovery and rule request, never a payment-method inference or billing mutation. All reads remain deployment-admin and pair-scoped; the Skill and Web use the same public schemas.

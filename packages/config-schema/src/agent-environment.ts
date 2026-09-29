@@ -957,6 +957,21 @@ export const AgentEnvironmentLlmEndpointSchema = z
   })
   .strict();
 
+/** Complete effective model parameters projected from admitted logical-model supply. */
+export const AgentEnvironmentLlmModelParametersSchema = z
+  .object({
+    contextWindow: z.number().int().positive(),
+    maxOutputTokens: z.number().int().positive(),
+    inputModalities: z.array(z.enum(['audio', 'image', 'pdf', 'text', 'video'])),
+    reasoning: z.boolean(),
+  })
+  .strict();
+
+/** Complete, secret-free native model descriptor inputs; absence grants no defaults. */
+export type AgentEnvironmentLlmModelParameters = z.infer<
+  typeof AgentEnvironmentLlmModelParametersSchema
+>;
+
 /**
  * One worker-visible LLM route.
  */
@@ -967,6 +982,7 @@ export const AgentEnvironmentLlmRouteSchema = z
     model: z.string().min(1),
     endpoint: AgentEnvironmentLlmEndpointSchema,
     credentialVisibility: z.enum(['none', 'placeholder', 'environment']).default('none'),
+    modelParameters: AgentEnvironmentLlmModelParametersSchema.optional(),
   })
   .strict();
 

@@ -28,6 +28,15 @@ export interface WorkerAdapterLlmRoute {
   readonly id: string;
   /** Exact resolved model id. */
   readonly model: string;
+  /** Effective native model parameters projected by NanoCore, absent on older packages. */
+  readonly modelParameters?:
+    | {
+        readonly contextWindow: number;
+        readonly maxOutputTokens: number;
+        readonly inputModalities: readonly ('text' | 'image' | 'audio' | 'video' | 'pdf')[];
+        readonly reasoning: boolean;
+      }
+    | undefined;
   /** NanoCore provider instance evidence id. */
   readonly providerInstanceId: string;
 }

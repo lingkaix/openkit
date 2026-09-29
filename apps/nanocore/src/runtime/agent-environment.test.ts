@@ -339,6 +339,78 @@ describe('agent environment package resolver', () => {
     expect(resolved.scope).not.toHaveProperty('organizationId');
   });
 
+  it.each([
+    true,
+    false,
+  ])('projects complete admitted model parameters into the AEP: %s', (complete) => {
+    const setupResult = resolveAgentSetup(createTestSetup().manifest, {
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'reasoning',
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'private-provider',
+                providerModel: 'private-model',
+              },
+            ],
+          },
+        ],
+      },
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'private-provider',
+          displayName: 'Private Provider',
+          kind: 'custom',
+          baseUrl: 'https://private.example/v1',
+          models: ['private-model'],
+          modelMetadata: {
+            'private-model': complete
+              ? {
+                  limit: { context: 128_000, output: 16_000 },
+                  modalities: { input: ['text', 'audio', 'pdf'] },
+                  reasoning: false,
+                }
+              : { limit: { context: 128_000 } },
+          },
+        },
+      ]),
+    });
+    expect(setupResult.diagnostics).toEqual([]);
+    if (!setupResult.setup) throw new Error('Expected admitted model setup.');
+    const resolved = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSetup: setupResult.setup,
+      agentSessionId: 'session_parameters',
+      backend: { kind: 'openshell' },
+      turn: createTurnFixture('Use admitted model parameters'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    });
+    const serialized = JSON.parse(JSON.stringify(resolved));
+    const route = serialized.llm.routes[0];
+    expect(route.model).toBe('reasoning');
+    expect(JSON.stringify(route)).not.toContain('private-provider');
+    expect(JSON.stringify(route)).not.toContain('private-model');
+    expect(JSON.stringify(route)).not.toContain('private.example');
+    if (complete) {
+      expect(route.modelParameters).toEqual({
+        contextWindow: 128_000,
+        maxOutputTokens: 16_000,
+        inputModalities: ['text', 'audio', 'pdf'],
+        reasoning: false,
+      });
+    } else {
+      expect(route).not.toHaveProperty('modelParameters');
+    }
+  });
+
   it('projects one resolved opaque manifest into the generic relay launch contract', () => {
     const turn = createTurnFixture('Run the opaque worker');
     const setupResult = resolveAgentSetup(createTestSetup({ adapter: 'future-adapter' }).manifest, {

@@ -57,6 +57,108 @@ function gateway(input: {
 }
 
 describe('resolveLogicalModelCatalog', () => {
+  it('projects complete effective model parameters without filtering modalities or replacing false', () => {
+    const metadata = {
+      limit: { context: 128_000, output: 16_000 },
+      modalities: { input: ['text', 'image', 'audio', 'video', 'pdf'] },
+      reasoning: false,
+    };
+    const provider = profile({
+      baseUrl: 'https://orca.example/v1',
+      id: 'orca-custom',
+      models: ['handwritten/local-flash'],
+      modelMetadata: { 'handwritten/local-flash': metadata },
+    });
+    const [model] = resolveLogicalModelCatalog(
+      gateway({
+        routes: [
+          { id: 'primary', providerProfileId: provider.id, providerModel: provider.models[0]! },
+        ],
+      }),
+      new ProviderRegistry([provider])
+    );
+
+    expect(model).toHaveProperty('modelParameters', {
+      contextWindow: 128_000,
+      maxOutputTokens: 16_000,
+      inputModalities: ['text', 'image', 'audio', 'video', 'pdf'],
+      reasoning: false,
+    });
+    expect(metadata).toEqual({
+      limit: { context: 128_000, output: 16_000 },
+      modalities: { input: ['text', 'image', 'audio', 'video', 'pdf'] },
+      reasoning: false,
+    });
+  });
+
+  it.each([
+    { label: 'matching', overlay: {}, projected: true },
+    {
+      label: 'conflicting context',
+      overlay: { limit: { context: 256_000, output: 16_000 } },
+      projected: false,
+    },
+    {
+      label: 'conflicting output',
+      overlay: { limit: { context: 128_000, output: 8_000 } },
+      projected: false,
+    },
+    {
+      label: 'conflicting modalities',
+      overlay: { modalities: { input: ['text', 'image'] } },
+      projected: false,
+    },
+    { label: 'conflicting reasoning', overlay: { reasoning: true }, projected: false },
+    { label: 'missing output', overlay: { limit: { context: 128_000 } }, projected: false },
+    { label: 'missing modalities', overlay: { modalities: undefined }, projected: false },
+    { label: 'missing reasoning', overlay: { reasoning: undefined }, projected: false },
+  ])('projects only coherent model parameters across authored routes: $label', ({
+    overlay,
+    projected,
+  }) => {
+    const metadata = {
+      family: 'local-model',
+      limit: { context: 128_000, output: 16_000 },
+      modalities: { input: ['text'] },
+      reasoning: false,
+    };
+    const [model] = resolveLogicalModelCatalog(
+      gateway({
+        routes: [
+          { id: 'primary', providerProfileId: 'primary', providerModel: 'handwritten/local-flash' },
+          { id: 'blocked', providerProfileId: 'blocked', providerModel: 'handwritten/local-flash' },
+        ],
+      }),
+      new ProviderRegistry([
+        profile({
+          id: 'primary',
+          baseUrl: 'https://primary.example/v1',
+          models: ['handwritten/local-flash'],
+          modelMetadata: { 'handwritten/local-flash': metadata },
+        }),
+        profile({
+          id: 'blocked',
+          baseUrl: 'https://blocked.example/v1',
+          models: ['handwritten/local-flash'],
+          readiness: { status: 'blocked', message: 'Unavailable' },
+          modelMetadata: { 'handwritten/local-flash': { ...metadata, ...overlay } },
+        }),
+      ])
+    );
+
+    expect(model?.routes).toHaveLength(1);
+    if (projected) {
+      expect(model).toHaveProperty('modelParameters', {
+        contextWindow: 128_000,
+        maxOutputTokens: 16_000,
+        inputModalities: ['text'],
+        reasoning: false,
+      });
+    } else {
+      expect(model).not.toHaveProperty('modelParameters');
+    }
+  });
+
   it('admits a handwritten uncatalogued model on one authored route with null family', () => {
     const catalog = resolveLogicalModelCatalog(
       gateway({
@@ -122,6 +224,12 @@ describe('resolveLogicalModelCatalog', () => {
         id: 'openrouter-free',
         displayName: 'openrouter-free',
         modelFamilyId: null,
+        modelParameters: {
+          contextWindow: 1_000_000,
+          maxOutputTokens: 8_000,
+          inputModalities: ['text', 'image'],
+          reasoning: true,
+        },
         contextManagement: { type: 'compaction', compactThreshold: 8_000 },
         capabilities: [
           'attachment',

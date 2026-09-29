@@ -1,4 +1,10 @@
-import { type GatewayConfig, resolveProviderSubscriptionFamily } from '@openkit/config-schema';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  type AgentEnvironmentLlmModelParameters,
+  AgentEnvironmentLlmModelParametersSchema,
+  type GatewayConfig,
+  resolveProviderSubscriptionFamily,
+} from '@openkit/config-schema';
 import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-09-17/api.json' with {
   type: 'json',
 };
@@ -73,6 +79,8 @@ export interface ResolvedLogicalModel {
   };
   /** Catalog family when inventory names one; null when family metadata is absent. */
   readonly modelFamilyId: string | null;
+  /** Complete descriptor inputs only when every authored route has identical effective values. */
+  readonly modelParameters?: AgentEnvironmentLlmModelParameters;
   readonly routes: readonly ResolvedLogicalModelRoute[];
 }
 
@@ -128,6 +136,12 @@ export function resolveLogicalModelCatalog(
     if (eligibleRouteIndexes.length === 0) return [];
     const contracts = eligibleRouteIndexes.map(({ index }) => authoredContracts[index]!);
     const eligibleRoutes = eligibleRouteIndexes.map(({ route }) => route);
+    const modelParameters = authoredContracts[0]?.modelParameters;
+    const coherentParameters =
+      modelParameters !== undefined &&
+      authoredContracts.every((contract) =>
+        isDeepStrictEqual(contract?.modelParameters, modelParameters)
+      );
 
     return [
       {
@@ -136,6 +150,7 @@ export function resolveLogicalModelCatalog(
         capabilities: intersectCapabilities(contracts.map((contract) => contract.capabilities)),
         contextManagement,
         modelFamilyId: contracts[0]!.modelFamilyId,
+        ...(coherentParameters ? { modelParameters } : {}),
         routes: eligibleRoutes.map((route) => ({ ...route })),
       },
     ];
@@ -172,8 +187,15 @@ function modelContract(
   contextLimit: number | null;
   modelFamilyId: string | null;
   outputLimit: number | null;
+  modelParameters?: AgentEnvironmentLlmModelParameters;
 } {
   const model = resolveEffectiveModelMetadata(profile, modelId);
+  const modelParameters = AgentEnvironmentLlmModelParametersSchema.safeParse({
+    contextWindow: model.limit?.context,
+    maxOutputTokens: model.limit?.output,
+    inputModalities: model.modalities?.input,
+    reasoning: model.reasoning,
+  });
   const capabilities = new Set<string>();
   for (const modality of model.modalities?.input ?? []) capabilities.add(`input:${modality}`);
   for (const modality of model.modalities?.output ?? []) capabilities.add(`output:${modality}`);
@@ -192,6 +214,7 @@ function modelContract(
     contextLimit: model.limit?.context ?? null,
     modelFamilyId: family,
     outputLimit: model.limit?.output ?? null,
+    ...(modelParameters.success ? { modelParameters: modelParameters.data } : {}),
   };
 }
 
