@@ -1060,17 +1060,26 @@ function projectSuccessfulResult(
   if (harness.operation === 'session.close') {
     const removed = coreDb.sqlite
       .prepare(
-        'DELETE FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?'
+        `DELETE FROM agent_session_runtime_bindings
+         WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?
+         RETURNING current_turn_id AS currentTurnId`
       )
-      .run(bindingId, harness.harness_instance_id);
-    if (removed.changes !== 1) {
+      .get(bindingId, harness.harness_instance_id) as { currentTurnId: string | null } | undefined;
+    if (!removed) {
       throw new Error('NanoHost AgentSession close binding is missing.');
     }
-    coreDb.sqlite
+    // Bounded-turn cleanup closes an active binding directly; an idle sibling owns no Turn slot.
+    const releasedTurns = removed.currentTurnId === null ? 0 : 1;
+    const released = coreDb.sqlite
       .prepare(
-        'UPDATE harness_instance_records SET open_session_count = open_session_count - 1 WHERE harness_instance_id = ? AND open_session_count > 0'
+        `UPDATE harness_instance_records
+         SET open_session_count = open_session_count - 1, active_turn_count = active_turn_count - ?
+         WHERE harness_instance_id = ? AND open_session_count > 0 AND active_turn_count >= ?`
       )
-      .run(harness.harness_instance_id);
+      .run(releasedTurns, harness.harness_instance_id, releasedTurns);
+    if (released.changes !== 1) {
+      throw new Error('NanoHost AgentSession close capacity changed concurrently.');
+    }
     return;
   }
   if (harness.operation === 'turn.interrupt') {

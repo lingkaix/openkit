@@ -2,6 +2,8 @@
 
 Harness result acknowledgement retries retain the exact prior receipt while a successor operation is queued. An identical replay only returns the acknowledgement; it neither mutates the successor nor notifies its producer. Dispatching the successor clears the prior receipt, after which stale or changed results remain conflicts.
 
+Successful Harness `session.close` settles exact child and private-state absence before deleting its binding and releasing that binding's open-session occupancy and, if it still names a current Turn, one active-Turn slot in the same transaction. Closing an idle sibling preserves another binding's active occupancy; refused or unknown closure releases nothing. This also covers bounded-turn terminal cleanup, which closes directly without native `session.inspect`, under the [shared-Sandbox lifecycle owner](../../../../docs/specs/20260802-nanohost_runtime_and_transport.md#shared-sandbox-harness-topology).
+
 This directory owns accepted-turn execution, scheduler dispatch integration, worker lifecycle, runtime recovery, worker-control transport, context preparation, and runtime-specific App API feature paths.
 
 ## Boundaries

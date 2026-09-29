@@ -768,6 +768,141 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
+  it.each([1, 2])('releases only the occupancy owned by closed binding %i', (closedSession) => {
+    const coreDb = openActiveTurnDb('openkit-harness-close-occupancy-');
+    try {
+      recordFinalStatus(coreDb, 'failed', 'error');
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'c'.repeat(64),
+        agentSessionId: 'agent-session-2',
+        agentSessionRuntimeBindingId: 'agent-session-binding-2',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-2',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          agentSessionId: `agent-session-${closedSession}`,
+          agentSessionRuntimeBindingId: `agent-session-binding-${closedSession}`,
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.close',
+        timestamp: now,
+      });
+      const command = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+      });
+      const result = {
+        body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+        disposition: 'succeeded',
+        harnessInstanceId: 'harness-1',
+        operationId: command!.operationId,
+        schemaVersion: 2,
+        sequence: command!.sequence,
+      } as const;
+      expect(
+        settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result,
+          timestamp: now,
+        })
+      ).toBe('settled');
+      expect(
+        settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result,
+          timestamp: now,
+        })
+      ).toBe('replayed');
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount,
+                    operation_state AS operationState FROM harness_instance_records`
+          )
+          .get()
+      ).toEqual({
+        activeTurnCount: closedSession === 1 ? 0 : 1,
+        openSessionCount: 1,
+        operationState: 'settled',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT agent_session_id AS agentSessionId, current_turn_id AS currentTurnId,
+                    current_lease_id AS currentLeaseId FROM agent_session_runtime_bindings`
+          )
+          .all()
+      ).toEqual([
+        closedSession === 1
+          ? { agentSessionId: 'agent-session-2', currentTurnId: null, currentLeaseId: null }
+          : {
+              agentSessionId: 'agent-session-1',
+              currentTurnId: 'turn-1',
+              currentLeaseId: 'lease-1',
+            },
+      ]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'refused',
+    'unknown',
+  ] as const)('preserves active binding occupancy after %s session.close', (disposition) => {
+    const coreDb = openActiveTurnDb('openkit-harness-close-unproved-');
+    try {
+      recordFinalStatus(coreDb, 'failed', 'error');
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          agentSessionId: 'agent-session-1',
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.close',
+        timestamp: now,
+      });
+      const command = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+      });
+      settleNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result: {
+          body: {
+            reasonCode: disposition === 'unknown' ? 'outcome_unknown' : 'cleanup_required',
+          },
+          disposition,
+          harnessInstanceId: 'harness-1',
+          operationId: command!.operationId,
+          schemaVersion: 2,
+          sequence: command!.sequence,
+        },
+        timestamp: now,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount
+               FROM harness_instance_records`
+          )
+          .get()
+      ).toEqual({ activeTurnCount: 1, openSessionCount: 1 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT current_turn_id AS currentTurnId, current_lease_id AS currentLeaseId
+               FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?`
+          )
+          .get('agent-session-binding-1')
+      ).toEqual({ currentTurnId: 'turn-1', currentLeaseId: 'lease-1' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('accepts identical session.close result replay after the next session.open is queued', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-close-replay-queued-')));
     try {
@@ -1502,8 +1637,8 @@ function harnessOperation(coreDb: ReturnType<typeof openCoreDb>): {
 /** Records one accepted final status for the active fixture lineage. */
 function recordFinalStatus(
   coreDb: ReturnType<typeof openCoreDb>,
-  status: 'blocked' | 'completed',
-  stopReason: 'ask_user' | 'completed'
+  status: 'blocked' | 'completed' | 'failed',
+  stopReason: 'ask_user' | 'completed' | 'error'
 ): void {
   recordWorkerControlAcceptedRecord(coreDb, {
     acceptedAt: now,
