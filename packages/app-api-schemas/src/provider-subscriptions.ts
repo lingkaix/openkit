@@ -197,6 +197,14 @@ export const ProviderSubscriptionQuotaSchema = z.discriminatedUnion('availabilit
       retryAfter: TimestampSchema.optional(),
     })
     .strict(),
+  z
+    .object({
+      subscriptionProviderId: SubscriptionProviderIdSchema,
+      accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
+      availability: z.literal('authentication_required'),
+      observedAt: TimestampSchema,
+    })
+    .strict(),
 ]);
 
 /** Strict xAI-only auto-top-up observation. */

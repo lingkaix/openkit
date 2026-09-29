@@ -299,9 +299,8 @@ export function registerProviderSubscriptionRoutes(
       const quota = await readCodexQuota(handle.credentials);
       return ProviderSubscriptionQuotaSchema.parse({
         accountSlotId: pair.accountSlotId,
-        availability: quota ? 'available' : 'temporarily_unavailable',
         observedAt: now(),
-        ...(quota ?? {}),
+        ...(quota ?? { availability: 'temporarily_unavailable' }),
         subscriptionProviderId: pair.subscriptionProviderId,
       });
     });

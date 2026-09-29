@@ -44633,6 +44633,38 @@
               "observedAt"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subscriptionProviderId": {
+                "type": "string",
+                "enum": [
+                  "openai-codex",
+                  "xai"
+                ]
+              },
+              "accountSlotId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "availability": {
+                "type": "string",
+                "const": "authentication_required"
+              },
+              "observedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+              }
+            },
+            "required": [
+              "subscriptionProviderId",
+              "accountSlotId",
+              "availability",
+              "observedAt"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -122408,5 +122440,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:10c9b71e6638b1ad4fc1ee681995ee1a56d5f41f2f1ca3f2258631af889e2c8f"
+  "x-openkit-source-digest": "sha256:38f2c4223902a0aa1acfaedd01d4434bb0a2b5f6ea7055ecac9cf31c12574f66"
 }

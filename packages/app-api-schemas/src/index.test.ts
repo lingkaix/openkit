@@ -4651,7 +4651,7 @@ describe('app api schemas', () => {
     }
   });
 
-  it('accepts only the two provider-subscription quota dispositions', () => {
+  it('accepts only the declared provider-subscription quota dispositions', () => {
     const quotaSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionQuotaSchema') as
       | typeof AppDiagnosticsResponseSchema
       | undefined;
@@ -4746,6 +4746,20 @@ describe('app api schemas', () => {
     expect(quotaSchema.parse(availableXaiOmittedUsage)).toEqual(availableXaiOmittedUsage);
     expect(quotaSchema.parse(unavailable)).toEqual(unavailable);
     expect(quotaSchema.parse(unavailableXai)).toEqual(unavailableXai);
+    const rejected = {
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'work',
+      availability: 'authentication_required',
+      observedAt: timestamp,
+    };
+    expect(quotaSchema.parse(rejected)).toEqual(rejected);
+    for (const extra of [
+      { windows: [] },
+      { rawProviderError: 'secret' },
+      { credential: 'secret' },
+    ]) {
+      expect(quotaSchema.safeParse({ ...rejected, ...extra }).success).toBe(false);
+    }
     for (const quota of [
       unsupported,
       { ...unsupported, subscriptionProviderId: 'openai-codex' },

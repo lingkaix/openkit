@@ -286,6 +286,81 @@ beforeEach(() => {
 });
 
 describe('AI interface deployment-admin workflow', () => {
+  it('offers pair-scoped re-login when Codex rejects a saved login', async () => {
+    const user = userEvent.setup();
+    const startAccountLogin = vi.fn().mockResolvedValue(PENDING_ACCOUNT);
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts: vi.fn().mockImplementation((providerId: string) =>
+          Promise.resolve({
+            accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+          })
+        ),
+        getAccountQuota: vi.fn().mockResolvedValue({
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'primary',
+          availability: 'authentication_required',
+          observedAt: TIMESTAMP,
+        }),
+        startAccountLogin,
+      },
+    });
+    renderScreen(client);
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    expect(within(codex).getByText('Access rejected')).toBeInTheDocument();
+    expect(within(codex).getByText(/login may still be refreshable/)).toBeInTheDocument();
+    expect(within(codex).queryByText('Connected')).not.toBeInTheDocument();
+    expect(within(codex).queryByRole('meter')).not.toBeInTheDocument();
+    expect(within(codex).getByText(/Last checked/)).toBeInTheDocument();
+    await user.click(within(codex).getByRole('button', { name: 'Sign in again' }));
+    expect(startAccountLogin).toHaveBeenCalledExactlyOnceWith('openai-codex', 'primary', {
+      mode: 'device_code',
+    });
+  });
+
+  it('keeps a temporary Codex quota failure separate from rejected authentication', async () => {
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts: vi.fn().mockImplementation((providerId: string) =>
+          Promise.resolve({
+            accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+          })
+        ),
+        getAccountQuota: vi.fn().mockResolvedValue({
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'primary',
+          availability: 'temporarily_unavailable',
+          observedAt: TIMESTAMP,
+        }),
+      },
+    });
+    renderScreen(client);
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    expect(within(codex).getByText('Login saved')).toBeInTheDocument();
+    expect(within(codex).getByText('Quota query failed')).toBeInTheDocument();
+    expect(within(codex).queryByText('Access rejected')).not.toBeInTheDocument();
+    expect(within(codex).queryByRole('button', { name: 'Sign in again' })).not.toBeInTheDocument();
+  });
+
+  it('shows one percentage per quota window for Codex and xAI', async () => {
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts: vi.fn().mockImplementation((providerId: string) =>
+          Promise.resolve({
+            accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: providerId }],
+          })
+        ),
+      },
+    });
+    renderScreen(client);
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    const xai = screen.getByRole('region', { name: 'xAI' });
+    expect(within(codex).getByText('Primary 59.6% remaining')).toBeInTheDocument();
+    expect(within(codex).queryByText('40.4% used')).not.toBeInTheDocument();
+    expect(within(xai).getByText('Included 87.5% remaining')).toBeInTheDocument();
+    expect(within(xai).queryByText('12.5% used')).not.toBeInTheDocument();
+  });
+
   it('keeps account management available when one quota read fails without an observation', async () => {
     const user = userEvent.setup();
     const client = makeClient({
@@ -766,6 +841,7 @@ describe('AI interface deployment-admin workflow', () => {
           windows: [
             { id: 'primary', remainingPercent: 99.996 },
             { id: 'secondary', remainingPercent: 0.004, usedPercent: 7.1 },
+            { id: 'usage-only', usedPercent: 7.1 },
           ],
         }),
       },
@@ -895,7 +971,7 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(xai).getByText('Build subscription eligibility: eligible')).toBeInTheDocument();
     expect(within(xai).getByText(/Shared allowance/)).toBeInTheDocument();
     expect(within(xai).getByText('Included 100% remaining')).toBeInTheDocument();
-    expect(within(xai).getByText('0% used')).toBeInTheDocument();
+    expect(within(xai).queryByText('0% used')).not.toBeInTheDocument();
     expect(getAccountAutoTopup).not.toHaveBeenCalled();
     expect(getAccountQuota).toHaveBeenCalledTimes(2);
 

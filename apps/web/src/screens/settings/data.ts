@@ -487,11 +487,16 @@ function projectQuotaObservation(
       ? (projectSafeValue(quota.observedAt) as string)
       : null;
   const metadata = {
-    quotaPlanType: quota.planType ? (projectSafeValue(quota.planType) as string) : null,
+    quotaPlanType:
+      'planType' in quota && quota.planType ? (projectSafeValue(quota.planType) as string) : null,
     quotaSubscriptionActive:
-      typeof quota.subscriptionActive === 'boolean' ? quota.subscriptionActive : null,
+      'subscriptionActive' in quota && typeof quota.subscriptionActive === 'boolean'
+        ? quota.subscriptionActive
+        : null,
     quotaAccountObservedAt:
-      typeof quota.accountObservedAt === 'string' && quota.accountObservedAt !== ''
+      'accountObservedAt' in quota &&
+      typeof quota.accountObservedAt === 'string' &&
+      quota.accountObservedAt !== ''
         ? (projectSafeValue(quota.accountObservedAt) as string)
         : null,
   };
@@ -509,7 +514,10 @@ function projectQuotaObservation(
     quotaAvailability: quota.availability,
     ...metadata,
     quotaObservedAt: observedAt,
-    quotaRetryAfter: quota.retryAfter ? (projectSafeValue(quota.retryAfter) as string) : null,
+    quotaRetryAfter:
+      'retryAfter' in quota && quota.retryAfter
+        ? (projectSafeValue(quota.retryAfter) as string)
+        : null,
     quotaWindows: [],
     quotaBilling: null,
   };

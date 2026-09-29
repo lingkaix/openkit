@@ -389,7 +389,13 @@ function AccountControls({
     retry: false,
   });
   const live = overlayAccount(account, status.data ?? snapshot ?? cachedStatus);
-  const statusLabel = providerSubscriptionAccountStatusLabel(live.status);
+  const rejectedLogin =
+    live.status === 'logged_in' && live.quotaAvailability === 'authentication_required';
+  const statusLabel = rejectedLogin
+    ? { label: 'Access rejected', tone: 'negative' as const }
+    : live.status === 'logged_in' && live.quotaAvailability !== 'available'
+      ? { label: 'Login saved', tone: 'neutral' as const }
+      : providerSubscriptionAccountStatusLabel(live.status);
 
   useEffect(() => {
     if (!status.data) return;
@@ -563,7 +569,8 @@ function AccountControls({
           >
             Cancel login
           </Button>
-        ) : live.status === 'logged_out' ||
+        ) : rejectedLogin ||
+          live.status === 'logged_out' ||
           live.status === 'error' ||
           live.status === 'unavailable' ? (
           <Button
@@ -571,7 +578,7 @@ function AccountControls({
             isDisabled={disconnected || login.isPending}
             onPress={() => login.mutate()}
           >
-            Start login
+            {rejectedLogin ? 'Sign in again' : 'Start login'}
           </Button>
         ) : null}
       </div>
@@ -815,7 +822,7 @@ function QuotaWindow({ window }: { window: ConnectedAppQuotaWindow }) {
           ) : null}
         </>
       )}
-      {window.usedPercent !== null ? (
+      {remaining === null && window.usedPercent !== null ? (
         <p className="text-xs text-fg-muted">{formatQuotaPercent(window.usedPercent)} used</p>
       ) : null}
       {window.periodType ? (
@@ -835,6 +842,16 @@ function QuotaStatus({ account }: { account: ConnectedAppRow }) {
     return <p className="text-wrap text-xs text-fg-muted">Quota query failed</p>;
   }
   const lastChecked = <QuotaInstant label="Last checked" value={account.quotaObservedAt} />;
+  if (account.quotaAvailability === 'authentication_required') {
+    return (
+      <div className="flex min-w-0 w-full flex-col gap-1">
+        <p className="text-wrap text-xs text-fg-muted">
+          Saved access was rejected; the login may still be refreshable.
+        </p>
+        {lastChecked}
+      </div>
+    );
+  }
   if (account.quotaAvailability === 'temporarily_unavailable') {
     return (
       <div className="flex min-w-0 w-full flex-col gap-1">

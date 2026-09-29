@@ -1399,6 +1399,61 @@ describe('provider-subscription app API', () => {
     }
   });
 
+  it.each([
+    401, 403, 429, 503,
+  ])('distinguishes Codex quota HTTP %s without credential mutation', async (status) => {
+    const fixture = createFixture();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('token_expired Bearer upstream-private-canary', { status }));
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        accountSlotId: 'default',
+        availability: status === 401 ? 'authentication_required' : 'temporarily_unavailable',
+        observedAt: OBSERVED_AT,
+        subscriptionProviderId: 'openai-codex',
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fixture.spies.credentialModify).not.toHaveBeenCalled();
+      expect(fixture.spies.credentialDelete).not.toHaveBeenCalled();
+      expect(fixture.spies.modelsGetAuth).not.toHaveBeenCalled();
+      expect(fixture.spies.startLogin).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it('does not reject a replacement Codex credential after an older quota read returns 401', async () => {
+    const fixture = createFixture();
+    fixture.spies.credentialRead
+      .mockResolvedValueOnce(CODEX_CREDENTIAL as never)
+      .mockResolvedValueOnce({ ...CODEX_CREDENTIAL, access: 'replacement-access-canary' } as never);
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('token_expired', { status: 401 }));
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+      );
+      expect(await response.json()).toEqual({
+        accountSlotId: 'default',
+        availability: 'temporarily_unavailable',
+        observedAt: OBSERVED_AT,
+        subscriptionProviderId: 'openai-codex',
+      });
+      expect(fixture.spies.credentialRead).toHaveBeenCalledTimes(2);
+      expect(fixture.spies.credentialModify).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+
   it('projects xAI credits quota through getAuth without reading the credential store', async () => {
     const fixture = createFixture();
     const fetchSpy = mockXaiQuotaUpstream();
@@ -2104,6 +2159,7 @@ describe('provider-subscription app API', () => {
     {
       credential: { ...CODEX_CREDENTIAL, access: '   ', accountId: '\t ' },
       expectedFetches: 1,
+      authenticationRequired: true,
       name: 'whitespace-only credential strings',
       upstream: async () =>
         new Response('Bearer whitespace-credential-canary', {
@@ -2113,6 +2169,7 @@ describe('provider-subscription app API', () => {
     {
       credential: CODEX_CREDENTIAL,
       expectedFetches: 1,
+      authenticationRequired: true,
       name: 'authentication failure',
       upstream: async () =>
         new Response('Bearer upstream-auth-canary', {
@@ -2394,7 +2451,7 @@ describe('provider-subscription app API', () => {
         })
       )
     ),
-  ])('redacts Codex quota $name as temporarily unavailable without mutation', async (testCase) => {
+  ])('redacts Codex quota $name without mutation', async (testCase) => {
     const fixture = createFixture();
     fixture.spies.credentialRead.mockResolvedValue(testCase.credential as never);
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(testCase.upstream);
@@ -2429,14 +2486,19 @@ describe('provider-subscription app API', () => {
       expect(response.status).toBe(200);
       expect(quota).toEqual({
         accountSlotId: 'default',
-        availability: 'temporarily_unavailable',
+        availability:
+          'authenticationRequired' in testCase
+            ? 'authentication_required'
+            : 'temporarily_unavailable',
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         subscriptionProviderId: 'openai-codex',
       });
       expect(fetchSpy).toHaveBeenCalledTimes(testCase.expectedFetches);
       expect(fixture.spies.reconcileAccount).toHaveBeenCalledTimes(1);
       expect(fixture.spies.getPairHandle).toHaveBeenCalledTimes(1);
-      expect(fixture.spies.credentialRead).toHaveBeenCalledTimes(1);
+      expect(fixture.spies.credentialRead).toHaveBeenCalledTimes(
+        'authenticationRequired' in testCase ? 2 : 1
+      );
       expect(JSON.stringify(quota)).not.toMatch(
         /Bearer|canary|credential|accountId|access|authorization|cookie|raw|retryAfter/i
       );

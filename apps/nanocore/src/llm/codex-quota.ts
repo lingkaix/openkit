@@ -20,6 +20,8 @@ interface CodexQuotaWindow {
 
 /** Validated provider quota fields consumed by the App API route. */
 export interface CodexQuotaObservation {
+  /** A valid provider response, separate from authentication rejection. */
+  readonly availability: 'available';
   /** Exact provider plan label. */
   readonly planType: string;
   /** Present provider windows in primary-then-secondary order. */
@@ -30,11 +32,11 @@ export interface CodexQuotaObservation {
  * Reads one current Codex quota observation through the pair-scoped credential store.
  *
  * @param credentials Credential store constrained to one provider-subscription account pair.
- * @returns Validated quota fields, or null when any private reader step fails.
+ * @returns Validated quota, exact current-credential rejection, or null for an unclassified failure.
  */
 export async function readCodexQuota(
   credentials: CredentialStore
-): Promise<CodexQuotaObservation | null> {
+): Promise<CodexQuotaObservation | { readonly availability: 'authentication_required' } | null> {
   try {
     const credential = await credentials.read('openai-codex');
     if (!isRecord(credential)) {
@@ -74,6 +76,19 @@ export async function readCodexQuota(
         deadline,
       ]);
       if (!response.ok) {
+        void response.body?.cancel().catch(() => undefined);
+        if (response.status === 401) {
+          // A concurrent pi-ai refresh or login may already have replaced the rejected credential.
+          const current = await Promise.race([credentials.read('openai-codex'), deadline]);
+          if (
+            isRecord(current) &&
+            current.type === type &&
+            current.access === access &&
+            current.accountId === accountId
+          ) {
+            return { availability: 'authentication_required' };
+          }
+        }
         return null;
       }
       const bytes = await readResponseBytes(response, deadline);
@@ -164,7 +179,7 @@ function parseCodexQuota(value: unknown): CodexQuotaObservation {
     }
   }
 
-  return { planType: value.plan_type, windows };
+  return { availability: 'available', planType: value.plan_type, windows };
 }
 
 /**
