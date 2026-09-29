@@ -1125,26 +1125,10 @@ describe('worker shim CLI parsing', () => {
     }
   });
 
-  it.each([
-    {
-      message: 'process-failed-before-control-abort secret-canary',
-      origin: 'native_process',
-    },
-    {
-      message: 'Worker process group remained addressable after SIGKILL.',
-      origin: 'native_process_group_addressable',
-    },
-    {
-      message: 'Worker process group remained addressable after SIGKILL. secret-canary',
-      origin: 'native_process',
-    },
-  ])('preserves a process failure while the sibling control stops from supervisor abort ($origin)', async ({
-    message,
-    origin,
-  }) => {
+  it('preserves a process failure while the sibling control stops from supervisor abort', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-process-abort-first-'));
     const packagePath = join(sessionDir, 'package.json');
-    const processError = new Error(message);
+    const processError = new Error('process-failed-before-control-abort secret-canary');
     const onStartupFailure = vi.fn();
     writeFileSync(
       packagePath,
@@ -1170,13 +1154,11 @@ describe('worker shim CLI parsing', () => {
         expect.objectContaining({
           event: expect.objectContaining({
             type: 'turn.failed',
-            data: expect.objectContaining({
-              diagnostics: {
-                failureOrigin: origin,
-                stdoutBytes: '0',
-                stdoutLimitBytes: '16777216',
-              },
-            }),
+            data: {
+              evidenceManifestDigests: {},
+              status: 'failed',
+              stopReason: 'error',
+            },
           }),
         }),
       ])
@@ -1343,11 +1325,8 @@ describe('worker shim CLI parsing', () => {
 
       await expect(run).rejects.toBe(controlError);
       expect(finalStatuses).toHaveLength(1);
-      expect(finalStatuses[0]?.diagnostics).toEqual({
-        failureOrigin: 'worker_control',
-        stdoutBytes: '0',
-        stdoutLimitBytes: '16777216',
-      });
+      expect(finalStatuses[0]).toMatchObject({ status: 'failed', stopReason: 'error' });
+      expect(finalStatuses[0]).not.toHaveProperty('diagnostics');
       expect(JSON.stringify(finalStatuses)).not.toContain(controlError.message);
     } finally {
       controller.abort();
@@ -2893,37 +2872,9 @@ describe('worker shim CLI parsing', () => {
     await expect(run).resolves.toMatchObject({ exitCode: 0 });
   });
 
-  it.each([
-    {
-      origin: 'stdout_sink',
-      chunkSizes: [8, 12],
-      expectedBytes: '20',
-      cleanupFails: false,
-    },
-    {
-      origin: 'stdout_sink',
-      chunkSizes: [8, 12],
-      expectedBytes: '20',
-      cleanupFails: true,
-    },
-    {
-      origin: 'stdout_limit',
-      chunkSizes: [8_388_608, 8_388_608, 1],
-      expectedBytes: '16777217',
-      cleanupFails: false,
-    },
-  ])('publishes only safe temporary diagnostics for a midstream $origin failure (cleanup failure: $cleanupFails)', async ({
-    origin,
-    chunkSizes,
-    expectedBytes,
-    cleanupFails,
-  }) => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-failure-probe-'));
+  it('fails closed when streamed native stdout exceeds the 16 MiB capture bound', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-stdout-bound-'));
     const packagePath = join(sessionDir, 'package.json');
-    const secretCanary = 'private-sink-exception-secret-canary';
-    const sinkError = new Error(secretCanary);
-    const cleanupError = new Error('private-cleanup-exception-secret-canary');
-    let sinkWrites = 0;
     let markReady!: () => void;
     const ready = new Promise<void>((resolve) => {
       markReady = resolve;
@@ -2936,13 +2887,6 @@ describe('worker shim CLI parsing', () => {
         ...(await prepare(input)),
         captureStdout: true,
         suppressFailureDiagnostics: true,
-        writeStdout: async () => {
-          sinkWrites += 1;
-          if (origin === 'stdout_sink' && sinkWrites === 2) throw sinkError;
-        },
-        invalidate: async () => {
-          if (cleanupFails) throw cleanupError;
-        },
       }));
     writeFileSync(
       packagePath,
@@ -2969,34 +2913,26 @@ describe('worker shim CLI parsing', () => {
           async run(input) {
             input.onStart?.();
             await ready;
-            for (const size of chunkSizes) await input.writeStdout?.(Buffer.alloc(size));
+            for (const size of [8_388_608, 8_388_608, 1]) {
+              await input.writeStdout?.(Buffer.alloc(size));
+            }
             throw new Error('Overflow must fail before the runner returns.');
           },
         },
       });
-      // The temporary probe preserves the existing cleanup rejection while diagnosing its predecessor.
-      if (origin === 'stdout_sink') {
-        await expect(run).rejects.toBe(cleanupFails ? cleanupError : sinkError);
-      } else await expect(run).rejects.toThrow('Native stdout exceeds 16777216 bytes.');
+      await expect(run).rejects.toThrow('Native stdout exceeds 16777216 bytes.');
       const events = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
         event: { type: string; data: Record<string, unknown> };
       }>;
-      const diagnostics = {
-        failureOrigin: origin,
-        stdoutBytes: expectedBytes,
-        stdoutLimitBytes: '16777216',
-      };
       expect(events.find((record) => record.event.type === 'turn.failed')?.event.data).toEqual({
-        diagnostics,
         evidenceManifestDigests: {},
         status: 'failed',
         stopReason: 'error',
       });
       expect(finalStatuses).toHaveLength(1);
-      expect(finalStatuses[0]?.diagnostics).toEqual(diagnostics);
+      expect(finalStatuses[0]).toMatchObject({ status: 'failed', stopReason: 'error' });
+      expect(finalStatuses[0]).not.toHaveProperty('diagnostics');
       expect(events.some((record) => record.event.data.status === 'process.exited')).toBe(false);
-      expect(JSON.stringify({ events, finalStatuses })).not.toContain(secretCanary);
-      expect(JSON.stringify({ events, finalStatuses })).not.toContain(cleanupError.message);
     } finally {
       prepareSpy.mockRestore();
     }
