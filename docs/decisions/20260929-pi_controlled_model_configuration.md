@@ -1,7 +1,8 @@
 ---
-status: Accepted
+status: Superseded
 date: "2026-09-29"
 decider: Engineer
+superseded-by: docs/decisions/20260929-four_native_runtime_adapters.md
 ---
 # Controlled Pi Model Configuration
 

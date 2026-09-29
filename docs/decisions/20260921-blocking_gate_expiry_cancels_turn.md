@@ -1,7 +1,8 @@
 ---
-status: Accepted
+status: Superseded
 date: "2026-09-21"
 decider: Engineer
+superseded-by: docs/decisions/20260930-pending_tool_calls.md
 ---
 # Delayed User Input Is Its Own Design Line
 
