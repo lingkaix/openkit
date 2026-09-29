@@ -1333,11 +1333,6 @@ async function runChildProcessGroup(input: {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.once('spawn', () => input.onStart?.());
-  const close = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>(
-    (resolve) => {
-      child.once('close', (exitCode, signal) => resolve({ exitCode, signal }));
-    }
-  );
   const completion = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>(
     (resolve, reject) => {
       child.once('error', reject);
@@ -1355,13 +1350,15 @@ async function runChildProcessGroup(input: {
   /** Starts bounded child termination at most once. */
   const terminate = (graceful = true) => {
     if (!termination) {
-      termination = terminateChildProcess(child, close, graceful);
+      termination = terminateChildProcess(child, graceful);
       void termination.catch(rejectTermination);
     }
     return termination;
   };
-  /** Starts graceful process-group termination after supervisor cancellation. */
-  const terminateForAbort = () => void terminate();
+  /** Cancels pending output draining even when process-group termination already settled. */
+  const terminateForAbort = () => {
+    void terminate().then(() => rejectTermination(input.signal.reason), rejectTermination);
+  };
   input.signal.addEventListener('abort', terminateForAbort, { once: true });
   if (input.signal.aborted) {
     terminateForAbort();
@@ -1370,7 +1367,12 @@ async function runChildProcessGroup(input: {
   try {
     const outcome = await Promise.race([completion, drainFailure, terminationFailure]);
     await terminate(false);
-    const [stdout, stderr] = await Promise.all([stdoutDrain, stderrDrain]);
+    // Process-group absence does not mean a backpressured output sink has finished.
+    // Only the existing Turn abort/deadline may cut short a healthy normal-exit drain.
+    const [stdout, stderr] = await Promise.race([
+      Promise.all([stdoutDrain, stderrDrain]),
+      terminationFailure,
+    ]);
 
     return { ...outcome, stderr, stdout };
   } catch (error) {
@@ -1432,15 +1434,13 @@ function firstRejectedDrain(drains: Array<Promise<string>>): Promise<never> {
 }
 
 /**
- * Stops a child process group with bounded TERM-to-KILL escalation and waits for closure.
+ * Stops a child process group with bounded TERM-to-KILL escalation and proves absence.
  *
  * @param child Spawned child process.
- * @param close Child close promise that never rejects on process error.
  * @param graceful Whether to offer the live process group SIGTERM before SIGKILL.
  */
 async function terminateChildProcess(
   child: ReturnType<typeof spawn>,
-  close: Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>,
   graceful = true
 ): Promise<void> {
   const groupId = child.pid;
@@ -1457,13 +1457,6 @@ async function terminateChildProcess(
     if (!(await waitForProcessGroupExit(groupId, 1000))) {
       throw new Error(PROCESS_GROUP_ADDRESSABLE_ASSERTION);
     }
-  }
-
-  const killed = await waitForChildProcessClose(close, 1000);
-  if (!killed) {
-    child.stdout?.destroy();
-    child.stderr?.destroy();
-    child.unref();
   }
 }
 
@@ -1519,20 +1512,6 @@ function processGroupExists(groupId: number): boolean {
 }
 
 /**
- * Waits a bounded interval for one child close event.
- *
- * @param close Child close promise.
- * @param timeoutMs Maximum wait in milliseconds.
- * @returns True when the child closed before the deadline.
- */
-async function waitForChildProcessClose(
-  close: Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>,
-  timeoutMs: number
-): Promise<boolean> {
-  return Promise.race([close.then(() => true), delay(timeoutMs).then(() => false)]);
-}
-
-/**
  * Waits a bounded interval for output drains, then destroys their source pipes.
  *
  * @param child Spawned child process that owns the output pipes.
@@ -1550,6 +1529,7 @@ async function settleChildProcessDrains(
   if (!settled) {
     child.stdout?.destroy();
     child.stderr?.destroy();
+    child.unref();
   }
 }
 

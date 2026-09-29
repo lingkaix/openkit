@@ -1779,6 +1779,188 @@ describe('worker shim CLI parsing', () => {
     }
   }, 8_000);
 
+  it('drains every native stdout byte after a zero-exit child despite a slow capture sink', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-slow-drain-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const exitMarkerPath = join(sessionDir, 'native-exit.json');
+    const stdout = Buffer.from(
+      Array.from(
+        { length: 150 },
+        (_, index) => `${JSON.stringify({ type: 'fixture', index, text: 'x'.repeat(960) })}\n`
+      ).join('')
+    );
+    const sinkDelayMs = 1_500;
+    const chunks: Buffer[] = [];
+    let collectedStdout: Buffer | null = null;
+    const prepare = processFixtureAdapter.prepare;
+    const prepareSpy = vi
+      .spyOn(processFixtureAdapter, 'prepare')
+      .mockImplementationOnce(async (input) => ({
+        ...(await prepare(input)),
+        captureStdout: true,
+        suppressFailureDiagnostics: true,
+        // One native chunk can consume the entire existing pipe-close timeout.
+        // Normal output draining must instead remain bound by the Turn's abort signal.
+        writeStdout: async (chunk: Uint8Array) => {
+          await new Promise((resolve) => setTimeout(resolve, sinkDelayMs));
+          chunks.push(Buffer.from(chunk));
+        },
+      }));
+    const collectSpy = vi
+      .spyOn(processFixtureAdapter, 'collect')
+      .mockImplementationOnce(async (input) => {
+        collectedStdout = (input.processResult as WorkerNativeProcessResult).stdout;
+        return { assistantText: null, status: 'completed', stopReason: 'completed' };
+      });
+    const childScript = [
+      "const fs = require('node:fs');",
+      `process.on('exit', code => fs.writeFileSync(${JSON.stringify(exitMarkerPath)}, JSON.stringify({ code, pid: process.pid })));`,
+      "process.stdout.write(Array.from({ length: 150 }, (_, index) => JSON.stringify({ type: 'fixture', index, text: 'x'.repeat(960) }) + '\\n').join(''));",
+    ].join('');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        extensions: { openkit: { turnInput: childScript } },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+    try {
+      // No runner injection: this exercises the actual detached child and pipe drains.
+      const outcome = await runWorkerShim({
+        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: workerShimEnvironment(),
+        fetch: async (url) => ({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(workerControlSuccessBody(url)),
+        }),
+      }).then(
+        (result) => ({ result, error: null }),
+        (error: Error & { code?: string }) => ({ result: null, error })
+      );
+      const exit = JSON.parse(readFileSync(exitMarkerPath, 'utf8')) as {
+        code: number;
+        pid: number;
+      };
+      let groupAbsent = false;
+      try {
+        process.kill(-exit.pid, 0);
+      } catch (error) {
+        groupAbsent = (error as NodeJS.ErrnoException).code === 'ESRCH';
+      }
+      const events = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
+        event: { data: Record<string, unknown> };
+      }>;
+      expect(exit.code).toBe(0);
+      expect(groupAbsent).toBe(true);
+      expect(outcome.error).toBeNull();
+      expect(outcome.result).toMatchObject({ status: 'completed' });
+      expect(Buffer.concat(chunks)).toEqual(stdout);
+      expect(collectedStdout).toEqual(stdout);
+      expect(events.filter((record) => record.event.data.status === 'process.exited')).toHaveLength(
+        1
+      );
+    } finally {
+      prepareSpy.mockRestore();
+      collectSpy.mockRestore();
+    }
+  }, 12_000);
+
+  it('bounds cancellation of a blocked stdout sink after native group termination is memoized', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-abort-drain-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const exitMarkerPath = join(sessionDir, 'native-exit.json');
+    const controller = new AbortController();
+    let releaseSink!: () => void;
+    const blockedSink = new Promise<void>((resolve) => {
+      releaseSink = resolve;
+    });
+    let sinkStarted = false;
+    let settled = false;
+    const prepare = processFixtureAdapter.prepare;
+    const prepareSpy = vi
+      .spyOn(processFixtureAdapter, 'prepare')
+      .mockImplementationOnce(async (input) => ({
+        ...(await prepare(input)),
+        captureStdout: true,
+        suppressFailureDiagnostics: true,
+        writeStdout: async () => {
+          sinkStarted = true;
+          await blockedSink;
+        },
+      }));
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        extensions: {
+          openkit: {
+            turnInput: [
+              "const fs = require('node:fs');",
+              `process.on('exit', code => fs.writeFileSync(${JSON.stringify(exitMarkerPath)}, JSON.stringify({ code, pid: process.pid })));`,
+              "process.stdout.write('x'.repeat(150_040));",
+            ].join(''),
+          },
+        },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+    const run = runWorkerShim({
+      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: workerShimEnvironment(),
+      fetch: async (url) => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
+      }),
+      signal: controller.signal,
+    });
+    void run.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(sinkStarted).toBe(true);
+        expect(existsSync(exitMarkerPath)).toBe(true);
+        const exit = JSON.parse(readFileSync(exitMarkerPath, 'utf8')) as {
+          code: number;
+          pid: number;
+        };
+        expect(exit.code).toBe(0);
+        expect(() => process.kill(-exit.pid, 0)).toThrow(
+          expect.objectContaining({ code: 'ESRCH' })
+        );
+      });
+      // Let the original close timeout expire: abort must still act on a memoized termination.
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      expect(settled).toBe(false);
+      controller.abort();
+      // The sink stays blocked until finally; cancellation must not wait for its cooperation.
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 3_000 });
+      await expect(run).resolves.toMatchObject({ status: 'interrupted' });
+      const events = readJsonl(join(sessionDir, 'events.jsonl')) as Array<{
+        event: { data: Record<string, unknown> };
+      }>;
+      expect(
+        events.filter(
+          (record) =>
+            record.event.data.status === 'interrupted' && record.event.data.stopReason === 'aborted'
+        )
+      ).toHaveLength(1);
+    } finally {
+      controller.abort();
+      releaseSink();
+      await run.catch(() => undefined);
+      prepareSpy.mockRestore();
+    }
+  }, 8_000);
+
   it('does not start the native process when the initial control poll interrupts the worker', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-initial-interrupt-'));
     const packagePath = join(sessionDir, 'package.json');
