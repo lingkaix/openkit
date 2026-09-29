@@ -23,7 +23,7 @@ use openshell_sdk::{
 };
 use prost_types::{ListValue, Struct, Value as ProstValue, value::Kind};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
@@ -368,12 +368,18 @@ impl WorkerBootstrapRequest {
 /// Retained independent response task for the fixed worker bootstrap.
 pub struct WorkerBootstrapMonitor {
     response: JoinHandle<Result<WorkerBootstrapCompletion, EpochFault>>,
+    bridge_route: Option<AbortHandle>,
 }
 
 impl WorkerBootstrapMonitor {
     /// Returns whether the independent response stream remains live.
     pub fn is_live(&self) -> bool {
         !self.response.is_finished()
+    }
+
+    /// Shares only task completion proofs with the existing epoch member monitor.
+    pub(crate) fn task_handles(&self) -> Option<(AbortHandle, AbortHandle)> {
+        Some((self.response.abort_handle(), self.bridge_route.clone()?))
     }
 
     /// Stops the process-local response task after exact Sandbox absence fenced its worker.
@@ -694,7 +700,7 @@ impl NanoHostOpenShellClient {
         sandbox_id: &str,
         sandbox_integration_binding_ref: String,
         route_projection: OuterRouteProjection,
-    ) -> Result<OpenSandboxBridge, EpochFault> {
+    ) -> Result<(OpenSandboxBridge, AbortHandle), EpochFault> {
         let client = self.connected()?;
         let mut grpc = client.raw_grpc();
         let session = grpc
@@ -798,12 +804,13 @@ impl NanoHostOpenShellClient {
             let deadline_reached = tokio::select! {
                 readiness = harness_ready_rx.recv() => {
                     if readiness.is_some() && !route_server.is_finished() {
-                        return Ok(OpenSandboxBridge::new(
+                        let route_monitor = route_server.abort_handle();
+                        return Ok((OpenSandboxBridge::new(
                             route_server,
                             session.token,
                             sandbox_integration_binding_ref,
                             true,
-                        ));
+                        ), route_monitor));
                     }
                     false
                 }
@@ -914,7 +921,7 @@ impl NanoHostOpenShellClient {
                 let sandbox_integration_binding_ref =
                     worker_bootstrap.sandbox_integration_binding_ref.clone();
                 let mut exec_monitor = self.exec_sandbox_worker_bootstrap(worker_bootstrap).await?;
-                let bridge = tokio::select! {
+                let (bridge, route_monitor) = tokio::select! {
                     bridge = self.open_sandbox_bridge(
                         &sandbox_id,
                         sandbox_integration_binding_ref,
@@ -922,6 +929,7 @@ impl NanoHostOpenShellClient {
                     ) => bridge?,
                     _ = &mut exec_monitor.response => return Err(EpochFault::MemberExited),
                 };
+                exec_monitor.bridge_route = Some(route_monitor);
                 let harness_ready = bridge.harness_ready();
                 if !harness_ready || !exec_monitor.is_live() {
                     return Err(EpochFault::MemberExited);
@@ -1095,7 +1103,7 @@ impl NanoHostOpenShellClient {
                 if response.is_finished() {
                     return Err(EpochFault::MemberExited);
                 }
-                Ok(WorkerBootstrapMonitor { response })
+                Ok(WorkerBootstrapMonitor { response, bridge_route: None })
             }
         }
     }
@@ -1154,6 +1162,20 @@ where
         clean_response: true,
         exit_status,
     })
+}
+
+#[cfg(test)]
+impl WorkerBootstrapMonitor {
+    /// Creates a real response-task monitor for coordinator lifecycle regressions.
+    pub(crate) fn from_test_task(
+        response: JoinHandle<Result<WorkerBootstrapCompletion, EpochFault>>,
+        bridge_route: AbortHandle,
+    ) -> Self {
+        Self {
+            response,
+            bridge_route: Some(bridge_route),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1525,7 +1547,11 @@ mod tests {
             unreachable!()
         });
         let abort = response.abort_handle();
-        WorkerBootstrapMonitor { response }.discard_after_sandbox_deletion();
+        WorkerBootstrapMonitor {
+            response,
+            bridge_route: None,
+        }
+        .discard_after_sandbox_deletion();
         tokio::task::yield_now().await;
         assert!(abort.is_finished());
     }
@@ -1844,7 +1870,7 @@ mod tests {
             .find("let mut exec_monitor =")
             .expect("mutable bootstrap response monitor before bridge admission");
         let select = open_bridge
-            .find("let bridge = tokio::select!")
+            .find("let (bridge, route_monitor) = tokio::select!")
             .expect("bridge admission must race bootstrap monitor completion");
         let select_block = open_bridge[select..]
             .split_once("};")

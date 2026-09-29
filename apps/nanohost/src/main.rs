@@ -1245,7 +1245,18 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                             );
                             // The coordinator retains the static Harness monitor and
                             // bridge plus terminal proof across successor reconnects.
-                            let result = match execute_effect_command(coordinator, &mut command) {
+                            let executed = execute_effect_command(coordinator, &mut command);
+                            // A synchronous effect must not publish success while Harness
+                            // completion is still crossing the export-before-fence barrier.
+                            if coordinator.check_member_liveness().is_err() {
+                                return Err(OuterSessionFailure::terminal(
+                                    OuterSessionStage::Execute,
+                                    OuterSessionOperation::from(command.kind),
+                                    None,
+                                    "nanohost epoch member failed",
+                                ));
+                            }
+                            let result = match executed {
                                 Ok(result) => result,
                                 Err("static Harness bridge command invalid") => {
                                     if coordinator.discard_unknown_bridge_command().is_err() {

@@ -14,7 +14,7 @@ use std::os::unix::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -22,6 +22,7 @@ use openshell_sdk::raw::proto::SandboxPolicy;
 use openshell_sdk::{ListOptions, SandboxRef, SandboxSpec};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
+use tokio::task::AbortHandle;
 use tokio::time::{sleep, timeout};
 
 use crate::epoch_evidence::{
@@ -1005,6 +1006,15 @@ fn is_canonical_local_digest(reference: &str) -> bool {
     })
 }
 
+/// Requires a ready route and live retained response task for Harness readiness.
+fn harness_bridge_is_live(
+    bridge: Option<&OpenSandboxBridge>,
+    bootstrap_monitor: Option<&WorkerBootstrapMonitor>,
+) -> bool {
+    bridge.is_some_and(OpenSandboxBridge::harness_ready)
+        && bootstrap_monitor.is_some_and(WorkerBootstrapMonitor::is_live)
+}
+
 /// Owns all child processes in one fresh Runtime Epoch.
 #[allow(dead_code)]
 pub struct EpochCoordinator {
@@ -1027,6 +1037,7 @@ struct EpochMemberMonitor {
     fence: mpsc::SyncSender<Option<EpochFault>>,
     member_failure: mpsc::Receiver<EpochFault>,
     worker: Option<JoinHandle<()>>,
+    harness_tasks: Arc<Mutex<Option<(AbortHandle, AbortHandle)>>>,
 }
 
 /// Child-handle aggregate whose normal drop always kills and reaps the group.
@@ -1064,46 +1075,89 @@ impl EpochMemberMonitor {
     ) -> Self {
         let (fence, fence_rx) = mpsc::sync_channel(1);
         let (failure_tx, member_failure) = mpsc::sync_channel(1);
+        let harness_tasks = Arc::new(Mutex::new(None));
+        let watched_tasks = Arc::clone(&harness_tasks);
         let worker = thread::spawn(move || {
             let mut children = OwnedEpochChildren {
                 children,
                 private_namespaces,
             };
-            loop {
-                let observed = children
-                    .children
-                    .iter_mut()
-                    .any(|child| !matches!(child.try_wait(), Ok(None)));
-                if observed {
-                    fence_initiated(
-                        &mut evidence,
-                        &mut children.children,
-                        &EpochFault::MemberExited,
-                    );
-                    let _ = failure_tx.send(EpochFault::MemberExited);
-                    return;
-                }
-                match fence_rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(Some(fault)) => {
-                        fence_initiated(&mut evidence, &mut children.children, &fault);
-                        let _ = failure_tx.send(fault);
-                        return;
-                    }
-                    Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        return;
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                }
+            if let Some(fault) =
+                Self::observe_members(&mut children.children, &fence_rx, &watched_tasks)
+            {
+                fence_initiated(&mut evidence, &mut children.children, &fault);
+                let _ = failure_tx.send(fault);
             }
         });
         Self {
             fence,
             member_failure,
             worker: Some(worker),
+            harness_tasks,
         }
     }
 
-    /// Waits asynchronously for the monitor's one terminal member-failure event.
+    /// Runs the existing member observation loop independently of outer-session polling.
+    fn observe_members(
+        children: &mut [Child],
+        requests: &mpsc::Receiver<Option<EpochFault>>,
+        harness_tasks: &Mutex<Option<(AbortHandle, AbortHandle)>>,
+    ) -> Option<EpochFault> {
+        loop {
+            if Self::harness_failed(harness_tasks)
+                || children
+                    .iter_mut()
+                    .any(|child| !matches!(child.try_wait(), Ok(None)))
+            {
+                return Some(EpochFault::MemberExited);
+            }
+            match requests.recv_timeout(Duration::from_millis(50)) {
+                Ok(fault) => return fault,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+
+    /// Checks retained task completion under the same lock used by explicit close.
+    fn harness_failed(tasks: &Mutex<Option<(AbortHandle, AbortHandle)>>) -> bool {
+        tasks.lock().map_or(true, |tasks| {
+            tasks
+                .as_ref()
+                .is_some_and(|(response, route)| response.is_finished() || route.is_finished())
+        })
+    }
+
+    /// Retains the exact response and route task proofs beside the existing child monitor.
+    fn watch_harness(&self, bootstrap: &WorkerBootstrapMonitor) -> Result<(), EpochFault> {
+        let tasks = bootstrap
+            .task_handles()
+            .ok_or(EpochFault::IdentityMismatch)?;
+        if tasks.0.is_finished() || tasks.1.is_finished() {
+            return Err(EpochFault::MemberExited);
+        }
+        *self
+            .harness_tasks
+            .lock()
+            .map_err(|_| EpochFault::MemberExited)? = Some(tasks);
+        Ok(())
+    }
+
+    /// Establishes the explicit-close exemption before bridge ownership is removed.
+    fn begin_bridge_close(&self) -> Result<(), EpochFault> {
+        let mut tasks = self
+            .harness_tasks
+            .lock()
+            .map_err(|_| EpochFault::MemberExited)?;
+        let (response, route) = tasks.as_ref().ok_or(EpochFault::MemberExited)?;
+        if response.is_finished() || route.is_finished() {
+            return Err(EpochFault::MemberExited);
+        }
+        tasks.take();
+        Ok(())
+    }
+
+    /// Waits asynchronously for the continuously observed member-failure event.
     async fn member_failure(&self) -> EpochFault {
         loop {
             match self.member_failure.try_recv() {
@@ -1112,6 +1166,23 @@ impl EpochMemberMonitor {
                 Err(mpsc::TryRecvError::Empty) => sleep(Duration::from_millis(50)).await,
             }
         }
+    }
+
+    /// Joins the existing fence before a completed local effect can publish its result.
+    fn check_liveness(&mut self) -> Result<(), EpochFault> {
+        let fault = match self.member_failure.try_recv() {
+            Ok(fault) => Some(fault),
+            Err(mpsc::TryRecvError::Disconnected) => Some(EpochFault::MemberExited),
+            Err(mpsc::TryRecvError::Empty) if Self::harness_failed(&self.harness_tasks) => {
+                Some(EpochFault::MemberExited)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+        };
+        if let Some(fault) = fault {
+            self.fence(fault.clone());
+            return Err(self.member_failure.try_recv().unwrap_or(fault));
+        }
+        Ok(())
     }
 
     /// Requests one export-before-fence and waits for complete sibling reap.
@@ -1455,7 +1526,7 @@ impl EpochCoordinator {
 
     /// Returns whether the accepted Harness bridge and its lifetime monitor remain live.
     pub fn has_live_bridge(&self) -> bool {
-        self.bridge.is_some() && self.worker_bootstrap_monitor.is_some()
+        harness_bridge_is_live(self.bridge.as_ref(), self.worker_bootstrap_monitor.as_ref())
     }
 
     /// Deletes the current sandbox after static bridge command delivery becomes unknown.
@@ -1611,6 +1682,8 @@ impl EpochCoordinator {
         // OpenBridge orders fixed Start before `open_sandbox_bridge` and retains
         // the live Harness monitor.
         let bridge = if request.kind() == LifecycleEffectKind::CloseBridge {
+            let close = self.monitor.begin_bridge_close();
+            self.settle(close)?;
             self.bridge.take()
         } else {
             None
@@ -1700,6 +1773,12 @@ impl EpochCoordinator {
                 {
                     return self.settle(Err(EpochFault::IdentityMismatch));
                 }
+                let watched = self.monitor.watch_harness(
+                    self.worker_bootstrap_monitor
+                        .as_ref()
+                        .expect("retained response monitor"),
+                );
+                self.settle(watched)?;
                 let harness_ready = self
                     .bridge
                     .as_ref()
@@ -2054,6 +2133,15 @@ impl EpochCoordinator {
     /// Waits for the monitor's terminal member event while effects remain callable.
     pub async fn member_failure(&self) -> EpochFault {
         self.monitor.member_failure().await
+    }
+
+    /// Completes the existing fence before publishing an effect result from a dead Harness.
+    ///
+    /// # Errors
+    ///
+    /// Returns the winning member fault after export-before-fence and sibling reap.
+    pub fn check_member_liveness(&mut self) -> Result<(), EpochFault> {
+        self.monitor.check_liveness()
     }
 
     /// Waits for the monitor's terminal member event without owning child handles.
@@ -2619,11 +2707,11 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
     use std::process::Command;
-    #[cfg(target_os = "linux")]
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     #[cfg(target_os = "linux")]
     use std::thread;
     use std::time::{Duration, Instant};
+    use tokio::task::AbortHandle;
 
     use sha2::{Digest, Sha256};
 
@@ -2641,6 +2729,223 @@ mod tests {
     use super::{EpochMemberSpec, spawn_member, wait_for_child_success};
     use crate::image_store::{ImageStore, StoreLineage};
     use crate::openshell_client::{LifecycleEffectKind, LifecycleEffectRequest};
+
+    /// Keeps a real bridge route task pending until its ordinary Drop cleanup.
+    fn liveness_test_bridge() -> (crate::sandbox_bridge::OpenSandboxBridge, AbortHandle) {
+        let route = tokio::spawn(std::future::pending());
+        let watched_route = route.abort_handle();
+        (
+            crate::sandbox_bridge::OpenSandboxBridge::new(
+                route,
+                "fixture-authorization".to_string(),
+                "fixture-integration-binding".to_string(),
+                true,
+            ),
+            watched_route,
+        )
+    }
+
+    /// Creates a real pending bootstrap response task whose completion is controllable.
+    fn liveness_test_bootstrap(
+        route: AbortHandle,
+    ) -> (
+        crate::openshell_client::WorkerBootstrapMonitor,
+        tokio::task::AbortHandle,
+    ) {
+        let response = tokio::spawn(std::future::pending());
+        let abort = response.abort_handle();
+        (
+            crate::openshell_client::WorkerBootstrapMonitor::from_test_task(response, route),
+            abort,
+        )
+    }
+
+    /// Requires task completion as fixture setup, rather than mistaking a setup race for red.
+    async fn wait_for_liveness_test_bootstrap(
+        monitor: &crate::openshell_client::WorkerBootstrapMonitor,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while monitor.is_live() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("bootstrap fixture task completed");
+    }
+
+    /// Acknowledges the real failure wait's fence request without host-global fence timestamps.
+    /// Existing member-owner tests cover termination; these tests decide Harness observation.
+    fn liveness_test_member_monitor() -> EpochMemberMonitor {
+        let (fence, requests) = std::sync::mpsc::sync_channel(1);
+        let (faults, member_failure) = std::sync::mpsc::sync_channel(1);
+        let harness_tasks = Arc::new(Mutex::new(None));
+        let watched_tasks = Arc::clone(&harness_tasks);
+        let worker = std::thread::spawn(move || {
+            if let Some(fault) =
+                EpochMemberMonitor::observe_members(&mut [], &requests, &watched_tasks)
+            {
+                faults.send(fault).expect("acknowledge requested fence");
+            }
+        });
+        EpochMemberMonitor {
+            fence,
+            member_failure,
+            worker: Some(worker),
+            harness_tasks,
+        }
+    }
+
+    #[tokio::test]
+    async fn harness_liveness_completed_monitor_is_not_ready() {
+        let (bridge, route) = liveness_test_bridge();
+        let bootstrap = crate::openshell_client::WorkerBootstrapMonitor::from_test_task(
+            tokio::spawn(async {
+                Ok(crate::openshell_client::WorkerBootstrapCompletion {
+                    monitor_exit: true,
+                    clean_response: true,
+                    exit_status: 0,
+                })
+            }),
+            route,
+        );
+        wait_for_liveness_test_bootstrap(&bootstrap).await;
+        assert!(bridge.harness_ready(), "the route itself is still live");
+        assert!(
+            !super::harness_bridge_is_live(Some(&bridge), Some(&bootstrap)),
+            "a retained completed bootstrap is not a live Harness"
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_liveness_finished_monitor_wakes_existing_wait() {
+        let (bridge, route) = liveness_test_bridge();
+        let (bootstrap, abort) = liveness_test_bootstrap(route);
+        let members = liveness_test_member_monitor();
+        members
+            .watch_harness(&bootstrap)
+            .expect("watch real Harness tasks");
+        assert!(super::harness_bridge_is_live(
+            Some(&bridge),
+            Some(&bootstrap)
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), members.member_failure(),)
+                .await
+                .is_err(),
+            "a live Harness must not interrupt active consumers"
+        );
+        abort.abort();
+        wait_for_liveness_test_bootstrap(&bootstrap).await;
+        let observed = tokio::time::timeout(Duration::from_secs(1), members.member_failure()).await;
+        drop(members);
+        assert_eq!(
+            observed.expect("completed Harness must wake the existing failure wait"),
+            EpochFault::MemberExited
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_liveness_intentional_bridge_close_keeps_member_wait() {
+        let (bridge, route) = liveness_test_bridge();
+        let (bootstrap, abort) = liveness_test_bootstrap(route);
+        let members = liveness_test_member_monitor();
+        members
+            .watch_harness(&bootstrap)
+            .expect("watch real Harness tasks");
+        members.begin_bridge_close().expect("live explicit close");
+        drop(bridge);
+        abort.abort();
+        wait_for_liveness_test_bootstrap(&bootstrap).await;
+        assert!(!super::harness_bridge_is_live(None, Some(&bootstrap)));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), members.member_failure(),)
+                .await
+                .is_err(),
+            "explicit bridge.close retains the monitor until Sandbox deletion"
+        );
+        drop(members);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn harness_liveness_completion_during_effect_without_waiter() {
+        let (_bridge, route) = liveness_test_bridge();
+        let (bootstrap, abort) = liveness_test_bootstrap(route);
+        let members = liveness_test_member_monitor();
+        members
+            .watch_harness(&bootstrap)
+            .expect("watch real Harness tasks");
+        abort.abort();
+        wait_for_liveness_test_bootstrap(&bootstrap).await;
+        // Matches the synchronous local-effect window: no member_failure future exists.
+        let observed = tokio::task::block_in_place(|| {
+            members.member_failure.recv_timeout(Duration::from_secs(1))
+        });
+        drop(members);
+        assert_eq!(
+            observed.expect("Harness completion must reach the fence during a local effect"),
+            EpochFault::MemberExited,
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_liveness_completion_before_close_cannot_be_exempted() {
+        let (bridge, route) = liveness_test_bridge();
+        let (bootstrap, abort) = liveness_test_bootstrap(route);
+        let members = liveness_test_member_monitor();
+        members
+            .watch_harness(&bootstrap)
+            .expect("watch real Harness tasks");
+        abort.abort();
+        wait_for_liveness_test_bootstrap(&bootstrap).await;
+        let closed = members.begin_bridge_close();
+        drop(members);
+        assert_eq!(
+            closed,
+            Err(EpochFault::MemberExited),
+            "completion before close cannot settle as explicit close"
+        );
+        assert!(
+            bridge.harness_ready(),
+            "close rejection retains bridge ownership"
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_liveness_result_checkpoint_joins_fence_before_publication() {
+        let (_bridge, route) = liveness_test_bridge();
+        let (bootstrap, abort) = liveness_test_bootstrap(route);
+        let mut members = liveness_test_member_monitor();
+        members
+            .watch_harness(&bootstrap)
+            .expect("watch real Harness tasks");
+        assert_eq!(members.check_liveness(), Ok(()));
+        abort.abort();
+        wait_for_liveness_test_bootstrap(&bootstrap).await;
+        assert_eq!(members.check_liveness(), Err(EpochFault::MemberExited));
+        assert!(
+            members.worker.is_none(),
+            "publication checkpoint joins fence acknowledgement"
+        );
+
+        // The runtime oracle above proves the barrier; this checks its actual caller binding.
+        let main = include_str!("main.rs")
+            .split_once("#[cfg(test)]")
+            .expect("main production")
+            .0;
+        let effect = main
+            .find("let executed = execute_effect_command(coordinator, &mut command)")
+            .expect("synchronous effect caller");
+        let checkpoint = main[effect..]
+            .find("coordinator.check_member_liveness()")
+            .expect("effect result checkpoint");
+        let publication = main[effect..]
+            .find("let result = match executed")
+            .expect("result classification before publication");
+        assert!(
+            checkpoint < publication,
+            "caller must complete the fence before accepting an effect result"
+        );
+    }
 
     #[cfg(target_os = "linux")]
     const RESOLVER_CHILD_ENV: &str = "OPENKIT_NANOHOST_TEST_RESOLVER_CHILD";
