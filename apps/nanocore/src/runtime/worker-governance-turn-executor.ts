@@ -2991,8 +2991,13 @@ function asWorkerArtifactTurnError(error: unknown): unknown {
   return error;
 }
 
-/** Reads the canonical SessionCompatibilityKey from one metadata-only AEP. */
-function agentSessionCompatibilityKeyFromPackage(
+/**
+ * Reads the canonical SessionCompatibilityKey projected by the AEP resolver.
+ *
+ * @param environmentPackage Admitted package or non-dispatchable planning metadata.
+ * @returns The existing session-static key, before backend path materialization.
+ */
+export function agentSessionCompatibilityKeyFromPackage(
   environmentPackage: AgentEnvironmentPackagePreview
 ): string {
   return (

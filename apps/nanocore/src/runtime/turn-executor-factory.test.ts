@@ -9,6 +9,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
   planSessionWorkspaceMaterialization,
+  type SessionWorkspaceMaterializationPlan,
 } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -454,7 +455,7 @@ function completeNanoHostPackage(input: {
   const extensions = input.extensions as AgentEnvironmentPackage['extensions'] | undefined;
   const baseOpenkit = base.extensions.openkit as Record<string, unknown>;
   const inputOpenkit = extensions?.openkit as Record<string, unknown> | undefined;
-  return {
+  const environmentPackage = {
     ...base,
     ...input,
     runtime: {
@@ -470,6 +471,12 @@ function completeNanoHostPackage(input: {
       openkit: { ...baseOpenkit, ...inputOpenkit },
     },
   } as AgentEnvironmentPackage;
+  // Explicitly authored fixture changes need their own canonical key; resolver-produced AEPs bypass this fixture.
+  if (!inputOpenkit || !('sessionWorkspace' in inputOpenkit)) {
+    (environmentPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+      planSessionWorkspaceMaterialization({ environmentPackage });
+  }
+  return environmentPackage;
 }
 
 /** Records NanoHost effects while optionally mutating authority during image.inspect. */
@@ -2362,9 +2369,11 @@ describe('createConfiguredTurnExecutor', () => {
         readonly nativeHandleState: string;
         readonly sandboxCompatibilityKey: string;
       };
-      const sessionCompatibilityKey = planSessionWorkspaceMaterialization({
-        environmentPackage,
-      }).compatibilityKey.digest;
+      const sessionCompatibilityKey = (
+        environmentPackage.extensions.openkit as {
+          sessionWorkspace: SessionWorkspaceMaterializationPlan;
+        }
+      ).sessionWorkspace.compatibilityKey.digest;
       expect(idleBinding.sandboxCompatibilityKey).toMatch(/^[0-9a-f]{64}$/);
       expect(idleBinding.harnessCompatibilityKey).toMatch(/^[0-9a-f]{64}$/);
       expect(idleBinding).toMatchObject({
@@ -4248,7 +4257,7 @@ describe('createConfiguredTurnExecutor', () => {
                      1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-03T00:00:00.000Z');
-      const environmentPackage = completeNanoHostPackage({
+      let environmentPackage = completeNanoHostPackage({
         extensions: {
           openkit: {
             workerStorage: {
@@ -4269,6 +4278,89 @@ describe('createConfiguredTurnExecutor', () => {
       });
       environmentPackage.control.adapter.targetRuntime = adapterId;
       environmentPackage.agent.runtimeVersion = adapterId === 'pi' ? '0.85.1' : '0.153.4';
+      if (adapterId === 'pi' && purpose === 'completed') {
+        const setup = createTestAgentSetup({ adapter: 'pi' });
+        environmentPackage = resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSessionId: 'as_human_gate',
+          agentSetup: {
+            ...setup,
+            manifest: {
+              ...setup.manifest,
+              runtime: { ...setup.manifest.runtime, version: '0.85.1' },
+              workspace: { inputs: [{ access: 'read-write', id: 'repo', sourceRef: 'main-repo' }] },
+            },
+          },
+          backend: { kind: 'openshell' },
+          createdAt: '2026-09-03T00:00:00.000Z',
+          requestId: null,
+          triggerActor: environmentPackage.scope.triggerActor,
+          turn: {
+            completedAt: null,
+            configVersion: null,
+            durationMs: null,
+            error: null,
+            humanGate: null,
+            id: 'turn_human_gate',
+            items: [],
+            startedAt: '2026-09-03T00:00:00.000Z',
+            status: 'running',
+            threadId: 'thread_human_gate',
+            triggerActor: environmentPackage.scope.triggerActor,
+            workspaceId: 'workspace_human_gate',
+          },
+          workspaceCwd: '/workspace/openkit',
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'repo',
+              sourceCommit: '0123456789abcdef0123456789abcdef01234567',
+              sourceKind: 'remote-git',
+              workerPath: '/workspace/openkit',
+            },
+          ],
+          workspaceSourceRefs: { repo: 'main-repo' },
+          workspaceDataSourceCatalog: {
+            schemaVersion: 1,
+            requiredFeatures: [],
+            extensions: {},
+            sources: [
+              {
+                access: 'read-write',
+                allowedSlotKinds: ['worktree'],
+                displayName: 'Remote repository',
+                extensions: {},
+                id: 'main-repo',
+                kind: 'git',
+                locator: {
+                  url: 'https://git.example.test/openkit/repository.git',
+                  commit: '0123456789abcdef0123456789abcdef01234567',
+                },
+                requiredFeatures: [],
+                sensitivity: 'internal',
+                status: 'active',
+                syncHints: {},
+              },
+            ],
+          },
+        });
+        const canonicalKey = (
+          environmentPackage.extensions.openkit as {
+            sessionWorkspace: SessionWorkspaceMaterializationPlan;
+          }
+        ).sessionWorkspace.compatibilityKey.digest;
+        expect(environmentPackage.workspace.inputs[0]?.target).toMatch(/^\/workspace\/worktrees\//);
+        expect(environmentPackage.policy.filesystem?.rules).toContainEqual(
+          expect.objectContaining({
+            id: 'repo',
+            workerPath: environmentPackage.workspace.inputs[0]!.target,
+          })
+        );
+        // The stored key precedes the resolver's policy-path rewrite; hashing returned bytes differs.
+        expect(
+          planSessionWorkspaceMaterialization({ environmentPackage }).compatibilityKey.digest
+        ).not.toBe(canonicalKey);
+      }
       authorizeNanoHostPackage(coreDb, environmentPackage);
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
         leaseId: 'lease_human_gate',
@@ -4293,6 +4385,26 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
+      if (adapterId === 'pi' && purpose === 'completed') {
+        for (const digest of [undefined, 'sha256:invalid']) {
+          const invalidPackage = structuredClone(environmentPackage);
+          const openkit = invalidPackage.extensions.openkit as Record<string, unknown>;
+          if (digest === undefined) delete openkit.sessionWorkspace;
+          else {
+            const plan = openkit.sessionWorkspace as SessionWorkspaceMaterializationPlan;
+            plan.compatibilityKey.digest = digest;
+          }
+          await expect(
+            backend.materialize(invalidPackage, { workspaceRoots: [] })
+          ).rejects.toThrow();
+          expect(effects).toEqual([]);
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings')
+              .get()
+          ).toEqual({ count: 0 });
+        }
+      }
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       const materialization = await backend.materialize(environmentPackage, {
         runtimeEnvCredentials: [
@@ -4516,9 +4628,11 @@ describe('createConfiguredTurnExecutor', () => {
         };
         await expect(
           backend.prepareAgentSessionContinuity?.({
-            agentSessionCompatibilityKey: planSessionWorkspaceMaterialization({
-              environmentPackage: nextPackage,
-            }).compatibilityKey.digest,
+            agentSessionCompatibilityKey: (
+              nextPackage.extensions.openkit as {
+                sessionWorkspace: SessionWorkspaceMaterializationPlan;
+              }
+            ).sessionWorkspace.compatibilityKey.digest,
             agentSessionId: environmentPackage.scope.agentSessionId,
             environmentPackage: nextPackage,
             reuseAllowed: true,

@@ -97,7 +97,10 @@ import {
   removeNanoHostStagedExport,
   resolveNanoHostExportPath,
 } from './worker-governance-backend.js';
-import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
+import {
+  agentSessionCompatibilityKeyFromPackage,
+  WorkerGovernanceTurnExecutor,
+} from './worker-governance-turn-executor.js';
 import {
   activateWorkerStorageAttachment,
   admitWorkerStorageContributor,
@@ -3667,8 +3670,8 @@ function nanoHostStaticWorkspaceInput(
 function nanoHostAgentSessionCompatibilityKey(
   environmentPackage: AgentEnvironmentPackagePreview
 ): string {
-  const sessionCompatibilityKey = planSessionWorkspaceMaterialization({ environmentPackage })
-    .compatibilityKey.digest;
+  // AEP policy paths are already materialized; only its embedded key preserves the admitted inputs.
+  const sessionCompatibilityKey = agentSessionCompatibilityKeyFromPackage(environmentPackage);
   return deriveNanoHostAgentSessionCompatibilityKey({
     adapterId: nanoHostAdapterId(environmentPackage),
     adapterVersion: environmentPackage.agent.runtimeVersion,
