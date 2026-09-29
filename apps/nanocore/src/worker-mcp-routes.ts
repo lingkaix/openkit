@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
+import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
 import {
-  CallToolRequestSchema,
-  CancelledNotificationSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError,
-} from '@modelcontextprotocol/sdk/types.js';
+  createMcpHandler,
+  isLegacyRequest,
+  type ListToolsResult,
+  ProtocolError,
+  ProtocolErrorCode,
+  Server,
+  WebStandardStreamableHTTPServerTransport,
+} from '@modelcontextprotocol/server';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import { ItemSchema, responsibleUserIdForActor } from '@openkit/protocol';
@@ -316,11 +317,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           }
           return new Response(null, { status: 202 });
         }
-        server = new Server(
+        const mcp = new Server(
           { name: `openkit-${serverId}`, version: '1.0.0' },
           { capabilities: { tools: {} } }
         );
-        server.setRequestHandler(ListToolsRequestSchema, async () => {
+        server = mcp;
+        mcp.setRequestHandler('tools/list', async () => {
           if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
             throw mcpDeniedError();
           }
@@ -337,9 +339,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 description: tool.description,
                 inputSchema: tool.inputSchema,
               })),
-          };
+          } as ListToolsResult;
         });
-        server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+        mcp.setRequestHandler('tools/call', async (request, ctx) => {
           if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
             throw mcpDeniedError();
           }
@@ -347,8 +349,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             activeRequests,
             environmentPackage,
             serverId,
-            extra.requestId,
-            extra.signal
+            ctx.mcpReq.id,
+            ctx.mcpReq.signal
           );
           const releaseMutation = input.workspaceMutationAdmission.enter(
             environmentPackage.scope.workspaceId
@@ -391,15 +393,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 : `mcp.call_tool.${request.params.name}`,
               environmentPackage,
               itemId: repositoryBuiltin
-                ? workerMcpItemId(
-                    environmentPackage,
-                    serverId,
-                    request.params.name,
-                    extra.requestId
-                  )
+                ? workerMcpItemId(environmentPackage, serverId, request.params.name, ctx.mcpReq.id)
                 : (environmentPackage.scope.itemId ?? null),
               operation: 'mcp.call_tool',
-              protocolRequestId: extra.requestId,
+              protocolRequestId: ctx.mcpReq.id,
               serverId,
               toolName: request.params.name,
               workspaceDb: activeWorkspaceDb,
@@ -453,7 +450,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     environmentPackage,
                     serverId,
                     request.params.name,
-                    extra.requestId
+                    ctx.mcpReq.id
                   ),
                   serverId,
                   workspaceDb: activeWorkspaceDb,
@@ -471,14 +468,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       throw new Error('Worker Gate stop is unavailable.');
                     input.requestHumanGateStop(environmentPackage.snapshotId);
                   } catch {
-                    throw new McpError(
-                      ErrorCode.InvalidRequest,
+                    throw new ProtocolError(
+                      ProtocolErrorCode.InvalidRequest,
                       'Worker Gate recovery is required.',
                       { code: 'recovery_required' }
                     );
                   }
                 }
-                return outcome.result;
+                return mcp.projectCallToolResult(outcome.result, undefined);
               }
               const result = await dispatchOpenkitGenerativeTool(
                 {
@@ -489,7 +486,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   actor: environmentPackage.scope.triggerActor,
                   workspaceDb: activeWorkspaceDb,
                   scope: environmentPackage.scope,
-                  protocolRequestId: extra.requestId,
+                  protocolRequestId: ctx.mcpReq.id,
                 },
                 request.params.name,
                 (request.params.arguments ?? {}) as Record<string, unknown>
@@ -499,7 +496,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 status: 'succeeded',
                 workspaceDb: activeWorkspaceDb,
               });
-              return result;
+              return mcp.projectCallToolResult(result, undefined);
             } catch (error) {
               if (repositoryTerminal) throw error;
               throw finishMcpHandlerFailure(error, call, activeWorkspaceDb);
@@ -510,11 +507,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             toolCancellation.release();
           }
         });
-        const transport = new WebStandardStreamableHTTPServerTransport({
-          enableJsonResponse: true,
+        return await serveStatelessWorkerMcp(context.req.raw, protocolMessage, () => {
+          if (!server) throw new Error('Worker MCP server was not constructed.');
+          return server;
         });
-        await server.connect(transport);
-        return await transport.handleRequest(context.req.raw);
       }
       const catalog = input
         .runtimeConfig()
@@ -544,11 +540,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         }
         return new Response(null, { status: 202 });
       }
-      server = new Server(
+      const mcp = new Server(
         { name: `openkit-${serverId}`, version: '1.0.0' },
         { capabilities: { tools: {} } }
       );
-      server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
+      server = mcp;
+      mcp.setRequestHandler('tools/list', async (_request, ctx) => {
         if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
           throw mcpDeniedError();
         }
@@ -556,8 +553,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           activeRequests,
           environmentPackage,
           serverId,
-          extra.requestId,
-          extra.signal
+          ctx.mcpReq.id,
+          ctx.mcpReq.signal
         );
         const releaseMutation = input.workspaceMutationAdmission.enter(
           environmentPackage.scope.workspaceId
@@ -579,7 +576,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             itemId: environmentPackage.scope.itemId ?? null,
             operation: 'mcp.list_tools',
             serverId,
-            protocolRequestId: extra.requestId,
+            protocolRequestId: ctx.mcpReq.id,
             workspaceDb: activeWorkspaceDb,
           });
           try {
@@ -604,7 +601,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 status: 'succeeded',
                 workspaceDb: activeWorkspaceDb,
               });
-              return result;
+              return result as ListToolsResult;
             }
             const observed = await observeWorkerMcpTools({
               call,
@@ -637,7 +634,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               status: 'succeeded',
               workspaceDb: activeWorkspaceDb,
             });
-            return result;
+            return result as ListToolsResult;
           } catch (error) {
             throw finishMcpHandlerFailure(error, call, activeWorkspaceDb);
           }
@@ -647,7 +644,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           cancellation.release();
         }
       });
-      server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      mcp.setRequestHandler('tools/call', async (request, ctx) => {
         if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
           throw mcpDeniedError();
         }
@@ -655,8 +652,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           activeRequests,
           environmentPackage,
           serverId,
-          extra.requestId,
-          extra.signal
+          ctx.mcpReq.id,
+          ctx.mcpReq.signal
         );
         try {
           const call = async () => {
@@ -675,7 +672,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 arguments: request.params.arguments ?? {},
                 environmentPackage,
                 input,
-                protocolRequestId: extra.requestId,
+                protocolRequestId: ctx.mcpReq.id,
                 resolved,
                 selected,
                 serverId,
@@ -688,29 +685,65 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               releaseMutation();
             }
           };
-          return await (selected.approvalRequiredTools.includes(request.params.name)
+          const result = await (selected.approvalRequiredTools.includes(request.params.name)
             ? serializeMcpToolCall(
                 toolCallTails,
                 `${environmentPackage.scope.workspaceId}:${environmentPackage.scope.turnId}`,
                 call
               )
             : call());
+          return mcp.projectCallToolResult(result, undefined);
         } finally {
           cancellation.release();
         }
       });
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        enableJsonResponse: true,
+      return await serveStatelessWorkerMcp(context.req.raw, protocolMessage, () => {
+        if (!server) throw new Error('Worker MCP server was not constructed.');
+        return server;
       });
-      await server.connect(transport);
-      const response = await transport.handleRequest(context.req.raw);
-      return response;
     } catch (error) {
       return workerMcpHttpError(error);
     } finally {
       await server?.close().catch(() => undefined);
     }
   });
+}
+
+/**
+ * Serves one worker MCP POST on both protocol eras.
+ * Legacy requests stay JSON and stateless. Modern requests use the SDK's per-request handler.
+ * The factory runs once for the era that actually serves the request.
+ */
+async function serveStatelessWorkerMcp(
+  request: Request,
+  parsedBody: unknown,
+  factory: () => Server
+): Promise<Response> {
+  const handler = createMcpHandler(() => factory(), {
+    legacy: 'reject',
+    responseMode: 'json',
+  });
+  const parsed = parsedBody === null ? undefined : parsedBody;
+  try {
+    if (await isLegacyRequest(request, parsed)) {
+      const server = factory();
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        enableJsonResponse: true,
+      });
+      await server.connect(transport);
+      try {
+        return await transport.handleRequest(
+          request,
+          parsed === undefined ? undefined : { parsedBody: parsed }
+        );
+      } finally {
+        await server.close().catch(() => undefined);
+      }
+    }
+    return await handler.fetch(request, parsed === undefined ? undefined : { parsedBody: parsed });
+  } finally {
+    await handler.close().catch(() => undefined);
+  }
 }
 
 /** Correlates MCP cancellation notifications across stateless HTTP requests. */
@@ -966,7 +999,7 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
 async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   const parsedToolName = WorkspaceMcpToolNameSchema.safeParse(input.toolName);
   if (!parsedToolName.success || parsedToolName.data !== input.toolName) {
-    throw new McpError(ErrorCode.InvalidRequest, 'MCP tool is unavailable.', {
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool is unavailable.', {
       code: 'mcp-tool-not-found',
     });
   }
@@ -1245,9 +1278,13 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
     }
     if (usageRecoveryRequired) {
-      throw new McpError(ErrorCode.InternalError, 'MCP tool call recovery is required.', {
-        code: 'recovery_required',
-      });
+      throw new ProtocolError(
+        ProtocolErrorCode.InternalError,
+        'MCP tool call recovery is required.',
+        {
+          code: 'recovery_required',
+        }
+      );
     }
     if (failure instanceof WorkerMcpGatewayCallError) {
       upstreamEffect = failure.upstreamEffect;
@@ -1258,9 +1295,13 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       try {
         recordMcpToolCallUsage(call, input.workspaceDb);
       } catch {
-        throw new McpError(ErrorCode.InternalError, 'MCP tool call recovery is required.', {
-          code: 'recovery_required',
-        });
+        throw new ProtocolError(
+          ProtocolErrorCode.InternalError,
+          'MCP tool call recovery is required.',
+          {
+            code: 'recovery_required',
+          }
+        );
       }
     }
     const normalized = normalizeWorkerMcpRouteError(failure);
@@ -1291,9 +1332,13 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         workspaceDb: input.workspaceDb,
       });
     } catch {
-      throw new McpError(ErrorCode.InternalError, 'MCP tool call recovery is required.', {
-        code: 'recovery_required',
-      });
+      throw new ProtocolError(
+        ProtocolErrorCode.InternalError,
+        'MCP tool call recovery is required.',
+        {
+          code: 'recovery_required',
+        }
+      );
     }
     terminalCommitted = true;
     status = terminalStatus === 'denied' ? 'declined' : 'failed';
@@ -1304,12 +1349,16 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         }
         input.input.requestHumanGateStop(input.environmentPackage.snapshotId);
       } catch {
-        throw new McpError(ErrorCode.InvalidRequest, 'Worker Gate recovery is required.', {
-          code: 'recovery_required',
-        });
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidRequest,
+          'Worker Gate recovery is required.',
+          {
+            code: 'recovery_required',
+          }
+        );
       }
     }
-    throw new McpError(ErrorCode.InvalidRequest, normalized.message, {
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, normalized.message, {
       code: normalized.code,
     });
   } finally {
@@ -1596,8 +1645,8 @@ function mcpApprovalCapabilityCallId(approvalId: string): string {
 }
 
 /** Returns the closed worker-visible denial for a consumed or ambiguous Approval. */
-function mcpDeniedError(): McpError {
-  return new McpError(ErrorCode.InvalidRequest, 'MCP tool call was denied.', {
+function mcpDeniedError(): ProtocolError {
+  return new ProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool call was denied.', {
     code: 'mcp-denied',
   });
 }
@@ -1936,9 +1985,11 @@ function finishMcpHandlerFailure(
   error: unknown,
   call: StartedCapabilityCall,
   workspaceDb: WorkspaceDb
-): McpError {
+): ProtocolError {
   const normalized = finishMcpCallFailure(error, call, workspaceDb);
-  return new McpError(ErrorCode.InvalidRequest, normalized.message, { code: normalized.code });
+  return new ProtocolError(ProtocolErrorCode.InvalidRequest, normalized.message, {
+    code: normalized.code,
+  });
 }
 
 /** Safely terminalizes one MCP handler failure or returns a recovery-required result. */
@@ -2201,7 +2252,7 @@ function workerMcpHttpError(error: unknown): Response {
   return Response.json(
     {
       error: {
-        code: ErrorCode.InvalidRequest,
+        code: ProtocolErrorCode.InvalidRequest,
         data: { code: normalized.code },
         message: normalized.message,
       },

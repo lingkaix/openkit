@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import {
   ExecuteGitPushRequestSchema,
   RequestGitPushApprovalRequestSchema,
@@ -89,12 +89,12 @@ export async function dispatchOpenkitRepositoryTool(
         ? executeSchema
         : null;
   if (!schema)
-    throw new McpError(ErrorCode.InvalidRequest, 'MCP tool is unavailable.', {
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool is unavailable.', {
       code: 'mcp-tool-not-found',
     });
   const parsed = schema.safeParse(args);
   if (!parsed.success)
-    throw new McpError(ErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
       code: 'mcp-call-failed',
     });
   const { scope } = environmentPackage;
@@ -112,7 +112,7 @@ export async function dispatchOpenkitRepositoryTool(
     !actorId ||
     !currentWorkerLineageWorkspaceAuthority(context.coreDb, lineage, 'repo.push', true)
   ) {
-    throw new McpError(ErrorCode.InvalidRequest, 'MCP tool call was denied.', {
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool call was denied.', {
       code: 'mcp-denied',
     });
   }
@@ -126,7 +126,7 @@ export async function dispatchOpenkitRepositoryTool(
     repository.workspaceId !== scope.workspaceId ||
     context.store.getWorkspace(scope.workspaceId).kind === 'quick-chat'
   ) {
-    throw new McpError(ErrorCode.InvalidRequest, 'MCP tool call was denied.', {
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool call was denied.', {
       code: 'mcp-denied',
     });
   }
@@ -140,7 +140,7 @@ export async function dispatchOpenkitRepositoryTool(
         })
       : ExecuteGitPushRequestSchema.safeParse(candidate);
   if (!domainInput.success)
-    throw new McpError(ErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
       code: 'mcp-call-failed',
     });
   const ownerContext: RepositoryPushContext = {

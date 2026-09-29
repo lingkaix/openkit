@@ -2,14 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 
 import { serve } from '@hono/node-server';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError,
-} from '@modelcontextprotocol/sdk/types.js';
+  createMcpHandler,
+  ProtocolError,
+  ProtocolErrorCode,
+  Server,
+  WebStandardStreamableHTTPServerTransport,
+} from '@modelcontextprotocol/server';
 import { Hono } from 'hono';
 
 /** Isolated official-SDK Streamable HTTP MCP fixture. */
@@ -18,9 +17,17 @@ export interface McpHttpStub {
   close(): Promise<void>;
   /** Redacted-or-test-only request observations captured by the fixture. */
   readonly observed: string[];
+  /** Makes later `server/discover` requests fail without answering. */
+  stopAnswering(): void;
   /** Loopback endpoint exposed by the fixture. */
   readonly url: string;
 }
+
+const echoInputSchema = {
+  properties: { message: { type: 'string' as const } },
+  required: ['message'],
+  type: 'object' as const,
+};
 
 /** Starts one isolated official-SDK Streamable HTTP MCP server. */
 export async function createMcpHttpStub(
@@ -32,64 +39,94 @@ export async function createMcpHttpStub(
     readonly delayMs?: number;
     readonly hangDelete?: boolean;
     readonly listError?: boolean;
-    readonly nextCursor?: string;
+    /** `finite` returns two pages. `nonterminating` repeats one cursor forever. */
+    readonly toolPages?: 'finite' | 'nonterminating';
+    /** `2026-07-28` serves the stateless era. Omitted servers stay on the session era. */
+    readonly protocolEra?: '2026-07-28';
   } = {}
 ): Promise<McpHttpStub> {
   const observed: string[] = [];
+  let answering = true;
   const sessions = new Map<
     string,
     { mcp: Server; transport: WebStandardStreamableHTTPServerTransport }
   >();
   const servers = new Set<Server>();
-  const createSession = async () => {
+  const createEchoServer = () => {
     const mcp = new Server(
       { name: 'http-test', version: '1.0.0' },
       { capabilities: { tools: {} } }
     );
-    mcp.setRequestHandler(ListToolsRequestSchema, () => {
-      if (options.listError) throw new McpError(ErrorCode.InternalError, 'Injected list failure.');
-      return {
-        ...(options.nextCursor ? { nextCursor: options.nextCursor } : {}),
-        tools: [
-          {
-            ...(options.credentialListEcho ? { description: options.credentialListEcho } : {}),
-            inputSchema: {
-              properties: { message: { type: 'string' } },
-              required: ['message'],
-              type: 'object',
-            },
-            name: 'echo',
-          },
-        ],
+    let repeatedPage = 0;
+    mcp.setRequestHandler('tools/list', (request) => {
+      if (options.listError) {
+        throw new ProtocolError(ProtocolErrorCode.InternalError, 'Injected list failure.');
+      }
+      const echo = {
+        ...(options.credentialListEcho ? { description: options.credentialListEcho } : {}),
+        inputSchema: echoInputSchema,
+        name: 'echo',
       };
+      if (options.toolPages === 'nonterminating') {
+        repeatedPage += 1;
+        return {
+          nextCursor: 'next',
+          tools: [{ ...echo, name: `echo-${repeatedPage}` }],
+        };
+      }
+      if (options.toolPages === 'finite') {
+        if (request.params?.cursor === 'page-2') {
+          return {
+            tools: [
+              {
+                inputSchema: echoInputSchema,
+                name: 'echo-page-2',
+              },
+            ],
+          };
+        }
+        return { nextCursor: 'page-2', tools: [echo] };
+      }
+      return { tools: [echo] };
     });
-    mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
+    mcp.setRequestHandler('tools/call', async (request) => {
       if (request.params.arguments?.message === 'delayed' && options.delayMs) {
         await new Promise((resolve) => setTimeout(resolve, options.delayMs));
       }
-      return {
-        content: [
-          {
-            text:
-              request.params.arguments?.message === 'leak' && options.credentialEcho
-                ? options.credentialEcho
-                : String(request.params.arguments?.message),
-            type: 'text' as const,
-          },
-        ],
-        ...(request.params.arguments?.message === 'key-leak' && options.credentialEcho
-          ? { structuredContent: { [options.credentialEcho]: 'leaked' } }
-          : {}),
-      };
+      return mcp.projectCallToolResult(
+        {
+          content: [
+            {
+              text:
+                request.params.arguments?.message === 'leak' && options.credentialEcho
+                  ? options.credentialEcho
+                  : String(request.params.arguments?.message),
+              type: 'text' as const,
+            },
+          ],
+          ...(request.params.arguments?.message === 'key-leak' && options.credentialEcho
+            ? { structuredContent: { [options.credentialEcho]: 'leaked' } }
+            : {}),
+        },
+        undefined
+      );
     });
+    return mcp;
+  };
+  const createSession = async () => {
+    const mcp = createEchoServer();
+    servers.add(mcp);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true,
       sessionIdGenerator: randomUUID,
     });
     await mcp.connect(transport);
-    servers.add(mcp);
     return { mcp, transport };
   };
+  const modernHandler =
+    options.protocolEra === '2026-07-28'
+      ? createMcpHandler(() => createEchoServer(), { legacy: 'reject', responseMode: 'json' })
+      : null;
   const app = new Hono();
   app.all('/mcp', async (context) => {
     const url = new URL(context.req.url);
@@ -100,9 +137,19 @@ export async function createMcpHttpStub(
             .json()
             .catch(() => null)
         : null;
+    const method = body && typeof body === 'object' && 'method' in body ? String(body.method) : '';
     observed.push(
-      `${context.req.header('authorization') ?? ''}|${url.searchParams.get('token') ?? ''}|${context.req.method}|${body && typeof body === 'object' && 'method' in body ? String(body.method) : ''}`
+      `${context.req.header('authorization') ?? ''}|${url.searchParams.get('token') ?? ''}|${context.req.method}|${method}`
     );
+    if (!answering && method === 'server/discover') {
+      return new Response('MCP server stopped answering.', { status: 503 });
+    }
+    if (modernHandler) {
+      return modernHandler.fetch(
+        context.req.raw,
+        body && typeof body === 'object' ? { parsedBody: body } : undefined
+      );
+    }
     const requestBody = body && typeof body === 'object' ? body : null;
     const chunkedResultBytes =
       requestBody && 'method' in requestBody
@@ -168,11 +215,15 @@ export async function createMcpHttpStub(
   return {
     close: async () => {
       await Promise.all([...servers].map((mcp) => mcp.close()));
+      await modernHandler?.close();
       await new Promise<void>((resolve, reject) =>
         activeHttp.close((error) => (error ? reject(error) : resolve()))
       );
     },
     observed,
+    stopAnswering: () => {
+      answering = false;
+    },
     url: `http://127.0.0.1:${address.port}/mcp`,
   };
 }

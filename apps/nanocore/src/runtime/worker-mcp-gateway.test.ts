@@ -4,8 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -647,6 +646,66 @@ describe('worker MCP gateway', () => {
     }
   });
 
+  it('keeps teardown ownership when a refused group signal cannot prove the descendant is gone', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-group-refusal-'));
+    const pidFile = join(dataRoot, 'descendant.pid');
+    const credential = 'stdio-refusal-private-value';
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const gateway = createDefaultWorkerMcpGateway(coreDb);
+    const server = stdioTestServer(10_000);
+    const gatewayInput = {
+      credentials: {
+        environment: {
+          OPENKIT_MCP_DESCENDANT_PID_FILE: pidFile,
+          OPENKIT_MCP_DESCENDANT_SECRET: credential,
+        },
+      },
+      server,
+      workspaceId: 'ws_demo',
+    };
+    const kill = process.kill.bind(process);
+    let leaderPid = 0;
+    const killed = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number
+    ) => {
+      const id = Number(pid);
+      if (id < 0) throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+      if (leaderPid !== 0 && id === leaderPid) {
+        throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+      }
+      return kill(pid, signal);
+    }) as typeof process.kill);
+
+    try {
+      const activeCall = gateway.callTool({
+        ...gatewayInput,
+        arguments: { message: 'timeout' },
+        toolName: 'echo',
+      });
+      const activeCallOutcome = activeCall.then(
+        () => null,
+        (error: unknown) => error
+      );
+      await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+      const descendantPid = JSON.parse(readFileSync(pidFile, 'utf8')).pid as number;
+      leaderPid = processGroupLeader(descendantPid);
+      await expect(gateway.closeWorkspace('ws_demo')).rejects.toThrow(
+        'MCP stdio process group remained addressable after SIGKILL.'
+      );
+      expect(() => process.kill(descendantPid, 0)).not.toThrow();
+      await expect(gateway.listTools(gatewayInput)).rejects.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(await activeCallOutcome).toMatchObject({ code: 'recovery_required' });
+    } finally {
+      killed.mockRestore();
+      await gateway.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('reaps a credential-bearing descendant when stdio initialization exits', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-init-exit-'));
     const pidFile = join(dataRoot, 'descendant.pid');
@@ -861,8 +920,75 @@ describe('worker MCP gateway', () => {
     }
   });
 
-  it('rejects V1 tool-list pagination without requesting another page', async () => {
-    const upstream = await createMcpHttpStub({ nextCursor: 'next' });
+  it('degrades a 2026-07-28 session when its health probe stops being answered', async () => {
+    const upstream = await createMcpHttpStub({ protocolEra: '2026-07-28' });
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = httpTestServer(upstream.url, 1_000);
+
+    try {
+      await gateway.listTools({ server, workspaceId: 'ws_demo' });
+      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('ready');
+      expect(upstream.observed.some((request) => request.endsWith('|initialize'))).toBe(false);
+      expect(upstream.observed.some((request) => request.endsWith('|server/discover'))).toBe(true);
+      const discoversBefore = upstream.observed.filter((request) =>
+        request.endsWith('|server/discover')
+      ).length;
+      upstream.stopAnswering();
+      await vi.waitFor(
+        () => {
+          expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+        },
+        { timeout: 20_000 }
+      );
+      expect(
+        upstream.observed.filter((request) => request.endsWith('|server/discover')).length
+      ).toBeGreaterThan(discoversBefore);
+      expect(upstream.observed.some((request) => request.endsWith('|ping'))).toBe(false);
+    } finally {
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
+  it('follows a bounded multi-page tools/list and returns every page', async () => {
+    const upstream = await createMcpHttpStub({ toolPages: 'finite' });
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = resolveWorkspaceMcpServer({
+      catalog: {
+        schemaVersion: 1,
+        servers: [
+          {
+            allowedTools: ['echo', 'echo-page-2'],
+            approvalRequiredTools: [],
+            credentialBindings: [],
+            deniedTools: [],
+            enabled: true,
+            id: 'paged',
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking',
+            timeoutMs: 2_000,
+            transport: { endpoint: upstream.url, kind: 'http' },
+          },
+        ],
+      },
+      serverId: 'paged',
+    });
+
+    try {
+      await expect(gateway.listTools({ server, workspaceId: 'ws_demo' })).resolves.toMatchObject({
+        tools: [{ name: 'echo' }, { name: 'echo-page-2' }],
+      });
+      expect(
+        upstream.observed.filter((request) => request.endsWith('|tools/list')).length
+      ).toBeGreaterThan(1);
+    } finally {
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
+  it('fails closed when tools/list pagination does not terminate', async () => {
+    const upstream = await createMcpHttpStub({ toolPages: 'nonterminating' });
     const gateway = createDefaultWorkerMcpGateway();
     const server = resolveWorkspaceMcpServer({
       catalog: {
@@ -890,7 +1016,7 @@ describe('worker MCP gateway', () => {
         code: 'mcp-server-unavailable',
       });
       expect(upstream.observed.filter((request) => request.endsWith('|tools/list'))).toHaveLength(
-        1
+        64
       );
     } finally {
       await gateway.close();
@@ -1144,6 +1270,19 @@ async function waitForProcessExit(pid: number): Promise<boolean> {
   return false;
 }
 
+/** Reads the process-group leader of one live pid. */
+function processGroupLeader(pid: number): number {
+  const result = spawnSync(
+    'python3',
+    ['-c', 'import os,sys; print(os.getpgid(int(sys.argv[1])))', String(pid)],
+    { encoding: 'utf8' }
+  );
+  if (result.status !== 0) {
+    throw new Error(result.stderr || 'process group lookup failed');
+  }
+  return Number(result.stdout.trim());
+}
+
 /** Resolves one stdio fixture server with a caller-selected request bound. */
 function stdioTestServer(timeoutMs: number) {
   return resolveWorkspaceMcpServer({
@@ -1197,5 +1336,5 @@ function httpTestServer(endpoint: string, timeoutMs: number) {
   });
 }
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';

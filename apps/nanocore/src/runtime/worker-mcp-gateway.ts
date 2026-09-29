@@ -2,14 +2,16 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
+  Client,
+  ProtocolError,
+  SdkError,
+  SdkErrorCode,
+  SdkHttpError,
   StreamableHTTPClientTransport,
-  StreamableHTTPError,
-} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+} from '@modelcontextprotocol/client';
+import { getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { ResolvedWorkspaceMcpServer } from '@openkit/config-schema';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -23,6 +25,8 @@ const MCP_RESULT_MAX_BYTES = 512 * 1024;
 const MCP_PROTOCOL_RESPONSE_MAX_BYTES = 2 * MCP_RESULT_MAX_BYTES;
 const MCP_HEALTH_CHECK_MS = 15_000;
 const MCP_SESSION_IDLE_MS = 60_000;
+/** Page cap for one auto-aggregated tools/list. Matches the SDK default and fails closed without a partial list. */
+const MCP_TOOL_LIST_MAX_PAGES = 64;
 const MCP_STDIO_SUPERVISOR =
   "const{spawn}=require('node:child_process');const reap=()=>{try{process.kill(-process.pid,'SIGKILL')}catch{process.exit(71)}};process.on('SIGTERM',reap);process.on('disconnect',reap);if(!process.connected||process.ppid!==Number(process.argv[1]))reap();else{const child=spawn(process.argv[2],process.argv.slice(3),{stdio:'inherit'});child.on('error',reap);child.on('exit',reap)}";
 
@@ -131,7 +135,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
 
   public constructor(private readonly coreDb?: CoreDb) {}
 
-  /** Lists one bounded, non-paginated live server tool page. */
+  /** Lists live tools, following pagination up to the page cap and the result byte bound. */
   public async listTools(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpLiveTools> {
     if (input.signal?.aborted) {
       throw new WorkerMcpGatewayCallError(
@@ -142,10 +146,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         true
       );
     }
-    const cancellationReason = new McpError(
-      ErrorCode.RequestTimeout,
-      'MCP caller cancelled request.'
-    );
+    const cancellationReason = mcpCancellationReason();
     const cancellation = new AbortController();
     const forwardCancellation = () => cancellation.abort(cancellationReason);
     input.signal?.addEventListener('abort', forwardCancellation, { once: true });
@@ -158,10 +159,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       connected = true;
       let page: Awaited<ReturnType<Client['listTools']>>;
       try {
-        page = await session.client.listTools(
-          undefined,
-          requestOptions(input.server.timeoutMs, cancellation.signal)
-        );
+        page = await session.client.listTools(undefined, {
+          ...requestOptions(input.server.timeoutMs, cancellation.signal),
+          cacheMode: 'bypass',
+        });
       } catch (error) {
         if (error === cancellationReason) {
           throw new WorkerMcpGatewayCallError(
@@ -179,9 +180,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
               normalized.code,
               normalized.message,
               normalized.status,
-              error instanceof McpError && error.code !== ErrorCode.RequestTimeout
-                ? 'contacted'
-                : 'unknown',
+              mcpUpstreamWasContacted(error) ? 'contacted' : 'unknown',
               false,
               true
             )
@@ -197,13 +196,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           hasCredentials(input)
         );
       }
-      if (
-        page.nextCursor ||
-        Buffer.byteLength(JSON.stringify(page.tools), 'utf8') > MCP_RESULT_MAX_BYTES
-      ) {
+      if (Buffer.byteLength(JSON.stringify(page.tools), 'utf8') > MCP_RESULT_MAX_BYTES) {
         throw new WorkerMcpGatewayCallError(
           'mcp-server-unavailable',
-          'MCP tool listing exceeds the V1 response bound.',
+          'MCP tool listing exceeds the response bound.',
           503,
           'contacted',
           false,
@@ -261,10 +257,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         true
       );
     }
-    const cancellationReason = new McpError(
-      ErrorCode.RequestTimeout,
-      'MCP caller cancelled request.'
-    );
+    const cancellationReason = mcpCancellationReason();
     const cancellation = new AbortController();
     const forwardCancellation = () => cancellation.abort(cancellationReason);
     input.signal?.addEventListener('abort', forwardCancellation, { once: true });
@@ -292,17 +285,12 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       try {
         result = await session.client.callTool(
           { arguments: input.arguments, name: input.toolName },
-          undefined,
           requestOptions(input.server.timeoutMs, cancellation.signal)
         );
       } catch (error) {
         const normalized = normalizeMcpCallError(
           error,
-          error instanceof McpError &&
-            error.code !== ErrorCode.ConnectionClosed &&
-            error.code !== ErrorCode.RequestTimeout
-            ? 'contacted'
-            : 'unknown',
+          mcpUpstreamWasContacted(error) ? 'contacted' : 'unknown',
           error === cancellationReason
         );
         if (this.sessions.get(key) === pending) {
@@ -462,7 +450,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   /** Connects one catalog-declared transport through the official MCP SDK. */
   private async connect(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpSession> {
     this.transition(input, 'starting');
-    const client = new Client({ name: 'openkit-nanocore', version: '1.0.0' });
+    const client = new Client(
+      { name: 'openkit-nanocore', version: '1.0.0' },
+      { listMaxPages: MCP_TOOL_LIST_MAX_PAGES, versionNegotiation: { mode: 'auto' } }
+    );
     const key = workerMcpSessionKey(input);
     let transportClosed = false;
     client.onclose = () => {
@@ -567,9 +558,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       }
       if (
         hasCredentials(input) &&
-        (processGroupId !== null ||
-          error instanceof McpError ||
-          error instanceof StreamableHTTPError)
+        (processGroupId !== null || error instanceof SdkError || mcpUpstreamWasContacted(error))
       ) {
         const normalized = normalizeMcpError(error, 'list');
         const cancelled = input.signal?.aborted && input.signal.reason === error;
@@ -577,9 +566,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           normalized.code,
           normalized.message,
           normalized.status,
-          error instanceof McpError || error instanceof StreamableHTTPError
-            ? 'contacted'
-            : 'unknown',
+          mcpUpstreamWasContacted(error) ? 'contacted' : 'unknown',
           cancelled,
           true
         );
@@ -624,7 +611,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     }
   }
 
-  /** Pings one still-current live session and degrades it when the upstream disappears. */
+  /** Probes one still-current live session and degrades it when the upstream disappears. */
   private async checkHealth(
     key: string,
     input: WorkerMcpGatewayServerInput,
@@ -637,7 +624,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       return;
     }
     try {
-      await client.ping(requestOptions(input.server.timeoutMs));
+      await probeMcpSession(client, input.server.timeoutMs);
     } catch {
       if (this.sessions.get(key) !== pending) return;
       this.transition(input, 'degraded');
@@ -782,27 +769,50 @@ async function terminateMcpProcessGroup(groupId: number): Promise<void> {
   }
 }
 
-/** Signals every process in one gateway-owned detached stdio group. */
+/** Signals one gateway-owned detached stdio group.
+ *
+ * A refused group signal is not absence. Only SIGTERM is repeated to the
+ * leader, so its handler can reap the group. SIGKILL is never sent to the leader.
+ */
 function signalMcpProcessGroup(groupId: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(-groupId, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-  }
+  const group = deliverMcpSignal(-groupId, signal);
+  if (group === 'delivered' || group === 'gone') return;
+  if (signal === 'SIGTERM') deliverMcpSignal(groupId, 'SIGTERM');
 }
 
 /** Waits for one gateway-owned stdio process group to disappear. */
 async function waitForMcpProcessGroupExit(groupId: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try {
-      process.kill(-groupId, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
-    }
+    if (mcpProcessGroupExited(groupId)) return true;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
-  return false;
+  return mcpProcessGroupExited(groupId);
+}
+
+/** Reports whether the process group is proved gone.
+ *
+ * Absence is only `kill(-groupId, 0)` returning ESRCH. A refused group signal
+ * is not absence. The wait yields between checks, so a zombie-leader refusal
+ * can clear to ESRCH once that leader is reaped.
+ */
+function mcpProcessGroupExited(groupId: number): boolean {
+  return deliverMcpSignal(-groupId, 0) === 'gone';
+}
+
+type McpSignalDelivery = 'delivered' | 'gone' | 'refused';
+
+/** Delivers one signal. ESRCH means that pid is gone. EPERM is a refusal, not absence. */
+function deliverMcpSignal(pid: number, signal: NodeJS.Signals | 0): McpSignalDelivery {
+  try {
+    process.kill(pid, signal);
+    return 'delivered';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return 'gone';
+    if (code === 'EPERM') return 'refused';
+    throw error;
+  }
 }
 
 /** Builds the in-memory identity for one exact catalog and credential selection. */
@@ -964,6 +974,42 @@ function hasCredentials(input: WorkerMcpGatewayServerInput): boolean {
   );
 }
 
+/** Abort reason the SDK rethrows by identity when the caller cancels one in-flight request. */
+function mcpCancellationReason(): SdkError {
+  return new SdkError(SdkErrorCode.RequestTimeout, 'MCP caller cancelled request.');
+}
+
+/** Returns whether the upstream answered this failed exchange with an HTTP response or a JSON-RPC error. */
+function mcpUpstreamWasContacted(error: unknown): boolean {
+  return error instanceof ProtocolError || error instanceof SdkHttpError;
+}
+
+/**
+ * Pings a legacy session.
+ * A 2026-07-28 session cannot answer ping. That era's request registry requires
+ * `server/discover` and gives it no capability precondition, so the probe sends
+ * that request under the same server timeout.
+ */
+async function probeMcpSession(client: Client, timeoutMs: number): Promise<void> {
+  try {
+    await client.ping(requestOptions(timeoutMs));
+  } catch (error) {
+    if (
+      error instanceof SdkError &&
+      error.code === SdkErrorCode.MethodNotSupportedByProtocolVersion
+    ) {
+      await client.discover(requestOptions(timeoutMs));
+      return;
+    }
+    throw error;
+  }
+}
+
+/** Returns whether one SDK failure is a request timeout rather than a caller cancellation identity. */
+function isMcpTimeout(error: unknown): boolean {
+  return error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout;
+}
+
 /** Returns one hard total timeout for MCP SDK requests. */
 function requestOptions(
   timeout: number,
@@ -987,7 +1033,7 @@ function normalizeMcpError(error: unknown, operation: 'call' | 'list'): WorkerCo
       error.credentialsMaterialized
     );
   }
-  if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+  if (isMcpTimeout(error)) {
     return new WorkerControlGatewayError('mcp-timeout', 'MCP request timed out.', 504);
   }
   return new WorkerControlGatewayError(
@@ -1042,7 +1088,7 @@ function normalizeMcpCallError(
       cancelled
     );
   }
-  if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+  if (isMcpTimeout(error)) {
     return new WorkerMcpGatewayCallError(
       'mcp-timeout',
       'MCP request timed out.',

@@ -5,8 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   ListHumanAttentionResponseSchema,
   StartTaskModeResponseSchema,
@@ -167,6 +166,95 @@ function recordMcpWorkerLineage(
 }
 
 describe('worker MCP routes', () => {
+  it('serves one stateless-era client and one session-era client on the worker MCP route', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-era-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'List generative MCP tools', {
+      id: 'user_local',
+      kind: 'user',
+    });
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-09-03T00:00:00.000Z',
+      id: 'as_mcp_era',
+      message: null,
+      status: 'busy',
+      threadId: turn.threadId,
+      updatedAt: '2026-09-03T00:00:00.000Z',
+      workspaceId: turn.workspaceId,
+    });
+    store.updateTurn(turn.id, { agentSessionId: 'as_mcp_era' });
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSessionId: 'as_mcp_era',
+      agentSetup: createTestAgentSetup(),
+      backend: { kind: 'openshell' },
+      createdAt: '2026-09-03T00:00:00.000Z',
+      requestId: 'req_mcp_era',
+      triggerActor: turn.triggerActor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceRoots: [],
+    });
+    recordMcpWorkerLineage(coreDb, environmentPackage);
+    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+    const app = new Hono();
+    registerWorkerMcpRoutes({
+      app,
+      coreDb,
+      runtimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          agentManifests: [],
+          workspaceMcpServerCatalogs: [],
+        }),
+      store,
+      workerControlGateway: {
+        authenticatePackageToken: vi.fn(() => environmentPackage),
+      } as unknown as WorkerControlGateway,
+      workerMcpGateway,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    });
+    const fetchMcp = (input: RequestInfo | URL, init?: RequestInit) =>
+      app.fetch(new Request(input, init));
+    const sessionClient = new Client(
+      { name: 'session-era', version: '1.0.0' },
+      { versionNegotiation: { mode: 'legacy' } }
+    );
+    const statelessClient = new Client(
+      { name: 'stateless-era', version: '1.0.0' },
+      { versionNegotiation: { mode: { pin: '2026-07-28' } } }
+    );
+    const endpoint = new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-generative');
+    const sessionTransport = new StreamableHTTPClientTransport(endpoint, {
+      fetch: fetchMcp,
+      requestInit: { headers: { authorization: 'Bearer capability-token' } },
+    });
+    const statelessTransport = new StreamableHTTPClientTransport(endpoint, {
+      fetch: fetchMcp,
+      requestInit: { headers: { authorization: 'Bearer capability-token' } },
+    });
+    try {
+      await sessionClient.connect(sessionTransport);
+      await statelessClient.connect(statelessTransport);
+      expect(sessionClient.getProtocolEra()).toBe('legacy');
+      expect(statelessClient.getProtocolEra()).toBe('modern');
+      const sessionTools = await sessionClient.listTools();
+      const statelessTools = await statelessClient.listTools();
+      expect(sessionTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
+      expect(statelessTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
+    } finally {
+      await sessionClient.close().catch(() => undefined);
+      await statelessClient.close().catch(() => undefined);
+      await workerMcpGateway.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('uses the admitted admin bearer for nonmember tool calls and denies revocation or lineage drift', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-admin-'));
     const coreDb = openCoreDb(dataRoot);
@@ -214,6 +302,7 @@ describe('worker MCP routes', () => {
       ],
     };
     const environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: 'as_mcp_admin',
       agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
       backend: { kind: 'openshell' },
@@ -356,6 +445,7 @@ describe('worker MCP routes', () => {
       ],
     };
     let environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: 'as_mcp_route',
       agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
       backend: { kind: 'openshell' },
@@ -394,10 +484,30 @@ describe('worker MCP routes', () => {
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     });
     const client = new Client({ name: 'route-test', version: '1.0.0' });
+    let cancelInFlightToolCall: AbortController | undefined;
     const transport = new StreamableHTTPClientTransport(
       new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
       {
-        fetch: (input, init) => app.fetch(new Request(input, init)),
+        fetch: (input, init) => {
+          const request = new Request(input, init);
+          const cancellation = cancelInFlightToolCall;
+          if (cancellation) {
+            void request
+              .clone()
+              .text()
+              .then((body) => {
+                if (
+                  cancelInFlightToolCall !== cancellation ||
+                  !body.includes('"method":"tools/call"')
+                ) {
+                  return;
+                }
+                cancelInFlightToolCall = undefined;
+                cancellation.abort();
+              });
+          }
+          return app.fetch(request);
+        },
         requestInit: { headers: { authorization: 'Bearer capability-token' } },
       }
     );
@@ -568,6 +678,7 @@ describe('worker MCP routes', () => {
         turn.triggerActor
       );
       environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: 'as_mcp_route_approved',
         agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
         backend: { kind: 'openshell' },
@@ -610,14 +721,18 @@ describe('worker MCP routes', () => {
       const winner = client.callTool({ arguments: { message: 'hello' }, name: 'echo' });
       await vi.waitFor(() => expect(callTool).toHaveBeenCalledTimes(1));
       const loserCancellation = new AbortController();
-      const loser = client.callTool({ arguments: { message: 'hello' }, name: 'echo' }, undefined, {
-        signal: loserCancellation.signal,
-      });
+      // v2 reads its output-schema cache before it writes the request, so a
+      // synchronous abort never reaches the route. Abort from the fetch that
+      // carries this call, while the winner still holds the one-shot grant.
+      cancelInFlightToolCall = loserCancellation;
+      const loser = client.callTool(
+        { arguments: { message: 'hello' }, name: 'echo' },
+        { signal: loserCancellation.signal }
+      );
       const loserOutcome = loser.then(
         () => null,
         (error: unknown) => error
       );
-      loserCancellation.abort();
       await expect(winner).resolves.toMatchObject({
         content: [{ text: 'hello', type: 'text' }],
         structuredContent: { message: 'hello' },
@@ -2049,6 +2164,7 @@ describe('worker MCP routes', () => {
       ],
     };
     let environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: 'as_mcp_failures',
       agentSetup: createTestAgentSetup({
         mcpIds: [
@@ -2340,7 +2456,6 @@ describe('worker MCP routes', () => {
       const callsBeforeCancellation = callTool.mock.calls.length;
       const cancelled = echo.callTool(
         { arguments: { message: 'cancelled' }, name: 'echo' },
-        undefined,
         { signal: cancellation.signal }
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -2393,7 +2508,6 @@ describe('worker MCP routes', () => {
       schemaCancellationDb.sqlite.close();
       const schemaCancelledCall = schemaCancel.callTool(
         { arguments: { message: 'schema-cancel' }, name: 'echo' },
-        undefined,
         { signal: schemaCancellation.signal }
       );
       const schemaCancelledOutcome = schemaCancelledCall.then(
@@ -2578,6 +2692,7 @@ describe('worker MCP routes', () => {
         kind: 'user',
       });
       environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: 'as_mcp_denied',
         agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
         backend: { kind: 'openshell' },
@@ -2873,6 +2988,7 @@ describe('worker MCP routes', () => {
     };
     let activeCatalog = catalog;
     let environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: 'as_mcp_vault',
       agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
       backend: { kind: 'openshell' },
@@ -3102,6 +3218,7 @@ describe('worker MCP routes', () => {
         servers: [{ ...catalog.servers[0], timeoutMs: 2_001 }],
       };
       environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: 'as_mcp_vault',
         agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
         backend: { kind: 'openshell' },

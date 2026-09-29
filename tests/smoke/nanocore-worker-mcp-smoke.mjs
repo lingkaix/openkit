@@ -1057,15 +1057,12 @@ async function settleHarness(client, binding, command, body) {
 /** Loads the official MCP SDK from the NanoCore package that owns the dependency. */
 async function loadMcpSdk() {
   const fromNanoCore = createRequire(join(repoRoot, 'apps/nanocore/package.json'));
-  const [client, transport] = await Promise.all([
-    import(pathToFileURL(fromNanoCore.resolve('@modelcontextprotocol/sdk/client/index.js'))),
-    import(
-      pathToFileURL(fromNanoCore.resolve('@modelcontextprotocol/sdk/client/streamableHttp.js'))
-    ),
-  ]);
+  const client = await import(
+    pathToFileURL(fromNanoCore.resolve('@modelcontextprotocol/client')).href
+  );
   return {
     Client: client.Client,
-    StreamableHTTPClientTransport: transport.StreamableHTTPClientTransport,
+    StreamableHTTPClientTransport: client.StreamableHTTPClientTransport,
   };
 }
 

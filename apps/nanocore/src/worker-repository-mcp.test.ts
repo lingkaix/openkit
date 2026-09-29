@@ -3,8 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -144,6 +143,7 @@ async function fixture(mode: 'auto_allow' | 'require_human_approval' = 'auto_all
     });
     store.updateTurn(turn.id, { agentSessionId: sessionId });
     const environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup({ mcpIds: ['openkit-repository'] }),
       agentSessionId: sessionId,
       backend: { kind: 'openshell' },
