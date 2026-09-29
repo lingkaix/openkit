@@ -2,13 +2,13 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-09-10
+updated: 2026-09-29
 ---
 # Pi Worker Adapter
 
 ## Generic Volume Retention Amendment
 
-[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter locates its data directory in its admitted stable Thread-private home and leaves all contents intact, without a list of known filenames. Generated launch/control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory; closing still invalidates the exact binding/handle and proves writer absence. Retained native histories, memory, configuration and unknown files do not select a conversation or grant tools/credentials.
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter preserves its admitted stable Thread-private data directory intact, without a list of known filenames. For the bounded inference route, Pi reads native configuration from the separate ephemeral launch directory defined below; retained native configuration does not become launch authority. Generated launch/control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory; closing still invalidates the exact binding/handle and proves writer absence. Retained native histories, memory, configuration and unknown files do not select a conversation or grant tools/credentials.
 
 The pinned native command, result parser and feature restrictions remain owned here. Whole-volume retention alone does not enable native session resume, hooks, extensions, saved-session discovery or ambient configuration that the current adapter does not support. A supported exact resume requires the existing current AgentSession proof; otherwise a fresh native conversation may use retained files as data. The existing runtime-state deletion implementation is not yet aligned with this amendment.
 
@@ -18,7 +18,7 @@ The Pi Worker Adapter translates one resolved Agent Environment Package into one
 
 Pi is the third concrete runtime challenge. Its purpose in this architecture is to prove that the worker boundary is not an accidental Codex/OpenCode common denominator.
 
-This adapter remains in the shared registry's `bounded-turn` mode and is already ineligible for the target NanoHost route. It is not eligible for the multi-AgentSession shared-Harness RuntimeTarget until this owning specification accepts and the pinned runtime proves both the route and complete `session-continuity` contracts; the Codex implementation does not implicitly broaden Pi.
+This adapter remains in the shared registry's `bounded-turn` mode. The accepted inference route permits one fresh Turn-private, non-reusable binding through the existing bounded-turn Harness path. It grants no native session continuity or reusable multi-AgentSession RuntimeTarget eligibility; those require a separately accepted and proved `session-continuity` contract.
 
 ## Owns
 
@@ -53,7 +53,7 @@ The current bounded native command uses JSON mode with all ambient resource and 
 pi --mode json --no-approve --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --offline --provider <provider> --model <model> <turn-input>
 ```
 
-The safe child environment sets `PI_CODING_AGENT_DIR` to the admitted stable Thread-private data directory within a retained volume plus `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, and the one manifest-declared standard provider credential environment variable. The adapter spawns the argv directly without a shell and never uses `--api-key`.
+The safe child environment sets `PI_CODING_AGENT_DIR` to the fresh Turn-private ephemeral launch directory, plus `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, and the existing distinct inference credential environment variable. The adapter spawns the argv directly without a shell and never uses `--api-key`.
 
 Pi also provides newline-delimited JSON RPC mode with native commands including prompt, steer, follow-up, abort, session operations, and extension UI request and response. OpenKit does not adopt RPC mode in this change because the accepted product envelope is one bounded worker turn and only interrupt has a current shared control mapping.
 
@@ -67,16 +67,16 @@ The shared harness supplies the adapter with:
 - turn input
 - worker working directory
 - session directory
-- the preferred and allowed logical-model contract plus the sandbox-local `inference.local` binding when a future accepted Pi adapter can consume it
+- the preferred and allowed logical-model contract plus the sandbox-local `inference.local` binding
 - a safe child environment without the worker-control or capability token; any target inference binding uses its own distinct inference credential
 
 The adapter does not choose provider credentials, trust arbitrary project resources, enable network sources, or override AEP policy.
 
 ## Launch Plan
 
-`prepare` returns the exact native launch command, the safe Pi environment above, and a request for bounded exact stdout capture. The plan has no config-artifact field.
+`prepare` materializes the one adapter-owned native model descriptor defined under Provider And Credentials before returning the exact native launch command, safe Pi environment, and request for bounded exact stdout capture. The plan has no config-artifact field; the shared Harness does not interpret Pi configuration.
 
-The fixed fail-closed flags prevent the image from silently loading project extensions, Skills, prompt templates, themes, context files, or saved sessions. `--no-approve` bypasses project-trust approval for the already governed workspace; it is not a general approval-state control. Retained `PI_CODING_AGENT_DIR` bytes survive collection; pinned discovery restrictions and current AEP authority continue to control what can execute. If that version cannot safely isolate an authority-bearing native configuration field, preparation rejects it or uses the existing ephemeral launch override; it does not erase retained data to obtain a clean run.
+The fixed fail-closed flags prevent the image from silently loading project extensions, Skills, prompt templates, themes, context files, or saved sessions. `--no-approve` bypasses project-trust approval for the already governed workspace; it is not a general approval-state control. The ephemeral `PI_CODING_AGENT_DIR` isolates generated configuration from retained native files. Pinned discovery restrictions and current AEP authority continue to control what can execute. Preparation rejects an unsupported authority-bearing field rather than loading retained settings or deleting retained data to obtain a clean run.
 
 No environment variable, AEP extension, test option, or image diagnostic may replace the adapter-produced argv. Tests inject a process runner or a static test adapter without creating a production command override, and NanoCore never constructs a Pi command.
 
@@ -111,17 +111,23 @@ Pi does not need native MCP support to satisfy the OpenKit boundary. The selecte
 
 ## Provider And Credentials
 
-The accepted NanoHost runtime exposes the logical worker-local `inference.local` binding at fixed `http://127.0.0.1:17892/inference/v1`, projected by Sandbox Integration through `/inference/*` with an inference credential distinct from `/worker-control/*` and `/capabilities/*`. Pi must not receive a direct NanoCore endpoint, the worker-control token, an SSH or Gateway-forward route, or a second control path. The pinned Pi runtime still cannot consume that fixed target under this adapter contract, so the target remains unsupported for Pi.
+The accepted NanoHost runtime exposes the logical worker-local `inference.local` binding at fixed `http://127.0.0.1:17892/inference/v1`, projected by Sandbox Integration through `/inference/*` with an inference credential distinct from `/worker-control/*` and `/capabilities/*`. Pi must not receive a direct NanoCore endpoint, the worker-control token, an SSH or Gateway-forward route, or a second control path. The adapter may project this fixed target through the bounded native descriptor below. No upstream subscription credential is passed to Pi.
 
-The authored Agent Manifest owns logical-model preferences, credential requirements, backend-capability requirements, and network needs; the resolved AEP owns the exact allowed logical-model contract, credential bindings, and effective launch policy while the Gateway privately owns Provider routes. Pi `0.85.1` cannot consume the accepted `inference.local` target under the no-generated-file adapter contract. The pinned runtime has no safe custom-base argv or environment binding; its custom-Provider path requires `models.json`. The target binding is therefore unsupported. The adapter must not generate `models.json`, use `--api-key`, patch or fork Pi, expose a concrete Provider route, or silently replace worker-local inference with a direct route.
+The authored Agent Manifest owns logical-model preferences, credential requirements, backend-capability requirements, and network needs; the resolved AEP owns the exact allowed logical-model contract, credential bindings, and effective launch policy while the Gateway privately owns Provider routes. Pi `0.85.1` uses its native `models.json` custom-Provider path to consume this target. The adapter must not use `--api-key`, patch or fork Pi, expose a concrete upstream Provider route, or silently replace worker-local inference with a direct route. The engineer-approved reason for replacing the blanket generated-file prohibition is recorded in [Controlled Pi Model Configuration](../decisions/20260929-pi_controlled_model_configuration.md).
+
+The adapter generates exactly one `models.json` in a fresh Turn-private ephemeral directory. It contains one adapter-owned Provider alias, the fixed `inference.local` base URL, the supported OpenAI-compatible protocol, and the exact admitted logical model with its effective context, output and modality parameters. It is a projection of the current resolved AEP, never a second model catalog or authored configuration source. Arbitrary project files, retained native configuration, caller-provided native JSON, shell-command credential resolvers, and concrete upstream URLs are not merged into it.
+
+The descriptor references the existing inference credential as `$OPENKIT_WORKER_INFERENCE_TOKEN`; it must not contain the credential value, a subscription secret, or a worker-control/capability token. The safe child environment supplies that distinct inference credential. The alias and logical model passed to `--provider` and `--model` must match the final correlated native result under Native Output Mapping.
+
+Generation completes before native spawn. Missing or conflicting selected-model authority, missing effective model parameters or inference credential, an unsupported endpoint/protocol, or a write failure stops preparation before spawn without a direct-provider fallback. Each new attempt regenerates the descriptor from its own admitted inputs; restart does not resume from a stale descriptor. Existing Turn-control cleanup removes the ephemeral directory only after the native process has stopped, including failure and interruption. Retained workspace and native data remain untouched. This adds no durable record, migration, RPC operation, MCP capability, or native-session resume authority.
 
 The historical Pi adapter accepted only the pinned `anthropic` / `claude-sonnet-4-5` direct pair with the manifest-declared `ANTHROPIC_API_KEY` credential binding, which the image smoke proved existed exactly in Pi's catalog. It passed that exact pair through `--provider` and `--model`, rejected zero or multiple routes, and failed before spawn when the pair or credential binding differed. Pi's fuzzy and synthetic model fallback was never accepted as route resolution. This direct credential path is historical evidence, not current NanoHost guidance.
 
 ## Manifest And Image Contract
 
-The repository-owned Pi AgentManifest selects adapter id `pi`, the Pi worker image, native executable paths used by network policy, the exact `anthropic` / `claude-sonnet-4-5` pair and `ANTHROPIC_API_KEY` binding, resource-discovery isolation flags, and only capabilities proven by this specification.
+The repository-owned Pi AgentManifest selects adapter id `pi`, the Pi worker image, native executable paths used by network policy, the logical-model preferences for the admitted inference route, resource-discovery isolation flags, and only capabilities proven by this specification. The active route does not require a direct upstream credential binding.
 
-The Pi image installs the generic worker shim and `@earendil-works/pi-coding-agent@0.85.1`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or OpenCode runtime. Its current smoke check verifies the exact native version, JSON mode, generic shim dry run, the fixed fail-closed flags and environment, the historical direct Provider/model pair, non-root identity, and expected worker filesystem layout. That catalog proof does not make Pi dispatch-ready under the logical-model target.
+The Pi image installs the generic worker shim and `@earendil-works/pi-coding-agent@0.85.1`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or OpenCode runtime. Its smoke check must verify the exact native version, JSON mode, generic shim dry run, fixed resource-isolation flags, ephemeral configuration projection, non-root identity, and expected worker filesystem layout. Image-content proof alone does not make Pi dispatch-ready without a real bounded inference Turn.
 
 Pi-specific install commands, binary paths, resource flags, event fixtures, and version pins live only in the Pi AgentManifest, adapter, image, specification, and tests.
 
@@ -155,23 +161,25 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 Required adapter tests cover:
 
 - exact JSON-mode command construction
-- trusted-relay rejection, exact pinned provider/model enforcement, `--offline`, and absence of `--api-key` or config artifacts
+- exact admitted inference endpoint, adapter-owned Provider alias and logical model; rejection of mixed/direct routes; `--offline` and absence of `--api-key` or a shared config-artifact envelope
+- descriptor parameters derived from the admitted model, environment-variable credential reference without credential bytes, and rejection of missing or conflicting inputs before spawn
+- fresh configuration on a new attempt, preparation write failure, and cleanup after process termination on success, failure and interruption
 - final settled assistant extraction and ordered text parts from one pinned success fixture
 - fail-closed retry-intermediate, missing-settlement, contradictory-correlation, provider/model mismatch, error, abort, and interruption cases in one compact table
 - unknown event tolerance
 - malformed JSON, missing final output, and byte-bound failures
 - non-zero exit and redacted diagnostics
 - exact fail-closed resource, approval, session, provider, model, update, and telemetry controls
-- retained Thread-private `PI_CODING_AGENT_DIR` with current launch controls proving unsupported global prompts, settings, packages and stale auth cannot become active authority; close preserves its opaque bytes
+- ephemeral `PI_CODING_AGENT_DIR` isolation proving retained prompts, settings, models, packages and stale auth cannot become active authority; close preserves all retained opaque bytes
 - conformance with the shared `bounded-turn` adapter contract also used by OpenCode
 
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.
 
-Required image smoke covers pinned `pi --version`, JSON mode help, generic shim entrypoint, non-root user, the fixed fail-closed flags and environment, exact manifest-advertised provider/model catalog pairs, and adapter dry run.
+Required image smoke covers pinned `pi --version`, JSON mode help, generic shim entrypoint, non-root user, the fixed fail-closed flags and environment, the generated Provider/logical-model projection without upstream credentials, and adapter dry run. A real bounded Pi Task must execute verifiable repository tools, produce a reviewable change through the existing review/apply path, and expose consistent terminal results in Web and the public Skill before the route is claimed usable.
 
 ## Implementation Evidence And Limit
 
-The Pi `0.85.1` bounded-turn adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented for the legacy direct `anthropic` / `claude-sonnet-4-5` route. Pi remains ineligible for the target NanoHost route and shared-Harness RuntimeTarget because neither the accepted route nor a session-continuity adapter is implemented. The 2026-07-21 arm64 image build and complete smoke, and the earlier minimal arm64 OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, are historical evidence for the previous Pi `0.80.7` image contents. They are not 0.85.1 image evidence and prove neither the target NanoHost lifecycle nor RelayStream plus nested HTTP/2 feasibility. On 2026-09-05 this worktree built and smoked unique local tag `openkit/worker-pi:codex-pi-refresh-20260905` on Docker Engine 29.5.2 linux/aarch64 (image id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745`, smoke exit 0, native version `0.85.0`). That 0.85.0 unique-tag proof is historical for the previous pin. On 2026-09-06 this worktree built and smoked unique local tag `openkit/worker-pi:pi-0.85.1-refresh-20260906` on Docker Engine 29.5.2 linux/arm64 (image id `sha256:6cd46bcc208092417082152cf022a1818674f21bdcc921b02d6424c8e60662de`, smoke exit 0, native version `0.85.1`). That local unique-tag proof does not replace stock OpenShell, amd64 cross-build, real-provider, worker-control, heartbeat, interruption, reconnect, or recovery gates.
+The Pi `0.85.1` bounded-turn adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented for the legacy direct `anthropic` / `claude-sonnet-4-5` route. The controlled descriptor route is accepted but not yet implemented or live-verified. Pi remains disabled until its bounded route is proved; reusable shared-Harness eligibility additionally requires session continuity, which this amendment does not adopt. The 2026-07-21 arm64 image build and complete smoke, and the earlier minimal arm64 OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, are historical evidence for the previous Pi `0.80.7` image contents. They are not 0.85.1 image evidence and prove neither the target NanoHost lifecycle nor RelayStream plus nested HTTP/2 feasibility. On 2026-09-05 this worktree built and smoked unique local tag `openkit/worker-pi:codex-pi-refresh-20260905` on Docker Engine 29.5.2 linux/aarch64 (image id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745`, smoke exit 0, native version `0.85.0`). That 0.85.0 unique-tag proof is historical for the previous pin. On 2026-09-06 this worktree built and smoked unique local tag `openkit/worker-pi:pi-0.85.1-refresh-20260906` on Docker Engine 29.5.2 linux/arm64 (image id `sha256:6cd46bcc208092417082152cf022a1818674f21bdcc921b02d6424c8e60662de`, smoke exit 0, native version `0.85.1`). That local unique-tag proof does not replace stock OpenShell, amd64 cross-build, real-provider, worker-control, heartbeat, interruption, reconnect, or recovery gates.
 
 This local unique-tag smoke proves image contents and adapter dry-run for the current pin. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
 
@@ -188,6 +196,7 @@ Pi proves the intended extensibility only when it is added as one AgentManifest,
 ## Upstream Evidence
 
 - `https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/README.md`
+- `https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/models.md`
 - `https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/json.md`
 - `https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/rpc.md`
 - `https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/ai/src/types.ts`
