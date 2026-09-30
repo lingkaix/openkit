@@ -61,6 +61,7 @@ import type {
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
 import { projectOpenShellWorkerPolicy } from './openshell-policy.js';
+import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import type { TurnExecutor } from './types.js';
 import {
   getWorkerBackendSession,
@@ -146,6 +147,8 @@ export interface TurnExecutorFactoryEnv {
 
 /** Options for creating the configured NanoCore turn executor. */
 export interface CreateConfiguredTurnExecutorOptions {
+  /** Reads active configuration for resolution-time public-route admission. */
+  readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined;
   /** Optional Core database for durable workspace synchronization records. */
   coreDb?: CoreDb | undefined;
   /** Environment variables to read. Defaults to `process.env`. */
@@ -229,7 +232,8 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.workerControlGateway,
     options.vaultBackend,
     options.store,
-    options.workspaceMutationAdmission
+    options.workspaceMutationAdmission,
+    options.readRuntimeConfig
   );
 }
 
@@ -251,7 +255,8 @@ function createNanoHostWorkerLifecycleRuntime(
   workerControlGateway?: WorkerControlGateway | undefined,
   vaultBackend?: (() => VaultBackend) | undefined,
   sharedStore?: FsStore | undefined,
-  workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined
+  workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined,
+  readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined
 ): ConfiguredWorkerLifecycleRuntime {
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
@@ -276,6 +281,7 @@ function createNanoHostWorkerLifecycleRuntime(
             }),
           backend,
           coreDb,
+          ...(readRuntimeConfig ? { readRuntimeConfig } : {}),
           resolveResidentWorkerStorageWorkSlotRef: (environmentPackage) =>
             backend.resolveResidentWorkerStorageWorkSlotRef(environmentPackage),
           ...(vaultBackend ? { vaultBackend } : {}),

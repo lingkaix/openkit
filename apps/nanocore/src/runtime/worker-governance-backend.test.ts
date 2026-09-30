@@ -13,7 +13,9 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import { projectOpenShellWorkerPolicy } from './openshell-policy.js';
 import {
+  openShellNetworkEndpointsFromPackagePolicy,
   prepareNanoHostContextPackageImports,
   resolveNanoHostExportPath,
 } from './worker-governance-backend.js';
@@ -231,3 +233,55 @@ function sortJsonObjectKeys(value: unknown, descending = false): unknown {
     ])
   );
 }
+
+describe('public exact grant materialization', () => {
+  it('projects only the existing enforceable tuple and no public request inspector', () => {
+    const environmentPackage = createNanoHostPackage();
+    const rule = {
+      action: 'allow',
+      id: 'public-search',
+      host: 'search.example.com',
+      port: 443,
+      protocol: 'rest',
+      purpose: 'Public search',
+      scope: 'session',
+      binaries: ['/usr/local/bin/node'],
+      rules: [{ method: 'POST', path: '/mcp' }],
+      publicAccess: { kind: 'credential-free-non-llm' },
+    };
+    const marked = AgentEnvironmentPackageSchema.parse({
+      ...environmentPackage,
+      policy: {
+        ...environmentPackage.policy,
+        network: { default: 'deny', enforcement: 'openshell', rules: [rule] },
+      },
+    });
+    const endpoints = openShellNetworkEndpointsFromPackagePolicy(marked);
+    expect(endpoints).toEqual([
+      {
+        name: 'public_search',
+        host: rule.host,
+        port: rule.port,
+        protocol: 'rest',
+        binaries: rule.binaries,
+        rules: rule.rules,
+      },
+    ]);
+    const policy = projectOpenShellWorkerPolicy({ additionalNetworkEndpoints: endpoints });
+    expect(policy.networkPolicies.public_search).toEqual({
+      name: 'public_search',
+      binaries: [{ path: '/usr/local/bin/node' }],
+      endpoints: [
+        {
+          enforcement: 'enforce',
+          host: rule.host,
+          port: rule.port,
+          protocol: 'rest',
+          rules: [{ allow: { method: 'POST', path: '/mcp' } }],
+        },
+      ],
+    });
+    expect(policy.networkMiddlewares).toEqual({});
+    expect(marked.credentials.declarations).toEqual([]);
+  });
+});

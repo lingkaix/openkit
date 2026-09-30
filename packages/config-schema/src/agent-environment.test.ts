@@ -1897,3 +1897,73 @@ describe('agent environment package schema', () => {
     ).toThrow();
   });
 });
+
+describe('public network grant classification', () => {
+  const grant = {
+    id: 'public-search',
+    host: 'search.example.com',
+    port: 443,
+    purpose: 'Public search',
+    binaries: ['/usr/local/bin/node'],
+    protocol: 'rest',
+    rules: [{ method: 'POST', path: '/mcp' }],
+    publicAccess: { kind: 'credential-free-non-llm' },
+  };
+
+  it('preserves the closed marker on an exact REST grant', () => {
+    const parsed = WorkerSandboxAccessSchema.parse({ network: [grant] });
+    expect(parsed.network[0]).toMatchObject(grant);
+  });
+
+  it.each([
+    { publicAccess: { kind: 'credentialed' } },
+    { publicAccess: { kind: 'credential-free-non-llm', request: {} } },
+    { access: 'read-only', rules: undefined },
+    { rules: [] },
+    { protocol: 'https' },
+  ])('rejects unsupported public authority %j', (change) => {
+    expect(
+      WorkerSandboxAccessSchema.safeParse({ network: [{ ...grant, ...change }] }).success
+    ).toBe(false);
+  });
+
+  it('rejects unknown public authority in resolved policy evidence', () => {
+    const fixture = openshellPackageFixture() as { policy: { network: { rules: unknown[] } } };
+    fixture.policy.network.rules = [
+      { ...grant, action: 'allow', publicAccess: { kind: 'unknown' } },
+    ];
+    expect(AgentEnvironmentPackageSchema.safeParse(fixture).success).toBe(false);
+  });
+});
+
+describe('resolved public network evidence', () => {
+  const rule = {
+    action: 'allow',
+    id: 'public-search',
+    host: 'search.example.com',
+    port: 443,
+    purpose: 'Public search',
+    binaries: ['/usr/local/bin/node'],
+    protocol: 'rest',
+    scope: 'session',
+    rules: [{ method: 'POST', path: '/mcp' }],
+    publicAccess: { kind: 'credential-free-non-llm' },
+  };
+
+  it('retains the recognized marker in parsed immutable policy', () => {
+    const fixture = openshellPackageFixture() as { policy: { network: { rules: unknown[] } } };
+    fixture.policy.network.rules = [rule];
+    expect(AgentEnvironmentPackageSchema.parse(fixture).policy.network?.rules).toEqual([rule]);
+  });
+
+  it.each([
+    { action: 'deny' },
+    { publicAccess: { kind: 'credential-free-non-llm', request: {} } },
+    { access: 'read-only' },
+    { rules: [] },
+  ])('refuses unsupported resolved authority %j', (change) => {
+    const fixture = openshellPackageFixture() as { policy: { network: { rules: unknown[] } } };
+    fixture.policy.network.rules = [{ ...rule, ...change }];
+    expect(AgentEnvironmentPackageSchema.safeParse(fixture).success).toBe(false);
+  });
+});

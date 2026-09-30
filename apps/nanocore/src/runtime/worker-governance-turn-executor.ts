@@ -81,6 +81,7 @@ import {
   resolveAgentEnvironmentPackageMetadata,
 } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
+import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { generateUuidV7 } from './session-id.js';
 import type {
   AgentSessionReadModel,
@@ -626,6 +627,8 @@ export function acceptPreparedWorkerTurnContextPackage(input: {
  * Options for the worker-governance-backed turn executor.
  */
 export interface WorkerGovernanceTurnExecutorOptions {
+  /** Active configuration snapshot for resolution-time public-route admission. */
+  readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined;
   /** Optional durable completion barrier used after a detached backend launch. */
   awaitWorkerCompletion?:
     | ((
@@ -685,6 +688,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         leaseId: string
       ) => Promise<AcceptedWorkerFinalStatus>)
     | null;
+  private readonly readRuntimeConfig: (() => PublicNetworkConfiguration) | null;
   private readonly backend: WorkerGovernanceBackend;
   private readonly coreDb: CoreDb | null;
   private readonly createAgentSessionId: () => string;
@@ -705,6 +709,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   public constructor(options: WorkerGovernanceTurnExecutorOptions) {
     this.awaitWorkerCompletion = options.awaitWorkerCompletion ?? null;
     this.backend = options.backend;
+    this.readRuntimeConfig = options.readRuntimeConfig ?? null;
     this.capabilities = {
       approvals: false,
       artifacts: true,
@@ -1249,6 +1254,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         agentSessionId,
         agentSetup: input.agentSetup,
         backend: { kind: 'openshell' },
+        ...(this.readRuntimeConfig ? { readRuntimeConfig: this.readRuntimeConfig } : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
         requestId: input.requestId,
         turn: input.turn,
@@ -1415,6 +1421,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const credentialReceipts: CreateVaultInjectionReceiptInput[] = [];
       const resolvedEnvironmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage,
+        ...(this.readRuntimeConfig ? { readRuntimeConfig: this.readRuntimeConfig } : {}),
         agentSetup: context.agentSetup,
         agentSessionId: resolvedAgentSessionId,
         backend: { kind: 'openshell' },

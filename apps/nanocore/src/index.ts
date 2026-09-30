@@ -319,6 +319,8 @@ const bootResult = await runBootPhases({
         );
         workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
           coreDb: recoveryCoreDb,
+          // Defer snapshot reads until admission, after the shared manager is initialized below.
+          readRuntimeConfig: () => runtimeConfigManager.current(),
           nanoHostSessionDispatch,
           store: recoveryStore,
           vaultBackend: () =>

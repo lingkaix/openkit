@@ -57,3 +57,5 @@ AEP `observability.captureCoverage` uses the shared Worker protocol schema as a 
 `openkit.thread-visibility.v1` gates explicit Thread audience and private-owner semantics in canonical record envelopes.
 
 `server.jsonc.policy.workspaceApprovalModes` maps exact Workspace IDs to strict per-action modes for `repo.push`: `require_human_approval` or `auto_allow`. Missing entries require human approval. The policy catalog marks this deployment-owned setting restart-required and forbids request or Workspace overrides.
+
+Exact REST network grants may carry the closed `publicAccess: { kind: 'credential-free-non-llm' }` admission marker. Presets and unsupported marker semantics fail closed. Resolved AEP policy preserves the marker as immutable evidence; NanoCore owns current classification, while OpenShell receives only the existing exact network tuple. See the accepted public-route decision and Agent Manifest And AEP Resolution owner when integrating the frozen communication redesign amendments.

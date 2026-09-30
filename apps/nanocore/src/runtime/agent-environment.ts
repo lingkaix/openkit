@@ -48,6 +48,11 @@ import {
   OPENKIT_REPOSITORY_MCP_ID,
 } from './openkit-repository-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
+import {
+  assertCurrentPublicNetworkGrants,
+  canonicalPublicNetworkHost,
+  type PublicNetworkConfiguration,
+} from './public-network-grants.js';
 import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 
 type Turn = z.infer<typeof TurnSchema>;
@@ -118,6 +123,8 @@ export interface ResolveAgentEnvironmentPackageInput {
   agentSessionId: string;
   /** Container backend target for the package. */
   backend?: ResolveAgentEnvironmentBackendInput;
+  /** Reads current public-route authority from the active configuration snapshot. */
+  readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined;
   /** Optional Core database used to derive durable vault grants into package metadata. */
   coreDb?: CoreDb;
   /** ISO timestamp used for deterministic package tests. */
@@ -328,6 +335,45 @@ function resolveOpenShellAgentEnvironmentPackage(
     filesystem: [],
     network: [],
   };
+  const publicGrants = sandboxAccess.network.filter(
+    (grant) => 'publicAccess' in grant && grant.publicAccess !== undefined
+  );
+  if (publicGrants.length > 0) {
+    if (!input.coreDb || !input.readRuntimeConfig) {
+      throw new Error('Public network current admission metadata is required.');
+    }
+    const lineage = {
+      workspaceId: input.turn.workspaceId,
+      threadId: input.turn.threadId,
+      turnId: input.turn.id,
+      triggerActor,
+    };
+    const authority =
+      credentialResolution === 'metadata-only'
+        ? currentScheduledTurnWorkspaceAuthority(input.coreDb, lineage, 'runtime.launch', true)
+        : currentWorkerLineageWorkspaceAuthority(
+            input.coreDb,
+            {
+              ...lineage,
+              agentSessionId: input.agentSessionId,
+              packageSnapshotId: `aepsnap_${input.turn.id}_${input.agentSessionId}`,
+            },
+            'runtime.launch',
+            true
+          );
+    if (!authority) throw new Error('Public network current actor authority is unavailable.');
+    assertCurrentPublicNetworkGrants(
+      {
+        agentId: manifest.id,
+        profileId: input.agentSetup.profileId,
+        logicalModelId: logicalModels.preferredLogicalModelId,
+        workspaceId: input.turn.workspaceId,
+        sandbox: sandboxAccess,
+        mcp: manifest.mcp,
+      },
+      input.readRuntimeConfig()
+    );
+  }
   const backendRequirements = sandboxAccess.backend;
   const requiredCapabilities = backendRequirements?.requiredCapabilities ?? [];
   const workspaceRoot = '/workspace';
@@ -652,7 +698,13 @@ function resolveOpenShellAgentEnvironmentPackage(
         rules: sandboxAccess.network.map((grant) => ({
           action: 'allow' as const,
           binaries: grant.binaries,
-          host: grant.host,
+          host:
+            'publicAccess' in grant && grant.publicAccess
+              ? canonicalPublicNetworkHost(grant.host)
+              : grant.host,
+          ...('publicAccess' in grant && grant.publicAccess
+            ? { publicAccess: { ...grant.publicAccess } }
+            : {}),
           id: grant.id,
           port: grant.port,
           protocol: grant.protocol,

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,14 @@ import {
   type WorkerSandboxAccess,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import {
+  createSourceFile,
+  forEachChild,
+  isCallExpression,
+  type Node,
+  ScriptTarget,
+  transpileModule,
+} from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
@@ -18,6 +26,10 @@ import {
 } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-catalog.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
@@ -26,6 +38,7 @@ import {
 } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -41,6 +54,9 @@ import {
   resolveAgentSessionCompatibilityKey,
 } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
+import type { PublicNetworkConfiguration } from './public-network-grants.js';
+import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
+import type { PrepareAgentSessionForTurnInput } from './types.js';
 
 const USER_TRIGGER_ACTOR = { kind: 'user', id: 'user_local' } as const satisfies ActorRef;
 const AUTOMATION_TRIGGER_ACTOR = {
@@ -1930,5 +1946,356 @@ describe('agent environment package resolver', () => {
         }),
       ])
     );
+  });
+});
+
+describe('public network AEP admission', () => {
+  const network = [
+    {
+      id: 'public-search',
+      host: 'search.example.com',
+      port: 443,
+      protocol: 'rest' as const,
+      purpose: 'Public search',
+      scope: 'session' as const,
+      binaries: ['/usr/local/bin/node'],
+      rules: [{ method: 'POST' as const, path: '/mcp' }],
+      publicAccess: { kind: 'credential-free-non-llm' as const },
+    },
+  ];
+
+  it('admits public grants through the boot-supplied runtime and observes active configuration reload', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-public-boot-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const store = createDemoStore({ dataRoot });
+    const turn = createTurnFixture('Public boot admission', coreDb);
+    const agentSetup = createTestSetup({ network });
+    const gatewayConfig = createTestGatewayConfig({
+      logicalModelId: 'reasoning',
+      privateRoute: { providerProfileId: 'agent-openrouter', providerModel: 'openai/gpt-5.1' },
+    });
+    const provider = {
+      id: 'agent-openrouter',
+      vendor: 'openrouter',
+      kind: 'gateway' as const,
+      displayName: 'Gateway',
+      baseUrl: 'https://provider.example.com/v1',
+      models: ['openai/gpt-5.1'],
+    };
+    const manager = createRuntimeConfigManager({
+      dataRoot,
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+        dataRoot,
+        openKitConfig: { mode: 'local' },
+        agentManifests: [agentSetup.manifest],
+        gatewayConfig,
+        providerRegistry: new ProviderRegistry([provider]),
+      }),
+    });
+    const reads = vi.spyOn(manager, 'current');
+    // Evaluate the actual boot call, rather than reproducing its option list in the test.
+    const source = createSourceFile(
+      'index.ts',
+      readFileSync(new URL('../index.ts', import.meta.url), 'utf8'),
+      ScriptTarget.Latest,
+      true
+    );
+    const calls: string[] = [];
+    const visit = (node: Node): void => {
+      if (
+        isCallExpression(node) &&
+        node.expression.getText(source) === 'createConfiguredWorkerLifecycleRuntime'
+      )
+        calls.push(node.getText(source));
+      forEachChild(node, visit);
+    };
+    visit(source);
+    expect(calls).toHaveLength(1);
+    const javascript = transpileModule(
+      `const runtime = ${calls[0]}; const runtimeConfigManager = manager; return runtime;`,
+      { compilerOptions: { target: ScriptTarget.ES2022 } }
+    ).outputText;
+    const runtime = new Function(
+      'createConfiguredWorkerLifecycleRuntime',
+      'manager',
+      'recoveryCoreDb',
+      'recoveryStore',
+      'nanoHostSessionDispatch',
+      'vaultUnlockState',
+      'requireBootValue',
+      'bootWorkerControlGateway',
+      'workspaceMutationAdmission',
+      javascript
+    )(
+      createConfiguredWorkerLifecycleRuntime,
+      manager,
+      coreDb,
+      store,
+      undefined,
+      undefined,
+      (value: unknown) => value,
+      undefined,
+      undefined
+    ) as ReturnType<typeof createConfiguredWorkerLifecycleRuntime>;
+    expect(reads).not.toHaveBeenCalled();
+    const preview = runtime.turnExecutor as unknown as {
+      previewAgentEnvironmentPackage: (
+        id: string,
+        input: PrepareAgentSessionForTurnInput
+      ) => ReturnType<typeof resolveAgentEnvironmentPackageMetadata>;
+    };
+    const input: PrepareAgentSessionForTurnInput = {
+      agentSetup,
+      freshAgentSessionId: 'session_public_boot',
+      requestId: null,
+      turn,
+      turnInput: 'Public boot admission',
+      workspaceCwd: null,
+      workspaceRoots: [],
+    };
+    try {
+      createApp({
+        coreDb,
+        dataRoot,
+        store,
+        mode: 'local',
+        runtimeConfigManager: manager,
+        workerLifecycleRuntime: runtime,
+        turnExecutor: runtime.turnExecutor,
+      });
+      expect(
+        preview.previewAgentEnvironmentPackage(input.freshAgentSessionId, input).policy.network
+          ?.rules
+      ).toContainEqual({ ...network[0], action: 'allow' });
+      expect(reads).toHaveBeenCalled();
+      mkdirSync(join(dataRoot, 'config', 'agents'), { recursive: true });
+      mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
+      writeFileSync(
+        join(dataRoot, 'config', 'agents', 'public.agent.jsonc'),
+        JSON.stringify({
+          ...agentSetup.manifest,
+          sandbox: { ...agentSetup.manifest.sandbox, network: [] },
+        })
+      );
+      writeFileSync(
+        join(dataRoot, 'config', 'providers', 'agent-openrouter.provider.jsonc'),
+        JSON.stringify(provider)
+      );
+      writeFileSync(join(dataRoot, 'config', 'gateway.jsonc'), JSON.stringify(gatewayConfig));
+      const version = manager.current().version;
+      expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+      expect(manager.current().version).toBeGreaterThan(version);
+      expect(() =>
+        preview.previewAgentEnvironmentPackage(input.freshAgentSessionId, input)
+      ).toThrow(/removed or changed/i);
+    } finally {
+      reads.mockRestore();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves immutable public evidence and rechecks current grant removal and actor revocation', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-public-grant-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_local',
+      tokenId: 'token_public',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const turn = createTurnFixture('Public endpoint', coreDb, USER_TRIGGER_ACTOR, 'token_public');
+    const agentSetup = createTestSetup({ network });
+    const current: PublicNetworkConfiguration = {
+      agentManifests: [agentSetup.manifest],
+      gatewayConfig: {
+        schemaVersion: 1 as const,
+        enabled: true,
+        defaultLogicalModelId: 'reasoning',
+        requiredFeatures: [],
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction' as const, compactThreshold: 8000 }],
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'agent-openrouter',
+                providerModel: 'openai/gpt-5.1',
+              },
+            ],
+          },
+        ],
+      },
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          vendor: 'openrouter',
+          kind: 'gateway',
+          displayName: 'Gateway',
+          baseUrl: 'https://provider.example.com/v1',
+          models: ['openai/gpt-5.1'],
+        },
+      ]),
+      openKitConfig: { mode: 'local' as const },
+      workspaceConfigs: [],
+      workspaceMcpServerCatalogs: [],
+    };
+    const input = {
+      agentSetup,
+      agentSessionId: 'session_public',
+      backend: { kind: 'openshell' as const },
+      coreDb,
+      captureCoverage: { scope: 'server' as const, value: 'off' as const },
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+      readRuntimeConfig: () => current,
+    };
+    try {
+      const preview = resolveAgentEnvironmentPackageMetadata(input);
+      expect(preview.policy.network?.rules).toContainEqual({ ...network[0], action: 'allow' });
+      leaseCredentialFixture(coreDb, turn, 'session_public');
+      const resolved = resolveAgentEnvironmentPackage(input);
+      const canonicalBytes = JSON.stringify(resolved);
+      const uppercaseSetup = createTestSetup({
+        network: [{ ...network[0]!, host: 'SEARCH.EXAMPLE.COM.' }],
+      });
+      expect(() =>
+        resolveAgentEnvironmentPackage({ ...input, agentSetup: uppercaseSetup })
+      ).not.toThrow();
+      expect(
+        resolveAgentEnvironmentPackage({ ...input, agentSetup: uppercaseSetup }).policy.network
+          ?.rules
+      ).toContainEqual({ ...network[0], action: 'allow' });
+
+      const staleSetup = createTestSetup({
+        network: [
+          ...network,
+          {
+            id: 'stale-broader',
+            host: network[0]!.host,
+            port: 443,
+            protocol: 'rest',
+            purpose: 'Stale broad route',
+            scope: 'session',
+            binaries: ['/usr/local/bin/node'],
+            access: 'read-write',
+          },
+        ],
+      });
+      expect(() => resolveAgentEnvironmentPackage({ ...input, agentSetup: staleSetup })).toThrow(
+        /overlap/i
+      );
+
+      current.agentManifests = [staleSetup.manifest];
+      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/overlap/i);
+      current.agentManifests = [agentSetup.manifest];
+
+      expect(resolved.policy.network?.rules).toContainEqual({ ...network[0], action: 'allow' });
+      const compatibilityKey = resolveAgentSessionCompatibilityKey(input);
+      const { publicAccess: _publicAccess, ...ordinary } = network[0]!;
+
+      expect(
+        resolveAgentSessionCompatibilityKey({
+          ...input,
+          agentSetup: createTestSetup({ network: [ordinary] }),
+        })
+      ).not.toBe(compatibilityKey);
+
+      expect(() =>
+        resolveAgentEnvironmentPackage({ ...input, readRuntimeConfig: undefined })
+      ).toThrow(/metadata is required/i);
+
+      current.agentManifests = [];
+      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/current Agent authority/i);
+      current.agentManifests = [agentSetup.manifest];
+      const currentGateway = current.gatewayConfig;
+      current.gatewayConfig = { ...currentGateway, logicalModels: [] };
+      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/current setup metadata/i);
+      current.gatewayConfig = currentGateway;
+      current.agentManifests = [
+        createTestSetup({
+          network: [{ ...network[0]!, rules: [{ method: 'POST', path: '/other' }] }],
+        }).manifest,
+      ];
+      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/removed or changed/i);
+      current.agentManifests = [agentSetup.manifest];
+      for (const config of [
+        { mode: 'local' as const, server: { publicBaseUrl: 'https://search.example.com' } },
+        { mode: 'local' as const, server: { bind: { host: 'search.example.com' } } },
+        {
+          mode: 'local' as const,
+          nanohost: { rendezvousUrl: 'https://search.example.com/control' },
+        },
+        {
+          mode: 'local' as const,
+          nanohost: {
+            rendezvousUrl: 'https://other.example.com/control',
+            bind: { host: 'search.example.com', port: 7443 },
+          },
+        },
+      ]) {
+        current.openKitConfig = config as PublicNetworkConfiguration['openKitConfig'];
+        expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/excluded/i);
+      }
+      current.openKitConfig = { mode: 'local' };
+
+      current.agentManifests = [createTestSetup().manifest];
+
+      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/Public network/i);
+      expect(() => resolveAgentEnvironmentPackageMetadata(input)).toThrow(/Public network/i);
+      current.agentManifests = [agentSetup.manifest];
+      current.providerRegistry = new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          vendor: 'openrouter',
+          kind: 'gateway',
+          displayName: 'Gateway',
+          baseUrl: 'https://search.example.com/llm',
+          models: ['openai/gpt-5.1'],
+        },
+      ]);
+      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/excluded/i);
+      current.providerRegistry = new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          vendor: 'openrouter',
+          kind: 'gateway',
+          displayName: 'Gateway',
+          baseUrl: 'https://provider.example.com/v1',
+          models: ['openai/gpt-5.1'],
+        },
+      ]);
+      expect(resolveAgentSessionCompatibilityKey(input)).toBe(compatibilityKey);
+      revokeOpenKitAccessTokenRecord(coreDb, 'token_public', new Date());
+
+      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/authority/i);
+      expect(JSON.stringify(resolved)).toBe(canonicalBytes);
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses missing current admission metadata without falling back to ordinary grants', () => {
+    const input = {
+      captureCoverage: { scope: 'server' as const, value: 'off' as const },
+      agentSetup: createTestSetup({ network }),
+      agentSessionId: 'session_public_missing',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('No current metadata'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/Public network/i);
   });
 });

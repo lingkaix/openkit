@@ -821,6 +821,11 @@ const WORKER_SANDBOX_NETWORK_GRANT_BASE_SCHEMA = z
   })
   .strict();
 
+/** Closed admission-time public endpoint classification; it defines no request inspection. */
+const WorkerSandboxPublicAccessSchema = z
+  .object({ kind: z.literal('credential-free-non-llm') })
+  .strict();
+
 /**
  * User-authored network grant for one worker sandbox launch.
  */
@@ -835,6 +840,7 @@ export const WorkerSandboxNetworkGrantSchema = z
       access: z.never().optional(),
       protocol: z.literal('rest').default('rest'),
       rules: z.array(WorkerSandboxRestRuleSchema).min(1),
+      publicAccess: WorkerSandboxPublicAccessSchema.optional(),
     }),
   ])
   .superRefine((value, ctx) => {
@@ -1136,6 +1142,16 @@ export const AgentEnvironmentPackageSchema = z
     for (const [ruleIndex, rule] of (value.policy.network?.rules ?? []).entries()) {
       if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
         continue;
+      }
+      if ('publicAccess' in rule) {
+        const { action, ...grant } = rule as Record<string, unknown>;
+        if (action !== 'allow' || !WorkerSandboxNetworkGrantSchema.safeParse(grant).success) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Public network policy requires a recognized exact REST grant.',
+            path: ['policy', 'network', 'rules', ruleIndex],
+          });
+        }
       }
       const binaries = (rule as { binaries?: unknown }).binaries;
       if (!Array.isArray(binaries)) {
