@@ -29,6 +29,7 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @openkit/nanocore... --filter @openkit/web... build
 
 # The workspace does not enable injected workspace packages, so pnpm v10 needs legacy deploy for a production nanocore tree.
+# Pin Zod exactly across the workspace because legacy deploy re-resolves schema-package ranges independently of NanoCore's locked converter; remove the pin once App deploy uses the shared lockfile.
 RUN pnpm --filter @openkit/nanocore deploy --prod --legacy /deploy/nanocore
 
 FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS runtime

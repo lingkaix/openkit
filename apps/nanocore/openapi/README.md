@@ -20,3 +20,5 @@ pnpm --filter @openkit/nanocore run openapi:check
 The JSON artifact is not the source of truth. Runtime handlers register by operation id and derive their method and path from the same catalog that generates the artifact. Focused tests compare the default app's explicit GET, POST, PUT, PATCH, and DELETE entries with documented operations in both directions, require a closed classification for every inspected non-App route, and enforce selected shared-schema, security, error, and reference invariants. Middleware, Hono `ALL` entries, and conditionally mounted browser-auth routes remain covered by their owning tests.
 
 The generated document identifies the App API and Core protocol versions separately, includes a projection-content digest, and is instantiated once at module load for reuse by each NanoCore process. The shared schema packages and operation catalog remain canonical.
+
+Regenerate and validate this artifact when upgrading the shared schema packages' Zod dependency: JSON Schema emission can change with the converter version even when the authored schemas are unchanged.

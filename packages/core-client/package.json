@@ -20,7 +20,7 @@
   "dependencies": {
     "@openkit/app-api-schemas": "workspace:*",
     "@openkit/protocol": "workspace:*",
-    "zod": "^4.3.6"
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

@@ -8,6 +8,10 @@ The local `scripts/docker/run-app.sh` seed helper authors an explicit 8,000-toke
 
 The entrypoint probes NanoCore's loopback App HTTP/1.1 health endpoint before starting Caddy. Caddy uses that listener for public app routes and does not publish or connect to the separate private NanoHost HTTP/2 listener.
 
+`scripts/docker/smoke-image.sh app` checks packaged tools and recovery commands, then starts the ordinary entrypoint with a disposable Data Root. It requires public `/api/health` within 60 seconds and checks the SPA root before stopping the server and removing its temporary data. This exercises schema conversion using the production dependency layout created by `pnpm deploy`.
+
+Workspace Zod 4 dependencies pin 4.6.5 exactly so legacy deploy cannot resolve a newer shared schema implementation than NanoCore's locked JSON Schema converter. The separate root A2UI overrides retain Zod 3.25.76 for those packages.
+
 The runtime image exposes the compiled stopped-server administrator recovery command as `/usr/local/bin/openkit-operator` and the stopped-server data-root restore command as `/usr/local/bin/openkit-restore`. Recovery acquires the ordinary NanoCore data-root lock and refuses a live deployment. Restore reuses the existing restore helper, refuses when `server/runtime/nanocore.lock` is present, and does not start NanoCore. The image entrypoint does not invoke either command.
 
 Live `backup.create` writes `/data/openkit.backups/<backupId>`, a sibling of the Data Root, not a directory inside the `/data/openkit` mount. Persist that sibling on the host (`<data-root>.backups`) with the running App.

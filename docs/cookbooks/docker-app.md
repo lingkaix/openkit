@@ -62,7 +62,7 @@ When a Linux host already has the restricted App-update identity configured, in-
 scripts/docker/smoke-image.sh app
 ```
 
-The smoke command reports Node, pnpm, and Caddy versions as required app tools.
+The smoke command reports Node, pnpm, and Caddy versions, checks recovery packaging, and starts the ordinary App entrypoint with a disposable Data Root. It requires `/api/health` through Caddy within 60 seconds and checks the SPA root, then stops the server and removes its temporary data. This catches startup failures in the production `pnpm deploy` dependency layout.
 
 The stopped-server recovery packaging probe uses only disposable bind mounts and never starts NanoCore or Caddy:
 
