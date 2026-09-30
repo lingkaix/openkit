@@ -1,6 +1,6 @@
 //! Epoch-external retained Worker volume storage.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -44,6 +44,24 @@ pub struct ImageStorageLayout {
     pub os: String,
     pub architecture: String,
     pub targets: Vec<String>,
+    environment_defaults: EnvironmentDefaults,
+}
+
+/// Bounded literal defaults from verified Config.Env; Debug never exposes values.
+#[derive(Clone, PartialEq, Eq)]
+struct EnvironmentDefaults {
+    defaults_digest: String,
+    values: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for EnvironmentDefaults {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EnvironmentDefaults")
+            .field("defaults_digest", &self.defaults_digest)
+            .field("names", &self.values.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl ImageStorageLayout {
@@ -73,6 +91,10 @@ impl ImageStorageLayout {
     pub fn result_json(&self) -> Value {
         json!({
             "digest": self.digest,
+            "environmentDefaults": {
+                "defaultsDigest": self.environment_defaults.defaults_digest,
+                "values": self.environment_defaults.values,
+            },
             "platform": {"os": self.os, "architecture": self.architecture},
             "storageLayout": {
                 "family": self.family,
@@ -968,6 +990,52 @@ fn parse_image_inspect(
         os,
         architecture,
         targets,
+        environment_defaults: parse_environment_defaults(config.get("Env"))?,
+    })
+}
+
+/// Canonicalizes only the final verified OCI metadata, without evaluating values.
+/// ASCII names make BTreeMap byte ordering identical to RFC 8785 key ordering.
+fn parse_environment_defaults(env: Option<&Value>) -> Result<EnvironmentDefaults, &'static str> {
+    let invalid = "image.inspect environment invalid";
+    let mut values = BTreeMap::new();
+    if let Some(env) = env.filter(|env| !env.is_null()) {
+        let entries = env.as_array().ok_or(invalid)?;
+        if entries.len() > 128 {
+            return Err(invalid);
+        }
+        for entry in entries {
+            let (name, value) = entry
+                .as_str()
+                .and_then(|entry| entry.split_once('='))
+                .ok_or(invalid)?;
+            let valid_first = name
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_');
+            if !valid_first
+                || name.len() > 128
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                || value.contains('\0')
+            {
+                return Err(invalid);
+            }
+            if values.insert(name.to_string(), value.to_string()).is_some() {
+                return Err(invalid);
+            }
+        }
+    }
+    // serde_json's string escaping over ASCII-sorted names is the settled JCS
+    // encoding. The same bytes define both the aggregate cap and the digest.
+    let canonical = serde_json::to_vec(&values).map_err(|_| invalid)?;
+    if canonical.len() > 16 * 1024 {
+        return Err(invalid);
+    }
+    Ok(EnvironmentDefaults {
+        defaults_digest: format!("sha256:{:x}", Sha256::digest(&canonical)),
+        values,
     })
 }
 
@@ -1829,6 +1897,7 @@ pub(crate) mod tests {
             os: "linux".into(),
             architecture: "arm64".into(),
             targets: vec!["/workspace".into()],
+            environment_defaults: parse_environment_defaults(None).unwrap(),
         };
         let request = StorageAttachmentRequest {
             storage_ref: storage_ref.into(),
@@ -1909,6 +1978,131 @@ pub(crate) mod tests {
         archive.resize(
             archive.len() + (TAR_BLOCK_BYTES - body.len() % TAR_BLOCK_BYTES) % TAR_BLOCK_BYTES,
             0,
+        );
+    }
+
+    /// Exercises the public result rather than a separate digest-only test path.
+    fn environment_result(env: Option<Value>) -> Result<Value, &'static str> {
+        let image_digest = digest('a');
+        let mut fixture = json!({
+            "Id": image_digest, "Os": "linux", "Architecture": "arm64",
+            "Config": {"User": "1000:1000", "WorkingDir": "/tmp/bootstrap",
+                "Volumes": {"/workspace": {}}, "Labels": null}
+        });
+        if let Some(env) = env {
+            fixture["Config"]["Env"] = env;
+        }
+        parse_image_inspect(&image_digest, &serde_json::to_vec(&fixture).unwrap())
+            .map(|layout| layout.result_json())
+    }
+
+    #[test]
+    fn environment_defaults_shared_vectors_and_literal_values() {
+        for env in [None, Some(Value::Null), Some(json!([]))] {
+            let result = environment_result(env).unwrap();
+            assert_eq!(result["digest"], digest('a'));
+            assert_eq!(
+                result["environmentDefaults"],
+                json!({
+                    "defaultsDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                    "values": {}
+                })
+            );
+        }
+        let result = environment_result(Some(json!(["B=", "A=x=y\n"]))).unwrap();
+        assert_eq!(
+            result["environmentDefaults"],
+            json!({
+                "defaultsDigest": "sha256:c80a567369da09cf9b70c49c5b2b16b392a94912d1726f2e88ecf1e5901cad4d",
+                "values": {"A": "x=y\n", "B": ""}
+            })
+        );
+        assert_eq!(result["environmentDefaults"].as_object().unwrap().len(), 2);
+        let literal = environment_result(Some(json!(["A=$HOME", "Z=é😀\u{0001}\t\\\""]))).unwrap();
+        assert_eq!(literal["environmentDefaults"]["values"]["A"], "$HOME");
+        assert_eq!(
+            literal["environmentDefaults"]["values"]["Z"],
+            "é😀\u{0001}\t\\\""
+        );
+        let reversed = environment_result(Some(json!(["A=x=y\n", "B="]))).unwrap();
+        assert_eq!(result, reversed);
+    }
+
+    #[test]
+    fn environment_defaults_reject_invalid_metadata() {
+        let invalid = [
+            json!({}),
+            json!("A=x"),
+            json!([1]),
+            json!(["NO_EQUALS"]),
+            json!(["=value"]),
+            json!(["1A=x"]),
+            json!(["A-B=x"]),
+            json!(["É=x"]),
+            json!([format!("{}=x", "A".repeat(129))]),
+            json!(["A=x\u{0000}"]),
+            json!(["A=first", "A=second"]),
+            json!((0..129).map(|i| format!("A{i}=x")).collect::<Vec<_>>()),
+            json!([format!("A={}", "x".repeat(16377))]),
+            json!([format!("A={}", "\n".repeat(8190))]),
+        ];
+        for env in invalid {
+            assert_eq!(
+                environment_result(Some(env)),
+                Err("image.inspect environment invalid")
+            );
+        }
+    }
+
+    #[test]
+    fn environment_defaults_debug_redacts_values() {
+        let env = json!(["TOKEN=synthetic-private-value"]);
+        let defaults = parse_environment_defaults(Some(&env)).unwrap();
+        let diagnostic = format!("{defaults:?}");
+        assert!(diagnostic.contains("TOKEN"));
+        assert!(!diagnostic.contains("synthetic-private-value"));
+    }
+
+    #[test]
+    fn environment_defaults_accept_exact_limits() {
+        // Literal digests independently computed with Node JSON.stringify over
+        // byte-sorted keys and crypto.createHash("sha256"), not the Rust helper.
+        let entries = (0..128).map(|i| format!("A{i}=x")).collect::<Vec<_>>();
+        let result = environment_result(Some(json!(entries))).unwrap();
+        let defaults = &result["environmentDefaults"];
+        let expected = (0..128)
+            .map(|i| (format!("A{i}"), "x".to_string()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(defaults["values"], json!(expected));
+        assert_eq!(defaults["values"].as_object().unwrap().len(), 128);
+        assert_eq!(defaults["values"]["A127"], "x");
+        assert_eq!(
+            defaults["defaultsDigest"],
+            "sha256:607d367d865503d226baa72ca9244055aa17943d2a127ec6874de91d8ea83864"
+        );
+
+        let name = "A".repeat(128);
+        let result = environment_result(Some(json!([format!("{name}=x")]))).unwrap();
+        let defaults = &result["environmentDefaults"];
+        assert_eq!(defaults["values"], json!({name.clone(): "x"}));
+        assert_eq!(defaults["values"][&name], "x");
+        assert_eq!(
+            defaults["defaultsDigest"],
+            "sha256:d34908e5e1e3034b1fdc7b277083b9c477158e705b902810e4d0e156c49141c5"
+        );
+
+        let value = "x".repeat(16376);
+        let result = environment_result(Some(json!([format!("A={value}")]))).unwrap();
+        let defaults = &result["environmentDefaults"];
+        assert_eq!(defaults["values"], json!({"A": value}));
+        assert_eq!(defaults["values"]["A"].as_str().unwrap(), value);
+        assert_eq!(
+            serde_json::to_vec(&defaults["values"]).unwrap().len(),
+            16384
+        );
+        assert_eq!(
+            defaults["defaultsDigest"],
+            "sha256:e9da50d95e0b0d577121e89a67f0665120f72a7421cd304ce8407b35775c6467"
         );
     }
 
@@ -2255,6 +2449,7 @@ pub(crate) mod tests {
             os: "linux".into(),
             architecture: "arm64".into(),
             targets: vec!["/workspace".into()],
+            environment_defaults: parse_environment_defaults(None).unwrap(),
         };
         let request = StorageAttachmentRequest {
             storage_ref: "storage-one".into(),
