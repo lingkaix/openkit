@@ -316,14 +316,14 @@ build_nanohost() {
     "${MISE_BIN}" exec rust@1.97.1 -- cargo build --release
   )
 
-  worker_archive="${ARTIFACT_DIR}/worker-codex-${commit}.oci.tar"
+  worker_archive="${ARTIFACT_DIR}/worker-runtimes-${commit}.oci.tar"
   worker_archive_tmp="${worker_archive}.partial"
   sudo -n rm -f "${worker_archive_tmp}"
-  echo "Building the Codex worker OCI archive from public origin/main."
+  echo "Building the four-runtime worker OCI archive from public origin/main."
   sudo -n docker buildx build \
     --file "${REPO_DIR}/containers/workers/Dockerfile" \
-    --target worker-codex \
-    --tag openkit/worker-codex:dev \
+    --target worker-runtimes \
+    --tag openkit/worker-runtimes:dev \
     --platform linux/arm64 \
     --provenance=false \
     --output "type=oci,dest=${worker_archive_tmp}" \
@@ -331,7 +331,7 @@ build_nanohost() {
   sudo -n chown "$(id -u):$(id -g)" "${worker_archive_tmp}"
   mv "${worker_archive_tmp}" "${worker_archive}"
   sudo -n docker load --input "${worker_archive}" >/dev/null
-  sudo -n "${REPO_DIR}/scripts/docker/smoke-image.sh" worker-codex
+  sudo -n "${REPO_DIR}/scripts/docker/smoke-image.sh" worker-runtimes
   worker_digest="$(tar -xOf "${worker_archive}" index.json | jq -er 'if .schemaVersion == 2 and (.manifests | length) == 1 then .manifests[0].digest else empty end')"
   case "$(uname -m)" in
     aarch64 | arm64) supervisor_platform="linux/arm64" ;;

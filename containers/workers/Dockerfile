@@ -26,6 +26,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/protocol/package.json packages/protocol/package.json
 COPY packages/worker-protocol/package.json packages/worker-protocol/package.json
 COPY packages/worker-shim/package.json packages/worker-shim/package.json
+COPY packages/codex-app-server-schema/package.json packages/codex-app-server-schema/package.json
+COPY packages/pi-runtime-host/package.json packages/pi-runtime-host/package.json
 COPY patches/pi-coding-agent-0.99.1-openkit-native-state.patch patches/pi-coding-agent-0.99.1-openkit-native-state.patch
 
 RUN pnpm install --frozen-lockfile
@@ -33,12 +35,16 @@ RUN pnpm install --frozen-lockfile
 COPY packages/protocol packages/protocol
 COPY packages/worker-protocol packages/worker-protocol
 COPY packages/worker-shim packages/worker-shim
+COPY packages/codex-app-server-schema packages/codex-app-server-schema
+COPY packages/pi-runtime-host packages/pi-runtime-host
 
 RUN pnpm --filter @openkit/protocol build \
   && pnpm --filter @openkit/worker-protocol build \
   && pnpm --filter @openkit/worker-shim build \
+  && pnpm --filter @openkit/pi-runtime-host build \
   && rm package.json \
-  && pnpm --filter @openkit/worker-shim deploy --prod --legacy /deploy/worker-shim
+  && pnpm --filter @openkit/worker-shim deploy --prod --legacy /deploy/worker-shim \
+  && pnpm --filter @openkit/pi-runtime-host deploy --prod --legacy /deploy/pi-runtime-host
 
 FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS worker-common
 
@@ -206,16 +212,18 @@ CMD ["openkit-worker-shim"]
 
 USER 1000:1000
 
-FROM worker-common AS worker-codex
+FROM worker-common AS worker-runtimes
 
 ARG TARGETARCH
-ARG CODEX_CLI_VERSION="0.153.4"
+ARG CODEX_CLI_VERSION="0.159.2"
+ARG OPENCODE_VERSION="2.0.20"
+ARG DEEPSEEK_VERSION="0.2.0-rc.2"
 
-LABEL org.openkit.image="worker-codex"
-LABEL org.openkit.worker.runtime="codex"
+LABEL org.openkit.image="worker-runtimes"
+LABEL org.openkit.worker.runtimes="codex,pi,opencode,deepseek"
 LABEL org.openkit.worker.contract="openkit-worker-v1"
 LABEL org.openkit.worker-shim="/usr/local/bin/openkit-worker-shim"
-LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-codex-smoke"
+LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-runtimes-smoke"
 
 USER root
 
@@ -252,70 +260,35 @@ RUN export CODEX_HOME=/tmp/codex-home \
     /tmp/codex-state \
     /tmp/npm-cache
 
-COPY containers/worker-codex/smoke.sh /usr/local/bin/openkit-worker-codex-smoke
-
-RUN chmod +x /usr/local/bin/openkit-worker-codex-smoke
-
-USER 1000:1000
-
-FROM worker-common AS worker-opencode
-
-ARG OPENCODE_VERSION="1.18.1"
-
-LABEL org.openkit.image="worker-opencode"
-LABEL org.openkit.worker.runtime="opencode"
-LABEL org.openkit.worker.contract="openkit-worker-v1"
-LABEL org.openkit.worker-shim="/usr/local/bin/openkit-worker-shim"
-LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-opencode-smoke"
-
-USER root
-
-RUN export HOME=/tmp/opencode-home \
+# Native packages resolve from the shim's ancestor, without entering worker-common.
+RUN export HOME=/tmp/runtime-home \
     NPM_CONFIG_CACHE=/tmp/npm-cache \
-    XDG_CACHE_HOME=/tmp/opencode-cache \
-    XDG_CONFIG_HOME=/tmp/opencode-config \
-    XDG_DATA_HOME=/tmp/opencode-data \
-    XDG_STATE_HOME=/tmp/opencode-state \
+    XDG_CACHE_HOME=/tmp/runtime-cache \
+    XDG_CONFIG_HOME=/tmp/runtime-config \
+    XDG_DATA_HOME=/tmp/runtime-data \
+    XDG_STATE_HOME=/tmp/runtime-state \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
-  && npm install --global --omit=dev "opencode-ai@${OPENCODE_VERSION}" \
-  && test "$(readlink -f /usr/local/bin/opencode)" = "/usr/local/lib/node_modules/opencode-ai/bin/opencode.exe" \
+    OPENCODE_DISABLE_MODELS_FETCH=1 \
+  && npm install --prefix /usr/local/lib/openkit/runtime-supply --omit=dev \
+    "@opencode/cli@${OPENCODE_VERSION}" \
+    "@opencode/client@${OPENCODE_VERSION}" \
+    "@deepseek-ai/dsh@${DEEPSEEK_VERSION}" \
+  && ln -s runtime-supply/node_modules /usr/local/lib/openkit/node_modules \
+  && ln -s /usr/local/lib/openkit/runtime-supply/node_modules/.bin/opencode /usr/local/bin/opencode \
+  && ln -s /usr/local/lib/openkit/runtime-supply/node_modules/.bin/dsh /usr/local/bin/dsh \
   && opencode --version \
-  && rm -rf /tmp/npm-cache /tmp/opencode-cache /tmp/opencode-config /tmp/opencode-data /tmp/opencode-home /tmp/opencode-state \
+  && rm -rf /tmp/npm-cache /tmp/runtime-home /tmp/runtime-cache /tmp/runtime-config /tmp/runtime-data /tmp/runtime-state \
   && test ! -e /etc/opencode
 
-COPY containers/worker-opencode/smoke.sh /usr/local/bin/openkit-worker-opencode-smoke
+# Preserve the frozen workspace patch and every transitive production asset.
+COPY --from=worker-shim-builder /deploy/pi-runtime-host/ /usr/local/lib/openkit/pi-runtime-host/
+COPY patches/pi-coding-agent-0.99.1-openkit-native-state.patch /usr/local/lib/openkit/pi-native-state.patch
+COPY containers/worker-runtimes/versions.json /usr/local/lib/openkit/worker-runtimes-versions.json
+COPY containers/worker-runtimes/smoke-package.json /usr/local/lib/openkit/image-smoke-package.json
+COPY containers/worker-runtimes/smoke.sh /usr/local/bin/openkit-worker-runtimes-smoke
 
-RUN chmod +x /usr/local/bin/openkit-worker-opencode-smoke
-
-USER 1000:1000
-
-FROM worker-common AS worker-pi
-
-ARG PI_VERSION="0.85.1"
-
-LABEL org.openkit.image="worker-pi"
-LABEL org.openkit.worker.runtime="pi"
-LABEL org.openkit.worker.contract="openkit-worker-v1"
-LABEL org.openkit.worker-shim="/usr/local/bin/openkit-worker-shim"
-LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-pi-smoke"
-
-USER root
-
-RUN export HOME=/tmp/pi-home \
-    NPM_CONFIG_CACHE=/tmp/npm-cache \
-    PI_CODING_AGENT_DIR=/tmp/pi-agent \
-    PI_SKIP_VERSION_CHECK=1 \
-    PI_TELEMETRY=0 \
-    XDG_CACHE_HOME=/tmp/pi-cache \
-    XDG_CONFIG_HOME=/tmp/pi-config \
-    XDG_DATA_HOME=/tmp/pi-data \
-    XDG_STATE_HOME=/tmp/pi-state \
-  && npm install --global --omit=dev --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
-  && pi --version \
-  && rm -rf /tmp/npm-cache /tmp/pi-agent /tmp/pi-cache /tmp/pi-config /tmp/pi-data /tmp/pi-home /tmp/pi-state
-
-COPY containers/worker-pi/smoke.sh /usr/local/bin/openkit-worker-pi-smoke
-
-RUN chmod +x /usr/local/bin/openkit-worker-pi-smoke
+RUN chmod +x /usr/local/lib/openkit/pi-runtime-host/dist/bin/openkit-pi-runtime-host.js /usr/local/bin/openkit-worker-runtimes-smoke \
+  && ln -s /usr/local/lib/openkit/pi-runtime-host/dist/bin/openkit-pi-runtime-host.js /usr/local/bin/openkit-pi-runtime-host \
+  && ln -s /usr/local/lib/openkit/pi-runtime-host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js /usr/local/bin/pi
 
 USER 1000:1000

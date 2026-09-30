@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -19,7 +19,7 @@ test('release preflight accepts product tags independently of private package ve
   });
 
   assert.equal(result.version, '0.0.1');
-  assert.deepEqual(result.releaseImages, ['app', 'worker-base', 'worker-codex']);
+  assert.deepEqual(result.releaseImages, ['app', 'worker-base', 'worker-runtimes']);
 });
 
 test('release preflight rejects a missing public release worker base', () => {
@@ -161,7 +161,7 @@ test('release preflight rejects an unpinned release worker image', () => {
         requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
-    /Release image worker-codex must use a digest-pinned baseImage/
+    /Release image worker-runtimes must use a digest-pinned baseImage/
   );
 });
 
@@ -306,8 +306,8 @@ test('release preflight requires one coherent promoted host manifest', () => {
   );
 });
 
-test('release preflight rejects deployment workers without a runtime', () => {
-  const repoRoot = makeReleaseFixture({ omitWorkerRuntime: true });
+test('release preflight rejects deployment workers without runtimes', () => {
+  const repoRoot = makeReleaseFixture({ omitWorkerRuntimes: true });
 
   assert.throws(
     () =>
@@ -316,7 +316,7 @@ test('release preflight rejects deployment workers without a runtime', () => {
         requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
-    /Worker image worker-codex is missing runtime/
+    /Worker image worker-runtimes is missing runtimes/
   );
 });
 
@@ -330,12 +330,12 @@ test('release preflight rejects deployment workers without a workerContract', ()
         requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
-    /Worker image worker-codex is missing workerContract/
+    /Worker image worker-runtimes is missing workerContract/
   );
 });
 
-test('release preflight rejects non-string worker runtime metadata', () => {
-  const repoRoot = makeReleaseFixture({ workerRuntime: [] });
+test('release preflight rejects malformed worker runtime sets', () => {
+  const repoRoot = makeReleaseFixture({ workerRuntimes: [] });
 
   assert.throws(
     () =>
@@ -344,7 +344,7 @@ test('release preflight rejects non-string worker runtime metadata', () => {
         requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
-    /runtime must be a non-empty string/
+    /runtimes must be a non-empty array/
   );
 });
 
@@ -372,7 +372,7 @@ test('release preflight rejects worker images without an explicit build target',
         requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
-    /Worker image worker-codex is missing target/
+    /Worker image worker-runtimes is missing target/
   );
 });
 
@@ -390,7 +390,7 @@ test('release preflight rejects worker images without an explicit build target',
  * @param {boolean} [options.omitSkillManifest] Whether to omit the public Skill manifest.
  * @param {boolean} [options.omitOpsSkillManifest] Whether to omit the operations Skill manifest.
  * @param {boolean} [options.omitWorkerContract] Whether to omit the deployment workerContract.
- * @param {boolean} [options.omitWorkerRuntime] Whether to omit the deployment worker runtime.
+ * @param {boolean} [options.omitWorkerRuntimes] Whether to omit the deployment worker runtime.
  * @param {boolean} [options.omitWorkerTarget] Whether to omit the worker Docker target.
  * @param {boolean} [options.omitNanoHostInstaller] Whether to omit the NanoHost installer.
  * @param {string} [options.nanoHostSourceCommit] OpenShell source commit.
@@ -404,7 +404,7 @@ test('release preflight rejects worker images without an explicit build target',
  * @param {string} [options.hostDockerPath] Docker path projected by the promoted manifest.
  * @param {string} [options.workerBaseImage] Worker base image manifest value.
  * @param {unknown} [options.workerContract] Worker contract fixture value.
- * @param {unknown} [options.workerRuntime] Worker runtime fixture value.
+ * @param {unknown} [options.workerRuntimes] Worker runtime fixture value.
  * @returns {string} Temporary repository root.
  */
 function makeReleaseFixture(options = {}) {
@@ -494,7 +494,7 @@ function makeReleaseFixture(options = {}) {
     version,
   });
 
-  for (const image of ['app', 'worker-codex']) {
+  for (const image of ['app', 'worker-runtimes']) {
     mkdirSync(join(root, 'containers', image), { recursive: true });
     writeFileSync(join(root, 'containers', image, 'Dockerfile'), 'FROM scratch\n');
     writeFileSync(join(root, 'containers', image, 'smoke.sh'), '#!/usr/bin/env bash\n');
@@ -547,23 +547,25 @@ function makeReleaseFixture(options = {}) {
           ]
         : []),
       {
-        id: 'worker-codex',
-        repository: 'openkit-worker-codex',
-        dockerfile: 'containers/worker-codex/Dockerfile',
+        id: 'worker-runtimes',
+        repository: 'openkit-worker-runtimes',
+        dockerfile: 'containers/worker-runtimes/Dockerfile',
         context: '.',
         kind: 'worker',
-        ...(options.omitWorkerRuntime ? {} : { runtime: options.workerRuntime ?? 'codex' }),
+        ...(options.omitWorkerRuntimes
+          ? {}
+          : { runtimes: options.workerRuntimes ?? ['codex', 'pi', 'opencode', 'deepseek'] }),
         release: true,
         ...(options.leafAnonymousPull ? { anonymousPull: true } : {}),
         ...(options.omitWorkerContract
           ? {}
           : { workerContract: options.workerContract ?? 'openkit-worker-v1' }),
         baseImage: workerBaseImage,
-        ...(options.omitWorkerTarget ? {} : { target: 'worker-codex' }),
+        ...(options.omitWorkerTarget ? {} : { target: 'worker-runtimes' }),
         platforms: ['linux/amd64'],
-        smoke: 'containers/worker-codex/smoke.sh',
-        smokeCommand: 'openkit-worker-codex-smoke',
-        localTag: 'openkit/worker-codex:dev',
+        smoke: 'containers/worker-runtimes/smoke.sh',
+        smokeCommand: 'openkit-worker-runtimes-smoke',
+        localTag: 'openkit/worker-runtimes:dev',
       },
     ],
   });
@@ -664,3 +666,29 @@ function runPreflightCli(repoRoot, tag) {
     encoding: 'utf8',
   });
 }
+
+test('release preflight rejects empty, scalar, blank and duplicate declared runtime sets', () => {
+  for (const runtimes of [[], 'codex', [''], ['codex', 'codex'], ['codex', 7]]) {
+    const repoRoot = makeReleaseFixture({ workerRuntimes: runtimes });
+    assert.throws(
+      () => validateReleasePreflight({ repoRoot, tag: 'v0.0.1' }),
+      /runtimes must be a non-empty array/
+    );
+  }
+});
+
+test('release preflight rejects retired leaf ids and singular runtime metadata', () => {
+  for (const removed of ['worker-codex', 'worker-opencode', 'worker-pi', 'runtime']) {
+    const repoRoot = makeReleaseFixture();
+    const path = join(repoRoot, 'containers', 'images.json');
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    const deployment = manifest.images.find((image) => image.id === 'worker-runtimes');
+    if (removed === 'runtime') deployment.runtime = 'codex';
+    else {
+      deployment.id = removed;
+      deployment.target = removed;
+    }
+    writeJson(path, manifest);
+    assert.throws(() => validateReleasePreflight({ repoRoot, tag: 'v0.0.1' }), /retired/);
+  }
+});

@@ -6,10 +6,10 @@
   "runtime": {
     "kind": "opencode",
     "adapter": "opencode",
-    "version": "1.18.1",
+    "version": "2.0.20",
     "image": {
       "kind": "reference",
-      "ref": "openkit/worker-opencode:dev",
+      "ref": "openkit/worker-runtimes:dev",
       "pullPolicy": "if-not-present"
     },
     "binaries": [
@@ -29,7 +29,7 @@
       { "id": "opencode", "path": "/usr/local/bin/opencode" },
       {
         "id": "opencode-native",
-        "path": "/usr/local/lib/node_modules/opencode-ai/bin/opencode.exe"
+        "path": "/usr/local/lib/openkit/runtime-supply/node_modules/@opencode/cli/bin/opencode.exe"
       }
     ]
   },

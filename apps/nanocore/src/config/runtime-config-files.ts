@@ -814,10 +814,10 @@ export class RuntimeConfigFileService {
   "runtime": {
     "kind": "codex",
     "adapter": "codex",
-    "version": "0.153.4",
+    "version": "0.159.2",
     "image": {
       "kind": "reference",
-      "ref": "openkit/worker-codex:dev",
+      "ref": "openkit/worker-runtimes:dev",
       "pullPolicy": "if-not-present"
     },
     "binaries": [

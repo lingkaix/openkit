@@ -5,15 +5,15 @@
   "displayName": "Pi Agent",
   "readiness": {
     "status": "disabled",
-    "message": "Pi 0.85.1 remains disabled until a live bounded inference Turn proves its Gateway route."
+    "message": "Pi 0.99.1 remains disabled until a live bounded inference Turn proves its Gateway route."
   },
   "runtime": {
     "kind": "pi",
     "adapter": "pi",
-    "version": "0.85.1",
+    "version": "0.99.1",
     "image": {
       "kind": "reference",
-      "ref": "openkit/worker-pi:dev",
+      "ref": "openkit/worker-runtimes:dev",
       "pullPolicy": "if-not-present"
     },
     "binaries": [
@@ -30,7 +30,8 @@
       { "id": "python3", "path": "/opt/openkit/venv/bin/python3" },
       { "id": "pip", "path": "/opt/openkit/venv/bin/pip" },
       { "id": "pip3", "path": "/opt/openkit/venv/bin/pip3" },
-      { "id": "pi", "path": "/usr/local/bin/pi" }
+      { "id": "pi", "path": "/usr/local/bin/pi" },
+      { "id": "openkit-pi-runtime-host", "path": "/usr/local/bin/openkit-pi-runtime-host" }
     ]
   },
   "models": {

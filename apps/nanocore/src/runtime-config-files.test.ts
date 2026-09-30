@@ -364,6 +364,11 @@ describe('runtime config file API', () => {
     );
     expect(agentTemplate).toContain('"id": "new-agent"');
     expect(agentTemplate).toContain('"kind": "reference"');
+    expect(JSON.parse(agentTemplate).runtime).toMatchObject({
+      adapter: 'codex',
+      version: '0.159.2',
+      image: { kind: 'reference', ref: 'openkit/worker-runtimes:dev' },
+    });
     expect(agentTemplate).toContain('"path": "/opt/openkit/venv/bin/python"');
     expect(agentTemplate).toContain('"path": "/opt/openkit/venv/bin/pip"');
     expect(agentTemplate).not.toContain('/sandbox/.venv');

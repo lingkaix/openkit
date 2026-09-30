@@ -1,12 +1,16 @@
 {
   "schemaVersion": 1,
   "requiredFeatures": [],
-  "id": "agent_codex_host",
-  "displayName": "Codex Agent",
+  "id": "agent_deepseek",
+  "displayName": "DeepSeek Agent",
+  "readiness": {
+    "status": "disabled",
+    "message": "DeepSeek 0.2.0-rc.2 remains disabled until a live bounded inference Turn proves its Gateway route."
+  },
   "runtime": {
-    "kind": "codex",
-    "adapter": "codex",
-    "version": "0.159.2",
+    "kind": "deepseek",
+    "adapter": "deepseek",
+    "version": "0.2.0-rc.2",
     "image": {
       "kind": "reference",
       "ref": "openkit/worker-runtimes:dev",
@@ -26,8 +30,7 @@
       { "id": "python3", "path": "/opt/openkit/venv/bin/python3" },
       { "id": "pip", "path": "/opt/openkit/venv/bin/pip" },
       { "id": "pip3", "path": "/opt/openkit/venv/bin/pip3" },
-      { "id": "codex", "path": "/usr/local/bin/codex" },
-      { "id": "codex-native", "path": "/usr/local/lib/codex/bin/codex" }
+      { "id": "dsh", "path": "/usr/local/bin/dsh" }
     ]
   },
   "models": {
@@ -37,7 +40,6 @@
   "profiles": [
     {
       "id": "default",
-      "instructionsRef": "codex",
       "skills": []
     }
   ],
@@ -121,7 +123,7 @@
     "backend": {
       "allowedKinds": ["openshell"],
       "preferred": "openshell",
-      "requiredCapabilities": ["trusted-worker-inference-relay", "worker.runtime-provenance.v1"]
+      "requiredCapabilities": ["trusted-worker-inference-relay"]
     }
   },
   "extensions": {}

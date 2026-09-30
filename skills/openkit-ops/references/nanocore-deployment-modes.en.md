@@ -16,11 +16,11 @@ Real Worker Agent execution uses one configured NanoHost RuntimeTarget in both m
 
 OpenKit-owned container images are cataloged in `containers/images.json`.
 
-Current artifact selection uses the shipped catalog. That catalog lists `app`, the published base `worker-common`, and the leaf worker images `worker-codex`, `worker-opencode`, and `worker-pi`.
+Current artifact selection uses the shipped catalog. That catalog lists `app`, the extension base `worker-common`, and the repository deployment image `worker-runtimes`.
 
 - `app` contains NanoCore, the public HTTP entrypoint, Web assets, migrations, and data-root templates.
-- `worker-common` is the published base with an empty runtime set.
-- `worker-runtimes`, including the local tag `openkit/worker-runtimes:dev`, is the accepted replacement and is not yet available. It is not an executable current deployment instruction. The shipped leaf images are not that future contract.
+- `worker-common` is the extension base with an empty runtime set.
+- `worker-runtimes` is the current repository deployment image and contains Codex, Pi, OpenCode, and DeepSeek.
 
 `test-env` is the repository test image and is not a deployment artifact.
 
@@ -29,9 +29,10 @@ Local development uses the local tags of the shipped catalog entries:
 ```text
 openkit/app:dev
 openkit/worker-common:dev
+openkit/worker-runtimes:dev
 ```
 
-Production-style deployments should use an exact version tag or digest-pinned image reference and should not use `latest`.
+A local build does not publish these images. GHCR publication is a separate, later version-tag release step. Production-style deployments should use an exact published version tag or digest-pinned image reference and should not use `latest`.
 
 Use [Release Cookbook](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/release.md) for release tags and [Docker App Image](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/docker-app.md) for local app-image build, run, persistence smoke, and packaged UI checks.
 

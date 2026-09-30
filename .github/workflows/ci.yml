@@ -612,7 +612,7 @@ jobs:
               context: image.context,
               kind: image.kind,
               platforms: image.platforms.join(','),
-              runtime: image.runtime || '',
+              runtimes: (image.runtimes || []).join(','),
               target: image.target || '',
               workerContract: image.workerContract || '',
               smokeCommand: image.smokeCommand,
@@ -712,7 +712,7 @@ jobs:
           IMAGE_KIND: ${{ matrix.kind }}
           IMAGE_REPOSITORY: ${{ matrix.repository }}
           WORKER_CONTRACT: ${{ matrix.workerContract }}
-          WORKER_RUNTIME: ${{ matrix.runtime }}
+          WORKER_RUNTIMES: ${{ matrix.runtimes }}
         run: |
           created="$(git show -s --format=%cI "${GITHUB_SHA}")"
           CREATED="${created}" node <<'NODE' >> "${GITHUB_OUTPUT}"
@@ -741,8 +741,8 @@ jobs:
             `org.openkit.image.id=${process.env.IMAGE_ID}`,
             `org.openkit.image.kind=${process.env.IMAGE_KIND}`,
           ];
-          if (process.env.WORKER_RUNTIME) {
-            labels.push(`org.openkit.worker.runtime=${process.env.WORKER_RUNTIME}`);
+          if (process.env.WORKER_RUNTIMES) {
+            labels.push(`org.openkit.worker.runtimes=${process.env.WORKER_RUNTIMES}`);
           }
           if (process.env.WORKER_CONTRACT) {
             labels.push(`org.openkit.worker.contract=${process.env.WORKER_CONTRACT}`);

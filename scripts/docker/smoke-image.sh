@@ -54,7 +54,12 @@ if [[ "${IMAGE_ID}" == "test-env" ]]; then
   fi
 fi
 
-docker run --rm "${tag}" "${smoke_command}"
+# Worker packaging checks exercise only local tools and synthetic loopback services.
+docker_run_args=(run --rm)
+if [[ "$(read_image_field kind)" == "worker" ]]; then
+  docker_run_args+=(--network=none)
+fi
+docker "${docker_run_args[@]}" "${tag}" "${smoke_command}"
 
 if [[ "${IMAGE_ID}" == "worker-common" ]]; then
   derived_tag="openkit/worker-common-derived-smoke:$$"
@@ -79,5 +84,5 @@ EOF
 
   docker build --network=none -t "${derived_tag}" "${derived_dir}"
   derived_built=1
-  docker run --rm "${derived_tag}" bash -c 'openkit-worker-common-smoke && command -v openkit-derived-probe >/dev/null && test "$(openkit-derived-probe)" = "openkit-derived-probe"'
+  docker run --rm --network=none "${derived_tag}" bash -c 'openkit-worker-common-smoke && command -v openkit-derived-probe >/dev/null && test "$(openkit-derived-probe)" = "openkit-derived-probe"'
 fi

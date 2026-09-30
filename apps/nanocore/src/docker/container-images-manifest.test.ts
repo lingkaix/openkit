@@ -41,8 +41,8 @@ interface ContainerImageEntry {
   readonly smokeCommand: string;
   /** Local development image tag used by helper scripts. */
   readonly localTag: string;
-  /** Singular catalog runtime for the current declared set; omit when that set is empty. */
-  readonly runtime?: string;
+  /** Catalog-declared runtime set; omit when that set is empty. */
+  readonly runtimes?: readonly string[];
   /** Direct base image for release reproducibility and CI review. */
   readonly baseImage?: string;
   /** Worker execution contract implemented by the image. */
@@ -58,12 +58,7 @@ describe('container image manifest', () => {
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.registry).toBe('ghcr.io');
     expect(manifest.images.map((image) => image.id)).toEqual(
-      expect.arrayContaining([
-        'app',
-        'worker-common',
-        ...currentWorkerLeaves.map((leaf) => leaf.id),
-        'test-env',
-      ])
+      expect.arrayContaining(['app', 'worker-common', 'worker-runtimes', 'test-env'])
     );
 
     for (const image of manifest.images) {
@@ -95,24 +90,27 @@ describe('container image manifest', () => {
         target: 'worker-common',
       })
     );
-    expect(base).not.toHaveProperty('runtime');
+    expect(base).not.toHaveProperty('runtimes');
     expect(base).not.toHaveProperty('workerContract');
     expect(base?.baseImage).toBeTruthy();
     expect(manifest.images.filter((image) => image.anonymousPull)).toEqual([base]);
 
-    for (const leaf of currentWorkerLeaves) {
-      const worker = workers.find((image) => image.id === leaf.id);
-
-      expect(worker).toMatchObject({
-        dockerfile: 'containers/workers/Dockerfile',
-        kind: 'worker',
-        release: true,
-        runtime: leaf.runtime,
-        target: leaf.id,
-        workerContract: 'openkit-worker-v1',
-      });
-      expect(worker?.baseImage).toBeTruthy();
-    }
+    const deployment = workers.find((image) => image.id === 'worker-runtimes');
+    expect(deployment).toMatchObject({
+      repository: 'openkit-worker-runtimes',
+      dockerfile: 'containers/workers/Dockerfile',
+      kind: 'worker',
+      release: true,
+      runtimes: ['codex', 'pi', 'opencode', 'deepseek'],
+      target: 'worker-runtimes',
+      workerContract: 'openkit-worker-v1',
+      smoke: 'containers/worker-runtimes/smoke.sh',
+      smokeCommand: 'openkit-worker-runtimes-smoke',
+      localTag: 'openkit/worker-runtimes:dev',
+    });
+    expect(workers.map((image) => image.id)).toEqual(['worker-common', 'worker-runtimes']);
+    for (const image of workers) expect(image).not.toHaveProperty('runtime');
+    expect(deployment?.baseImage).toBeTruthy();
     expect(new Set(workers.map((image) => image.target)).size).toBe(workers.length);
   });
 
@@ -121,11 +119,7 @@ describe('container image manifest', () => {
     const releaseImages = manifest.images.filter((image) => image.release);
 
     expect(releaseImages.map((image) => image.id)).toEqual(
-      expect.arrayContaining([
-        'app',
-        'worker-common',
-        ...currentWorkerLeaves.map((leaf) => leaf.id),
-      ])
+      expect.arrayContaining(['app', 'worker-common', 'worker-runtimes'])
     );
     for (const image of releaseImages) {
       expect(image.baseImage).toMatch(/@sha256:[a-f0-9]{64}$/);
@@ -142,13 +136,6 @@ describe('container image manifest', () => {
     });
   });
 });
-
-/** Current OpenKit worker leaves and their singular catalog-declared runtimes. */
-const currentWorkerLeaves = [
-  { id: 'worker-codex', runtime: 'codex' },
-  { id: 'worker-opencode', runtime: 'opencode' },
-  { id: 'worker-pi', runtime: 'pi' },
-] as const;
 
 /**
  * Reads the repository image manifest.

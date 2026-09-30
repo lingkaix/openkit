@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
+import { AgentEnvironmentPackageSchema, AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -25,28 +26,35 @@ const workerImageSpecPath = join(
   '20260721-worker_execution_environment_images.md'
 );
 
-/** Current OpenKit worker leaves and their singular catalog-declared runtimes. */
+/** Pinned adapters selected independently on the shared deployment image. */
 const workerImageContracts = [
   {
-    id: 'worker-codex',
+    id: 'worker-runtimes',
     manifest: 'codex.agent.jsonc',
     nativeBinary: '/usr/local/bin/codex',
-    nativeVersion: '0.153.4',
+    nativeVersion: '0.159.2',
     runtime: 'codex',
   },
   {
-    id: 'worker-opencode',
+    id: 'worker-runtimes',
     manifest: 'opencode-server.agent.jsonc',
     nativeBinary: '/usr/local/bin/opencode',
-    nativeVersion: '1.18.1',
+    nativeVersion: '2.0.20',
     runtime: 'opencode',
   },
   {
-    id: 'worker-pi',
+    id: 'worker-runtimes',
     manifest: 'pi.agent.jsonc',
-    nativeBinary: '/usr/local/bin/pi',
-    nativeVersion: '0.85.1',
+    nativeBinary: '/usr/local/bin/openkit-pi-runtime-host',
+    nativeVersion: '0.99.1',
     runtime: 'pi',
+  },
+  {
+    id: 'worker-runtimes',
+    manifest: 'deepseek.agent.jsonc',
+    nativeBinary: '/usr/local/bin/dsh',
+    nativeVersion: '0.2.0-rc.2',
+    runtime: 'deepseek',
   },
 ] as const;
 
@@ -89,17 +97,14 @@ describe('governed worker image contracts', () => {
         target: 'worker-common',
       })
     );
-    expect(base).not.toHaveProperty('runtime');
+    expect(base).not.toHaveProperty('runtimes');
     expect(base).not.toHaveProperty('workerContract');
-    for (const leaf of workerImageContracts) {
-      const worker = workers.find((entry) => entry.id === leaf.id);
-
-      expect(worker).toMatchObject({
-        dockerfile: 'containers/workers/Dockerfile',
-        runtime: leaf.runtime,
-        target: leaf.id,
-      });
-    }
+    expect(workers.map((worker) => worker.id)).toEqual(['worker-common', 'worker-runtimes']);
+    expect(workers.find((worker) => worker.id === 'worker-runtimes')).toMatchObject({
+      dockerfile: 'containers/workers/Dockerfile',
+      runtimes: ['codex', 'pi', 'opencode', 'deepseek'],
+      target: 'worker-runtimes',
+    });
     expect(new Set(workers.map((worker) => worker.target)).size).toBe(workers.length);
     expect(new Set(workers.map((worker) => worker.baseImage)).size).toBe(1);
     expect(base?.baseImage ?? workers[0]?.baseImage).toBe(
@@ -227,9 +232,11 @@ describe('governed worker image contracts', () => {
     const agentManifest = readAgentManifest(manifest);
     const declaredRuntimes = catalogDeclaredRuntimeSet(image);
 
-    expect(image).toMatchObject({ runtime, target: id });
-    expect(declaredRuntimes).toEqual([runtime]);
-    expect(targetSection).toContain(`LABEL org.openkit.worker.runtime="${runtime}"`);
+    expect(image).toMatchObject({ runtimes: ['codex', 'pi', 'opencode', 'deepseek'], target: id });
+    expect(declaredRuntimes).toEqual(['codex', 'pi', 'opencode', 'deepseek']);
+    expect(targetSection).toContain(
+      'LABEL org.openkit.worker.runtimes="codex,pi,opencode,deepseek"'
+    );
     expect(targetSection).toContain(`COPY containers/${id}/smoke.sh`);
     expect(targetSection).toContain('USER 1000:1000');
     expect(agentManifest.runtime).toMatchObject({
@@ -238,56 +245,79 @@ describe('governed worker image contracts', () => {
       version: nativeVersion,
     });
     expect(agentManifest.runtime.binaries.map((binary) => binary.path)).toContain(nativeBinary);
-    for (const undeclaredRuntime of firstPartyRuntimes(workers).filter(
-      (candidate) => !declaredRuntimes.includes(candidate)
-    )) {
-      expect(targetSection).not.toContain(`org.openkit.worker.runtime="${undeclaredRuntime}"`);
-      expect(targetSection).not.toContain(`containers/worker-${undeclaredRuntime}/smoke.sh`);
+    expect(targetSection).not.toContain('org.openkit.worker.runtime=');
+  });
+
+  it('keeps the image version manifest aligned with adapter packages and validates all four templates', () => {
+    const versions = JSON.parse(
+      readFileSync(join(repoRoot, 'containers/worker-runtimes/versions.json'), 'utf8')
+    );
+    const shim = JSON.parse(
+      readFileSync(join(repoRoot, 'packages/worker-shim/package.json'), 'utf8')
+    );
+    const host = JSON.parse(
+      readFileSync(join(repoRoot, 'packages/pi-runtime-host/package.json'), 'utf8')
+    );
+    for (const runtime of ['codex', 'opencode', 'deepseek']) {
+      expect(versions[runtime].version).toBe(shim.devDependencies[versions[runtime].package]);
+    }
+    expect(versions.opencode.client.version).toBe(shim.devDependencies['@opencode/client']);
+    expect(versions.pi.version).toBe(host.dependencies['@earendil-works/pi-coding-agent']);
+    for (const contract of workerImageContracts) {
+      expect(
+        AuthoredAgentConfigSchema.safeParse(readAgentManifest(contract.manifest)).success
+      ).toBe(true);
     }
   });
 
-  it('keeps OpenCode ambient config absent and Pi credential passthrough immutable', () => {
-    const dockerfile = readFileSync(sharedDockerfilePath, 'utf8');
-    const launcher = readFileSync(launcherPath, 'utf8');
-    const openCodeSection = dockerTargetSection(dockerfile, 'worker-opencode');
-    const piSection = dockerTargetSection(dockerfile, 'worker-pi');
-
-    expect(openCodeSection).toContain('test ! -e /etc/opencode');
-    expect(openCodeSection).toContain('export HOME=/tmp/opencode-home');
-    expect(piSection).toContain('/usr/local/lib/openkit/allow-anthropic-api-key');
-    expect(launcher).toContain('if [[ -f /usr/local/lib/openkit/allow-anthropic-api-key ]]');
-    expect(launcher).toContain(`ANTHROPIC_API_KEY=\${ANTHROPIC_API_KEY:-}`);
-    expect(dockerTargetSection(dockerfile, 'worker-codex')).not.toContain(
-      'allow-anthropic-api-key'
+  it('reads a complete AEP fixture for each adapter in the deployed smoke', () => {
+    const fixture = JSON.parse(
+      readFileSync(join(repoRoot, 'containers/worker-runtimes/smoke-package.json'), 'utf8')
     );
-    expect(openCodeSection).not.toContain('allow-anthropic-api-key');
+    for (const { runtime, nativeVersion, nativeBinary } of workerImageContracts) {
+      const aep = structuredClone(fixture);
+      aep.agent.runtimeKind = runtime;
+      aep.agent.runtimeVersion = nativeVersion;
+      aep.control.adapter.targetRuntime = runtime;
+      aep.runtime.binaries[1] = { id: runtime, path: nativeBinary };
+      expect(AgentEnvironmentPackageSchema.safeParse(aep).success).toBe(true);
+    }
+    expect(
+      dockerTargetSection(readFileSync(sharedDockerfilePath, 'utf8'), 'worker-runtimes')
+    ).toContain(
+      'COPY containers/worker-runtimes/smoke-package.json /usr/local/lib/openkit/image-smoke-package.json'
+    );
   });
 
-  it('keeps the Pi image smoke dry-run on the adapter-accepted direct-provider route', () => {
-    const smoke = readFileSync(join(repoRoot, 'containers', 'worker-pi', 'smoke.sh'), 'utf8');
-    const encodedPackage = /printf '%s\\n' '(\{.*\})'/.exec(smoke)?.[1];
-
-    expect(encodedPackage).toEqual(expect.stringMatching(/^\{/));
-    const route = (
-      JSON.parse(encodedPackage ?? '{}') as {
-        llm?: { routes?: Array<Record<string, unknown>> };
-      }
-    ).llm?.routes?.[0];
-
-    expect(route).toEqual(
-      expect.objectContaining({
-        credentialVisibility: 'environment',
-        endpoint: {
-          kind: 'provider-compatible',
-          upstream: { kind: 'direct-provider' },
-        },
-        model: 'claude-sonnet-4-5',
-        providerInstanceId: 'anthropic',
-      })
+  it('deploys patched Pi separately and installs OpenCode and DeepSeek on the shim resolution path', () => {
+    const dockerfile = readFileSync(sharedDockerfilePath, 'utf8');
+    const common = dockerCommonSection(dockerfile);
+    const deployment = dockerTargetSection(dockerfile, 'worker-runtimes');
+    expect(dockerfile).toContain('pnpm --filter @openkit/pi-runtime-host deploy --prod --legacy');
+    expect(deployment).toContain('COPY --from=worker-shim-builder /deploy/pi-runtime-host/');
+    expect(deployment).toContain(`@opencode/cli@\${OPENCODE_VERSION}`);
+    expect(deployment).toContain(`@opencode/client@\${OPENCODE_VERSION}`);
+    expect(deployment).toContain(`@deepseek-ai/dsh@\${DEEPSEEK_VERSION}`);
+    expect(deployment).toContain('--prefix /usr/local/lib/openkit/runtime-supply');
+    expect(deployment).toContain('test ! -e /etc/opencode');
+    expect(deployment).toContain(
+      'ln -s /usr/local/lib/openkit/pi-runtime-host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js /usr/local/bin/pi'
     );
-    expect(encodedPackage).not.toContain('"credentialVisibility":"placeholder"');
-    expect(encodedPackage).not.toContain('"kind":"openai-compatible"');
-    expect(encodedPackage).not.toContain('"kind":"nanocore-gateway"');
+    expect(common).not.toContain('/deploy/pi-runtime-host/');
+    expect(deployment).not.toContain('pi-mcp-adapter');
+    expect(deployment).not.toContain('allow-anthropic-api-key');
+  });
+
+  it('keeps image smoke on the static four-adapter registry without provider work', () => {
+    const smoke = readFileSync(join(repoRoot, 'containers', 'worker-runtimes', 'smoke.sh'), 'utf8');
+    expect(smoke).toContain('WORKER_ADAPTERS');
+    expect(smoke).toContain('WorkerHarness');
+    expect(smoke).toContain("'session.open'");
+    expect(smoke).toContain("'session.inspect'");
+    expect(smoke).toContain("'session.close'");
+    expect(smoke).not.toContain("'turn.start'");
+    expect(smoke).toContain('createToolSearchExtension');
+    expect(smoke).toContain('onConnectionState');
   });
 
   it('keeps root-owned build state out of the writable worker home', () => {
@@ -300,7 +330,9 @@ describe('governed worker image contracts', () => {
       expect(targetSection).toContain('NPM_CONFIG_CACHE=/tmp/npm-cache');
       expect(targetSection).toContain('rm -rf');
     }
-    expect(dockerTargetSection(dockerfile, 'worker-codex')).toContain('CODEX_HOME=/tmp/codex-home');
+    expect(dockerTargetSection(dockerfile, 'worker-runtimes')).toContain(
+      'CODEX_HOME=/tmp/codex-home'
+    );
     expect(smoke).toContain('find /sandbox /workspace -xdev -uid 0 -print -quit');
   });
 
@@ -495,6 +527,47 @@ describe('governed worker image contracts', () => {
     }
   });
 
+  it('keeps catalog worker smoke runs offline while preserving app smoke networking', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-smoke-egress-'));
+    try {
+      for (const id of ['worker-common', 'worker-runtimes', 'app']) {
+        const log = join(root, `${id}.argv`);
+        const result = spawnSync(
+          'bash',
+          [
+            '-c',
+            `docker() {
+  if [[ "$1" == run ]]; then
+    printf '%s\\0' "$@" >> "$DOCKER_ARGV_LOG"
+    printf '\\n' >> "$DOCKER_ARGV_LOG"
+  fi
+}
+export -f docker
+bash "$SMOKE_HELPER" "$IMAGE_ID" "openkit/$IMAGE_ID:fixture"`,
+          ],
+          {
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              DOCKER_ARGV_LOG: log,
+              IMAGE_ID: id,
+              SMOKE_HELPER: join(repoRoot, 'scripts/docker/smoke-image.sh'),
+            },
+          }
+        );
+        expect(result.status, result.stderr).toBe(0);
+        const runs = readFileSync(log, 'utf8').trim().split('\n');
+        expect(runs.length).toBe(id === 'worker-common' ? 2 : 1);
+        for (const run of runs) {
+          const args = run.split('\0');
+          expect(args.includes('--network=none')).toBe(id !== 'app');
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('smokes the published empty declared runtime set by reusing common checks and proving no first-party Agent CLI', () => {
     const workers = readWorkerCatalog();
     const base = workers.find((entry) => entry.id === 'worker-common');
@@ -513,7 +586,7 @@ describe('governed worker image contracts', () => {
     const smoke = readFileSync(smokePath, 'utf8');
 
     expect(smoke).toContain('openkit-worker-common-smoke');
-    for (const runtime of firstPartyRuntimes(workers)) {
+    for (const runtime of ['codex', 'pi', 'opencode', 'dsh']) {
       expect(smoke).toContain(`! command -v ${runtime}`);
     }
   });
@@ -552,7 +625,7 @@ interface WorkerImageEntry {
   readonly id: string;
   readonly kind: string;
   readonly localTag: string;
-  readonly runtime?: string;
+  readonly runtimes?: readonly string[];
   readonly smoke: string;
   readonly target: string;
   readonly workerContract?: string;
@@ -561,23 +634,13 @@ interface WorkerImageEntry {
 /**
  * Returns the catalog-declared runtime set for one worker image.
  *
- * Singular `runtime` metadata is the current declared set. Omission is the empty set.
+ * `runtimes` metadata declares the installed set. Omission is the empty set.
  *
  * @param entry Worker catalog entry, when present.
  * @returns Declared runtime names.
  */
 function catalogDeclaredRuntimeSet(entry: WorkerImageEntry | undefined): string[] {
-  return entry?.runtime ? [entry.runtime] : [];
-}
-
-/**
- * Collects first-party runtimes currently declared on worker catalog entries.
- *
- * @param workers Worker catalog entries.
- * @returns Unique catalog-declared runtime names.
- */
-function firstPartyRuntimes(workers: readonly WorkerImageEntry[]): string[] {
-  return [...new Set(workers.flatMap((worker) => catalogDeclaredRuntimeSet(worker)))];
+  return [...(entry?.runtimes ?? [])];
 }
 
 /** One parsed built-in AgentManifest slice required by these tests. */

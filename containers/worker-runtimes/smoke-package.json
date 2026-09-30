@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 4,
+  "packageId": "image-smoke-package",
+  "snapshotId": "image-smoke-snapshot",
+  "createdAt": "2026-10-01T00:00:00.000Z",
+  "scope": {
+    "workspaceId": "image-smoke",
+    "threadId": "thread-codex",
+    "turnId": "image-smoke-turn",
+    "agentSessionId": "image-smoke-codex",
+    "triggerActor": {
+      "kind": "user",
+      "id": "image-smoke"
+    },
+    "requestId": "image-smoke-request"
+  },
+  "agent": {
+    "agentId": "image-smoke-codex",
+    "profileId": "coder",
+    "displayName": "Image Smoke",
+    "runtimeKind": "codex",
+    "runtimeVersion": "0.159.2",
+    "profileKind": "coder",
+    "instructions": [],
+    "capabilityRequests": ["llm", "shell", "filesystem", "network", "artifacts"]
+  },
+  "runtime": {
+    "image": {
+      "kind": "reference",
+      "pullPolicy": "if-not-present",
+      "ref": "openkit/worker-runtimes:smoke"
+    },
+    "binaries": [
+      {
+        "id": "openkit-worker-shim",
+        "path": "/usr/local/bin/openkit-worker-shim"
+      },
+      {
+        "id": "codex",
+        "path": "/usr/local/bin/codex"
+      }
+    ],
+    "command": {
+      "argv": ["openkit-worker-shim"],
+      "workingDirectory": "/workspace",
+      "stdin": "ignore",
+      "stdout": "pipe",
+      "stderr": "pipe"
+    },
+    "process": {
+      "user": "sandbox",
+      "group": "sandbox",
+      "umask": "0022"
+    },
+    "session": {
+      "reuse": "never",
+      "resumeHandleRef": null
+    }
+  },
+  "workspace": {
+    "root": "/workspace",
+    "inputs": [],
+    "generatedFiles": [],
+    "outputs": []
+  },
+  "supply": {
+    "skills": [],
+    "mcpServers": [],
+    "services": []
+  },
+  "control": {
+    "protocol": "openkit-worker-control-v1",
+    "mode": "sandbox-integration",
+    "bindings": {
+      "capabilities": {
+        "pathPrefix": "/capabilities/",
+        "tokenRef": "runtime://openkit/capability-token"
+      },
+      "inference": {
+        "pathPrefix": "/inference/",
+        "tokenRef": "runtime://openkit/inference-token"
+      },
+      "workerControl": {
+        "pathPrefix": "/worker-control/",
+        "tokenRef": "runtime://openkit/worker-control-token"
+      }
+    },
+    "transcript": {
+      "root": "/openkit/session",
+      "eventsPath": "/openkit/session/events.jsonl",
+      "itemsPath": "/openkit/session/items.jsonl",
+      "artifactsPath": "/openkit/session/artifacts.jsonl",
+      "flush": "line",
+      "import": "turn-end",
+      "required": true
+    },
+    "channels": {
+      "events": "batch",
+      "artifacts": "batch",
+      "heartbeats": true,
+      "logs": "summary-only"
+    },
+    "events": ["worker.ready", "turn.started", "item.created", "turn.completed"],
+    "adapter": {
+      "kind": "openkit-worker-shim",
+      "targetRuntime": "codex"
+    }
+  },
+  "capabilities": {
+    "protocol": "openkit-worker-capability-v1",
+    "mode": "disabled",
+    "routes": []
+  },
+  "credentials": {
+    "declarations": []
+  },
+  "vault": {
+    "references": [],
+    "grants": []
+  },
+  "policy": {
+    "snapshotId": "worker_turn_launch_policy",
+    "filesystem": {
+      "default": "deny",
+      "rules": []
+    },
+    "network": {
+      "default": "deny",
+      "enforcement": "openshell",
+      "rules": []
+    },
+    "process": {
+      "default": "deny",
+      "rules": []
+    },
+    "inference": {
+      "mode": "gateway"
+    },
+    "secrets": {
+      "visibility": "placeholder-only"
+    },
+    "artifacts": {
+      "outputsMustBeDeclared": true
+    }
+  },
+  "llm": {
+    "mode": "gateway",
+    "preferredLogicalModelId": "reasoning",
+    "routes": [
+      {
+        "id": "worker-inference",
+        "providerInstanceId": "openkit-gateway",
+        "model": "reasoning",
+        "endpoint": {
+          "kind": "openai-compatible",
+          "upstream": {
+            "kind": "nanocore-gateway"
+          }
+        },
+        "credentialVisibility": "placeholder"
+      }
+    ]
+  },
+  "resources": {
+    "cpu": {
+      "maxCores": 2
+    },
+    "memory": {
+      "maxBytes": 4294967296
+    },
+    "wallClock": {
+      "maxSeconds": 3600
+    }
+  },
+  "observability": {
+    "captureCoverage": {
+      "scope": "server",
+      "value": "off"
+    },
+    "audit": {
+      "required": true,
+      "formats": {
+        "preferred": "ocsf-json"
+      }
+    },
+    "evidence": {
+      "collectBackendLogs": true,
+      "collectSessionFiles": true
+    }
+  },
+  "backend": {
+    "preferred": "openshell",
+    "allowedKinds": ["openshell"],
+    "requiredCapabilities": ["trusted-worker-inference-relay"],
+    "degrade": {
+      "allowHostMode": false,
+      "allowMissingAudit": false
+    }
+  },
+  "extensions": {}
+}

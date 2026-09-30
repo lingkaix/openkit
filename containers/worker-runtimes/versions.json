@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "codex": {
+    "package": "@openai/codex",
+    "version": "0.159.2"
+  },
+  "pi": {
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.99.1",
+    "host": "@openkit/pi-runtime-host",
+    "patchSha256": "5868f5a848430430f1b3ef8066c70f34b28310f50b0fa325268b7f00dc1e9577",
+    "patchedFiles": {
+      "dist/extensions/mcp/index.js": "f81591fc9e0af3e2b1cbf8bb24c22fe61a93319d49d26d42c62bac9e46ba467a",
+      "dist/extensions/mcp/index.d.ts": "e035f27fccb79bef5bd22b1000794a17457c10dcf4e424e805dc8cf34b19eabb"
+    },
+    "dependencies": {
+      "@earendil-works/pi-ai": "0.99.1",
+      "@earendil-works/pi-tui": "0.99.1",
+      "@earendil-works/pi-mcp": "0.99.1"
+    }
+  },
+  "opencode": {
+    "package": "@opencode/cli",
+    "version": "2.0.20",
+    "client": {
+      "package": "@opencode/client",
+      "version": "2.0.20"
+    }
+  },
+  "deepseek": {
+    "package": "@deepseek-ai/dsh",
+    "version": "0.2.0-rc.2",
+    "acpClient": {
+      "package": "@agentclientprotocol/sdk",
+      "version": "1.4.0"
+    }
+  }
+}

@@ -105,14 +105,18 @@ test('manual release gate derives a nonpublishing worker image smoke matrix', ()
       [
         'worker-common:linux/amd64',
         'worker-common:linux/arm64',
-        'worker-codex:linux/amd64',
-        'worker-codex:linux/arm64',
-        'worker-opencode:linux/amd64',
-        'worker-opencode:linux/arm64',
-        'worker-pi:linux/amd64',
-        'worker-pi:linux/arm64',
+        'worker-runtimes:linux/amd64',
+        'worker-runtimes:linux/arm64',
       ]
     );
+    for (const image of matrix.include) {
+      assert.equal(
+        image.runtimes,
+        image.id === 'worker-common' ? '' : 'codex,pi,opencode,deepseek'
+      );
+      assert.equal(image.runtime, undefined);
+      assert.equal(image.target, image.id);
+    }
   } finally {
     rmSync(join(outputFile, '..'), { recursive: true, force: true });
   }
@@ -339,3 +343,13 @@ function outputReference(producer, consumer, name) {
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
+
+test('release image metadata emits the plural catalog runtime label', () => {
+  const identity = step(
+    workflow.jobs['publish-container-images'],
+    'Compute deterministic image identity'
+  );
+  assert.equal(identity.env.WORKER_RUNTIMES, actionExpression('matrix.runtimes'));
+  assert.match(identity.run, /org\.openkit\.worker\.runtimes=/);
+  assert.doesNotMatch(identity.run, /org\.openkit\.worker\.runtime=/);
+});

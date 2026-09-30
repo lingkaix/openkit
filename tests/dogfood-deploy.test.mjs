@@ -44,14 +44,17 @@ sudo() {
   [[ "$1" == -n ]]; shift
   printf '%s\\n' "$*" >> "$FIXTURE/effects"
   case "$1 $2" in
-    'rm -f') command rm -f "$FIXTURE/worker-codex-fixture.oci.tar.partial" ;;
-    'docker buildx') touch "$FIXTURE/worker-codex-fixture.oci.tar.partial" ;;
+    'rm -f') command rm -f "$FIXTURE/worker-runtimes-fixture.oci.tar.partial" ;;
+    'docker buildx')
+      [[ "$*" == *"--target worker-runtimes --tag openkit/worker-runtimes:dev"* ]]
+      touch "$FIXTURE/worker-runtimes-fixture.oci.tar.partial"
+      ;;
     'docker load'|'chown '* ) ;;
     'test -f') [[ "$3" == "/var/lib/openkit/nanohost-images/content/\${EXPECTED_SUPERVISOR#sha256:}" ]] ;;
     'python3 '*) printf 'seeded_digest=%s\\n' "$WORKER_DIGEST" ;;
     'install -D') ;;
     'install -m') command cp "$NANOHOST_ENV_SOURCE" "$FIXTURE/installed.env" ;;
-    *) [[ "$1" == "$REPO_DIR/scripts/docker/smoke-image.sh" && "$2" == worker-codex ]] ;;
+    *) [[ "$1" == "$REPO_DIR/scripts/docker/smoke-image.sh" && "$2" == worker-runtimes ]] ;;
   esac
 }
 build_nanohost
@@ -76,6 +79,13 @@ for (const [arch, platform] of [
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(join(root, 'installed.env'), 'utf8'), retained);
+    const effects = readFileSync(join(root, 'effects'), 'utf8');
+    assert.match(
+      effects,
+      /docker buildx build .*--target worker-runtimes --tag openkit\/worker-runtimes:dev/
+    );
+    assert.ok(effects.includes(`docker load --input ${root}/worker-runtimes-fixture.oci.tar`));
+    assert.ok(effects.includes(`${root}/scripts/docker/smoke-image.sh worker-runtimes`));
     assert.ok(
       readFileSync(join(root, 'effects'), 'utf8').includes(
         `/content/${release.supervisor.platformDigests[platform].slice(7)}`

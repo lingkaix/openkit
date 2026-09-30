@@ -92,10 +92,28 @@ for path in \
   /workspace/.openkit/cache \
   /openkit/sessions \
   /openkit/session \
+  /openkit/artifacts \
   /openkit/instructions; do
   test -d "${path}"
   test -w "${path}"
 done
+
+# Provision a disposable writable environment without downloads or changing image supply.
+python - <<'PY'
+import pathlib
+import shutil
+import subprocess
+import venv
+
+root = pathlib.Path('/sandbox/.cache/image-smoke-venv')
+try:
+    venv.EnvBuilder(with_pip=False).create(root)
+    executable = root / 'bin/python'
+    subprocess.run([str(executable), '-c', 'import pathlib, sysconfig; pathlib.Path(sysconfig.get_path("purelib"), "openkit_image_smoke.py").write_text("VALUE = 42\\n")'], check=True)
+    subprocess.run([str(executable), '-c', 'import openkit_image_smoke; assert openkit_image_smoke.VALUE == 42'], check=True)
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+PY
 
 workspace_unknown="/workspace/.openkit-image-smoke-unknown"
 sandbox_unknown="/sandbox/.openkit-image-smoke-unknown"

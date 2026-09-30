@@ -618,7 +618,7 @@ Same-tag reruns reuse a complete, matching immutable identity and build only abs
 
 ## Current Implementation
 
-Applied image catalog and Dockerfile layout. These paths are today's tree. The accepted design replaces the three leaf smoke scripts with `containers/worker-runtimes/smoke.sh`, which does not exist yet:
+Applied image catalog and Dockerfile layout. The common base and combined deployment image use one shared Dockerfile; deployment smoke and version evidence have one owner:
 
 - `containers/images.json`
 - `containers/app/Dockerfile`
@@ -628,9 +628,8 @@ Applied image catalog and Dockerfile layout. These paths are today's tree. The a
 - `containers/test-env/Dockerfile`
 - `containers/app/entrypoint.sh`
 - `containers/app/smoke.sh`
-- `containers/worker-codex/smoke.sh`
-- `containers/worker-opencode/smoke.sh`
-- `containers/worker-pi/smoke.sh`
+- `containers/worker-runtimes/smoke.sh`
+- `containers/worker-runtimes/versions.json`
 - `containers/test-env/smoke.sh`
 
 Applied Docker helper scripts:
@@ -663,23 +662,23 @@ Release workflow state:
 
 Runtime default state:
 
-- Repository-owned `AgentManifest` templates today still select the leaf images, together with the runtime adapter, binary paths, pull policy, provider route, credential requirements, and sandbox policy. The accepted design selects `worker-runtimes` with a distinct `targetRuntime` for each runtime, including a DeepSeek manifest that does not exist yet.
+- The four repository-owned `AgentManifest` templates select `worker-runtimes`, together with distinct runtime adapters, pinned versions, binary paths, pull policy, logical-model preferences, credential requirements, and the five exact development grants. The new DeepSeek template uses `dsh`. Pi and DeepSeek remain disabled pending live bounded Gateway inference qualification.
 - NanoCore resolves the manifest into the AEP generically. It has no runtime-specific image selector, native command schema, or global worker-image fallback.
 - The AEP launches `openkit-worker-shim`; `control.adapter.targetRuntime` selects one adapter in the shim's static registry.
 - Current release documentation uses exact GHCR version or digest references.
 
-Today's catalog contains separate Codex, OpenCode, and Pi worker images. Each contains the generic shim and a singular catalog-declared runtime: Codex `0.153.4`, OpenCode `1.18.1`, or Pi `0.85.1`. Those observations are the current tree. The accepted design replaces the three leaves with `worker-runtimes`. The four deployment pins are established by the adapter slices and are not guessed here. Historical leaf pins stay in the paragraphs below.
+The catalog contains `worker-common` and `worker-runtimes`, with no leaf aliases. The deployment declares the ordered runtime set `codex`, `pi`, `opencode`, `deepseek` and carries Codex `0.159.2`, the built Pi SDK host with patched `0.99.1` production closure, OpenCode CLI/client `2.0.20`, and DeepSeek CLI `0.2.0-rc.2`. Its installed version manifest records adapter-derived package identities and the Pi patch/module digests. `pi-mcp-adapter` is absent. CI emits the plural runtime OCI label from the catalog, and preflight validates the runtime array, its workerContract relationship, and removed-id rejection. Historical leaf pins stay in the paragraphs below.
 
 Release worker base state:
 
 - `containers/images.json` pins every current release `baseImage` value to `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d` and selects one unique target per worker artifact.
 - Both app Dockerfile stages use that exact cataloged digest.
-- `containers/workers/Dockerfile` uses that digest-pinned Node base for the shared shim-builder and common stages, then adds exactly the catalog-declared runtime set in each final target. The accepted design adds the four runtimes only in `worker-runtimes` and leaves `worker-common` empty of them.
+- `containers/workers/Dockerfile` uses that digest-pinned Node base for the shared shim-builder and common stages, then adds exactly the catalog-declared runtime set in each final target. `worker-runtimes` adds the four runtimes and leaves `worker-common` empty of them.
 - `test-env` is an internal sibling that pins the same Node digest in its own Dockerfile and does not derive `FROM worker-common`. After first `worker-common` GHCR publication, one internal `release: false` `kind: test` dogfood image may derive that published digest with Codex plus Pi and without OpenCode; that image is design and backlog only here and is not `worker-runtimes`.
 
 Worker runtime state:
 
-- The installed shim registry today has three adapters, Codex, OpenCode, and Pi (`packages/worker-shim/src/adapter-registry.ts`). The four-adapter resident contract is the accepted replacement and is not implemented protection. Native runtime schemas and commands remain outside NanoCore and canonical worker schemas. Image smoke does not require a bounded machine-readable native mode and does not treat MCP loading as a packaging failure. It still fails an OpenKit-managed capability route or an integrated external system the AEP did not select. Worker-configured in-Sandbox MCP is outside that supply plane and is not a packaging failure merely for lacking a catalog selection or Gateway hop. Image contents confer no external authority.
+- The installed static shim registry contains the four resident Codex, Pi, OpenCode, and DeepSeek adapters (`packages/worker-shim/src/adapter-registry.ts`). Deployment smoke exercises real adapter open, inspect and close through the resident Harness with synthetic loopback credentials, without a provider Turn. It checks Pi's deployed patch identity and native MCP/search factories and private imports; those imports do not prove search/call or resume behavior. Native runtime schemas and commands remain outside NanoCore and canonical worker schemas. Image smoke does not require a bounded machine-readable native mode and does not treat MCP loading as a packaging failure. It still fails an OpenKit-managed capability route or an integrated external system the AEP did not select. Worker-configured in-Sandbox MCP is outside that supply plane and is not a packaging failure merely for lacking a catalog selection or Gateway hop. Image contents confer no external authority.
 - The Codex launcher preserves the OpenShell-provided proxy variables and enables Node environment-proxy support with `NODE_USE_ENV_PROXY=1` so Node `fetch` follows the governed egress path.
 - The deleted Cell launcher preserved inherited `NO_PROXY` and `no_proxy` entries but did not add `host.openshell.internal`; its authenticated NanoCore worker-control origin remained reachable through the OpenShell policy proxy. The current path uses Sandbox Integration and distinct `/worker-control/*`, `/inference/*`, and `/capabilities/*` bindings over the NanoHost-owned transport.
 - The image and launcher MUST provide a writable runtime home through `CODEX_HOME` or `HOME` before the optional S33 Codex provenance extension starts. Missing home state is a Codex image or provenance failure, not a shared adapter-contract requirement, and MUST fail closed before inference when that extension is required.

@@ -279,7 +279,7 @@ function validateImageManifest(repoRoot, requireReleaseImageDigests) {
 /**
  * Validates one image manifest entry.
  *
- * A release worker base is identified by absent runtime metadata rather than image id, and workerContract is required exactly when runtime metadata exists.
+ * A release worker base is identified by absent runtimes metadata rather than image id, and workerContract is required exactly when runtime metadata exists.
  *
  * @param {string} repoRoot Repository root.
  * @param {Record<string, unknown>} image Image entry.
@@ -350,10 +350,28 @@ function validateImageEntry(
     }
     workerTargets.add(image.target);
 
-    const hasRuntime = Object.hasOwn(image, 'runtime');
+    if (
+      Object.hasOwn(image, 'runtime') ||
+      ['worker-codex', 'worker-opencode', 'worker-pi'].includes(image.id)
+    ) {
+      throw new Error(
+        `Worker image ${image.id} uses retired leaf ids or singular runtime metadata.`
+      );
+    }
+    const hasRuntime = Object.hasOwn(image, 'runtimes');
     const hasWorkerContract = Object.hasOwn(image, 'workerContract');
-    if (hasRuntime && (typeof image.runtime !== 'string' || image.runtime.trim().length === 0)) {
-      throw new Error(`Worker image ${image.id} runtime must be a non-empty string when present.`);
+    if (
+      hasRuntime &&
+      (!Array.isArray(image.runtimes) ||
+        image.runtimes.length === 0 ||
+        image.runtimes.some(
+          (runtime) => typeof runtime !== 'string' || runtime.trim().length === 0
+        ) ||
+        new Set(image.runtimes).size !== image.runtimes.length)
+    ) {
+      throw new Error(
+        `Worker image ${image.id} runtimes must be a non-empty array of unique non-empty strings when present.`
+      );
     }
     if (
       hasWorkerContract &&
@@ -368,7 +386,7 @@ function validateImageEntry(
     }
     if (!hasRuntime && hasWorkerContract) {
       throw new Error(
-        `Worker image ${image.id} is missing runtime; workerContract is required exactly when runtime metadata exists.`
+        `Worker image ${image.id} is missing runtimes; workerContract is required exactly when runtime metadata exists.`
       );
     }
     if (!hasRuntime && image.release === true) {
