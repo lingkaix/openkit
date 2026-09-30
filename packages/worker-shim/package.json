@@ -24,6 +24,8 @@
     "@openkit/worker-protocol": "workspace:*"
   },
   "devDependencies": {
+    "@opencode/cli": "2.0.20",
+    "@opencode/client": "2.0.20",
     "@types/node": "^25.6.0",
     "@vitest/coverage-v8": "4.1.4",
     "vitest": "^4.1.4"
