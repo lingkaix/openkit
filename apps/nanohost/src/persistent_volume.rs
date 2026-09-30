@@ -1,10 +1,11 @@
 //! Epoch-external retained Worker volume storage.
 
 use std::collections::{BTreeSet, HashMap};
-use std::ffi::OsString;
+use std::ffi::{CString, OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStringExt;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -139,6 +140,23 @@ struct StorageMetadata {
     targets: Vec<StoredTarget>,
 }
 
+/// Descriptor and stable volume identity proved by the retained attachment owner.
+pub struct CollectionWorktree {
+    /// Already-open work slot; traversal must retain this descriptor.
+    pub worktree: OwnedFd,
+    /// Host-owned selected volume reference, used only for private-store scoping.
+    pub volume_ref: String,
+}
+
+/// Uses exactly the sandbox.create identity grammars for collection correlation.
+pub fn valid_collection_identity(storage_ref: &str, scope_digest: &str, sandbox_id: &str) -> bool {
+    validate_opaque_ref(storage_ref).is_ok()
+        && validate_digest(scope_digest).is_ok()
+        && !sandbox_id.is_empty()
+        && sandbox_id.len() <= 512
+        && !sandbox_id.chars().any(char::is_control)
+}
+
 /// Host-local retained-volume owner bound to one private Docker epoch socket.
 pub struct PersistentVolumeStore {
     root: PathBuf,
@@ -172,6 +190,125 @@ impl PersistentVolumeStore {
             root,
             docker_socket,
             owner_uid,
+        })
+    }
+
+    /// Resolves only the currently admitted association; never discovers or repairs storage.
+    pub fn resolve_collection(
+        &self,
+        command: &crate::workspace_collect::CollectCommand,
+    ) -> Result<CollectionWorktree, &'static str> {
+        let invalid = "collection attachment unproved";
+        let open = |parent: &OwnedFd, name: &OsStr, directory: bool| {
+            let name = CString::new(name.as_bytes()).map_err(|_| invalid)?;
+            let flags = libc::O_RDONLY
+                | libc::O_NOFOLLOW
+                | libc::O_CLOEXEC
+                | libc::O_NONBLOCK
+                | if directory { libc::O_DIRECTORY } else { 0 };
+            let raw = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+            if raw < 0 {
+                return Err(invalid);
+            }
+            Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+        };
+        let stat = |fd: &OwnedFd| {
+            let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+            if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } < 0 {
+                return Err(invalid);
+            }
+            Ok(stat)
+        };
+        let private = |fd: &OwnedFd| {
+            let stat = stat(fd)?;
+            if stat.st_uid != self.owner_uid
+                || stat.st_mode & 0o077 != 0
+                || stat.st_mode & libc::S_IFMT != libc::S_IFDIR
+            {
+                return Err(invalid);
+            }
+            Ok(())
+        };
+        let path = CString::new(self.root.as_os_str().as_bytes()).map_err(|_| invalid)?;
+        let raw = unsafe {
+            libc::open(
+                path.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if raw < 0 {
+            return Err(invalid);
+        }
+        let root = unsafe { OwnedFd::from_raw_fd(raw) };
+        private(&root)?;
+        if path_exists_nofollow(&self.purging_path(&command.storage_ref)) {
+            return Err(invalid);
+        }
+        let association = open(
+            &root,
+            OsStr::new(&component_key(&command.storage_ref)),
+            true,
+        )?;
+        private(&association)?;
+        let identity = open(&association, OsStr::new(METADATA_NAME), false)?;
+        let identity_stat = stat(&identity)?;
+        if identity_stat.st_mode & libc::S_IFMT != libc::S_IFREG
+            || identity_stat.st_uid != self.owner_uid
+            || identity_stat.st_mode & 0o777 != 0o600
+            || identity_stat.st_size < 0
+            || identity_stat.st_size > 512 * 1024
+        {
+            return Err(invalid);
+        }
+        let mut bytes = Vec::new();
+        File::from(identity)
+            .take(512 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| invalid)?;
+        if bytes.len() > 512 * 1024 {
+            return Err(invalid);
+        }
+        let metadata = decode_metadata(&bytes).map_err(|_| invalid)?;
+        if metadata.state != "attached"
+            || metadata.storage_ref != command.storage_ref
+            || metadata.scope_digest != command.scope_digest
+            || metadata.attachment_generation != command.attachment_generation
+            || !metadata.attachment.as_ref().is_some_and(|attachment| {
+                attachment.generation == command.attachment_generation
+                    && attachment.sandbox_id == command.sandbox_id
+            })
+            || metadata.targets.iter().any(|target| !target.initialized)
+        {
+            return Err(invalid);
+        }
+        let targets = metadata
+            .targets
+            .iter()
+            .filter(|target| target.target == "/workspace")
+            .collect::<Vec<_>>();
+        if targets.len() != 1 {
+            return Err(invalid);
+        }
+        let target = targets[0];
+        let volumes = open(&association, OsStr::new("volumes"), true)?;
+        private(&volumes)?;
+        let volume = open(
+            &volumes,
+            OsStr::new(&component_key(&target.volume_ref)),
+            true,
+        )?;
+        let volume_stat = stat(&volume)?;
+        if volume_stat.st_uid != metadata.uid
+            || volume_stat.st_gid != metadata.gid
+            || volume_stat.st_mode & libc::S_IFMT != libc::S_IFDIR
+        {
+            return Err(invalid);
+        }
+        let worktrees = open(&volume, OsStr::new("worktrees"), true)?;
+        let worktree = open(&worktrees, OsStr::new(&command.work_slot), true)?;
+        Ok(CollectionWorktree {
+            worktree,
+            volume_ref: target.volume_ref.clone(),
         })
     }
 
@@ -1644,7 +1781,7 @@ fn wait_child(child: &mut Child, limit: Duration) -> Result<(), &'static str> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Cursor;
     use std::os::unix::fs::symlink;
@@ -1669,12 +1806,12 @@ mod tests {
         ))
     }
 
-    fn test_store(root: &Path) -> PersistentVolumeStore {
+    pub(crate) fn test_store(root: &Path) -> PersistentVolumeStore {
         let uid = unsafe { libc::geteuid() };
         PersistentVolumeStore::open_at(root.to_path_buf(), PathBuf::from("/missing"), uid).unwrap()
     }
 
-    fn stored_association(
+    pub(crate) fn stored_association(
         store: &PersistentVolumeStore,
         storage_ref: &str,
         sandbox_id: &str,
@@ -2211,5 +2348,122 @@ mod tests {
         fs::remove_file(store.association_path("storage-one")).unwrap();
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+    #[test]
+    fn h1_r3_collection_attachment_resolver_uses_exact_authority() {
+        let root = temporary_root();
+        let store = test_store(&root);
+        let (association_a, volume_a) = stored_association(&store, "storage-a", "sandbox-a", 1);
+        let (_, volume_b) = stored_association(&store, "storage-b", "sandbox-b", 1);
+        fs::create_dir_all(volume_a.join("worktrees/slotA")).unwrap();
+        fs::create_dir_all(volume_b.join("worktrees/slotA")).unwrap();
+        fs::write(volume_a.join("worktrees/slotA/a"), b"A").unwrap();
+        fs::write(volume_b.join("worktrees/slotA/a"), b"B").unwrap();
+        let input = json!({
+            "requestId": "ab".repeat(32), "mode": "baseline",
+            "storageRef": "storage-a", "scopeDigest": digest('b'),
+            "attachmentGeneration": 1, "sandboxId": "sandbox-a",
+            "workSlot": "slotA", "collectionId": "collection",
+            "acceptedBase": null, "previousHead": null,
+            "checkValues": {"runtimeEnv": [], "loopbackDigests": ["c".repeat(64), "d".repeat(64)]}
+        });
+        let command = crate::workspace_collect::validate_collect_command(
+            &serde_json::to_vec(&input).unwrap(),
+        )
+        .unwrap();
+        let resolved = store.resolve_collection(&command).unwrap();
+        let fd_path = CString::new("a").unwrap();
+        let raw = unsafe {
+            libc::openat(
+                resolved.worktree.as_raw_fd(),
+                fd_path.as_ptr(),
+                libc::O_RDONLY,
+            )
+        };
+        assert!(raw >= 0);
+        let mut bytes = Vec::new();
+        unsafe { File::from_raw_fd(raw) }
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"A");
+        let original = store.read_metadata(&association_a).unwrap();
+        for field in ["scope", "generation", "sandbox", "ref"] {
+            let mut wrong = command.clone();
+            match field {
+                "scope" => wrong.scope_digest = digest('c'),
+                "generation" => wrong.attachment_generation = 2,
+                "sandbox" => wrong.sandbox_id = "sandbox-b".into(),
+                _ => wrong.storage_ref = "missing".into(),
+            }
+            assert!(store.resolve_collection(&wrong).is_err(), "{field}");
+        }
+        for state in ["available", "unknown", "initializing"] {
+            let mut wrong = original.clone();
+            wrong.state = state.into();
+            store.write_metadata(&association_a, &wrong).unwrap();
+            assert!(store.resolve_collection(&command).is_err(), "{state}");
+        }
+        for defect in [
+            "detached",
+            "uninitialized",
+            "missing_workspace",
+            "duplicate",
+        ] {
+            let mut wrong = original.clone();
+            match defect {
+                "detached" => wrong.attachment = None,
+                "uninitialized" => wrong.targets[0].initialized = false,
+                "missing_workspace" => wrong.targets[0].target = "/other".into(),
+                _ => wrong.targets.push(wrong.targets[0].clone()),
+            }
+            store.write_metadata(&association_a, &wrong).unwrap();
+            assert!(store.resolve_collection(&command).is_err(), "{defect}");
+        }
+        store.write_metadata(&association_a, &original).unwrap();
+        fs::remove_dir_all(volume_a.join("worktrees")).unwrap();
+        assert!(
+            store.resolve_collection(&command).is_err(),
+            "B's spelling cannot supply A's missing slot"
+        );
+        fs::create_dir_all(volume_a.join("worktrees/slotA")).unwrap();
+        fs::remove_file(association_a.join("identity.json")).unwrap();
+        assert!(store.resolve_collection(&command).is_err());
+        store.write_metadata(&association_a, &original).unwrap();
+        let tomb = store.purging_path("storage-a");
+        fs::create_dir(&tomb).unwrap();
+        assert!(store.resolve_collection(&command).is_err());
+        fs::remove_dir(&tomb).unwrap();
+        let before = crate::workspace_collect::store_directory(
+            &root,
+            "storage-a",
+            &resolved.volume_ref,
+            "slotA",
+        );
+        let mut new = original.clone();
+        new.attachment_generation = 2;
+        new.attachment.as_mut().unwrap().generation = 2;
+        store.write_metadata(&association_a, &new).unwrap();
+        let mut next = command.clone();
+        next.attachment_generation = 2;
+        let reattached = store.resolve_collection(&next).unwrap();
+        assert_eq!(
+            before,
+            crate::workspace_collect::store_directory(
+                &root,
+                "storage-a",
+                &reattached.volume_ref,
+                "slotA"
+            )
+        );
+        assert_ne!(
+            before,
+            crate::workspace_collect::store_directory(
+                &root,
+                "storage-b",
+                "storage-b-volume",
+                "slotA"
+            )
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 }

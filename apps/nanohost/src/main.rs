@@ -16,6 +16,7 @@ mod openshell_client;
 mod openshell_release;
 mod persistent_volume;
 mod sandbox_bridge;
+mod workspace_collect;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::read_to_string;
@@ -161,6 +162,8 @@ enum ExecutedEffectResult {
     Json(serde_json::Value),
     /// Complete verified raw export tuple eligible for exact successor resend.
     FileExport(RetainedExportResult),
+    /// `workspace.collect` file-data result, either exact JSON or the candidate body.
+    WorkspaceCollect(workspace_collect::WorkspaceCollectDelivery),
 }
 
 /// Parses one complete NanoCore-derived policy into the pinned OpenShell proto.
@@ -907,6 +910,27 @@ fn execute_effect_command(
                 coordinator.purge_storage(string("storageRef")?, generation),
             ))
         }
+        RuntimeEffectKind::CollectWorkspace => {
+            // Drop runtime-env values before any failure return. The collector keeps them in memory only for the scan.
+            let input = std::mem::replace(&mut command.input, serde_json::json!({}));
+            Ok(ExecutedEffectResult::WorkspaceCollect(
+                workspace_collect::execute_collect(coordinator, &command.request_id, &input),
+            ))
+        }
+    }
+}
+
+/// Applies the existing reconnect retention rule to the actual pending-result slot.
+fn clear_pending_after_failure(
+    pending: &mut Option<(PolledEffectCommand, ExecutedEffectResult)>,
+    failure: &OuterSessionFailure,
+) {
+    let retain = failure.disposition() == OuterSessionDisposition::Reconnect
+        && pending
+            .as_ref()
+            .is_some_and(|(command, _)| !nanocore_session::clear_lost_effect_result(command.kind));
+    if !retain {
+        *pending = None;
     }
 }
 
@@ -1153,6 +1177,14 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                                                 result,
                                             ).await
                                         }
+                                        ExecutedEffectResult::WorkspaceCollect(result) => {
+                                            nanocore_session::submit_workspace_collect_result(
+                                                authority,
+                                                &mut sender,
+                                                command,
+                                                result,
+                                            ).await
+                                        }
                                     }
                                 } => submitted,
                                 _ = coordinator.wait() => {
@@ -1165,17 +1197,7 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                                 }
                             };
                             if let Err(failure) = submission {
-                                let retry_on_successor =
-                                    failure.disposition() == OuterSessionDisposition::Reconnect;
-                                let current_correlation_only = matches!(
-                                    command.kind,
-                                    RuntimeEffectKind::InspectImage
-                                        | RuntimeEffectKind::InspectStorage
-                                        | RuntimeEffectKind::PurgeStorage
-                                );
-                                if !retry_on_successor || current_correlation_only {
-                                    *pending_result = None;
-                                }
+                                clear_pending_after_failure(pending_result, &failure);
                                 return Err(failure.with_reconnect_after(Some(generation)));
                             }
                             *pending_result = None;
@@ -1375,6 +1397,9 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                                         RuntimeEffectKind::PurgeStorage => {
                                             OuterSessionOperation::PurgeStorage
                                         }
+                                        RuntimeEffectKind::CollectWorkspace => {
+                                            OuterSessionOperation::CollectWorkspace
+                                        }
                                     };
                                     return Err(OuterSessionFailure::terminal(
                                         OuterSessionStage::Execute,
@@ -1385,7 +1410,9 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                                     .with_reconnect_after(Some(generation)));
                                 }
                             };
-                            if command.kind == RuntimeEffectKind::BuildImage {
+                            if command.kind == RuntimeEffectKind::BuildImage
+                                || command.kind == RuntimeEffectKind::CollectWorkspace
+                            {
                                 command.input = serde_json::json!({});
                             }
                             *pending_result = Some((command, result));
@@ -1448,6 +1475,10 @@ fn main() {
     }
     if args.len() != 1 {
         eprintln!("nanohost arguments invalid");
+        std::process::exit(1);
+    }
+    if let Err(message) = workspace_collect::verify_pinned_git() {
+        eprintln!("{message}");
         std::process::exit(1);
     }
     rustls::crypto::ring::default_provider()
@@ -2131,7 +2162,7 @@ mod tests {
             .next()
             .expect("client production section");
         let coordinator_source = include_str!("epoch_coordinator.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("coordinator production section");
 
@@ -2181,7 +2212,7 @@ mod tests {
             .next()
             .expect("main production section");
         let coordinator_source = include_str!("epoch_coordinator.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("coordinator production section");
         let run_source = main_source

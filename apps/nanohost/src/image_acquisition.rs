@@ -4379,7 +4379,7 @@ mod tests {
                 .is_err()
         );
         let coordinator = include_str!("epoch_coordinator.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod tests")
             .expect("coordinator production section")
             .0;
         for owner in [

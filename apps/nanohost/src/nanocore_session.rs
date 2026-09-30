@@ -319,8 +319,8 @@ pub struct RawImportFile {
     pub bytes: Vec<u8>,
 }
 
-/// The exact eleven command/result pairs carried on the authoritative connection.
-const EFFECT_PATHS: [(&str, &str, RuntimeEffectKind); 11] = [
+/// The exact twelve command/result pairs carried on the authoritative connection.
+const EFFECT_PATHS: [(&str, &str, RuntimeEffectKind); 12] = [
     (
         "/api/nanohost/transport/effects/sandbox.create",
         "/api/nanohost/transport/effects/sandbox.create/result",
@@ -376,6 +376,11 @@ const EFFECT_PATHS: [(&str, &str, RuntimeEffectKind); 11] = [
         "/api/nanohost/transport/effects/storage.purge/result",
         RuntimeEffectKind::PurgeStorage,
     ),
+    (
+        "/api/nanohost/transport/effects/workspace.collect",
+        "/api/nanohost/transport/effects/workspace.collect/result",
+        RuntimeEffectKind::CollectWorkspace,
+    ),
 ];
 /// Fixed effect count used to retain the round-robin start after a successor result delivery.
 pub const EFFECT_OPERATION_COUNT: usize = EFFECT_PATHS.len();
@@ -393,6 +398,19 @@ pub fn effect_cursor_start(has_retained_result: bool) -> usize {
 /// Returns the fixed effect owner selected by one fair polling cursor.
 pub fn effect_kind_for_cursor(cursor: usize) -> RuntimeEffectKind {
     EFFECT_PATHS[cursor % EFFECT_PATHS.len()].2
+}
+
+/// Returns whether a lost result is dropped instead of replayed on the successor.
+///
+/// Collection, inspection, and purge stay bound to the current correlation. A lost collection delivery is cleared so Core can issue a new request from its unchanged cursor. Export and the other retained effects keep their existing redelivery rule.
+pub fn clear_lost_effect_result(kind: RuntimeEffectKind) -> bool {
+    matches!(
+        kind,
+        RuntimeEffectKind::InspectImage
+            | RuntimeEffectKind::InspectStorage
+            | RuntimeEffectKind::PurgeStorage
+            | RuntimeEffectKind::CollectWorkspace
+    )
 }
 
 /// Decision for NanoHost→NanoCore rendezvous transport security.
@@ -996,6 +1014,8 @@ pub enum OuterSessionOperation {
     InspectStorage,
     /// Purges one exact fenced storage association.
     PurgeStorage,
+    /// `workspace.collect`.
+    CollectWorkspace,
 }
 
 impl From<RuntimeEffectKind> for OuterSessionOperation {
@@ -1013,6 +1033,7 @@ impl From<RuntimeEffectKind> for OuterSessionOperation {
             RuntimeEffectKind::InspectImage => Self::InspectImage,
             RuntimeEffectKind::InspectStorage => Self::InspectStorage,
             RuntimeEffectKind::PurgeStorage => Self::PurgeStorage,
+            RuntimeEffectKind::CollectWorkspace => Self::CollectWorkspace,
         }
     }
 }
@@ -1033,6 +1054,7 @@ impl OuterSessionOperation {
             Self::InspectImage => "image.inspect",
             Self::InspectStorage => "storage.inspect",
             Self::PurgeStorage => "storage.purge",
+            Self::CollectWorkspace => "workspace.collect",
         }
     }
 }
@@ -1640,8 +1662,13 @@ pub async fn poll_effect_command(
             reason,
         )
     };
-    let input: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|_| terminal("effect command body invalid"))?;
+    let input: serde_json::Value = if kind == RuntimeEffectKind::CollectWorkspace {
+        crate::workspace_collect::validate_collect_command(&body)
+            .map_err(|_| terminal("workspace.collect command invalid"))?
+            .input()
+    } else {
+        serde_json::from_slice(&body).map_err(|_| terminal("effect command body invalid"))?
+    };
     let object = input
         .as_object()
         .ok_or_else(|| terminal("effect command body invalid"))?;
@@ -1651,35 +1678,39 @@ pub async fn poll_effect_command(
         .filter(|value| is_lowercase_hex(value, 64))
         .ok_or_else(|| terminal("effect command requestId invalid"))?
         .to_string();
-    for rejected in [
-        "operation",
-        "kind",
-        "bytes",
-        "payload",
-        "dockerfile",
-        "authorization",
-        "connectionGeneration",
-        "physicalHandle",
-    ] {
-        if object.contains_key(rejected) {
-            return Err(terminal("effect command contains forbidden field"));
+    if kind != RuntimeEffectKind::CollectWorkspace {
+        for rejected in [
+            "operation",
+            "kind",
+            "bytes",
+            "payload",
+            "dockerfile",
+            "authorization",
+            "connectionGeneration",
+            "physicalHandle",
+        ] {
+            if object.contains_key(rejected) {
+                return Err(terminal("effect command contains forbidden field"));
+            }
         }
-    }
-    if kind == RuntimeEffectKind::OpenBridge {
-        if object.len() != 2
-            || !object
-                .get("sandboxIntegrationBindingRef")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| {
-                    !value.is_empty() && value.len() <= 512 && !value.contains(['\r', '\n', '\0'])
-                })
-        {
-            return Err(terminal("static Harness bridge command invalid"));
+        if kind == RuntimeEffectKind::OpenBridge {
+            if object.len() != 2
+                || !object
+                    .get("sandboxIntegrationBindingRef")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| {
+                        !value.is_empty()
+                            && value.len() <= 512
+                            && !value.contains(['\r', '\n', '\0'])
+                    })
+            {
+                return Err(terminal("static Harness bridge command invalid"));
+            }
+        } else if object.contains_key("sandboxIntegrationBindingRef") {
+            return Err(terminal(
+                "Harness binding field rejected for non-bridge effect",
+            ));
         }
-    } else if object.contains_key("sandboxIntegrationBindingRef") {
-        return Err(terminal(
-            "Harness binding field rejected for non-bridge effect",
-        ));
     }
     let mut input = input;
     if kind == RuntimeEffectKind::BuildImage {
@@ -2174,6 +2205,144 @@ pub async fn submit_file_export_result(
         ));
     }
     Ok(())
+}
+
+/// Sends one `workspace.collect` result on the fixed file-data reservation.
+///
+/// JSON outcomes are exact bytes. A candidate is `application/octet-stream` with
+/// the snapshot-pair headers. This does not share `submit_effect_result`, which
+/// rewrites JSON and rejects a body that already contains `requestId`.
+///
+/// # Errors
+///
+/// A reconnect failure leaves collection delivery unknown; the successor polls
+/// for a new Core request. Any received non-204 status is a definitive rejection.
+pub async fn submit_workspace_collect_result(
+    authority: &str,
+    sender: &mut h2::client::SendRequest<Bytes>,
+    command: &PolledEffectCommand,
+    result: &crate::workspace_collect::WorkspaceCollectDelivery,
+) -> Result<(), OuterSessionFailure> {
+    let attempt = async {
+        let operation = OuterSessionOperation::CollectWorkspace;
+        let terminal_without_status = |reason| {
+            OuterSessionFailure::terminal(OuterSessionStage::Result, operation, None, reason)
+        };
+        let reconnect_without_status = |reason| {
+            OuterSessionFailure::reconnect(OuterSessionStage::Result, operation, None, reason, None)
+        };
+        if command.kind != RuntimeEffectKind::CollectWorkspace
+            || command.request_id != result.request_id()
+            || !is_lowercase_hex(result.request_id(), 64)
+            || result.body_len() > FILE_DATA_BODY_MAX_BYTES
+            || !crate::workspace_collect::collect_result_is_admissible(result.body_len())
+        {
+            return Err(terminal_without_status("workspace collect result invalid"));
+        }
+        let (_, path, _) = EFFECT_PATHS
+            .iter()
+            .find(|(_, _, kind)| *kind == RuntimeEffectKind::CollectWorkspace)
+            .ok_or_else(|| terminal_without_status("workspace collect result path unavailable"))?;
+        let mut request = Request::builder().method(Method::POST).uri(format!(
+            "{}{}",
+            authority.trim_end_matches('/'),
+            path
+        ));
+        for header in crate::workspace_collect::delivery_headers(result) {
+            request = request.header(header.name, header.value);
+        }
+        let request = request
+            .body(())
+            .map_err(|_| terminal_without_status("workspace collect result invalid"))?;
+        let mut ready =
+            sender.clone().ready().await.map_err(|_| {
+                reconnect_without_status("workspace collect result delivery uncertain")
+            })?;
+        let (response, mut request_body) = ready
+            .send_request(request, false)
+            .map_err(|_| reconnect_without_status("workspace collect result delivery uncertain"))?;
+        let length = result.body_len();
+        let mut offset = 0u64;
+        tokio::pin!(response);
+        if length == 0 {
+            request_body.send_data(Bytes::new(), true).map_err(|_| {
+                reconnect_without_status("workspace collect result delivery uncertain")
+            })?;
+        }
+        while offset < length {
+            let wanted = (length - offset).min(FILE_DATA_APPLICATION_CHUNK_BYTES as u64) as usize;
+            request_body.reserve_capacity(wanted);
+            let available = tokio::select! {
+            early = &mut response => {
+                let early = early.map_err(|_| reconnect_without_status("workspace collect result delivery uncertain"))?;
+                return Err(OuterSessionFailure::terminal(OuterSessionStage::Result,
+                    operation, Some(early.status().as_u16()), "workspace collect result rejected"));
+            },
+            available = std::future::poll_fn(|context| request_body.poll_capacity(context)) => available,
+        }.ok_or_else(|| reconnect_without_status("workspace collect result delivery uncertain"))?
+            .map_err(|_| reconnect_without_status("workspace collect result delivery uncertain"))?;
+            let sent = available.min(wanted);
+            if sent == 0 {
+                continue;
+            }
+            let bytes = result.body_chunk(offset, sent).map_err(|_| {
+                reconnect_without_status("workspace collect result delivery uncertain")
+            })?;
+            offset += bytes.len() as u64;
+            request_body
+                .send_data(Bytes::from(bytes), offset == length)
+                .map_err(|_| {
+                    reconnect_without_status("workspace collect result delivery uncertain")
+                })?;
+        }
+        let response = response
+            .await
+            .map_err(|_| reconnect_without_status("workspace collect result delivery uncertain"))?;
+        let status = response.status();
+        if status != StatusCode::NO_CONTENT {
+            return Err(OuterSessionFailure::terminal(
+                OuterSessionStage::Result,
+                operation,
+                Some(status.as_u16()),
+                "workspace collect result rejected",
+            ));
+        }
+        let mut response_body = response.into_body();
+        if response_body
+            .data()
+            .await
+            .transpose()
+            .map_err(|_| {
+                OuterSessionFailure::reconnect(
+                    OuterSessionStage::Result,
+                    operation,
+                    Some(status.as_u16()),
+                    "workspace collect result delivery uncertain",
+                    None,
+                )
+            })?
+            .is_some()
+        {
+            return Err(OuterSessionFailure::terminal(
+                OuterSessionStage::Result,
+                operation,
+                Some(status.as_u16()),
+                "workspace collect result rejected",
+            ));
+        }
+        Ok(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(120), attempt)
+        .await
+        .unwrap_or_else(|_| {
+            Err(OuterSessionFailure::reconnect(
+                OuterSessionStage::Result,
+                OuterSessionOperation::CollectWorkspace,
+                None,
+                "workspace collect result delivery uncertain",
+                None,
+            ))
+        })
 }
 
 /// Returns one required non-duplicated visible-ASCII response header.
@@ -3954,6 +4123,7 @@ mod tests {
         assert_eq!(
             observed,
             vec![
+                "/api/nanohost/transport/effects/sandbox.create",
                 "/api/nanohost/transport/effects/sandbox.delete",
                 "/api/nanohost/transport/effects/bridge.open",
                 "/api/nanohost/transport/effects/bridge.close",
@@ -3964,12 +4134,758 @@ mod tests {
                 "/api/nanohost/transport/effects/image.inspect",
                 "/api/nanohost/transport/effects/storage.inspect",
                 "/api/nanohost/transport/effects/storage.purge",
-                "/api/nanohost/transport/effects/sandbox.create",
+                "/api/nanohost/transport/effects/workspace.collect",
             ],
             "the cursor boundary must wrap through one complete fair operation cycle instead of saturating on reference.import"
         );
         drop(sender);
         client_driver.abort();
+    }
+
+    fn collect_request_id() -> String {
+        "ab".repeat(32)
+    }
+
+    fn collect_command_body(extra: bool) -> Vec<u8> {
+        let mut value = serde_json::json!({
+            "requestId": collect_request_id(),
+            "storageRef": "storage-one",
+            "scopeDigest": format!("sha256:{}", "b".repeat(64)),
+            "attachmentGeneration": 1,
+            "sandboxId": "sandbox-one",
+            "mode": "capture",
+            "workSlot": "slotA",
+            "collectionId": "collect.1",
+            "acceptedBase": {
+                "tree": "0123456789abcdef0123456789abcdef01234567",
+                "manifest": "89abcdef0123456789abcdef0123456789abcdef"
+            },
+            "previousHead": {
+                "tree": "0123456789abcdef0123456789abcdef01234567",
+                "manifest": "89abcdef0123456789abcdef0123456789abcdef"
+            },
+            "checkValues": {
+                "runtimeEnv": ["VALUE"],
+                "loopbackDigests": ["0123456789abcdef".repeat(4), "fedcba9876543210".repeat(4)]
+            }
+        });
+        if extra {
+            value["note"] = serde_json::json!("ignored");
+        }
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    fn json_delivery(body: &str) -> crate::workspace_collect::WorkspaceCollectDelivery {
+        crate::workspace_collect::WorkspaceCollectDelivery::Json {
+            request_id: collect_request_id(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    fn candidate_delivery(body: Vec<u8>) -> crate::workspace_collect::WorkspaceCollectDelivery {
+        let pair = |tree: &str, manifest: &str| crate::workspace_collect::SnapshotPair {
+            tree: tree.to_string(),
+            manifest: manifest.to_string(),
+        };
+        crate::workspace_collect::WorkspaceCollectDelivery::Candidate(
+            crate::workspace_collect::WorkspaceCandidate {
+                request_id: collect_request_id(),
+                head: pair(
+                    "0123456789abcdef0123456789abcdef01234567",
+                    "89abcdef0123456789abcdef0123456789abcdef",
+                ),
+                previous_head: pair(
+                    "1111111111111111111111111111111111111111",
+                    "2222222222222222222222222222222222222222",
+                ),
+                accepted_base: pair(
+                    "3333333333333333333333333333333333333333",
+                    "4444444444444444444444444444444444444444",
+                ),
+                unstable: false,
+                body: crate::workspace_collect::CandidateBody::fixture(body),
+            },
+        )
+    }
+
+    struct CollectExchange {
+        poll_body: Vec<u8>,
+        poll_status: StatusCode,
+        result: CollectResultScript,
+        stream_window: u32,
+        frame: u32,
+    }
+
+    #[derive(Clone, Copy)]
+    enum CollectResultScript {
+        None,
+        NoContent,
+        NonemptyNoContent,
+        EarlyReject,
+        Status(StatusCode),
+        CloseBeforeBody,
+        CloseAfterOneChunk,
+        CloseAfterBody,
+        Reset,
+    }
+
+    struct CollectObserved {
+        paths: Vec<String>,
+        chunks: Vec<usize>,
+        result_body: Vec<u8>,
+        result_headers: Vec<(String, String)>,
+    }
+
+    async fn drive_collect(
+        exchange: CollectExchange,
+        submit: Option<crate::workspace_collect::WorkspaceCollectDelivery>,
+    ) -> (
+        Result<Option<PolledEffectCommand>, OuterSessionFailure>,
+        Option<Result<(), OuterSessionFailure>>,
+        CollectObserved,
+    ) {
+        drive_collect_dispatch(exchange, submit, None).await
+    }
+
+    async fn drive_collect_dispatch(
+        exchange: CollectExchange,
+        mut submit: Option<crate::workspace_collect::WorkspaceCollectDelivery>,
+        coordinator: Option<&mut crate::epoch_coordinator::EpochCoordinator>,
+    ) -> (
+        Result<Option<PolledEffectCommand>, OuterSessionFailure>,
+        Option<Result<(), OuterSessionFailure>>,
+        CollectObserved,
+    ) {
+        let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
+        let poll_body = exchange.poll_body.clone();
+        let poll_status = exchange.poll_status;
+        let result_script = exchange.result;
+        let server = tokio::spawn(async move {
+            let mut connection = h2::server::Builder::new()
+                .initial_window_size(exchange.stream_window)
+                .initial_connection_window_size(2 * 1024 * 1024)
+                .max_frame_size(exchange.frame)
+                .handshake(server_io)
+                .await
+                .expect("collect server handshake");
+            let mut observed = CollectObserved {
+                paths: Vec::new(),
+                chunks: Vec::new(),
+                result_body: Vec::new(),
+                result_headers: Vec::new(),
+            };
+            let (request, mut respond) = connection
+                .accept()
+                .await
+                .expect("poll stream")
+                .expect("poll");
+            observed.paths.push(request.uri().path().to_string());
+            let mut body = request.into_body();
+            while let Some(chunk) = body.data().await {
+                let chunk = chunk.expect("poll body");
+                body.flow_control()
+                    .release_capacity(chunk.len())
+                    .expect("poll window");
+            }
+            let response = Response::builder()
+                .status(poll_status)
+                .body(())
+                .expect("poll response");
+            {
+                let mut response_body = respond.send_response(response, false).expect("poll send");
+                response_body
+                    .send_data(Bytes::from(poll_body), true)
+                    .expect("poll bytes");
+            }
+            if matches!(result_script, CollectResultScript::None) {
+                while connection
+                    .accept()
+                    .await
+                    .transpose()
+                    .expect("idle connection")
+                    .is_some()
+                {}
+                return observed;
+            }
+            let Some(accepted) = connection.accept().await else {
+                return observed;
+            };
+            let (request, mut respond) = accepted.expect("result stream");
+            observed.paths.push(request.uri().path().to_string());
+            for (name, value) in request.headers() {
+                if let Ok(text) = value.to_str() {
+                    observed
+                        .result_headers
+                        .push((name.as_str().to_string(), text.to_string()));
+                }
+            }
+            match result_script {
+                CollectResultScript::EarlyReject => {
+                    respond
+                        .send_response(
+                            Response::builder()
+                                .status(StatusCode::BAD_REQUEST)
+                                .body(())
+                                .unwrap(),
+                            true,
+                        )
+                        .unwrap();
+                    drop(respond);
+                    while connection.accept().await.is_some() {}
+                    return observed;
+                }
+                CollectResultScript::CloseBeforeBody => return observed,
+                CollectResultScript::Reset => {
+                    respond.send_reset(h2::Reason::CANCEL);
+                    return observed;
+                }
+                _ => {}
+            }
+            let mut body = request.into_body();
+            loop {
+                // A small H2 window needs the server connection polled while the
+                // result body waits for more DATA frames after capacity is returned.
+                let chunk = tokio::select! {
+                    chunk = body.data() => chunk,
+                    incoming = connection.accept() => {
+                        assert!(incoming.is_none(), "unexpected concurrent collect stream");
+                        None
+                    }
+                };
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                let chunk = chunk.expect("result body");
+                observed.chunks.push(chunk.len());
+                observed.result_body.extend_from_slice(&chunk);
+                body.flow_control()
+                    .release_capacity(chunk.len())
+                    .expect("result window");
+                if matches!(result_script, CollectResultScript::CloseAfterOneChunk) {
+                    return observed;
+                }
+            }
+            if matches!(result_script, CollectResultScript::CloseAfterBody) {
+                return observed;
+            }
+            let status = match result_script {
+                CollectResultScript::Status(status) => status,
+                _ => StatusCode::NO_CONTENT,
+            };
+            let mut acknowledgement = respond
+                .send_response(
+                    Response::builder()
+                        .status(status)
+                        .body(())
+                        .expect("result response"),
+                    !matches!(result_script, CollectResultScript::NonemptyNoContent),
+                )
+                .expect("result send");
+            if matches!(result_script, CollectResultScript::NonemptyNoContent) {
+                acknowledgement
+                    .send_data(Bytes::from_static(b"unexpected"), true)
+                    .unwrap();
+            }
+            drop(acknowledgement);
+            drop(respond);
+            while connection
+                .accept()
+                .await
+                .transpose()
+                .expect("result connection")
+                .is_some()
+            {}
+            observed
+        });
+        let (mut sender, connection) = h2::client::Builder::new()
+            .max_frame_size(exchange.frame)
+            .initial_window_size(1024 * 1024)
+            .handshake(client_io)
+            .await
+            .expect("collect client handshake");
+        let mut connection = std::pin::pin!(connection);
+        let mut connection_open = true;
+        let mut drive = |context: &mut std::task::Context<'_>| {
+            if connection_open && std::future::Future::poll(connection.as_mut(), context).is_ready()
+            {
+                connection_open = false;
+            }
+        };
+        let mut cursor = 11usize;
+        let polled = {
+            let poll_future =
+                poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false);
+            tokio::pin!(poll_future);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                std::future::poll_fn(|context| {
+                    let started = poll_future.as_mut().poll(context);
+                    drive(context);
+                    if started.is_ready() {
+                        started
+                    } else {
+                        poll_future.as_mut().poll(context)
+                    }
+                }),
+            )
+            .await
+            .expect("collect poll stalled")
+        };
+        let mut dispatched_command = None;
+        if let Some(coordinator) = coordinator {
+            let received = polled.as_ref().unwrap().as_ref().unwrap();
+            assert!(received.file_data.is_none());
+            let mut command = PolledEffectCommand {
+                kind: received.kind,
+                request_id: received.request_id.clone(),
+                input: received.input.clone(),
+                file_data: None,
+            };
+            submit = match crate::execute_effect_command(coordinator, &mut command).unwrap() {
+                crate::ExecutedEffectResult::WorkspaceCollect(delivery) => Some(delivery),
+                _ => panic!("wrong dispatcher result"),
+            };
+            assert_eq!(command.input, serde_json::json!({}));
+            dispatched_command = Some(command);
+        }
+        let submitted = if let Some(delivery) = submit {
+            let command = dispatched_command.unwrap_or(PolledEffectCommand {
+                kind: RuntimeEffectKind::CollectWorkspace,
+                request_id: collect_request_id(),
+                input: serde_json::json!({}),
+                file_data: None,
+            });
+            let outcome = {
+                let submit_future = submit_workspace_collect_result(
+                    "http://nanocore.test",
+                    &mut sender,
+                    &command,
+                    &delivery,
+                );
+                tokio::pin!(submit_future);
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    std::future::poll_fn(|context| {
+                        let started = submit_future.as_mut().poll(context);
+                        drive(context);
+                        if started.is_ready() {
+                            started
+                        } else {
+                            submit_future.as_mut().poll(context)
+                        }
+                    }),
+                )
+                .await
+                .expect("collect result stalled")
+            };
+            let mut pending = Some((
+                command,
+                crate::ExecutedEffectResult::WorkspaceCollect(delivery),
+            ));
+            if let Err(failure) = &outcome {
+                crate::clear_pending_after_failure(&mut pending, failure);
+                assert!(
+                    pending.is_none(),
+                    "collection result survived its failed physical attempt"
+                );
+            }
+            Some(outcome)
+        } else {
+            None
+        };
+        drop(sender);
+        let _ = std::future::poll_fn(|context| {
+            drive(context);
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let mut server = server;
+        let observed = tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            std::future::poll_fn(|context| {
+                drive(context);
+                std::future::Future::poll(std::pin::Pin::new(&mut server), context)
+            }),
+        )
+        .await
+        .expect("collect server stalled")
+        .expect("collect server");
+        (polled, submitted, observed)
+    }
+
+    #[test]
+    fn h1_r2_lost_collection_result_is_cleared_and_export_is_retained() {
+        assert!(clear_lost_effect_result(
+            RuntimeEffectKind::CollectWorkspace
+        ));
+        assert!(clear_lost_effect_result(RuntimeEffectKind::InspectImage));
+        assert!(clear_lost_effect_result(RuntimeEffectKind::InspectStorage));
+        assert!(clear_lost_effect_result(RuntimeEffectKind::PurgeStorage));
+        assert!(!clear_lost_effect_result(RuntimeEffectKind::ExportFile));
+        assert!(!clear_lost_effect_result(RuntimeEffectKind::CreateSandbox));
+        assert!(!clear_lost_effect_result(
+            RuntimeEffectKind::ImportReference
+        ));
+        let main = include_str!("main.rs");
+        assert!(main.contains("nanocore_session::clear_lost_effect_result(command.kind)"));
+        assert!(main.contains("clear_pending_after_failure(pending_result, &failure)"));
+        assert!(main.contains("workspace_collect::execute_collect"));
+        assert_eq!(effect_cursor_start(false), 0);
+    }
+
+    #[tokio::test]
+    async fn h1_r12_poll_accepts_an_additive_command_and_rejects_bad_core() {
+        let (polled, _, observed) = drive_collect(
+            CollectExchange {
+                poll_body: collect_command_body(true),
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::None,
+                stream_window: 1024 * 1024,
+                frame: 256 * 1024,
+            },
+            None,
+        )
+        .await;
+        let command = polled.expect("additive command").expect("command present");
+        assert_eq!(command.kind, RuntimeEffectKind::CollectWorkspace);
+        assert_eq!(command.request_id, collect_request_id());
+        assert_eq!(
+            observed.paths,
+            vec!["/api/nanohost/transport/effects/workspace.collect"]
+        );
+        let typed = crate::workspace_collect::validate_collect_command(&collect_command_body(true))
+            .unwrap();
+        let plain =
+            crate::workspace_collect::validate_collect_command(&collect_command_body(false))
+                .unwrap();
+        assert!(typed == plain);
+
+        let (missing, _, _) = drive_collect(
+            CollectExchange {
+                poll_body: br#"{"workSlot":"slotA"}"#.to_vec(),
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::None,
+                stream_window: 64 * 1024,
+                frame: 16 * 1024,
+            },
+            None,
+        )
+        .await;
+        match missing {
+            Err(error) => assert_eq!(error.reason(), "workspace.collect command invalid"),
+            Ok(_) => panic!("missing core was accepted"),
+        }
+
+        let mut duplicate = collect_command_body(false);
+        let text = String::from_utf8(duplicate.split_off(0)).unwrap();
+        let text = text.replacen(
+            "\"workSlot\"",
+            "\"workSlot\":\"slotA\",\"work\\u0053lot\"",
+            1,
+        );
+        duplicate = text.into_bytes();
+        let (duplicated, _, _) = drive_collect(
+            CollectExchange {
+                poll_body: duplicate,
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::None,
+                stream_window: 64 * 1024,
+                frame: 16 * 1024,
+            },
+            None,
+        )
+        .await;
+        match duplicated {
+            Err(error) => assert_eq!(error.reason(), "workspace.collect command invalid"),
+            Ok(_) => panic!("duplicate core was accepted"),
+        }
+    }
+
+    #[tokio::test]
+    async fn h1_r12_result_bytes_headers_window_and_chunk_limit() {
+        let json = format!(
+            r#"{{"requestId":"{}","outcome":"no_new_head","unstable":false}}"#,
+            collect_request_id()
+        );
+        let (polled, submitted, observed) = drive_collect(
+            CollectExchange {
+                poll_body: collect_command_body(false),
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::NoContent,
+                stream_window: 65_535,
+                frame: 16 * 1024,
+            },
+            Some(json_delivery(&json)),
+        )
+        .await;
+        assert!(polled.expect("poll").is_some());
+        submitted.unwrap().expect("json result");
+        assert_eq!(
+            observed.paths,
+            vec![
+                "/api/nanohost/transport/effects/workspace.collect",
+                "/api/nanohost/transport/effects/workspace.collect/result",
+            ]
+        );
+        assert_eq!(observed.result_body, json.as_bytes());
+        assert!(
+            observed
+                .result_headers
+                .iter()
+                .any(|(name, value)| name == "content-type" && value == "application/json")
+        );
+        assert!(
+            !observed
+                .result_headers
+                .iter()
+                .any(|(name, _)| name == "x-openkit-request-id")
+        );
+
+        let body = vec![0x5au8; 200 * 1024];
+        let (polled, submitted, observed) = drive_collect(
+            CollectExchange {
+                poll_body: collect_command_body(false),
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::NoContent,
+                stream_window: 1024 * 1024,
+                frame: 256 * 1024,
+            },
+            Some(candidate_delivery(body.clone())),
+        )
+        .await;
+        assert!(polled.expect("candidate poll").is_some());
+        submitted.unwrap().expect("candidate result");
+        assert_eq!(observed.result_body, body);
+        assert!(
+            observed
+                .chunks
+                .iter()
+                .all(|len| *len <= FILE_DATA_APPLICATION_CHUNK_BYTES)
+        );
+        assert!(
+            observed.chunks.iter().copied().max().unwrap_or(0) >= 60_000,
+            "{:?}",
+            observed.chunks
+        );
+        assert!(
+            observed
+                .result_headers
+                .iter()
+                .any(|(name, value)| name == "content-type" && value == "application/octet-stream")
+        );
+        assert!(
+            observed
+                .result_headers
+                .iter()
+                .any(|(name, value)| name == "x-openkit-request-id"
+                    && value == &collect_request_id())
+        );
+        assert!(
+            observed
+                .result_headers
+                .iter()
+                .any(|(name, _)| name == "x-openkit-previous-head")
+        );
+        assert!(
+            observed
+                .result_headers
+                .iter()
+                .any(|(name, _)| name == "x-openkit-accepted-base")
+        );
+        for (name, expected) in [
+            (
+                "x-openkit-head",
+                "0123456789abcdef0123456789abcdef01234567 89abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+            ),
+            (
+                "x-openkit-previous-head",
+                "1111111111111111111111111111111111111111 2222222222222222222222222222222222222222"
+                    .to_string(),
+            ),
+            (
+                "x-openkit-accepted-base",
+                "3333333333333333333333333333333333333333 4444444444444444444444444444444444444444"
+                    .to_string(),
+            ),
+            (
+                "x-openkit-sha256",
+                format!("sha256:{:x}", sha2::Sha256::digest(&observed.result_body)),
+            ),
+            ("x-openkit-unstable", "false".to_string()),
+            ("content-length", observed.result_body.len().to_string()),
+            (
+                "x-openkit-byte-length",
+                observed.result_body.len().to_string(),
+            ),
+        ] {
+            let values = observed
+                .result_headers
+                .iter()
+                .filter(|(key, _)| key == name)
+                .collect::<Vec<_>>();
+            assert_eq!(values.len(), 1, "{name}");
+            assert_eq!(values[0].1, expected, "{name}");
+        }
+        assert_eq!(observed.paths.len(), 2);
+
+        let modest = vec![0x11u8; 200 * 1024];
+        let (polled, submitted, observed) = drive_collect(
+            CollectExchange {
+                poll_body: collect_command_body(false),
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::NoContent,
+                stream_window: 1024,
+                frame: 16 * 1024,
+            },
+            Some(candidate_delivery(modest.clone())),
+        )
+        .await;
+        assert!(polled.expect("window poll").is_some());
+        submitted.unwrap().expect("small window");
+        assert_eq!(observed.result_body, modest);
+        assert!(
+            observed
+                .chunks
+                .iter()
+                .all(|len| *len <= FILE_DATA_APPLICATION_CHUNK_BYTES)
+        );
+        assert!(crate::workspace_collect::collect_result_is_admissible(
+            256 * 1024 * 1024
+        ));
+        assert!(!crate::workspace_collect::collect_result_is_admissible(
+            256 * 1024 * 1024 + 1
+        ));
+    }
+
+    #[tokio::test]
+    async fn h1_r2_lost_result_points_are_not_resubmitted() {
+        let lost = json_delivery(&format!(
+            r#"{{"requestId":"{}","outcome":"credential_hit"}}"#,
+            collect_request_id()
+        ));
+        for script in [
+            CollectResultScript::CloseBeforeBody,
+            CollectResultScript::CloseAfterOneChunk,
+            CollectResultScript::CloseAfterBody,
+        ] {
+            let (_polled, submitted, _) = drive_collect(
+                CollectExchange {
+                    poll_body: collect_command_body(false),
+                    poll_status: StatusCode::OK,
+                    result: script,
+                    stream_window: 1024,
+                    frame: 16 * 1024,
+                },
+                Some(lost.clone()),
+            )
+            .await;
+            let failure = submitted.unwrap().expect_err("lost delivery");
+            assert_eq!(failure.disposition(), OuterSessionDisposition::Reconnect);
+            assert_eq!(
+                failure.reason(),
+                "workspace collect result delivery uncertain"
+            );
+            assert!(clear_lost_effect_result(
+                RuntimeEffectKind::CollectWorkspace
+            ));
+        }
+
+        let fresh = format!(
+            r#"{{"requestId":"{}","outcome":"no_new_head","unstable":false}}"#,
+            collect_request_id()
+        );
+        let (polled, submitted, observed) = drive_collect(
+            CollectExchange {
+                poll_body: collect_command_body(false),
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::NoContent,
+                stream_window: 64 * 1024,
+                frame: 16 * 1024,
+            },
+            Some(json_delivery(&fresh)),
+        )
+        .await;
+        assert!(polled.expect("new request poll").is_some());
+        submitted.unwrap().expect("new request");
+        assert_eq!(
+            observed.paths[0],
+            "/api/nanohost/transport/effects/workspace.collect"
+        );
+        assert_ne!(observed.result_body, lost.body());
+        assert_eq!(observed.result_body, fresh.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn h1_r12_rejection_and_reset_fail_the_result() {
+        let delivery = json_delivery(&format!(
+            r#"{{"requestId":"{}","outcome":"effect_failed"}}"#,
+            collect_request_id()
+        ));
+        let (_polled, submitted, _) = drive_collect(
+            CollectExchange {
+                poll_body: collect_command_body(false),
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::Status(StatusCode::BAD_REQUEST),
+                stream_window: 64 * 1024,
+                frame: 16 * 1024,
+            },
+            Some(delivery.clone()),
+        )
+        .await;
+        let rejected = submitted.unwrap().expect_err("rejected result");
+        assert_eq!(rejected.disposition(), OuterSessionDisposition::Terminal);
+        assert_eq!(rejected.reason(), "workspace collect result rejected");
+
+        let (_polled, submitted, _) = drive_collect(
+            CollectExchange {
+                poll_body: collect_command_body(false),
+                poll_status: StatusCode::OK,
+                result: CollectResultScript::Reset,
+                stream_window: 64 * 1024,
+                frame: 16 * 1024,
+            },
+            Some(delivery),
+        )
+        .await;
+        let reset = submitted.unwrap().expect_err("reset result");
+        assert_eq!(reset.disposition(), OuterSessionDisposition::Reconnect);
+        assert_eq!(
+            reset.reason(),
+            "workspace collect result delivery uncertain"
+        );
+    }
+
+    #[tokio::test]
+    async fn h1_r3_nonempty_ack_and_early_rejection_with_blocked_capacity() {
+        for (script, window) in [
+            (CollectResultScript::NonemptyNoContent, 65536),
+            (CollectResultScript::EarlyReject, 0),
+        ] {
+            let (_, submitted, observed) = drive_collect(
+                CollectExchange {
+                    poll_body: collect_command_body(false),
+                    poll_status: StatusCode::OK,
+                    result: script,
+                    stream_window: window,
+                    frame: 16384,
+                },
+                Some(candidate_delivery(vec![0x12; 200000])),
+            )
+            .await;
+            let failure = submitted
+                .unwrap()
+                .expect_err("invalid acknowledgement cannot accept candidate");
+            assert_eq!(
+                failure.disposition(),
+                OuterSessionDisposition::Terminal,
+                "window {window}: {}",
+                failure.reason()
+            );
+            if window == 0 {
+                assert!(observed.result_body.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -4335,5 +5251,171 @@ mod tests {
                 ))
                 .is_err()
         );
+    }
+    #[tokio::test]
+    async fn h1_r3_real_poll_dispatch_collector_and_sender() {
+        let root = std::env::temp_dir().join(format!("openkit-h1-dispatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (mut coordinator, worktree) =
+            crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root);
+        std::fs::write(worktree.join("a"), b"base").unwrap();
+        let mut input: serde_json::Value =
+            serde_json::from_slice(&collect_command_body(false)).unwrap();
+        input["mode"] = serde_json::json!("baseline");
+        input["acceptedBase"] = serde_json::Value::Null;
+        input["previousHead"] = serde_json::Value::Null;
+        input["checkValues"]["runtimeEnv"] = serde_json::json!([]);
+        let exchange = |input: &serde_json::Value, result| CollectExchange {
+            poll_body: serde_json::to_vec(input).unwrap(),
+            poll_status: StatusCode::OK,
+            result,
+            stream_window: 1024,
+            frame: 256 * 1024,
+        };
+        let (_, submitted, observed) = drive_collect_dispatch(
+            exchange(&input, CollectResultScript::NoContent),
+            None,
+            Some(&mut coordinator),
+        )
+        .await;
+        submitted.unwrap().unwrap();
+        let baseline: serde_json::Value = serde_json::from_slice(&observed.result_body).unwrap();
+        assert_eq!(baseline["outcome"], "baseline");
+        assert_eq!(baseline.as_object().unwrap().len(), 3);
+        let base = baseline["head"].clone();
+        input["mode"] = serde_json::json!("capture");
+        input["acceptedBase"] = base.clone();
+        input["previousHead"] = base.clone();
+        input["requestId"] = serde_json::json!("cd".repeat(32));
+        input["collectionId"] = serde_json::json!("capture-1");
+        std::fs::write(worktree.join("a"), vec![0x41; 200 * 1024]).unwrap();
+        let (_, submitted, lost) = drive_collect_dispatch(
+            exchange(&input, CollectResultScript::CloseAfterOneChunk),
+            None,
+            Some(&mut coordinator),
+        )
+        .await;
+        assert_eq!(
+            submitted.unwrap().unwrap_err().disposition(),
+            OuterSessionDisposition::Reconnect
+        );
+        assert!(!lost.result_body.is_empty());
+        input["requestId"] = serde_json::json!("ef".repeat(32));
+        input["collectionId"] = serde_json::json!("capture-2");
+        let (_, submitted, observed) = drive_collect_dispatch(
+            exchange(&input, CollectResultScript::NoContent),
+            None,
+            Some(&mut coordinator),
+        )
+        .await;
+        submitted.unwrap().unwrap();
+        let header = |name| {
+            let values = observed
+                .result_headers
+                .iter()
+                .filter(|(key, _)| key == name)
+                .collect::<Vec<_>>();
+            assert_eq!(values.len(), 1, "{name}");
+            values[0].1.clone()
+        };
+        let pair = format!(
+            "{} {}",
+            base["tree"].as_str().unwrap(),
+            base["manifest"].as_str().unwrap()
+        );
+        assert_eq!(header("x-openkit-accepted-base"), pair);
+        assert_eq!(header("x-openkit-previous-head"), pair);
+        assert_eq!(header("x-openkit-request-id"), "ef".repeat(32));
+        assert_eq!(
+            header("x-openkit-sha256"),
+            format!("sha256:{:x}", sha2::Sha256::digest(&observed.result_body))
+        );
+        assert_eq!(
+            header("content-length"),
+            observed.result_body.len().to_string()
+        );
+        assert_eq!(
+            header("x-openkit-byte-length"),
+            observed.result_body.len().to_string()
+        );
+        assert_eq!(header("x-openkit-unstable"), "false");
+        assert!(observed.chunks.iter().all(|length| *length <= 65536));
+        assert!(
+            observed
+                .result_body
+                .windows(b"diff --git".len())
+                .any(|window| window == b"diff --git")
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test(start_paused = true)]
+    async fn h1_r3_withheld_capacity_expires_at_absolute_delivery_deadline() {
+        let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
+        let server = tokio::spawn(async move {
+            let mut connection = h2::server::Builder::new()
+                .initial_window_size(0)
+                .handshake::<_, Bytes>(server_io)
+                .await
+                .unwrap();
+            let (request, response) = connection.accept().await.unwrap().unwrap();
+            // Keep both handles alive while intentionally granting no DATA capacity or acknowledgement.
+            let _held = (request, response);
+            while connection.accept().await.is_some() {}
+        });
+        let (mut sender, connection) = h2::client::handshake(client_io).await.unwrap();
+        let driver = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let command = PolledEffectCommand {
+            kind: RuntimeEffectKind::CollectWorkspace,
+            request_id: collect_request_id(),
+            input: serde_json::json!({}),
+            file_data: None,
+        };
+        let delivery = candidate_delivery(vec![0x41; 200 * 1024]);
+        let start = tokio::time::Instant::now();
+        let result = submit_workspace_collect_result(
+            "http://nanocore.test",
+            &mut sender,
+            &command,
+            &delivery,
+        )
+        .await;
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(start),
+            std::time::Duration::from_secs(120)
+        );
+        let failure = result.unwrap_err();
+        assert_eq!(failure.disposition(), OuterSessionDisposition::Reconnect);
+        let mut pending = Some((
+            command,
+            crate::ExecutedEffectResult::WorkspaceCollect(delivery),
+        ));
+        crate::clear_pending_after_failure(&mut pending, &failure);
+        assert!(pending.is_none());
+        driver.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn h1_r3_control_size_boundary_runs_through_polling() {
+        let mut body = collect_command_body(false);
+        body.resize(
+            crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES,
+            b' ',
+        );
+        let exchange = |body| CollectExchange {
+            poll_body: body,
+            poll_status: StatusCode::OK,
+            result: CollectResultScript::None,
+            stream_window: 1024 * 1024,
+            frame: 256 * 1024,
+        };
+        let (at, _, _) = drive_collect(exchange(body.clone()), None).await;
+        assert!(at.unwrap().is_some());
+        body.push(b' ');
+        let (over, _, _) = drive_collect(exchange(body), None).await;
+        assert!(over.is_err());
     }
 }

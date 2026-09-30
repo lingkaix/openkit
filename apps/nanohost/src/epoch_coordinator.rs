@@ -581,6 +581,8 @@ pub enum RuntimeEffectKind {
     InspectStorage,
     /// Purges one exact fenced storage association.
     PurgeStorage,
+    /// Collects one read-only workspace snapshot pair.
+    CollectWorkspace,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -603,6 +605,7 @@ impl RuntimeEffectKind {
             "image.inspect" => Ok(Self::InspectImage),
             "storage.inspect" => Ok(Self::InspectStorage),
             "storage.purge" => Ok(Self::PurgeStorage),
+            "workspace.collect" => Ok(Self::CollectWorkspace),
             _ => Err("runtime effect rejected"),
         }
     }
@@ -1030,6 +1033,10 @@ pub struct EpochCoordinator {
     route_projection: OuterRouteProjection,
     current_sandbox: Option<SandboxRef>,
     worker_bootstrap_monitor: Option<WorkerBootstrapMonitor>,
+    #[cfg(test)]
+    collection_scan_root: PathBuf,
+    #[cfg(test)]
+    collection_test_sandbox: Option<String>,
 }
 
 /// Sole owner of Runtime Epoch member handles and whole-group fencing.
@@ -1465,6 +1472,10 @@ impl EpochCoordinator {
             route_projection: OuterRouteProjection::new(),
             current_sandbox: None,
             worker_bootstrap_monitor: None,
+            #[cfg(test)]
+            collection_scan_root: PathBuf::from(crate::workspace_collect::WORKSPACE_SCAN_ROOT),
+            #[cfg(test)]
+            collection_test_sandbox: None,
         })
     }
 
@@ -1480,10 +1491,85 @@ impl EpochCoordinator {
 
     /// Returns the exact current ready Sandbox name for static bridge composition.
     pub fn current_sandbox_name(&self) -> Result<&str, EpochFault> {
+        #[cfg(test)]
+        if let Some(name) = &self.collection_test_sandbox {
+            return Ok(name);
+        }
         self.current_sandbox
             .as_ref()
             .map(|sandbox| sandbox.name.as_str())
             .ok_or(EpochFault::IdentityMismatch)
+    }
+
+    /// Returns the fixed private store root; fixtures substitute only its placement.
+    pub(crate) fn collection_scan_root(&self) -> &Path {
+        #[cfg(test)]
+        {
+            &self.collection_scan_root
+        }
+        #[cfg(not(test))]
+        {
+            Path::new(crate::workspace_collect::WORKSPACE_SCAN_ROOT)
+        }
+    }
+
+    /// Builds admitted metadata and a ready identity projection without a deployed Sandbox.
+    #[cfg(test)]
+    pub(crate) fn collection_fixture(root: &Path) -> (Self, PathBuf) {
+        let persistent_volumes = crate::persistent_volume::tests::test_store(&root.join("volumes"));
+        let (_, volume) = crate::persistent_volume::tests::stored_association(
+            &persistent_volumes,
+            "storage-one",
+            "sandbox-one",
+            1,
+        );
+        let worktree = volume.join("worktrees/slotA");
+        fs::create_dir_all(&worktree).unwrap();
+        let (fence, _) = mpsc::sync_channel(1);
+        let (_, member_failure) = mpsc::sync_channel(1);
+        (
+            Self {
+                monitor: EpochMemberMonitor {
+                    fence,
+                    member_failure,
+                    worker: None,
+                    harness_tasks: Arc::new(Mutex::new(None)),
+                },
+                runtime: Handle::current(),
+                client: NanoHostOpenShellClient::new(
+                    "http://127.0.0.1:1".into(),
+                    root.join("missing-auth"),
+                ),
+                image_store: ImageStore::open(root.join("images"), root.join("epoch"), &[])
+                    .unwrap(),
+                image_backend: DockerImageBackend::new(root.join("missing-docker")),
+                persistent_volumes,
+                physical_epoch: "a".repeat(64),
+                run_root: root.join("epoch"),
+                bridge: None,
+                route_projection: OuterRouteProjection::new(),
+                current_sandbox: None,
+                worker_bootstrap_monitor: None,
+                collection_scan_root: root.join("scans"),
+                collection_test_sandbox: Some("sandbox-one".into()),
+            },
+            worktree,
+        )
+    }
+
+    /// Proves live-epoch identity before the storage owner opens worker-controlled children.
+    pub fn resolve_collection(
+        &self,
+        command: &crate::workspace_collect::CollectCommand,
+    ) -> Result<crate::persistent_volume::CollectionWorktree, &'static str> {
+        if self
+            .current_sandbox_name()
+            .map_err(|_| "collection epoch unproved")?
+            != command.sandbox_id.as_str()
+        {
+            return Err("collection sandbox unproved");
+        }
+        self.persistent_volumes.resolve_collection(command)
     }
 
     /// Inspects one exact verified local image without acquisition.
@@ -3229,7 +3315,7 @@ mod tests {
     #[test]
     fn nhc_imp_5o_orders_namespace_entry_and_gateway_connection_proofs() {
         let production = include_str!("epoch_coordinator.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod tests")
             .expect("epoch coordinator production section")
             .0;
         let setns_network_wrapper = production
@@ -3837,7 +3923,7 @@ mod tests {
     #[test]
     fn nhc_imp_5o_reaps_members_before_releasing_the_private_namespace_descriptors() {
         let production = include_str!("epoch_coordinator.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod tests")
             .expect("epoch coordinator production section")
             .0;
         let owner = production
@@ -4182,7 +4268,7 @@ mod tests {
         assert_eq!(wait_for_success(&mut already_reaped), Err("wait"));
 
         let production = include_str!("epoch_coordinator.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod tests")
             .expect("coordinator production section")
             .0;
         let gateway_auth = production
@@ -4227,7 +4313,7 @@ mod tests {
     #[test]
     fn wp3a_u3a1_enters_the_runtime_before_constructing_startup_timeout() {
         let production = include_str!("epoch_coordinator.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("coordinator production section");
         let startup = production
@@ -4274,7 +4360,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
 
         let production = include_str!("epoch_coordinator.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod tests")
             .expect("coordinator production section")
             .0;
         assert!(!production.contains("use tokio::runtime::Runtime"));
@@ -4307,7 +4393,7 @@ mod tests {
     #[test]
     fn wp3a_u3a1_retries_transient_gateway_readiness_without_retrying_identity_mismatch() {
         let production = include_str!("epoch_coordinator.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("coordinator production section");
         let startup = production
@@ -4401,7 +4487,7 @@ mod tests {
         }
 
         let production = include_str!("epoch_coordinator.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("coordinator production section");
         let spawn_member = production
@@ -4435,7 +4521,7 @@ mod tests {
     #[test]
     fn image_import_streams_one_verified_file_and_checks_the_exact_digest() {
         let production = include_str!("epoch_coordinator.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("coordinator production section");
         let docker_backend = production
@@ -4594,7 +4680,7 @@ mod tests {
     #[test]
     fn wp3c_invalidation_export_precedes_every_fence_and_is_never_recovery_input() {
         let coordinator = include_str!("epoch_coordinator.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("coordinator production section");
         let main = include_str!("main.rs")
@@ -4723,7 +4809,7 @@ mod tests {
     #[test]
     fn nhc_imp_5n_turn_export_preserves_the_harness_lifetime_monitor_until_sandbox_deletion() {
         let source = include_str!("epoch_coordinator.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod tests")
             .expect("coordinator production section")
             .0;
         let compact = |value: &str| value.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -4872,6 +4958,7 @@ mod tests {
             "image.build",
             "file.export",
             "reference.import",
+            "workspace.collect",
         ] {
             assert!(
                 RuntimeEffectKind::parse(operation).is_ok(),
@@ -4891,7 +4978,7 @@ mod tests {
             );
         }
         let source = include_str!("epoch_coordinator.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod tests")
             .expect("coordinator production section")
             .0;
         let coordinator = source
@@ -5111,5 +5198,27 @@ mod tests {
             1,
             "bridge.open must remain the sole worker bootstrap owner"
         );
+    }
+    #[tokio::test]
+    async fn h1_r3_current_epoch_is_required_before_storage_resolution() {
+        let root = std::env::temp_dir().join(format!("openkit-h1-epoch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (mut coordinator, _) = super::EpochCoordinator::collection_fixture(&root);
+        let command = crate::workspace_collect::validate_collect_command(&serde_json::to_vec(&serde_json::json!({
+            "requestId": "ab".repeat(32), "mode": "baseline", "storageRef": "storage-one",
+            "scopeDigest": format!("sha256:{}", "b".repeat(64)), "attachmentGeneration": 1,
+            "sandboxId": "sandbox-one", "workSlot": "slotA", "collectionId": "baseline",
+            "acceptedBase": null, "previousHead": null,
+            "checkValues": {"runtimeEnv": [], "loopbackDigests": ["c".repeat(64), "d".repeat(64)]}
+        })).unwrap()).unwrap();
+        coordinator.collection_test_sandbox = Some("other-epoch-sandbox".into());
+        assert!(coordinator.resolve_collection(&command).is_err());
+        assert!(!coordinator.collection_scan_root.exists());
+        coordinator.collection_test_sandbox = None;
+        assert!(coordinator.resolve_collection(&command).is_err());
+        coordinator.collection_test_sandbox = Some("sandbox-one".into());
+        assert!(coordinator.resolve_collection(&command).is_ok());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -212,7 +212,7 @@ if [ -n "${DESTDIR-}" ]; then
 fi
 
 [ "$(uname -m)" = aarch64 ] || fail 'host-architecture=unsupported'
-for prerequisite in /usr/bin/containerd /usr/bin/dockerd /usr/bin/docker /usr/bin/slirp4netns; do
+for prerequisite in /usr/bin/containerd /usr/bin/dockerd /usr/bin/docker /usr/bin/git /usr/bin/slirp4netns; do
   is_regular_nonlink "$prerequisite" && [ -x "$prerequisite" ] || fail "host-prerequisite=missing:$prerequisite"
 done
 [ -d /run/systemd/system ] && [ ! -L /run/systemd/system ] || fail 'host-prerequisite=systemd'
@@ -227,6 +227,11 @@ case "$slirp_sha" in *[!0-9a-f]*|'') fail 'host-manifest=slirp4netns-invalid' ;;
 [ "${#slirp_sha}" -eq 64 ] || fail 'host-manifest=slirp4netns-invalid'
 observed_docker=$(/usr/bin/docker --version 2>/dev/null) || fail 'host-prerequisite=docker-identity'
 [ "$observed_docker" = "$docker_version" ] || fail 'host-prerequisite=docker-identity'
+git_path=$(manifest_identity_value git path)
+git_version=$(manifest_identity_value git version)
+[ "$git_path" = /usr/bin/git ] && [ -n "$git_version" ] || fail 'host-manifest=git-invalid'
+observed_git=$(/usr/bin/git --version 2>/dev/null) || fail 'host-prerequisite=git-identity'
+[ "$observed_git" = "$git_version" ] || fail 'host-prerequisite=git-identity'
 observed_slirp_output=$(/usr/bin/slirp4netns --version 2>/dev/null) || fail 'host-prerequisite=slirp4netns-identity'
 observed_slirp=$(printf '%s\n' "$observed_slirp_output" | awk 'NR == 1 { print; exit }')
 [ "$observed_slirp" = "$slirp_version" ] || fail 'host-prerequisite=slirp4netns-identity'
