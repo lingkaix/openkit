@@ -113,24 +113,6 @@ export interface WorkerControlArtifactNotice {
 }
 
 /**
- * Interrupt command queued for the worker.
- */
-export interface WorkerControlInterruptCommand {
-  /** Gateway-local command id. */
-  commandId: string;
-  /** Command kind. */
-  kind: 'interrupt';
-  /** Worker command sequence number. */
-  sequence: number;
-  /** Optional reason shown to the worker. */
-  reason: string | null;
-  /** Timestamp recorded when NanoCore queued the command. */
-  queuedAt: string;
-  /** Timestamp recorded when a worker poll first delivered the command. */
-  deliveredAt: string | null;
-}
-
-/**
  * Supply refresh acknowledgement reported by a worker runtime adapter.
  */
 export interface WorkerControlSupplyRefreshAck {
@@ -187,8 +169,6 @@ export interface WorkerControlSessionSnapshot {
   heartbeat: WorkerControlHeartbeat | null;
   /** Live artifact notices announced by the worker. */
   artifacts: WorkerControlArtifactNotice[];
-  /** Commands queued or delivered to the worker. */
-  commands: WorkerControlInterruptCommand[];
   /** Supply refresh acknowledgements reported by the worker. */
   supplyRefreshAcks: WorkerControlSupplyRefreshAck[];
   /** Product-safe capability summaries reported by the worker. */
@@ -219,10 +199,6 @@ export interface WorkerControlSessionRestoreInput {
   readonly heartbeat?: WorkerControlHeartbeat | null;
   /** Durable artifact notices. */
   readonly artifacts?: readonly WorkerControlArtifactNotice[];
-  /** Durable worker commands. */
-  readonly commands?: readonly WorkerControlInterruptCommand[];
-  /** Highest durable command sequence across active and terminal rows. */
-  readonly commandSequenceHighWatermark?: number | null;
   /** Durable supply refresh acknowledgements. */
   readonly supplyRefreshAcks?: readonly WorkerControlSupplyRefreshAck[];
   /** Durable capability summaries. */
@@ -245,8 +221,6 @@ export interface WorkerControlGatewayOptions {
   now?: () => string;
   /** Optional durable recorder for accepted worker-control records. */
   acceptedRecordRecorder?: WorkerControlAcceptedRecordRecorder;
-  /** Optional durable recorder for NanoCore-to-worker command delivery state. */
-  commandDeliveryRecorder?: WorkerControlCommandDeliveryRecorder;
   /** Optional durable sandbox binding resolver for live lease enforcement. */
   resolveTokenBinding?: WorkerControlTokenBindingResolver;
   /** Optional durable sequence fingerprint recorder. */
@@ -432,67 +406,6 @@ export interface WorkerControlAcceptedRecordRecorder {
   record(input: WorkerControlAcceptedRecordRecorderInput): void;
 }
 
-/** Input used to persist one queued worker-control command. */
-export interface WorkerControlCommandDeliveryRecorderInput {
-  /** Worker lineage that owns the command. */
-  readonly lineage: WorkerControlLineage;
-  /** Command queued for worker delivery. */
-  readonly command: WorkerControlInterruptCommand;
-}
-
-/** Input used to update one worker-control command delivery status. */
-export interface WorkerControlCommandDeliveryStatusInput {
-  /** Worker-control command id. */
-  readonly commandId: string;
-  /** Complete worker lineage that owns the command. */
-  readonly lineage: WorkerControlLineage;
-  /** ISO timestamp for the status transition. */
-  readonly at: string;
-}
-
-/** Durable worker-control command delivery states. */
-export type WorkerControlCommandDeliveryStatus =
-  | 'queued'
-  | 'delivered'
-  | 'acknowledged'
-  | 'undeliverable';
-
-/** Durable command row returned after an insert, replay, or status compare-and-set. */
-export interface WorkerControlCommandDeliveryRecord {
-  /** Canonical interrupt command reconstructed from durable columns. */
-  readonly command: WorkerControlInterruptCommand;
-  /** Current durable delivery status. */
-  readonly status: WorkerControlCommandDeliveryStatus;
-}
-
-/** Records durable worker-control command delivery state. */
-export interface WorkerControlCommandDeliveryRecorder {
-  /**
-   * Stores one queued command.
-   *
-   * @param input Queued command input.
-   */
-  recordQueued(
-    input: WorkerControlCommandDeliveryRecorderInput
-  ): WorkerControlCommandDeliveryRecord;
-  /**
-   * Marks one command as delivered.
-   *
-   * @param input Delivery status input.
-   */
-  markDelivered(
-    input: WorkerControlCommandDeliveryStatusInput
-  ): WorkerControlCommandDeliveryRecord | null;
-  /**
-   * Marks one command as acknowledged.
-   *
-   * @param input Acknowledgement status input.
-   */
-  markAcknowledged(
-    input: WorkerControlCommandDeliveryStatusInput
-  ): WorkerControlCommandDeliveryRecord | null;
-}
-
 /** Input passed to final-status lifecycle hooks. */
 export interface WorkerControlFinalStatusAcceptedInput {
   /** Non-secret sandbox binding reference presented as the worker bearer token. */
@@ -546,10 +459,6 @@ interface WorkerControlSessionState {
   readonly eventFingerprintsBySequence: Map<number, string>;
   /** Control operation fingerprints keyed by operation name and worker sequence. */
   readonly operationFingerprintsBySequence: Map<string, Map<number, string>>;
-  /** Next command sequence number. */
-  nextCommandSequence: number;
-  /** Whether this Turn already owns any interrupt command history. */
-  hasInterruptCommand: boolean;
   /** Highest canonical event sequence accepted on the event append channel. */
   highestEventSequence: number | null;
   /** Highest worker sequence accepted per sequenced control operation. */
@@ -590,7 +499,6 @@ export class WorkerControlGateway {
   private readonly createCapabilityToken: () => string;
   private readonly now: () => string;
   private readonly acceptedRecordRecorder: WorkerControlAcceptedRecordRecorder | null;
-  private readonly commandDeliveryRecorder: WorkerControlCommandDeliveryRecorder | null;
   private readonly onFinalStatusAccepted: WorkerControlFinalStatusAcceptedHook | null;
   private readonly onFinalStatusCommitted: WorkerControlFinalStatusAcceptedHook | null;
   private readonly onHeartbeatAccepted: WorkerControlHeartbeatAcceptedHook | null;
@@ -613,7 +521,6 @@ export class WorkerControlGateway {
     this.createCapabilityToken = options.createCapabilityToken ?? createRandomToken;
     this.now = options.now ?? (() => new Date().toISOString());
     this.acceptedRecordRecorder = options.acceptedRecordRecorder ?? null;
-    this.commandDeliveryRecorder = options.commandDeliveryRecorder ?? null;
     this.onFinalStatusAccepted = options.onFinalStatusAccepted ?? null;
     this.onFinalStatusCommitted = options.onFinalStatusCommitted ?? null;
     this.onHeartbeatAccepted = options.onHeartbeatAccepted ?? null;
@@ -670,7 +577,6 @@ export class WorkerControlGateway {
       agentSessionId: environmentPackage.scope.agentSessionId,
       artifacts: [],
       capabilitySummaries: [],
-      commands: [],
       events: [],
       heartbeat: null,
       packageSnapshotId: environmentPackage.snapshotId,
@@ -685,8 +591,6 @@ export class WorkerControlGateway {
       eventFingerprintsBySequence: new Map(),
       highestEventSequence: null,
       highestOperationSequenceByOperation: new Map(),
-      hasInterruptCommand: false,
-      nextCommandSequence: 1,
       operationFingerprintsBySequence: new Map(),
       sandboxBindingRef: options.sandboxBindingRef ?? null,
       snapshot,
@@ -781,12 +685,10 @@ export class WorkerControlGateway {
     }
 
     const events = [...(input.events ?? [])].map(cloneCanonicalEventRecord);
-    const commands = [...(input.commands ?? [])].map(cloneCommand);
     const snapshot: WorkerControlSessionSnapshot = {
       agentSessionId: input.lineage.agentSessionId,
       artifacts: [...(input.artifacts ?? [])].map((artifact) => ({ ...artifact })),
       capabilitySummaries: [...(input.capabilitySummaries ?? [])].map(cloneCapabilitySummary),
-      commands,
       events,
       heartbeat: input.heartbeat ? { ...input.heartbeat } : null,
       packageSnapshotId: input.lineage.packageSnapshotId,
@@ -804,16 +706,7 @@ export class WorkerControlGateway {
       highestEventSequence:
         events.length === 0 ? null : Math.max(...events.map((event) => event.sequence)),
       highestOperationSequenceByOperation: new Map(),
-      hasInterruptCommand:
-        commands.length > 0 ||
-        (input.commandSequenceHighWatermark !== null &&
-          input.commandSequenceHighWatermark !== undefined),
       lineage: input.lineage,
-      nextCommandSequence:
-        Math.max(
-          input.commandSequenceHighWatermark ?? 0,
-          ...commands.map((command) => command.sequence)
-        ) + 1,
       operationFingerprintsBySequence: new Map(),
       sandboxBindingRef: input.sandboxBindingRef,
       snapshot,
@@ -986,146 +879,6 @@ export class WorkerControlGateway {
     });
 
     return { ...artifact };
-  }
-
-  /**
-   * Queues one interrupt command for delivery to the worker.
-   *
-   * @param packageSnapshotId Package snapshot that owns the worker.
-   * @param reason Optional interrupt reason.
-   * @returns Queued command.
-   */
-  public enqueueInterrupt(
-    packageSnapshotId: string,
-    reason: string | null = null
-  ): WorkerControlInterruptCommand {
-    const state = this.requirePackageSession(packageSnapshotId);
-    if (state.hasInterruptCommand) {
-      throw new WorkerControlGatewayError(
-        'worker_control_interrupt_conflict',
-        `Worker interrupt already admitted for Turn: ${state.lineage.turnId}`,
-        409
-      );
-    }
-    const lineage = lineageFromState(state);
-    const command: WorkerControlInterruptCommand = {
-      commandId: deriveWorkerControlCommandId(lineage, state.nextCommandSequence),
-      deliveredAt: null,
-      kind: 'interrupt',
-      queuedAt: this.now(),
-      reason,
-      sequence: state.nextCommandSequence,
-    };
-
-    const durable = this.recordQueuedCommand(state, command);
-
-    state.hasInterruptCommand = true;
-    state.nextCommandSequence = Math.max(state.nextCommandSequence, durable.command.sequence + 1);
-    if (
-      (durable.status === 'queued' || durable.status === 'delivered') &&
-      !state.snapshot.commands.some(
-        (candidate) => candidate.commandId === durable.command.commandId
-      )
-    ) {
-      state.snapshot.commands.push(cloneCommand(durable.command));
-    }
-
-    return cloneCommand(durable.command);
-  }
-
-  /**
-   * Polls queued commands for the authenticated worker session.
-   *
-   * @param input Authenticated worker poll request.
-   * @returns Commands available for the worker.
-   */
-  public pollCommands(input: AuthenticatedWorkerControlInput): {
-    /** Commands available for delivery. */
-    commands: WorkerControlInterruptCommand[];
-    /** Timestamp recorded when the worker polled. */
-    polledAt: string;
-  } {
-    const state = this.requireSession(input);
-    const polledAt = this.now();
-
-    const commands: WorkerControlInterruptCommand[] = [];
-
-    for (const command of state.snapshot.commands) {
-      const durable = this.commandDeliveryRecorder?.markDelivered({
-        at: polledAt,
-        commandId: command.commandId,
-        lineage: lineageFromState(state),
-      });
-      if (this.commandDeliveryRecorder && durable?.status !== 'delivered') {
-        continue;
-      }
-      const delivered = durable?.command ?? {
-        ...command,
-        deliveredAt: command.deliveredAt ?? polledAt,
-      };
-      command.deliveredAt = delivered.deliveredAt;
-      commands.push(cloneCommand(delivered));
-    }
-    state.snapshot.commands = commands.map(cloneCommand);
-
-    return {
-      commands,
-      polledAt,
-    };
-  }
-
-  /**
-   * Acknowledges delivery handling for an interrupt command.
-   *
-   * @param input Authenticated command acknowledgement request.
-   * @returns Acknowledged command.
-   */
-  public acknowledgeCommand(
-    input: AuthenticatedWorkerControlInput & {
-      /** Worker-control command id to acknowledge. */
-      commandId: string;
-    }
-  ): WorkerControlInterruptCommand {
-    const state = this.requireSession(input);
-    const command = state.snapshot.commands.find(
-      (candidate) => candidate.commandId === input.commandId
-    );
-
-    if (!command && !this.commandDeliveryRecorder) {
-      throw new WorkerControlGatewayError(
-        'worker_control_command_not_found',
-        `Worker command not found: ${input.commandId}`,
-        404
-      );
-    }
-
-    if (command && !command.deliveredAt) {
-      throw new WorkerControlGatewayError(
-        'worker_control_command_not_delivered',
-        `Worker command has not been delivered: ${input.commandId}`,
-        409
-      );
-    }
-
-    const durable = this.commandDeliveryRecorder?.markAcknowledged({
-      at: this.now(),
-      commandId: input.commandId,
-      lineage: lineageFromState(state),
-    });
-    if (this.commandDeliveryRecorder && durable?.status !== 'acknowledged') {
-      throw new WorkerControlGatewayError(
-        durable?.status === 'queued'
-          ? 'worker_control_command_not_delivered'
-          : 'worker_control_command_not_found',
-        `Worker command cannot be acknowledged: ${input.commandId}`,
-        durable?.status === 'queued' ? 409 : 404
-      );
-    }
-    if (command) {
-      state.snapshot.commands.splice(state.snapshot.commands.indexOf(command), 1);
-    }
-
-    return cloneCommand(durable?.command ?? command!);
   }
 
   /**
@@ -1776,24 +1529,6 @@ export class WorkerControlGateway {
   }
 
   /**
-   * Records one queued worker command when durable storage is configured.
-   *
-   * @param state Worker-control session state.
-   * @param command Command queued for the worker.
-   */
-  private recordQueuedCommand(
-    state: WorkerControlSessionState,
-    command: WorkerControlInterruptCommand
-  ): WorkerControlCommandDeliveryRecord {
-    return (
-      this.commandDeliveryRecorder?.recordQueued({
-        command,
-        lineage: lineageFromState(state),
-      }) ?? { command, status: 'queued' }
-    );
-  }
-
-  /**
    * Enforces the optional durable lease binding for one authenticated token.
    *
    * @param state Process-local session carrying the non-secret lease binding.
@@ -1863,26 +1598,6 @@ export class WorkerControlGateway {
       403
     );
   }
-
-  /**
-   * Resolves a session by package snapshot id.
-   *
-   * @param packageSnapshotId Package snapshot id.
-   * @returns Mutable session state.
-   */
-  private requirePackageSession(packageSnapshotId: string): WorkerControlSessionState {
-    const state = this.sessionsBySnapshotId.get(packageSnapshotId);
-
-    if (!state) {
-      throw new WorkerControlGatewayError(
-        'worker_control_session_not_found',
-        `Worker control session not found: ${packageSnapshotId}`,
-        404
-      );
-    }
-
-    return state;
-  }
 }
 
 /**
@@ -1902,28 +1617,6 @@ function createRandomToken(): string {
  */
 export function hashWorkerRouteToken(token: string): string {
   return createHash('sha256').update(Buffer.from(token, 'base64url')).digest('hex');
-}
-
-/** Derives the collision-resistant global identity for one durable interrupt command. */
-export function deriveWorkerControlCommandId(
-  lineage: WorkerControlLineage,
-  sequence: number
-): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        domain: 'openkit.worker-command.v2',
-        workspaceId: lineage.workspaceId,
-        threadId: lineage.threadId,
-        turnId: lineage.turnId,
-        agentSessionId: lineage.agentSessionId,
-        packageSnapshotId: lineage.packageSnapshotId,
-        requestId: lineage.requestId ?? null,
-        kind: 'interrupt',
-        sequence,
-      })
-    )
-    .digest('hex');
 }
 
 /**
@@ -2222,26 +1915,6 @@ function sortJsonValue(value: unknown): unknown {
 }
 
 /**
- * Clones a worker command before returning it to callers.
- *
- * @param command Command to clone.
- * @returns Cloned command.
- */
-function cloneCommand(command: WorkerControlInterruptCommand): WorkerControlInterruptCommand {
-  return { ...command };
-}
-
-/**
- * Reconstructs request lineage from registered session state.
- *
- * @param state Worker-control session state.
- * @returns Stable worker-control lineage.
- */
-function lineageFromState(state: WorkerControlSessionState): WorkerControlLineage {
-  return state.lineage;
-}
-
-/**
  * Checks whether a request belongs to a restored worker-control session.
  *
  * @param left First lineage value.
@@ -2269,7 +1942,6 @@ function cloneSnapshot(snapshot: WorkerControlSessionSnapshot): WorkerControlSes
     ...snapshot,
     artifacts: snapshot.artifacts.map((artifact) => ({ ...artifact })),
     capabilitySummaries: snapshot.capabilitySummaries.map(cloneCapabilitySummary),
-    commands: snapshot.commands.map(cloneCommand),
     events: snapshot.events.map(cloneCanonicalEventRecord),
     heartbeat: snapshot.heartbeat ? { ...snapshot.heartbeat } : null,
     supplyRefreshAcks: snapshot.supplyRefreshAcks.map((ack) => ({ ...ack })),

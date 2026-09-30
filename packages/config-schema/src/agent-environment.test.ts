@@ -161,13 +161,11 @@ function openshellPackageFixture(): unknown {
         required: true,
       },
       channels: {
-        commands: true,
         events: 'batch',
         artifacts: 'batch',
         heartbeats: true,
         logs: 'summary-only',
       },
-      commands: ['interrupt'],
       events: ['worker.ready', 'turn.started', 'item.created', 'turn.completed'],
       adapter: {
         kind: 'openkit-worker-shim',
@@ -956,8 +954,8 @@ describe('agent environment package schema', () => {
         artifacts: 'batch',
         events: 'batch',
       },
-      commands: ['interrupt'],
     });
+    expect(parsed.control).not.toHaveProperty('commands');
     expect(parsed.control).not.toHaveProperty('endpoint');
     expect(parsed.control).not.toHaveProperty('auth');
     expect(parsed.control.transcript?.itemsPath).toBe('/openkit/session/items.jsonl');
@@ -1246,26 +1244,29 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it('accepts interrupt as the only worker-control command', () => {
+  it('declares no worker-control command channel', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const control = fixture.control as Record<string, unknown>;
+    const channels = control.channels as Record<string, unknown>;
 
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        control: { ...control, commands: ['interrupt'] },
-      })
-    ).not.toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        control: { ...control, commands: ['interrupt', 'terminal-command'] },
-      })
-    ).toThrow();
+    expect(() => AgentEnvironmentPackageSchema.parse(fixture)).not.toThrow();
+    // Private Harness `turn.interrupt` is the only interrupt, so the package declares no command.
+    for (const invalidControl of [
+      { ...control, commands: ['interrupt'] },
+      { ...control, commands: ['interrupt', 'terminal-command'] },
+      { ...control, channels: { ...channels, commands: true } },
+    ]) {
+      expect(() =>
+        AgentEnvironmentPackageSchema.parse({ ...fixture, control: invalidControl })
+      ).toThrow();
+    }
     expect(OPENKIT_WORKER_CONTROL_POST_PATHS).not.toContain('/api/worker-control/terminal-results');
     expect(OPENKIT_WORKER_CONTROL_POST_PATHS).not.toContain(
       '/api/worker-control/knowledge-proposal-summary'
     );
+    // Private Harness `turn.interrupt` replaced the worker command poll and acknowledgement.
+    expect(OPENKIT_WORKER_CONTROL_POST_PATHS).not.toContain('/api/worker-control/commands/poll');
+    expect(OPENKIT_WORKER_CONTROL_POST_PATHS).not.toContain('/api/worker-control/commands/ack');
   });
 
   it('rejects false local Integration control declarations', () => {
@@ -1297,9 +1298,7 @@ describe('agent environment package schema', () => {
       { ...control, endpoint: { baseUrl: 'https://nanocore.local/api/worker-control' } },
       { ...control, auth: { tokenRef: 'runtime://openkit/raw-control-token' } },
       { ...control, channels: undefined },
-      { ...control, channels: { ...channels, commands: false } },
       { ...control, channels: { ...channels, heartbeats: false } },
-      { ...control, commands: ['interrupt', 'terminal-command', 'approval-result'] },
       { ...control, channels: { ...channels, events: 'live' } },
       { ...control, channels: { ...channels, artifacts: 'live' } },
       { ...control, adapter: undefined },

@@ -145,6 +145,8 @@ const UNRESOLVED_KNOWLEDGE_CONFLICT_STATUSES = new Set<KnowledgeConflictStatus>(
 export type AgentSession = ProtocolAgentSession & {
   configVersion: number | null;
   environmentPackageSnapshotId: string | null;
+  /** Accepted ready native handle digest; with `id` as locator it is the resume pair. */
+  nativeHandleDigest: string | null;
   policySnapshotId: string | null;
   sessionCompatibilityKey: string | null;
   stale: boolean;
@@ -155,6 +157,7 @@ type AgentSessionInput = Omit<
   AgentSession,
   | 'configVersion'
   | 'environmentPackageSnapshotId'
+  | 'nativeHandleDigest'
   | 'policySnapshotId'
   | 'sandboxSummary'
   | 'sessionCompatibilityKey'
@@ -166,6 +169,7 @@ type AgentSessionInput = Omit<
       AgentSession,
       | 'configVersion'
       | 'environmentPackageSnapshotId'
+      | 'nativeHandleDigest'
       | 'policySnapshotId'
       | 'sandboxSummary'
       | 'sessionCompatibilityKey'
@@ -3053,6 +3057,7 @@ export class FsStore {
     const agentSession = AgentSessionRecordSchema.parse({
       configVersion: null,
       environmentPackageSnapshotId: null,
+      nativeHandleDigest: null,
       policySnapshotId: null,
       sandboxSummary: sandboxSummaryForWorkspaceRoots(workspaceRoots),
       sessionCompatibilityKey: null,
@@ -3099,6 +3104,7 @@ export class FsStore {
         | 'configVersion'
         | 'environmentPackageSnapshotId'
         | 'message'
+        | 'nativeHandleDigest'
         | 'stale'
         | 'status'
         | 'updatedAt'
@@ -3112,6 +3118,7 @@ export class FsStore {
           'configVersion',
           'environmentPackageSnapshotId',
           'message',
+          'nativeHandleDigest',
           'stale',
           'status',
           'updatedAt',
@@ -3119,6 +3126,14 @@ export class FsStore {
     );
     if (unsupportedField) {
       throw new Error(`AgentSession update cannot change field: ${unsupportedField}`);
+    }
+    // The resume pair is write-once: a later proof for the same binding must carry the same digest.
+    if (
+      input.nativeHandleDigest !== undefined &&
+      agentSession.nativeHandleDigest !== null &&
+      input.nativeHandleDigest !== agentSession.nativeHandleDigest
+    ) {
+      throw new Error(`AgentSession resume digest cannot change: ${agentSessionId}`);
     }
     if (
       input.status &&

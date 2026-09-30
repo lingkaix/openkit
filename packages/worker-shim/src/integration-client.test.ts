@@ -8,7 +8,7 @@ import {
 } from 'node:http2';
 import { connect as connectSocket } from 'node:net';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   openSandboxIntegration,
   SANDBOX_INTEGRATION_ROUTE_NAMESPACES,
@@ -171,7 +171,15 @@ describe('Sandbox Integration', () => {
           method: 'POST',
         })
       ).rejects.toThrow('credential-free');
-      integration.bindTurnRouteTokens({ capabilityToken, controlToken, inferenceToken });
+      integration.registerSessionLoopback('as_route', {
+        capabilityCredential: 'c'.repeat(43),
+        inferenceCredential: 'i'.repeat(43),
+      });
+      integration.bindTurnRouteTokens('as_route', {
+        capabilityToken,
+        controlToken,
+        inferenceToken,
+      });
 
       const control = await integration.workerControlFetch('/worker-control/heartbeat', {
         body: '{}',
@@ -217,7 +225,7 @@ describe('Sandbox Integration', () => {
         { authorization: `Bearer ${inferenceToken}`, path: '/inference/v1/responses' },
       ]);
 
-      integration.clearTurnRouteTokens();
+      integration.clearTurnRouteTokens('as_route');
       await expect(
         integration.workerControlFetch('/worker-control/heartbeat', {
           body: '{}',
@@ -225,7 +233,11 @@ describe('Sandbox Integration', () => {
           method: 'POST',
         })
       ).rejects.toThrow('not bound');
-      integration.bindTurnRouteTokens({ capabilityToken, controlToken, inferenceToken });
+      integration.bindTurnRouteTokens('as_route', {
+        capabilityToken,
+        controlToken,
+        inferenceToken,
+      });
 
       const rejectedBeforeStream = requests.length;
       await expect(
@@ -337,6 +349,8 @@ describe('Sandbox Integration', () => {
     const capabilityToken = 'native-capability-token';
     const controlToken = 'native-control-token';
     const inferenceToken = 'native-inference-token';
+    const capabilityCredential = 'C'.repeat(43);
+    const inferenceCredential = 'I'.repeat(43);
     const requests: Array<{
       authorization: string | undefined;
       bodyBytes: number;
@@ -475,9 +489,17 @@ describe('Sandbox Integration', () => {
       });
 
     try {
-      integration.bindTurnRouteTokens({ capabilityToken, controlToken, inferenceToken });
+      integration.registerSessionLoopback('as_native', {
+        capabilityCredential,
+        inferenceCredential,
+      });
+      integration.bindTurnRouteTokens('as_native', {
+        capabilityToken,
+        controlToken,
+        inferenceToken,
+      });
       const unavailable = await nativeRequest(nativeTarget, {
-        authorization: `Bearer ${inferenceToken}`,
+        authorization: `Bearer ${inferenceCredential}`,
         body: Buffer.alloc(16 * 1024 * 1024),
         method: 'POST',
         path: '/inference/v1/responses',
@@ -494,15 +516,16 @@ describe('Sandbox Integration', () => {
       await integration.ready;
 
       const exactLimit = await nativeRequest(nativeTarget, {
-        authorization: `Bearer ${inferenceToken}`,
+        authorization: `Bearer ${inferenceCredential}`,
         body: Buffer.alloc(16 * 1024 * 1024),
         method: 'POST',
         path: '/inference/v1/responses',
       });
       expect(exactLimit.status).toBe(202);
       expect(requests.at(-1)?.bodyBytes).toBe(16 * 1024 * 1024);
+      expect(requests.at(-1)?.authorization).toBe(`Bearer ${inferenceToken}`);
       const capability = await nativeRequest(nativeTarget, {
-        authorization: `Bearer ${capabilityToken}`,
+        authorization: `Bearer ${capabilityCredential}`,
         body: '{}',
         method: 'POST',
         path: '/capabilities/mcp/echo',
@@ -515,7 +538,7 @@ describe('Sandbox Integration', () => {
       });
       const beforeOversized = requests.length;
       const oversized = await nativeRequest(nativeTarget, {
-        authorization: `Bearer ${inferenceToken}`,
+        authorization: `Bearer ${inferenceCredential}`,
         body: Buffer.alloc(16 * 1024 * 1024 + 1),
         method: 'POST',
         path: '/inference/v1/responses',
@@ -534,7 +557,7 @@ describe('Sandbox Integration', () => {
         const request = requestHttp(
           {
             headers: {
-              authorization: `Bearer ${inferenceToken}`,
+              authorization: `Bearer ${inferenceCredential}`,
               'content-encoding': 'gzip',
               'content-type': 'application/json',
               'x-openkit-native': 'request-canary',
@@ -589,7 +612,7 @@ describe('Sandbox Integration', () => {
         let cancelled = false;
         const request = requestHttp(
           {
-            headers: { authorization: `Bearer ${inferenceToken}` },
+            headers: { authorization: `Bearer ${inferenceCredential}` },
             host: nativeTarget.hostname,
             method: 'POST',
             path: '/inference/v1/responses?cancel=1',
@@ -622,7 +645,7 @@ describe('Sandbox Integration', () => {
       const rejectedBeforeH2 = requests.length;
       await expect(
         nativeRequest(integrationTarget, {
-          authorization: `Bearer ${inferenceToken}`,
+          authorization: `Bearer ${inferenceCredential}`,
           method: 'POST',
           path: '/inference/v1/responses',
         })
@@ -640,24 +663,35 @@ describe('Sandbox Integration', () => {
           path: '/worker-control/heartbeat',
         },
         {
-          authorization: `Bearer ${inferenceToken}`,
+          authorization: `Bearer ${inferenceCredential}`,
           method: 'POST',
           path: '/capabilities/call',
         },
         {
-          authorization: `Bearer ${capabilityToken}`,
+          authorization: `Bearer ${capabilityCredential}`,
           method: 'POST',
           path: '/inference/v1/responses',
         },
         {
-          authorization: `Bearer ${inferenceToken}`,
+          authorization: `Bearer ${inferenceCredential}`,
           method: 'GET',
           path: '/inference/v1/responses',
         },
         {
-          authorization: `Bearer ${inferenceToken}`,
+          authorization: `Bearer ${inferenceCredential}`,
           method: 'POST',
           path: '/undeclared/route',
+        },
+        // Raw upstream route tokens are never native credentials.
+        {
+          authorization: `Bearer ${inferenceToken}`,
+          method: 'POST',
+          path: '/inference/v1/responses',
+        },
+        {
+          authorization: `Bearer ${capabilityToken}`,
+          method: 'POST',
+          path: '/capabilities/mcp/echo',
         },
       ]) {
         const response = await nativeRequest(nativeTarget, rejected);
@@ -690,6 +724,236 @@ describe('Sandbox Integration', () => {
           rejected.once('error', resolve);
         })
       ).resolves.toBeDefined();
+    }
+  });
+
+  it('attributes loopback requests to their AgentSession Turn, drains the barrier, and destroys at close', async () => {
+    const tokens = (prefix: string) => ({
+      capabilityToken: `${prefix}-capability-token`,
+      controlToken: `${prefix}-control-token`,
+      inferenceToken: `${prefix}-inference-token`,
+    });
+    const credentials = (letter: string) => ({
+      capabilityCredential: letter.toLowerCase().repeat(43),
+      inferenceCredential: letter.toUpperCase().repeat(43),
+    });
+    const a = credentials('a');
+    const b = credentials('b');
+    const upstream: Array<{ authorization: string; path: string }> = [];
+    const held = new Set<ServerHttp2Stream>();
+    const bridge = createHttp2Server();
+    let bridgeSession: ServerHttp2Session | undefined;
+    bridge.on('session', (session) => {
+      bridgeSession = session;
+    });
+    bridge.on('stream', (stream: ServerHttp2Stream, headers) => {
+      const path = String(headers[':path']);
+      stream.on('error', () => undefined);
+      stream.resume();
+      stream.once('end', () => {
+        upstream.push({ authorization: String(headers.authorization), path });
+        if (path.endsWith('/hold')) {
+          held.add(stream);
+          stream.once('close', () => held.delete(stream));
+          return;
+        }
+        stream.respond({ ':status': 200 });
+        stream.end(String(headers.authorization));
+      });
+    });
+    const integration = await openSandboxIntegration();
+    const integrationTarget = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
+    const nativeTarget = new URL(`http://${SANDBOX_NATIVE_INFERENCE_TARGET}`);
+    const socket = connectSocket(Number(integrationTarget.port), integrationTarget.hostname);
+    socket.on('error', () => undefined);
+    bridge.emit('connection', socket);
+    /** Sends one native request; resolves with its status and body, or `cut` when destroyed. */
+    const native = (credential: string, path: string) =>
+      new Promise<{ body: string; status: number } | 'cut'>((resolve) => {
+        const request = requestHttp(
+          {
+            headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
+            host: nativeTarget.hostname,
+            method: 'POST',
+            path,
+            port: Number(nativeTarget.port),
+          },
+          (response) => {
+            const chunks: Buffer[] = [];
+            response.on('data', (chunk: Uint8Array) => chunks.push(Buffer.from(chunk)));
+            response.once('end', () =>
+              resolve({
+                body: Buffer.concat(chunks).toString('utf8'),
+                status: response.statusCode ?? 0,
+              })
+            );
+            response.once('error', () => resolve('cut'));
+            response.once('aborted', () => resolve('cut'));
+          }
+        );
+        request.once('error', () => resolve('cut'));
+        request.end('{}');
+      });
+
+    /** Sends headers declaring 100 body bytes and only one; resolves `cut` once it is destroyed. */
+    const uploading = (credential: string, path: string) =>
+      new Promise<'cut' | 'answered'>((resolve) => {
+        const request = requestHttp(
+          {
+            headers: {
+              authorization: `Bearer ${credential}`,
+              'content-length': '100',
+              'content-type': 'application/json',
+            },
+            host: nativeTarget.hostname,
+            method: 'POST',
+            path,
+            port: Number(nativeTarget.port),
+          },
+          () => resolve('answered')
+        );
+        request.once('error', () => resolve('cut'));
+        request.once('close', () => resolve('cut'));
+        request.write('{');
+      });
+
+    try {
+      await integration.ready;
+      expect(() =>
+        integration.registerSessionLoopback('as_bad', {
+          capabilityCredential: 'short',
+          inferenceCredential: 'x'.repeat(43),
+        })
+      ).toThrow();
+      expect(() =>
+        integration.registerSessionLoopback('as_bad', {
+          capabilityCredential: 'x'.repeat(43),
+          inferenceCredential: 'x'.repeat(43),
+        })
+      ).toThrow();
+      integration.registerSessionLoopback('as_a', a);
+      expect(() => integration.registerSessionLoopback('as_a', b)).toThrow();
+      expect(() =>
+        integration.registerSessionLoopback('as_reuse', {
+          capabilityCredential: a.inferenceCredential,
+          inferenceCredential: 'z'.repeat(43),
+        })
+      ).toThrow();
+      integration.registerSessionLoopback('as_b', b);
+
+      // Idle supplies no authority; an unknown bearer is not a loopback credential.
+      expect(await native(a.inferenceCredential, '/inference/v1/responses')).toMatchObject({
+        status: 403,
+      });
+      expect(await native('q'.repeat(43), '/inference/v1/responses')).toMatchObject({
+        status: 401,
+      });
+      expect(upstream).toEqual([]);
+
+      integration.bindTurnRouteTokens('as_a', tokens('turn-a'));
+      expect(await native(a.inferenceCredential, '/inference/v1/responses')).toEqual({
+        body: 'Bearer turn-a-inference-token',
+        status: 200,
+      });
+      expect(await native(a.capabilityCredential, '/capabilities/mcp/echo')).toEqual({
+        body: 'Bearer turn-a-capability-token',
+        status: 200,
+      });
+      // A sibling AgentSession without a bound Turn is refused, never routed to Turn A.
+      expect(await native(b.inferenceCredential, '/inference/v1/responses')).toMatchObject({
+        status: 403,
+      });
+      integration.bindTurnRouteTokens('as_b', tokens('turn-b'));
+      expect(await native(b.inferenceCredential, '/inference/v1/responses')).toEqual({
+        body: 'Bearer turn-b-inference-token',
+        status: 200,
+      });
+
+      // A request that completes inside the drain bound is not cut.
+      expect(await integration.drainTurn('as_b', 1_000)).toBe(0);
+      expect(await native(b.inferenceCredential, '/inference/v1/responses')).toMatchObject({
+        status: 403,
+      });
+      integration.clearTurnRouteTokens('as_b');
+
+      // The barrier refuses new requests, waits for in-flight ones up to its bound, then cuts.
+      const inflight = native(a.inferenceCredential, '/inference/v1/hold');
+      await vi.waitFor(() => expect(held.size).toBe(1));
+      const drainStarted = Date.now();
+      const drain = integration.drainTurn('as_a', 300);
+      expect(await native(a.inferenceCredential, '/inference/v1/responses')).toMatchObject({
+        status: 403,
+      });
+      expect(await drain).toBe(1);
+      expect(Date.now() - drainStarted).toBeGreaterThanOrEqual(250);
+      expect(await inflight).toBe('cut');
+      await vi.waitFor(() => expect(held.size).toBe(0));
+      integration.clearTurnRouteTokens('as_a');
+      expect(await native(a.inferenceCredential, '/inference/v1/responses')).toMatchObject({
+        status: 403,
+      });
+
+      // A request still uploading its body is cut by the barrier, and none of it goes upstream.
+      const openRequests = () =>
+        (integration as unknown as { nativeRequests: Set<unknown> }).nativeRequests.size;
+      integration.bindTurnRouteTokens('as_a', tokens('turn-a-upload'));
+      const upstreamBefore = upstream.length;
+      const uploadingAtBarrier = uploading(a.inferenceCredential, '/inference/v1/responses');
+      await vi.waitFor(() => expect(openRequests()).toBe(1));
+      expect(await integration.drainTurn('as_a', 20)).toBe(1);
+      expect(await uploadingAtBarrier).toBe('cut');
+      await vi.waitFor(() => expect(openRequests()).toBe(0));
+      integration.clearTurnRouteTokens('as_a');
+
+      // The production barrier bound is ten seconds.
+      integration.bindTurnRouteTokens('as_a', tokens('turn-a-bound'));
+      const uploadingAtDefault = uploading(a.inferenceCredential, '/inference/v1/responses');
+      await vi.waitFor(() => expect(openRequests()).toBe(1));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'performance'] });
+      let defaultCut: number | null = null;
+      try {
+        const drainAtDefault = integration.drainTurn('as_a').then((count) => {
+          defaultCut = count;
+        });
+        await vi.advanceTimersByTimeAsync(9_900);
+        expect(defaultCut).toBeNull();
+        await vi.advanceTimersByTimeAsync(200);
+        await drainAtDefault;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(defaultCut).toBe(1);
+      expect(await uploadingAtDefault).toBe('cut');
+      integration.clearTurnRouteTokens('as_a');
+
+      // Destroying the credentials cuts a request still uploading its body.
+      integration.bindTurnRouteTokens('as_a', tokens('turn-a-destroy'));
+      const uploadingAtClose = uploading(a.capabilityCredential, '/capabilities/mcp/echo');
+      await vi.waitFor(() => expect(openRequests()).toBe(1));
+      integration.destroySessionLoopback('as_a');
+      expect(await uploadingAtClose).toBe('cut');
+      await vi.waitFor(() => expect(openRequests()).toBe(0));
+      expect(upstream).toHaveLength(upstreamBefore);
+      integration.registerSessionLoopback('as_a', a);
+
+      // Close destroys the credentials and cuts what is still in flight.
+      integration.bindTurnRouteTokens('as_a', tokens('turn-a2'));
+      const beforeClose = native(a.capabilityCredential, '/capabilities/mcp/hold');
+      await vi.waitFor(() => expect(held.size).toBe(1));
+      integration.destroySessionLoopback('as_a');
+      expect(await beforeClose).toBe('cut');
+      expect(await native(a.inferenceCredential, '/inference/v1/responses')).toMatchObject({
+        status: 401,
+      });
+      expect(() => integration.bindTurnRouteTokens('as_a', tokens('turn-a3'))).toThrow();
+      expect(upstream.map(({ authorization }) => authorization)).not.toContain(
+        `Bearer ${a.inferenceCredential}`
+      );
+    } finally {
+      const socketClosed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+      await integration.close();
+      await socketClosed;
+      bridgeSession?.destroy();
     }
   });
 });

@@ -88,8 +88,6 @@ export const AgentEnvironmentDockerfileInputSchema = z
 export const OPENKIT_WORKER_CONTROL_POST_PATHS = [
   '/api/worker-control/heartbeat',
   '/api/worker-control/artifacts',
-  '/api/worker-control/commands/poll',
-  '/api/worker-control/commands/ack',
   '/api/worker-control/events/append',
   '/api/worker-control/final-status',
   '/api/worker-control/supply-refresh-ack',
@@ -564,7 +562,6 @@ export const AgentEnvironmentControlBindingSchema = z
  */
 export const AgentEnvironmentControlChannelsSchema = z
   .object({
-    commands: z.literal(true),
     events: z.literal('batch'),
     artifacts: z.literal('batch'),
     heartbeats: z.literal(true),
@@ -598,7 +595,6 @@ export const AgentEnvironmentControlSchema = z
       .strict(),
     transcript: AgentEnvironmentControlTranscriptSchema,
     channels: AgentEnvironmentControlChannelsSchema,
-    commands: z.tuple([z.literal('interrupt')]),
     events: z.array(z.string().min(1)).default([]),
     adapter: AgentEnvironmentControlAdapterSchema,
   })

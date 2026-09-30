@@ -1140,7 +1140,6 @@ describe('scheduler records', () => {
 
   it('marks expired live leases stale without reviving terminal leases', () => {
     const coreDb = createMigratedCoreDb();
-    const commandId = 'b'.repeat(64);
 
     try {
       createAcquiredLease(coreDb, 'lease_expired');
@@ -1151,25 +1150,6 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO worker_control_commands (
-            workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
-            request_id, command_id, command_kind, sequence, payload_json, status,
-            queued_at, delivered_at, acknowledged_at
-          ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'interrupt', 1, ?, 'delivered', ?, ?, NULL)`
-        )
-        .run(
-          'ws_demo',
-          'thread_expired',
-          'turn_expired',
-          'session_expired',
-          'pkg_demo',
-          commandId,
-          '{"reason":null}',
-          '2026-07-05T00:00:03.000Z',
-          '2026-07-05T00:00:04.000Z'
-        );
       coreDb.sqlite
         .prepare(
           "UPDATE scheduler_session_leases SET status = 'released', release_reason = 'completed' WHERE lease_id = ?"
@@ -1191,11 +1171,6 @@ describe('scheduler records', () => {
           .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
           .get('lease_terminal')
       ).toEqual({ status: 'released' });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM worker_control_commands WHERE command_id = ?')
-          .get(commandId)
-      ).toEqual({ status: 'undeliverable' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1203,28 +1178,9 @@ describe('scheduler records', () => {
 
   it('completes leases and releases pool capacity in one terminal transition', () => {
     const coreDb = createMigratedCoreDb();
-    const commandId = 'c'.repeat(64);
 
     try {
       createDispatchedLease(coreDb, 'lease_terminal_release');
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO worker_control_commands (
-            workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
-            request_id, command_id, command_kind, sequence, payload_json, status,
-            queued_at, delivered_at, acknowledged_at
-          ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'interrupt', 1, ?, 'queued', ?, NULL, NULL)`
-        )
-        .run(
-          'ws_demo',
-          'thread_terminal_release',
-          'turn_terminal_release',
-          'session_terminal_release',
-          'pkg_demo',
-          commandId,
-          '{"reason":null}',
-          '2026-07-05T00:00:03.000Z'
-        );
 
       const lease = completeSchedulerSessionLease(coreDb, {
         leaseId: 'lease_terminal_release',
@@ -1257,11 +1213,6 @@ describe('scheduler records', () => {
           .prepare('SELECT status FROM scheduler_placement_plans WHERE plan_id = ?')
           .get('plan_terminal_release')
       ).toEqual({ status: 'completed' });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM worker_control_commands WHERE command_id = ?')
-          .get(commandId)
-      ).toEqual({ status: 'undeliverable' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1847,66 +1798,6 @@ describe('scheduler records', () => {
           },
         })
       ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rolls back release and command drain when an outer caller catches drain failure', () => {
-    const coreDb = createMigratedCoreDb();
-    const commandId = 'a'.repeat(64);
-
-    try {
-      createDispatchedLease(coreDb, 'lease_atomic_release');
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO worker_control_commands (
-            workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
-            request_id, command_id, command_kind, sequence, payload_json, status,
-            queued_at, delivered_at, acknowledged_at
-          ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'interrupt', 1, ?, 'queued', ?, NULL, NULL)`
-        )
-        .run(
-          'ws_demo',
-          'thread_atomic_release',
-          'turn_atomic_release',
-          'session_atomic_release',
-          'pkg_demo',
-          commandId,
-          '{"reason":null}',
-          '2026-07-05T00:00:03.000Z'
-        );
-      const before = coreDb.sqlite
-        .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
-        .get('lease_atomic_release');
-      coreDb.sqlite.exec(
-        `CREATE TEMP TRIGGER reject_worker_command_drain
-         BEFORE UPDATE OF status ON worker_control_commands
-         WHEN OLD.command_id = '${commandId}'
-         BEGIN
-           SELECT RAISE(ABORT, 'injected command drain failure');
-         END`
-      );
-
-      coreDb.sqlite.transaction(() => {
-        expect(() =>
-          markSchedulerSessionLeaseReleasing(coreDb, {
-            leaseId: 'lease_atomic_release',
-            releaseReason: 'worker-final-status',
-          })
-        ).toThrow('injected command drain failure');
-      })();
-
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
-          .get('lease_atomic_release')
-      ).toEqual(before);
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM worker_control_commands WHERE command_id = ?')
-          .get(commandId)
-      ).toEqual({ status: 'queued' });
     } finally {
       coreDb.sqlite.close();
     }

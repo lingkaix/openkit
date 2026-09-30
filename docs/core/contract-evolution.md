@@ -21,8 +21,18 @@ This model separates how long a contract must remain meaningful from the mechani
 - Release-coupled surfaces may break between coordinated OpenKit releases without deprecation windows, aliases, or compatibility adapters.
 - Experimental and private shapes must not become authority-bearing or persistent dependencies by accident.
 - Product projections must preserve promoted Core meaning without becoming the owner of that meaning.
-- Unknown semantics that affect authority, safety, retention, billing, or product meaning must fail closed.
-- Settled mechanisms stay stable, and extension stays open. Deleting obsolete implementation does not license rewriting a settled mechanism, and it does not conflict with an older reader tolerating a newer, safely ignorable extension. The reason is recorded in [Settled Mechanisms Stay Stable And Extension Stays Open](../decisions/20260924-stable_mechanisms_open_extension.md). The rule it qualifies is recorded in [Compatibility Obligations Rest On Data](../decisions/20260928-compatibility_rests_on_data.md).
+- Unknown semantics that affect authority, safety, retention, billing, or security must fail closed, as must an extension that changes how a core field is read. Closed Core, Open Extension below states that rule.
+- Settled mechanisms stay stable, and extension stays open under Closed Core, Open Extension below. Deleting obsolete implementation does not license rewriting a settled mechanism, and it does not conflict with a reader ignoring an unknown additive extension. The reason settled mechanisms stay stable is recorded in [Settled Mechanisms Stay Stable And Extension Stays Open](../decisions/20260924-stable_mechanisms_open_extension.md). The data-continuity rule it qualifies is recorded in [Compatibility Obligations Rest On Data](../decisions/20260928-compatibility_rests_on_data.md). The closed-core ruling is recorded in [Closed Core, Open Extension](../decisions/20260930-closed_core_open_extension.md).
+
+## Closed Core, Open Extension
+
+Every owned data shape separates a closed core from an open extension. The shapes are storage records and file formats, directory layouts, configuration, and interface and protocol messages. The ruling is recorded in [Closed Core, Open Extension](../decisions/20260930-closed_core_open_extension.md).
+
+Each core field's values are a closed set with one owner. An unknown core value fails closed at admission and is never coerced, defaulted, or passed on.
+
+Everything outside the core is open. A reader ignores unknown additive fields, members, files, and entries without an owner first declaring a tolerant location. Ignoring means the reader does not act on the content. Ignored content from a producer outside the reader's trust boundary is not persisted, forwarded, or displayed unless its owner defines that use. Hand-Written Configuration below adds a warning for an unknown key in operator- or user-authored configuration, and that warning does not apply the key.
+
+An extension that changes how a core field is read, or that carries authority or security meaning, is not safely ignorable. Its owner MUST mark it required through the shape's required-feature or equivalent contract gate. A reader that does not understand a required extension MUST fail closed. The rule governs data shapes and their readers. It does not authorize a code extension point before a second variant exists.
 
 ## Canonical Terms
 
@@ -83,16 +93,16 @@ OpenKit's compatibility obligations rest on retained data. Retained canonical da
 
 - Retained canonical data means canonical file-backed records, including persisted protocol records, and retained evidence, even when that evidence is non-authorizing or diagnostic. SQLite source-of-truth records carry this obligation from the first release; until then their schemas follow the pre-release consolidation rule recorded in [Schema Migrations Start At First Release](../decisions/20260918-release_schema_migrations.md), which authorizes no automatic deletion or reset.
 - A change keeps retained data usable by extending its format additively or by carrying it forward through a one-way migration under an accepted design. A temporary migration path exists only when that design defines one; no permanent legacy reader or dual write remains. Removing retained data instead requires an explicit data-retirement decision.
-- An older reader tolerates a safely ignorable unknown field only where the owning contract defines a tolerant location, as Hand-Written Configuration below does for authored configuration. Generated configuration, execution contracts, and strict record schemas gain no tolerant location from this section. Unknown required or authority-bearing semantics fail closed.
+- An older reader ignores unknown additive fields, members, files, and entries outside the closed core, as Closed Core, Open Extension states, without an owner first declaring a tolerant location. Generated configuration, execution contracts, and record schemas follow that same rule for unknown additive content. Unknown core values, and unknown required or authority-bearing semantics, fail closed.
 - Opaque retained bytes, such as Worker volumes, native agent history, and retained images, survive under `docs/core/storage.md` without an OpenKit format promise. Rebuildable derivatives, caches, disposable diagnostic projections, and operational telemetry that its owner classifies as `Release-coupled` carry no continuity obligation.
-- This obligation is prospective: completed cutovers recorded by their owners stand. It does not relax strict validation or required-feature checks, does not extend a generated execution contract to older launches, does not authorize boot-time rewriting, automatic migration, or data-root replacement beyond what existing owners define, and does not override retention, deletion, revocation, or hold rules.
+- This obligation is prospective: completed cutovers recorded by their owners stand. It does not relax closed-core validation or required-feature checks, does not extend a generated execution contract to older launches, does not authorize boot-time rewriting, automatic migration, or data-root replacement beyond what existing owners define, and does not override retention, deletion, revocation, or hold rules.
 
 ## Stabilization Mechanisms
 
 | Contract kind | Required stabilization mechanism |
 | --- | --- |
 | Core semantics and lifecycle invariants | One canonical Core owner, normative invariants, explicit promotion, and conformance coverage at every claimed projection. |
-| Durable protocol or schema family | Explicit version identity, strict schemas for known records, generated schema drift checks where applicable, valid and invalid fixtures, and capability or required-feature discovery for additive semantic extensions. |
+| Durable protocol or schema family | Explicit version identity, strict schemas as the source of truth for the known core, generated schema drift checks where applicable, valid and invalid fixtures, and capability or required-feature discovery for an extension that changes how a core field is read or carries authority or security meaning. Readers do not reject unknown additive content. |
 | Persisted data and storage ownership | Schema or layout version, source-of-truth declaration, one-way migration for breaking changes, migration report, recovery behavior, and data-continuity verification. |
 | Export and portable manifests | Format version, exact inventory and integrity validation, required-feature handling, and import fixtures and explicit identity or authority rebinding rules for any import an owner accepts. Lossless re-import into OpenKit is not an export requirement ([decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md)). |
 | Backup and restore | A mechanism separate from export: consistency and integrity validation, restore round-trip tests, identity handling, and recovery behavior for retained data. |
@@ -110,6 +120,7 @@ A surface may be promoted only when all of the following are true:
 - its semantic invariants are settled
 - its schema, version, feature, migration, or release-identity mechanism is defined as applicable
 - its valid, invalid, mismatch, and failure behavior is verifiable
+- for each owned data shape, its closed core and open extension are explicit, and an unknown core value fails closed at admission
 - authority-bearing unknowns fail closed
 - all existing first-party projections agree with the promoted meaning or are explicitly outside the claim
 
@@ -125,7 +136,7 @@ Promotion from `Experimental` or `Private` is a contract change. Existing accide
 
 ## Boundaries And Non-Goals
 
-This document owns stability classes, stabilization mechanisms, retained data continuity, promotion and demotion rules, strictness expectations, conformance dimensions, and the lifecycle of breaking changes.
+This document owns stability classes, stabilization mechanisms, retained data continuity, the closed core and open extension of every owned data shape, promotion and demotion rules, strictness expectations, conformance dimensions, and the lifecycle of breaking changes.
 
 This document does not classify the current release's individual contract families. A baseline specification owns that inventory because implementation readiness and current scope change more frequently than Core doctrine.
 
@@ -143,7 +154,7 @@ This document does not create a compatibility promise for independently versione
 - Implementation-private payloads, native runtime logs, provider-native events, backend diagnostics, launch commands, absolute local paths, and environment variables MUST NOT become supported contracts by accident.
 - Newly introduced external dependencies MUST use official unmodified releases. Missing stock capability MUST be handled through a bounded local guard, upstream change, or design reconsideration rather than a dependency fork, patch, or monkey-patch; previously authorized vendor snapshots retain their existing governed status.
 - Any change to a promoted aspect MUST update the owning document, matching schemas or fixtures, affected migrations, and the implementation tests that enforce the behavior.
-- Safely ignorable unknown optional fields MAY be ignored by readers and SHOULD be preserved when a writer rewrites the same canonical record. Unsupported required or authority-bearing semantics MUST fail closed rather than be ignored or inferred.
+- A reader MUST ignore unknown additive fields, members, files, and entries outside the closed core and MUST NOT require a tolerant location before doing so. A writer SHOULD preserve those fields when it rewrites the same canonical record. An unknown core value MUST fail closed at admission and MUST NOT be coerced, defaulted, or passed on. An extension that changes how a core field is read, or that carries authority or security meaning, MUST be marked required by its owner, and a reader that does not understand it MUST fail closed rather than ignore or infer it. Ignored content from a producer outside the reader's trust boundary MUST NOT be persisted, forwarded, or displayed unless its owner defines that use.
 - Release-coupled consumers MUST fail with a typed incompatibility instead of guessing across an unknown contract identity.
 
 ## Conformance Dimensions
@@ -166,7 +177,7 @@ Deferring implementation does not permit redefining a promoted concept, using co
 
 ## Schema And Fixture Conformance
 
-Strict schemas are the source of truth for known protocol and release-coupled payloads. Forward-compatible live stream readers may preserve unknown optional event or payload families, but fixtures for known records, commands, and events must continue to use strict schemas.
+Strict schemas are the source of truth for the known core of protocol and release-coupled payloads. Readers do not reject unknown additive content; they ignore it under Closed Core, Open Extension. Forward-compatible live stream readers may preserve unknown optional event or payload families, and fixtures for known records, commands, and events must continue to use strict schemas for that known core.
 
 Conformance coverage should include, where relevant:
 
@@ -175,8 +186,9 @@ Conformance coverage should include, where relevant:
 - item lifecycle and item-delta compatibility
 - valid and invalid schema examples
 - exact contract or protocol identity
-- additive optional field handling
+- additive optional field handling, including that readers ignore unknown additive content and do not reject it
 - unsupported required-feature handling
+- unknown core values failing closed without coercion, defaulting, or passing on
 - authority-bearing fail-closed behavior
 - export boundaries for private schemas
 - migration and data-continuity evidence for durable persisted changes
@@ -187,13 +199,13 @@ Every fixture file that targets a versioned family MUST identify the version or 
 
 | Change | Rule |
 | --- | --- |
-| Add optional descriptive field | Requires schema, fixture or test, and documentation updates. Durable readers may ignore it only when it cannot affect authority or product meaning. |
+| Add optional descriptive field | Requires schema, fixture or test, and documentation updates for the owner. Readers that do not understand it ignore it when it stays outside the closed core and is not required. An extension that changes how a core field is read, or carries authority or security meaning, MUST be marked required by its owner. An authority- or security-bearing extension follows the authority-bearing row. |
 | Add required field | Breaking; requires the transition mechanism of the surface's stability class and a version or exact release identity change. |
 | Add authority-bearing field | Requires an accepted design, a registered required feature or equivalent contract gate, strict validation, and fail-closed behavior. |
 | Remove or rename field | Breaking; update all current consumers and remove aliases in the same release. Persisted durable data requires a one-way migration. |
 | Add event or command family | Requires schema, discovery where relevant, fixture or test, documentation, and an explicit stability classification. |
 | Add closed enum value | Requires consumer handling, documentation, tests, and storage or index updates when relevant. |
-| Add extension namespace | Allowed when optional and safely ignorable, or when a required feature makes it fail closed. |
+| Add extension namespace | Allowed when optional and safely ignorable outside the closed core; readers that do not understand it ignore it. Otherwise its owner MUST mark it required, and a reader that does not understand it MUST fail closed. |
 | Change release-coupled operation shape | Update all first-party producers and consumers together, advance exact contract identity, and remove the old shape. |
 | Remove persisted durable shape | Requires a one-way migration or an explicit data-retirement decision with a migration report; a permanent legacy reader is not required. |
 | Change private implementation detail | Remains inside its owner and must continue to satisfy boundary tests. |
@@ -204,9 +216,9 @@ Breaking changes to surfaces that ship with each release do not require deprecat
 
 Provider-native, adapter-native, and experimental fields must live under explicit extension namespaces when they cross an intentional boundary.
 
-Unknown optional extension namespaces may be preserved only when they are safely ignorable.
+A reader ignores an unknown additive extension namespace outside the closed core. A writer preserves that namespace when rewriting the same canonical record only when preservation is safe and practical. Content from a producer outside the reader's trust boundary is not persisted, forwarded, or displayed unless its owner defines that use.
 
-Unknown required extension namespaces must block readiness with an explainable error.
+Unknown required extension namespaces MUST block readiness with an explainable error. Their owners mark extensions required under [Closed Core, Open Extension](#closed-core-open-extension).
 
 ## Version And Capability Discovery
 
@@ -225,15 +237,15 @@ The exact endpoint or transport shape belongs to the owning projection.
 
 ## Storage Strictness Versus Live Projection Strictness
 
-Durable storage and manifest readers may ignore unknown optional non-authority-bearing fields when their owning contract permits it. Writers SHOULD preserve those fields when rewriting the same canonical record whenever preservation is safe and practical; an owning record contract MAY require stronger preservation for referenced content.
+Durable storage and manifest readers MUST ignore unknown additive fields, members, files, and entries outside the closed core, without an owner first declaring a tolerant location. Writers SHOULD preserve those fields when rewriting the same canonical record whenever preservation is safe and practical; an owning record contract MAY require stronger preservation for referenced content. Ignored content from a producer outside the reader's trust boundary is not persisted unless its owner defines that use.
 
-Storage tolerance never relaxes protocol, App API, CLI, Skill, or UI projection strictness. A projection MUST emit a strictly valid payload for its exact claimed contract identity and MUST drop safely ignorable storage extensions rather than forwarding unknown fields.
+Open extension does not relax protocol, App API, CLI, Skill, or UI projection strictness. A projection MUST emit a strictly valid payload for its exact claimed contract identity and MUST drop safely ignorable storage extensions rather than forwarding unknown fields. Ignored content from a producer outside the reader's trust boundary MUST NOT be persisted, forwarded, or displayed unless its owner defines that use. An owner-defined use still MUST satisfy the projection's claimed contract.
 
-Unsupported authority-bearing semantics, required features, canonical record families, or major format versions MUST fail closed or enter the quarantine behavior defined by their owner.
+Unsupported authority-bearing semantics, required features, unknown core values, canonical record families, or major format versions MUST fail closed or enter the quarantine behavior defined by their owner.
 
 ## Hand-Written Configuration
 
-A reader of operator- or user-authored configuration reports an unknown key as a warning diagnostic that names the key and its location, and otherwise ignores it, so that a configuration written for a newer release does not stop an older one. An unknown key inside an authority-bearing section, and a feature the file declares as required, fail closed. A warning is not silent: the diagnostic reaches the operator through the same channel as other configuration errors. Generated and machine-written configuration follows the storage rules above.
+A reader of operator- or user-authored configuration ignores an unknown key as an open extension, and it reports a warning diagnostic that names the key and its location, so that a configuration written for a newer release does not stop an older one and a misspelled key is not silent. The warning reaches the operator through the same channel as other configuration errors. An unknown value of a closed-core field fails closed at admission and is never coerced, defaulted, or passed on. An unknown key inside an authority-bearing section, and a feature the file declares as required, fail closed. Generated and machine-written configuration follows the storage rules above.
 
 ## Relationships To Other Core Aspects
 

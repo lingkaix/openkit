@@ -34,13 +34,6 @@ const WorkerControlArtifactNoticeRequestSchema = z.object({
     mediaType: z.string().min(1).nullable().optional(),
   }),
 });
-const WorkerControlCommandPollRequestSchema = z.object({
-  lineage: WorkerControlLineageRequestSchema,
-});
-const WorkerControlCommandAckRequestSchema = z.object({
-  lineage: WorkerControlLineageRequestSchema,
-  commandId: z.string().min(1),
-});
 const WorkerControlEventAppendRequestSchema = z.object({
   lineage: WorkerControlLineageRequestSchema,
   record: WorkerCanonicalEventRecordSchema,
@@ -118,59 +111,6 @@ export function registerWorkerControlRoutes({
         lineage: parsed.data.lineage,
         operation: 'artifact_notice',
         route: '/api/worker-control/artifacts',
-      });
-      return asWorkerControlApiError(error);
-    }
-  });
-
-  app.post('/api/worker-control/commands/poll', async (c) => {
-    const parsed = await parseWorkerControlRequest(c, WorkerControlCommandPollRequestSchema);
-
-    if (!parsed.success) {
-      return parsed.response;
-    }
-
-    try {
-      return c.json(
-        workerControlGateway.pollCommands({
-          ...workerControlTokenHashAuthentication(c),
-          lineage: parsed.data.lineage,
-        })
-      );
-    } catch (error) {
-      quarantineWorkerControlRejection({
-        coreDb,
-        error,
-        lineage: parsed.data.lineage,
-        operation: 'command_poll',
-        route: '/api/worker-control/commands/poll',
-      });
-      return asWorkerControlApiError(error);
-    }
-  });
-
-  app.post('/api/worker-control/commands/ack', async (c) => {
-    const parsed = await parseWorkerControlRequest(c, WorkerControlCommandAckRequestSchema);
-
-    if (!parsed.success) {
-      return parsed.response;
-    }
-
-    try {
-      return c.json({
-        command: workerControlGateway.acknowledgeCommand({
-          ...workerControlTokenHashAuthentication(c),
-          commandId: parsed.data.commandId,
-          lineage: parsed.data.lineage,
-        }),
-      });
-    } catch (error) {
-      quarantineWorkerControlRejection({
-        coreDb,
-        error,
-        lineage: parsed.data.lineage,
-        operation: 'command_ack',
-        route: '/api/worker-control/commands/ack',
       });
       return asWorkerControlApiError(error);
     }

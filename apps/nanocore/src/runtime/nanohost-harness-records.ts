@@ -24,7 +24,6 @@ export type NanoHostHarnessOperation = (typeof NANO_HOST_HARNESS_OPERATIONS)[num
 
 /** One private Harness command returned only on the exact pull route. */
 export interface NanoHostHarnessCommand {
-  readonly adapterId: 'codex' | 'opencode' | 'pi';
   readonly harnessInstanceId: string;
   readonly schemaVersion: 2;
   readonly operationId: string;
@@ -45,7 +44,8 @@ export interface NanoHostHarnessResult {
 
 /** Input for adding one Harness Instance to a Sandbox runtime projection. */
 export interface CreateNanoHostHarnessRuntimeInput {
-  readonly adapterId: 'codex' | 'opencode' | 'pi';
+  /** Opaque adapter identity; the Harness's static registry decides whether it is supported. */
+  readonly adapterId: string;
   readonly adapterVersion: string;
   readonly harnessBindingRef: string;
   readonly harnessCompatibilityKey: string;
@@ -84,7 +84,10 @@ export interface QueueNanoHostHarnessOperationInput {
 export interface DispatchNanoHostHarnessOperationInput {
   readonly sandboxIntegrationBindingRef: string;
   readonly now?: () => string;
+  /** Test seam for the three `turn.start` route tokens. */
   readonly routeToken?: () => string;
+  /** Test seam for the two `session.open` loopback credentials. */
+  readonly loopbackCredential?: () => string;
 }
 
 /** Input for settling one exact Harness result. */
@@ -129,13 +132,9 @@ export interface NanoHostAgentSessionContinuityInspection {
   readonly agentSessionId: string;
   readonly agentSessionRuntimeBindingId: string;
   readonly harnessBindingRef: string;
+  readonly harnessCompatibilityKey: string;
   readonly harnessInstanceId: string;
   readonly reusable: boolean;
-}
-
-/** Projects the accepted mode shared by durable records and live dispatch. @param adapterId Admitted adapter identity. @returns Its shared Harness mode. */
-export function nanoHostAdapterMode(adapterId: string): 'session-continuity' | 'bounded-turn' {
-  return adapterId === 'codex' || adapterId === 'pi' ? 'session-continuity' : 'bounded-turn';
 }
 
 /** Derives the private native-continuity key from the owning SessionCompatibilityKey. */
@@ -160,7 +159,6 @@ export function deriveNanoHostAgentSessionCompatibilityKey(input: {
           adapterId: input.adapterId,
           adapterVersion: input.adapterVersion,
           harnessCompatibilityKey: input.harnessCompatibilityKey,
-          mode: nanoHostAdapterMode(input.adapterId),
         },
         sessionCompatibilityKey: input.sessionCompatibilityKey,
         threadId: input.threadId,
@@ -171,7 +169,7 @@ export function deriveNanoHostAgentSessionCompatibilityKey(input: {
 
 /** Raw durable Harness row used by checked transitions. */
 interface HarnessRow {
-  readonly adapter_id: 'codex' | 'opencode' | 'pi';
+  readonly adapter_id: string;
   readonly adapter_version: string;
   readonly harness_instance_id: string;
   readonly harness_binding_ref: string;
@@ -191,7 +189,7 @@ interface HarnessRow {
   readonly updated_at: string;
 }
 
-/** Creates the fixed first-slice private Sandbox and Codex Harness projections. */
+/** Creates the private Sandbox projection when absent and adds one resident Harness to it. */
 export function createNanoHostHarnessRuntime(
   coreDb: CoreDb,
   input: CreateNanoHostHarnessRuntimeInput
@@ -297,7 +295,6 @@ export function createNanoHostHarnessRuntime(
         throw new Error('NanoHost retained Sandbox has no Harness capacity.');
       }
     }
-    const mode = nanoHostAdapterMode(input.adapterId);
     coreDb.sqlite
       .prepare(
         `INSERT INTO harness_instance_records (
@@ -306,7 +303,7 @@ export function createNanoHostHarnessRuntime(
            capabilities_json, max_open_sessions, max_active_turns,
            open_session_count, active_turn_count, lifecycle_state, drain_state,
            next_sequence, operation_state, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 8, 1, 0, 0, 'open', 'accepting', 0, 'idle', ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, '[]', 8, 1, 0, 0, 'open', 'accepting', 0, 'idle', ?, ?)`
       )
       .run(
         input.harnessInstanceId,
@@ -316,7 +313,6 @@ export function createNanoHostHarnessRuntime(
         input.adapterId,
         input.adapterId,
         input.adapterVersion,
-        JSON.stringify([mode]),
         input.timestamp,
         input.timestamp
       );
@@ -358,6 +354,56 @@ export function removeNanoHostSandboxRuntimeByBinding(
   coreDb.sqlite
     .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?')
     .run(sandboxBindingRef);
+}
+
+/**
+ * Stops Harness admission after `cleanup_required` without marking Sandbox cleanup unknown and
+ * without releasing occupancy. Idempotent when the Harness is already failed and draining.
+ * A crash after this commit and before the first wider effect is dispatched cannot be told from
+ * a crash after that effect was sent, so a later process must not invent a fresh delete.
+ *
+ * @param coreDb Core database that owns the Harness row.
+ * @param input Harness binding and the settlement timestamp.
+ */
+export function drainNanoHostHarnessAdmission(
+  coreDb: CoreDb,
+  input: { readonly harnessBindingRef: string; readonly timestamp: string }
+): void {
+  requireIdentity(input.harnessBindingRef, 'Harness binding');
+  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+  try {
+    drainNanoHostHarnessAdmissionInTransaction(coreDb, input);
+    coreDb.sqlite.exec('COMMIT');
+  } catch (error) {
+    coreDb.sqlite.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+/** Applies one admission fence inside the caller's write transaction. */
+function drainNanoHostHarnessAdmissionInTransaction(
+  coreDb: CoreDb,
+  input: { readonly harnessBindingRef: string; readonly timestamp: string }
+): void {
+  const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+  if (harness.lifecycle_state === 'failed' && harness.drain_state === 'draining') {
+    return;
+  }
+  const update = coreDb.sqlite
+    .prepare(
+      `UPDATE harness_instance_records
+       SET lifecycle_state = 'failed', drain_state = 'draining', updated_at = ?
+       WHERE harness_instance_id = ? AND lifecycle_state = ? AND drain_state = ?`
+    )
+    .run(
+      input.timestamp,
+      harness.harness_instance_id,
+      harness.lifecycle_state,
+      harness.drain_state
+    );
+  if (update.changes !== 1) {
+    throw new Error('NanoHost Harness admission fence changed concurrently.');
+  }
 }
 
 /** Fences one uncertain Sandbox and drains its Harness without changing scheduler capacity. */
@@ -535,6 +581,7 @@ export function inspectNanoHostAgentSessionContinuity(
     agentSessionId: input.agentSessionId,
     agentSessionRuntimeBindingId: row.agentSessionRuntimeBindingId,
     harnessBindingRef: row.harnessBindingRef,
+    harnessCompatibilityKey: row.harnessCompatibilityKey,
     harnessInstanceId: row.harnessInstanceId,
     reusable:
       row.agentSessionCompatibilityKey === expectedRuntimeCompatibilityKey &&
@@ -801,7 +848,12 @@ export function queueNanoHostHarnessOperation(
   }
 }
 
-/** Dispatches one exact operation once, drops the prior result receipt, and binds Turn route-token hashes in the same transaction. */
+/**
+ * Dispatches one exact operation once and drops the prior result receipt. In the same
+ * transaction, `turn.start` binds its three route-token hashes to the lease and `session.open`
+ * binds its two loopback-credential digests to the AgentSession binding; only the returned live
+ * command carries the raw values, and the durable body and operation identity carry only hashes.
+ */
 export function dispatchNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: DispatchNanoHostHarnessOperationInput
@@ -884,6 +936,39 @@ export function dispatchNanoHostHarnessOperation(
       };
       wireBody = { ...body, capabilityToken, inferenceToken, workerControlToken };
     }
+    if (harness.operation === 'session.open') {
+      const credential = input.loopbackCredential ?? (() => randomBytes(32).toString('base64url'));
+      const inferenceLoopbackCredential = requireRouteToken(credential());
+      let capabilityLoopbackCredential = requireRouteToken(credential());
+      while (capabilityLoopbackCredential === inferenceLoopbackCredential) {
+        capabilityLoopbackCredential = requireRouteToken(credential());
+      }
+      const inferenceLoopbackCredentialHash = hashLoopbackCredential(inferenceLoopbackCredential);
+      const capabilityLoopbackCredentialHash = hashLoopbackCredential(capabilityLoopbackCredential);
+      const bound = coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET inference_loopback_credential_digest = ?, capability_loopback_credential_digest = ?,
+               updated_at = ?
+           WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?
+             AND agent_session_id = ? AND lifecycle_state = 'opening'
+             AND inference_loopback_credential_digest IS NULL
+             AND capability_loopback_credential_digest IS NULL`
+        )
+        .run(
+          inferenceLoopbackCredentialHash,
+          capabilityLoopbackCredentialHash,
+          now,
+          body.agentSessionRuntimeBindingId,
+          harness.harness_instance_id,
+          body.agentSessionId
+        );
+      if (bound.changes !== 1) {
+        throw new Error('NanoHost AgentSession loopback credentials were already delivered.');
+      }
+      durableBody = { ...body, capabilityLoopbackCredentialHash, inferenceLoopbackCredentialHash };
+      wireBody = { ...body, capabilityLoopbackCredential, inferenceLoopbackCredential };
+    }
     const operationId = sha256(
       canonicalJson({
         body: durableBody,
@@ -916,7 +1001,6 @@ export function dispatchNanoHostHarnessOperation(
     }
     coreDb.sqlite.exec('COMMIT');
     return {
-      adapterId: harness.adapter_id,
       body: wireBody,
       harnessInstanceId: harness.harness_instance_id,
       operation: harness.operation,
@@ -987,6 +1071,17 @@ export function settleNanoHostHarnessOperation(
       throw new Error('NanoHost Harness result does not match the dispatched operation.');
     }
     requireHarnessResult(harness.operation, input.result);
+    if (
+      input.result.disposition === 'refused' &&
+      input.result.body.reasonCode === 'cleanup_required'
+    ) {
+      // Admission stops here. Sandbox cleanup stays clean so the live owner can issue the first
+      // wider delete; an unknown fence would skip that delete.
+      drainNanoHostHarnessAdmissionInTransaction(coreDb, {
+        harnessBindingRef: harness.harness_binding_ref,
+        timestamp: input.timestamp,
+      });
+    }
     if (input.result.disposition === 'unknown') {
       setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp);
       coreDb.sqlite.exec('COMMIT');
@@ -1073,7 +1168,7 @@ function projectSuccessfulResult(
     if (!removed) {
       throw new Error('NanoHost AgentSession close binding is missing.');
     }
-    // Bounded-turn cleanup closes an active binding directly; an idle sibling owns no Turn slot.
+    // A failed Turn inspection can leave the binding holding its Turn slot until this close.
     const releasedTurns = removed.currentTurnId === null ? 0 : 1;
     const released = coreDb.sqlite
       .prepare(
@@ -1087,24 +1182,23 @@ function projectSuccessfulResult(
     }
     return;
   }
+  // An interrupt proves cancellation only. The Turn keeps its occupancy and lineage until a
+  // later terminal inspection proves the clean barrier, or `session.close` or wider cleanup
+  // proves release.
   if (harness.operation === 'turn.interrupt') {
-    coreDb.sqlite
-      .prepare(
-        `UPDATE agent_session_runtime_bindings
-         SET lifecycle_state = 'open', current_turn_id = NULL, current_lease_id = NULL,
-             cleanup_state = 'clean', updated_at = ?
-         WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`
-      )
-      .run(timestamp, bindingId, harness.harness_instance_id);
-    coreDb.sqlite
-      .prepare(
-        'UPDATE harness_instance_records SET active_turn_count = 0 WHERE harness_instance_id = ?'
-      )
-      .run(harness.harness_instance_id);
     return;
   }
   const nativeHandleState = body.nativeHandleState;
   const nativeHandleDigest = body.nativeHandleDigest;
+  const bindingState = coreDb.sqlite
+    .prepare(
+      `SELECT lifecycle_state AS lifecycleState FROM agent_session_runtime_bindings
+       WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`
+    )
+    .get(bindingId, harness.harness_instance_id) as { readonly lifecycleState: string } | undefined;
+  if (!bindingState) {
+    throw new Error('NanoHost Harness result binding is missing.');
+  }
   if (harness.operation === 'turn.start') {
     const started = coreDb.sqlite
       .prepare(
@@ -1135,10 +1229,14 @@ function projectSuccessfulResult(
     }
     return;
   }
+  // A resident host keeps running after its Turn, so the Turn barrier is the binding leaving
+  // `active` with clean disposable state: settled `open`, or `failed` because the host ended.
+  // A failed binding without clean state keeps its Turn slot until `session.close`.
   if (
     harness.operation === 'session.inspect' &&
-    body.childState === 'absent' &&
-    body.cleanupState === 'clean'
+    bindingState.lifecycleState === 'active' &&
+    body.cleanupState === 'clean' &&
+    (body.state === 'open' || body.state === 'failed')
   ) {
     const inspected = coreDb.sqlite
       .prepare(
@@ -1328,9 +1426,8 @@ function requireHarnessOperationBody(
       'agentSessionId',
       'agentSessionRuntimeBindingId',
       'effectiveSetupGeneration',
-      'storageRef',
+      'resume',
       'threadId',
-      'workSlotRef',
       'workspaceId',
     ],
     'session.inspect': ['agentSessionId', 'agentSessionRuntimeBindingId'],
@@ -1366,24 +1463,26 @@ function requireHarnessOperationBody(
       }
       continue;
     }
+    if (name === 'resume') {
+      if (value === null) continue;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('NanoHost Harness session.open resume is invalid.');
+      }
+      const resume = value as Readonly<Record<string, unknown>>;
+      requireExactFields(resume, ['digest', 'locator'], 'session.open resume');
+      requireIdentity(resume.locator, 'Harness resume locator');
+      requireSha256(resume.digest, 'Harness resume digest');
+      continue;
+    }
     requireIdentity(value, `Harness ${name}`);
   }
   if (operation === 'session.open') {
     requireSha256(body.agentSessionCompatibilityKey, 'AgentSession compatibility key');
-    if (
-      !['codex', 'opencode', 'pi'].includes(body.adapterId as string) ||
-      (body.effectiveSetupGeneration as number) < 1 ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.storageRef as string) ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.workSlotRef as string)
-    ) {
-      throw new Error('NanoHost Harness session.open adapter or setup generation is unsupported.');
+    if ((body.effectiveSetupGeneration as number) < 1) {
+      throw new Error('NanoHost Harness session.open setup generation is unsupported.');
     }
   }
-  if (
-    operation === 'turn.interrupt' &&
-    body.purpose !== 'interrupt' &&
-    body.purpose !== 'human-gate'
-  ) {
+  if (operation === 'turn.interrupt' && body.purpose !== 'interrupt') {
     throw new Error('NanoHost Harness turn.interrupt purpose is unsupported.');
   }
 }
@@ -1454,11 +1553,26 @@ function requireHarnessResult(
       'state',
     ],
     'turn.start': ['nativeHandleDigest', 'nativeHandleState', 'state'],
-    'turn.interrupt': ['childState', 'state'],
-    'session.close': ['childState', 'privateState', 'state'],
+    'turn.interrupt': ['state'],
+    'session.close': ['privateState', 'state'],
     'harness.drain': ['activeTurns', 'openSessions', 'state'],
   };
-  requireExactFields(result.body, fields[operation], `${operation} success body`);
+  // Interrupt and close may add host liveness, which is never the cancellation or close proof:
+  // a resident shared host stays running for its sibling bindings.
+  const optionalChildState =
+    (operation === 'turn.interrupt' || operation === 'session.close') &&
+    result.body.childState !== undefined;
+  requireExactFields(
+    result.body,
+    optionalChildState ? [...fields[operation], 'childState'] : fields[operation],
+    `${operation} success body`
+  );
+  if (
+    optionalChildState &&
+    !['absent', 'running', 'stopping', 'unknown'].includes(result.body.childState as string)
+  ) {
+    throw new Error(`NanoHost Harness ${operation} host liveness is invalid.`);
+  }
   if (
     operation === 'session.open' &&
     (result.body.state !== 'open' || result.body.maxActiveTurns !== 1)
@@ -1468,10 +1582,7 @@ function requireHarnessResult(
   if (operation === 'turn.start' && result.body.state !== 'started') {
     throw new Error('NanoHost Harness turn.start success is invalid.');
   }
-  if (
-    operation === 'turn.interrupt' &&
-    (result.body.state !== 'interrupted' || result.body.childState !== 'absent')
-  ) {
+  if (operation === 'turn.interrupt' && result.body.state !== 'interrupted') {
     throw new Error('NanoHost Harness turn.interrupt success is invalid.');
   }
   if (operation === 'turn.interrupt') {
@@ -1479,9 +1590,7 @@ function requireHarnessResult(
   }
   if (
     operation === 'session.close' &&
-    (result.body.state !== 'closed' ||
-      result.body.childState !== 'absent' ||
-      result.body.privateState !== 'absent')
+    (result.body.state !== 'closed' || result.body.privateState !== 'absent')
   ) {
     throw new Error('NanoHost Harness session.close success is invalid.');
   }
@@ -1678,6 +1787,14 @@ function canonicalJson(value: Readonly<Record<string, unknown>>): string {
 /** Returns a lowercase SHA-256 identity. */
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * Digests one session loopback credential over its 43 encoded UTF-8 bytes, the form the
+ * collection scan compares against every 43-byte window of the credential alphabet.
+ */
+export function hashLoopbackCredential(credential: string): string {
+  return createHash('sha256').update(credential, 'utf8').digest('hex');
 }
 
 /** Writes one immutable binding-time digest copy that survives Sandbox deletion. */

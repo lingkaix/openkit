@@ -10,6 +10,11 @@ import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/stor
 export interface TerminalizeGovernedWorkerTurnInput {
   /** AgentSession created for the worker, when its write completed. */
   readonly agentSessionId: string | null;
+  /**
+   * Whether the backend still holds this AgentSession's reusable runtime binding after closeout.
+   * A retained AgentSession returns to `idle` for its next Turn instead of becoming terminal.
+   */
+  readonly agentSessionRetained?: boolean;
   /** Canonical terminal completion timestamp. */
   readonly completedAt: string;
   /** Stable product diagnostic code. */
@@ -109,18 +114,24 @@ export function terminalizeGovernedWorkerTurn(
     }
   }
 
-  const terminalSessionStatus = input.outcome === 'cancelled' ? 'interrupted' : input.outcome;
+  const terminalSessionStatus = input.agentSessionRetained
+    ? 'idle'
+    : input.outcome === 'cancelled'
+      ? 'interrupted'
+      : input.outcome;
+  const terminalSessionMessage = input.agentSessionRetained ? null : message;
   let terminalSession = input.agentSessionId
     ? readAgentSession(input.store, input.agentSessionId)
     : null;
   if (
     input.agentSessionId &&
     terminalSession &&
-    (terminalSession.status !== terminalSessionStatus || terminalSession.message !== message)
+    (terminalSession.status !== terminalSessionStatus ||
+      terminalSession.message !== terminalSessionMessage)
   ) {
     try {
       terminalSession = input.store.updateAgentSession(input.agentSessionId, {
-        message,
+        message: terminalSessionMessage,
         status: terminalSessionStatus,
         updatedAt: completedAt,
       });

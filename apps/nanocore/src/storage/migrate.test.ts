@@ -57,7 +57,6 @@ const CORE_TABLES = [
   'vault_use_records',
   'verification',
   'worker_backend_sessions',
-  'worker_control_commands',
   'worker_control_records',
   'worker_control_rejected_evidence',
   'worker_control_sequence_fingerprints',
@@ -423,6 +422,8 @@ describe('database setup', () => {
         'created_at',
         'updated_at',
         'image_digest',
+        'inference_loopback_credential_digest',
+        'capability_loopback_credential_digest',
       ]);
       expect(listColumnNames(coreDb, 'agent_session_runtime_binding_image_digests')).toEqual([
         'agent_session_runtime_binding_id',

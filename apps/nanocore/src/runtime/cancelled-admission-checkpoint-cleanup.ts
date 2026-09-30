@@ -492,8 +492,6 @@ function classifyExecutionEvidence(input: {
       .prepare(
         `SELECT 1 AS found FROM worker_control_records
            WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
-         UNION ALL SELECT 1 FROM worker_control_commands
-           WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
          UNION ALL SELECT 1 FROM worker_control_rejected_evidence
            WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
          UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints

@@ -62,7 +62,7 @@ export interface WorkerGovernanceAgentSessionContinuityInput {
   readonly agentSessionId: string;
   /** Exact desired compatibility key derived from current static owners. */
   readonly agentSessionCompatibilityKey: string;
-  /** Secret-free successor package required only for post-dispatch whole-Sandbox retirement. */
+  /** Current secret-free desired package required to prove existing-binding reuse or retire a Sandbox; absence and package-free close need no supply proof. */
   readonly environmentPackage?: AgentEnvironmentPackagePreview;
   /** Whether the product owner permits reuse if backend hygiene is exact. */
   readonly reuseAllowed: boolean;
@@ -110,6 +110,18 @@ export class WorkerGovernanceCapacityUnavailableError extends Error {
 }
 
 /**
+ * Resume pair a successor AgentSession presents at `session.open`: the predecessor AgentSession
+ * id as locator and the native handle digest Core recorded when it accepted that predecessor's
+ * ready proof.
+ */
+export interface WorkerGovernanceNativeResume {
+  /** Predecessor AgentSession id under which the Harness stored the restricted reference. */
+  readonly locator: string;
+  /** Lowercase hex SHA-256 of that stored reference. */
+  readonly digest: string;
+}
+
+/**
  * Backend-private workspace context used for transport effects.
  */
 export interface WorkerGovernanceMaterializationContext {
@@ -125,6 +137,11 @@ export interface WorkerGovernanceMaterializationContext {
   sandboxBindingRef?: string;
   /** Explicit retained-storage choice; absence requests a fresh retained association. */
   workerStorageChoice?: SchedulerWorkerStorageChoice;
+  /**
+   * Resume pair for a binding this Turn opens; null or absent starts a new native conversation.
+   * A Turn that reuses an open binding ignores it.
+   */
+  nativeResume?: WorkerGovernanceNativeResume | null;
   /** Host-side workspace roots available to NanoCore but not uploaded in raw form to workers. */
   workspaceRoots: MaterializedWorkspaceRoot[];
 }
@@ -713,7 +730,7 @@ export interface WorkerGovernanceBackend {
   }): { readonly agentSessionId: string } | null;
 
   /**
-   * Proves exact retained continuity or closes the predecessor after scheduler admission.
+   * Proves exact retained continuity against the current desired package or closes the predecessor after scheduler admission.
    *
    * An absent method means the backend cannot prove either reusable or absent durable continuity.
    */
@@ -759,6 +776,18 @@ export interface WorkerGovernanceBackend {
    * @param packageSnapshotId Exact active package snapshot.
    */
   interruptTurn?(packageSnapshotId: string): Promise<void>;
+
+  /**
+   * Binds the AgentSession owner that durably records native ready proof for one live Turn's
+   * binding. The backend calls `record` synchronously each time it accepts a ready proof, before
+   * any later import, native work, export, or close can discard it, and once at bind time for a
+   * proof its binding already holds, so a proof accepted before a NanoCore restart reaches the
+   * AgentSession record. A `record` failure fails the accepting operation closed.
+   *
+   * @param packageSnapshotId Exact live or restored package snapshot.
+   * @param record Records one accepted `nativeHandleDigest` on the Turn's AgentSession.
+   */
+  bindNativeHandleRecorder?(packageSnapshotId: string, record: (digest: string) => void): void;
 
   /**
    * Applies a dynamic package update when supported.

@@ -36,7 +36,6 @@ import {
   listWorkerControlAcceptedEvents,
   resolveWorkerControlFinalStatusTokenBinding,
 } from './runtime/worker-control-records.js';
-import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
 import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
 import { importWorkerTranscript } from './runtime/worker-transcript.js';
 import {
@@ -338,8 +337,6 @@ describe('worker control routes', () => {
       'ALL /api/worker-control/*',
       'POST /api/worker-control/heartbeat',
       'POST /api/worker-control/artifacts',
-      'POST /api/worker-control/commands/poll',
-      'POST /api/worker-control/commands/ack',
       'POST /api/worker-control/events/append',
       'POST /api/worker-control/final-status',
       'POST /api/worker-control/supply-refresh-ack',
@@ -2405,14 +2402,6 @@ describe('worker control routes', () => {
         },
         path: '/api/worker-control/artifacts',
       },
-      {
-        body: { lineage, padding },
-        path: '/api/worker-control/commands/poll',
-      },
-      {
-        body: { commandId: 'command_missing', lineage, padding },
-        path: '/api/worker-control/commands/ack',
-      },
     ];
     const results = await Promise.all(
       requests.map(async ({ body, path }) => {
@@ -2488,146 +2477,6 @@ describe('worker control routes', () => {
       path: '/openkit/artifacts/report.md',
       title: 'Worker report',
     });
-  });
-
-  it('returns queued commands to the authenticated worker poll', async () => {
-    const { app, environmentPackage, gateway, lineage, token } = createWorkerControlRouteFixture();
-
-    const interrupt = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
-
-    const res = await app.request('/api/worker-control/commands/poll', {
-      body: JSON.stringify({ lineage }),
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    });
-    const body = (await res.json()) as {
-      commands: Array<{ commandId: string; kind: string }>;
-    };
-
-    expect(res.status).toBe(200);
-    expect(body.commands).toEqual([
-      expect.objectContaining({
-        commandId: interrupt.commandId,
-        kind: 'interrupt',
-      }),
-    ]);
-  });
-
-  it('records command poll rejection evidence with the canonical operation', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-command-poll-rejected-')));
-    const { gateway, lineage, store } = createWorkerControlRouteFixture();
-
-    try {
-      applyMigrations(coreDb);
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
-      const res = await app.request('/api/worker-control/commands/poll', {
-        body: JSON.stringify({ lineage }),
-        headers: {
-          authorization: 'Bearer wrong',
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const evidence = listWorkerControlRejectedEvidenceForWorkspace(
-        coreDb,
-        lineage.workspaceId
-      )[0];
-
-      expect(res.status).toBe(401);
-      expect(evidence).toMatchObject({
-        errorCode: 'worker_control_unauthorized',
-        operation: 'command_poll',
-        route: '/api/worker-control/commands/poll',
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('persists interrupt command acknowledgements through the default gateway', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-command-ack-')));
-    const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Durable command ack thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Control worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
-        agentSetup: createTestAgentSetup(),
-        agentSessionId: 'session_durable_command_ack',
-        triggerActor: { kind: 'user', id: 'user_local' },
-        backend: {
-          kind: 'openshell',
-        },
-        createdAt: '2026-06-16T00:00:00.000Z',
-        requestId: 'req_durable_command_ack',
-        turn,
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    );
-    const lineage: WorkerControlLineage = {
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      requestId: environmentPackage.scope.requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    };
-
-    try {
-      applyMigrations(coreDb);
-
-      const binding = createDurableWorkerControlLease(
-        coreDb,
-        environmentPackage,
-        lineage,
-        'durable_command_ack'
-      );
-      const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = registerDurableWorkerControlSession(
-        gateway,
-        environmentPackage,
-        binding
-      );
-      const interrupt = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
-
-      await app.request('/api/worker-control/commands/poll', {
-        body: JSON.stringify({ lineage }),
-        headers: {
-          authorization: `Bearer ${registration.token}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const ack = await app.request('/api/worker-control/commands/ack', {
-        body: JSON.stringify({ commandId: interrupt.commandId, lineage }),
-        headers: {
-          authorization: `Bearer ${registration.token}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const acknowledged = coreDb.sqlite
-        .prepare(
-          'SELECT status, acknowledged_at AS acknowledgedAt FROM worker_control_commands WHERE command_id = ?'
-        )
-        .get(interrupt.commandId) as {
-        acknowledgedAt: string | null;
-        status: string;
-      };
-
-      expect(ack.status).toBe(200);
-      expect(acknowledged.status).toBe('acknowledged');
-      expect(acknowledged.acknowledgedAt).toEqual(expect.any(String));
-    } finally {
-      coreDb.sqlite.close();
-    }
   });
 
   it('rebuilds live worker-control sessions from durable gateway rows', async () => {

@@ -162,6 +162,13 @@ export const agentSessionRuntimeBindings = sqliteTable(
     updatedAt: text('updated_at').notNull(),
     /** Measured sandbox image digest copied as a value at binding time. */
     imageDigest: text('image_digest').notNull(),
+    /**
+     * Lowercase hex SHA-256 of the UTF-8 bytes of the inference loopback credential that
+     * `session.open` delivered; null until that dispatch. The raw value is never stored.
+     */
+    inferenceLoopbackCredentialDigest: text('inference_loopback_credential_digest'),
+    /** Lowercase hex SHA-256 of the delivered capability loopback credential; null until dispatch. */
+    capabilityLoopbackCredentialDigest: text('capability_loopback_credential_digest'),
   },
   (table) => [
     uniqueIndex('agent_session_runtime_bindings_session_idx').on(table.agentSessionId),

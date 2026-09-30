@@ -164,6 +164,17 @@ export const AgentSessionRecordSchema = AgentSessionSchema.extend({
   updatedAt: CanonicalTimestampSchema,
   configVersion: z.number().int().positive().nullable(),
   environmentPackageSnapshotId: z.string().min(1).nullable(),
+  /**
+   * Resume digest: the native handle digest of the ready proof NanoCore accepted for this
+   * AgentSession's binding. With the record's own id as locator it forms the resume pair a
+   * successor presents; null means no accepted ready proof. The field is an additive extension,
+   * so a record written before it existed reads as having no proof.
+   */
+  nativeHandleDigest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable()
+    .default(null),
   policySnapshotId: z.string().min(1).nullable(),
   sessionCompatibilityKey: z.string().min(1).nullable(),
   stale: z.boolean(),

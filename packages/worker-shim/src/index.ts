@@ -1,31 +1,20 @@
 export {
   WORKER_ADAPTERS,
-  type WorkerAdapter,
-  type WorkerAdapterCollectInput,
-  type WorkerAdapterLaunchPlan,
   type WorkerAdapterLlmRoute,
-  type WorkerAdapterPrepareInput,
   type WorkerAdapterResult,
   type WorkerAdapterRuntimeProvenance,
-  type WorkerNativeProcessResult,
+  type WorkerNativeHandle,
+  type WorkerResidentAdapter,
+  type WorkerResidentLoopback,
+  type WorkerResidentOpenInput,
+  type WorkerResidentSession,
+  type WorkerResidentTurn,
+  type WorkerResidentTurnInput,
 } from './adapter-registry.js';
-export {
-  parseWorkerShimArgs,
-  runWorkerShim,
-  runWorkerShimCli,
-  type WorkerProcessRunInput,
-  type WorkerProcessRunner,
-  type WorkerProcessRunResult,
-  type WorkerShimArgs,
-  type WorkerShimEnvironment,
-  type WorkerShimRunOptions,
-  type WorkerShimRunResult,
-} from './cli.js';
 export {
   type WorkerControlArtifactInput,
   WorkerControlClient,
   type WorkerControlClientOptions,
-  type WorkerControlCommandPoll,
   WorkerControlError,
   type WorkerControlFetch,
   type WorkerControlFetchResponse,
@@ -49,3 +38,4 @@ export {
   WorkerTranscriptWriter,
   type WorkerTranscriptWriterOptions,
 } from './transcript.js';
+export type { WorkerShimEnvironment } from './turn.js';

@@ -1677,7 +1677,6 @@ function isProvenNeverLaunchedGoalAttempt(
   return !coreDb.sqlite
     .prepare(`
     SELECT 1 FROM worker_control_records WHERE agent_session_id = @session OR turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_commands WHERE agent_session_id = @session OR turn_id = @turn
     UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE agent_session_id = @session OR turn_id = @turn
     UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE agent_session_id = @session OR turn_id = @turn
     UNION ALL SELECT 1 FROM agent_session_runtime_bindings
