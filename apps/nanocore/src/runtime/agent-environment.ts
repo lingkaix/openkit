@@ -723,6 +723,17 @@ function resolveOpenShellAgentEnvironmentPackage(
     environmentPackage,
     workSlotRef,
   });
+  // The workspace planner owns session-static layout; logical-model admission adds an exact
+  // continuity dimension without making the current preferred model a binding identity.
+  const allowedLogicalModelIds = logicalModels.allowed.map((model) => model.id).sort();
+  sessionWorkspace.compatibilityKey.digest = `sha256:${createHash('sha256')
+    .update(
+      JSON.stringify({
+        sessionWorkspaceKey: sessionWorkspace.compatibilityKey.digest,
+        allowedLogicalModelIds,
+      })
+    )
+    .digest('hex')}`;
   const materializedWorkspaceInputs = environmentPackage.workspace.inputs.map((workspaceInput) => {
     const materializationInput = sessionWorkspace.materialization.inputs.find(
       (candidate) => candidate.inputId === workspaceInput.id

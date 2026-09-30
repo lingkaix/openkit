@@ -113,6 +113,8 @@ export interface WorkerResidentOpenInput {
 export interface WorkerResidentTurnInput {
   /** The package's unique preferred LLM route selected by the Harness. */
   readonly llmRoute: WorkerAdapterLlmRoute;
+  /** Exact admitted logical-model routes fixed for this binding; the adapter must use the preferred llmRoute for this Turn and may select only a route in this set for later Turns. */
+  readonly allowedLlmRoutes: readonly WorkerAdapterLlmRoute[];
   /** Catalog-selected MCP server ids exposed through the fixed capability route. */
   readonly mcpServerIds: readonly string[];
   /** Admission-bound live observation capture. */
@@ -131,11 +133,11 @@ export interface WorkerResidentTurnInput {
   readonly workingDirectory: string;
 }
 
-/** One Turn accepted by a resident binding. */
+/** One accepted native Turn, or an unproved native attempt retained for Harness cleanup. */
 export interface WorkerResidentTurn {
-  /** Resolves with the normalized result once the native Turn settles; never rejects. */
+  /** Resolves with a normalized result only after native settlement is proved; rejects when settlement cannot be proved, requiring bounded Harness stop confirmation or fencing. */
   readonly settled: Promise<WorkerAdapterResult>;
-  /** Requests native interruption and resolves once the Turn has settled. */
+  /** Requests interruption and resolves only after the addressed native work is proved stopped; rejection or non-resolution does not prove settlement. */
   interrupt(): Promise<void>;
 }
 
@@ -149,11 +151,7 @@ export interface WorkerResidentSession {
   close(): Promise<void>;
   /** Proves the current restricted native handle without starting work. */
   nativeHandle(): Promise<WorkerNativeHandle>;
-  /**
-   * Accepts one Turn on the retained conversation and resolves once the runtime accepted it.
-   * Rejection guarantees that no native Turn remains live; otherwise cleanup ownership stays with
-   * the Harness, which fences admission and keeps the Turn occupied.
-   */
+  /** Returns accepted native work or an unproved attempt for Harness cleanup; rejects only when the runtime did not accept the Turn and no native Turn work remains live. */
   startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn>;
 }
 

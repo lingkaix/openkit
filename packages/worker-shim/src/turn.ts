@@ -193,7 +193,7 @@ async function runResidentTurnImplementation(
   if (resolveWorkerAdapterId(packageManifest) !== options.adapterId) {
     throw new Error('Worker package adapter does not match its owning Harness.');
   }
-  const llmRoute = resolveWorkerLlmRoute(packageManifest);
+  const { llmRoute, allowedLlmRoutes } = resolveWorkerLlmRoutes(packageManifest);
   const mcpServerIds = resolveWorkerMcpServerIds(packageManifest);
   const skillSupply = resolveSkillSupply(packageManifest.supply?.skills);
   const turnInput = resolveWorkerTurnInput(packageManifest);
@@ -323,6 +323,7 @@ async function runResidentTurnImplementation(
     try {
       startedTurn = await options.resident.startTurn({
         llmRoute,
+        allowedLlmRoutes,
         mcpServerIds,
         runtimeCapture: {
           captureCoverage,
@@ -345,6 +346,12 @@ async function runResidentTurnImplementation(
     } catch (error) {
       throw new NativeAcceptanceUnknownError(error);
     }
+    // Observe both outcomes before transcript I/O; the derived promise never rejects, so a
+    // pending writer cannot expose exceptional settlement at the process rejection boundary.
+    const settlement = startedTurn.settled.then(
+      (result) => ({ kind: 'settled' as const, result }),
+      (error: unknown) => ({ error })
+    );
     residentTurn = startedTurn;
     progress.stage = null;
     if (interrupted) {
@@ -364,7 +371,7 @@ async function runResidentTurnImplementation(
       });
       const hostEnded = () => ({ error: hostEndedError });
       const outcome = await Promise.race([
-        startedTurn.settled.then((result) => ({ kind: 'settled' as const, result })),
+        settlement,
         heartbeat.then(
           () => ({ error: new Error('Worker control stopped before the Turn settled.') }),
           (error: unknown) => ({ error })
@@ -405,11 +412,7 @@ async function runResidentTurnImplementation(
       adapterResult.assistantText,
       credentialValues
     );
-    const status = interrupted
-      ? 'interrupted'
-      : assistantOutputRejected
-        ? 'failed'
-        : adapterResult.status;
+    const status = assistantOutputRejected ? 'failed' : adapterResult.status;
 
     if (adapterResult.assistantText && status !== 'interrupted' && !assistantOutputRejected) {
       await writer.writeAssistantMessage({ status, text: adapterResult.assistantText });
@@ -967,13 +970,16 @@ function resolveWorkerAdapterId(packageManifest: WorkerShimPackageManifest): str
 }
 
 /**
- * Selects the package's unique preferred LLM route.
+ * Validates the exact allowed route set and selects its unique preferred route.
  *
  * @param packageManifest Worker-visible AEP.
- * @returns Valid runtime-neutral route.
+ * @returns The exact allowed routes and this Turn's preferred route.
  * @throws Error when the mode, selection, route count, or selected shape is invalid.
  */
-function resolveWorkerLlmRoute(packageManifest: WorkerShimPackageManifest): WorkerAdapterLlmRoute {
+function resolveWorkerLlmRoutes(packageManifest: WorkerShimPackageManifest): {
+  llmRoute: WorkerAdapterLlmRoute;
+  allowedLlmRoutes: readonly WorkerAdapterLlmRoute[];
+} {
   const mode = packageManifest.llm?.mode;
   const preferredLogicalModelId = packageManifest.llm?.preferredLogicalModelId;
   const routes = packageManifest.llm?.routes;
@@ -999,25 +1005,52 @@ function resolveWorkerLlmRoute(packageManifest: WorkerShimPackageManifest): Work
   if (preferredRoutes.length !== 1 || !route) {
     throw new Error('Worker shim requires exactly one resolved LLM route for the preferred model.');
   }
+  const allowedLlmRoutes = routes.map((candidate) => projectWorkerLlmRoute(candidate));
+  if (
+    new Set(allowedLlmRoutes.map((candidate) => candidate.model)).size !== routes.length ||
+    new Set(allowedLlmRoutes.map((candidate) => candidate.id)).size !== routes.length
+  ) {
+    throw new Error('Worker shim requires unambiguous logical-model and route identities.');
+  }
+  const expected =
+    mode === 'gateway'
+      ? (['placeholder', 'openai-compatible', 'nanocore-gateway'] as const)
+      : mode === 'direct-external'
+        ? (['environment', 'provider-compatible', 'direct-provider'] as const)
+        : (['none', 'backend-local', 'backend-local'] as const);
+  if (
+    allowedLlmRoutes.some(
+      (candidate) =>
+        candidate.credentialVisibility !== expected[0] ||
+        candidate.endpoint.kind !== expected[1] ||
+        candidate.endpoint.upstream?.kind !== expected[2] ||
+        candidate.endpoint.workerBaseUrl !== undefined
+    )
+  ) {
+    throw new Error('Worker shim requires matching LLM routing-mode authority.');
+  }
+  return {
+    llmRoute: allowedLlmRoutes.find((candidate) => candidate.model === preferredLogicalModelId)!,
+    allowedLlmRoutes,
+  };
+}
+
+/** Validates and projects one admitted logical-model route without repairing its core shape. */
+function projectWorkerLlmRoute(route: unknown): WorkerAdapterLlmRoute {
+  if (!isRecord(route)) throw new Error('Worker shim received an invalid resolved LLM route.');
   const endpoint = route.endpoint;
   if (
-    typeof route.id !== 'string' ||
-    typeof route.model !== 'string' ||
-    typeof route.providerInstanceId !== 'string' ||
-    !['none', 'placeholder', 'environment'].includes(String(route.credentialVisibility)) ||
+    !isNonEmptyString(route.id) ||
+    !isNonEmptyString(route.model) ||
+    !isNonEmptyString(route.providerInstanceId) ||
     !isRecord(endpoint) ||
-    !['openai-compatible', 'provider-compatible', 'backend-local'].includes(
-      String(endpoint.kind)
-    ) ||
-    (endpoint.upstream !== undefined && !isRecord(endpoint.upstream))
+    (endpoint.upstream !== undefined && !isRecord(endpoint.upstream)) ||
+    (endpoint.workerBaseUrl !== undefined && !isNonEmptyString(endpoint.workerBaseUrl))
   ) {
     throw new Error('Worker shim received an invalid resolved LLM route.');
   }
   const upstream = isRecord(endpoint.upstream) ? endpoint.upstream : undefined;
-  if (
-    upstream &&
-    !['nanocore-gateway', 'backend-local', 'direct-provider'].includes(String(upstream.kind))
-  ) {
+  if (upstream && upstream.baseUrlRef !== undefined && !isNonEmptyString(upstream.baseUrlRef)) {
     throw new Error('Worker shim received an invalid resolved LLM route.');
   }
 
@@ -1045,9 +1078,46 @@ function resolveWorkerLlmRoute(packageManifest: WorkerShimPackageManifest): Work
     id: route.id,
     model: route.model,
     ...(route.modelParameters !== undefined
-      ? { modelParameters: route.modelParameters as WorkerAdapterLlmRoute['modelParameters'] }
+      ? { modelParameters: projectWorkerModelParameters(route.modelParameters) }
       : {}),
     providerInstanceId: route.providerInstanceId,
+  };
+}
+
+/** Checks an identity or present optional reference without coercion. */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/** Validates the complete present model descriptor, including positive safe-integer limits, and drops safe additive content. */
+function projectWorkerModelParameters(
+  value: unknown
+): NonNullable<WorkerAdapterLlmRoute['modelParameters']> {
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.contextWindow) ||
+    typeof value.contextWindow !== 'number' ||
+    value.contextWindow <= 0 ||
+    !Number.isSafeInteger(value.maxOutputTokens) ||
+    typeof value.maxOutputTokens !== 'number' ||
+    value.maxOutputTokens <= 0 ||
+    !Array.isArray(value.inputModalities) ||
+    !value.inputModalities.every(
+      (modality) =>
+        typeof modality === 'string' &&
+        ['text', 'image', 'audio', 'video', 'pdf'].includes(modality)
+    ) ||
+    typeof value.reasoning !== 'boolean'
+  ) {
+    throw new Error('Worker shim received invalid resolved LLM model parameters.');
+  }
+  return {
+    contextWindow: value.contextWindow,
+    maxOutputTokens: value.maxOutputTokens,
+    inputModalities: [...value.inputModalities] as NonNullable<
+      WorkerAdapterLlmRoute['modelParameters']
+    >['inputModalities'],
+    reasoning: value.reasoning,
   };
 }
 

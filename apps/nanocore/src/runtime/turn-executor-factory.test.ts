@@ -12,7 +12,6 @@ import {
   type SessionWorkspaceMaterializationPlan,
 } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -77,6 +76,7 @@ import {
   type WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceCapacityUnavailableError,
 } from './worker-governance-backend.js';
+import { agentSessionCompatibilityKeyFromPackage } from './worker-governance-turn-executor.js';
 import {
   activateWorkerStorageAttachment,
   createWorkerStorageBinding,
@@ -6429,9 +6429,7 @@ describe('createConfiguredTurnExecutor', () => {
           adapterId: 'codex',
           adapterVersion: harness.adapterVersion,
           harnessCompatibilityKey: harness.harnessCompatibilityKey,
-          sessionCompatibilityKey: planSessionWorkspaceMaterialization({
-            environmentPackage,
-          }).compatibilityKey.digest,
+          sessionCompatibilityKey: agentSessionCompatibilityKeyFromPackage(environmentPackage),
           threadId: environmentPackage.scope.threadId,
         }),
         agentSessionId: environmentPackage.scope.agentSessionId,
@@ -6589,9 +6587,7 @@ describe('createConfiguredTurnExecutor', () => {
           adapterId: 'codex',
           adapterVersion: harness.adapterVersion,
           harnessCompatibilityKey: harness.harnessCompatibilityKey,
-          sessionCompatibilityKey: planSessionWorkspaceMaterialization({
-            environmentPackage: firstPackage,
-          }).compatibilityKey.digest,
+          sessionCompatibilityKey: agentSessionCompatibilityKeyFromPackage(firstPackage),
           threadId: firstPackage.scope.threadId,
         }),
         agentSessionId: firstPackage.scope.agentSessionId,

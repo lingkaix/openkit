@@ -217,6 +217,60 @@ describe('agent environment package resolver', () => {
     expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
+  it('partitions compatibility by the exact allowed logical models but not the preferred one', () => {
+    const setup = createTestSetup();
+    const second = {
+      ...setup.logicalModels.allowed[0]!,
+      id: 'second-model',
+      displayName: 'Second',
+    };
+    const input = {
+      agentSetup: setup,
+      agentSessionId: 'session_models',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('Model admission'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    const original = resolveAgentSessionCompatibilityKey(input);
+    const allowed = [setup.logicalModels.allowed[0]!, second];
+    const expanded = resolveAgentSessionCompatibilityKey({
+      ...input,
+      agentSetup: { ...setup, logicalModels: { preferredLogicalModelId: 'reasoning', allowed } },
+    });
+    expect(expanded).not.toBe(original);
+    expect(
+      resolveAgentSessionCompatibilityKey({
+        ...input,
+        agentSetup: {
+          ...setup,
+          logicalModels: { preferredLogicalModelId: 'second-model', allowed },
+        },
+      })
+    ).toBe(expanded);
+    expect(() =>
+      resolveAgentSessionCompatibilityKey({
+        ...input,
+        agentSetup: {
+          ...setup,
+          logicalModels: {
+            preferredLogicalModelId: 'reasoning',
+            allowed: [allowed[0]!, allowed[0]!],
+          },
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      resolveAgentSessionCompatibilityKey({
+        ...input,
+        agentSetup: {
+          ...setup,
+          logicalModels: { preferredLogicalModelId: 'missing-model', allowed },
+        },
+      })
+    ).toThrow();
+  });
+
   it('projects exact admitted capture coverage without partitioning session compatibility', () => {
     const input = {
       agentSetup: createTestSetup(),

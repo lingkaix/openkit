@@ -23,6 +23,7 @@ import type {
 } from './adapter-registry.js';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
+import { WorkerTranscriptWriter } from './transcript.js';
 
 const loopFixture = vi.hoisted(() => ({
   client: null as SandboxIntegrationClient | null,
@@ -80,6 +81,8 @@ type TurnScript =
   | { readonly kind: 'fail' }
   | { readonly kind: 'hold' }
   | { readonly kind: 'reject' }
+  | { readonly kind: 'reject-settlement'; readonly stopProved: boolean }
+  | { readonly kind: 'interrupt-race'; readonly status: 'completed' | 'failed' }
   /** Keeps working: its interrupt rejects and it never settles. */
   | { readonly kind: 'stuck' };
 
@@ -155,6 +158,39 @@ function fakeAdapter(
             interrupt = () =>
               resolve({ assistantText: null, status: 'interrupted', stopReason: 'aborted' });
           });
+          if (next.kind === 'reject-settlement') {
+            return {
+              async interrupt() {
+                resident.interrupts += 1;
+                if (!next.stopProved) throw new Error('native stop unproved');
+              },
+              settled: new Promise<WorkerAdapterResult>((_resolve, reject) => {
+                setTimeout(() => reject(new Error('native settlement unproved')), 10);
+              }),
+            };
+          }
+          if (next.kind === 'interrupt-race') {
+            let settle!: (result: WorkerAdapterResult) => void;
+            const settled = new Promise<WorkerAdapterResult>((resolve) => {
+              settle = resolve;
+            });
+            return {
+              async interrupt() {
+                resident.interrupts += 1;
+                settle(
+                  next.status === 'completed'
+                    ? {
+                        assistantText: 'raced answer',
+                        status: 'completed',
+                        stopReason: 'completed',
+                      }
+                    : { assistantText: null, status: 'failed', stopReason: 'error' }
+                );
+                await settled;
+              },
+              settled,
+            };
+          }
           if (next.kind === 'stuck') {
             return {
               async interrupt() {
@@ -324,7 +360,11 @@ function harnessFixture(
   const writePackage = (
     agentSessionId: string,
     turnId: string,
-    extra: { runtimeEnvNames?: readonly string[]; threadId?: string } = {}
+    extra: {
+      allowedModels?: readonly string[];
+      runtimeEnvNames?: readonly string[];
+      threadId?: string;
+    } = {}
   ) => {
     mkdirSync(join(sandboxRoot, 'sessions', agentSessionId, 'config'), { recursive: true });
     writeFileSync(
@@ -360,15 +400,13 @@ function harnessFixture(
         llm: {
           mode: 'gateway',
           preferredLogicalModelId: 'model-a',
-          routes: [
-            {
-              credentialVisibility: 'placeholder',
-              endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
-              id: 'worker-inference',
-              model: 'model-a',
-              providerInstanceId: 'provider-a',
-            },
-          ],
+          routes: (extra.allowedModels ?? ['model-a']).map((model, index) => ({
+            credentialVisibility: 'placeholder',
+            endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+            id: `worker-inference-${index}`,
+            model,
+            providerInstanceId: 'provider-a',
+          })),
         },
         observability: { captureCoverage: { scope: 'server', value: 'off' } },
         runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot } },
@@ -403,7 +441,11 @@ function harnessFixture(
   const start = (
     agentSessionId: string,
     turnId: string,
-    extra: { leaseId?: string; runtimeEnvNames?: readonly string[] } = {}
+    extra: {
+      allowedModels?: readonly string[];
+      leaseId?: string;
+      runtimeEnvNames?: readonly string[];
+    } = {}
   ) => {
     writePackage(agentSessionId, turnId, extra);
     return send('turn.start', startBody(agentSessionId, turnId, extra.leaseId));
@@ -697,6 +739,23 @@ describe('Worker Harness resident AgentSessions', () => {
     }
   });
 
+  it('delivers the exact admitted logical-model routes and rejects duplicate core models', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    expect(
+      await f.start('as-a', 'turn-1', { allowedModels: ['model-a', 'model-b'] })
+    ).toMatchObject({ disposition: 'succeeded' });
+    expect(f.fake.residents[0]?.turns[0]).toMatchObject({
+      llmRoute: { model: 'model-a' },
+      allowedLlmRoutes: [{ model: 'model-a' }, { model: 'model-b' }],
+    });
+    await f.settle('as-a');
+    expect(
+      await f.start('as-a', 'turn-2', { allowedModels: ['model-a', 'model-a'] })
+    ).toMatchObject({ disposition: 'refused' });
+    expect(f.fake.residents[0]?.turns).toHaveLength(1);
+  });
+
   it('runs two Turns on one resident binding and stores the first ready reference', async () => {
     const f = harnessFixture({
       environment: { GITHUB_TOKEN: 'harness-only', HOME: '/home/worker', NO_PROXY: 'internal' },
@@ -743,7 +802,7 @@ describe('Worker Harness resident AgentSessions', () => {
     await f.settle('as-a');
     expect(resident?.turns[0]).toMatchObject({
       mcpServerIds: ['echo'],
-      llmRoute: { id: 'worker-inference', model: 'model-a' },
+      llmRoute: { id: 'worker-inference-0', model: 'model-a' },
       turnId: 'turn-1',
       turnInput: 'input for turn-1',
       workingDirectory: f.sandboxRoot,
@@ -930,6 +989,49 @@ describe('Worker Harness resident AgentSessions', () => {
       body: { activeTurns: 1, openSessions: 1, state: 'draining' },
     });
     expect(f.fake.residents[0]?.turns).toHaveLength(1);
+  });
+
+  it.each([false, true])('handles rejected settlement with stop proof %s', async (stopProved) => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    f.fake.script.push({ kind: 'reject-settlement', stopProved });
+    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+    await vi.waitFor(() => expect(f.fake.residents[0]?.interrupts).toBe(1));
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: stopProved
+        ? { cleanupState: 'clean', state: 'open' }
+        : { cleanupState: 'unknown', state: 'failed' },
+    });
+    expect(f.integration.finalStatuses.at(-1)?.body.status).not.toBe('completed');
+    expect(await f.send('harness.drain', {})).toMatchObject({
+      body: { activeTurns: stopProved ? 0 : 1, openSessions: 1 },
+    });
+    if (!stopProved) {
+      expect(await f.start('as-a', 'turn-2')).toMatchObject({ disposition: 'refused' });
+      expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+        body: { reasonCode: 'cleanup_required' },
+        disposition: 'refused',
+      });
+    }
+  });
+
+  it.each([
+    'completed',
+    'failed',
+  ] as const)('keeps native %s when interrupt races settlement', async (status) => {
+    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+    await f.open('as-a');
+    f.fake.script.push({ kind: 'interrupt-race', status });
+    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+    expect(
+      await f.send('turn.interrupt', {
+        ...f.selector('as-a'),
+        leaseId: 'lease-turn-1',
+        purpose: 'interrupt',
+        turnId: 'turn-1',
+      })
+    ).toMatchObject({ disposition: 'succeeded' });
+    expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status } });
   });
 
   it('refuses an interrupt whose native stop was not proved', async () => {
@@ -1356,5 +1458,406 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(await f.open('as-b', { threadId: 'thread-two' })).toEqual(
       expect.objectContaining({ body: { reasonCode: 'busy' } })
     );
+  });
+});
+
+describe('N4b immediate exceptional settlement', () => {
+  it.each([
+    false,
+    true,
+  ])('handles immediate settlement rejection with event writing held %s', async (holdEvent) => {
+    let releaseEvent!: () => void;
+    let eventPending = false;
+    let rejectSettlement!: (error: Error) => void;
+    const eventGate = new Promise<void>((resolve) => {
+      releaseEvent = resolve;
+    });
+    const originalWrite = WorkerTranscriptWriter.prototype.writeAndAppendEvent;
+    const write = vi
+      .spyOn(WorkerTranscriptWriter.prototype, 'writeAndAppendEvent')
+      .mockImplementation(async function (this: WorkerTranscriptWriter, event) {
+        if (holdEvent && event.type === 'worker.ready') {
+          eventPending = true;
+          await eventGate;
+        }
+        return originalWrite.call(this, event);
+      });
+    const fake = fakeAdapter({ readyAtOpen: true });
+    const originalOpen = fake.adapter.openSession;
+    fake.adapter.openSession = async (input) => {
+      const resident = await originalOpen(input);
+      return {
+        ...resident,
+        async startTurn() {
+          return {
+            settled: holdEvent
+              ? new Promise<WorkerAdapterResult>((_resolve, reject) => {
+                  rejectSettlement = reject;
+                })
+              : Promise.reject<WorkerAdapterResult>(new Error('N4b immediate settlement loss')),
+            async interrupt() {},
+          };
+        },
+      };
+    };
+    const f = harnessFixture({ adapter: fake });
+    await f.open('as-a');
+    await f.start('as-a', 'turn-1');
+    if (holdEvent) {
+      await vi.waitFor(() => expect(eventPending).toBe(true));
+      rejectSettlement(new Error('N4b settlement loss during event writing'));
+      // Cross a process rejection-reporting turn while the writer is still pending.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.integration.finalStatuses).toHaveLength(0);
+    }
+    releaseEvent();
+    write.mockRestore();
+    await vi.waitFor(() =>
+      expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status: 'failed' } })
+    );
+    await f.settle('as-a');
+    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+  });
+});
+
+/** Mutable JSON fixture at the shim's untrusted package boundary. */
+interface RouteProbePackage {
+  llm: {
+    routes: Array<Record<string, unknown> & { endpoint: Record<string, unknown> }>;
+    mode: string;
+  };
+}
+
+describe('N4b independent route admission probes', () => {
+  it.each([
+    [
+      'duplicate route identity',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].id = pkg.llm.routes[0].id;
+      },
+    ],
+    [
+      'empty route identity',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].id = '';
+      },
+    ],
+    [
+      'empty provider identity',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].providerInstanceId = '';
+      },
+    ],
+    [
+      'malformed upstream reference',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.upstream = { kind: 'nanocore-gateway', baseUrlRef: 12 };
+      },
+    ],
+    [
+      'empty upstream reference',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.upstream = { kind: 'nanocore-gateway', baseUrlRef: '' };
+      },
+    ],
+    [
+      'missing upstream',
+      (pkg: RouteProbePackage) => {
+        delete pkg.llm.routes[1].endpoint.upstream;
+      },
+    ],
+    [
+      'coerced upstream kind',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.upstream = { kind: ['nanocore-gateway'] };
+      },
+    ],
+    [
+      'wrong mode credential',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].credentialVisibility = 'environment';
+      },
+    ],
+    [
+      'wrong mode endpoint',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.kind = 'provider-compatible';
+      },
+    ],
+    [
+      'wrong mode upstream',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.upstream = { kind: 'direct-provider' };
+      },
+    ],
+    [
+      'forbidden worker URL',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.workerBaseUrl = 'https://example.invalid/v1';
+      },
+    ],
+    [
+      'non-gateway multiple routes',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.mode = 'backend-local';
+      },
+    ],
+    [
+      'invalid context window',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 0,
+          maxOutputTokens: 50,
+          inputModalities: ['text'],
+          reasoning: false,
+        };
+      },
+    ],
+    [
+      'fractional context window',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 1.5,
+          maxOutputTokens: 50,
+          inputModalities: ['text'],
+          reasoning: false,
+        };
+      },
+    ],
+    [
+      'invalid output tokens',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 100,
+          maxOutputTokens: -1,
+          inputModalities: ['text'],
+          reasoning: false,
+        };
+      },
+    ],
+    [
+      'fractional output tokens',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 100,
+          maxOutputTokens: 1.5,
+          inputModalities: ['text'],
+          reasoning: false,
+        };
+      },
+    ],
+    [
+      'non-array modalities',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 100,
+          maxOutputTokens: 50,
+          inputModalities: 'text',
+          reasoning: false,
+        };
+      },
+    ],
+    [
+      'coerced modality',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 100,
+          maxOutputTokens: 50,
+          inputModalities: [['text']],
+          reasoning: false,
+        };
+      },
+    ],
+    [
+      'non-boolean reasoning',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 100,
+          maxOutputTokens: 50,
+          inputModalities: ['text'],
+          reasoning: 'false',
+        };
+      },
+    ],
+    [
+      'duplicate non-preferred model',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes.push({ ...pkg.llm.routes[1], id: 'duplicate-b' });
+      },
+    ],
+    [
+      'coerced endpoint kind',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.kind = ['openai-compatible'];
+      },
+    ],
+    [
+      'coerced credential visibility',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].credentialVisibility = ['placeholder'];
+      },
+    ],
+    [
+      'unknown model parameter modality',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 100,
+          maxOutputTokens: 50,
+          inputModalities: ['future'],
+          reasoning: false,
+        };
+      },
+    ],
+    [
+      'missing required model parameter',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].modelParameters = {
+          contextWindow: 100,
+          maxOutputTokens: 50,
+          inputModalities: ['text'],
+        };
+      },
+    ],
+    [
+      'empty model id',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].model = '';
+      },
+    ],
+    [
+      'malformed optional worker URL',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.workerBaseUrl = 12;
+      },
+    ],
+    [
+      'unknown endpoint kind',
+      (pkg: RouteProbePackage) => {
+        pkg.llm.routes[1].endpoint.kind = 'future';
+      },
+    ],
+  ])('refuses %s before native start', async (_label, corrupt) => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    f.writePackage('as-a', 'turn-1', { allowedModels: ['model-a', 'model-b'] });
+    const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+    pkg.llm.routes.forEach((route: RouteProbePackage['llm']['routes'][number], i: number) => {
+      route.id = `route-${i}`;
+    });
+    (corrupt as (pkg: RouteProbePackage) => void)(pkg);
+    writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
+    const result = await f.send('turn.start', f.startBody('as-a', 'turn-1'));
+    await f.settle('as-a');
+    expect({
+      disposition: result.disposition,
+      nativeStarts: f.fake.residents[0]?.turns.length,
+    }).toEqual({ disposition: 'refused', nativeStarts: 0 });
+  });
+  it.each([
+    'gateway',
+    'backend-local',
+    'direct-external',
+  ] as const)('admits the complete %s mode route', async (mode) => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    f.writePackage('as-a', 'turn-1');
+    const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+    pkg.llm.mode = mode;
+    const route = pkg.llm.routes[0];
+    const authority =
+      mode === 'gateway'
+        ? ['placeholder', 'openai-compatible', 'nanocore-gateway']
+        : mode === 'backend-local'
+          ? ['none', 'backend-local', 'backend-local']
+          : ['environment', 'provider-compatible', 'direct-provider'];
+    route.credentialVisibility = authority[0];
+    route.endpoint = { kind: authority[1], upstream: { kind: authority[2] } };
+    route.modelParameters = {
+      contextWindow: 100,
+      maxOutputTokens: 50,
+      inputModalities: ['text', 'image', 'audio', 'video', 'pdf'],
+      reasoning: true,
+    };
+    writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
+    expect(await f.send('turn.start', f.startBody('as-a', 'turn-1'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+    await f.settle('as-a');
+    expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes).toEqual([route]);
+  });
+  it.each([
+    ['contextWindow', 9007199254740992, 'refused'],
+    ['maxOutputTokens', 9007199254740992, 'refused'],
+    ['contextWindow', 9007199254740991, 'succeeded'],
+    ['maxOutputTokens', 9007199254740991, 'succeeded'],
+  ] as const)('enforces safe-integer %s limit %s (%s)', async (field, limit, disposition) => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    f.writePackage('as-a', 'turn-1', { allowedModels: ['model-a', 'model-b'] });
+    const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+    const parameters = {
+      contextWindow: 100,
+      maxOutputTokens: 50,
+      inputModalities: ['text'],
+      reasoning: false,
+      [field]: limit,
+    };
+    pkg.llm.routes[1].modelParameters = { ...parameters, futureOptional: 'ignored' };
+    writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
+    const result = await f.send('turn.start', f.startBody('as-a', 'turn-1'));
+    await f.settle('as-a');
+    expect({
+      disposition: result.disposition,
+      nativeStarts: f.fake.residents[0]?.turns.length,
+    }).toEqual({ disposition, nativeStarts: disposition === 'refused' ? 0 : 1 });
+    if (disposition === 'succeeded') {
+      expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes[1]?.modelParameters).toEqual(
+        parameters
+      );
+    }
+  });
+
+  it('omits an unknown additive route field from the adapter input', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    f.writePackage('as-a', 'turn-1', { allowedModels: ['model-a', 'model-b'] });
+    const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+    pkg.llm.routes[1].futureOptional = 'ignored';
+    pkg.llm.routes[1].endpoint.futureOptional = 'ignored';
+    pkg.llm.routes[1].endpoint.upstream = {
+      kind: 'nanocore-gateway',
+      baseUrlRef: 'provider-ref',
+      futureOptional: 'ignored',
+    };
+    pkg.llm.routes[1].modelParameters = {
+      contextWindow: 100,
+      maxOutputTokens: 50,
+      inputModalities: ['text'],
+      reasoning: false,
+      futureOptional: 'ignored',
+    };
+    writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
+    expect(await f.send('turn.start', f.startBody('as-a', 'turn-1'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+    await f.settle('as-a');
+    expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes[1]).toEqual({
+      id: 'worker-inference-1',
+      model: 'model-b',
+      providerInstanceId: 'provider-a',
+      credentialVisibility: 'placeholder',
+      endpoint: {
+        kind: 'openai-compatible',
+        upstream: { kind: 'nanocore-gateway', baseUrlRef: 'provider-ref' },
+      },
+      modelParameters: {
+        contextWindow: 100,
+        maxOutputTokens: 50,
+        inputModalities: ['text'],
+        reasoning: false,
+      },
+    });
   });
 });

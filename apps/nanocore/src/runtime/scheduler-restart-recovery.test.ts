@@ -2,10 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  type AgentEnvironmentPackage,
-  planSessionWorkspaceMaterialization,
-} from '@openkit/config-schema';
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
@@ -64,6 +61,7 @@ import {
 } from './worker-backend-sessions.js';
 import { WorkerControlGateway, type WorkerControlLineage } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import { agentSessionCompatibilityKeyFromPackage } from './worker-governance-turn-executor.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -2717,8 +2715,7 @@ describe('minimal scheduler reconnect contract', () => {
         adapterId: harness.adapterId,
         adapterVersion: harness.adapterVersion,
         harnessCompatibilityKey: harness.harnessCompatibilityKey,
-        sessionCompatibilityKey: planSessionWorkspaceMaterialization({ environmentPackage })
-          .compatibilityKey.digest,
+        sessionCompatibilityKey: agentSessionCompatibilityKeyFromPackage(environmentPackage),
         threadId: environmentPackage.scope.threadId,
       });
       openNanoHostAgentSessionBinding(coreDb, {
