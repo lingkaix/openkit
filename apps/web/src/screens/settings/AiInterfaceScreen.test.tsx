@@ -949,6 +949,10 @@ describe('AI interface deployment-admin workflow', () => {
 
   it('loads auto-top-up only from costs expand and clears stale usage after a failed refresh', async () => {
     const user = userEvent.setup();
+    // The provider-subscription spec requires explicit USD zero; normalize Intl spaces for text queries.
+    const prepaidZero = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' })
+      .format(0)
+      .replace(/\s/g, ' ');
     const autoTopupResponse = {
       subscriptionProviderId: 'xai',
       accountSlotId: 'primary',
@@ -1021,7 +1025,7 @@ describe('AI interface deployment-admin workflow', () => {
     expect(getAccountQuota).toHaveBeenCalledTimes(2);
 
     await user.click(within(xai).getByText('Balance and costs'));
-    expect(await within(xai).findByText('Prepaid $0.00')).toBeInTheDocument();
+    expect(await within(xai).findByText(`Prepaid ${prepaidZero}`)).toBeInTheDocument();
     expect(within(xai).getByText('Extra spend not reported')).toBeInTheDocument();
     expect(within(xai).getByText('Spend cap not reported')).toBeInTheDocument();
     expect(await within(xai).findByText('Checking auto top-up…')).toBeInTheDocument();
