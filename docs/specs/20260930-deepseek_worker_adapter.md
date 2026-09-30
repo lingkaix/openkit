@@ -42,7 +42,7 @@ The runtime process is supervised and disposable. Plugins do not run in the Inte
 
 ## Upstream Contract
 
-No adapter, image target, manifest, or install recipe exists today. The deployment pin, the client pin, and the image install are established by this adapter's implementation slice from probes and recorded in the `worker-runtimes` version manifest. This specification does not guess those values and does not write an install command that has not been shown to work.
+The resident adapter is implemented; image and manifest integration remain outside this slice, as Implementation Evidence And Limit states. The deployment pin, the client pin, and the image install are established by this adapter's implementation slice from probes and recorded in the `worker-runtimes` version manifest. This specification does not guess those values and does not write an install command that has not been shown to work.
 
 Examined evidence, not a deployment pin: source commit `639ed015397290b3745d163aafe02ffee4aa3f84`, package `@deepseek-ai/dsh-acp@0.2.0-rc.2`, depending on `@agentclientprotocol/sdk@1.4.0`. The ACP handshake value `0.0.1` is not a build id. The inspected package depends on `workspace:*` packages, so a standalone npm install is not established. The client pin is selected against that server peer. `@modelcontextprotocol/sdk` is a different package and is not this client.
 
