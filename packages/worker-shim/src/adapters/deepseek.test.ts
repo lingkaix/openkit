@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { spawn } from 'node:child_process';
 import {
   existsSync,

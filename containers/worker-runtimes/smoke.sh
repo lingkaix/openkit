@@ -27,7 +27,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { WORKER_ADAPTERS, WorkerHarness } from '/usr/local/lib/openkit/worker-shim/dist/index.js';
-import { loadPiMcpInternals } from '/usr/local/lib/openkit/pi-runtime-host/dist/openkit-mcp.js';
+import { loadPiMcpInternals } from '/usr/local/lib/openkit/pi-runtime-host/dist/capability-mcp.js';
 import { PiRuntimeHost } from '/usr/local/lib/openkit/pi-runtime-host/dist/host.js';
 
 const manifest = JSON.parse(readFileSync('/usr/local/lib/openkit/worker-runtimes-versions.json', 'utf8'));

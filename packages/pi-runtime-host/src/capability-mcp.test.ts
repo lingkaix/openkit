@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { OpenKitMcpGate } from './openkit-mcp.ts';
+import { OpenKitMcpGate } from './capability-mcp.ts';
 
 /** Exercises the native message hook and Pi's binary resource conversion together. */
 describe('OpenKit MCP binary resource redaction', () => {

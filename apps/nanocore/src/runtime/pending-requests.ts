@@ -1731,7 +1731,7 @@ export function validateCanonicalLoad(
  * Infers the executor of a Turn from its agent binding. Core-local and Assistant Turns are distinguished by the caller.
  *
  * @param turn Turn.
- * @returns Worker when the Turn names an agent session, otherwise null.
+ * @returns Worker when the Turn names an AgentSession, otherwise null.
  */
 export function executorKindForTurn(turn: Turn): PendingExecutorKind | null {
   return turn.agentSessionId || (turn.agentId && turn.agentId !== 'quick-chat')

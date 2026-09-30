@@ -15,6 +15,7 @@ import {
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
+import { hostSuppliedBuiltinMcp, loadPiMcpInternals, OpenKitMcpGate } from './capability-mcp.ts';
 import {
   CHANNEL_NATIVE_EVENT_MAX_BYTES,
   type HostErrorCode,
@@ -36,7 +37,6 @@ import {
   provePiSessionHeader,
   requireAbsentPiSession,
 } from './identity.ts';
-import { hostSuppliedBuiltinMcp, loadPiMcpInternals, OpenKitMcpGate } from './openkit-mcp.ts';
 import { type PiTurnOutcome, PiTurnOutcomeTracker } from './outcome.ts';
 
 /** The one adapter-owned provider alias every generated model descriptor uses. */

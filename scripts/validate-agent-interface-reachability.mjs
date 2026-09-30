@@ -1,6 +1,8 @@
+import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -117,15 +119,45 @@ function scanFile(relativePath) {
 /**
  * Reports whether a removed public-interface identifier still occurs as itself.
  *
- * The catalog digest format `openkit-mcp-config-v1` is current accepted identity, not the deleted `openkit-mcp` binary.
+ * Identifier suffixes belong to a different token; path and configuration fragments remain literal prefix checks.
+ * This also preserves the accepted `openkit-mcp-config-v1` catalog digest identity.
  *
  * @param {string} content File contents.
  * @param {string} needle Forbidden identifier.
  * @returns {boolean} True when the needle remains as the retired interface rather than a current accepted prefix.
  */
 function containsLegacyIdentifier(content, needle) {
-  if (needle === 'openkit-mcp') {
-    return /openkit-mcp(?!-config-v1)/u.test(content);
-  }
-  return content.includes(needle);
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const suffix = /[A-Za-z0-9_-]$/u.test(needle) ? '(?![A-Za-z0-9_-])' : '';
+  return new RegExp(`${escaped}${suffix}`, 'u').test(content);
 }
+
+test('retains every retired identifier in prose, quotes, paths, and mixed content', () => {
+  for (const needle of forbiddenNeedles) {
+    for (const content of [needle, `"${needle}"`, `skills/${needle}/`, `${needle}back ${needle}`]) {
+      assert.equal(
+        containsLegacyIdentifier(content, needle),
+        true,
+        JSON.stringify({ needle, content })
+      );
+    }
+  }
+});
+
+test('distinguishes longer identifiers while retaining path-prefix checks', () => {
+  for (const needle of forbiddenNeedles) {
+    if (/[A-Za-z0-9_-]$/u.test(needle)) {
+      for (const suffix of ['back', '0', '_current', '-current']) {
+        assert.equal(containsLegacyIdentifier(`${needle}${suffix}`, needle), false);
+      }
+    } else {
+      assert.equal(containsLegacyIdentifier(`${needle}current`, needle), true);
+    }
+  }
+});
+
+test('preserves the accepted catalog digest exception without masking a retired binary', () => {
+  assert.equal(containsLegacyIdentifier('openkit-mcp-config-v1', 'openkit-mcp'), false);
+  assert.equal(containsLegacyIdentifier('openkit-mcp-config-v1suffix', 'openkit-mcp'), false);
+  assert.equal(containsLegacyIdentifier('openkit-mcp-config-v1 openkit-mcp', 'openkit-mcp'), true);
+});

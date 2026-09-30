@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import {
