@@ -23,6 +23,7 @@ This directory holds reusable libraries, shared configuration packages, internal
 - `@openkit/core-client`: composed typed HTTP and SSE client for the SPA and protocol integration tests.
 - `@openkit/config-schema`: shared OpenKit config schemas, policy metadata, and workspace root materialization helpers.
 - `@openkit/policy-kernel`: shared standard-aligned NGAC subset policy kernel for relation-backed authorization decisions and decision traces.
+- `@openkit/pi-runtime-host`: the dedicated Pi SDK host process the Pi Worker Adapter runs under the shared Harness, with its private control channel, exact session identity, and host-managed OpenKit MCP.
 - `@openkit/worker-protocol`: canonical `Core <-> Worker` schemas for governed container worker records, control envelopes, transcript records, capability summaries, workspace-change manifests, and worker errors.
 - `@openkit/codex-app-server-schema`: vendored Codex app-server JSON Schema snapshot for the NanoCore host adapter boundary.
 - `@openkit/models-dev-catalog`: vendored `models.dev` catalog snapshots for provider-template traceability.
