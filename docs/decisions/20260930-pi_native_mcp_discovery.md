@@ -13,6 +13,8 @@ The Pi SDK host loads the pinned native tool-search extension and activates `too
 
 The engineer selected 「加载原生发现机制」 (English translation: ‘Load the native discovery mechanism’). After the pinned research, the primary instructed the search-only, no-codemode implementation choice and the image-owner reconciliation under that direction; those details are not a separate engineer ruling. The research finding in temp/research/20260930-pi-codemode-mcp/report.md establishes that the 0.99.1 SDK exports both the codemode and tool-search factories and that tool search alone meets the discovery and direct-call need. Its pinned-source and local-probe evidence supports additive activation and reproduces a codemode identifier collision that can execute the wrong target. The accepted current route therefore loads search without codemode script composition or another configuration/client system. Source and construction probes establish the available mechanism; actual model-visible discovery, native calls, resume and deployed packaging still require their owning qualification.
 
+At the Pi 0.99.1 pin, createAgentSession rebuilds the initial tool selection from current native settings on both new and resumed sessions, not from the transcript's prior declarations, so an exact successor adds tool_search again and the model rediscovers formerly searched tools. The primary settled this pin behavior within the existing decision after verifying the pinned source; it is not a separate engineer ruling. The Pi Worker Adapter owns the resulting criteria.
+
 ## Rejected Alternatives
 
 - Direct-only support with a visible limit: it leaves default-exposure user servers unusable despite the pin's available native search mechanism.
@@ -26,7 +28,7 @@ A released upstream fix for [earendil-works/pi#10239](https://github.com/earendi
 
 ## Affected Owners
 
-- [Pi Worker Adapter](../specs/20260716-pi_worker_adapter.md) — Adapter-specific amendment assigned to its builder; not included in this frozen commit.
+- [Pi Worker Adapter](../specs/20260716-pi_worker_adapter.md)
 - [Worker Execution Environment Images](../specs/20260721-worker_execution_environment_images.md)
 - [Container Image Packaging And Release Publishing](../specs/20260708-container_image_packaging.md)
 - [Worker Runtime Communication Model](../specs/20260629-worker_runtime_communication_model.md)

@@ -62,7 +62,11 @@ The shared Harness supplies the adapter with:
 - the exact server ids from resolved AEP MCP supply, including automatically supplied built-in servers
 - the two session-local loopback credentials, and no worker-control credential
 
-The adapter does not invent provider, model, policy, or credential decisions. User configuration is preserved through the native profile. Generic per-session replacement of all tools, credentials, and Skills is not an ACP config option. Isolation is a configuration fact that must be proved, not inferred from session ids. Do not imply per-session isolation for global rows.
+The adapter does not invent platform Provider, model, policy, or credential decisions. It honors native configuration and profile precedence under Native Local Configuration and composes only the protected bindings it owns. Generic per-session replacement of all tools, credentials, and Skills is not an ACP config option. Isolation is a configuration fact that must be proved, not inferred from session ids. Do not imply per-session isolation for global rows.
+
+## Native Local Configuration
+
+DeepSeek's native configuration, profiles, instructions, Skill roots, plugins and local MCP configuration keep their native precedence in the admitted home and workspace. Image defaults reach the home by native layering where the pin supports it, otherwise by initializing a fresh home, under [Persistent Worker Volumes](20260910-persistent_worker_volumes.md#native-defaults-and-private-home-placement). The adapter projects the AEP-selected Skills and managed MCP separately, removes stale managed roots, and does not disable native default Skill roots or replace a whole user profile row to do so. It overlays only the bindings it owns: the model and Gateway route, the exact OpenKit-managed MCP projection, the capability credentials, the exact session and ACP control. A native setting that would replace one of them fails before native work without editing the user's files. Closing or failing a binding preserves the whole native home, and the adapter's protected projection is not written into the retained profile as a default for a successor.
 
 ## Session Operations
 
@@ -104,7 +108,7 @@ Compaction evidence is only what ACP actually exposes. Usage changes are not a c
 
 The adapter declares whether tools are re-listed at Turn start. The implementation slice establishes that declaration by probe, and this specification does not invent it. When the runtime does not re-list, a changed supply is a setup change replaced by a successor AgentSession that resumes the exact id. Narrowing and revocation still apply at the next call as `capability_denied`.
 
-In-Sandbox MCP is unrestricted. External systems stay on the Gateway ([Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md)). The adapter must not discover, install, directly connect, authorize, or broaden supply beyond the exact selection. ACP is not added to that specification as a permission channel.
+In-Sandbox MCP follows native local configuration. OpenKit-managed MCP remains exactly selected and Gateway-projected; the adapter cannot broaden or directly replace that selection. Other external traffic follows the MCP and Sandbox/network owners, including admission-classified public endpoints and separately authorized REST grants. ACP does not become an authorization channel.
 
 ## Provider And Credentials
 
@@ -158,12 +162,15 @@ Required tests cover:
 - Successful completion from the addressed prompt's correlated native terminal outcome, partial output followed by failure, cancellation, and missing or conflicting terminal evidence
 - Final text as the ordered text of the successful terminal outcome trimmed once, and empty success returning no assistant candidate
 - Inspection of the exact surviving host and native conversation, rejection of an unknown or mismatched identity with no work launched, and `harness.drain` refusing new `session.open` and `turn.start` while admitted work and cleanup settle
+- Native profile and local Skill roots effective alongside the current managed roots, a fresh home receiving image defaults, a populated home preserved, and a native setting that would replace a protected binding refused before work
 
 The shared qualification cases in [Codex Worker Adapter](20260716-codex_worker_adapter.md#tests) apply on native ACP. The SDK wire and a third-party ACP bridge are not alternate passing interfaces. One runtime's pass does not qualify another.
 
 ## Implementation Evidence And Limit
 
 No DeepSeek adapter, image target, manifest, or install recipe exists in the tree. The accepted design is this specification. Nothing here is implemented.
+
+Native Local Configuration, including image-default layering or fresh-home initialization, is specified but not yet implemented.
 
 ## Acceptance
 

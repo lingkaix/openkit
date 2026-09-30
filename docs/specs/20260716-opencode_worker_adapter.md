@@ -8,9 +8,9 @@ updated: 2026-09-30
 
 ## Generic Volume Retention Amendment
 
-[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter locates its data directory in its admitted stable Thread-private home and leaves all contents intact, without a list of known filenames. Generated launch and control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory. Closing still invalidates the exact binding and proves writer absence. Retained native histories, memory, configuration, and unknown files do not select a conversation or grant tools or credentials.
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter locates its data directory in its admitted stable Thread-private home and leaves all contents intact, without a list of known filenames. Generated launch and control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory. Closing still invalidates the exact binding and proves writer absence. Retained native histories, memory, configuration, and unknown files do not select a conversation, grant OpenKit credentials, or grant external model, tool, provider, or network authority; admitted native configuration follows Native Local Configuration below.
 
-OpenCode V2 server operations, event translation, and feature restrictions remain owned here. Whole-volume retention alone does not discover a session or grant tools or ambient configuration as launch authority. Exact resume uses the retained reference under [AgentSession](../core/agent-session.md). A resume that is not the exact session fails explicitly and never falls back to a fresh conversation, an empty conversation, or a transcript replay. This version starts from a new data root and does not read earlier-version native state ([earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)).
+OpenCode V2 server operations, event translation, and feature restrictions remain owned here. Whole-volume retention alone does not discover a session or grant credentials or external authority. Exact resume uses the retained reference under [AgentSession](../core/agent-session.md). A resume that is not the exact session fails explicitly and never falls back to a fresh conversation, an empty conversation, or a transcript replay. This version starts from a new data root and does not read earlier-version native state ([earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)).
 
 ## Summary
 
@@ -66,9 +66,13 @@ The shared Harness supplies the adapter with:
 
 The Harness passes the Turn's unique preferred route and the binding's exact admitted logical-model route set. The adapter configures the whole set, selects this Turn's preferred route, and never invents a model or provider fallback. The adapter does not resolve providers, credentials, models, permissions, or workspace policy on its own.
 
-Server configuration is explicit and private. Ambient project configuration, auth content, default plugins, Claude Code prompts, external Skills, model fetches, sharing, updates, and LSP downloads stay disabled unless an accepted supply adds a specific one back. `OPENCODE_AUTH_CONTENT={}` must not be replaced by a stored provider credential. The V1 environment-variable spellings are not the contract. The requirement is the outcome: those ambient sources stay disabled. Native data under the retained home is persistent and is the resume store for sessions this version created.
+Server configuration combines OpenCode's native configuration from the admitted home and workspace with the adapter's protected overlay under Native Local Configuration. `OPENCODE_AUTH_CONTENT={}` must not be replaced by a stored provider credential. Sharing, automatic updates, model-catalog fetches, default plugin installation and LSP downloads stay disabled, because they publish or download outside the Sandbox without an admitted grant. The V1 environment-variable spellings are not the contract; the requirement is that outcome. Native data under the retained home is persistent and is the resume store for sessions this version created.
 
 Because the pinned V1 client loaded managed configuration after inline configuration and offered no disabling flag, `/etc/opencode` must not be able to override the adapter's explicit configuration. The V2 equivalent preserves that outcome. Until a probe shows a private configuration that cannot be overridden from that path, the image proves `/etc/opencode` is absent.
+
+## Native Local Configuration
+
+OpenCode's native configuration, instructions, Skills, plugins and local MCP configuration load from the admitted home and workspace with native precedence. Image defaults reach the home by native layering where the pin supports it, otherwise by initializing a fresh home, under [Persistent Worker Volumes](20260910-persistent_worker_volumes.md#native-defaults-and-private-home-placement). A private launch home must not make them unreachable. The adapter overlays only the bindings it owns: the model and Gateway route, the exact OpenKit-managed MCP projection, the capability credentials, the exact session, the required host plugin and control bindings. A native setting or plugin that would replace one of them fails before work without editing the user's files.
 
 ## Session Operations
 
@@ -99,7 +103,7 @@ The adapter returns a normalized final assistant message and adapter-local diagn
 
 ## Skills And MCP
 
-OpenKit-managed MCP is server configuration on the dedicated server, for the exact selected supply, not a cwd-scoped ACP registry. Dedicated initial servers avoid sharing a live configuration scope across sessions. The adapter must not discover, install, connect directly, authorize, or broaden supply. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns the Gateway plane for external systems. In-Sandbox MCP is unrestricted.
+OpenKit-managed MCP is server configuration on the dedicated server, for the exact selected supply, not a cwd-scoped ACP registry. Dedicated initial servers avoid sharing a live configuration scope across sessions. The adapter must not discover, install, connect directly to, authorize, or broaden OpenKit-managed MCP supply. Independently configured local Skills and MCP follow Native Local Configuration; the managed selection is projected separately and does not disable them. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns the Gateway plane for external systems. In-Sandbox MCP is unrestricted.
 
 The adapter declares whether the server lists tools again at Turn start. The implementation slice establishes that declaration by probe. When it does not, a changed supply is a setup change replaced by a successor AgentSession that resumes the native conversation. Narrowing and revocation apply at the next call as `capability_denied`.
 
@@ -119,7 +123,7 @@ Declared runtime-env credentials are session-static. A changed declaration or va
 
 The repository-owned OpenCode AgentManifest selects adapter id `opencode`, the deployment image `worker-runtimes`, native executable paths used by network policy, provider and credential requirements, and only capabilities proved by this specification. [Worker Execution Environment Images](20260721-worker_execution_environment_images.md) owns the image. This version starts from a new data root and does not read earlier-version data ([earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)).
 
-The OpenCode install slice of that image installs the selected OpenCode V2 server, sets the generic shim as the image entrypoint, and runs as a non-root worker user. The image also contains Codex, Pi, and DeepSeek. Smoke verifies the selected native version, `/etc/opencode` absent or the proved equivalent, the shim, ambient-configuration isolation, and non-root identity. It does not verify JSON run mode. Image contents confer no adapter authority.
+The OpenCode install slice of that image installs the selected OpenCode V2 server, sets the generic shim as the image entrypoint, and runs as a non-root worker user. The image also contains Codex, Pi, and DeepSeek. Smoke verifies the selected native version, `/etc/opencode` absent or the proved equivalent, the shim, protected-binding isolation, and non-root identity. It does not verify JSON run mode. Image contents confer no adapter authority.
 
 OpenCode-specific install commands, binary paths, configuration isolation, and version pins live only in the OpenCode AgentManifest, this adapter, this specification, and its tests, and in the OpenCode install slice of the one image.
 
@@ -153,8 +157,8 @@ Required adapter tests cover:
 
 - Credential-value absence, the fixed slash-free provider id, exact model id serialization, and direct-route rejection before the session admits work
 - Unknown-event tolerance, the 16 MiB and 16 KiB bounds, and redacted diagnostics
-- Ambient-configuration isolation, including disabled project config, default plugins, external Skills, sharing, updates, model fetches, and LSP download, and retained home bytes preserved at close
-- A server started with explicit configuration, the required plugin loaded without ambient discovery, a session aborted mid-tool, and the session still present afterward
+- Admitted home and project configuration, local Skills and plugins affect actual execution without their files being overwritten or protected bindings replaced; sharing, updates, model fetches, default plugin installation and LSP download stay disabled; a fresh home receives image defaults; and retained home bytes are preserved at close
+- A server started with explicit configuration, the required plugin loaded alongside native plugins and not replaceable by them, a session aborted mid-tool, and the session still present afterward
 - Dedicated-server MCP grants do not leak across sessions. The live event stream is not treated as a transcript
 - A supply change between two Turns either shows the new supply on the second Turn or follows the probed setup-change successor. The check reads the model-visible schema
 - Fail-closed native permissions
@@ -187,6 +191,8 @@ Result collection bounds UTF-8 content bytes across parts and pages before conca
 Round-five results and guard mutations are recorded in `temp/comm-redesign/reports/build-w4-r5.md`; builder execution is not independent acceptance. The fixed Harness, Turn consumer, registry contract, dependency manifest, lockfile, and workspace configuration were not changed in this round. Round six consumes N4b's exact admitted route set. Startup creates an exact durable conversation without choosing a model; the first admitted Turn writes every and only admitted model into an explicit ephemeral configuration file and invokes the pin's supported `location.reload` in the same host. The native move initializes location services before `model.list` proves the full catalog. Every prompt follows supported `session.switchModel`, move/selection drain, and `session.get` verification. Native configuration preserves exact model ids, context/output limits, input modalities, and reasoning output. Unsupported non-preferred members, preferred non-members, duplicate native ids, and changed sets are refused before native requests. Real add/remove successor runs both preserve the exact handle and prior context, including removal of the predecessor's selected model. No placeholder model or HTTP request-body rewrite remains. Round-six checks and mutation evidence live in `temp/comm-redesign/reports/build-w4-r6.md`.
 
 Image smoke and exact-product Sandbox qualification remain with their existing owners. The image must install glibc Linux arm64/x64 CLI builds and the client on the shim Node resolution path, keep `/etc/opencode` absent, and prove non-root execution. The client remains a devDependency because its Effect graph must not enter worker-common. Real-provider behavior, NanoCore restart adoption, selected Skill import, Integration idle/sibling refusal, compaction recovery, and complete descendant-writer containment are not established by these adapter tests. Whole-volume bytes remain untouched; local readiness and graceful-close evidence do not replace those broader proofs.
+
+Native Local Configuration, including image-default layering or fresh-home initialization, is specified but not yet implemented; the current server configuration is generated privately and does not load native project configuration.
 
 ## Acceptance
 

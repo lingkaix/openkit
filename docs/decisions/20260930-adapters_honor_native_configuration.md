@@ -29,8 +29,8 @@ A pinned runtime cannot preserve both native configuration and protected authori
 
 - [Persistent Worker Volumes](../specs/20260910-persistent_worker_volumes.md)
 - [Worker Execution Environment Images](../specs/20260721-worker_execution_environment_images.md)
-- [Codex Worker Adapter](../specs/20260716-codex_worker_adapter.md) — Adapter-specific amendment assigned to its builder; not included in this frozen commit.
-- [Pi Worker Adapter](../specs/20260716-pi_worker_adapter.md) — Adapter-specific amendment assigned to its builder; not included in this frozen commit.
-- [OpenCode Worker Adapter](../specs/20260716-opencode_worker_adapter.md) — Adapter-specific amendment assigned to its builder; not included in this frozen commit.
-- [DeepSeek Worker Adapter](../specs/20260930-deepseek_worker_adapter.md) — Adapter-specific amendment assigned to its builder; not included in this frozen commit.
+- [Codex Worker Adapter](../specs/20260716-codex_worker_adapter.md)
+- [Pi Worker Adapter](../specs/20260716-pi_worker_adapter.md)
+- [OpenCode Worker Adapter](../specs/20260716-opencode_worker_adapter.md)
+- [DeepSeek Worker Adapter](../specs/20260930-deepseek_worker_adapter.md)
 - [Worker Runtime Communication Model](../specs/20260629-worker_runtime_communication_model.md)
