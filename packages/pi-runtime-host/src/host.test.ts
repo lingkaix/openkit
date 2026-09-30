@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
+import { getCurrentSystemMessage } from '@earendil-works/pi-ai';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { HostResponse } from './channel.ts';
 import { PI_PROVIDER_ALIAS } from './host.ts';
@@ -634,8 +636,7 @@ describe('Pi runtime host', () => {
       const local = await startSyntheticCapability(null, ['local-tools']);
       local.bound = true;
       cleanups.push(() => local.close());
-      // Direct exposure declares the user's tool. The default, codemode, would hide it because
-      // this host does not load Pi's codemode extension.
+      // Direct exposure declares the user's tool before any native search.
       await writeFile(
         join(f.directories.agentDir, 'mcp.json'),
         JSON.stringify({
@@ -1950,6 +1951,915 @@ export default function (pi) {
       );
       expect(await host.exited).toBe(0);
       expect(await readdir(join(f.directories.stateRoot, 'sessions'))).toEqual([]);
+    },
+    TIMEOUT
+  );
+});
+
+/** Native search qualification uses the real SDK, real HTTP MCP, and a scripted local provider. */
+describe('M4 native search', () => {
+  const schema = { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] };
+  const tool = (name: string) => ({
+    name,
+    description: 'Distinct archive retrieval sentinel.',
+    inputSchema: schema,
+  });
+  const extra = `import { appendFileSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+const threads = createRequire(import.meta.url)('node:worker_threads');
+const NativeWorker = threads.Worker;
+threads.Worker = class extends NativeWorker {
+ constructor(...args) {
+  appendFileSync(process.env.PI_M4_WORKER_PROBE, 'worker-created\\n');
+  super(...args);
+ }
+};
+syncBuiltinESMExports();
+export default function(pi) {
+    pi.on('tool_result', event => {
+      if (event.toolName === 'mcp__local__read_file') appendFileSync(process.env.PI_M4_WORKER_PROBE + '.results', event.toolName);
+    });
+    pi.registerTool({ name: 'native_extra', label: 'extra', description: 'Unrelated active tool',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({ content: [{ type: 'text', text: 'extra' }] }) });
+  }`;
+  const names = (request: CapturedInference) =>
+    request.body.tools?.map((entry) => entry.function.name) ?? [];
+
+  it.each([undefined, 'codemode-deferred', 'deferred'])(
+    'declares active additive search and calls exact local exposure %s (inactive factory must fail)',
+    async (exposure) => {
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval', limit: 8 } } },
+        { toolCall: { name: 'mcp__local__read_file', arguments: { text: 'qualified' } } },
+        { text: 'served' },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
+      const local = await startSyntheticCapability(null, ['local'], {
+        tools: [tool('read_file')],
+        targetSentinel: true,
+      });
+      local.bound = true;
+      cleanups.push(() => local.close());
+      await installExtension(f.directories, extra, {
+        defaultTools: ['read', 'native_extra', 'mcp__openkit-work__echo'],
+      });
+      const config = JSON.stringify({
+        mcpServers: {
+          local: { url: `${local.base}/mcp/local`, ...(exposure ? { exposure } : {}) },
+        },
+      });
+      await writeFile(join(f.directories.agentDir, 'mcp.json'), config);
+      const settings = await readFile(join(f.directories.agentDir, 'settings.json'), 'utf8');
+      f.capability.bound = true;
+      const workerProbe = join(f.directories.root, 'worker-created');
+      const host = f.start({ PI_M4_WORKER_PROBE: workerProbe });
+      await f.open(host);
+      expect((await turn(host, 'turn-search', 'discover and call')).outcome.status).toBe(
+        'completed'
+      );
+      expect(names(f.inference.requests[0]!)).toEqual(
+        expect.arrayContaining(['read', 'native_extra', 'mcp__openkit-work__echo', 'tool_search'])
+      );
+      expect(names(f.inference.requests[0]!)).not.toContain('mcp__local__read_file');
+      expect(names(f.inference.requests[1]!)).toContain('mcp__local__read_file');
+      expect(f.inference.requests[1]!.body.tools).toContainEqual(
+        expect.objectContaining({
+          function: expect.objectContaining({ name: 'mcp__local__read_file', parameters: schema }),
+        })
+      );
+      expect(
+        local.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => ({ name: entry.params?.name, arguments: entry.params?.arguments }))
+      ).toEqual([{ name: 'read_file', arguments: { text: 'qualified' } }]);
+      expect(requestTexts(f.inference.requests[2]!).join(' ')).toContain(
+        'local:read_file:qualified'
+      );
+      expect(local.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+      expect(local.log.some((entry) => entry.headers.authorization !== undefined)).toBe(false);
+      expect(f.capability.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+      expect(
+        f.capability.log.every(
+          (entry) => entry.headers.authorization === `Bearer ${f.capabilityCredential}`
+        )
+      ).toBe(true);
+      expect(await readFile(join(f.directories.agentDir, 'mcp.json'), 'utf8')).toBe(config);
+      expect(await readFile(join(f.directories.agentDir, 'settings.json'), 'utf8')).toBe(settings);
+      expect(f.inference.requests.every((request) => !names(request).includes('codemode'))).toBe(
+        true
+      );
+      expect(existsSync(workerProbe)).toBe(false);
+      expect(await readFile(`${workerProbe}.results`, 'utf8')).toBe('mcp__local__read_file');
+    },
+    TIMEOUT
+  );
+
+  it(
+    'calls an ordinary raw codemode MCP tool through its exact namespaced name',
+    async () => {
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval', limit: 8 } } },
+        { toolCall: { name: 'mcp__local__codemode', arguments: { text: 'ordinary-target' } } },
+        { text: 'served ordinary target' },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
+      const local = await startSyntheticCapability(null, ['local'], {
+        tools: [tool('codemode')],
+        targetSentinel: true,
+      });
+      local.bound = true;
+      cleanups.push(() => local.close());
+      await writeFile(
+        join(f.directories.agentDir, 'mcp.json'),
+        JSON.stringify({
+          mcpServers: { local: { url: `${local.base}/mcp/local` } },
+        })
+      );
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      expect(
+        (await turn(host, 'ordinary-codemode', 'discover and call ordinary tool')).outcome.status
+      ).toBe('completed');
+      expect(names(f.inference.requests[0]!)).toContain('tool_search');
+      expect(names(f.inference.requests[0]!)).not.toContain('mcp__local__codemode');
+      expect(f.inference.requests[1]!.body.tools).toContainEqual(
+        expect.objectContaining({
+          function: expect.objectContaining({ name: 'mcp__local__codemode', parameters: schema }),
+        })
+      );
+      expect(
+        local.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => ({
+            name: entry.params?.name,
+            arguments: entry.params?.arguments,
+          }))
+      ).toEqual([{ name: 'codemode', arguments: { text: 'ordinary-target' } }]);
+      expect(requestTexts(f.inference.requests[2]!).join(' ')).toContain(
+        'local:codemode:ordinary-target'
+      );
+      expect(f.inference.requests.every((request) => !names(request).includes('codemode'))).toBe(
+        true
+      );
+      expect(local.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+    },
+    TIMEOUT
+  );
+
+  it.each([false, true])(
+    'preserves exact colliding server/tool targets in reversed order=%s',
+    async (reverse) => {
+      const servers = reverse ? ['work_files', 'work-files'] : ['work-files', 'work_files'];
+      const tools = reverse ? ['read_file', 'read-file'] : ['read-file', 'read_file'];
+      const targets = servers.flatMap((server) => tools.map((name) => ({ server, name })));
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval', limit: 8 } } },
+        ...targets.map(({ server, name }, index) => ({
+          toolCall: { name: `mcp__${server}__${name}`, arguments: { text: `effect-${index}` } },
+        })),
+        { text: 'exact targets' },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
+      const local = await startSyntheticCapability(null, servers, {
+        tools: tools.map(tool),
+        targetSentinel: true,
+      });
+      local.bound = true;
+      cleanups.push(() => local.close());
+      await writeFile(
+        join(f.directories.agentDir, 'mcp.json'),
+        JSON.stringify({
+          mcpServers: Object.fromEntries(
+            servers.map((server) => [server, { url: `${local.base}/mcp/${server}` }])
+          ),
+        })
+      );
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      expect(
+        (await turn(host, 'turn-targets', 'discover exact archive tools')).outcome.status
+      ).toBe('completed');
+      const calls = local.log.filter((entry) => entry.method === 'tools/call');
+      expect(
+        calls.map((entry) => ({
+          server: entry.path.split('/').at(-1),
+          name: entry.params?.name,
+          arguments: entry.params?.arguments,
+        }))
+      ).toEqual(
+        targets.map(({ server, name }, index) => ({
+          server,
+          name,
+          arguments: { text: `effect-${index}` },
+        }))
+      );
+      for (const [index, { server, name }] of targets.entries()) {
+        expect(names(f.inference.requests[index + 1]!)).toContain(`mcp__${server}__${name}`);
+        expect(requestTexts(f.inference.requests[index + 2]!).join(' ')).toContain(
+          `${server}:${name}:effect-${index}`
+        );
+        expect(
+          calls.filter(
+            (call) =>
+              call.params?.arguments &&
+              (call.params.arguments as { text: string }).text === `effect-${index}`
+          )
+        ).toHaveLength(1);
+      }
+    },
+    TIMEOUT
+  );
+
+  it.each(['exclude-search', 'exclude-all', 'replace-search', 'script-setting', 'script-factory'])(
+    'refuses required resource conflict %s before session_start or provider work',
+    async (kind) => {
+      const f = await fixture(() => ({ text: 'must not prompt' }));
+      const marker = join(f.directories.root, 'session-start');
+      const hook = `import { writeFileSync } from 'node:fs';
+export default function(pi) {
+  pi.on('session_start', () => writeFileSync(${JSON.stringify(marker)}, 'effect'));
+  ${kind === 'replace-search' ? "pi.registerTool({ name: 'tool_search', label: 'fake', description: 'fake', parameters: { type: 'object' }, execute: async () => ({ content: [] }) });" : ''}
+}`;
+      const source =
+        kind === 'script-factory'
+          ? `import { writeFileSync } from 'node:fs';
+import { createCodemodeExtension } from '@earendil-works/pi-coding-agent';
+export default function(pi) {
+  createCodemodeExtension()(pi);
+  pi.on('session_start', () => writeFileSync(${JSON.stringify(marker)}, 'effect'));
+}`
+          : hook;
+      await installExtension(
+        f.directories,
+        source,
+        kind === 'exclude-search'
+          ? { extensions: ['-builtin:tool-search'] }
+          : kind === 'exclude-all'
+            ? { extensions: ['-builtin:mcp', '-builtin:tool-search'] }
+            : kind === 'script-setting'
+              ? { defaultTools: ['+codemode'] }
+              : {}
+      );
+      const original = await readFile(join(f.directories.agentDir, 'settings.json'), 'utf8');
+      f.capability.bound = true;
+      const host = f.start();
+      await f.open(host);
+      expect((await turn(host, 'turn-refused', 'no setup work')).outcome).toMatchObject({
+        status: 'failed',
+        reason: kind.startsWith('script-') ? 'pi-codemode-unsupported' : 'pi-setup-failed',
+      });
+      expect(f.inference.requests).toHaveLength(0);
+      expect(f.capability.log).toHaveLength(0);
+      expect(existsSync(marker)).toBe(false);
+      expect(await readFile(join(f.directories.agentDir, 'settings.json'), 'utf8')).toBe(original);
+    },
+    TIMEOUT
+  );
+});
+
+describe('M4 late native setup registration', () => {
+  it.each([true, false])(
+    'refuses genuine session_start codemode registration activated=%s before provider work',
+    async (activate) => {
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'codemode', arguments: { code: 'return 73019;' } } }
+          : { text: 'provider reached' }
+      );
+      const registration = join(f.directories.root, 'late-registration');
+      await installExtension(
+        f.directories,
+        `import { writeFileSync } from 'node:fs';
+import { createCodemodeExtension } from '@earendil-works/pi-coding-agent';
+export default function(pi) {
+  pi.on('session_start', () => {
+    createCodemodeExtension()(pi);
+    ${activate ? "pi.setActiveTools([...pi.getActiveTools(), 'codemode']);" : ''}
+    writeFileSync(${JSON.stringify(registration)}, JSON.stringify({ registered: pi.getAllTools().some(tool => tool.name === 'codemode'), active: pi.getActiveTools().includes('codemode') }));
+  });
+}`
+      );
+      const configPath = join(f.directories.agentDir, 'settings.json');
+      const authored = await readFile(configPath, 'utf8');
+      f.capability.bound = true;
+      const host = f.start();
+      expect(await f.open(host)).toMatchObject({ ok: true });
+      const settled = await turn(host, 'turn-late-codemode', 'unsupported native setup');
+      expect(settled.outcome).toEqual({ status: 'failed', reason: 'pi-codemode-unsupported' });
+      expect(JSON.parse(await readFile(registration, 'utf8'))).toEqual({
+        registered: true,
+        active: activate,
+      });
+      expect(f.inference.requests).toHaveLength(0);
+      expect(f.capability.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
+      expect(await readFile(configPath, 'utf8')).toBe(authored);
+      await host.request({ op: 'close' });
+      expect(await host.exited).toBe(0);
+      const count = f.capability.log.length;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(f.capability.log).toHaveLength(count);
+    },
+    TIMEOUT
+  );
+});
+
+describe('M4 bounded support checkpoint characterization', () => {
+  it.each(['input', 'before_agent_start', 'agent_start'])(
+    'places reviewer %s registration outside the promised setup refusal',
+    async (event) => {
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'codemode', arguments: { code: 'return 73019;' } } }
+          : { text: 'provider reached' }
+      );
+      // Preserve the reviewer's genuine later-event source. Its Turn result is observation,
+      // not a supported-feature success or universal-refusal oracle.
+      const source = `import { createCodemodeExtension } from '@earendil-works/pi-coding-agent';
+export default function(pi) { pi.on('${event}', () => {
+  createCodemodeExtension()(pi);
+  pi.setActiveTools([...pi.getActiveTools(), 'codemode']);
+}); }`;
+      const checkpoint = join(f.directories.root, 'support-checkpoint.json');
+      const observer = join(f.directories.root, 'checkpoint-observer.js');
+      await writeFile(
+        observer,
+        `import { writeFileSync } from 'node:fs';
+export default function(pi) { pi.on('session_start', () => {
+  writeFileSync(${JSON.stringify(checkpoint)}, JSON.stringify({
+    registered: pi.getAllTools().some(tool => tool.name === 'codemode'),
+    active: pi.getActiveTools().includes('codemode')
+  })); }); }`
+      );
+      await installExtension(f.directories, source, { extensions: [observer] });
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      const settled = await turn(host, 'reviewer-later', 'work');
+      // These sources supply nothing at the documented checkpoint. No assertion constrains
+      // their later success or refusal; lifecycle cleanup retains its ordinary oracle.
+      expect(JSON.parse(await readFile(checkpoint, 'utf8'))).toEqual({
+        registered: false,
+        active: false,
+      });
+      expect(
+        await readFile(join(f.directories.root, 'extension-package', 'extension.js'), 'utf8')
+      ).toBe(source);
+      console.info(
+        'bounded-codemode-observation',
+        JSON.stringify({
+          event,
+          outcome: settled.outcome,
+          providerRequests: f.inference.requests.length,
+          firstDeclaresComposer:
+            f.inference.requests[0]?.body.tools?.some(
+              (tool) => tool.function.name === 'codemode'
+            ) ?? false,
+          arithmeticObserved: f.inference.requests.some((request) =>
+            requestTexts(request).join(' ').includes('73019')
+          ),
+        })
+      );
+      await host.request({ op: 'close' });
+      expect(await host.exited).toBe(0);
+    },
+    TIMEOUT
+  );
+});
+
+describe('M4 native search lifecycle and authority', () => {
+  const schema = { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] };
+  const localTool = { name: 'read_file', description: 'Archive retrieval.', inputSchema: schema };
+  const declared = (request: CapturedInference) =>
+    request.body.tools?.map((entry) => entry.function.name) ?? [];
+
+  it(
+    'keeps hidden tools unsearchable and uncallable without rewriting configuration',
+    async () => {
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval' } } },
+        { toolCall: { name: 'mcp__secret__read_file', arguments: { text: 'forbidden' } } },
+        { text: 'hidden stayed hidden' },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
+      const local = await startSyntheticCapability(null, ['secret'], {
+        tools: [localTool],
+        targetSentinel: true,
+      });
+      local.bound = true;
+      cleanups.push(() => local.close());
+      const config = JSON.stringify({
+        mcpServers: { secret: { url: `${local.base}/mcp/secret`, exposure: 'hidden' } },
+      });
+      await writeFile(join(f.directories.agentDir, 'mcp.json'), config);
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      expect((await turn(host, 'turn-hidden', 'attempt discovery')).outcome.status).toBe(
+        'completed'
+      );
+      expect(
+        f.inference.requests.every(
+          (request) => !declared(request).includes('mcp__secret__read_file')
+        )
+      ).toBe(true);
+      expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('No matching tools');
+      expect(local.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
+      expect(await readFile(join(f.directories.agentDir, 'mcp.json'), 'utf8')).toBe(config);
+    },
+    TIMEOUT
+  );
+
+  it.each(['validation', 'hook'])(
+    'discovered tools obey native %s before effects',
+    async (guard) => {
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval' } } },
+        {
+          toolCall: {
+            name: 'mcp__local__read_file',
+            arguments: guard === 'validation' ? {} : { text: 'blocked' },
+          },
+        },
+        { text: 'refused tool' },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
+      const local = await startSyntheticCapability(null, ['local'], {
+        tools: [localTool],
+        targetSentinel: true,
+      });
+      local.bound = true;
+      cleanups.push(() => local.close());
+      const probe = join(f.directories.root, 'tool-hooks');
+      await installExtension(
+        f.directories,
+        `import { appendFileSync } from 'node:fs';
+export default function(pi) {
+ pi.on('tool_call', event => {
+  appendFileSync(${JSON.stringify(probe)}, event.toolName + '\\n');
+  ${guard === 'hook' ? "if (event.toolName === 'mcp__local__read_file') return { block: true, reason: 'native hook refusal' };" : ''}
+ });
+}`
+      );
+      await writeFile(
+        join(f.directories.agentDir, 'mcp.json'),
+        JSON.stringify({ mcpServers: { local: { url: `${local.base}/mcp/local` } } })
+      );
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      expect((await turn(host, 'turn-guard', 'discover')).outcome.status).toBe('completed');
+      expect(declared(f.inference.requests[1]!)).toContain('mcp__local__read_file');
+      expect(local.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
+      const resultText = requestTexts(f.inference.requests[2]!).join(' ');
+      expect(resultText).toContain(guard === 'hook' ? 'native hook refusal' : 'text');
+      if (guard === 'hook') {
+        expect(await readFile(probe, 'utf8')).toContain('mcp__local__read_file');
+      }
+    },
+    TIMEOUT
+  );
+
+  it.each(['changed', 'unchanged', 'unconfigured'] as const)(
+    'preserves resident activation and exact successor rediscovery with %s defaults',
+    async (defaults) => {
+      const target = 'mcp__local__read_file';
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval' } } },
+        { toolCall: { name: target, arguments: { text: 'first' } } },
+        { text: 'first sentinel' },
+        { toolCall: { name: target, arguments: { text: 'second' } } },
+        { text: 'second sentinel' },
+        { toolCall: { name: target, arguments: { text: 'stale-do-not-run' } } },
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval' } } },
+        { toolCall: { name: target, arguments: { text: 'resumed-new' } } },
+        { text: 'resumed after native rediscovery' },
+      ];
+      let nativePath = '';
+      const projections = new Map<number, ReturnType<SessionManager['buildSessionContext']>>();
+      const effectsAtRequest = new Map<number, ReturnType<typeof calls>>();
+      const f = await fixture((n, request) => {
+        if (n >= 6) {
+          projections.set(n, SessionManager.open(nativePath).buildSessionContext());
+          effectsAtRequest.set(n, calls());
+          // Stop the script before any stale/new effect if a mutation restores old declarations.
+          const names = declared(request);
+          if (
+            n === 6 &&
+            (names.includes(target) || (defaults === 'changed' && names.includes('write')))
+          )
+            return { text: 'unexpected historical startup declaration' };
+        }
+        return replies[n - 1] ?? { text: 'unexpected' };
+      });
+      const local = await startSyntheticCapability(null, ['local'], {
+        tools: [localTool],
+        targetSentinel: true,
+      });
+      local.bound = true;
+      cleanups.push(() => local.close());
+      const calls = () =>
+        local.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => ({ name: entry.params?.name, arguments: entry.params?.arguments }));
+      const configPath = join(f.directories.agentDir, 'mcp.json');
+      const config = JSON.stringify({ mcpServers: { local: { url: `${local.base}/mcp/local` } } });
+      await writeFile(configPath, config);
+      const settingsPath = join(f.directories.agentDir, 'settings.json');
+      const firstSettings = JSON.stringify(
+        defaults === 'unconfigured' ? {} : { defaultTools: ['read', 'write'] }
+      );
+      await writeFile(settingsPath, firstSettings);
+      f.capability.bound = true;
+      const host = f.start();
+      await f.open(host);
+      expect((await turn(host, 'turn-first', 'search')).outcome.status).toBe('completed');
+      expect(f.inference.requests[1]!.body.tools).toContainEqual(
+        expect.objectContaining({
+          function: expect.objectContaining({ name: target, parameters: schema }),
+        })
+      );
+      const first = readyHandle(await host.request({ op: 'inspect' }));
+      nativePath = JSON.parse(first.handle).path;
+      expect((await turn(host, 'turn-second', 'reuse without search')).outcome.status).toBe(
+        'completed'
+      );
+      expect(declared(f.inference.requests[3]!)).toContain(target);
+      expect(calls()).toEqual([
+        { name: 'read_file', arguments: { text: 'first' } },
+        { name: 'read_file', arguments: { text: 'second' } },
+      ]);
+      expect(local.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+      expect(f.capability.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+      await host.request({ op: 'close' });
+      expect(await host.exited).toBe(0);
+      const retained = await readFile(nativePath);
+      const predecessorTools = getCurrentSystemMessage(
+        SessionManager.open(nativePath).buildSessionContext().messages
+      )?.toolsAdded?.map((tool) => tool.name);
+      expect(predecessorTools).toContain(target);
+      const successorSettings = JSON.stringify(
+        defaults === 'unconfigured'
+          ? {}
+          : {
+              defaultTools: defaults === 'changed' ? ['read', 'edit'] : ['read', 'write'],
+            }
+      );
+      await writeFile(settingsPath, successorSettings);
+      const successor = f.start();
+      expect(await f.open(successor, { resume: { handle: first.handle } })).toMatchObject({
+        ok: true,
+      });
+      expect((await turn(successor, 'turn-resumed', 'resume and rediscover')).outcome.status).toBe(
+        'completed'
+      );
+      const startup = declared(f.inference.requests[5]!);
+      expect(startup).not.toContain(target);
+      if (defaults === 'changed') expect(startup).not.toContain('write');
+      expect(startup).toEqual(
+        expect.arrayContaining(['read', 'tool_search', 'mcp__openkit-work__echo'])
+      );
+      if (defaults === 'changed') expect(startup).toContain('edit');
+      if (defaults === 'unchanged') expect(startup).toContain('write');
+      expect(requestTexts(f.inference.requests[5]!).join(' ')).toContain('second sentinel');
+      const stale = projections
+        .get(7)!
+        .messages.filter((message) => message.role === 'toolResult')
+        .at(-1);
+      expect(stale).toMatchObject({
+        role: 'toolResult',
+        toolName: target,
+        toolCallId: expect.stringContaining('call_6'),
+        isError: true,
+        content: [{ type: 'text', text: `Tool ${target} not found` }],
+      });
+      const staleInput = f.inference.requests[6]!.body.messages.filter(
+        (message) => message.role === 'tool'
+      ).at(-1);
+      expect(staleInput).toMatchObject({ tool_call_id: expect.stringContaining('call_6') });
+      expect(JSON.stringify(staleInput)).toContain('not found');
+      const staleEffects = projections
+        .get(7)!
+        .messages.filter(
+          (message) =>
+            message.role === 'toolResult' && message.toolName === target && !message.isError
+        );
+      expect(staleEffects).toHaveLength(2);
+      for (const index of [6, 7, 8])
+        expect(effectsAtRequest.get(index)).toEqual([
+          { name: 'read_file', arguments: { text: 'first' } },
+          { name: 'read_file', arguments: { text: 'second' } },
+        ]);
+      expect(f.inference.requests[7]!.body.tools).toContainEqual(
+        expect.objectContaining({
+          function: expect.objectContaining({ name: target, parameters: schema }),
+        })
+      );
+      expect(requestTexts(f.inference.requests[8]!).join(' ')).toContain(
+        'local:read_file:resumed-new'
+      );
+      expect(calls()).toEqual([
+        { name: 'read_file', arguments: { text: 'first' } },
+        { name: 'read_file', arguments: { text: 'second' } },
+        { name: 'read_file', arguments: { text: 'resumed-new' } },
+      ]);
+      expect(local.log.filter((entry) => entry.method === 'initialize')).toHaveLength(2);
+      expect(f.capability.log.filter((entry) => entry.method === 'initialize')).toHaveLength(2);
+      expect(f.inference.requests).toHaveLength(9);
+      for (const index of [6, 7, 8, 9]) {
+        const folded =
+          getCurrentSystemMessage(projections.get(index)!.messages)?.toolsAdded?.map(
+            (tool) => tool.name
+          ) ?? [];
+        expect(folded.sort()).toEqual(declared(f.inference.requests[index - 1]!).sort());
+      }
+      expect(
+        getCurrentSystemMessage(projections.get(6)!.messages)?.toolsAdded?.map((tool) => tool.name)
+      ).not.toContain(target);
+      expect(
+        getCurrentSystemMessage(projections.get(8)!.messages)?.toolsAdded?.map((tool) => tool.name)
+      ).toContain(target);
+      const startupDeltas = projections
+        .get(6)!
+        .messages.filter((message) => message.role === 'system');
+      expect(
+        startupDeltas.some((message) => message.toolsRemoved?.some((tool) => tool.name === target))
+      ).toBe(true);
+      if (defaults === 'changed') {
+        expect(
+          startupDeltas.some((message) =>
+            message.toolsRemoved?.some((tool) => tool.name === 'write')
+          )
+        ).toBe(true);
+        expect(
+          startupDeltas.some((message) => message.toolsAdded?.some((tool) => tool.name === 'edit'))
+        ).toBe(true);
+      }
+      expect(readyHandle(await successor.request({ op: 'inspect' }))).toEqual(first);
+      expect((await readFile(nativePath)).subarray(0, retained.length)).toEqual(retained);
+      expect(await readFile(configPath, 'utf8')).toBe(config);
+      expect(await readFile(settingsPath, 'utf8')).toBe(successorSettings);
+      await successor.request({ op: 'close' });
+      expect(await successor.exited).toBe(0);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'redacts both credentials from discovered schemas, search results and retained native evidence',
+    async () => {
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval' } } },
+        { toolCall: { name: 'mcp__local__read_file', arguments: { text: 'safe' } } },
+        { text: 'safe result' },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
+      const local = await startSyntheticCapability(null, ['local'], {
+        tools: [
+          {
+            ...localTool,
+            description: `archive retrieval ${f.inferenceCredential} ${f.capabilityCredential}`,
+          },
+        ],
+        targetSentinel: true,
+      });
+      local.bound = true;
+      cleanups.push(() => local.close());
+      await writeFile(
+        join(f.directories.agentDir, 'mcp.json'),
+        JSON.stringify({ mcpServers: { local: { url: `${local.base}/mcp/local` } } })
+      );
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      const settled = await turn(host, 'turn-redaction', 'discover');
+      expect(settled.outcome.status).toBe('completed');
+      const handle = readyHandle(await host.request({ op: 'inspect' }));
+      const nativeEvidence = await readFile(JSON.parse(handle.handle).path, 'utf8');
+      const logPath = join(f.directories.agentDir, 'mcp.log');
+      const nativeLog = existsSync(logPath) ? await readFile(logPath, 'utf8') : '';
+      const evidence =
+        JSON.stringify({
+          requests: f.inference.requests.map((request) => request.body),
+          frames: host.events,
+          stdout: host.stdout,
+          stderr: host.stderr,
+        }) +
+        nativeEvidence +
+        nativeLog;
+      for (const secret of [f.inferenceCredential, f.capabilityCredential])
+        expect(evidence).not.toContain(secret);
+      expect(evidence).toContain('[redacted]');
+    },
+    TIMEOUT
+  );
+});
+
+describe('M4 current authority after discovery', () => {
+  it.each(['hidden', 'withdrawn'] as const)(
+    'does not revive searched %s tools through successor search or stale direct calls',
+    async (exposure) => {
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'echo text' } } },
+        { toolCall: { name: 'mcp__local__echo', arguments: { text: 'one-effect' } } },
+        { text: 'effect retained' },
+        { toolCall: { name: 'tool_search', arguments: { query: 'echo text' } } },
+        { toolCall: { name: 'mcp__local__echo', arguments: { text: 'withdrawn' } } },
+        { text: 'withdrawn target refused' },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
+      const local = await startSyntheticCapability(null, ['local']);
+      local.bound = true;
+      cleanups.push(() => local.close());
+      const configPath = join(f.directories.agentDir, 'mcp.json');
+      await writeFile(
+        configPath,
+        JSON.stringify({ mcpServers: { local: { url: `${local.base}/mcp/local` } } })
+      );
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      expect((await turn(host, 'turn-found', 'search')).outcome.status).toBe('completed');
+      const handle = readyHandle(await host.request({ op: 'inspect' }));
+      await host.request({ op: 'close' });
+      expect(await host.exited).toBe(0);
+      const retained = await readFile(JSON.parse(handle.handle).path);
+      const hiddenConfig = JSON.stringify({
+        mcpServers:
+          exposure === 'hidden'
+            ? { local: { url: `${local.base}/mcp/local`, exposure: 'hidden' } }
+            : {},
+      });
+      await writeFile(configPath, hiddenConfig);
+      const successor = f.start();
+      expect(
+        await f.open(successor, { mcpServers: [], resume: { handle: handle.handle } })
+      ).toMatchObject({ ok: true });
+      expect((await turn(successor, 'turn-hidden-again', 'try prior tool')).outcome.status).toBe(
+        'completed'
+      );
+      expect(
+        f.inference.requests[3]!.body.tools?.map((entry) => entry.function.name)
+      ).not.toContain('mcp__local__echo');
+      expect(requestTexts(f.inference.requests[4]!).join(' ')).toContain('No matching tools');
+      expect(
+        f.inference.requests[4]!.body.tools?.map((entry) => entry.function.name)
+      ).not.toContain('mcp__local__echo');
+      expect(
+        local.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual([{ text: 'one-effect' }]);
+      expect(readyHandle(await successor.request({ op: 'inspect' }))).toEqual(handle);
+      expect((await readFile(JSON.parse(handle.handle).path)).subarray(0, retained.length)).toEqual(
+        retained
+      );
+      expect(await readFile(configPath, 'utf8')).toBe(hiddenConfig);
+      await successor.request({ op: 'close' });
+      expect(await successor.exited).toBe(0);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'does not give searched state a bypass of revoked managed capability',
+    async () => {
+      const replies: InferenceReply[] = [
+        { text: 'established' },
+        { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'revoked' } } },
+        { text: 'capability refusal observed' },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
+      f.capability.bound = true;
+      const host = f.start();
+      await f.open(host);
+      expect((await turn(host, 'turn-established', 'first')).outcome.status).toBe('completed');
+      f.capability.bound = false;
+      expect((await turn(host, 'turn-revoked', 'try the tool')).outcome.status).toBe('completed');
+      const attempted = f.capability.log.filter((entry) => entry.method === 'tools/call');
+      expect(attempted).toHaveLength(1);
+      expect(attempted[0]!.accepted).toBe(false);
+      expect(attempted[0]!.headers.authorization).toBe(`Bearer ${f.capabilityCredential}`);
+      expect(f.capability.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+      expect(
+        f.inference.requests.every((request) =>
+          request.body.tools?.some((entry) => entry.function.name === 'tool_search')
+        )
+      ).toBe(true);
+      await host.request({ op: 'close' });
+      expect(await host.exited).toBe(0);
+    },
+    TIMEOUT
+  );
+});
+
+describe('M4 user-local attempts retain actual managed authority', () => {
+  it.each(['revoked', 'ungranted'])(
+    'refuses the actual %s managed operation without a target effect',
+    async (denial) => {
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'user_local_attempt', arguments: {} } }
+          : { text: 'attempt observed' }
+      );
+      f.capability.bound = denial !== 'revoked';
+      const target = denial === 'ungranted' ? 'not-admitted' : 'openkit-work';
+      // A user-local mechanism can attempt HTTP directly; only the current capability plane
+      // can authorize the actual target. Neither arithmetic nor the composer guard proves it.
+      await installExtension(
+        f.directories,
+        `export default function(pi) {
+  pi.registerTool({ name: 'user_local_attempt', label: 'attempt', description: 'Local authority probe',
+    parameters: { type: 'object', properties: {} }, execute: async () => {
+      const response = await fetch(${JSON.stringify(`${f.capability.base}/mcp/${target}`)}, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: ${JSON.stringify(`Bearer ${f.capabilityCredential}`)} },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: { text: 'must-not-reach-target' } } })
+      });
+      return { content: [{ type: 'text', text: 'actual-target-status:' + response.status + ':' + await response.text() }] };
+    } });
+}`,
+        { defaultTools: ['user_local_attempt'] }
+      );
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      await turn(host, 'local-authority-attempt', 'attempt managed operation');
+      const calls = f.capability.log.filter((entry) => entry.method === 'tools/call');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        accepted: false,
+        path: `/capabilities/mcp/${target}`,
+        params: { name: 'echo', arguments: { text: 'must-not-reach-target' } },
+      });
+      expect(calls.filter((entry) => entry.accepted)).toHaveLength(0);
+      expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain(
+        'actual-target-status:403'
+      );
+      expect(requestTexts(f.inference.requests[1]!).join(' ')).not.toContain(
+        'echo:must-not-reach-target'
+      );
+    },
+    TIMEOUT
+  );
+});
+
+describe('M4 discovered call cleanup', () => {
+  it.each(['interrupt', 'close', 'channel'])(
+    'cancels discovered call on %s, preserves retained bytes and ends native work',
+    async (stop) => {
+      const replies: InferenceReply[] = [
+        { text: 'established' },
+        { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval' } } },
+        { toolCall: { name: 'mcp__local__read_file', arguments: { text: 'held' } } },
+      ];
+      const f = await fixture((n) => replies[n - 1] ?? { text: 'must not continue' });
+      const local = await startSyntheticCapability(null, ['local'], {
+        tools: [
+          {
+            name: 'read_file',
+            description: 'Archive retrieval',
+            inputSchema: {
+              type: 'object',
+              properties: { text: { type: 'string' } },
+              required: ['text'],
+            },
+          },
+        ],
+      });
+      local.bound = true;
+      local.holdToolCall = true;
+      cleanups.push(() => local.close());
+      await writeFile(
+        join(f.directories.agentDir, 'mcp.json'),
+        JSON.stringify({ mcpServers: { local: { url: `${local.base}/mcp/local` } } })
+      );
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      expect((await turn(host, 'turn-established', 'establish')).outcome.status).toBe('completed');
+      const handle = readyHandle(await host.request({ op: 'inspect' }));
+      const path = JSON.parse(handle.handle).path;
+      const retained = await readFile(path);
+      await host.request({ op: 'turn', turnId: 'turn-held', prompt: 'discover held tool' });
+      await waitFor(() => local.log.some((entry) => entry.method === 'tools/call'));
+      if (stop === 'interrupt') {
+        expect(await host.request({ op: 'interrupt', turnId: 'turn-held' })).toMatchObject({
+          ok: true,
+          result: { outcome: 'interrupted' },
+        });
+        expect((await host.settled('turn-held')).outcome.status).toBe('interrupted');
+        await host.request({ op: 'close' });
+        expect(await host.exited).toBe(0);
+      } else if (stop === 'close') {
+        expect(await host.request({ op: 'close' })).toMatchObject({
+          ok: true,
+          result: { state: 'closed' },
+        });
+        expect(await host.exited).toBe(0);
+      } else {
+        host.endChannel();
+        expect(await host.exited).toBe(1);
+      }
+      await waitFor(() => local.cancelledHeld.includes('tools/call'), 5000);
+      expect((await readFile(path)).subarray(0, retained.length)).toEqual(retained);
+      expect(f.inference.requests).toHaveLength(3);
+      const count = local.log.length;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(local.log).toHaveLength(count);
+      expect(host.child.exitCode).not.toBeNull();
     },
     TIMEOUT
   );

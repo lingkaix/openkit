@@ -6,6 +6,7 @@ import {
   type AgentSessionEvent,
   createAgentSession,
   createMcpExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
   type ExtensionFactory,
   type ExtensionUIContext,
@@ -104,6 +105,14 @@ interface ActiveTurn {
   /** True while the SDK session, resources, and MCP connection are being prepared. */
   settingUp: boolean;
   readonly turnId: string;
+}
+
+/** Distinguishes a deliberately unsupported native feature from an unavailable setup dependency. */
+class NativeCodemodeUnsupportedError extends Error {
+  public constructor() {
+    super('Native codemode script composition is unsupported at Pi 0.99.1.');
+    this.name = 'NativeCodemodeUnsupportedError';
+  }
 }
 
 /** Raised at a preparation or preflight boundary once the Turn was interrupted or fenced. */
@@ -364,7 +373,11 @@ export class PiRuntimeHost {
     } catch (error) {
       if (!(error instanceof TurnCancelledError)) {
         setupFailure =
-          error instanceof PiSessionIdentityError ? 'pi-identity-failed' : 'pi-setup-failed';
+          error instanceof PiSessionIdentityError
+            ? 'pi-identity-failed'
+            : error instanceof NativeCodemodeUnsupportedError
+              ? 'pi-codemode-unsupported'
+              : 'pi-setup-failed';
       }
     } finally {
       turn.settingUp = false;
@@ -562,6 +575,12 @@ export class PiRuntimeHost {
       ),
       {
         builtin: true,
+        factory: createToolSearchExtension(),
+        name: 'tool-search',
+        replaceable: true,
+      },
+      {
+        builtin: true,
         factory: createMcpExtension({
           createTransport: (entry, cwd, authProvider) =>
             gate.createTransport(entry, cwd, authProvider),
@@ -589,7 +608,8 @@ export class PiRuntimeHost {
   }
 
   /**
-   * Loads resources, requires the host-supplied MCP Extension, and waits for admitted servers.
+   * Loads resources, requires the separately owned native MCP/search builtins, activates search
+   * additively, and waits for admitted servers before provider work.
    */
   async #openResidentSession(
     binding: Binding,
@@ -612,6 +632,13 @@ export class PiRuntimeHost {
     const settingsManager = SettingsManager.create(request.workingDirectory, request.agentDir, {
       projectTrusted: false,
     });
+    const nativeSettings = settingsManager.getSettings();
+    if (
+      nativeSettings.codemode?.mode !== undefined ||
+      nativeSettings.defaultTools?.some((name) => name === 'codemode' || name === '+codemode')
+    ) {
+      throw new NativeCodemodeUnsupportedError();
+    }
     const resourceLoader = new DefaultResourceLoader({
       agentDir: request.agentDir,
       // Retained `SYSTEM.md` and `APPEND_SYSTEM.md` in the agent or project directory would
@@ -648,6 +675,17 @@ export class PiRuntimeHost {
     if (openkitServers.size > 0 && !hostSuppliedBuiltinMcp(extensionsResult.extensions)) {
       throw new Error('Host-supplied built-in Pi MCP extension is not loaded.');
     }
+    const search = extensionsResult.extensions.find(
+      (extension) =>
+        extension.path === 'builtin:tool-search' && extension.sourceInfo.source === 'builtin'
+    );
+    const searchDefinition = search?.tools.get('tool_search')?.definition;
+    if (!searchDefinition || session.getToolDefinition('tool_search') !== searchDefinition) {
+      throw new Error('Host-supplied built-in Pi tool-search extension is not loaded.');
+    }
+    if (extensionsResult.extensions.some((extension) => extension.tools.has('codemode'))) {
+      throw new NativeCodemodeUnsupportedError();
+    }
     const recordExtensionError = (message: string): void => {
       this.#io.send({ event: 'extension_error', message });
     };
@@ -659,6 +697,24 @@ export class PiRuntimeHost {
         recordExtensionError(`${error.extensionPath} ${error.event}: ${error.error}`),
       uiContext: this.#headlessUi(session.extensionRunner.getUIContext()),
     });
+    // Current settings and native registration establish the loadout at this pin. Add discovery
+    // to that effective set; successor construction does not restore transcript declarations.
+    if (session.getToolDefinition('tool_search') !== searchDefinition) {
+      throw new Error('Host-supplied Pi tool_search registration was replaced.');
+    }
+    session.setActiveToolsByName([...session.getActiveToolNames(), 'tool_search']);
+    if (!session.getActiveToolNames().includes('tool_search')) {
+      throw new Error('Host-supplied Pi tool_search could not be activated.');
+    }
+    // session_start may register a native resource after the loaded-extension check.
+    // An inactive codemode registration still supplies the unsupported native integration.
+    // This setup checkpoint makes no prevention promise over later user Extension execution.
+    if (
+      session.getToolDefinition('codemode') ||
+      session.getActiveToolNames().includes('codemode')
+    ) {
+      throw new NativeCodemodeUnsupportedError();
+    }
     if (session.extensionRunner.getShortcuts({}).size > 0) this.#reportUi('registerShortcut');
     const override = gate.overrideError();
     if (override) throw override;

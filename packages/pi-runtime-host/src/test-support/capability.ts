@@ -28,6 +28,8 @@ export interface SyntheticCapability {
   cutStreams(): void;
   /** While true, accepted `initialize` requests are logged and never answered. */
   holdInitialize: boolean;
+  /** Hold an actual tool call until native cancellation closes its HTTP request. */
+  holdToolCall: boolean;
   readonly log: CapabilityRequest[];
 }
 
@@ -38,6 +40,10 @@ export interface SyntheticCapabilityOptions {
    * `tools/list` page.
    */
   catalog?: 'echo' | 'empty' | 'paged' | 'malformed';
+  /** Custom local schemas for exact native search/dispatch qualification. */
+  tools?: readonly { name: string; description: string; inputSchema: Record<string, unknown> }[];
+  /** Return the exact server, tool and argument as a distinguishable effect sentinel. */
+  targetSentinel?: boolean;
   /** Append one logging notification on the GET stream whose data is the Authorization header. */
   logAuthorization?: boolean;
   /** Return the Authorization header as the `tools/call` text. */
@@ -88,7 +94,7 @@ export async function startSyntheticCapability(
     },
     name: 'echo',
   };
-  const plane = { bound: false, holdInitialize: false };
+  const plane = { bound: false, holdInitialize: false, holdToolCall: false };
   const server: Server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -154,6 +160,7 @@ export async function startSyntheticCapability(
       res.end(JSON.stringify({ id: body.id, jsonrpc: '2.0', result }));
     };
     const params = (body.params ?? {}) as {
+      name?: string;
       arguments?: { text?: unknown };
       protocolVersion?: string;
     };
@@ -191,9 +198,17 @@ export async function startSyntheticCapability(
           listPages.set(serverId, page + 1);
           if (page === 0) return reply({ nextCursor: 'page-2', tools: [] });
         }
-        return reply({ tools: [echoTool] });
+        return reply({ tools: options.tools ?? [echoTool] });
       }
       case 'tools/call':
+        if (plane.holdToolCall) {
+          streams.add(res);
+          res.on('close', () => {
+            streams.delete(res);
+            if (!res.writableEnded) cancelledHeld.push('tools/call');
+          });
+          return;
+        }
         if (options.rejectToolWithAuthorization) {
           res.writeHead(400, { 'content-type': 'text/plain' });
           res.end(req.headers.authorization ?? '');
@@ -211,9 +226,11 @@ export async function startSyntheticCapability(
                   },
                 }
               : {
-                  text: options.reflectAuthorization
-                    ? (req.headers.authorization ?? '')
-                    : `echo:${String(params.arguments?.text)}`,
+                  text: options.targetSentinel
+                    ? `${serverId}:${params.name}:${String(params.arguments?.text)}`
+                    : options.reflectAuthorization
+                      ? (req.headers.authorization ?? '')
+                      : `echo:${String(params.arguments?.text)}`,
                   type: 'text',
                 },
           ],

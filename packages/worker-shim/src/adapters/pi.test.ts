@@ -1146,6 +1146,83 @@ describe('Pi controlled channel faults', () => {
   });
 });
 
+it.each([
+  'setting',
+  'late-registration',
+] as const)('M4 adapter preserves the explicit unsupported script outcome from %s before provider work', async (source) => {
+  const f = await fixture(() => ({ text: 'must not prompt' }));
+  const agentDir = piAgentDirectory(f.dirs.stateRoot);
+  await mkdir(agentDir, { recursive: true });
+  if (source === 'setting') {
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({ defaultTools: ['+codemode'] })
+    );
+  } else {
+    const extension = join(agentDir, 'late-codemode.js');
+    await writeFile(
+      extension,
+      `import { createCodemodeExtension } from '@earendil-works/pi-coding-agent';
+export default function(pi) { pi.on('session_start', () => {
+  createCodemodeExtension()(pi);
+  pi.setActiveTools([...pi.getActiveTools(), 'codemode']);
+}); }`
+    );
+    await writeFile(join(agentDir, 'settings.json'), JSON.stringify({ extensions: [extension] }));
+  }
+  f.capability.bound = true;
+  const session = await f.open();
+  const result = await (await session.startTurn(turnInput(f.dirs))).settled;
+  expect(result).toMatchObject({ status: 'failed', stopReason: 'pi-codemode-unsupported' });
+  expect(f.inference.requests).toHaveLength(0);
+  if (source === 'setting') expect(f.capability.log).toHaveLength(0);
+  expect(f.capability.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
+  await session.close();
+});
+
+it('M4 adapter discovers and calls default-exposure local MCP without a second managed owner', async () => {
+  const replies: InferenceReply[] = [
+    { toolCall: { name: 'tool_search', arguments: { query: 'echo text' } } },
+    { toolCall: { name: 'mcp__local-tools__echo', arguments: { text: 'adapter-sentinel' } } },
+    { text: 'adapter search completed' },
+  ];
+  const f = await fixture((_request, n) => replies[n - 1] ?? { text: 'unexpected' });
+  const localCredential = credential();
+  // The user server has its own authored local credential, unrelated to the two loopback carriers.
+  // Use a plane with the exact credential written into user configuration.
+  const admittedLocal = await startSyntheticCapability(localCredential, ['local-tools']);
+  admittedLocal.bound = true;
+  stops.push(() => admittedLocal.close());
+  const agentDir = piAgentDirectory(f.dirs.stateRoot);
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(
+    join(agentDir, 'mcp.json'),
+    JSON.stringify({
+      mcpServers: {
+        'local-tools': {
+          url: `${admittedLocal.base}/mcp/local-tools`,
+          headers: { Authorization: `Bearer ${localCredential}` },
+        },
+      },
+    })
+  );
+  f.capability.bound = true;
+  const session = await f.open();
+  expect((await (await session.startTurn(turnInput(f.dirs))).settled).status).toBe('completed');
+  expect(toolNames(f.inference.requests[0]!)).toContain('tool_search');
+  expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit-work__echo');
+  expect(toolNames(f.inference.requests[1]!)).toContain('mcp__local-tools__echo');
+  expect(
+    admittedLocal.log
+      .filter((entry) => entry.method === 'tools/call')
+      .map((entry) => entry.params?.arguments)
+  ).toEqual([{ text: 'adapter-sentinel' }]);
+  expect(requestTexts(f.inference.requests[2]!).join(' ')).toContain('echo:adapter-sentinel');
+  expect(f.capability.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+  expect(admittedLocal.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+  await session.close();
+});
+
 describe('Pi resident host', () => {
   it(
     'keeps one conversation across Turns, then resumes that handle in a new host',
