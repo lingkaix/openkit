@@ -75,6 +75,38 @@ Source: the engineer's message during M3 round-three corrections: 「不需要�
 
 **Earlier-version data and sessions are not carried** ([decision](../../decisions/20260930-earlier_version_data_not_carried.md)). This version starts from a new data root and reads no data an earlier version wrote. It removes the upgrade migration of retained requests, gates, and fields from derivation 17, the native-conversation classification from derivation 20, the upgrade handling of open executions in derivation 25, and the manifest rewrite from decision 27. Removed mechanisms are deleted outright, with no reader kept for records an earlier version wrote. The engineer confirmation the M3 reviews had reserved for the native-context fallback no longer arises, because no earlier-version conversation exists. The second reserved question, a closeout Turn on an archived Thread, is resolved separately and applies to new Threads too: closeout is written before the archived status, and archive waits for an idle Thread when something must be closed out.
 
+## Intent Revision 5 — 2026-09-30
+
+Source: the engineer's messages during M5, translated from Chinese.
+
+**Battle test of a user-authored sandbox.** The engineer asked that the four-runtime image be exercised with Pi configured as the pi-optimized-agent wrapper (https://github.com/lingkaix/pi-optimized-agent, every plugin installed and configured), agent-browser configured for all four worker runtimes, and agent-browser sharing the one Chromium that the sandbox's Playwright installation provides, with no browser or browser engine installed twice. The engineer then stated the purpose: to verify whether the current designs and adapter implementations satisfy a user who creates and configures a sandbox themselves. The concrete in-sandbox configuration and the container's Dockerfile therefore do not enter system decisions; the platform must leave users room and mechanisms to create and configure different sandboxes and workers for their own needs. The wrapper, browser stack, keyless search choice (the wrapper's bundled Exa and DuckDuckGo need no key), and single-Chromium arrangement are a test fixture kept outside the owners. Gaps the fixture exposes are raised as generic mechanisms for engineer decision.
+
+**Codex native home** (decision record `20260930-codex_home_retained_whole`, landing with the Codex adapter slice). The Codex adapter retains its whole native home, and in-Sandbox native configuration may influence local execution while AEP, adapter bindings, and the Gateway keep external authority.
+
+**Dispatch routing.** Builders and writers run as Codex CLI on gpt-6.1-sol at medium effort in herdr. Small reviews run on gpt-6.1-sol; large or complex reviews and Consultant or advisor work run on Pi with gpt-6-astra. This supersedes the Grok routing stated in Intent Revision 2.
+
+## Intent Revision 6 — 2026-09-30
+
+Source: the engineer's messages and answers during the battle-test consultation, translated from Chinese. The Consultant's working analysis is `temp/comm-redesign/reports/consult-pi-wrapper-r2.md`.
+
+**Externally managed native environment** (decision record `20260930-native_environment_managed_outside_the_sandbox`, landing with its owner amendments). The engineer asked whether in-Sandbox environment variables could be exposed outside the Sandbox so that the user can view and change them from NanoCore, with NanoHost or OpenShell recognizing image declarations, and approved that direction, delegating its details to the primary and the Consultant and asking to proceed unless an insurmountable technical blocker or an unrepairable design defect appears. The settled design reads the verified image's OCI `Config.Env` as digest-bound read-only defaults, lets the Server Agent manifest author non-secret overrides and removals edited through NanoCore's existing configuration App API, resolves the result once into the immutable AEP, delivers it in a separate non-secret `session.open` field beside the private Vault map, keeps the launcher's `env -i`, and applies a change at the next Turn through a successor with exact native resume. Modification by NanoCore's built-in agents, such as the Assistant and the Coordinator, through an MCP tool is pending, because the engineer is redesigning the built-in agents' tool system.
+
+**Native defaults, native local configuration, and native MCP discovery.** The engineer accepted the Consultant's recommendations: use each runtime's native default layering where it exists and otherwise initialize only a fresh private home once from an image-designated native default tree, never overwriting an existing home and using no OpenKit profile format; honor each runtime's native local configuration in its native precedence, with the adapter overlaying only what it must own and failing on a protected conflict without editing user files, qualified per pinned version, with Codex plugins and hooks assessed separately; and let the Pi host load the native discovery mechanism that default-exposure local MCP servers need. For the last point the engineer asked a researcher to check whether Pi's SDK supports codemode and tool search and whether upstream will, before choosing between waiting, loading the native extensions, or `pi-mcp-adapter`; the primary observed that the pinned 0.99.1 SDK exports both extension constructors. The researcher's report (`temp/research/20260930-pi-codemode-mcp/report.md`) found that neither waiting nor `pi-mcp-adapter` is needed: loading the native tool-search extension alone makes default-exposure MCP tools discoverable and callable, while the codemode extension is not loaded because open upstream issue #10239 can route a call to the wrong one of two same-named tools; its removal condition is a released upstream fix qualified against the pin (decision record `20260930-pi_native_mcp_discovery`). During implementation the W3 Builder found that Pi 0.99.1's `createAgentSession` always supplies an initial tool list, so neither the SDK nor the CLI resume path restores the transcript's active tools, and a tool found through search before an exact successor is inactive afterwards. The Consultant (`temp/comm-redesign/reports/consult-pi-wrapper-r4.md`) withdrew its earlier assumption that native resume restores that state and recommended following the pin: the successor starts from the current native initial selection plus `tool_search`, and the model finds a previously searched tool again through search, while a stale direct call returns the native unavailable-tool error with no target effect. The primary accepted that settlement within the engineer's native-precedence and native-discovery rulings; it is a pin limitation that the Pi owner records and a later SDK upgrade requalifies, not an engineer ruling and not a claim about upstream intent.
+
+**Credential-free public egress.** The engineer ruled that a credential-free, non-LLM public endpoint, such as a keyless search MCP server, may be reached directly from the Sandbox under an exact AgentManifest network grant, while credentialed or audit-requiring external integrations still go through the Gateway. Asked where that property must hold, the engineer chose classification at admission (an administrator-declared class validated by NanoCore) with the boundary enforcing only the existing exact grant rules, over boundary-enforced request inspection.
+
+**DeepSeek removed-model successor.** Pinned `@deepseek-ai/dsh-acp@0.2.0-rc.2`, the newest published release, cannot natively resume a conversation when the successor's admitted catalog excludes the model it last used. Under the continuity owner's resume-or-fail-explicitly rule, that successor fails explicitly and the limit is recorded against the pin; rendering a non-routable placeholder descriptor to make resume succeed is an alternative left for the engineer.
+
+## Intent Revision 7 — 2026-10-01
+
+Source: the engineer's messages of 2026-10-01, translated from Chinese. The research is `temp/research/20261001-runtime-adoption-lody/` (`report-lody.md`, `report-adapters.md` and the pending `report-comparison.md`); the Consultant analysis is `temp/comm-redesign/reports/consult-pi-wrapper-r5.md`.
+
+**Adoption paths as an experiment.** The engineer explained that the four runtimes use different adoption paths in order to test whether a unified or partially unified underlying mechanism is possible, asked to keep discussing during landing what an efficient and stable way to adopt a runtime is, and asked for a comparison with Lody, which connects runtimes through an ACP extension protocol. After the research summary, the engineer agreed with its conclusions and asked to optimize the adapters according to them: product lifecycle and authority are already shared; the repeated cost is adapter-local proof handling, where a weaker fact was promoted to a stronger one; a mandatory ACP bridge would move those proofs behind each bridge rather than remove them. The direction is a small shared proof and settlement substrate inside the existing worker-shim adapter support seam, together with an adversarial contract suite, with native evidence producers staying in each adapter. Its first step is the research's bounded counterfactual, and the substrate is extracted only if that step's falsifier does not fire.
+
+**Pi native codemode support boundary** (decision record `20261001-pi_codemode_support_boundary`, landing with W3). The engineer approved Consultant round 5's option (b): Pi 0.99.1 native codemode is unsupported OpenKit supply refused at the static and immediate post-`session_start` setup checks, and later user Extension execution is outside the supported configuration rather than universally prevented; Sandbox and Gateway authority and all managed and lifecycle protections are unchanged. Translated: "For Pi Agent CodeMode, I also agree with your suggested narrowing to a support boundary."
+
+**Pending-request exact effect and delivery bound** (decision records `20261001-approval_exact_effect_disclosure` and `20261001-pending_delivery_count_bound`, landing with N-pending). N-pending round 2 stopped on two gaps in the pending owner; the Consultant analysis is `temp/comm-redesign/reports/consult-pending-gaps.md`. The engineer chose both recommendations. First, approval cards and shared Items carry a bounded summary of at most 2 KiB and never raw captured arguments; only the responsible user reads the complete canonical exact-effect detail of at most 512 KiB under current authority; and unavailable, oversized or undisclosable detail makes the server refuse grant with `409 approval_preview_unavailable` while deny and withdraw remain available. Second, the phantom "existing aggregate input bounds" reference is removed: delivery is bounded by the 16-outcome count and each owner's real limits, and it carries selected values completely, with the stated limitation that a large input may exceed an executor's capacity.
+
 ## Owners And Seams
 
 The redesign touches these accepted owners, with amendments still to be drafted:
@@ -288,6 +320,14 @@ Consequences the primary will write unless the engineer objects:
   - resident tool refresh through notifications;
   - native MCP Tasks in runtime clients.
 
+## Intent Revision 8 — 2026-10-01
+
+Source: the engineer's messages of 2026-10-01, translated from Chinese.
+
+**Live test and dogfooding.** The final live test runs on the A2 staging host when the work reaches a suitable stage. The primary acts only as coordinator, like OpenKit's Goal coordinator, and assigns defects to dispatched agents. Usage data on A2 (conversations, Tasks and similar records) is deleted while accounts, secrets and configuration are kept, and the host's backups are removed because it is a test server. The primary then dogfoods the deployed platform with the latest Skill and CLI: it works open GitHub issues in Task mode, submits and merges the resulting pull requests, and keeps testing until the release is deployable. No handoff file is written at the final stage. The peer-read design stays as accepted.
+
+**Dispatch routing.** The Consultant role runs on Grok 4.7 at high effort, on Pi with gpt-6-astra at high effort, or both. Builders, testers, reviewers and other job workers run as Codex CLI on gpt-6.1-sol at high effort in herdr. This supersedes the routing in Intent Revision 5. The engineer warned that GPT-6 family models tend to over-engineer and over-defend, so the primary checks each finding and output against an owner predicate, whether the actor is user code inside the Sandbox, and whether the fix adds machinery.
+
 ## Working Checkpoint
 
 The design is closed (Intent Revision 2), and execution has started.
@@ -315,3 +355,23 @@ Milestones, each with one local commit:
 The fresh-context direction check ran on 2026-09-30 and returned Ask Human; the engineer's two answers are decisions 26 and 27, and the corrections are in the derivations above and in the proposal.
 
 M1, M2, and M3 are committed; M3 took six Pi review rounds. S1, the Gateway's move to the MCP SDK v2, is committed after three Grok review rounds. M4 is committed after independent Pi review of each batch to acceptance: sweep in two rounds, pending-request consumers in three, adapters and images in three, lifecycle in three, and collection in four. Next action: start the M5 streams: N-pending in the main checkout, the lifecycle slices W1 and N4 in a separate worktree, H1 in apps/nanohost, and P, the new packages/pi-runtime-host.
+
+State on 2026-10-02. Main is `a9bc2d0b`. It carries every stage 1 and stage 2 slice except N5 and N6:
+- W2, W3, W4, W5, N-pending, N-egress and the owner amendments;
+- the `worker-runtimes` image (`b47af2b1`);
+- the repository gate repair (`6ff7909d`);
+- N-env (`6863556a`);
+- the exact Zod pin, which fixes the App startup crash that stopped the first A2 deployment (`a9bc2d0b`).
+
+On `a9bc2d0b` all eight repository gates, the shared package, worker-shim and Web suites, typecheck and OpenAPI validation pass. The NanoCore suite fails only the 82 failures named in `temp/comm-redesign/reports/baseline-nanocore.md`, and the App image smoke now reaches public health.
+
+A2 was cleaned of usage data and backups, and its schema was aligned for `b47af2b1`. The round 3 deployment of `a9bc2d0b` is in phase 1, with schema alignment prepared in parallel; `temp/a2-ops/` holds its briefs and reports.
+
+N6 and W6 are integrated onto `6365fde4`. The independent review rejected them with four findings: the collection timer phases, the stored identity core comparison, binary review presentation, and W6 remnants. Round 2 is building, and it will be re-integrated onto current main before re-review.
+
+Open work after N6:
+- N5 peer reads;
+- Codex and DeepSeek consumption of the native environment;
+- the adapter follow-ups;
+- the four-runtime live smoke on A2;
+- dogfooding GitHub issues in Task mode, whose push to GitHub waits for the engineer.
