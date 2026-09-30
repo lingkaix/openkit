@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { WorkerResidentAdapter, WorkerResidentSession } from '../adapter-registry.js';
 import { WorkerHarness } from '../harness.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
@@ -13,6 +13,17 @@ import {
 } from '../test-support/deepseek-admission.js';
 import { startSyntheticInference } from '../test-support/inference.js';
 import { deepseekResidentAdapter } from './deepseek.js';
+
+// Defaults are image supply; test runs never import the developer's native home.
+let imageHome: string;
+beforeEach(() => {
+  imageHome = mkdtempSync(join(tmpdir(), 'deepseek-test-image-'));
+  vi.stubEnv('HOME', imageHome);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(imageHome, { force: true, recursive: true });
+});
 
 /** Tests the actual Harness and adapter; only external Integration endpoints are synthetic. */
 it.each([

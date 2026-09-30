@@ -1,11 +1,23 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { mkdir, open as openFile, readFile, rename, writeFile } from 'node:fs/promises';
+import {
+  access,
+  cp,
+  lstat,
+  mkdir,
+  open as openFile,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  writeFile,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { PassThrough, Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
+import { pathToFileURL } from 'node:url';
 
 import {
   type Client,
@@ -217,6 +229,7 @@ export function classifyDeepSeekStop(input: {
  * Harness fences; they are not reported as a clean refusal.
  */
 async function openDeepSeekSession(input: WorkerResidentOpenInput): Promise<WorkerResidentSession> {
+  await initializeNativeHome(input.stateRoot);
   const session = new DeepSeekSession(input);
   if (input.resumeReference) await session.proveResume();
   return session;
@@ -1326,6 +1339,145 @@ function resolveDshExecutable(): string {
   return join(dirname(packageJson), relative);
 }
 
+/** Native data and profiles live in a child whose absence the adapter can observe. */
+function nativeHome(stateRoot: string): string {
+  return join(stateRoot, 'dsh-home');
+}
+
+/** Tests lexical or canonical containment without confusing path-prefix siblings. */
+function within(root: string, path: string): boolean {
+  const suffix = relative(root, path);
+  return (
+    suffix === '' || (!isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith(`..${sep}`))
+  );
+}
+
+/** Observes dangling links too; only absence is a fresh-home observation. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (isRecord(error) && error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/** Validates every source entry before copying; links are dereferenced only within the source. */
+async function validateNativeSource(source: string, path = source): Promise<void> {
+  const target = await realpath(path);
+  if (!within(source, target)) throw new Error('DeepSeek image source escapes its root.');
+  const entry = await lstat(target);
+  await access(target, entry.isDirectory() ? 5 : 4);
+  if (entry.isDirectory()) {
+    for (const name of await readdir(path)) await validateNativeSource(source, join(path, name));
+  } else if (!entry.isFile()) {
+    throw new Error('DeepSeek image source contains an unreadable native entry.');
+  }
+}
+
+/** Seeds only a genuinely absent child home; the Thread lease already supplies the sole writer. */
+async function initializeNativeHome(stateRoot: string): Promise<void> {
+  const home = nativeHome(stateRoot);
+  const root = await realpath(stateRoot);
+  if (await pathExists(home)) {
+    if (!(await lstat(home)).isDirectory() || !within(root, await realpath(home))) {
+      throw new Error('DeepSeek native home escapes its retained root.');
+    }
+    await assertNativeProtectedBindings(home);
+    return;
+  }
+  const staging = `${home}.initializing`;
+  if (await pathExists(staging))
+    throw new Error('DeepSeek native home initialization is incomplete.');
+  // Input.environment.HOME is launch supply, not the shim image user's default source.
+  const source = process.env.HOME ? resolve(process.env.HOME, '.dsh') : null;
+  if (!source || within(resolve(stateRoot), source) || !(await pathExists(source))) {
+    await mkdir(home, { mode: 0o700 });
+    return;
+  }
+  const canonicalSource = await realpath(source);
+  if (within(root, canonicalSource)) {
+    await mkdir(home, { mode: 0o700 });
+    return;
+  }
+  await validateNativeSource(canonicalSource);
+  await assertNativeProtectedBindings(canonicalSource);
+  await cp(canonicalSource, staging, {
+    recursive: true,
+    dereference: true,
+    errorOnExist: true,
+    force: false,
+  });
+  if (await pathExists(home))
+    throw new Error('DeepSeek native home was created during initialization.');
+  await rename(staging, home);
+}
+
+/** Native parsing/composition API, resolved from the selected runtime rather than a second parser. */
+interface NativeConfiguration {
+  readonly PROFILE_TEMPLATES: Readonly<Record<string, { readonly bundles: readonly string[] }>>;
+  loadProfileDirectory(
+    bin: string,
+    dir: string,
+    anchor: string
+  ): {
+    readonly layers: readonly { readonly patches: readonly unknown[] }[];
+    readonly patches: readonly unknown[];
+  };
+  loadOptionalPatches(bin: string, path: string): readonly unknown[] | undefined;
+  loadOverlayPatches(bin: string, path: string): readonly unknown[];
+  resolveBundleDir(bin: string, name: string, anchor: string, dir: string): string;
+  bundlePatchPaths(dir: string, bundle: unknown): readonly string[];
+  composeEntries(layers: readonly (readonly unknown[])[]): readonly Record<string, unknown>[];
+}
+
+/** Refuses native row disabling that survives the protected config overlay, without loading plugins or writing profiles. */
+async function assertNativeProtectedBindings(home: string): Promise<void> {
+  const anchor = createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json');
+  const native = createRequire(anchor);
+  const boot = (await import(
+    pathToFileURL(native.resolve('@deepseek-ai/dsh-app-boot')).href
+  )) as NativeConfiguration;
+  const dir = join(home, 'profiles', 'acp');
+  let layers: readonly (readonly unknown[])[];
+  if (await pathExists(join(dir, 'package.json'))) {
+    const profile = boot.loadProfileDirectory('dsh', dir, anchor);
+    layers = [...profile.layers.map((layer) => layer.patches), profile.patches];
+  } else {
+    const bundles = boot.PROFILE_TEMPLATES.acp?.bundles ?? [];
+    layers = bundles.map((name) => {
+      const packageDir = boot.resolveBundleDir('dsh', name, anchor, dir);
+      const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+      return boot
+        .bundlePatchPaths(packageDir, manifest.dsh.bundle)
+        .flatMap((path) => boot.loadOverlayPatches('dsh', path));
+    });
+    layers = [...layers, boot.loadOptionalPatches('dsh', join(dir, 'cordis.patch.yml')) ?? []];
+  }
+  const rows = boot.composeEntries([
+    ...layers,
+    boot.loadOptionalPatches('dsh', join(home, 'cordis.patch.yml')) ?? [],
+  ]);
+  // Patch ids index nested groups globally. A duplicate can redirect the overlay to a
+  // different implementation while leaving the original row outside protected routing.
+  const flatten = (
+    entries: readonly Record<string, unknown>[],
+    disabled = false
+  ): readonly Record<string, unknown>[] =>
+    entries.flatMap((row) =>
+      row.group && Array.isArray(row.config)
+        ? flatten(row.config, disabled || Boolean(row.disabled))
+        : [{ ...row, disabled: disabled || row.disabled }]
+    );
+  const entries = flatten(rows);
+  for (const id of ['acp', 'llm-pi-ai']) {
+    const matches = entries.filter((row) => row.id === id);
+    if (matches.length !== 1 || matches[0]?.disabled)
+      throw new Error('DeepSeek native configuration replaces a protected binding.');
+  }
+}
+
 /** Private home so the process does not read the operator's `~/.dsh`. */
 function privateHome(stateRoot: string): string {
   return join(stateRoot, 'private-home');
@@ -1380,7 +1532,7 @@ export function deepseekLaunchArgs(executable: string, patchPath: string): reado
 
 /**
  * Environment of the native process. Loopback bearers stay out of it. `DSH_HOME` is the
- * retained state root. Permission prompts are disabled and telemetry is off.
+ * adapter-owned child of the retained state root. Permission prompts are disabled and telemetry is off.
  *
  * @param input Open input whose safe environment is forwarded, minus secret values.
  * @returns The child environment.
@@ -1395,7 +1547,7 @@ export function deepseekHostEnvironment(input: WorkerResidentOpenInput): NodeJS.
     environment[key] = value;
   }
   environment.HOME = privateHome(input.stateRoot);
-  environment.DSH_HOME = input.stateRoot;
+  environment.DSH_HOME = nativeHome(input.stateRoot);
   environment.DSH_PERMISSION_MODE = 'danger-full-access';
   environment.DSH_TELEMETRY_MODE = 'DISABLED';
   return environment;
@@ -1500,7 +1652,7 @@ function sameRoute(left: WorkerAdapterLlmRoute, right: WorkerAdapterLlmRoute): b
   );
 }
 
-/** Renders the overlay that replaces the pi-ai, ACP, and Skill rows for this process. */
+/** Overlays protected routing/control and inserts managed Skills beside native providers. */
 function renderPatch(patch: LoopbackPatch): string {
   const lines = [
     '- id: llm-pi-ai',
@@ -1528,15 +1680,18 @@ function renderPatch(patch: LoopbackPatch): string {
     '  config:',
     '    provider: openkit-loopback',
     `    model: ${JSON.stringify(patch.model)}`,
-    '- id: skill-filesystem',
-    '  config:',
-    '    includeDefaultRoots: false',
-    '    watch: false'
+    '- insert:',
+    '    - id: openkit-managed-skills',
+    '      name: "@deepseek-ai/dsh-skill-filesystem"',
+    '      config:',
+    '        providerName: openkit-managed',
+    '        includeDefaultRoots: false',
+    '        watch: false'
   );
   if (patch.skillTargetPaths.length > 0) {
-    lines.push('    customSkillDirs:');
+    lines.push('        customSkillDirs:');
     for (const skillPath of patch.skillTargetPaths)
-      lines.push(`      - ${JSON.stringify(skillPath)}`);
+      lines.push(`          - ${JSON.stringify(skillPath)}`);
   }
   return `${lines.join('\n')}\n`;
 }

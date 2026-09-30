@@ -21,7 +21,7 @@ import {
   PROTOCOL_VERSION,
   RequestError,
 } from '@agentclientprotocol/sdk';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   WorkerResidentOpenInput,
   WorkerResidentSession,
@@ -50,6 +50,17 @@ import {
   deepseekSessionUpdateBytes,
   surfaceUnprovedDeepSeekTurn,
 } from './deepseek.js';
+
+// Defaults are image supply; test runs never import the developer's native home.
+let imageHome: string;
+beforeEach(() => {
+  imageHome = mkdtempSync(join(tmpdir(), 'deepseek-test-image-'));
+  vi.stubEnv('HOME', imageHome);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(imageHome, { force: true, recursive: true });
+});
 
 const INFERENCE = 'inference-credential-deepseek-w5';
 const CAPABILITY = 'capability-credential-deepseek-w5';
@@ -2664,7 +2675,8 @@ function snapshotRetainedBytes(root: string): Record<string, string> {
   const bytes: Record<string, string> = {};
   const walk = (directory: string, prefix: string): void => {
     for (const name of readdirSync(directory).sort()) {
-      if (name === 'session.lock' || prefix + name === 'storages/session_projcache') continue;
+      if (name === 'session.lock' || prefix + name === 'dsh-home/storages/session_projcache')
+        continue;
       const path = join(directory, name);
       const key = prefix + name;
       if (statSync(path).isDirectory()) walk(path, `${key}/`);

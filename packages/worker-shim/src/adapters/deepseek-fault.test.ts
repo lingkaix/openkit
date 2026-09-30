@@ -1,7 +1,20 @@
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Defaults are image supply; test runs never import the developer's native home.
+let imageHome: string;
+beforeEach(() => {
+  imageHome = mkdtempSync(join(tmpdir(), 'deepseek-test-image-'));
+  vi.stubEnv('HOME', imageHome);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(imageHome, { force: true, recursive: true });
+});
 /** Runs the actual adapter in an isolated supervisor; unhandled errors are fatal. */
 function probe(scenario: string): Promise<{ code: number | null; output: string }> {
   const script = `
