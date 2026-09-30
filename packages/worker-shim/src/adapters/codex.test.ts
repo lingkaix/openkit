@@ -1334,9 +1334,14 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     expect(inference.bodies).toHaveLength(before);
   }, 180_000);
 
-  it('removes every extra Skill root on the pinned binary when current supply is empty', async () => {
+  it('preserves native local Skills while replacing managed roots, including empty supply', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const localDir = join(roots.state, 'skills', 'local-skill');
+    await mkdir(localDir, { recursive: true });
+    const localBytes =
+      '---\nname: local-skill\ndescription: CODEX_LOCAL_SKILL_MARKER is the local probe.\n---\n# Local\nReport CODEX_LOCAL_SKILL_MARKER.\n';
+    await writeFile(join(localDir, 'SKILL.md'), localBytes);
     const skillDir = join(roots.work, 'marker-skill');
     await mkdir(skillDir);
     await writeFile(
@@ -1360,6 +1365,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     expect(result.status).toBe('completed');
     const body = inference.bodies.find((item) => item.includes('Say other.')) ?? '';
     expect(body).toContain('CODEX_SKILL_MARKER_r2');
+    expect(body).toContain('CODEX_LOCAL_SKILL_MARKER');
     // Read native current projection rather than historical prompt text.
     const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
     const installed = await rpc.request('skills/list', { cwds: [roots.work], forceReload: true });
@@ -1369,7 +1375,30 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     ).toBe('completed');
     const cleared = await rpc.request('skills/list', { cwds: [roots.work], forceReload: true });
     expect(JSON.stringify(cleared)).not.toContain('CODEX_SKILL_MARKER_r2');
+    expect(JSON.stringify(cleared)).toContain('CODEX_LOCAL_SKILL_MARKER');
+    expect(await readFile(join(localDir, 'SKILL.md'), 'utf8')).toBe(localBytes);
     expect(await readFile(join(skillDir, 'SKILL.md'), 'utf8')).toContain('CODEX_SKILL_MARKER_r2');
+    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+    const emptySession = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
+      })
+    );
+    sessions.push(emptySession);
+    // A fresh conversation makes this prompt proof independent of historical Skill descriptions.
+    expect(
+      (
+        await (
+          await emptySession.startTurn(turnInput(roots, [], 'Fresh empty Skill supply.'))
+        ).settled
+      ).status
+    ).toBe('completed');
+    const emptyBody = inference.bodies.at(-1) ?? '';
+    expect(emptyBody).toContain('Fresh empty Skill supply.');
+    expect(emptyBody).toContain('CODEX_LOCAL_SKILL_MARKER');
+    expect(emptyBody).not.toContain('CODEX_SKILL_MARKER_r2');
+    expect(await readFile(join(localDir, 'SKILL.md'), 'utf8')).toBe(localBytes);
   }, 180_000);
 });
 
