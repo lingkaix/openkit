@@ -20,7 +20,7 @@ Core Agent Supply owns the authored `AgentManifest` concept. This specification 
 - The authored composition and resolution contract from Server Agent Manifest, Workspace binding, selected profile, User preference, request input, logical-model catalog, supply catalog, vault grants, policy decisions, and runtime backend capability into one launch snapshot.
 - Resolution precedence, fail-closed behavior, readiness diagnostics, degraded state explanation, and snapshot identity rules.
 - The implementation projection for current `.agent.jsonc` loading, setup resolution, runtime config reload handling, and OpenShell-backed AEP materialization.
-- The boundary between authored setup fields and runtime-native argv, safe environment bindings, and isolated state paths derived inside the selected adapter.
+- The boundary between authored public native environment settings and runtime-native argv, protected environment bindings, and isolated state paths derived inside the selected adapter.
 - Manifest schema evolution, unknown-field handling, and required-feature fail-closed behavior.
 - Copy-on-init built-in AgentManifest development grant templates, including the exact out-of-box five-grant table; later template edits do not mutate existing manifests.
 
@@ -171,6 +171,14 @@ extensions
 
 `runtime` declares an opaque `kind`, an opaque `adapter`, an optional pinned `version`, one governed image selection, and a non-empty list of runtime binary ids with absolute worker-local executable paths. NanoCore must preserve these declarations generically; it must not infer an image, adapter, or binary path from `kind`.
 
+`runtime.environment` is optional Agent-scoped authored non-secret native process configuration, not native argv or launch authority. It is a map of at most 128 ASCII identifiers matching `^[A-Za-z_][A-Za-z0-9_]*$` and no longer than 128 characters to NUL-free literal strings or null, bounded to 16 KiB of canonical compact UTF-8 JSON. A string, including an empty string, sets a value; null suppresses that image default; an omitted entry inherits it. No interpolation, executable source, credential reference or implicit file read is supported.
+
+Only the existing Server Agent configuration owns this map in this slice. Profiles, Workspace bindings, requests and Threads introduce no additional environment override layer. A task-specific environment uses a separately authored or selected Agent configuration; changing a shared Agent affects all later admissions using it, and the preview states that scope.
+
+Resolution combines verified digest-bound non-secret image defaults, then authored Agent overrides and removals, then protected runtime bindings. Credential targets are disjoint from public settings. An explicit protected-name or credential-target override, duplicate/invalid input, oversized map or missing required image evidence blocks resolution; no source silently wins an authority conflict. Harmless names outside the protected core require no package-specific platform registration.
+
+The decision and its reason are recorded in [a decision record](../decisions/20260930-native_environment_managed_outside_the_sandbox.md).
+
 The image selection is exactly one of two authored forms, matching the two forms the package owner accepts in `docs/specs/20260616-agent_environment_package.md`:
 
 - one exact governed `image.ref` with pull policy; or
@@ -210,9 +218,21 @@ Resolution must turn workspace declarations into a session-static workspace layo
 
 `sandbox` declares exact network grants, credential requirements or Server-scope direct declarations, and backend requirements. Each network grant identifies its host, port, protocol, purpose, and a non-empty explicit binary-path list plus either one access mode or a non-empty bounded REST rule list; omission never means every runtime binary, and every listed path must exactly match a path declared in `runtime.binaries`. Exact REST rules currently allow `GET` or `POST` with absolute OpenShell-compatible paths and cannot be combined with an access preset. Credential entries use the `vault` requirement contract plus allowed visibility and injection mode without secret values. Backend requirements may identify allowed and preferred backend kinds plus required capabilities only as eligibility constraints; they never name or select a NanoHost, backend instance, Runtime Epoch, local or remote placement, SSH target, Gateway origin, NanoCore endpoint, direct worker endpoint, route credential, or transport.
 
+An exact REST-rule grant in sandbox.network may additionally contain publicAccess as the closed object { kind: 'credential-free-non-llm' }. The grant retains its existing id, exact host, port, protocol, purpose, explicit declared-binary list, nonempty GET/POST path rules and optional scope; it cannot combine those rules with an access preset. The marker contains no request contract, credential reference, query/header matcher, MCP tool selection or argument schema. Unknown marker values or members fail closed. An omitted marker preserves ordinary grant semantics and does not assert this public exception.
+
+The responsible administrator declares that the intended endpoint use is public and account-independent, requires no authentication supplied by OpenKit, and exposes search/retrieval or another non-LLM service rather than an inference, chat, completions, responses, embedding or other model-execution interface. A service's internal implementation is not inferred from its marketing or host name: public search may use ranking technology without becoming a model-execution interface. This is the administrator's declared-use classification, not a per-request semantic proof, provider registry or continuous remote probe. NanoCore admits it only with current authority and applicable policy, no applicable Vault declaration or platform credential attachment targeting that destination, no known LLM Provider or Gateway/control route host, and no broader overlapping effective grant covering the same destination, binary and method/path traffic. A managed MCP selection or required Gateway approval/audit cannot be reclassified by this marker. Credential targeting is established only by authoritative destination metadata, such as a credential bound to that grant or destination, a Provider attachment, or platform injection for that route, never by a guessed environment-variable name or purpose string. A declaration whose only target is an environment-variable or file sink, with no destination association, does not target the public destination and does not block this class; destination metadata that exists but is ambiguous refuses the public-class setup.
+
+Admission applies existing canonical host normalization and compares current configured host identities; changing the port or path does not override the known LLM Provider or Gateway/control host exclusion. Overlap compares the same canonical host/port, intersecting authorized binary sets and overlapping method/path allowances, including access presets and supported path globs. An unrelated host or nonoverlapping method/path is not a conflict merely because it uses the same binary; an unprovable overlap refuses rather than introducing a generalized pattern-analysis engine.
+
+Classification is an admission decision over the composed setup, not a per-request assertion. OpenKit supplies no credential for this route; a user-owned key in the user's image is not an inferred Vault declaration and introduces no request-inspection requirement. The boundary continues enforcing only the existing exact network rules. An otherwise matching request is not rejected by this class merely because of its header, query or body contents.
+
+The decision and its reason are recorded in [a decision record](../decisions/20260930-public_endpoints_by_admitted_grant.md).
+
 NanoCore may restrict these declarations during resolution, but neither NanoCore nor a backend may add an endpoint, credential path, credential materialization, binary allow rule, or backend capability that the authored manifest and policy did not authorize. Backend environment variables, built-in endpoints, and deployment defaults must not expand the effective allowlist.
 
-Image contents, OCI labels, and carrier markers confer no network or credential authority. `control.adapter.targetRuntime` selects exactly one adapter per session. A worker runtime is dispatch-ready only when its adapter can consume the Gateway relay with worker-visible logical model IDs and no concrete LLM Provider credential; the prior direct-provider Pi route is not dispatchable under this target. This Gateway-only rule applies to LLM inference authority, not to every networked tool. An exact authored Sandbox network grant may let its explicitly named runtime binary call the declared non-LLM tool or service endpoint, including an endpoint authenticated by a separately resolved Workspace credential, but it grants no Provider endpoint, Provider credential, logical-model route, or inference bypass.
+Image contents, OCI labels, and carrier markers confer no network or credential authority. `control.adapter.targetRuntime` selects exactly one adapter per session. A worker runtime is dispatch-ready only when its adapter can consume the Gateway relay with worker-visible logical model IDs and no concrete LLM Provider credential; the prior direct-provider Pi route is not dispatchable under this target. This Gateway-only rule applies to LLM inference authority, not to every networked tool. An exact authored Sandbox network grant may let its explicitly named runtime binary call the declared non-LLM tool or service endpoint, including an endpoint authenticated by a separately resolved Workspace credential, but it grants no Provider endpoint, Provider credential, logical-model route, or inference bypass. The publicAccess exception neither removes nor expands that separately credentialed non-LLM REST path; a grant using it cannot also assert credential-free public classification for the same destination.
+
+The resolved public map obeys the same 128-entry, 128-character-name and 16 KiB canonical compact UTF-8 JSON limits as the authored map. Protected control/bootstrap fields, current inference/Gateway/auth bindings, executable/argv selectors, exact conversation selectors and adapter-derived home/state/config destinations are managed rather than editable; harmless image defaults for protected placement fields are shown as managed/superseded and excluded from the public value map. Each adapter owns its exact protected-name projection. Inheritance or a vendor prefix alone does not protect an otherwise harmless setting. Trusted interpreter loader, preload, shell-startup and execution-search settings cannot alter fixed bootstrap before sanitization; ordinary native-tool PATH and package settings may differ only after that boundary, with the adapter retaining its fixed absolute command. Required control trust/proxy bindings remain protected, and user-local proxy/CA settings add no endpoint or weakened platform TLS authority.
 
 ## Built-In Development Grant Templates
 
@@ -240,7 +260,7 @@ An authored AgentManifest may add a narrower present-use grant when the generic 
 
 `extensions` is reserved for namespaced optional metadata. It must not carry the runtime selector, native argv, native event schema, network or credential authority, backend requirements, or any other launch authority; extension fields are never the stable product contract. The resolved AEP's existing private `extensions.openkit.turnInput` value is a NanoCore-supplied per-turn input, not an authored runtime override.
 
-The current manifest schema validates known fields strictly. Unknown fields are rejected unless an accepted current specification explicitly defines a namespaced descriptive extension.
+Known fields retain their owning validation. Unknown additive descriptive keys outside authority-bearing sections are ignored with a located warning under Contract Evolution. Unknown keys inside authority-bearing sections, unknown core values and unsupported required features fail closed. Environment-variable names in authored and delivered maps are consumed settings, not ignorable metadata; entries remain subject to the open identifier namespace, bounds and protected-name checks. The authority-bearing `publicAccess` declaration remains fail-closed: its kind must be `credential-free-non-llm`, and unknown classes, `request`, credential references or inspection semantics are not admitted.
 
 Unknown authority-bearing semantics must fail closed.
 
@@ -266,7 +286,7 @@ NanoCore resolves an agent launch in this order:
 4. Resolve the preferred and allowed logical-model set, expanding `all` from the current Workspace-visible Gateway catalog and rejecting an empty, stale, or incompatible set.
 5. Attach logical-model, Skill, MCP, Vault, Workspace-resource, and runtime catalogs only to resolve references or prove support; catalogs do not supply missing authored declarations.
 6. Validate request selections against the composed setup without deriving Agent identity from logical model identity.
-7. Resolve the authored opaque adapter, governed image, and declared runtime binary paths without runtime-specific inference.
+7. Resolve the authored opaque adapter, governed image, and declared runtime binary paths without runtime-specific inference, using already verified image/default evidence for native environment resolution before session compatibility; missing evidence returns preparation-required without an image effect.
 8. Resolve Skill and MCP catalog entries as static supply metadata.
 9. Bind every credential requirement to an exact Server or Workspace VaultGrant and resolve injection visibility and target without secret values.
 10. Resolve exact Sandbox network, credential, and backend requirements without accepting manifest-owned placement, NanoHost, endpoint, credential, or transport topology.
@@ -323,11 +343,13 @@ The AEP snapshot must carry:
 - redacted diagnostics
 - content digest
 
+The resolved policy.network.rules entry preserves the exact publicAccess marker and the ordinary normalized network constraints. NanoCore validates its admission predicates before dispatch and on subsequent admission/reuse when their owning current-authority checks require it; the marker is immutable policy content and participates in the existing static policy/compatibility identity. No credential value, request schema, new transport or native command is inferred from it.
+
 The snapshot is immutable. Any material change creates a new snapshot.
 
 The AEP snapshot is the only launch contract passed to worker governance backends. `runtime.command.argv` launches `openkit-worker-shim`; it never contains Codex, OpenCode, Pi, or future runtime-native argv. `control.adapter.targetRuntime` is the only adapter selector, while `agent.runtimeKind` is descriptive and must not select code.
 
-The backend materializes the governed image, exact policy, Vault bindings, Workspace, package file, and non-secret Sandbox-local Integration bindings without widening the AEP. The worker package never receives a concrete LLM Provider profile, provider-native model, account slot, private Gateway route, configured NanoHost credential, raw route token, Runtime Epoch identity, remote NanoCore or Gateway address, SSH target, Gateway forward, or direct sandbox-to-NanoCore endpoint. Inside the image, the generic shim selects the statically registered adapter named by `targetRuntime`; the adapter derives only runtime-native argv, safe child environment additions, and isolated state-root paths from the resolved AEP. A runtime that cannot consume the logical-model relay through this contract is blocked as non-ready rather than receiving a direct-provider exception.
+The backend materializes the governed image, exact policy, Vault bindings, Workspace, package file, and non-secret Sandbox-local Integration bindings without widening the AEP. The worker package never receives a concrete LLM Provider profile, provider-native model, account slot, private Gateway route, configured NanoHost credential, raw route token, Runtime Epoch identity, remote NanoCore or Gateway address, SSH target, Gateway forward, or direct sandbox-to-NanoCore endpoint. Inside the image, the generic shim selects the statically registered adapter named by `targetRuntime`; admitted public native environment values are resolved AEP inputs, and the adapter derives only runtime-native argv, protected environment bindings, and isolated state-root paths from those inputs. A runtime that cannot consume the logical-model relay through this contract is blocked as non-ready rather than receiving a direct-provider exception.
 
 An AEP MCP catalog record carries only worker-safe selected supply metadata and enables the three governed MCP capability operations. The delivered Codex adapter may derive fixed loopback MCP URLs and the capability token environment-key name from that selection, but no AEP record generates an upstream command, upstream endpoint, credential reference, credential, or direct worker-to-server connection; packages without selected MCP supply keep the plane disabled.
 
@@ -347,6 +369,10 @@ Admission may report `degraded` when a required worker credential is owned by an
 Readiness explanations must be redacted and must not expose secrets, host paths, or backend-private payloads.
 
 Readiness states describe launchability. They do not describe turn completion or AgentSession lifecycle state.
+
+Invalid or unsupported public classification, absent current authority, a targeting credential, ambiguous existing destination metadata or overlap, a known excluded host, required Gateway mediation or unavailable necessary admission metadata blocks the dependent setup with a value-free reason. Do not drop the marker, assume empty metadata, widen the rules or invent an alternate route. Ordinary unrelated grants retain their existing admission path.
+
+Configuration changes use existing revision/reload and immutable AEP resolution. Reuse must still satisfy current policy/credential/route validity and the existing static Sandbox compatibility rules. Removal or newly discovered ineligibility follows current revocation/stop/replacement owners; this class creates no mutable in-place AEP, per-request reclassification, revocation detector or new lifecycle. Security revocation is not postponed merely because an old snapshot was valid. Restart revalidates current metadata and exact retained authority; failed dependency resolution never defaults to public. Retry is a new authorized request resolving current facts, never replay of a previous effect.
 
 ## Readiness Remediation Hints
 
@@ -394,11 +420,21 @@ Worker governance backends materialize the AEP into:
 - output roots
 - transcript and evidence sinks
 
-The generic shim selects the one statically registered worker-side adapter named by `control.adapter.targetRuntime`. The current adapter contract derives runtime-native argv, safe child environment, and isolated state-root paths only inside the worker image; those values are not NanoCore inputs, AEP fields, or backend defaults, and the shared shim has no adapter-authored file contract.
+The generic shim selects the one statically registered worker-side adapter named by `control.adapter.targetRuntime`. Admitted public native environment values are AEP inputs. Native argv, executable selection, private home/control destinations, conversation selection, current Gateway bindings and credential carriers remain adapter-derived and cannot be authored through that map. Environment values add no filesystem, endpoint, credential, model, capability or MCP authority. The shared shim has no adapter-authored file contract.
 
 Shim and adapter outputs are candidate records, never canonical product state. NanoCore validates their lineage, schema, ordering, policy, and bounds before committing any canonical record.
 
 Worker agents must not author or mutate their own stable supply, and neither a backend nor an adapter may add undeclared network, credential, capability, provider, or MCP authority.
+
+## User Administration Of Native Environment
+
+NanoCore's user configuration view and App API edit the same Agent file through existing revision-checked validation, write and safe-reload operations; neither owns an independent environment store. Reads and edits require current usable deployment-administrator authority and applicable audience checks. The response distinguishes persisted revision, runtime-snapshot reload and native application; a write or reload alone never reports a running binding changed.
+
+The user can inspect admitted image defaults as read-only values, edit or suppress ordinary overrides, restore inheritance, preview effective desired values and shared-Agent impact, and see the acknowledged binding's applied configuration separately from pending next-Turn changes. Protected names are managed/read-only. Credential values, raw unclassified image environment, host environment and live process dumps are not exposed. The view follows the existing private administration disclosure boundary and does not publish this data to an Agent catalog or ordinary Thread.
+
+User application rechecks current authority, exact file revision and current image evidence; stale input refuses without overwrite. Existing required image-activation confirmation remains required, and ordinary configuration editing does not invent a new approval owner. Built-in-agent environment modification tools, MCP bindings and autonomous application are pending and are not activated by this contract.
+
+A worker-local export, shell-local change or native-written environment file is not reverse-synchronized into Core. The administration view describes admitted launch configuration and the exact acknowledged binding, not every descendant's later environment. Failed validation or reload publishes no partial runtime snapshot. Restart reconstructs desired values from canonical configuration and verified immutable image evidence, never from a prior child environment; current revisions, image/default identity and credentials are rechecked at admission.
 
 ## Current Implementation Projection
 
@@ -502,9 +538,11 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - Capability tests proving launch advertisement is the manifest requirement intersection with adapter and image proof, required missing proof blocks launch, and optional unproven support stays unadvertised.
 - MCP tests proving unselected or disabled catalog records generate no native config, connection, or route, while exact selected supply generates only fixed loopback Codex MCP projection and never an upstream command, endpoint, or credential.
 - Candidate-record tests proving shim and adapter output is not canonical until NanoCore validates and commits it.
-- Reload tests proving a changed composed package does not mutate the active Turn or AEP, enters only a later Turn, and is read by the next per-Turn Codex child while that child resumes the exact native handle from AgentSession-private state. Any implemented adapter that retains a native process between Turns must separately prove in-place application or refuse reuse under its accepted runtime contract.
+- Reload tests proving a changed composed package does not mutate the active Turn or AEP and enters only a later Turn under the continuity owner. A changed effective public native environment requires a successor with exact native resume; no resident process applies that environment in place.
 - Redaction tests proving readiness diagnostics, AEP snapshots, generated files, and backend extensions do not expose secrets, host paths, or backend-private tokens.
 - Fail-closed tests proving unsupported mount kinds, credential materialization modes, vault injection modes, and capability families block launch when required.
+
+Qualification of native environment administration requires observable admitted-default inspection, revision-checked override/edit/suppression/restored inheritance, desired-versus-acknowledged-applied status and shared-Agent scope, actual new values in a native tool only after exact successor resume, denial of unauthorized or stale edits, no secret publication, no sibling change, and preserved conversation and native data.
 
 ## Risks & Mitigations
 
@@ -528,7 +566,7 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - AEP snapshots are immutable launch contracts. Any material supply, policy, workspace, provider, vault, backend, or request change produces a new snapshot.
 - Server Manifest, Workspace binding, selected profile, and User preference compose one authored setup before resolution. Workspace composition may add Workspace-owned resources; catalogs, grants, policy, runtime proof, governance materialization, and adaptation remain non-authoring.
 - Codex `0.153.4` and OpenCode `1.18.1` are relay-only for LLM authority. Direct LLM Provider credentials and endpoints are excluded from dispatchable worker supply. Pi `0.85.1` remains direct-provider-only in the current implementation and is therefore non-ready in the clean logical-model target until an accepted relay-capable adapter replaces that constraint.
-- Runtime-native launch details are adapter-derived outputs from AEP snapshots and are never stable product contracts. The current adapter interface does not provide verified Skill/plugin supply; its governed generated-file target is owned by `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
+- Runtime-native launch authority is adapter-derived from AEP snapshots; admitted public native environment settings remain authored inputs under Manifest Shape rather than adapter-derived authority. The current adapter interface does not provide verified Skill/plugin supply; its governed generated-file target is owned by `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
 - Readiness is a redacted pre-launch diagnostic with `ready`, `degraded`, `blocked`, and `stale` target states.
 - Scale fields in manifests are intent. Scheduler records decide actual placement, queueing, reuse, and capacity.
 - Host execution is not a valid worker AEP backend target.
@@ -538,7 +576,7 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - Authored Skill and MCP references resolve to exact versions under their independent catalog owners. Ranges are outside this target; Plugin expansion does not change component authority or the current MCP selection constraint.
 - Scale intent fields remain preferences or upper bounds; scheduler records own concrete placement, queueing, reuse, warm-pool realization, and capacity.
 - Product-visible readiness remediation hints must be redacted and action-oriented.
-- Manifest evolution changes the accepted current schema explicitly. Unknown fields and unsupported required features fail closed; no permanent older-shape reader is required, and a schema change keeps existing manifests usable by additive evolution or one-way migration.
+- Manifest evolution changes the accepted current schema explicitly. Known fields retain their owning validation; unknown additive descriptive keys outside authority-bearing sections are ignored with a located warning under Contract Evolution, while unknown keys inside authority-bearing sections, unknown core values and unsupported required features fail closed. No permanent older-shape reader is required, and a schema change keeps existing manifests usable by additive evolution or one-way migration.
 - Authority-bearing manifest additions must declare required features, minimum Core version, required backend capabilities, or equivalent required semantics.
 
 ## Deferred / Future Work

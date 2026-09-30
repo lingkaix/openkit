@@ -58,7 +58,7 @@ The clean target keeps logical `capability.local` and `inference.local` bindings
 
 - Do not absorb or replace the end-user Agent Skill Interface.
 - Do not expose NanoCore internals or database access to workers.
-- Do not let workers install or replace NanoCore-hosted or catalog capability implementations, or obtain external authority outside the MCP Gateway. Worker-owned tools and MCP configuration inside the Sandbox are not this prohibition, as [Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md) decides.
+- Do not let workers install or replace NanoCore-hosted or catalog capability implementations. External traffic follows [Sandbox](../core/sandbox.md) and [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md): Gateway-required integrations remain mediated, while admitted public non-LLM grants and separately authorized non-LLM REST grants retain their respective network and credential contracts. Neither direct route creates NanoCore-managed MCP supply or an upward control route. Worker-owned tools and MCP configuration inside the Sandbox are not this prohibition.
 - Do not define provider-specific API payload schemas except for gateway envelopes.
 - Do not make `inference.local` a generic capability endpoint.
 - Do not add a direct sandbox-to-NanoCore route, a second control path, or more than the current one active worker slot.
@@ -262,7 +262,7 @@ Knowledge retrieval is infrastructure by default. It should become item-visible 
 
 ## External API And Network Gateway
 
-External API calls must use provider profiles. Provider profiles define endpoint families, credential references, allowed operations, and redaction rules.
+Gateway-mediated external API calls must use provider profiles. Independently admitted public endpoints follow [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md), as recorded in [Public Endpoints By Admitted Grant](../decisions/20260930-public_endpoints_by_admitted_grant.md), and do not become Gateway capability calls. Provider profiles define endpoint families, credential references, allowed operations, and redaction rules.
 
 Network gateway access is deny-by-default. It should support allowlisted hosts, methods, ports, and purpose labels.
 

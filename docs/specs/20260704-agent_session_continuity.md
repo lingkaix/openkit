@@ -100,6 +100,10 @@ When any compatibility or hygiene predicate fails, NanoCore closes or fences the
 
 Eviction of an idle AgentSession changes latency and replacement diagnostics only. It does not change Thread history, accepted Items, Workspace truth, evidence, or recovery truth. This change adds no idle timer. Retry after a denied or failed reuse decision is a new admission decision from current durable truth; it does not retry a prior native operation or reuse the prior Turn request identity.
 
+The decision and its reason are recorded in [a decision record](../decisions/20260930-native_environment_managed_outside_the_sandbox.md).
+
+A changed effective public native environment waits for the next Turn admission and follows existing predecessor close/fence and successor AgentSession creation with the exact retained native reference. No running process is mutated, no active Turn is replayed, no hidden prompt is generated, and no fresh conversation substitutes for a failed required resume. Unproved predecessor cleanup blocks successor effects.
+
 ## Setup Generations And Revocation
 
 Desired and effective setup generations are immutable derived identities, not new Core product records. The desired generation derives from current Agent Manifest and profile resolution, Worker Skill and instruction digests, runtime image and adapter identity, policy digests, Workspace layout, provider and plugin posture, and current AEP requirements. The effective generation is what one Sandbox, Harness, and AgentSession binding can prove it materialized.

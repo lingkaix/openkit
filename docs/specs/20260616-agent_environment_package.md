@@ -101,7 +101,7 @@ The backend validates the package against its real capabilities and readiness be
 
 ## Strict Envelope
 
-The parsed package has `schemaVersion: 4` and exactly these top-level fields:
+The parsed package has `schemaVersion: 4` and these top-level core fields:
 
 ```text
 schemaVersion
@@ -125,7 +125,7 @@ backend
 extensions
 ```
 
-Unknown top-level fields are rejected. Backend-specific or private expansion belongs under `extensions` only when another accepted owner defines its use; `extensions` never bypasses the package's authority, secret, or validation rules.
+Known core fields retain their owning validation, immutability and secret checks. Unknown additive members outside the core are ignored under Contract Evolution; ignored content from outside the reader's trust boundary is not persisted, forwarded or displayed. Unknown core values and unsupported required or authority-bearing semantics fail closed. Backend-specific or private expansion belongs under `extensions` only when another accepted owner defines its use; `extensions` never bypasses the package's authority, secret, or validation rules.
 
 The schema supplies only these top-level defaults during parsing:
 
@@ -159,6 +159,10 @@ Each allowed logical-model route may carry optional `modelParameters` for native
 
 `agent.runtimeVersion` is created from the authored AgentManifest at package resolution (`apps/nanocore/src/runtime/agent-environment.ts:445`, `manifest.runtime.version ?? 'unversioned'`). It is not updated in place, reminted, or recovered as a measured digest; a later Turn receives a new package. A missing authored version remains the label `unversioned`. Treating `runtimeVersion` or authored `runtime.image` as measured identity is a false merge and is forbidden. This specification does not own sandbox-row deletion or the binding-time copy of the image digest.
 
+The decision and its reason are recorded in [a decision record](../decisions/20260930-native_environment_managed_outside_the_sandbox.md).
+
+A newly resolved environment-aware Worker package records `runtime.environment` as the core record `{ imageDigest, defaultsDigest, values }`: measured lowercase SHA-256 image identity, the canonical digest of its admitted non-secret default map, and the final bounded public string map owned by Agent Manifest And AEP Resolution. Null removals are resolved before this projection. It contains no raw credential, executable selector, protected binding override or mutable process observation, and it participates in the canonical immutable package bytes. These core fields are required for an environment-aware launch. Unknown additive members outside the core are ignored under Contract Evolution and are not forwarded into the native environment; unsupported required semantics fail closed. Retained canonical evidence is not rewritten merely to perform this projection. Environment-variable names in `values` are consumed settings, not ignorable additive metadata; the manifest owner's open identifier namespace, bounds and protected-name checks apply.
+
 Nested field shapes and lifecycle rules remain with the narrow owners linked above. This specification requires their resolved projections to agree in one strict envelope rather than duplicating their tables.
 
 ### Canonical Worker-Consumed Byte Projection
@@ -191,9 +195,9 @@ The build definition obeys the same package rules as every other resolved input,
 - **No widen of the sandbox.** A build definition MUST NOT grant the sandbox that runs the resulting image any network, filesystem, credential, or capability authority beyond what the same package's `policy`, `providers`, `credentials`, and `vault` sections already grant it. Nothing a build installs, writes, or configures becomes runtime authority; the launch policy remains the only authority.
 - **Declared build egress.** A build legitimately needs network access the resulting sandbox does not have, because package managers and language toolchains are build-time concerns. Pretending otherwise would make the form unusable, so build egress is its own explicitly declared, bounded grant set inside the build definition rather than an inherited or implied widening of the sandbox grants. It is authored, resolved, and validated like every other grant, it is scoped to ordinary build traffic only, and it is **not** inherited by the sandbox. Each resolved grant preserves exactly one explicit `{host, port}` pair; a missing host or port, wildcard host, non-positive or out-of-range port, path, URL, protocol, capability, socket, inferred default, or inferred `443` is rejected. The runtime-owned fixed OCI registry bootstrap pairs are separate from AEP grants and do not create, remove, replace, or default an authored pair. Whether a given endpoint may appear in a build egress set remains a workspace-policy decision under its existing owner.
 - **Declared execution bounds.** `timeLimitSeconds`, `outputLimitBytes`, and `layerLimit` are required positive integers and each MUST be no greater than the corresponding maximum owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`. V1 therefore accepts `timeLimitSeconds` from 1 through 1800, `outputLimitBytes` from 1 through 21474836480, and `layerLimit` from 1 through 128, all inclusive. Absence, zero, a negative or fractional value, overflow, or a value above its exact maximum fails resolution before any build effect; neither NanoCore nor NanoHost supplies a default or raises a declared bound.
-- **Resolved before launch.** NanoCore validates the build definition during ordinary AEP resolution, before any launch or build effect. Validation failure is a strict schema or cross-field rejection.
+- **Resolved before launch.** NanoCore validates the build definition before any launch or build effect, including when existing preparation supplies verified image evidence before environment-aware AEP resolution. Validation failure is a strict schema or cross-field rejection.
 - **Not a published image.** The image a build definition produces is attempt-scoped. Its publication boundary and content guarantees are owned by `docs/specs/20260721-worker_execution_environment_images.md`; this specification only requires that the package never names such an image as a deployment image.
-- **Digest binding.** The resulting image digest is bound to the attempt by the execution runtime owner and recorded as launch evidence. It is never written back into the immutable package. Under the build form the package-to-session consistency comparison that otherwise uses `runtime.image.ref` uses the build-definition lineage — the exact empty-context singleton reference and digest, independent Dockerfile input digest, and resolved argument digest — plus the recorded resulting image digest, and a missing or mismatched value fails closed exactly as a reference mismatch does.
+- **Digest binding.** The resulting image digest is bound by the execution runtime owner and recorded as preparation or launch evidence. For an environment-aware package, the already verified result is recorded at resolution in `runtime.environment.imageDigest`; an admitted immutable package is never rewritten with a later result. Under the build form the package-to-session consistency comparison that otherwise uses `runtime.image.ref` uses the build-definition lineage — the exact empty-context singleton reference and digest, independent Dockerfile input digest, and resolved argument digest — plus the recorded resulting image digest, and a missing or mismatched value fails closed exactly as a reference mismatch does.
 
 Administrator-authorized environment preparation under `20260910-persistent_worker_volumes.md` reuses this exact build-definition shape, no-secret validation, explicit egress and bounds in an immutable candidate Artifact before a Worker attempt exists. It does not require a synthetic AEP or lease and does not grant the later workload any authority; later launch still resolves its own complete current AEP.
 
@@ -212,6 +216,14 @@ Resource identity, inventory, selection, and static adapter projection participa
 ## Resolution And Launch Invariants
 
 NanoCore must resolve and validate an AEP before any worker launch effect.
+
+Verified image identity and defaults must be available before final AEP resolution and compatibility/lease admission. Existing image preparation/acquisition/build and immutable settlement supply that evidence; metadata-only compatibility planning performs no image effect and fails as preparation-required when evidence is missing. An authored build or mutable reference remains traceable to its original declaration, while materialization uses its already verified result digest rather than repeating a build to rediscover defaults. A mismatched or missing result refuses dependent launch; no empty-default fallback or silent tag re-resolution is permitted.
+
+A native environment change creates a newly resolved package and never rewrites an admitted one. Retained packages lacking this field remain valid historical evidence; new environment-aware launch requires complete resolved evidence and a consumer that supports it, never inference from ambient state. Coordinate the strict schema and all current producers/consumers; no compatibility shim or `extensions` carrier substitutes for this owned field.
+
+A resolved network rule retains the recognized `publicAccess` marker as immutable policy evidence. NanoCore must satisfy [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#manifest-shape)'s current public-class admission predicates before launch. The marker adds no backend request inspector and grants no inference, credential or managed MCP bypass.
+
+The decision and its reason are recorded in [a decision record](../decisions/20260930-public_endpoints_by_admitted_grant.md).
 
 Resolution and materialization obey these invariants:
 
@@ -241,6 +253,8 @@ Termination, evidence collection, workspace handoff, teardown, and retry outcome
 An AEP and every persisted or public snapshot must contain no raw secret value, authorization header, unrestricted host path, backend-private handle, raw provider payload, NanoHost credential, raw route token, remote Gateway locator, or transport credential.
 
 Worker-control, inference, capability, and credential access is expressed through non-secret declarations, logical-model IDs, Integration bindings, token references, secret references, Vault references, and grants. Exact credential values may exist only in the Vault or backend-private launch path authorized by those references, and they must not be copied into the AEP, its digest input, its durable snapshot, product records, ordinary logs, or public diagnostics. A token reference for one Integration route family MUST NOT be accepted as a reference for another family. LLM Provider profile IDs, Provider-native models, account slots, route-member IDs, fallback order, and Provider credentials are Gateway-private and MUST NOT appear in an AEP.
+
+Platform credential resolution and injection do not target a public-class destination. The class does not inspect arbitrary user-owned image material or detect user-provided authentication in request contents; its guarantee concerns admitted platform supply and routing, not universal secret detection. Existing separately authorized credentialed non-LLM REST declarations retain their current meaning and cannot be silently reclassified as public.
 
 The package schema recursively rejects raw secret-shaped fields. Snapshot persistence redacts backend-private identifiers and local runtime references and then parses the redacted value through the same strict version 4 schema before writing it.
 
@@ -294,6 +308,8 @@ The current affected package tests, migration and database checks, typechecks, b
 
 Every validation, resolution, materialization, snapshot, and recovery failure is fail-closed and must be reported without secret or backend-private material.
 
+Missing, stale, duplicate, secret-bearing, protected, unrepresentable or oversized environment input fails before native work and preserves configuration and retained data.
+
 Current observable failure categories are:
 
 - authored manifest loading failure, reported as an invalid-manifest diagnostic;
@@ -314,14 +330,18 @@ Failure before launch produces no worker launch. Failure after a physical effect
 
 ## Acceptance Predicates
 
+Qualification proves exact precedence and removal, empty-string preservation, secret/public separation, digest mismatch refusal, unsupported-consumer refusal and stable canonical values across restart; installed image strings or a successful config write are not application evidence.
+
+Qualification proves admission denial for invalid classes, unauthorized application, targeting credentials or ambiguous existing credential-destination metadata, known excluded hosts, broader overlaps, required Gateway mediation and missing current evidence; it also proves lossless AEP classification and unchanged exact boundary rules. Header/query/body mutations are not a deciding denial oracle for this class. An allowed public request succeeds under the exact rules, disallowed host/port/binary/method/path traffic is denied, platform secrets are absent from the route's materialization and public evidence, and an existing credentialed non-LLM REST case remains valid under its original contract.
+
 The contract is satisfied only when all of the following are observable:
 
-- A parsed package has literal `schemaVersion: 4`, contains the complete strict top-level envelope without a `providers` section, applies only the three documented defaults, and rejects unknown top-level fields.
+- A parsed package has literal `schemaVersion: 4`, contains the complete strict top-level envelope without a `providers` section, applies only the three documented defaults, and ignores unknown additive members outside the core under Contract Evolution without persisting, forwarding or displaying ignored content from outside its trust boundary; unknown core values and unsupported required or authority-bearing semantics fail closed, while known-field immutability and secret checks remain required.
 - One Server `AgentManifest`, optional Workspace binding, selected profile, applicable User preference, and request selection compose before one `ResolvedAgentSetup` produces one immutable AEP, with no parallel setup document or authority path.
 - Missing authored image, adapter, binary, network, credential requirement, Workspace, policy, logical-model contract, Integration binding, or backend authority is rejected rather than inferred.
 - `runtime` resolves to exactly one image form: an image reference with its pull policy, or a bounded build definition. Both forms and neither form are rejected.
 - A build definition preserves exactly `build-context://empty/v1` with digest `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, whose zero-entry canonical byte sequence is empty bytes, and preserves 1 through 268,435,456 exact UTF-8 Dockerfile bytes inline as independently digested package content excluded from that context digest. It also preserves explicit exact `{host, port}` ordinary build grants with no inferred port or registry bootstrap authority, `timeLimitSeconds` from 1 through 1800, `outputLimitBytes` from 1 through 21474836480, and `layerLimit` from 1 through 128; it has no secret value, capability, host path, build root, socket, Dockerfile locator, context transfer, or future context variant and grants the resulting sandbox no authority beyond the package's own grants.
-- The image digest produced from a build definition is recorded as launch evidence, never written back into the immutable package, and used with the build-definition lineage wherever `runtime.image.ref` would otherwise anchor package-to-session consistency.
+- The image digest produced from a build definition is recorded as preparation or launch evidence and used with the build-definition lineage wherever `runtime.image.ref` would otherwise anchor package-to-session consistency. Environment-aware resolution includes its already verified result in `runtime.environment.imageDigest` before admission; no later result rewrites the immutable package.
 - The package passes strict schema, cross-field, required-capability, and backend-readiness checks before worker launch.
 - Materialization and launch do not widen the parsed package or expose a second control, inference, credential, or capability route.
 - A generated Context Package input preserves its package-root digest and declared `context` slot while private roots and host paths remain outside the package; every output declaration remains path-only, and actual export digest and length are accepted only as NanoHost-produced evidence after NanoCore byte verification and canonical-owner handoff.

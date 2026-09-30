@@ -373,6 +373,10 @@ OpenShell upload, download, exec, policy, provider, and log outputs are backend 
 
 `SessionCompatibilityKey` is a deterministic digest over the session-static envelope that matters for safe reuse.
 
+The decision and its reason are recorded in [a decision record](../decisions/20260930-native_environment_managed_outside_the_sandbox.md).
+
+The static key includes the canonical resolved public native environment and its verified image/default identity, but never raw Vault values; equivalent maps with different authoring order have the same environment contribution. Metadata planning and final launch use the same already verified inputs, and stale image/configuration evidence fails revalidation rather than changing the key after admission.
+
 The key should cover:
 
 - agent id, profile id, runtime family, runtime image digest, command shape, process user and group, base working directory, worker-shim shape, and route-binding envelope

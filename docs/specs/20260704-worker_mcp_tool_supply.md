@@ -27,7 +27,7 @@ updated: 2026-09-30
 - Vault record semantics and injection plan shapes (`docs/specs/20260703-vault_secret_injection.md`).
 - Third-party non-MCP API proxying and unified network egress, which remain deferred on the roadmap.
 - MCP server sandboxing/isolation, which is deferred.
-- MCP servers and tools configured inside the worker's Sandbox, which are the worker's own under [Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md) and are not governed here unless they themselves call an integrated external system.
+- MCP servers and tools configured inside the worker's Sandbox, which are local execution under [Sandbox](../core/sandbox.md); the rationale is recorded in [Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md). Their external traffic follows the route distinction owned by [Sandbox](../core/sandbox.md); an independently admitted public endpoint is not Gateway-managed server supply.
 - The pending request record, its lifecycle, and its delivery, owned by [Pending Requests](20260930-pending_requests.md).
 - The canonical `AgentCapability` and `CapabilityCall` terms (`docs/core/agent-capability.md`).
 - RelayStream, nested HTTP/2, Sandbox Integration, route credentials, or NanoHost lifecycle, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
@@ -41,9 +41,9 @@ updated: 2026-09-30
 
 ## Summary
 
-Worker agents need MCP tools, and the product vision routes all worker access to integrated external systems through Core-governed gateways. This spec defines the accepted MCP plane for that traffic: a worker reaches catalog and built-in MCP servers only through NanoCore, whose gateway serves them at worker-local loopback endpoints that the runtime loads as MCP servers; the runtime presents the session capability loopback credential, and Sandbox Integration carries the request through `/capabilities/mcp/*` under the capability route token of the Turn bound when it arrives, as [Worker Agent Capability](20260703-worker_agent_capability.md) defines; NanoCore owns the servers, credentials, policy checks, audit trail, and tool schema history. MCP servers the worker configures inside its own Sandbox are outside this plane.
+This specification owns Gateway-mediated MCP integration, not every use of the MCP protocol: catalog and built-in servers, integrations using Gateway-held credentials, and operations requiring Gateway-mediated approval or audit remain on this plane, while separately admitted credential-free public non-LLM endpoints may use the Sandbox network path. This spec defines the accepted MCP plane for that traffic: a worker reaches catalog and built-in MCP servers only through NanoCore, whose gateway serves them at worker-local loopback endpoints that the runtime loads as MCP servers; the runtime presents the session capability loopback credential, and Sandbox Integration carries the request through `/capabilities/mcp/*` under the capability route token of the Turn bound when it arrives, as [Worker Agent Capability](20260703-worker_agent_capability.md) defines; NanoCore owns the servers, credentials, policy checks, audit trail, and tool schema history. MCP servers the worker configures inside its own Sandbox are outside this plane.
 
-In the accepted target, MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: endpoints and launch configs never appear inline in manifests. Every `mcp.call_tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted; tool schemas are snapshotted per server version so calls stay interpretable after servers change; credentials are injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
+In the accepted target, Gateway-managed MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: upstream server endpoints and launch configs never appear inline in AgentManifest.mcp. Every `mcp.call_tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted; tool schemas are snapshotted per server version so calls stay interpretable after servers change; credentials are injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
 
 ## Goals / Non-goals
 
@@ -71,12 +71,14 @@ The workspace data source catalog (`docs/specs/20260704-workspace_data_source_ca
 
 ## Decision
 
-- All worker access to catalog and built-in MCP servers flows through worker-local `capability.local`, projected by Sandbox Integration through `/capabilities/mcp/*` to the NanoCore capability gateway. A direct worker connection to a catalog server, or to any server that holds Gateway credentials, is prohibited in every deployment shape. An MCP server or tool configured inside the worker's Sandbox is the worker's own and is not this prohibition's subject.
-- External systems are integrated through the vendor's own MCP server, proxied by the gateway, which holds authentication and account and repository binding ([decision](../decisions/20260929-external_systems_through_vendor_mcp.md)).
+- All worker access to selected catalog and built-in MCP servers flows through worker-local capability.local and NanoCore's capability Gateway. Native configuration cannot directly connect to or reclassify that managed selection, use Gateway-held credentials, or bypass its policy. Independently configured in-Sandbox MCP remains local execution; a public remote MCP endpoint may use direct egress only through the admission-classified public grant owned by Agent Manifest And AEP Resolution.
+- Gateway-managed external systems use the vendor's MCP server with authentication and account/repository binding held at the Gateway. The admission-classified credential-free non-LLM public exception does not create a Gateway server, credential binding, tool schema snapshot, CapabilityCall or Gateway usage record, and carries no promise of per-request authentication or payload inspection. Existing separately authorized credentialed non-LLM REST grants are outside this MCP exception and remain unchanged.
+
+The decision and its reason are recorded in [a decision record](../decisions/20260930-public_endpoints_by_admitted_grant.md).
 - The gateway uses the official MCP SDK v2 packages and supports the current MCP standard, including the 2026-07-28 stateless era, on both its worker-facing and upstream faces ([decision](../decisions/20260929-gateway_adopts_current_mcp_standard.md)).
 - The tool surface a worker sees is fixed at Turn admission and changes only at a Turn boundary ([decision](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md)).
 - An `approval-required` call returns a pending result at once, and after a grant the gateway executes the captured call ([decision](../decisions/20260930-pending_tool_calls.md)).
-- MCP servers are declared in a workspace-scoped catalog (with read-only projection of server-scoped shared entries) and referenced by name from agent manifests.
+- Gateway-managed MCP servers are declared in a workspace-scoped catalog (with read-only projection of server-scoped shared entries) and referenced by name from agent manifests.
 - NanoCore owns catalog MCP server lifecycle: it spawns stdio servers and connects to HTTP servers; workers never hold handles to those servers.
 - Credentials resolve from vault references at the gateway with `gateway-only` visibility.
 - Every `mcp.call_tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted. Tool schemas are snapshotted per server version.
@@ -99,7 +101,7 @@ An `McpServerCatalogEntry` is the resolved Workspace-scoped projection of one ex
 
 Rules:
 
-- Endpoints, launch commands, and credentials MUST NOT appear inline in agent manifests; manifests reference entries by name only, following the data source catalog pattern.
+- AgentManifest.mcp contains only named catalog references and accepted constraints, never upstream executable transports or credential material. An independently authored Sandbox network grant may identify a public endpoint under the network owner; it does not create an inline catalog MCP server or broaden the Gateway selection.
 - Server-scoped shared entries are deployment configuration projected into workspaces read-only; a workspace MAY disable but not edit them.
 - Catalog entries carry no secret material; credential slots are Vault references per `docs/core/vault.md`. Vault injection wins over colliding ordinary package headers or environment, and reserved Integration variables cannot be overridden.
 - Imported stdio always uses its exact PluginVersion-owned verified source root, with default working directory, reserved subprocess variables, and restricted placeholder expansion defined by the MCP catalog owner. Mutable package data uses the current MCP binding key. Neither is worker supply or a caller-selected host directory.
@@ -187,7 +189,7 @@ Immutable MCP configuration history, current-version/binding resolution, ordinar
 
 ## Alternatives Considered
 
-- Direct worker connections to catalog or external MCP servers with credentials injected into the sandbox. Rejected: it bypasses policy and audit, puts credentials within sandbox reach (exactly what the vault boundary exists to prevent), and makes every backend responsible for MCP transport. A server the worker configures inside its own Sandbox holds no Gateway credential and is not this alternative.
+- Direct worker connections to catalog or Gateway-managed external MCP servers with Gateway credentials injected into the Sandbox. Rejected: it bypasses their policy and audit, puts Gateway credentials within Sandbox reach, and makes every backend responsible for their MCP transport. Independently configured local MCP and admission-classified public endpoints are outside this rejected managed-integration alternative.
 - Holding the native tool call open while a person decides. Rejected: it ties a Turn to human latency and cannot bind an exact effect.
 - Embedding MCP protocol or server lifecycle in the worker runtime. Rejected: the worker client stays a thin local caller while NanoCore owns MCP transport, policy, credentials, lifecycle, and records.
 - Per-turn ephemeral server spawn as the default lifecycle. Rejected as default: spawn cost per turn is wasteful for stateless servers; retained as a deferred per-session lifecycle option for stateful or isolation-sensitive servers.

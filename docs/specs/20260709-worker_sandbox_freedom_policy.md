@@ -114,6 +114,10 @@ Wildcard hosts, unrestricted ports, and private network ranges should be rejecte
 
 The first implementation supports HTTPS REST access presets and bounded `GET` or `POST` path rules because stock OpenShell already enforces that shape. Exact rules may use OpenShell path globs but hosts remain exact, rule paths must be absolute and free of line breaks, and another HTTP method remains unsupported until a present workload and backend proof justify it.
 
+Public-class eligibility and effective-rule overlap are owned by [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#manifest-shape). This owner materializes only the admitted host, port, binary, method and path constraints; it adds no header, query, MCP tool, argument or body inspection and no backend capability. User-supplied keys inside user space are not converted into platform credential declarations or a payload-inspection obligation.
+
+The decision and its reason are recorded in [a decision record](../decisions/20260930-public_endpoints_by_admitted_grant.md).
+
 ### Built-In Development Baseline
 
 The three repository-owned AgentManifest templates explicitly grant GitHub Smart HTTP clone and fetch, read-only GitHub REST access through `gh`, read-only npm registry access through the declared Node package binaries, and read-only PyPI index and artifact access through the declared uv, Python, and pip binaries. `docs/specs/20260721-worker_execution_environment_images.md` owns the exact endpoints, binary paths, and image correspondence.
@@ -165,6 +169,8 @@ NanoCore MUST validate user input, normalize it, redact sensitive details, resol
 OpenShell YAML remains backend materialization output derived solely from the AEP and the selected backend's enforcement mechanics. Stock OpenShell policy baselines may supply filesystem and process mechanics required to run the sandbox, but they do not authorize network egress beyond the AEP.
 
 If a backend cannot enforce a declared filesystem, network, or secret-injection requirement, launch MUST fail before worker execution.
+
+The AEP retains the recognized admission marker as policy evidence; OpenShell YAML remains a projection of the existing enforceable network fields. Materialization must not invent a publicAccess backend field, a middleware, a credential injection or a request filter. Unknown admission-class semantics fail at the owning Core boundary rather than being treated as a harmless optional field. Existing credentialed non-LLM REST grants and Vault injection contracts are unchanged.
 
 ## Invariants
 

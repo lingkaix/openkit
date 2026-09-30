@@ -232,7 +232,7 @@ Examples:
 - filesystem operation boundary
 - sandbox startup boundary
 
-The same policy decision may be enforced at multiple layers. Sandbox enforcement is still valuable even when permission policy already denies an action. Inside its Sandbox a worker has full permission; approval and audit apply to its interaction with external systems at the Sandbox boundary and the gateway, not to in-Sandbox tools or configuration, and native runtime permission prompts are not part of the permission model.
+The same policy decision may be enforced at multiple layers. Sandbox enforcement is still valuable even when permission policy already denies an action. Inside its Sandbox a worker has full permission; approval and audit apply to Gateway-mediated interaction with external systems at the Sandbox boundary and the Gateway, not to in-Sandbox tools or configuration, and native runtime permission prompts are not part of the permission model. Storage and network containment still apply at the Sandbox boundary. External routing follows [Sandbox](sandbox.md). NanoCore-managed supply and the upward interface remain Gateway-mediated; separately authorized non-LLM REST grants retain their existing network and credential contracts. Admission of that class does not exempt an action from policy-required approval or audit.
 
 ## Approval Gates
 

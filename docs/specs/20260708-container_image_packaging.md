@@ -135,7 +135,7 @@ The repository-owned image classes are:
 | --- | --- | --- | --- |
 | `app` | Yes | Product app image containing NanoCore, Web UI, public HTTP entrypoint, migrations, and data templates. | Use the digest-pinned Node runtime base declared in the image catalog and matching repository Node policy. |
 | `worker-common` | Yes | Published public extension base carrying the shared development environment and worker shim, with an empty declared runtime set. It is the extension point for user or secondary-developer sandbox images and the build base of the one deployment image. It is not a deployment image and it is not the `test-env` base. | Use the pinned digest-addressed upstream base under Worker Base Image Policy. |
-| `worker-runtimes` | Yes | Sole deployment worker image. OpenShell sandbox payload whose catalog-declared runtime set is `codex`, `pi`, `opencode`, and `deepseek`, with the generic shim and four static adapters. | Use the pinned shared OpenKit development stage and add those four runtimes, the four adapters, and `pi-mcp-adapter` for Pi only. |
+| `worker-runtimes` | Yes | Sole deployment worker image. OpenShell sandbox payload whose catalog-declared runtime set is `codex`, `pi`, `opencode`, and `deepseek`, with the generic shim and four static adapters. | Use the pinned shared OpenKit development stage and add those four runtimes, the four adapters, and the exact built Pi SDK host with its patched native MCP/tool-search production dependency closure under [Worker Execution Environment Images](20260721-worker_execution_environment_images.md), with rationale recorded in [Pi Native MCP Discovery](../decisions/20260930-pi_native_mcp_discovery.md); `pi-mcp-adapter` is absent. |
 | `test-env` | Never on a release tag; published for CI to consume | Internal sibling of `worker-common`, owned by `docs/toolchain.md` Test Execution Environment. Pins the same upstream Node digest independently and does not derive `FROM worker-common`. | Use the same digest-pinned Node base as the worker common stage and install only what the gates execute; no worker runtime. |
 
 App image and worker images MUST remain separate release units. The one allowed exception is a single-machine evaluation bundle that an explicit deployment owns and names; a normal release build MUST NOT merge the app and worker units, and the app image MUST NOT bundle worker agent runtimes as its release model.
@@ -262,7 +262,7 @@ Worker images must not:
 - store vault secrets as durable image files,
 - assume host filesystem paths,
 - publish product API endpoints,
-- advertise or execute an OpenKit-managed capability route or an integrated external system absent exact selected AEP supply and the separately authenticated governed Gateway path. Worker-configured in-Sandbox MCP is outside that supply plane and is not a packaging failure merely for lacking a catalog selection or Gateway hop. Image contents confer no external authority,
+- advertise or execute an OpenKit-managed capability route or an OpenKit-managed integrated external system absent exact selected AEP supply and the separately authenticated governed Gateway path. Worker-configured in-Sandbox MCP is outside that supply plane and is not a packaging failure merely for lacking a catalog selection or Gateway hop. An exactly granted credential-free non-LLM public endpoint follows [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#manifest-shape) and is not a packaging failure merely for lacking a Gateway hop; the rationale is recorded in [Public Endpoints By Admitted Grant](../decisions/20260930-public_endpoints_by_admitted_grant.md). Image contents confer no external authority,
 - make final authorization decisions,
 - push, tag, deploy, or mutate protected branches without NanoCore-approved review and apply gates,
 - treat OpenShell-native ids or logs as canonical product state.
@@ -786,7 +786,7 @@ Local build acceptance:
 - `scripts/docker/build-image.sh worker-runtimes` builds `openkit/worker-runtimes:dev`.
 - `scripts/docker/smoke-image.sh app` passes.
 - `scripts/docker/smoke-image.sh worker-common` passes, including the throwaway derived-image proof.
-- `scripts/docker/smoke-image.sh worker-runtimes` passes, including the shim, the four adapters, the declared set of four runtimes, `pi-mcp-adapter` for Pi, absence of `/etc/opencode` or the proved equivalent, no baked policy, and the zero-argument launcher.
+- `scripts/docker/smoke-image.sh worker-runtimes` passes, including the shim, the four adapters, the declared set of four runtimes, the exact built Pi SDK host with its patched native MCP/tool-search production dependency closure present and loadable under [Worker Execution Environment Images](20260721-worker_execution_environment_images.md), `pi-mcp-adapter` absent, absence of `/etc/opencode` or the proved equivalent, no baked policy, and the zero-argument launcher.
 
 App image smoke acceptance:
 

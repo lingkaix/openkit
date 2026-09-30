@@ -120,7 +120,7 @@ becoming the canonical source of workspace truth.
 - Do not let sandbox workers directly push, deploy, publish, tag, or mutate protected branches.
 - Do not make OpenShell the only materialization backend.
 - Do not treat backend logs, paths, process ids, sandbox ids, gateway ids, provider handles, or file-transfer handles as public product identity.
-- Do not expose raw host paths, provider secrets, raw environment values, or temporary credential material through product APIs.
+- Do not expose raw host paths, provider secrets, raw environment values, or temporary credential material through synchronization product APIs. The restricted native-environment administration view belongs to [Agent Manifest And AEP Resolution — User Administration Of Native Environment](20260703-agent_manifest_aep_resolution.md#user-administration-of-native-environment); it exposes admitted public defaults and overrides, never credential values, host environment, or raw unclassified image environment.
 - Do not require every backend to support every synchronization strategy.
 - Do not replace Goal Mode, Action Center, artifacts, or review decisions with Git commit state.
 - Do not implement unattended recursive self-modification.

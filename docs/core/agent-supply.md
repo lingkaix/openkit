@@ -268,7 +268,7 @@ The current manifest schema is validated strictly. Unknown or unsupported author
 - Each launch MUST derive from exactly one `AgentManifest` and one selected setup-local profile; resolution, governance materialization, and runtime adaptation MUST NOT become additional authored supply authorities.
 - Workspace bindings and User preferences MAY participate in authored composition, but they MUST yield one composed authored setup before resolution and MUST NOT turn catalogs, grants, policy, runtime proof, or materialization into authored supply.
 - Launch-time capability availability MUST be the intersection of authored requirements and selected runtime adapter and image proof; missing required proof MUST block readiness, and optional unproven capability MUST remain unavailable.
-- Agent supply MUST NOT create a direct or runtime-native MCP execution route; worker MCP access belongs to the governed capability plane owned by `agent-capability.md`.
+- Agent supply MUST NOT create a direct or runtime-native MCP execution route for NanoCore-managed supply; that supply belongs to the governed capability plane owned by `agent-capability.md`. This rule does not govern worker-owned in-Sandbox configuration. External routing follows [Sandbox](sandbox.md). NanoCore-managed supply and the upward interface remain Gateway-mediated; separately authorized non-LLM REST grants retain their existing network and credential contracts. Such a grant creates no NanoCore-managed supply route.
 
 ## Relationship To Other Docs
 
