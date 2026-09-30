@@ -46,7 +46,7 @@ Pi's purpose in this architecture is to prove that the worker boundary is not an
 
 ## Upstream Contract
 
-The deployment pin is the Pi release this adapter's implementation slice selects by probe and records in the `worker-runtimes` version manifest. This specification does not guess that pin. The image pin `0.85.1` at monorepo commit `d981de1229ef899957bbe968bc8dcda02a21f477`, and the published `0.87.1` commit `f07218c4d4bbc12bef056a7058c3dd49dfe41abe`, are examined evidence. Main commit `4df1574339bfbd1a9750ff485bb618da397ba135` is not a pin for `0.87.1`. Main-only MCP is not a substitute for `nicobailon/pi-mcp-adapter`.
+The SDK host pins `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at exactly `0.99.1` and uses that release's native MCP. On this pin the host calls that release's configuration loader with the admitted agent directory, the session cwd, and `projectTrusted: false`, and it requires the host-supplied built-in MCP Extension when OpenKit servers are admitted. The deployment image pin remains the `worker-runtimes` version manifest. The image pin `0.85.1` at monorepo commit `d981de1229ef899957bbe968bc8dcda02a21f477`, and the published `0.87.1` commit `f07218c4d4bbc12bef056a7058c3dd49dfe41abe`, are examined evidence of earlier pins. Main commit `4df1574339bfbd1a9750ff485bb618da397ba135` is not a pin for `0.87.1`.
 
 The production path is the SDK host. The adapter spawns no shell and never uses `--api-key`. JSON-mode argv, including `--mode json`, `--no-approve`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--offline`, is not the contract.
 
@@ -104,9 +104,9 @@ The adapter returns a normalized final assistant message and adapter-local diagn
 
 ## Skills, Extensions, And MCP
 
-OpenKit-managed MCP uses the host-managed entry of `nicobailon/pi-mcp-adapter` until official Pi MCP ships ([decision](../decisions/20260929-four_native_runtime_adapters.md)). User in-Sandbox MCP uses that adapter's own configuration file. The image carries the adapter in the Pi slice only. Do not enable built-in Pi MCP and the third-party adapter for the same servers. One server must not have two clients. The examined fixture writes `mcp.json` while the examined adapter reserves that file for built-in MCP and uses `mcp-adapter.json` or standard locations. The pinned combination chooses one file. The implementation slice establishes which file by probe, and this specification does not name it in advance.
+The host requires the workspace-patched `@earendil-works/pi-coding-agent@0.99.1`: `pnpm-workspace.yaml` applies `patches/pi-coding-agent-0.99.1-openkit-native-state.patch` to expose `McpExtensionOptions.onConnectionState`, which stock 0.99.1 does not provide. The private configuration-loader and default-transport imports resolve from that same pinned package. An image must deploy the built host with its patched production dependency closure; a plain npm installation of Pi is not equivalent.
 
-The published npm name of `nicobailon/pi-mcp-adapter` is not established. The examined git pin is commit `b33382ac057d033b0368c4dfdf10dbb3c634d7dc`, source package `3.2.0`. The slice installs from a checked pin or a published tarball only after its name and bytes are checked. `@earendil-works/pi-coding-agent` is not added to `@openkit/worker-shim`.
+OpenKit-managed MCP uses Pi 0.99.1's native MCP. The host registers each admitted server for the resident session with `exposure: "direct"`, so those tools are declared to the model, at `<capabilityBaseUrl>/mcp/<serverId>` with the capability loopback credential only in the `Authorization` header. User in-Sandbox MCP uses `<agentDir>/mcp.json` under Pi's own loader. The project `mcp.json` stays unread because the host does not trust the project. One server must not have two clients. The host invokes Pi's own loader with the admitted agent directory, the session cwd, and `projectTrusted: false`, and fails setup when that returned configuration contains an admitted name, including a disabled entry and an entry written during Extension loading. It requires the host-supplied built-in MCP Extension to remain loaded, and fails setup when that Extension is disabled or replaced, even if a replacement could connect the registrations. An empty tool catalog is a successful connection. Both loopback credentials are redacted from native MCP JSON messages, including member names and decoded resource blobs, and from native transport errors before Pi converts or persists them. Connection proof is Pi's completed setup and tool registration callback for each admitted server; terminal failure follows native retry handling. `@earendil-works/pi-coding-agent` is not added to `@openkit/worker-shim`.
 
 The adapter must not discover, install, directly connect, authorize, or broaden OpenKit MCP supply. Undeclared or unauthorized Extension loading is an image or manifest policy failure, not a reason to broaden the adapter. The adapter declares whether the runtime lists tools again at Turn start. The implementation slice establishes that declaration by probe. When it does not, a changed supply is a setup change replaced by a successor AgentSession that resumes the native conversation ([AgentSession](../core/agent-session.md)). Narrowing and revocation apply at the next call as `capability_denied`. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns the Gateway plane for external systems. In-Sandbox MCP is unrestricted.
 
@@ -128,7 +128,7 @@ This specification owns Pi's native representation of `modelParameters`. [Agent 
 
 The repository-owned Pi AgentManifest selects adapter id `pi`, the deployment image `worker-runtimes`, native executable paths used by network policy, the logical-model preferences for the admitted inference route, and only capabilities proved by this specification. The active route does not require a direct upstream credential binding. [Worker Execution Environment Images](20260721-worker_execution_environment_images.md) owns the image. This version starts from a new data root and does not read earlier-version data ([earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)).
 
-The deployment image's Pi slice installs the selected Pi package, the SDK host, and `pi-mcp-adapter`. It runs as a non-root worker user. Smoke proves the selected binary, the shim, non-root identity, and that the host is present. It does not prove a real inference Turn. Image-content proof is not dispatch readiness. The image also contains Codex, OpenCode V2, and DeepSeek. Image contents confer no adapter authority.
+The deployment image's Pi slice installs the selected Pi package and the SDK host. It does not install `pi-mcp-adapter`. It runs as a non-root worker user. Smoke proves the selected binary, the shim, non-root identity, and that the host is present. It does not prove a real inference Turn. Image-content proof is not dispatch readiness. The image also contains Codex, OpenCode V2, and DeepSeek. Image contents confer no adapter authority.
 
 Pi-specific install commands, binary paths, event fixtures, and version pins live only in the Pi AgentManifest, this adapter, this specification, and its tests, and in the Pi install slice of the one image. They do not live in the other adapters.
 
@@ -155,11 +155,11 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 - Normalized final assistant candidate content: supported
 - Interrupt that reports the actual outcome: supported
 - User Extension and Skill loading: supported
-- MCP through `pi-mcp-adapter` exactly once for OpenKit grants: supported
+- MCP through Pi's native MCP, once per resident session, with OpenKit tools declared directly when the server offers them and with an empty catalog accepted: supported
 - Live native token streaming into product Items: not supported
 - Native approval or extension UI round trips: not supported
 - Steer and follow-up: not supported
-- Built-in Pi MCP: not advertised
+- Built-in Pi MCP for admitted OpenKit servers and for agent-directory user servers: supported
 
 ## Tests
 
@@ -173,7 +173,7 @@ Required adapter tests cover:
 - Inspection of the exact host and session without launching work, rejection of an unknown or mismatched identity, and `harness.drain` refusing new `session.open` and `turn.start` while admitted work and cleanup settle
 - Ephemeral isolation from retained prompts and stale auth, so retained files do not become launch authority
 - Two prompts in one SDK host, then a new host resuming the exact session file, with the prior context visible in the captured provider input
-- SDK Extension lifecycle and authority removal: user package loading, a session-start hook, a Skill or template, one sandbox-local MCP server, OpenKit MCP exactly once through the host-managed entry, a browser path reaching the runtime, and an explicit unsupported result for a UI-only feature. Module load is not compatibility
+- SDK Extension lifecycle and authority removal: user package loading, a session-start hook, a Skill or template, one sandbox-local MCP server, OpenKit MCP exactly once through Pi's native registration, refusal when the loader returns an admitted name or the host-supplied built-in Extension is replaced, a successful empty catalog, redaction of both loopback credentials in native log and reflected tool-result delivery, a browser path reaching the runtime, and an explicit unsupported result for a UI-only feature. Module load is not compatibility
 - A supply change between two Turns either shows the new supply on the second Turn or follows the probed setup-change successor. The check reads the model-visible schema
 - Fail-closed native permissions
 - A real Pi Task must execute verifiable repository tools, produce a reviewable change through the existing review and apply path, and expose consistent terminal results in Web and the public Skill before the route is claimed usable. That live-acceptance obligation is separate from code-level synthetic proof

@@ -5,6 +5,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
+  createMcpExtension,
   DefaultResourceLoader,
   type ExtensionFactory,
   type ExtensionUIContext,
@@ -13,7 +14,6 @@ import {
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   CHANNEL_NATIVE_EVENT_MAX_BYTES,
   type HostErrorCode,
@@ -26,12 +26,6 @@ import {
   type PiModelDescriptor,
 } from './channel.ts';
 import {
-  type HostManagedMcpAdapter,
-  loadHostManagedMcp,
-  MCP_TOOL_APPROVAL_REQUEST_EVENT,
-  type McpToolApprovalRequest,
-} from './host-managed-mcp.ts';
-import {
   allocatePiSessionPath,
   digestPiSessionHandle,
   encodePiSessionHandle,
@@ -41,6 +35,7 @@ import {
   provePiSessionHeader,
   requireAbsentPiSession,
 } from './identity.ts';
+import { hostSuppliedBuiltinMcp, loadPiMcpInternals, OpenKitMcpGate } from './openkit-mcp.ts';
 import { type PiTurnOutcome, PiTurnOutcomeTracker } from './outcome.ts';
 
 /** The one adapter-owned provider alias every generated model descriptor uses. */
@@ -122,16 +117,17 @@ class TurnCancelledError extends Error {
 /**
  * One dedicated Pi SDK host: exactly one native conversation, prompted once per Turn.
  *
- * The SDK session, the resource loader, and the host-managed MCP connection are created lazily
- * at the first Turn, because the capability plane refuses every request until the Harness has
- * bound a Turn and the adapter freezes its tool catalog when it connects. The catalog is not
- * listed again at later Turns; a supply change is a setup change that the Harness serves with a
- * successor host resuming the same session file.
+ * The SDK session, the resource loader, and Pi's native MCP connection are created lazily at the
+ * first Turn, because the capability plane refuses every request until the Harness has bound a
+ * Turn. OpenKit tools stay on that connection for later Turns; a supply change is a setup change
+ * that the Harness serves with a successor host resuming the same session file.
  */
 export class PiRuntimeHost {
+  #awaitingOpenKitMcp = false;
   #binding: Binding | null = null;
   readonly #io: PiRuntimeHostIo;
-  #mcp: HostManagedMcpAdapter | null = null;
+  /** Native MCP gate for the resident session. It retains only this host's OpenKit transports. */
+  #mcpGate: OpenKitMcpGate | null = null;
   #opening: Promise<void> | null = null;
   #reportedUi = new Set<string>();
   #session: AgentSession | null = null;
@@ -455,18 +451,20 @@ export class PiRuntimeHost {
   }
 
   /** Cancels a Turn at every stage: pending MCP setup, pre-run hooks, compaction, or the run. */
-  async #cancelTurn(turn: ActiveTurn): Promise<void> {
-    if (turn.settingUp && !this.#session) {
-      // Closing the adapter aborts a connection that `ready()` is still establishing. A resident
-      // session keeps its connection: a later Turn's setup only proves identity and the model.
-      const mcp = this.#mcp;
-      this.#mcp = null;
-      await mcp?.close().catch(() => undefined);
+  async #cancelTurn(_turn: ActiveTurn): Promise<void> {
+    if (this.#awaitingOpenKitMcp && this.#session) {
+      // The first Turn's connection is still opening. Dropping it must abort the held HTTP
+      // initialize. A later Turn's setup only proves identity and the model, so it leaves the
+      // resident connection up and only aborts the run.
+      const session = this.#session;
+      this.#session = null;
+      await this.#releaseSession(session);
+      return;
     }
     await this.#session?.abort().catch(() => undefined);
   }
 
-  /** Interrupts any Turn, closes the MCP connection, and disposes the SDK session. */
+  /** Interrupts any Turn, closes MCP, and disposes the SDK session. */
   async #stop(): Promise<void> {
     const turn = this.#turn;
     if (turn) {
@@ -474,10 +472,11 @@ export class PiRuntimeHost {
       await this.#cancelTurn(turn);
       await turn.done;
     }
-    await this.#mcp?.close().catch(() => undefined);
-    this.#mcp = null;
-    this.#session?.dispose();
-    this.#session = null;
+    if (this.#session) {
+      const session = this.#session;
+      this.#session = null;
+      await this.#releaseSession(session);
+    }
   }
 
   /** Fences the binding after a failed identity proof, stopping an active Turn. */
@@ -524,44 +523,88 @@ export class PiRuntimeHost {
       return this.#session;
     }
     const openkitServers = new Set(request.mcpServers);
-    // The resident session keeps this Extension for every later Turn, so the check reads the
-    // current Turn on each hook invocation and never retains this first Turn's state.
-    const extensionFactories: ExtensionFactory[] = [
-      hostControl(openkitServers, () => {
-        const current = this.#turn;
-        return current === null || cancelled(current) || this.#state !== 'active';
-      }),
-    ];
-    if (openkitServers.size > 0) {
-      const createAdapter = await loadHostManagedMcp();
-      checkpoint();
-      const base = request.capabilityBaseUrl.replace(/\/+$/, '');
-      const authorization = `Bearer ${request.capabilityCredential}`;
-      const adapter = createAdapter({
-        onToolCall: (call) => call.dispatch(),
-        servers: Object.fromEntries(
-          request.mcpServers.map((server) => [
-            server,
-            {
-              createTransport: () =>
-                new StreamableHTTPClientTransport(
-                  new URL(`${base}/mcp/${encodeURIComponent(server)}`),
-                  { requestInit: { headers: { authorization } } }
-                ),
-            },
-          ])
-        ),
-      });
-      this.#mcp = adapter;
-      try {
-        await adapter.ready();
-      } catch (error) {
-        checkpoint();
-        throw error;
-      }
-      checkpoint();
-      extensionFactories.unshift(adapter.extensionFactory);
+    // Pi MCP server names are letters, digits, `_`, and `-`. A producer value outside that rule
+    // fails setup here. Admitted catalog names already satisfy it.
+    const rejectedNames = [...openkitServers].filter((id) => !/^[A-Za-z0-9_-]+$/.test(id));
+    if (rejectedNames.length > 0) {
+      throw new Error(
+        `OpenKit MCP server id is not a Pi MCP server name: ${rejectedNames.join(', ')}.`
+      );
     }
+    const piMcp = await loadPiMcpInternals();
+    checkpoint();
+    const gate = new OpenKitMcpGate({
+      admitted: openkitServers,
+      agentDir: request.agentDir,
+      createDefaultTransport: piMcp.createDefaultTransport,
+      cwd: request.workingDirectory,
+      loadMcpConfig: piMcp.loadMcpConfig,
+      secrets: [request.inferenceCredential, request.capabilityCredential],
+    });
+    this.#mcpGate = gate;
+    const base = request.capabilityBaseUrl.replace(/\/+$/, '');
+    const authorization = `Bearer ${request.capabilityCredential}`;
+    // The resident session keeps these Extensions for every later Turn. The gate reads the
+    // current Turn on each hook invocation and never retains this first Turn's state. The MCP
+    // factory is the host-supplied built-in one. Pi omits it when another Extension replaces or
+    // disables it, and the host refuses that before `session_start` can connect anything.
+    const extensionFactories = [
+      hostControl(
+        request.mcpServers.map((id) => ({
+          authorization,
+          id,
+          url: `${base}/mcp/${encodeURIComponent(id)}`,
+        })),
+        () => {
+          const current = this.#turn;
+          return current === null || cancelled(current) || this.#state !== 'active';
+        }
+      ),
+      {
+        builtin: true,
+        factory: createMcpExtension({
+          createTransport: (entry, cwd, authProvider) =>
+            gate.createTransport(entry, cwd, authProvider),
+          loadConfig: () => gate.loadConfig(),
+          onConnectionState: (connection) => gate.connectionState(connection),
+        }),
+        name: 'mcp',
+        replaceable: true,
+      },
+    ];
+    try {
+      return await this.#openResidentSession(
+        binding,
+        turn,
+        request,
+        model,
+        extensionFactories,
+        gate,
+        openkitServers
+      );
+    } catch (error) {
+      await gate.closeRetained();
+      throw error;
+    }
+  }
+
+  /**
+   * Loads resources, requires the host-supplied MCP Extension, and waits for admitted servers.
+   */
+  async #openResidentSession(
+    binding: Binding,
+    turn: ActiveTurn,
+    request: Binding['request'],
+    model: NonNullable<ReturnType<ModelRuntime['getModel']>>,
+    extensionFactories: NonNullable<
+      ConstructorParameters<typeof DefaultResourceLoader>[0]['extensionFactories']
+    >,
+    gate: OpenKitMcpGate,
+    openkitServers: ReadonlySet<string>
+  ): Promise<AgentSession> {
+    const checkpoint = () => {
+      if (cancelled(turn) || this.#state === 'closing') throw new TurnCancelledError();
+    };
     // Every Pi mode initializes the process theme; Extensions that format tool output read it
     // once the host offers a UI context. Only the built-in theme loads, with no file watcher,
     // so user themes stay off.
@@ -602,20 +645,69 @@ export class PiRuntimeHost {
       throw new PiSessionIdentityError('Pi session opened another conversation.');
     }
     checkpoint();
+    if (openkitServers.size > 0 && !hostSuppliedBuiltinMcp(extensionsResult.extensions)) {
+      throw new Error('Host-supplied built-in Pi MCP extension is not loaded.');
+    }
+    const recordExtensionError = (message: string): void => {
+      this.#io.send({ event: 'extension_error', message });
+    };
     for (const error of extensionsResult.errors) {
-      this.#io.send({ event: 'extension_error', message: `${error.path}: ${error.error}` });
+      recordExtensionError(`${error.path}: ${error.error}`);
     }
     await session.bindExtensions({
       onError: (error) =>
-        this.#io.send({
-          event: 'extension_error',
-          message: `${error.extensionPath} ${error.event}: ${error.error}`,
-        }),
+        recordExtensionError(`${error.extensionPath} ${error.event}: ${error.error}`),
       uiContext: this.#headlessUi(session.extensionRunner.getUIContext()),
     });
     if (session.extensionRunner.getShortcuts({}).size > 0) this.#reportUi('registerShortcut');
+    const override = gate.overrideError();
+    if (override) throw override;
+    checkpoint();
+    if (openkitServers.size > 0) {
+      this.#awaitingOpenKitMcp = true;
+      try {
+        await this.#waitForOpenKitMcp(gate, openkitServers, turn);
+      } finally {
+        this.#awaitingOpenKitMcp = false;
+      }
+    }
     checkpoint();
     return session;
+  }
+
+  /** Closes retained OpenKit transports, then disposes the SDK session. `dispose` emits no shutdown. */
+  async #releaseSession(session: AgentSession): Promise<void> {
+    await this.#mcpGate?.closeRetained();
+    await session.extensionRunner
+      .emit({ reason: 'quit', type: 'session_shutdown' })
+      .catch(() => undefined);
+    session.dispose();
+  }
+
+  /**
+   * Waits until every admitted server finishes native setup on the host-owned transport.
+   * An empty catalog is ready. Close or error before that exchange fails the wait. Pi's first
+   * prompt only waits `startupWaitMs` and then continues, so this wait is the setup gate.
+   */
+  async #waitForOpenKitMcp(
+    gate: OpenKitMcpGate,
+    servers: ReadonlySet<string>,
+    turn: ActiveTurn
+  ): Promise<void> {
+    const deadline = Date.now() + OPENKIT_MCP_CONNECT_TIMEOUT_MS;
+    while (true) {
+      if (cancelled(turn) || this.#state === 'closing') throw new TurnCancelledError();
+      const failed = gate.failedServers(servers);
+      if (failed.length > 0) {
+        throw new Error(`OpenKit MCP server failed to connect: ${failed.join(', ')}.`);
+      }
+      if (gate.allReady(servers)) return;
+      if (Date.now() >= deadline) {
+        const missing = [...servers].filter((id) => !gate.allReady(new Set([id])));
+        throw new Error(`OpenKit MCP server did not connect: ${missing.join(', ')}.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
   }
 
   /** Proves the established handle, or that a new conversation still grants nothing. */
@@ -744,28 +836,44 @@ function registerModel(runtime: ModelRuntime, baseUrl: string, model: PiModelDes
 }
 
 /**
- * The host's own Extension. It answers the adapter's approval broker for OpenKit host-managed
- * servers only: authorization of those calls belongs to the Gateway behind the capability plane,
- * and this broker is the embedding host's gate. Requests for other servers come from a user's own
- * in-Sandbox MCP configuration and are left unclaimed, so that configuration keeps its own
- * behavior. When no Turn may run it also cancels compaction, which the SDK can start before a run
- * exists and therefore before `abort()` can reach it.
+ * How long the first Turn waits for each OpenKit server before failing setup.
  *
- * The pinned agent loop checks an existing run's abort signal after its tool-call handlers and
- * before tool execution. An Extension can also trigger a new native run with a fresh signal, so the
- * resident host-control Extension checks the current Turn at every `agent_start` and aborts a run
- * when that Turn is absent, cancelled, fenced, or no longer active. These checks stop new work; they
- * do not prove rollback of an already-dispatched external effect.
+ * Pi retries a transient HTTP failure after 250ms and 1000ms, and a non-transient refusal such as
+ * 403 fails on the first attempt. This bound covers that retry and the lazy MCP runtime load, and
+ * it is shorter than Pi's 60s request timeout so a refused server does not hold the prompt.
+ */
+const OPENKIT_MCP_CONNECT_TIMEOUT_MS = 15_000;
+
+/**
+ * The host's own Extension. It registers each admitted OpenKit server with Pi's native MCP for
+ * this session only: `url` is the capability route, the bearer stays in the `Authorization`
+ * header, and `exposure: "direct"` declares the tools to the model. The registration is not
+ * written to `mcp.json`. Authorization of the calls belongs to the Gateway behind the capability
+ * plane. The host no longer brokers an adapter approval event.
  *
- * @param servers OpenKit host-managed server ids.
+ * When no Turn may run it also cancels compaction, which the SDK can start before a run exists
+ * and therefore before `abort()` can reach it. The pinned agent loop checks an existing run's
+ * abort signal after its tool-call handlers and before tool execution. An Extension can also
+ * trigger a new native run with a fresh signal, so this Extension checks the current Turn at
+ * every `agent_start` and aborts a run when that Turn is absent, cancelled, fenced, or no longer
+ * active. These checks stop new work; they do not prove rollback of an already-dispatched
+ * external effect.
+ *
+ * @param servers OpenKit servers to register before `session_start`.
  * @param isFenced Reads, at each invocation, whether native work must not proceed.
  */
-function hostControl(servers: ReadonlySet<string>, isFenced: () => boolean): ExtensionFactory {
+function hostControl(
+  servers: readonly { authorization: string; id: string; url: string }[],
+  isFenced: () => boolean
+): ExtensionFactory {
   return (pi) => {
-    pi.events.on(MCP_TOOL_APPROVAL_REQUEST_EVENT, (data) => {
-      const request = data as McpToolApprovalRequest;
-      if (servers.has(request.serverName)) request.claim(() => 'allow_once');
-    });
+    for (const server of servers) {
+      pi.registerMcpServer(server.id, {
+        exposure: 'direct',
+        headers: { Authorization: server.authorization },
+        url: server.url,
+      });
+    }
     pi.on('session_before_compact', () => (isFenced() ? { cancel: true } : undefined));
     pi.on('agent_start', (_event, ctx) => {
       if (isFenced()) ctx.abort();
@@ -773,7 +881,6 @@ function hostControl(servers: ReadonlySet<string>, isFenced: () => boolean): Ext
   };
 }
 
-/** Projects a proved handle to its Harness state. */
 function readyOrPending(handle: PiSessionHandle | null): HostNativeHandle {
   if (!handle) return { state: 'pending' };
   const encoded = encodePiSessionHandle(handle);

@@ -1,0 +1,21 @@
+--- a/dist/extensions/mcp/index.js
++++ b/dist/extensions/mcp/index.js
+@@ -306,6 +306,7 @@
+                 tokensAtSignIn.delete(connection);
+             else if (!tokensAtSignIn.has(connection))
+                 tokensAtSignIn.set(connection, storedTokens(connection));
++            options.onConnectionState?.(connection);
+             emitChange();
+         };
+         /** Reconnect servers that need a sign-in when their credentials were stored since. */
+--- a/dist/extensions/mcp/index.d.ts
++++ b/dist/extensions/mcp/index.d.ts
+@@ -45,6 +45,8 @@
+      * milliseconds. Their tools become available when they connect. Default: 10000.
+      */
+     startupWaitMs?: number;
++    /** Reports native connection state after tool registration or terminal connection failure. */
++    onConnectionState?: (connection: { entry: { name: string }; state: string }) => void;
+ }
+ export declare function createMcpExtension(options?: McpExtensionOptions): ExtensionFactory;
+ declare const _default: ExtensionFactory;

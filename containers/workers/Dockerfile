@@ -26,6 +26,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/protocol/package.json packages/protocol/package.json
 COPY packages/worker-protocol/package.json packages/worker-protocol/package.json
 COPY packages/worker-shim/package.json packages/worker-shim/package.json
+COPY patches/pi-coding-agent-0.99.1-openkit-native-state.patch patches/pi-coding-agent-0.99.1-openkit-native-state.patch
 
 RUN pnpm install --frozen-lockfile
 

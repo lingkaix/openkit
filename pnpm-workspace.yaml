@@ -1,6 +1,8 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+patchedDependencies:
+  '@earendil-works/pi-coding-agent@0.99.1': patches/pi-coding-agent-0.99.1-openkit-native-state.patch
 allowBuilds:
   '@google/genai': false
   better-sqlite3: true

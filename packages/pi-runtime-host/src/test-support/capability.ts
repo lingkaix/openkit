@@ -31,6 +31,31 @@ export interface SyntheticCapability {
   readonly log: CapabilityRequest[];
 }
 
+/** Catalog and message variants for one synthetic plane. Defaults match a single echo tool. */
+export interface SyntheticCapabilityOptions {
+  /**
+   * `echo` lists one echo tool. `empty` lists none. `paged` returns that echo tool on the second
+   * `tools/list` page.
+   */
+  catalog?: 'echo' | 'empty' | 'paged' | 'malformed';
+  /** Append one logging notification on the GET stream whose data is the Authorization header. */
+  logAuthorization?: boolean;
+  /** Return the Authorization header as the `tools/call` text. */
+  reflectAuthorization?: boolean;
+  /** Place the bearer in a JSON member name in a server logging notification. */
+  logAuthorizationKey?: boolean;
+  /** Return a failed tool request whose HTTP body reflects the bearer. */
+  rejectToolWithAuthorization?: boolean;
+  /** Return a text resource whose base64 blob decodes to the bearer. */
+  resourceAuthorization?: boolean;
+  /** Hold the initialized notification response after initialize succeeds. */
+  holdInitialized?: boolean;
+  /** Hold tools/list and send an unrelated result on the standalone event stream. */
+  unrelatedListResponse?: boolean;
+  /** Refuse the first initialize with a transient status. */
+  retryInitialize?: boolean;
+}
+
 /**
  * Starts a hand-rolled Streamable HTTP MCP endpoint behind a bearer check.
  *
@@ -40,15 +65,29 @@ export interface SyntheticCapability {
  * @param credential Capability loopback credential the plane accepts, or null for a plane that
  *   checks no bearer, as a user's own in-Sandbox MCP server does not.
  * @param serverIds MCP server ids served under `/capabilities/mcp/:serverId`.
+ * @param options Catalog shape and optional credential-bearing server messages.
  * @returns The running plane.
  */
 export async function startSyntheticCapability(
   credential: string | null,
-  serverIds: readonly string[]
+  serverIds: readonly string[],
+  options: SyntheticCapabilityOptions = {}
 ): Promise<SyntheticCapability> {
   const log: CapabilityRequest[] = [];
   const streams = new Set<ServerResponse>();
   const cancelledHeld: string[] = [];
+  const listPages = new Map<string, number>();
+  let initializeAttempts = 0;
+  const catalog = options.catalog ?? 'echo';
+  const echoTool = {
+    description: 'Echo text back.',
+    inputSchema: {
+      properties: { text: { type: 'string' } },
+      required: ['text'],
+      type: 'object',
+    },
+    name: 'echo',
+  };
   const plane = { bound: false, holdInitialize: false };
   const server: Server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
@@ -76,6 +115,21 @@ export async function startSyntheticCapability(
     if (req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write(': open\n\n');
+      if (options.logAuthorization || options.logAuthorizationKey) {
+        const note = {
+          jsonrpc: '2.0',
+          method: 'notifications/message',
+          params: {
+            data: options.logAuthorizationKey
+              ? { [req.headers.authorization ?? '']: 'key' }
+              : (req.headers.authorization ?? ''),
+            level: 'info',
+          },
+        };
+        res.write(`event: message\ndata: ${JSON.stringify(note)}\n\n`);
+      }
+      if (options.unrelatedListResponse)
+        res.write('event: message\ndata: {"jsonrpc":"2.0","id":99999,"result":{"tools":[]}}\n\n');
       streams.add(res);
       res.on('close', () => streams.delete(res));
       return;
@@ -86,6 +140,11 @@ export async function startSyntheticCapability(
       return;
     }
     if (!body || body.id === undefined) {
+      if (options.holdInitialized && body?.method === 'notifications/initialized') {
+        streams.add(res);
+        res.on('close', () => streams.delete(res));
+        return;
+      }
       res.writeHead(202);
       res.end();
       return;
@@ -101,6 +160,11 @@ export async function startSyntheticCapability(
     const serverInfo = { name: `synthetic-${serverId}`, version: '1.0.0' };
     switch (body.method) {
       case 'initialize':
+        if (options.retryInitialize && initializeAttempts++ === 0) {
+          res.writeHead(503, { 'content-type': 'text/plain' });
+          res.end('transient');
+          return;
+        }
         if (plane.holdInitialize) {
           streams.add(res);
           res.on('close', () => {
@@ -114,23 +178,45 @@ export async function startSyntheticCapability(
           protocolVersion: params.protocolVersion,
           serverInfo,
         });
-      case 'tools/list':
-        return reply({
-          tools: [
-            {
-              description: 'Echo text back.',
-              inputSchema: {
-                properties: { text: { type: 'string' } },
-                required: ['text'],
-                type: 'object',
-              },
-              name: 'echo',
-            },
-          ],
-        });
+      case 'tools/list': {
+        if (options.unrelatedListResponse) {
+          streams.add(res);
+          res.on('close', () => streams.delete(res));
+          return;
+        }
+        if (catalog === 'malformed') return reply({ tools: [{}] });
+        if (catalog === 'empty') return reply({ tools: [] });
+        if (catalog === 'paged') {
+          const page = listPages.get(serverId) ?? 0;
+          listPages.set(serverId, page + 1);
+          if (page === 0) return reply({ nextCursor: 'page-2', tools: [] });
+        }
+        return reply({ tools: [echoTool] });
+      }
       case 'tools/call':
+        if (options.rejectToolWithAuthorization) {
+          res.writeHead(400, { 'content-type': 'text/plain' });
+          res.end(req.headers.authorization ?? '');
+          return;
+        }
         return reply({
-          content: [{ text: `echo:${String(params.arguments?.text)}`, type: 'text' }],
+          content: [
+            options.resourceAuthorization
+              ? {
+                  type: 'resource',
+                  resource: {
+                    uri: 'test://reflection',
+                    mimeType: 'text/plain',
+                    blob: Buffer.from(req.headers.authorization ?? '').toString('base64'),
+                  },
+                }
+              : {
+                  text: options.reflectAuthorization
+                    ? (req.headers.authorization ?? '')
+                    : `echo:${String(params.arguments?.text)}`,
+                  type: 'text',
+                },
+          ],
           isError: false,
         });
       default:
