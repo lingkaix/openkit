@@ -1000,3 +1000,71 @@ WHERE `request_id` IS NOT NULL;
 
 CREATE INDEX `generative_presentations_thread_idx`
 ON `generative_presentations` (`workspace_id`, `thread_id`, `created_at`, `presentation_id`);
+
+--> statement-breakpoint
+
+CREATE TABLE `pending_requests` (
+  `request_id` text PRIMARY KEY NOT NULL,
+  `workspace_id` text NOT NULL,
+  `thread_id` text NOT NULL,
+  `raising_turn_id` text NOT NULL,
+  `request_item_id` text NOT NULL,
+  `kind` text NOT NULL,
+  `requester_kind` text NOT NULL,
+  `agent_id` text,
+  `agent_session_id` text,
+  `responsible_user_id` text NOT NULL,
+  `state` text NOT NULL,
+  `resolution` text,
+  `deciding_actor_kind` text,
+  `deciding_actor_id` text,
+  `decided_at` text,
+  `answer_map_json` text,
+  `ending` text,
+  `invalidating_event` text,
+  `ending_actor_kind` text,
+  `ending_actor_id` text,
+  `ended_at` text,
+  `server_id` text,
+  `catalog_revision` text,
+  `schema_snapshot_id` text,
+  `tool_name` text,
+  `canonical_arguments_json` text,
+  `arguments_digest` text,
+  `package_digest` text,
+  `policy_decision_id` text,
+  `authorization_context_json` text,
+  `governed_intent_json` text,
+  `questions_json` text,
+  `approval_kind` text,
+  `title` text,
+  `description` text,
+  `claim` text NOT NULL,
+  `execution_call_id` text,
+  `disposition` text,
+  `disposition_reason` text,
+  `held_result_json` text,
+  `publication_turn_id` text,
+  `invalidation_turn_id` text,
+  `delivery` text NOT NULL,
+  `delivery_turn_id` text,
+  `delivery_cause` text,
+  `created_at` text NOT NULL,
+  `updated_at` text NOT NULL,
+  CONSTRAINT `pending_requests_kind_check` CHECK (`kind` IN ('approval', 'user-input')),
+  CONSTRAINT `pending_requests_requester_kind_check` CHECK (`requester_kind` IN ('worker', 'assistant', 'person')),
+  CONSTRAINT `pending_requests_state_check` CHECK (`state` IN ('pending', 'resolved', 'ended')),
+  CONSTRAINT `pending_requests_resolution_check` CHECK (`resolution` IS NULL OR `resolution` IN ('granted', 'denied', 'answered')),
+  CONSTRAINT `pending_requests_deciding_actor_kind_check` CHECK (`deciding_actor_kind` IS NULL OR `deciding_actor_kind` IN ('user', 'system')),
+  CONSTRAINT `pending_requests_ending_check` CHECK (`ending` IS NULL OR `ending` IN ('withdrawn', 'invalidated')),
+  CONSTRAINT `pending_requests_ending_actor_kind_check` CHECK (`ending_actor_kind` IS NULL OR `ending_actor_kind` IN ('user', 'system')),
+  CONSTRAINT `pending_requests_claim_check` CHECK (`claim` IN ('unclaimed', 'claimed', 'finished')),
+  CONSTRAINT `pending_requests_disposition_check` CHECK (`disposition` IS NULL OR `disposition` IN ('approved-executed', 'denied-not-executed', 'execution-error', 'outcome-unknown')),
+  CONSTRAINT `pending_requests_delivery_check` CHECK (`delivery` IN ('undelivered', 'frozen', 'delivered', 'delivery-unknown', 'closed-out')),
+  CONSTRAINT `pending_requests_delivery_cause_check` CHECK (`delivery_cause` IS NULL OR `delivery_cause` IN ('outcome', 'carried')),
+  CONSTRAINT `pending_requests_approval_kind_check` CHECK (`approval_kind` IS NULL OR `approval_kind` IN ('permission', 'destructive-action'))
+);
+
+--> statement-breakpoint
+
+CREATE INDEX `pending_requests_thread_state_idx` ON `pending_requests` (`workspace_id`, `thread_id`, `state`);

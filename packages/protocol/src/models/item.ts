@@ -130,8 +130,7 @@ export const ApprovalRequestItemSchema = BaseItemSchema.extend({
 });
 
 /**
- * Product-visible approval decision item. System actors are restricted to boot
- * reconciliation denials and deployment policy grants for repository push.
+ * Product-visible approval decision item. The only system actor is the repository-push policy grant.
  */
 export const ApprovalDecisionItemSchema = BaseItemSchema.extend({
   type: z.literal('approval-decision'),
@@ -140,7 +139,7 @@ export const ApprovalDecisionItemSchema = BaseItemSchema.extend({
     z
       .object({
         kind: z.literal('system'),
-        id: z.enum(['nanocore-boot-reconciliation', 'nanocore-repo-push-policy']),
+        id: z.literal('nanocore-repo-push-policy'),
         responsibleUserId: z.null(),
       })
       .strict(),
@@ -148,12 +147,12 @@ export const ApprovalDecisionItemSchema = BaseItemSchema.extend({
   causationId: z.string().min(1),
   approvalRequestId: z.string().min(1),
   decision: z.enum(['granted', 'denied']),
+  decidedAt: TimestampSchema,
 }).refine(
   (item) =>
     item.actor.kind === 'user' ||
-    (item.actor.id === 'nanocore-boot-reconciliation' && item.decision === 'denied') ||
     (item.actor.id === 'nanocore-repo-push-policy' && item.decision === 'granted'),
-  { message: 'A system approval decision must match its specific denial or grant authority.' }
+  { message: 'A system approval decision must be a repository-push policy grant.' }
 );
 
 /**
@@ -180,7 +179,7 @@ export const UserInputQuestionSchema = z.object({
  * Product-visible agent question request item.
  *
  * Separate request/response item types keep question handling explicit instead of overloading
- * approvals, while still reusing the existing paused turn status for v0.0.1.
+ * approvals. The request does not pause the raising Turn.
  */
 export const UserInputRequestItemSchema = BaseItemSchema.extend({
   type: z.literal('user-input-request'),
@@ -199,6 +198,7 @@ export const UserInputResponseItemSchema = BaseItemSchema.extend({
   causationId: z.string().min(1),
   userInputRequestId: UserInputRequestIdSchema,
   answers: z.record(z.string().min(1), z.tuple([z.string().min(1)])),
+  answeredAt: TimestampSchema,
 });
 
 /**

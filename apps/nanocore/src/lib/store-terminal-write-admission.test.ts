@@ -419,6 +419,7 @@ describe('post-terminal write admission', () => {
       causationId: 'req_approval_grid',
       approvalRequestId: 'apr_grid',
       decision: 'granted' as const,
+      decidedAt: COMPLETED_AT,
       createdAt: COMPLETED_AT,
       completedAt: COMPLETED_AT,
     };

@@ -15,6 +15,7 @@ import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from './knowledge/okf.js';
 import { createPolicyApprovalGate } from './policy/approval-gates.js';
 import { createGoalReviewRecord, resolveGoalReviewRecord } from './runtime/goal-review-records.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
+import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { recordWorkspaceReconciliationRecord } from './runtime/workspace-reconciliation-records.js';
 import {
@@ -405,14 +406,24 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(approvalTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
+    const approvalDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      raiseRecordedPendingRequest(store, approvalDb.sqlite, {
+        requestId: approval.id,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        raisingTurnId: approvalTurn.id,
+        requestItemId: approvalItem.id,
         kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: approvalItem.id,
-      },
-    });
+        requesterKind: 'worker',
+        agentId: 'agent_demo',
+        responsibleUserId: 'user_local',
+        approval: { kind: 'permission', title: approval.title, description: approval.description },
+        now: timestamp,
+      });
+    } finally {
+      approvalDb.sqlite.close();
+    }
     const questionItem = store.createItem({
       id: 'it_action_center_question',
       workspaceId: 'ws_demo',
@@ -436,14 +447,24 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(questionTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
+    const questionDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      raiseRecordedPendingRequest(store, questionDb.sqlite, {
+        requestId: questionItem.userInputRequestId,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        raisingTurnId: questionTurn.id,
+        requestItemId: questionItem.id,
         kind: 'user-input',
-        userInputRequestId: questionItem.userInputRequestId,
-        itemId: questionItem.id,
-      },
-    });
+        requesterKind: 'assistant',
+        responsibleUserId: 'user_local',
+        questions: questionItem.questions,
+        questionDigest: 'digest-action-center',
+        now: timestamp,
+      });
+    } finally {
+      questionDb.sqlite.close();
+    }
     const toolUseTurn = store.createTurn('ws_demo', thread.id, 'Use an MCP tool', {
       kind: 'user',
       id: 'user_local',
@@ -486,7 +507,7 @@ describe('action center app API', () => {
         source: expect.objectContaining({ type: 'approval', approvalRequestId: approval.id }),
       }),
       expect.objectContaining({
-        id: `question:${questionItem.id}`,
+        id: `question:${questionItem.userInputRequestId}`,
         kind: 'question',
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -499,7 +520,7 @@ describe('action center app API', () => {
           expect.objectContaining({
             kind: 'answer_question',
             disabled: true,
-            reason: 'Secret answers require a future Vault-backed input contract.',
+            reason: 'Secret answers are not supported.',
           }),
         ]),
       }),
@@ -533,7 +554,7 @@ describe('action center app API', () => {
       ListHumanAttentionResponseSchema.parse(await incompleteWorkerGate.json()).items.map(
         (item) => item.id
       )
-    ).toEqual([`question:${questionItem.id}`]);
+    ).toEqual([`approval:${approval.id}`, `question:${questionItem.userInputRequestId}`]);
     coreDb.sqlite.close();
   });
 
@@ -575,14 +596,24 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(approvalTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
+    const approvalDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      raiseRecordedPendingRequest(store, approvalDb.sqlite, {
+        requestId: approval.id,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        raisingTurnId: approvalTurn.id,
+        requestItemId: approvalItem.id,
         kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: approvalItem.id,
-      },
-    });
+        requesterKind: 'person',
+        responsibleUserId: 'user_owner',
+        approval: { kind: 'permission', title: approval.title, description: approval.description },
+        governedIntent: { action: 'repo.push' },
+        now: timestamp,
+      });
+    } finally {
+      approvalDb.sqlite.close();
+    }
     const questionItem = store.createItem({
       id: 'it_actor_scoped_question',
       workspaceId: 'ws_demo',
@@ -606,14 +637,24 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(questionTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
+    const questionDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      raiseRecordedPendingRequest(store, questionDb.sqlite, {
+        requestId: questionItem.userInputRequestId,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        raisingTurnId: questionTurn.id,
+        requestItemId: questionItem.id,
         kind: 'user-input',
-        userInputRequestId: questionItem.userInputRequestId,
-        itemId: questionItem.id,
-      },
-    });
+        requesterKind: 'assistant',
+        responsibleUserId: 'user_responsible',
+        questions: questionItem.questions,
+        questionDigest: 'digest-actor-scoped',
+        now: timestamp,
+      });
+    } finally {
+      questionDb.sqlite.close();
+    }
     const knowledgeProposal = createKnowledgeProposalFixture(
       store,
       'ws_demo',
@@ -705,20 +746,15 @@ describe('action center app API', () => {
         status: 200,
         visibleIds: [
           'agent-readiness:agent_codex_host',
-          `approval:${approval.id}`,
           `knowledge:${knowledgeProposal.id}`,
-          `question:${questionItem.id}`,
+          `question:${questionItem.userInputRequestId}`,
         ],
       },
       {
         name: 'nonresponsible editor',
         secret: issueToken('user_editor', 'workspace'),
         status: 200,
-        visibleIds: [
-          'agent-readiness:agent_codex_host',
-          `approval:${approval.id}`,
-          `knowledge:${knowledgeProposal.id}`,
-        ],
+        visibleIds: ['agent-readiness:agent_codex_host', `knowledge:${knowledgeProposal.id}`],
       },
       {
         name: 'readonly responsible editor',
@@ -742,7 +778,7 @@ describe('action center app API', () => {
     const scopedRowIds = new Set([
       'agent-readiness:agent_codex_host',
       `approval:${approval.id}`,
-      `question:${questionItem.id}`,
+      `question:${questionItem.userInputRequestId}`,
       `knowledge:${knowledgeProposal.id}`,
     ]);
 
@@ -921,7 +957,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    const approvalItem = store.createItem({
+    store.createItem({
       id: 'it_incomplete_gate_approval',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -934,14 +970,6 @@ describe('action center app API', () => {
       kind: approval.kind,
       createdAt: timestamp,
       completedAt: null,
-    });
-    store.updateTurn(approvalTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: approvalItem.id,
-      },
     });
     store.createItem({
       id: 'it_ungated_question',
@@ -1017,6 +1045,7 @@ describe('action center app API', () => {
       causationId: 'it_resolved_approval',
       approvalRequestId: approval.id,
       decision: 'granted',
+      decidedAt: timestamp,
       createdAt: timestamp,
       completedAt: timestamp,
     });
@@ -1054,6 +1083,7 @@ describe('action center app API', () => {
       causationId: 'it_resolved_question',
       userInputRequestId: 'ui_resolved',
       answers: { path: ['Use path A'] },
+      answeredAt: timestamp,
       createdAt: timestamp,
       completedAt: timestamp,
     });
@@ -1654,8 +1684,9 @@ describe('action center app API', () => {
     }
   });
 
-  it('advertises the actual turn input route for question actions', async () => {
-    const store = createDemoStore();
+  it('advertises the user-input answer route for question actions', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_demo', 'Question route metadata');
     const turn = store.createTurn('ws_demo', thread.id, 'Ask before continuing', {
       kind: 'user',
@@ -1684,25 +1715,36 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(turn.id, {
-      status: 'awaiting_human',
-      humanGate: {
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+        requestId: questionItem.userInputRequestId,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        raisingTurnId: turn.id,
+        requestItemId: questionItem.id,
         kind: 'user-input',
-        userInputRequestId: questionItem.userInputRequestId,
-        itemId: questionItem.id,
-      },
-    });
-    const app = createApp({ store });
+        requesterKind: 'assistant',
+        responsibleUserId: 'user_local',
+        questions: questionItem.questions,
+        questionDigest: 'digest-question-route',
+        now: timestamp,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const app = createAuthorizedCoreApp(coreDb, store);
 
     const res = await app.request('/api/app/workspaces/ws_demo/action-center');
     const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
-      (item) => item.id === 'question:it_question_route'
+      (item) => item.id === `question:${questionItem.userInputRequestId}`
     );
 
     expect(row?.actions.find((action) => action.kind === 'answer_question')).toMatchObject({
       method: 'POST',
-      href: '/api/turns',
+      href: `/api/user-input-requests/${questionItem.userInputRequestId}/answer`,
     });
+    coreDb.sqlite.close();
   });
 
   it('scopes Goal Review row ids by workspace, thread, and Goal', async () => {

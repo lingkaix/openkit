@@ -6,16 +6,16 @@ import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
-import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from './config/runtime-config.js';
 import { FsStore } from './lib/store.js';
-import { isExactWorkerApprovalSourceDecision } from './policy/approval-gates.js';
-import { listPolicyApprovalSourceDecisions } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import * as gitExecutor from './runtime/git-push-executor.js';
-import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { recordWorkspaceApplyResult } from './runtime/workspace-apply-results.js';
@@ -29,11 +29,14 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
-import { createVaultGrant } from './vault/vault-grants.js';
+import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
-import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
+import {
+  getWorkspaceRepositoryResource,
+  upsertWorkspaceRepositoryResource,
+} from './workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -141,7 +144,7 @@ async function fixture(mode: 'auto_allow' | 'require_human_approval' = 'auto_all
       updatedAt: new Date().toISOString(),
       workspaceId: 'ws_demo',
     });
-    store.updateTurn(turn.id, { agentSessionId: sessionId });
+    store.updateTurn(turn.id, { agentId: 'agent_codex_host', agentSessionId: sessionId });
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup({ mcpIds: ['openkit-repository'] }),
@@ -270,6 +273,7 @@ async function fixture(mode: 'auto_allow' | 'require_human_approval' = 'auto_all
     request,
     stop,
     runner,
+    vaultUnlockState,
     runHostCommand,
     upstream,
     canary,
@@ -311,137 +315,216 @@ async function call(
 }
 
 describe('selected repository MCP', () => {
-  it('gives identical opaque errors for private and missing approval sources before Git effects', async () => {
-    const f = await fixture();
+  it('raises one human-mode pending push without stopping the Turn or contacting Git', async () => {
+    const f = await fixture('require_human_approval');
     try {
-      const sourceThread = f.store.getThread('ws_demo', 'th_demo');
-      Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: 'user_local' });
-      f.store.updateThread('ws_demo', 'th_demo', { name: sourceThread.name });
-      const approved = (await call(f, 'repository_push_request_approval', f.request))
-        .structuredContent as { approval: { id: string } };
-      const now = new Date().toISOString();
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
-          VALUES ('user_other', 'Other Editor', 'other-editor@example.invalid', 0, ?, ?, 'human')`)
-        .run(now, now);
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-          VALUES ('ws_demo', 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?) `)
-        .run(now, now, now);
-      f.store.createThread('ws_demo', 'Other work', 'th_other');
-      const old = f.active();
-      f.store.updateTurn(old.turn.id, { status: 'completed', completedAt: now });
-      f.store.updateAgentSession(old.environmentPackage.scope.agentSessionId, { status: 'closed' });
-      f.successor('user_other', null, 'th_other');
-      const execute = (approvalRequestId: string) =>
-        call(f, 'repository_push_execute', {
-          requestId: randomUUID(),
-          resourceId: 'repo_default',
-          approvalRequestId,
-        });
-      const hidden = await execute(approved.approval.id);
-      const missing = await execute('ap_missing');
-      expect(hidden).toMatchObject({ isError: true });
-      expect(hidden.structuredContent).toEqual(missing.structuredContent);
-      expect(hidden.structuredContent).toMatchObject({ error: { code: 'not_found' } });
+      expect((await f.client.listTools()).tools.map((tool) => tool.name)).toEqual([
+        'repository_push',
+      ]);
+      const pending = await call(f, 'repository_push', f.request);
+      expect(pending.isError).toBe(true);
+      expect(pending.structuredContent).toMatchObject({ status: 'pending-approval' });
+      expect(f.store.getTurnById(f.active().turn.id).status).toBe('running');
       expect(f.runner).not.toHaveBeenCalled();
+      expect(f.stop).not.toHaveBeenCalled();
+      expect((await call(f, 'repository_push', f.request)).structuredContent).toEqual(
+        pending.structuredContent
+      );
+      expect(
+        f.store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.type === 'approval-request')
+      ).toHaveLength(1);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it('serializes concurrent human Git raises before the sixteenth-request boundary', async () => {
+    const f = await fixture('require_human_approval');
+    try {
+      const results = await Promise.allSettled(
+        Array.from({ length: 17 }, () =>
+          call(f, 'repository_push', { ...f.request, requestId: randomUUID() })
+        )
+      );
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(16);
+      expect(results.filter((result) => result.status === 'rejected')).toMatchObject([
+        { reason: { data: { code: 'request_limit_reached' } } },
+      ]);
+      expect(
+        (
+          f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS n FROM capability_calls').get() as {
+            n: number;
+          }
+        ).n
+      ).toBe(16);
+      expect(
+        (
+          f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS n FROM pending_requests').get() as {
+            n: number;
+          }
+        ).n
+      ).toBe(16);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it('deduplicates and bounds human Git raises at the MCP boundary before ledger writes', async () => {
+    const f = await fixture('require_human_approval');
+    try {
+      const first = await call(f, 'repository_push', f.request);
+      const count = () =>
+        (
+          f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS n FROM capability_calls').get() as {
+            n: number;
+          }
+        ).n;
+      const before = count();
+      expect((await call(f, 'repository_push', f.request)).structuredContent).toEqual(
+        first.structuredContent
+      );
+      expect(count()).toBe(before);
+      for (let i = 1; i < 16; i++)
+        await call(f, 'repository_push', { ...f.request, requestId: randomUUID() });
+      const atLimit = count();
+      await expect(
+        call(f, 'repository_push', { ...f.request, requestId: randomUUID() })
+      ).rejects.toMatchObject({ data: { code: 'request_limit_reached' } });
+      expect(count()).toBe(atLimit);
     } finally {
       await f.cleanup();
     }
   });
 
   it.each([
-    false,
-    true,
-  ])('uses exact nonmember admin Worker authority and refuses a revoked successor: %s', async (revokeBeforeExecute) => {
-    const f = await fixture();
+    'vault-revoked',
+    'target-removed',
+  ] as const)('refuses captured Git authority before a claim: %s', async (fault) => {
+    const f = await fixture('require_human_approval');
     try {
-      const priorGrant = (await call(f, 'repository_push_request_approval', f.request))
-        .structuredContent as { approval: { id: string } };
-      const now = new Date().toISOString();
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
-            VALUES ('user_admin_push', 'Admin Push', 'admin-push@example.invalid', 0, ?, ?, 'human')`)
-        .run(now, now);
-      createOpenKitAccessTokenRecord(f.coreDb, {
-        expiresAt: '2099-01-01T00:00:00.000Z',
-        ownerUserId: 'user_admin_push',
-        scope: 'server-admin',
-        tokenId: 'token_admin_push',
-        workspaceIds: [],
-      });
-      const old = f.active();
-      f.store.updateTurn(old.turn.id, {
+      await call(f, 'repository_push', f.request);
+      const item = f.store
+        .listThreadItems('ws_demo', 'th_demo')
+        .find((item) => item.type === 'approval-request');
+      if (!item || item.type !== 'approval-request')
+        throw new Error('Missing captured push request.');
+      f.store.updateTurn(f.active().turn.id, {
         status: 'completed',
-        completedAt: now,
+        completedAt: new Date().toISOString(),
       });
-      f.store.updateAgentSession(old.environmentPackage.scope.agentSessionId, { status: 'closed' });
-      f.successor('user_admin_push', 'token_admin_push');
-      const adminApproval = await call(f, 'repository_push_request_approval', {
-        ...f.request,
-        requestId: randomUUID(),
-      });
-      expect(adminApproval.structuredContent).toMatchObject({
-        approval: { status: 'granted' },
-      });
-      if (revokeBeforeExecute) {
-        f.coreDb.sqlite
-          .prepare(
-            "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
-          )
-          .run(new Date().toISOString(), 'token_admin_push');
-      }
-      const execute = {
-        requestId: randomUUID(),
-        resourceId: 'repo_default',
-        approvalRequestId: priorGrant.approval.id,
-      };
-      if (revokeBeforeExecute) {
-        await expect(
-          f.client.callTool({ name: 'repository_push_execute', arguments: execute })
-        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-        expect(f.runner).not.toHaveBeenCalled();
-        expect(() => f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toThrow();
-      } else {
-        const pushed = await call(f, 'repository_push_execute', execute);
-        expect(pushed.structuredContent).toMatchObject({
-          outcome: 'pushed',
-          actorId: 'user_admin_push',
+      if (fault === 'vault-revoked') revokeVaultGrant(f.coreDb, { grantId: 'grant_push' });
+      else {
+        const repository = getWorkspaceRepositoryResource(
+          f.workspaceDb,
+          'ws_demo',
+          'repo_default'
+        )!;
+        upsertWorkspaceRepositoryResource(f.workspaceDb, {
+          ...repository,
+          workspaceExists: () => true,
+          git: { ...repository.git, allowedPushTargets: [] },
         });
-        expect(f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toBe(
-          f.request.commitIds[0]
-        );
       }
+      const app = createApp({
+        coreDb: f.coreDb,
+        store: f.store,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: f.snapshot,
+        }),
+        vaultUnlockState: f.vaultUnlockState,
+      });
+      const response = await app.request(`/api/approvals/${item.approvalRequestId}/respond`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: f.active().turn.id,
+          requestId: randomUUID(),
+          decision: 'granted',
+        }),
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(
+        f.workspaceDb.sqlite
+          .prepare('SELECT claim, disposition FROM pending_requests WHERE request_id = ?')
+          .get(item.approvalRequestId)
+      ).toEqual({ claim: 'unclaimed', disposition: 'denied-not-executed' });
+      expect(f.runner).not.toHaveBeenCalled();
     } finally {
       await f.cleanup();
     }
   });
 
-  it('stops before a second credential-bearing Git call when its exact Worker lease becomes terminal', async () => {
-    const f = await fixture();
+  it('executes the captured human-mode push once from the approval command after the raising Turn ends', async () => {
+    const f = await fixture('require_human_approval');
     try {
-      const approved = (await call(f, 'repository_push_request_approval', f.request))
-        .structuredContent as { approval: { id: string } };
-      let networkCalls = 0;
-      f.runner.mockImplementation(async (input) => {
-        const result = await f.runHostCommand(input);
-        if (input.args[0] === 'ls-remote') {
-          networkCalls += 1;
-          f.coreDb.sqlite
-            .prepare("UPDATE scheduler_session_leases SET status = 'released' WHERE lease_id = ?")
-            .run(`lease_${f.active().turn.id}`);
+      const pending = await call(f, 'repository_push', f.request);
+      const approvalItem = f.store
+        .listThreadItems('ws_demo', 'th_demo')
+        .find((item) => item.type === 'approval-request');
+      if (!approvalItem || approvalItem.type !== 'approval-request')
+        throw new Error('Missing pending push request.');
+      f.store.updateTurn(f.active().turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      const app = createApp({
+        coreDb: f.coreDb,
+        store: f.store,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: f.snapshot,
+        }),
+        vaultUnlockState: f.vaultUnlockState,
+      });
+      const response = await app.request(
+        `/api/approvals/${approvalItem.approvalRequestId}/respond`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: f.active().turn.id,
+            requestId: randomUUID(),
+            decision: 'granted',
+          }),
         }
-        return result;
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(
+        f.runner,
+        JSON.stringify(
+          f.workspaceDb.sqlite
+            .prepare(
+              'SELECT request_id, disposition, disposition_reason, claim FROM pending_requests'
+            )
+            .all()
+        )
+      ).toHaveBeenCalled();
+      const calls = f.workspaceDb.sqlite
+        .prepare("SELECT call_id, status FROM capability_calls WHERE operation = 'git.push'")
+        .all() as Array<{ call_id: string; status: string }>;
+      expect(calls).toEqual([
+        { call_id: `cap_pending_${approvalItem.approvalRequestId}`, status: 'succeeded' },
+      ]);
+      const permission = f.workspaceDb.sqlite
+        .prepare(
+          "SELECT context_summary_json FROM permission_decisions WHERE approval_id = ? AND result = 'allow'"
+        )
+        .get(approvalItem.approvalRequestId) as { context_summary_json: string };
+      expect(JSON.parse(permission.context_summary_json)).toMatchObject({
+        capabilityCallId: calls[0]!.call_id,
       });
-      const result = await call(f, 'repository_push_execute', {
-        requestId: randomUUID(),
-        resourceId: 'repo_default',
-        approvalRequestId: approved.approval.id,
-      });
-      expect(result.structuredContent).toMatchObject({ outcome: 'refused-policy' });
-      expect(networkCalls).toBe(1);
-      expect(f.runner.mock.calls.map(([input]) => input.args[0])).not.toContain('push');
-      expect(() => f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toThrow();
+      expect(f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toBe(
+        f.request.commitIds[0]
+      );
+      expect(f.store.getTurnById(f.active().turn.id).status).toBe('completed');
+      expect(pending.isError).toBe(true);
     } finally {
       await f.cleanup();
     }
@@ -451,111 +534,35 @@ describe('selected repository MCP', () => {
     const f = await fixture();
     try {
       expect((await f.client.listTools()).tools.map((tool) => tool.name)).toEqual([
-        'repository_push_request_approval',
-        'repository_push_execute',
+        'repository_push',
       ]);
-      const approved = await call(f, 'repository_push_request_approval', f.request);
-      const data = approved.structuredContent as { approval: { id: string; status: string } };
-      expect(data.approval.status).toBe('granted');
+      const pushed = await call(f, 'repository_push', f.request);
+      expect(pushed.structuredContent).toMatchObject({ outcome: 'pushed', actorId: 'user_local' });
       expect(f.store.getTurnById(f.active().turn.id)).toMatchObject({
         status: 'running',
-        humanGate: null,
         completedAt: null,
       });
       expect(f.stop).not.toHaveBeenCalled();
-      expect(f.runner).not.toHaveBeenCalled();
-      const replay = await call(f, 'repository_push_request_approval', f.request);
-      expect(replay.structuredContent).toEqual(approved.structuredContent);
-      const execute = {
-        requestId: randomUUID(),
-        resourceId: 'repo_default',
-        approvalRequestId: data.approval.id,
-      };
-      const pushed = await call(f, 'repository_push_execute', execute);
-      expect(pushed.structuredContent).toMatchObject({
-        outcome: 'pushed',
-        approvalRowId: f.store
-          .listThreadItems('ws_demo', 'th_demo')
-          .find((item) => item.type === 'approval-request')?.id,
-        actorId: 'user_local',
-      });
+      expect(
+        f.runner,
+        JSON.stringify(
+          f.workspaceDb.sqlite
+            .prepare(
+              'SELECT request_id, disposition, disposition_reason, claim FROM pending_requests'
+            )
+            .all()
+        )
+      ).toHaveBeenCalled();
       expect(f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toBe(
         f.request.commitIds[0]
       );
       const count = f.runner.mock.calls.length;
-      expect((await call(f, 'repository_push_execute', execute)).structuredContent).toEqual(
+      expect((await call(f, 'repository_push', f.request)).structuredContent).toEqual(
         pushed.structuredContent
       );
       expect(f.runner).toHaveBeenCalledTimes(count);
       expect(f.upstream).not.toHaveBeenCalled();
       expect(f.store.getTurnById(f.active().turn.id).status).toBe('running');
-    } finally {
-      await f.cleanup();
-    }
-  });
-
-  it('uses a reloaded exact grant from a fresh AgentSession without rewriting its lineage', async () => {
-    const f = await fixture();
-    try {
-      const approved = (await call(f, 'repository_push_request_approval', f.request))
-        .structuredContent as { approval: { id: string } };
-      const old = f.active();
-      f.store.updateTurn(old.turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-      });
-      f.store.updateAgentSession(old.environmentPackage.scope.agentSessionId, { status: 'closed' });
-      const immutable = f.store.getApproval(approved.approval.id);
-      f.reload();
-      expect(f.store.getApproval(approved.approval.id)).toEqual(immutable);
-      const successor = f.successor();
-      const result = await call(f, 'repository_push_execute', {
-        requestId: randomUUID(),
-        resourceId: 'repo_default',
-        approvalRequestId: approved.approval.id,
-      });
-      expect(result.structuredContent).toMatchObject({ outcome: 'pushed', actorId: 'user_local' });
-      expect(f.store.getApproval(approved.approval.id)).toEqual(immutable);
-      expect(f.store.getTurnById(successor.turn.id).status).toBe('running');
-    } finally {
-      await f.cleanup();
-    }
-  });
-
-  it('executes a prior grant as a different current editor after the source actor is disabled', async () => {
-    const f = await fixture();
-    try {
-      const approved = (await call(f, 'repository_push_request_approval', f.request))
-        .structuredContent as { approval: { id: string } };
-      const immutable = f.store.getApproval(approved.approval.id);
-      const now = new Date().toISOString();
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
-        VALUES ('user_successor', 'Successor', 'successor@example.invalid', 0, ?, ?, 'human')`)
-        .run(now, now);
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-        VALUES ('ws_demo', 'user_successor', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
-        .run(now, now, now);
-      f.coreDb.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = 'user_local'").run();
-      f.store.updateTurn(f.active().turn.id, { status: 'completed', completedAt: now });
-      f.store.updateAgentSession(f.active().environmentPackage.scope.agentSessionId, {
-        status: 'closed',
-      });
-      f.successor('user_successor');
-      const result = await call(f, 'repository_push_execute', {
-        requestId: randomUUID(),
-        resourceId: 'repo_default',
-        approvalRequestId: approved.approval.id,
-      });
-      expect(result.structuredContent).toMatchObject({
-        outcome: 'pushed',
-        actorId: 'user_successor',
-      });
-      expect(f.store.getApproval(approved.approval.id)).toEqual(immutable);
-      expect(f.git(['rev-parse', 'refs/heads/feature/issue84'], f.remotePath)).toBe(
-        f.request.commitIds[0]
-      );
     } finally {
       await f.cleanup();
     }
@@ -568,7 +575,7 @@ describe('selected repository MCP', () => {
       f.snapshot.agentManifests[0]!.mcp = [];
       await expect(f.client.listTools()).rejects.toThrow();
       await expect(
-        f.client.callTool({ name: 'repository_push_request_approval', arguments: f.request })
+        f.client.callTool({ name: 'repository_push', arguments: f.request })
       ).rejects.toThrow();
       expect(JSON.stringify(f.active().environmentPackage)).toBe(originalPackage);
       expect(f.runner).not.toHaveBeenCalled();
@@ -586,71 +593,11 @@ describe('selected repository MCP', () => {
     const f = await fixture();
     try {
       f.git(['remote', 'remove', 'origin']);
-      expect(await call(f, 'repository_push_request_approval', f.request)).toMatchObject({
+      expect(await call(f, 'repository_push', f.request)).toMatchObject({
         isError: true,
         structuredContent: { error: { code: 'git_push_failed' } },
       });
       expect(f.runner).not.toHaveBeenCalled();
-    } finally {
-      await f.cleanup();
-    }
-  });
-
-  it('rejects a denied-call source transplanted onto another Approval and Item', async () => {
-    const f = await fixture('require_human_approval');
-    try {
-      const result = await call(f, 'repository_push_request_approval', f.request);
-      const data = result.structuredContent as {
-        approval: { id: string; createdAt: string };
-        approvalItemId: string;
-      };
-      const source = listPolicyApprovalSourceDecisions(
-        f.workspaceDb,
-        'ws_demo',
-        data.approval.id
-      )[0]!;
-      const input = {
-        approvalCreatedAt: data.approval.createdAt,
-        approvalId: data.approval.id,
-        approvalItemId: data.approvalItemId,
-        source,
-        threadId: 'th_demo',
-        turnId: f.active().turn.id,
-        workspaceDb: f.workspaceDb,
-        workspaceId: 'ws_demo',
-        store: f.store,
-      };
-      // The original package is explicit fixture authority, as it would be in a real checkpoint.
-      f.store.updateAgentSession(f.active().environmentPackage.scope.agentSessionId, {
-        environmentPackageSnapshotId: f.active().environmentPackage.snapshotId,
-      });
-      expect(isExactWorkerApprovalSourceDecision(input)).toBe(true);
-      const context = source.contextSummary;
-      expect(context).toMatchObject({
-        commandTurnId: f.active().turn.id,
-        turnId: f.active().turn.id,
-      });
-      expect(
-        isExactWorkerApprovalSourceDecision({
-          ...input,
-          source: {
-            ...source,
-            contextSummary:
-              context && typeof context === 'object' && !Array.isArray(context)
-                ? Object.fromEntries(
-                    Object.entries(context).filter(([key]) => key !== 'commandTurnId')
-                  )
-                : context,
-          },
-        })
-      ).toBe(false);
-      expect(
-        isExactWorkerApprovalSourceDecision({
-          ...input,
-          approvalId: 'ap_transplanted',
-          approvalItemId: 'it_transplanted',
-        })
-      ).toBe(false);
     } finally {
       await f.cleanup();
     }
@@ -663,8 +610,8 @@ describe('selected repository MCP', () => {
     'stale-actor',
     'wrong-session',
     'changed-request',
-  ] as const)('refuses %s before host push or Gate effects', async (failure) => {
-    const f = await fixture();
+  ] as const)('refuses %s before host push or pending-request effects', async (failure) => {
+    const f = await fixture('require_human_approval');
     try {
       const args: Record<string, unknown> = { ...f.request };
       if (failure === 'missing-ref') args.sourceRef = 'absent-worker-only-ref';
@@ -677,11 +624,11 @@ describe('selected repository MCP', () => {
           .prepare("UPDATE users SET status = 'disabled' WHERE id = 'user_local'")
           .run();
       if (failure === 'changed-request') {
-        await call(f, 'repository_push_request_approval', f.request);
+        await call(f, 'repository_push', f.request);
         args.targetBranch = 'feature/other';
       }
       if (failure === 'missing-ref' || failure === 'changed-request') {
-        const result = await call(f, 'repository_push_request_approval', args);
+        const result = await call(f, 'repository_push', args);
         expect(result).toMatchObject({
           isError: true,
           structuredContent: {
@@ -696,58 +643,11 @@ describe('selected repository MCP', () => {
         });
       } else
         await expect(
-          f.client.callTool({ name: 'repository_push_request_approval', arguments: args })
+          f.client.callTool({ name: 'repository_push', arguments: args })
         ).rejects.toThrow();
       expect(f.runner).not.toHaveBeenCalled();
       expect(f.stop).not.toHaveBeenCalled();
       expect(f.store.getTurnById(f.active().turn.id).status).toBe('running');
-    } finally {
-      await f.cleanup();
-    }
-  });
-
-  it.each([
-    'stopped',
-    'stop-failed',
-    'receipt-failed',
-  ] as const)('persists the human Gate and fails closed for %s without reconstructing a stop', async (failure) => {
-    const f = await fixture('require_human_approval');
-    try {
-      if (failure === 'stop-failed')
-        f.stop.mockImplementation(() => {
-          throw new Error('injected stop failure');
-        });
-      if (failure === 'receipt-failed')
-        vi.spyOn(f.store, 'recordCommandRequest').mockImplementation(() => {
-          throw new Error('injected receipt failure');
-        });
-      if (failure === 'stop-failed')
-        await expect(
-          f.client.callTool({ name: 'repository_push_request_approval', arguments: f.request })
-        ).rejects.toMatchObject({ data: { code: 'recovery_required' } });
-      else {
-        const result = await call(f, 'repository_push_request_approval', f.request);
-        if (failure === 'stopped')
-          expect(result.structuredContent).toMatchObject({ approval: { status: 'pending' } });
-        else
-          expect(result).toMatchObject({
-            isError: true,
-            structuredContent: { error: { code: 'recovery_required' } },
-          });
-      }
-      expect(f.store.getTurnById(f.active().turn.id)).toMatchObject({
-        status: 'awaiting_human',
-        humanGate: { kind: 'approval' },
-      });
-      expect(f.stop).toHaveBeenCalledTimes(failure === 'receipt-failed' ? 0 : 1);
-      await expect(
-        f.client.callTool({ name: 'repository_push_request_approval', arguments: f.request })
-      ).rejects.toThrow();
-      expect(f.stop).toHaveBeenCalledTimes(failure === 'receipt-failed' ? 0 : 1);
-      expect(f.runner).not.toHaveBeenCalled();
-      expect(
-        getWorkerCheckpoint(f.workspaceDb, 'ws_demo', 'th_demo', f.active().turn.id)
-      ).toBeNull();
     } finally {
       await f.cleanup();
     }

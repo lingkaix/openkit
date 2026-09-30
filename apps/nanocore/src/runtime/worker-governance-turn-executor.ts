@@ -81,6 +81,7 @@ import {
   resolveAgentEnvironmentPackageMetadata,
 } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
+import { frozenPendingOutcomeInput, proveFrozenDelivery } from './pending-requests.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { generateUuidV7 } from './session-id.js';
 import type {
@@ -152,9 +153,6 @@ import {
   recordWorkspaceBackendHandoff,
   recordWorkspaceSyncReview,
 } from './workspace-sync-records.js';
-
-const WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE =
-  'Worker requested human input without an exact product Gate.';
 
 /** Returns the closed continuity disposition while retaining any cleanup proof separately. */
 function workerGovernanceContinuityDisposition(
@@ -1439,7 +1437,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
         runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
         turn,
-        turnInput: input,
+        turnInput: workspaceDb
+          ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
+          : input,
         triggerActor: context.triggerActor,
         ...(this.vaultBackend ? { vaultBackend: this.vaultBackend } : {}),
         ...(context.workspaceDataSourceCatalog
@@ -1714,6 +1714,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       await this.backend.launch(materialization);
+      if (workspaceDb) proveFrozenDelivery(workspaceDb.sqlite, turn.id, this.now());
       // Credential material is delivered once at `session.open`; a reused binding receives none.
       if (!existingAgentSession) {
         for (const receipt of credentialReceipts) {
@@ -1843,18 +1844,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       throw error;
     }
-
-    if (
-      workerFinalStatus &&
-      canonicalStopReasonForAcceptedWorkerFinalStatus(workerFinalStatus) === 'ask_user' &&
-      store.getTurnById(turn.id).status !== 'awaiting_human'
-    ) {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE,
-        409
-      );
-    }
   }
 
   /**
@@ -1892,10 +1881,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw new Error('Restart closeout requires the exact durable final status.');
     }
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
-    const recoveredStatus =
-      stopReason === 'ask_user'
-        ? 'interrupted'
-        : turnStatusForCanonicalWorkerStopReason(stopReason);
+    const recoveredStatus = turnStatusForCanonicalWorkerStopReason(stopReason);
     const workspaceDb = this.openWorkspaceDb(environmentPackage.scope.workspaceId);
     if (!workspaceDb) {
       throw new Error('Restart closeout requires durable workspace storage.');
@@ -1987,7 +1973,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
 
-      if (stopReason !== 'ask_user' && turn.status === recoveredStatus) {
+      if (turn.status === recoveredStatus) {
         return recoveredStatus;
       }
 
@@ -1999,33 +1985,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         accepted,
         environmentPackage.snapshotId
       );
-      if (stopReason === 'ask_user') {
-        const recoveredTurn = store.getTurnById(environmentPackage.scope.turnId);
-        const recoveredSession = store.getAgentSession(environmentPackage.scope.agentSessionId);
-        if (
-          recoveredTurn.status === 'awaiting_human' &&
-          recoveredTurn.humanGate !== null &&
-          recoveredSession.status === 'suspended'
-        ) {
-          return recoveredStatus;
-        }
-        if (
-          recoveredTurn.workspaceId !== environmentPackage.scope.workspaceId ||
-          recoveredTurn.threadId !== environmentPackage.scope.threadId ||
-          recoveredTurn.agentSessionId !== environmentPackage.scope.agentSessionId ||
-          recoveredTurn.status !== 'interrupted' ||
-          recoveredTurn.error?.code !== 'worker_human_gate_unavailable' ||
-          recoveredTurn.error.message !== WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE ||
-          recoveredSession.workspaceId !== environmentPackage.scope.workspaceId ||
-          recoveredSession.threadId !== environmentPackage.scope.threadId ||
-          recoveredSession.status !== 'interrupted' ||
-          recoveredSession.message !== WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE
-        ) {
-          throw new Error(
-            'Restart closeout did not establish the unavailable human-gate fallback.'
-          );
-        }
-      }
       return recoveredStatus;
     } finally {
       workspaceDb.sqlite.close();
@@ -2851,39 +2810,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         threadId: turnScope.threadId,
         workspaceId: turnScope.workspaceId,
       })?.agentSessionId === agentSessionId;
-    if (stopReason === 'ask_user') {
-      const turn = store.getTurnById(turnScope.id);
-      const session = store.getAgentSession(agentSessionId);
-      if (
-        turn.workspaceId === turnScope.workspaceId &&
-        turn.threadId === turnScope.threadId &&
-        turn.agentSessionId === agentSessionId &&
-        turn.status === 'awaiting_human' &&
-        turn.humanGate !== null &&
-        session.workspaceId === turnScope.workspaceId &&
-        session.threadId === turnScope.threadId &&
-        ['busy', 'degraded', 'suspended'].includes(session.status)
-      ) {
-        store.updateAgentSession(agentSessionId, {
-          message: null,
-          status: 'suspended',
-          updatedAt: this.now(),
-        });
-        return;
-      }
-      terminalizeGovernedWorkerTurn({
-        agentSessionId,
-        agentSessionRetained,
-        completedAt: this.now(),
-        errorCode: 'worker_human_gate_unavailable',
-        message: WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE,
-        outcome: 'interrupted',
-        requestId,
-        store,
-        turnId: turnScope.id,
-      });
-      return;
-    }
     if (
       stopReason === 'completed' ||
       stopReason === 'length' ||

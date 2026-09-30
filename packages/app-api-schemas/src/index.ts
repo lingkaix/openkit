@@ -17,6 +17,7 @@ export * from './knowledge-manager.js';
 export * from './light-apps.js';
 export * from './material.js';
 export * from './nanohost.js';
+export * from './pending-request.js';
 export * from './provider-subscriptions.js';
 export * from './quick-chat.js';
 export * from './repository.js';

@@ -16,7 +16,11 @@ import {
   Skeleton,
   StatusChip,
 } from '../../primitives';
-import { conversationThreadPath, useConversationNavigation } from '../chat/data';
+import {
+  conversationThreadPath,
+  useConversationNavigation,
+  useThreadDashboard,
+} from '../chat/data';
 import {
   type AttentionRow,
   attentionDecisionErrorMessage,
@@ -208,7 +212,24 @@ function AttentionListRow({
   onDecide: (action: AttentionRow['actions'][number]) => void;
 }) {
   const openHref = openHrefForRow(row);
-  const decidable = row.actions.filter((action) => canDecideInline(row, action));
+  const approval = row.source.type === 'approval' ? row.source : null;
+  const dashboard = useThreadDashboard(
+    approval?.workspaceId ?? null,
+    approval?.threadId ?? '',
+    Boolean(approval)
+  );
+  const request = dashboard.data?.pendingRequests?.find(
+    (candidate) => candidate.requestId === approval?.approvalRequestId
+  );
+  const effect = dashboard.isSuccess && !dashboard.isError ? request?.approvalEffect : undefined;
+  const decidable = row.actions.filter(
+    (action) =>
+      canDecideInline(row, action) &&
+      (!approval ||
+        (request?.state === 'pending' &&
+          request.canRespond === true &&
+          (action.kind !== 'grant_approval' || effect?.status === 'available')))
+  );
   const showOpen =
     openHref &&
     (decidable.length === 0 || row.actions.some((action) => action.kind === 'open_thread'));
@@ -224,6 +245,19 @@ function AttentionListRow({
           {waitingLabel(row.createdAt)}
           {row.summary ? ` · ${row.summary}` : ''}
         </p>
+        {approval &&
+          (effect?.status === 'available' ? (
+            <section aria-label="Complete exact effect">
+              <pre className="overflow-auto whitespace-pre-wrap break-all">{effect.detail}</pre>
+            </section>
+          ) : (
+            <p>
+              Exact effect unavailable; approval disabled
+              {effect?.status === 'unavailable'
+                ? `: ${effect.reason}`
+                : ': Complete detail has not been loaded.'}
+            </p>
+          ))}
       </div>
       {conversation ? (
         <StatusChip tone={conversation.state === 'needs-you' ? 'notice' : 'informative'} dot>

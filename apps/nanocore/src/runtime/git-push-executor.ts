@@ -150,6 +150,8 @@ export async function runGitPushCommand(
 
 /** Input for executing one Git push attempt through a provider runner. */
 export interface ExecuteGitPushAttemptInput {
+  /** Captured execution admitted by the pending owner; direct host attempts admit their own call. */
+  readonly admittedCall?: import('../capability/usage-ledger.js').StartedCapabilityCall;
   /** Preflight and record lineage input. */
   readonly attempt: PrepareGitPushAttemptInput;
   /** Fresh caller authority, revalidated before credential and remote effects. */
@@ -235,24 +237,26 @@ export async function executeGitPushAttempt(
   }
 
   try {
-    const capabilityCallId = `cap_${input.attempt.recordId}`;
+    const capabilityCallId = input.admittedCall?.id ?? `cap_${input.attempt.recordId}`;
     const now = new Date(timestamp(input));
-    const call = startCapabilityCall({
-      authorityActor: { kind: 'user', id: input.attempt.actorId },
-      workspaceDb,
-      callId: capabilityCallId,
-      capabilityId: 'workspace.git.push',
-      family: 'network',
-      itemId: input.attempt.approvalRowId,
-      operation: 'git.push',
-      providerRef: 'github',
-      redactionClass: 'product-safe',
-      requestId: input.attempt.requestId,
-      serviceRef: input.attempt.repositoryResourceId,
-      summary: `Git push to ${input.attempt.targetBranch}`,
-      workspaceId: input.attempt.workspaceId,
-      now,
-    });
+    const call =
+      input.admittedCall ??
+      startCapabilityCall({
+        authorityActor: { kind: 'user', id: input.attempt.actorId },
+        workspaceDb,
+        callId: capabilityCallId,
+        capabilityId: 'workspace.git.push',
+        family: 'network',
+        itemId: input.attempt.approvalRowId,
+        operation: 'git.push',
+        providerRef: 'github',
+        redactionClass: 'product-safe',
+        requestId: input.attempt.requestId,
+        serviceRef: input.attempt.repositoryResourceId,
+        summary: `Git push to ${input.attempt.targetBranch}`,
+        workspaceId: input.attempt.workspaceId,
+        now,
+      });
     let env: NodeJS.ProcessEnv | undefined;
     try {
       const resolvedEnv = input.env ?? input.resolveEnv?.(call.id);

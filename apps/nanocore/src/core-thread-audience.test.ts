@@ -525,9 +525,7 @@ describe('core Thread audience', () => {
         {
           after: () => {
             expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
-            expect(fixture.store.getTurnById(fixture.approvalTurn.id).status).toBe(
-              'awaiting_human'
-            );
+            expect(fixture.store.getTurnById(fixture.approvalTurn.id).status).toBe('running');
           },
           headers: member,
           init: {
@@ -643,9 +641,7 @@ describe('core Thread audience', () => {
         {
           after: () => {
             expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
-            expect(fixture.store.getTurnById(fixture.approvalTurn.id).status).toBe(
-              'awaiting_human'
-            );
+            expect(fixture.store.getTurnById(fixture.approvalTurn.id).status).toBe('running');
           },
           headers: member,
           init: {
@@ -661,9 +657,7 @@ describe('core Thread audience', () => {
         {
           after: () => {
             expect(fixture.store.getApproval(fixture.deniedGate.approvalId).status).toBe('pending');
-            expect(fixture.store.getTurnById(fixture.deniedApprovalTurn.id).status).toBe(
-              'awaiting_human'
-            );
+            expect(fixture.store.getTurnById(fixture.deniedApprovalTurn.id).status).toBe('running');
           },
           headers: admin,
           init: {

@@ -98,7 +98,7 @@ describe('workspace dashboard app API', () => {
       createdAt: attentionTurn.startedAt ?? completedAt,
       resolvedAt: null,
     });
-    const attentionItem = store.createItem({
+    store.createItem({
       id: 'it_workspace_attention',
       workspaceId: 'ws_demo',
       threadId: attentionThread.id,
@@ -111,14 +111,6 @@ describe('workspace dashboard app API', () => {
       kind: approval.kind,
       createdAt: attentionTurn.startedAt ?? completedAt,
       completedAt: attentionTurn.startedAt ?? completedAt,
-    });
-    store.updateTurn(attentionTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: attentionItem.id,
-      },
     });
     store.createArtifact({
       id: 'ar_workspace_completion',
@@ -157,16 +149,27 @@ describe('workspace dashboard app API', () => {
     const res = await app.request('/api/app/workspaces/ws_demo/dashboard');
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      activeWork: [
-        {
+    const dashboard = await res.json();
+    expect(dashboard.activeWork).toHaveLength(2);
+    expect(dashboard.activeWork).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
           threadId: activeThread.id,
           title: 'Active worker turn',
           status: 'running',
           mode: 'automation',
           agentId: 'agent_codex_host',
-        },
-      ],
+        }),
+        expect.objectContaining({
+          threadId: attentionThread.id,
+          title: 'Approval handoff',
+          status: 'running',
+          mode: 'automation',
+          agentId: null,
+        }),
+      ])
+    );
+    expect(dashboard).toMatchObject({
       recentCompletions: [
         {
           threadId: completedThread.id,
@@ -299,7 +302,7 @@ describe('workspace dashboard app API', () => {
       kind: 'user',
       id: 'user_local',
     });
-    const secretItem = store.createItem({
+    store.createItem({
       id: 'it_workspace_secret',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -321,14 +324,6 @@ describe('workspace dashboard app API', () => {
       ],
       createdAt: timestamp,
       completedAt: timestamp,
-    });
-    store.updateTurn(secretTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'user-input',
-        userInputRequestId: secretItem.userInputRequestId,
-        itemId: secretItem.id,
-      },
     });
     const app = createApp({ store });
 
@@ -367,7 +362,7 @@ describe('workspace dashboard app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    const approvalItem = store.createItem({
+    store.createItem({
       id: 'it_workspace_readonly',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -380,14 +375,6 @@ describe('workspace dashboard app API', () => {
       kind: approval.kind,
       createdAt: timestamp,
       completedAt: timestamp,
-    });
-    store.updateTurn(approvalTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: approvalItem.id,
-      },
     });
     const failedTurn = store.createTurn('ws_demo', thread.id, 'Shared failure', {
       kind: 'user',

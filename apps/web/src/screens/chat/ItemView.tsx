@@ -1,3 +1,4 @@
+import type { ApprovalEffectPreview } from '@openkit/app-api-schemas';
 import { useState } from 'react';
 import {
   AssistantMessage,
@@ -34,6 +35,10 @@ export interface ItemViewProps {
   resolvedApproval?: Extract<ThreadItem, { type: 'approval-decision' }>;
   /** Explanation for unavailable approval controls. */
   approvalUnavailableReason?: string;
+  /** Complete authorized read-model detail; absence never enables grant. */
+  approvalEffect?: ApprovalEffectPreview;
+  /** Withdraw under the same current responsible-user predicate. */
+  onWithdrawApproval?: (requestId: string) => void;
   /** Whether this request's decision is being submitted or refreshed. */
   approvalPending?: boolean;
   /** Whether this request's decision failed. */
@@ -42,8 +47,8 @@ export interface ItemViewProps {
   onRetryApproval?: () => void;
   /** When true, decision actions are hidden (e.g. runtime disconnected). */
   readOnly?: boolean;
-  /** Submit one complete non-secret answer map for the item's paused Turn. */
-  onSubmitAnswers?: (turnId: string, answers: Record<string, [string]>) => void;
+  /** Submit one complete non-secret answer map for the pending user-input request. */
+  onSubmitAnswers?: (userInputRequestId: string, answers: Record<string, [string]>) => void;
   /** Whether this item's answer command is awaiting settlement. */
   answerPending?: boolean;
   /** Whether this item's latest answer command failed. */
@@ -65,7 +70,7 @@ interface UserInputRequestViewProps {
   /** Whether the current answer submission failed. */
   failed: boolean;
   /** Submit the complete answer map. */
-  onSubmit?: (turnId: string, answers: Record<string, [string]>) => void;
+  onSubmit?: (userInputRequestId: string, answers: Record<string, [string]>) => void;
   /** Retry the exact previously submitted answer map. */
   onRetry?: () => void;
 }
@@ -116,7 +121,7 @@ function UserInputRequestView({
             const completeAnswers = Object.fromEntries(
               item.questions.map((question) => [question.id, [answers[question.id] as string]])
             ) as Record<string, [string]>;
-            onSubmit(item.turnId, completeAnswers);
+            onSubmit(item.userInputRequestId, completeAnswers);
           }}
         >
           {item.questions.map((question) => (
@@ -192,13 +197,10 @@ function ApprovalDecisionView({
   requestTitle?: string;
 }) {
   const system = item.actor.kind === 'system';
-  const recovery = system && item.actor.id === 'nanocore-boot-reconciliation';
   const timestamp = item.completedAt ?? item.createdAt;
-  const reason = recovery
-    ? 'The task had already ended without an approval decision. Server recovery closed the pending approval.'
-    : system
-      ? 'Automatically granted by the repository push policy.'
-      : 'No reason was recorded.';
+  const reason = system
+    ? 'Automatically granted by the repository push policy.'
+    : 'No reason was recorded.';
   return (
     <ItemCard
       kind={item.decision === 'granted' ? 'positive' : 'neutral'}
@@ -209,25 +211,17 @@ function ApprovalDecisionView({
         <p>Request: {requestTitle ?? item.approvalRequestId}</p>
         <p>{reason}</p>
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
-          <dt className="text-fg-muted">{recovery ? 'Inherited timestamp' : 'Decision time'}</dt>
+          <dt className="text-fg-muted">Decision time</dt>
           <dd>
             <time dateTime={timestamp} title={timestamp}>
               {new Date(timestamp).toLocaleString(undefined, { timeZoneName: 'short' })}
             </time>
           </dd>
           <dt className="text-fg-muted">Source</dt>
-          <dd>
-            {recovery ? 'Server recovery' : system ? 'Repository push policy' : 'User decision'}
-          </dd>
+          <dd>{system ? 'Repository push policy' : 'User decision'}</dd>
           <dt className="text-fg-muted">Client</dt>
           <dd>{system ? 'Not applicable — automatic server action' : 'Not recorded'}</dd>
         </dl>
-        {recovery ? (
-          <p className="text-xs text-fg-muted">
-            This timestamp was inherited from task completion, task start, or request creation. The
-            actual recovery time was not recorded.
-          </p>
-        ) : null}
         <details className="text-xs text-fg-muted">
           <summary className="cursor-pointer">Record identifiers</summary>
           <p>Actor: {item.actor.id}</p>
@@ -255,6 +249,8 @@ export function ItemView({
   approvalRequestTitle,
   resolvedApproval,
   approvalUnavailableReason,
+  approvalEffect,
+  onWithdrawApproval,
   approvalPending,
   approvalError,
   onRetryApproval,
@@ -331,16 +327,18 @@ export function ItemView({
             approvalUnavailableReason ||
             !onApprovalDecision ? undefined : (
               <>
-                <Button
-                  size="sm"
-                  isDisabled={approvalPending}
-                  variant="accent"
-                  onPress={() =>
-                    onApprovalDecision?.(item.approvalRequestId, item.turnId, 'granted')
-                  }
-                >
-                  Approve
-                </Button>
+                {approvalEffect?.status === 'available' && (
+                  <Button
+                    size="sm"
+                    isDisabled={approvalPending}
+                    variant="accent"
+                    onPress={() =>
+                      onApprovalDecision?.(item.approvalRequestId, item.turnId, 'granted')
+                    }
+                  >
+                    Approve
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   variant="negative-outline"
@@ -351,6 +349,15 @@ export function ItemView({
                 >
                   Deny
                 </Button>
+                {onWithdrawApproval && (
+                  <Button
+                    size="sm"
+                    isDisabled={approvalPending}
+                    onPress={() => onWithdrawApproval(item.approvalRequestId)}
+                  >
+                    Withdraw
+                  </Button>
+                )}
               </>
             )
           }
@@ -363,6 +370,24 @@ export function ItemView({
           ) : approvalUnavailableReason || readOnly ? (
             <p>{approvalUnavailableReason ?? 'Approval actions are unavailable in this view.'}</p>
           ) : null}
+          {!resolvedApproval &&
+            !readOnly &&
+            !approvalUnavailableReason &&
+            (approvalEffect?.status === 'available' ? (
+              <section aria-label="Complete exact effect">
+                <p>{approvalEffect.summary}</p>
+                <pre className="overflow-auto whitespace-pre-wrap break-all">
+                  {approvalEffect.detail}
+                </pre>
+              </section>
+            ) : (
+              <p>
+                Exact effect unavailable; approval disabled
+                {approvalEffect?.status === 'unavailable'
+                  ? `: ${approvalEffect.reason}`
+                  : ': Complete detail has not been loaded.'}
+              </p>
+            ))}
           {approvalPending ? <p role="status">Submitting decision…</p> : null}
           {approvalError && !resolvedApproval ? (
             <ErrorBanner

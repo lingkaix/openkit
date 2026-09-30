@@ -384,13 +384,11 @@ export function registerArtifactRoutes({
               stage:
                 followUpTurn.status === 'completed'
                   ? 'completed'
-                  : followUpTurn.status === 'awaiting_human'
-                    ? 'waiting_for_user'
-                    : followUpTurn.status === 'cancelled'
-                      ? 'aborted'
-                      : followUpTurn.status === 'failed' || followUpTurn.status === 'interrupted'
-                        ? 'failed'
-                        : 'running_worker',
+                  : followUpTurn.status === 'cancelled'
+                    ? 'aborted'
+                    : followUpTurn.status === 'failed' || followUpTurn.status === 'interrupted'
+                      ? 'failed'
+                      : 'running_worker',
               workerSessionId: followUpTurn.agentSessionId ?? null,
             });
             assertArtifactReviewFollowUpProof({
@@ -982,7 +980,6 @@ function replayArtifactIntroduction(
     turn.triggerActor.kind !== 'user' ||
     turn.triggerActor.id !== expected.actorId ||
     turn.status !== 'completed' ||
-    turn.humanGate !== null ||
     turn.error !== null ||
     turn.configVersion !== null ||
     turn.startedAt === null ||

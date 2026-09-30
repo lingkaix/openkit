@@ -64,7 +64,6 @@ const FAILED_DASHBOARD_TURN = ProductTurnSchema.parse({
   completedAt: '2026-09-16T05:21:24.892Z',
   durationMs: null,
   status: 'failed',
-  humanGate: null,
 });
 
 const COMPLETED_DASHBOARD_TURN = ProductTurnSchema.parse({

@@ -137,7 +137,6 @@ function workspaceImportPayload(
         triggerActor: localActor,
         items: [item],
         status: 'completed',
-        humanGate: null,
         error: null,
         configVersion: null,
         startedAt: timestamp,
@@ -404,10 +403,11 @@ describe('FsStore canonical reload', () => {
       status: 'completed',
       approvalRequestId: approval.id,
       decision: 'granted',
+      decidedAt: userItem.createdAt,
       createdAt: userItem.createdAt,
       completedAt: userItem.completedAt,
     });
-    const resolvedApproval = store.updateApproval(approval.id, {
+    store.updateApproval(approval.id, {
       status: 'granted',
       resolvedAt: approvalDecisionItem.completedAt,
     });
@@ -513,7 +513,9 @@ describe('FsStore canonical reload', () => {
     expect(restarted.getThread(workspace.id, thread.id)).toEqual(persistedThread);
     expect(restarted.getTurn(workspace.id, thread.id, turn.id)).toEqual(completedTurn);
     expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual(completedTurn.items);
-    expect(restarted.getApproval(approval.id)).toEqual(resolvedApproval);
+    expect(() => restarted.getApproval(approval.id)).toThrow(
+      `Approval request not found: ${approval.id}`
+    );
     expect(restarted.getAgentSession(agentSession.id)).toEqual(agentSession);
     expect(restarted.getArtifact(workspace.id, artifact.id)).toEqual(artifact);
     expect(restarted.getTurnEvents(turn.id)).toEqual([agentSessionEvent, artifactEvent]);
@@ -797,15 +799,11 @@ describe('FsStore canonical reload', () => {
     const restarted = new FsStore({ dataRoot });
     const recoveredTurn = restarted.getTurn(workspace.id, thread.id, turn.id);
 
-    expect(restarted.getApproval(approval.id)).toEqual(approval);
-    expect(recoveredTurn).toMatchObject({
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: requestItem.id,
-      },
-    });
+    expect(() => restarted.getApproval(approval.id)).toThrow(
+      `Approval request not found: ${approval.id}`
+    );
+    expect(recoveredTurn.status).toBe('running');
+    expect(recoveredTurn.items.map((item) => item.id)).toContain(requestItem.id);
     expect(
       JSON.parse(
         readFileSync(
@@ -822,7 +820,7 @@ describe('FsStore canonical reload', () => {
           'utf8'
         )
       )
-    ).toMatchObject({ status: 'awaiting_human', humanGate: recoveredTurn.humanGate });
+    ).toMatchObject({ status: 'running' });
   });
 
   it('clears a stale approval gate from its canonical decision item', () => {
@@ -863,14 +861,6 @@ describe('FsStore canonical reload', () => {
       completedAt: approval.createdAt,
     });
 
-    store.updateTurn(turn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: requestItem.id,
-      },
-    });
     store.createItem({
       id: `it_approval_decision_${turn.id}`,
       workspaceId: workspace.id,
@@ -882,19 +872,18 @@ describe('FsStore canonical reload', () => {
       status: 'completed',
       approvalRequestId: approval.id,
       decision: 'granted',
+      decidedAt: approval.createdAt,
       createdAt: approval.createdAt,
       completedAt: approval.createdAt,
     });
 
     const restarted = new FsStore({ dataRoot });
 
-    expect(restarted.getApproval(approval.id)).toMatchObject({
-      status: 'granted',
-      resolvedAt: approval.createdAt,
-    });
+    expect(() => restarted.getApproval(approval.id)).toThrow(
+      `Approval request not found: ${approval.id}`
+    );
     expect(restarted.getTurn(workspace.id, thread.id, turn.id)).toMatchObject({
       status: 'running',
-      humanGate: null,
     });
   });
 
@@ -910,16 +899,12 @@ describe('FsStore canonical reload', () => {
       localActor
     );
 
-    store.updateTurn(turn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: `ap_${turn.id}`,
-        itemId: `it_approval_request_${turn.id}`,
-      },
-    });
+    const restarted = new FsStore({ dataRoot });
 
-    expect(() => new FsStore({ dataRoot })).toThrow(/approval gate.*request item/i);
+    expect(restarted.getTurn(workspace.id, thread.id, turn.id).status).toBe('running');
+    expect(() => restarted.getApproval(`ap_${turn.id}`)).toThrow(
+      `Approval request not found: ap_${turn.id}`
+    );
   });
 
   it.each([
@@ -966,13 +951,10 @@ describe('FsStore canonical reload', () => {
     const recovered = restarted.getTurn(workspace.id, thread.id, turn.id);
     const decision = recovered.items.find((item) => item.type === 'approval-decision');
     expect(recovered.status).toBe(terminalStatus);
-    expect(recovered.humanGate).toBeNull();
-    expect(restarted.getApproval(approvalId)).toMatchObject({ status: 'denied' });
-    expect(decision).toMatchObject({
-      approvalRequestId: approvalId,
-      decision: 'denied',
-      actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
-    });
+    expect(decision).toBeUndefined();
+    expect(() => restarted.getApproval(approvalId)).toThrow(
+      `Approval request not found: ${approvalId}`
+    );
     const itemsPath = join(
       dataRoot,
       'workspaces',
@@ -989,16 +971,13 @@ describe('FsStore canonical reload', () => {
         .split('\n')
         .map((line) => JSON.parse(line))
         .filter(
-          (item) =>
-            item.type === 'approval-decision' &&
-            item.approvalRequestId === approvalId &&
-            item.actor?.id === 'nanocore-boot-reconciliation'
+          (item) => item.type === 'approval-decision' && item.approvalRequestId === approvalId
         );
-    expect(canonicalDenials()).toEqual([decision]);
+    expect(canonicalDenials()).toEqual([]);
     expect(new FsStore({ dataRoot }).getTurn(workspace.id, thread.id, turn.id).items).toEqual(
       recovered.items
     );
-    expect(canonicalDenials()).toEqual([decision]);
+    expect(canonicalDenials()).toEqual([]);
   });
 
   it('repairs only an incomplete final item-log fragment', () => {
@@ -1800,26 +1779,20 @@ describe('FsStore canonical reload', () => {
         TurnSchema.parse({
           ...turn,
           items: [...turn.items, approvalItem],
-          status: 'awaiting_human',
-          humanGate: {
-            kind: 'approval',
-            approvalRequestId: approvalItem.approvalRequestId,
-            itemId: approvalItem.id,
-          },
-          completedAt: null,
-          durationMs: null,
         }),
       ],
       itemRevisions: [...input.itemRevisions, approvalItem],
     });
 
-    expect(store.getApproval(approvalItem.approvalRequestId)).toMatchObject({
-      id: approvalItem.approvalRequestId,
-      workspaceId: input.workspace.id,
-      threadId: turn.threadId,
-      turnId: turn.id,
-      status: 'pending',
-    });
+    expect(store.getTurn(input.workspace.id, turn.threadId, turn.id).status).toBe(turn.status);
+    expect(
+      store
+        .getTurn(input.workspace.id, turn.threadId, turn.id)
+        .items.some((item) => item.id === approvalItem.id)
+    ).toBe(true);
+    expect(() => store.getApproval(approvalItem.approvalRequestId)).toThrow(
+      `Approval request not found: ${approvalItem.approvalRequestId}`
+    );
   });
 
   it('discards staged workspace side effects when import staging fails', () => {

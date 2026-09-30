@@ -184,7 +184,7 @@ describe('thread dashboard app API', () => {
         createdAt: timestamp,
         resolvedAt: null,
       });
-      const item = store.createItem({
+      store.createItem({
         id: 'it_activity_approval',
         workspaceId: 'ws_demo',
         threadId: thread.id,
@@ -197,14 +197,6 @@ describe('thread dashboard app API', () => {
         kind: approval.kind,
         createdAt: timestamp,
         completedAt: timestamp,
-      });
-      store.updateTurn(turn.id, {
-        status: 'awaiting_human',
-        humanGate: {
-          kind: 'approval',
-          approvalRequestId: approval.id,
-          itemId: item.id,
-        },
       });
       appendFileSync(
         join(
@@ -234,14 +226,7 @@ describe('thread dashboard app API', () => {
       ]);
       expect(unavailableBody.workStatus.pendingApprovalCount).toBe(1);
       expect(unavailableBody.composer.disabled).toBe(false);
-      expect(unavailableBody.turns[0]).toMatchObject({
-        status: 'awaiting_human',
-        humanGate: {
-          kind: 'approval',
-          approvalRequestId: approval.id,
-          itemId: item.id,
-        },
-      });
+      expect(unavailableBody.turns[0]).toMatchObject({ status: 'running' });
       expect(JSON.stringify(unavailableBody)).not.toContain('corrupt restricted diagnostic');
     } finally {
       coreDb.sqlite.close();
@@ -564,7 +549,7 @@ describe('thread dashboard app API', () => {
       createdAt: '2026-07-19T00:00:00.000Z',
       resolvedAt: null,
     });
-    const approvalItem = store.createItem({
+    store.createItem({
       id: 'it_dashboard_actor_approval',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -580,18 +565,14 @@ describe('thread dashboard app API', () => {
     });
     store.updateTurn(approvalTurn.id, {
       agentId: 'agent_codex_host',
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: approvalItem.id,
-      },
+      status: 'completed',
+      completedAt: '2026-07-19T00:00:00.000Z',
     });
     const questionTurn = store.createTurn('ws_demo', thread.id, 'Request responsible input', {
       kind: 'user',
       id: 'user_responsible',
     });
-    const questionItem = store.createItem({
+    store.createItem({
       id: 'it_dashboard_actor_question',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -616,12 +597,8 @@ describe('thread dashboard app API', () => {
     });
     store.updateTurn(questionTurn.id, {
       agentId: 'agent_codex_host',
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'user-input',
-        userInputRequestId: questionItem.userInputRequestId,
-        itemId: questionItem.id,
-      },
+      status: 'completed',
+      completedAt: '2026-07-19T00:01:00.000Z',
     });
     const failedTurn = store.createTurn('ws_demo', thread.id, 'Preserve shared failure', {
       kind: 'user',
@@ -683,8 +660,8 @@ describe('thread dashboard app API', () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
         turns: expect.arrayContaining([
-          expect.objectContaining({ id: approvalTurn.id, status: 'awaiting_human' }),
-          expect.objectContaining({ id: questionTurn.id, status: 'awaiting_human' }),
+          expect.objectContaining({ id: approvalTurn.id, status: 'completed' }),
+          expect.objectContaining({ id: questionTurn.id, status: 'completed' }),
           expect.objectContaining({ id: failedTurn.id, status: 'failed' }),
         ]),
         workStatus: {
@@ -728,7 +705,7 @@ describe('thread dashboard app API', () => {
       resolvedAt: null,
     });
 
-    const approvalItem = store.createItem({
+    store.createItem({
       id: 'it_thread_approval',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -742,20 +719,12 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(approvalTurn.id, {
-      agentId: 'agent_codex_host',
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: approval.id,
-        itemId: approvalItem.id,
-      },
-    });
+    store.updateTurn(approvalTurn.id, { agentId: 'agent_codex_host' });
     const questionTurn = store.createTurn('ws_demo', thread.id, 'Ask for input', {
       kind: 'user',
       id: 'user_local',
     });
-    const questionItem = store.createItem({
+    store.createItem({
       id: 'it_thread_question',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -778,15 +747,7 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(questionTurn.id, {
-      agentId: 'agent_codex_host',
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'user-input',
-        userInputRequestId: questionItem.userInputRequestId,
-        itemId: questionItem.id,
-      },
-    });
+    store.updateTurn(questionTurn.id, { agentId: 'agent_codex_host' });
     store.createArtifact({
       id: 'ar_thread_status',
       workspaceId: 'ws_demo',
@@ -819,7 +780,7 @@ describe('thread dashboard app API', () => {
       workStatus: {
         currentMode: 'automation',
         selectedAgentId: 'agent_codex_host',
-        activeTurnStatus: 'awaiting_human',
+        activeTurnStatus: 'running',
         pendingApprovalCount: 1,
         pendingQuestionCount: 1,
         latestArtifact: {
@@ -873,7 +834,7 @@ describe('thread dashboard app API', () => {
       kind: 'user',
       id: 'user_local',
     });
-    const duplicateItem = store.createItem({
+    store.createItem({
       id: 'it_thread_dashboard_duplicate',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -904,15 +865,7 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(duplicateTurn.id, {
-      agentId: 'agent_codex_host',
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'user-input',
-        userInputRequestId: duplicateItem.userInputRequestId,
-        itemId: duplicateItem.id,
-      },
-    });
+    store.updateTurn(duplicateTurn.id, { agentId: 'agent_codex_host' });
     const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
 
     const response = await app.request(
@@ -922,9 +875,9 @@ describe('thread dashboard app API', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       workStatus: {
-        pendingApprovalCount: 0,
+        pendingApprovalCount: 1,
         pendingQuestionCount: 0,
-        routing: { requiredUserAction: null },
+        routing: { requiredUserAction: 'Respond to the pending approval.' },
       },
     });
   });

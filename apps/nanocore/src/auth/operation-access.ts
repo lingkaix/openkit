@@ -346,6 +346,19 @@ registerOperations(catalog, ['POST /api/approvals/:approvalRequestId/respond'], 
   resolver: 'opaque-child-workspace',
   scope: 'workspace',
 });
+registerOperations(
+  catalog,
+  [
+    'POST /api/user-input-requests/:userInputRequestId/answer',
+    'POST /api/pending-requests/:pendingRequestId/withdraw',
+  ],
+  {
+    mutating: true,
+    policyOperation: 'approval.respond',
+    resolver: 'body-workspace',
+    scope: 'workspace',
+  }
+);
 
 registerOperations(catalog, ['refreshAgentHealth'], {
   mutating: true,

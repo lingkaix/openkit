@@ -13,7 +13,6 @@ export const AgentSessionStatusSchema = z.enum([
   'busy',
   'idle',
   'degraded',
-  'suspended',
   'interrupted',
   'failed',
   'closed',

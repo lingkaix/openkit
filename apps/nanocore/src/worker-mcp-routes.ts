@@ -15,7 +15,6 @@ import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/
 import { ItemSchema, responsibleUserIdForActor } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Hono } from 'hono';
-
 import { resolveAgentSetup } from './agents/setup-resolver.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
@@ -29,16 +28,7 @@ import {
 } from './capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
-import {
-  createPolicyApprovalGate,
-  isExactMcpApprovalSourceDecision,
-  MCP_APPROVAL_TTL_MS,
-} from './policy/approval-gates.js';
-import {
-  listPolicyApprovalSourceDecisions,
-  readPolicyApprovalTerminalWinner,
-  recordProductPermissionDecision,
-} from './policy/permission-decisions.js';
+import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
@@ -60,7 +50,24 @@ import {
   OPENKIT_REPOSITORY_CATALOG_DIGEST,
   OPENKIT_REPOSITORY_MCP_ID,
   OPENKIT_REPOSITORY_TOOLS,
+  preflightOpenkitRepositoryTool,
 } from './runtime/openkit-repository-mcp.js';
+import {
+  dispatchOpenkitWorkTool,
+  OPENKIT_WORK_CATALOG_DIGEST,
+  OPENKIT_WORK_MCP_ID,
+  OPENKIT_WORK_TOOLS,
+  preflightWorkRequestInput,
+  workRequestInputIsSecret,
+} from './runtime/openkit-work-mcp.js';
+import { approvalCardCopy } from './runtime/pending-request-disclosure.js';
+import { pendingToolResult, raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import {
+  canonicalJsonText,
+  PendingRequestCommandError,
+  preflightPendingRequest,
+  type RaisePendingRequestInput,
+} from './runtime/pending-requests.js';
 import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
@@ -70,7 +77,6 @@ import type {
   WorkerMcpGatewayCredentials,
 } from './runtime/worker-mcp-gateway.js';
 import { WorkerMcpGatewayCallError } from './runtime/worker-mcp-gateway.js';
-import { classifyClosedWorkerApprovalGate } from './runtime/worker-recovery.js';
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
@@ -142,7 +148,6 @@ export interface RegisterWorkerMcpRoutesInput {
   /** Process-local Vault state used only at the gateway sink boundary. */
   readonly vaultUnlockState?: VaultUnlockState | null;
   /** Durably queues the existing Codex Harness stop after a Gate and denial are durable. */
-  readonly requestHumanGateStop?: ((packageSnapshotId: string) => void) | undefined;
 }
 
 /** Registers the private per-catalog-entry MCP Streamable HTTP endpoint. */
@@ -210,18 +215,11 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         workspaceId: environmentPackage.scope.workspaceId,
       });
       const servers = environmentPackage.supply.mcpServers.map((selected) => {
-        if (
-          selected.id === OPENKIT_GENERATIVE_MCP_ID ||
-          selected.id === OPENKIT_REPOSITORY_MCP_ID
-        ) {
+        const listedBuiltin = builtinWorkerMcpServer(selected.id);
+        if (listedBuiltin) {
           if (selected.id === OPENKIT_REPOSITORY_MCP_ID)
             requireCurrentRepositorySelection(input, environmentPackage);
-          if (
-            selected.catalogDigest !==
-            (selected.id === OPENKIT_REPOSITORY_MCP_ID
-              ? OPENKIT_REPOSITORY_CATALOG_DIGEST
-              : OPENKIT_GENERATIVE_CATALOG_DIGEST)
-          ) {
+          if (selected.catalogDigest !== listedBuiltin.digest) {
             throw unavailableServer();
           }
           return {
@@ -286,16 +284,13 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       );
       const serverId = context.req.param('serverId');
       const selected = requireSelectedMcpServer(environmentPackage, serverId);
-      if (serverId === OPENKIT_GENERATIVE_MCP_ID || serverId === OPENKIT_REPOSITORY_MCP_ID) {
+      const builtin = builtinWorkerMcpServer(serverId);
+      if (builtin) {
         const repositoryBuiltin = serverId === OPENKIT_REPOSITORY_MCP_ID;
+        const workBuiltin = serverId === OPENKIT_WORK_MCP_ID;
         if (repositoryBuiltin) requireCurrentRepositorySelection(input, environmentPackage);
-        const tools = repositoryBuiltin ? OPENKIT_REPOSITORY_TOOLS : OPENKIT_GENERATIVE_TOOLS;
-        if (
-          selected.catalogDigest !==
-          (repositoryBuiltin
-            ? OPENKIT_REPOSITORY_CATALOG_DIGEST
-            : OPENKIT_GENERATIVE_CATALOG_DIGEST)
-        ) {
+        const tools = builtin.tools;
+        if (selected.catalogDigest !== builtin.digest) {
           throw unavailableServer();
         }
         const protocolMessage = await context.req.raw
@@ -342,170 +337,224 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           } as ListToolsResult;
         });
         mcp.setRequestHandler('tools/call', async (request, ctx) => {
-          if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
-            throw mcpDeniedError();
-          }
-          const toolCancellation = registerMcpActiveRequest(
-            activeRequests,
-            environmentPackage,
-            serverId,
-            ctx.mcpReq.id,
-            ctx.mcpReq.signal
-          );
-          const releaseMutation = input.workspaceMutationAdmission.enter(
-            environmentPackage.scope.workspaceId
-          );
-          if (!releaseMutation) {
-            toolCancellation.release();
-            throw mcpDeniedError();
-          }
-          let activeWorkspaceDb: WorkspaceDb | null = null;
-          try {
-            requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-            requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
-            if (
-              !selected.allowedTools.includes(request.params.name) ||
-              selected.deniedTools.includes(request.params.name)
-            ) {
+          const execute = async () => {
+            if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
               throw mcpDeniedError();
             }
-            if (selected.approvalRequiredTools.includes(request.params.name)) {
-              throw mcpDeniedError();
-            }
-            if (repositoryBuiltin) {
-              requireCurrentRepositorySelection(input, environmentPackage);
-              const turn = input.store.getTurnById(environmentPackage.scope.turnId);
-              if (
-                environmentPackage.agent.runtimeKind !== 'codex' ||
-                turn.agentSessionId !== environmentPackage.scope.agentSessionId
-              )
-                throw mcpDeniedError();
-            } else
-              requireGenerativeToolPolicy(input.coreDb!, environmentPackage, request.params.name);
-            activeWorkspaceDb = openWorkspaceDb(
-              input.coreDb!.dataRoot,
+            const toolCancellation = registerMcpActiveRequest(
+              activeRequests,
+              environmentPackage,
+              serverId,
+              ctx.mcpReq.id,
+              ctx.mcpReq.signal
+            );
+            const releaseMutation = input.workspaceMutationAdmission.enter(
               environmentPackage.scope.workspaceId
             );
-            applyScopedMigrations(activeWorkspaceDb);
-            const call = startMcpCapabilityCall({
-              capabilityId: repositoryBuiltin
-                ? 'mcp.call_tool'
-                : `mcp.call_tool.${request.params.name}`,
-              environmentPackage,
-              itemId: repositoryBuiltin
-                ? workerMcpItemId(environmentPackage, serverId, request.params.name, ctx.mcpReq.id)
-                : (environmentPackage.scope.itemId ?? null),
-              operation: 'mcp.call_tool',
-              protocolRequestId: ctx.mcpReq.id,
-              serverId,
-              toolName: request.params.name,
-              workspaceDb: activeWorkspaceDb,
-            });
-            if (repositoryBuiltin && !call.inserted) throw mcpDeniedError();
-            const repositoryStartedAt = Date.now();
-            let repositoryTerminal = false;
+            if (!releaseMutation) {
+              toolCancellation.release();
+              throw mcpDeniedError();
+            }
+            let activeWorkspaceDb: WorkspaceDb | null = null;
             try {
+              requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+              requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+              if (
+                !selected.allowedTools.includes(request.params.name) ||
+                selected.deniedTools.includes(request.params.name)
+              ) {
+                throw mcpDeniedError();
+              }
+              if (selected.approvalRequiredTools.includes(request.params.name)) {
+                throw mcpDeniedError();
+              }
               if (repositoryBuiltin) {
-                const outcome = await dispatchOpenkitRepositoryTool(
-                  {
-                    approvalPolicy: input.approvalPolicy,
-                    coreDb: input.coreDb,
-                    inflightCommands: builtinInflight,
-                    store: input.store,
-                    vaultBackend: input.vaultUnlockState
-                      ? () => input.vaultUnlockState!.backend()
-                      : undefined,
-                    workspaceDb: activeWorkspaceDb,
-                  },
+                requireCurrentRepositorySelection(input, environmentPackage);
+                const turn = input.store.getTurnById(environmentPackage.scope.turnId);
+                if (
+                  environmentPackage.agent.runtimeKind !== 'codex' ||
+                  turn.agentSessionId !== environmentPackage.scope.agentSessionId
+                )
+                  throw mcpDeniedError();
+              } else if (!workBuiltin)
+                requireGenerativeToolPolicy(input.coreDb!, environmentPackage, request.params.name);
+              if (
+                workBuiltin &&
+                workRequestInputIsSecret(
+                  (request.params.arguments ?? {}) as Record<string, unknown>
+                )
+              ) {
+                throw new WorkerControlGatewayError(
+                  'secret_input_not_supported',
+                  'Secret input is not supported.',
+                  400
+                );
+              }
+              activeWorkspaceDb = openWorkspaceDb(
+                input.coreDb!.dataRoot,
+                environmentPackage.scope.workspaceId
+              );
+              applyScopedMigrations(activeWorkspaceDb);
+              if (repositoryBuiltin) {
+                const duplicate = preflightOpenkitRepositoryTool(
+                  { approvalPolicy: input.approvalPolicy, workspaceDb: activeWorkspaceDb },
                   environmentPackage,
-                  call.id,
+                  request.params.arguments ?? {}
+                );
+                if (duplicate) return mcp.projectCallToolResult(duplicate, undefined);
+              }
+              if (workBuiltin) {
+                try {
+                  const duplicate = preflightWorkRequestInput(
+                    environmentPackage,
+                    activeWorkspaceDb,
+                    request.params.arguments ?? {}
+                  );
+                  if (duplicate) return mcp.projectCallToolResult(duplicate, undefined);
+                } catch (error) {
+                  if (error instanceof ProtocolError) throw error;
+                  const normalized = normalizeWorkerMcpRouteError(error);
+                  throw new ProtocolError(ProtocolErrorCode.InvalidRequest, normalized.message, {
+                    code: normalized.code,
+                  });
+                }
+              }
+
+              const call = startMcpCapabilityCall({
+                capabilityId: repositoryBuiltin
+                  ? 'mcp.call_tool'
+                  : `mcp.call_tool.${request.params.name}`,
+                environmentPackage,
+                itemId: repositoryBuiltin
+                  ? workerMcpItemId(
+                      environmentPackage,
+                      serverId,
+                      request.params.name,
+                      ctx.mcpReq.id
+                    )
+                  : (environmentPackage.scope.itemId ?? null),
+                operation: 'mcp.call_tool',
+                protocolRequestId: ctx.mcpReq.id,
+                serverId,
+                toolName: request.params.name,
+                workspaceDb: activeWorkspaceDb,
+              });
+              if (repositoryBuiltin && !call.inserted) throw mcpDeniedError();
+              const repositoryStartedAt = Date.now();
+              let repositoryTerminal = false;
+              try {
+                if (repositoryBuiltin) {
+                  const outcome = await dispatchOpenkitRepositoryTool(
+                    {
+                      approvalPolicy: input.approvalPolicy,
+                      coreDb: input.coreDb,
+                      inflightCommands: builtinInflight,
+                      store: input.store,
+                      vaultBackend: input.vaultUnlockState
+                        ? () => input.vaultUnlockState!.backend()
+                        : undefined,
+                      workspaceDb: activeWorkspaceDb,
+                    },
+                    environmentPackage,
+                    call.id,
+                    request.params.name,
+                    (request.params.arguments ?? {}) as Record<string, unknown>
+                  );
+                  finishCapabilityCall({
+                    callId: call.id,
+                    workspaceDb: activeWorkspaceDb,
+                    status: outcome.pendingApproval
+                      ? 'denied'
+                      : outcome.result.isError
+                        ? 'failed'
+                        : 'succeeded',
+                    ...(outcome.pendingApproval
+                      ? { errorCode: 'mcp-denied' }
+                      : outcome.result.isError
+                        ? { errorCode: 'git_push_failed' }
+                        : {}),
+                  });
+                  repositoryTerminal = true;
+                  publishWorkerMcpItem({
+                    call,
+                    durationMs: Date.now() - repositoryStartedAt,
+                    environmentPackage,
+                    errorCode: outcome.pendingApproval
+                      ? 'mcp-denied'
+                      : outcome.result.isError
+                        ? 'git_push_failed'
+                        : null,
+                    itemId: workerMcpItemId(
+                      environmentPackage,
+                      serverId,
+                      request.params.name,
+                      ctx.mcpReq.id
+                    ),
+                    serverId,
+                    workspaceDb: activeWorkspaceDb,
+                    status: outcome.pendingApproval
+                      ? 'declined'
+                      : outcome.result.isError
+                        ? 'failed'
+                        : 'completed',
+                    store: input.store,
+                    toolName: request.params.name,
+                  });
+                  return mcp.projectCallToolResult(outcome.result, undefined);
+                }
+                if (workBuiltin) {
+                  const result = await dispatchOpenkitWorkTool(
+                    {
+                      environmentPackage,
+                      store: input.store,
+                      workspaceDb: activeWorkspaceDb,
+                    },
+                    (request.params.arguments ?? {}) as Record<string, unknown>
+                  );
+                  finishCapabilityCall({
+                    callId: call.id,
+                    status: 'succeeded',
+                    workspaceDb: activeWorkspaceDb,
+                  });
+                  return mcp.projectCallToolResult(result, undefined);
+                }
+                const result = await dispatchOpenkitGenerativeTool(
+                  {
+                    store: input.store,
+                    inflightCommands: builtinInflight,
+                    dataRoot: input.coreDb!.dataRoot,
+                    workspaceId: environmentPackage.scope.workspaceId,
+                    actor: environmentPackage.scope.triggerActor,
+                    workspaceDb: activeWorkspaceDb,
+                    scope: environmentPackage.scope,
+                    protocolRequestId: ctx.mcpReq.id,
+                  },
                   request.params.name,
                   (request.params.arguments ?? {}) as Record<string, unknown>
                 );
                 finishCapabilityCall({
                   callId: call.id,
+                  status: 'succeeded',
                   workspaceDb: activeWorkspaceDb,
-                  status: outcome.pendingApproval
-                    ? 'denied'
-                    : outcome.result.isError
-                      ? 'failed'
-                      : 'succeeded',
-                  ...(outcome.pendingApproval
-                    ? { errorCode: 'mcp-denied' }
-                    : outcome.result.isError
-                      ? { errorCode: 'git_push_failed' }
-                      : {}),
                 });
-                repositoryTerminal = true;
-                publishWorkerMcpItem({
-                  call,
-                  durationMs: Date.now() - repositoryStartedAt,
-                  environmentPackage,
-                  errorCode: outcome.pendingApproval
-                    ? 'mcp-denied'
-                    : outcome.result.isError
-                      ? 'git_push_failed'
-                      : null,
-                  itemId: workerMcpItemId(
-                    environmentPackage,
-                    serverId,
-                    request.params.name,
-                    ctx.mcpReq.id
-                  ),
-                  serverId,
-                  workspaceDb: activeWorkspaceDb,
-                  status: outcome.pendingApproval
-                    ? 'declined'
-                    : outcome.result.isError
-                      ? 'failed'
-                      : 'completed',
-                  store: input.store,
-                  toolName: request.params.name,
-                });
-                if (outcome.pendingApproval) {
-                  try {
-                    if (!input.requestHumanGateStop)
-                      throw new Error('Worker Gate stop is unavailable.');
-                    input.requestHumanGateStop(environmentPackage.snapshotId);
-                  } catch {
-                    throw new ProtocolError(
-                      ProtocolErrorCode.InvalidRequest,
-                      'Worker Gate recovery is required.',
-                      { code: 'recovery_required' }
-                    );
-                  }
-                }
-                return mcp.projectCallToolResult(outcome.result, undefined);
+                return mcp.projectCallToolResult(result, undefined);
+              } catch (error) {
+                if (repositoryTerminal) throw error;
+                throw finishMcpHandlerFailure(error, call, activeWorkspaceDb);
               }
-              const result = await dispatchOpenkitGenerativeTool(
-                {
-                  store: input.store,
-                  inflightCommands: builtinInflight,
-                  dataRoot: input.coreDb!.dataRoot,
-                  workspaceId: environmentPackage.scope.workspaceId,
-                  actor: environmentPackage.scope.triggerActor,
-                  workspaceDb: activeWorkspaceDb,
-                  scope: environmentPackage.scope,
-                  protocolRequestId: ctx.mcpReq.id,
-                },
-                request.params.name,
-                (request.params.arguments ?? {}) as Record<string, unknown>
-              );
-              finishCapabilityCall({
-                callId: call.id,
-                status: 'succeeded',
-                workspaceDb: activeWorkspaceDb,
-              });
-              return mcp.projectCallToolResult(result, undefined);
-            } catch (error) {
-              if (repositoryTerminal) throw error;
-              throw finishMcpHandlerFailure(error, call, activeWorkspaceDb);
+            } finally {
+              activeWorkspaceDb?.sqlite.close();
+              releaseMutation();
+              toolCancellation.release();
             }
-          } finally {
-            activeWorkspaceDb?.sqlite.close();
-            releaseMutation();
-            toolCancellation.release();
-          }
+          };
+          return repositoryBuiltin
+            ? serializeMcpToolCall(
+                toolCallTails,
+                `${environmentPackage.scope.workspaceId}:${environmentPackage.scope.turnId}`,
+                execute
+              )
+            : execute();
         });
         return await serveStatelessWorkerMcp(context.req.raw, protocolMessage, () => {
           if (!server) throw new Error('Worker MCP server was not constructed.');
@@ -1019,9 +1068,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   const approvalEffect = currentSnapshot
     ? mcpApprovalEffect(input, currentSnapshot.schemaSnapshotId)
     : null;
-  let grantedApproval = approvalEffect
-    ? findGrantedMcpApproval(input.workspaceDb, approvalEffect, input.input.store)
-    : null;
+  const grantedApproval: GrantedMcpApproval | null = null;
   const itemId = workerMcpItemId(
     input.environmentPackage,
     input.serverId,
@@ -1034,6 +1081,66 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     'mcp.call_tool',
     input.protocolRequestId
   )}`;
+  const now = new Date().toISOString();
+  const identity = createHash('sha256').update(requestCallId).digest('hex').slice(0, 24);
+  const { title, description } = approvalCardCopy(
+    `Approve MCP tool ${input.serverId}/${input.toolName}`,
+    `Allow one ${input.serverId}/${input.toolName} MCP tool call.`
+  );
+  const canonicalArgumentsJson = canonicalJsonText(input.arguments);
+  const pendingInput: RaisePendingRequestInput | null =
+    approvalEffect && currentSnapshot
+      ? {
+          requestId: `ap_mcp_${identity}`,
+          workspaceId: approvalEffect.workspaceId,
+          threadId: approvalEffect.threadId,
+          raisingTurnId: input.environmentPackage.scope.turnId,
+          requestItemId: `it_mcp_approval_${identity}`,
+          kind: 'approval',
+          requesterKind: 'worker',
+          agentId: approvalEffect.agentId,
+          agentSessionId: input.environmentPackage.scope.agentSessionId,
+          responsibleUserId: approvalEffect.responsibleUserId,
+          call: {
+            serverId: input.serverId,
+            catalogRevision: approvalEffect.catalogEntryRevision,
+            schemaSnapshotId: currentSnapshot.schemaSnapshotId,
+            toolName: input.toolName,
+            canonicalArgumentsJson,
+            argumentsDigest: approvalEffect.argumentsDigest,
+            packageDigest: input.environmentPackage.snapshotId,
+            policyDecisionId: null,
+            authorizationContext: {
+              threadId: approvalEffect.threadId,
+              turnId: input.environmentPackage.scope.turnId,
+              agentSessionId: input.environmentPackage.scope.agentSessionId,
+              agentId: approvalEffect.agentId,
+              responsibleUserId: approvalEffect.responsibleUserId,
+              packageDigest: input.environmentPackage.snapshotId,
+              policyDecisionId: null,
+            },
+          },
+          approval: { kind: 'permission', title, description },
+          now,
+        }
+      : null;
+  if (
+    pendingInput &&
+    hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage) &&
+    hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
+  ) {
+    assertValidMcpToolArguments(currentSnapshot!.tools, input.toolName, input.arguments);
+    try {
+      const duplicate = preflightPendingRequest(input.workspaceDb.sqlite, pendingInput);
+      if (duplicate) return pendingToolResult('pending-approval', duplicate.requestId);
+    } catch (error) {
+      if (error instanceof PendingRequestCommandError)
+        throw new ProtocolError(ProtocolErrorCode.InvalidRequest, error.message, {
+          code: error.code,
+        });
+      throw error;
+    }
+  }
   const startedAt = Date.now();
   const startCall = (callId?: string) =>
     startMcpCapabilityCall({
@@ -1049,19 +1156,6 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       workspaceDb: input.workspaceDb,
     });
   let call: StartedCapabilityCall | null = null;
-  if (grantedApproval) {
-    const approvalCallId = mcpApprovalCapabilityCallId(grantedApproval.approvalId);
-    try {
-      const claimed = startCall(approvalCallId);
-      if (claimed.inserted) call = claimed;
-    } catch (error) {
-      const raced = input.workspaceDb.sqlite
-        .prepare('SELECT 1 FROM capability_calls WHERE call_id = ? LIMIT 1')
-        .get(approvalCallId);
-      if (!raced) throw error;
-    }
-    if (!call) grantedApproval = null;
-  }
   if (!call) {
     const replay = input.workspaceDb.sqlite
       .prepare(
@@ -1120,7 +1214,6 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   if (!call.inserted) throw mcpDeniedError();
   let status: 'completed' | 'declined' | 'failed' = 'failed';
   let errorCode: string | null = null;
-  let humanGateStopRequired = false;
   let terminalCommitted = false;
   let upstreamEffect: 'not-contacted' | 'contacted' | 'unknown' = 'not-contacted';
   let usageAttempted = false;
@@ -1155,11 +1248,40 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         workspaceDb: input.workspaceDb,
       });
       assertValidMcpToolArguments(currentSnapshot.tools, input.toolName, input.arguments);
-      if (!grantedApproval) {
-        createMcpToolApprovalGate(input, call, approvalEffect);
-        humanGateStopRequired = true;
-        throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+      const raised = raiseRecordedPendingRequest(
+        input.input.store,
+        input.workspaceDb.sqlite,
+        pendingInput!
+      );
+      const requestItemExists = input.input.store
+        .listAllItems()
+        .some((item) => item.id === raised.requestItemId);
+      if (!requestItemExists) {
+        input.input.store.createItem({
+          id: raised.requestItemId,
+          workspaceId: raised.workspaceId,
+          threadId: raised.threadId,
+          turnId: raised.raisingTurnId,
+          status: 'completed',
+          createdAt: now,
+          completedAt: now,
+          type: 'approval-request',
+          approvalRequestId: raised.requestId,
+          title,
+          description,
+          kind: 'permission',
+        });
       }
+      publishTerminalItem = false;
+      finishCapabilityCall({
+        callId: call.id,
+        errorCode: 'mcp-denied',
+        status: 'denied',
+        workspaceDb: input.workspaceDb,
+      });
+      terminalCommitted = true;
+      status = 'declined';
+      return pendingToolResult('pending-approval', raised.requestId);
     }
     const observed = await observeWorkerMcpTools({
       call,
@@ -1173,13 +1295,6 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       workspaceDb: input.workspaceDb,
     });
     observedCredentials = observed.credentials;
-    if (grantedApproval && observed.snapshotId !== grantedApproval.resource.schemaSnapshotId) {
-      throw new WorkerControlGatewayError(
-        'mcp-schema-drift',
-        'MCP tool schema changed after approval.',
-        409
-      );
-    }
     assertValidMcpToolArguments(observed.snapshotTools, input.toolName, input.arguments);
     if (!hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage)) {
       recordMcpToolUseDecision(input, call, 'deny', null);
@@ -1342,22 +1457,6 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     }
     terminalCommitted = true;
     status = terminalStatus === 'denied' ? 'declined' : 'failed';
-    if (humanGateStopRequired) {
-      try {
-        if (!input.input.requestHumanGateStop) {
-          throw new Error('The production Worker Gate stop owner is unavailable.');
-        }
-        input.input.requestHumanGateStop(input.environmentPackage.snapshotId);
-      } catch {
-        throw new ProtocolError(
-          ProtocolErrorCode.InvalidRequest,
-          'Worker Gate recovery is required.',
-          {
-            code: 'recovery_required',
-          }
-        );
-      }
-    }
     throw new ProtocolError(ProtocolErrorCode.InvalidRequest, normalized.message, {
       code: normalized.code,
     });
@@ -1418,163 +1517,6 @@ function mcpApprovalEffect(
     toolName: input.toolName,
     workspaceId: input.environmentPackage.scope.workspaceId,
   };
-}
-
-/** Finds the sole usable exact-match Approval without trusting a caller-supplied id. */
-function findGrantedMcpApproval(
-  workspaceDb: WorkspaceDb,
-  effect: McpApprovalEffect,
-  store: FsStore
-): GrantedMcpApproval | null {
-  const approvalIds = workspaceDb.sqlite
-    .prepare(
-      `SELECT DISTINCT approval_id
-       FROM permission_decisions
-       WHERE owner_scope = 'workspace'
-         AND workspace_id = ?
-         AND action = 'tool.use'
-         AND result = 'require_approval'
-         AND approval_id IS NOT NULL
-       ORDER BY approval_id`
-    )
-    .all(effect.workspaceId) as Array<{ approval_id: string }>;
-  const matches = approvalIds.flatMap(({ approval_id: approvalId }) => {
-    let sources: ReturnType<typeof listPolicyApprovalSourceDecisions>;
-    try {
-      sources = listPolicyApprovalSourceDecisions(workspaceDb, effect.workspaceId, approvalId);
-    } catch {
-      return [];
-    }
-    const source = sources[0];
-    if (sources.length !== 1 || source?.action !== 'tool.use') return [];
-    const sourceContext = source.contextSummary;
-    const sourceResource = source.resourceSummary;
-    if (
-      !sourceResource ||
-      typeof sourceResource !== 'object' ||
-      Array.isArray(sourceResource) ||
-      !sourceContext ||
-      typeof sourceContext !== 'object' ||
-      Array.isArray(sourceContext) ||
-      !('expiresAt' in sourceResource) ||
-      typeof sourceResource.expiresAt !== 'string' ||
-      Object.keys(sourceResource).length !== Object.keys(effect).length + 1 ||
-      !isMcpApprovalExpiryActive(sourceResource.expiresAt)
-    ) {
-      return [];
-    }
-    const { expiresAt, ...candidateEffect } = sourceResource;
-    if (!isDeepStrictEqual(candidateEffect, effect)) return [];
-    const context = sourceContext as Record<string, unknown>;
-    let approval: ReturnType<FsStore['getApproval']>;
-    try {
-      approval = store.getApproval(approvalId);
-    } catch {
-      return [];
-    }
-    if (
-      typeof context.agentSessionId !== 'string' ||
-      typeof context.turnId !== 'string' ||
-      context.workspaceId !== effect.workspaceId ||
-      context.threadId !== effect.threadId ||
-      !isExactMcpApprovalSourceDecision({
-        approvalCreatedAt: approval.createdAt,
-        source,
-        threadId: effect.threadId,
-        turnId: context.turnId,
-        workspaceDb,
-        workspaceId: effect.workspaceId,
-      })
-    ) {
-      return [];
-    }
-    try {
-      const sourceTurn = store.getTurn(effect.workspaceId, effect.threadId, context.turnId);
-      const sourceSession = store.getAgentSession(context.agentSessionId);
-      const closedGate = classifyClosedWorkerApprovalGate(store, sourceTurn);
-      const winner = readPolicyApprovalTerminalWinner(
-        workspaceDb,
-        effect.workspaceId,
-        approvalId,
-        effect.threadId,
-        context.turnId
-      );
-      if (
-        closedGate?.stopReason !== 'completed' ||
-        closedGate.responseRequestId !== winner?.requestId ||
-        sourceTurn.agentSessionId !== sourceSession.id ||
-        sourceSession.status !== 'closed' ||
-        !winner ||
-        winner.action !== 'tool.use' ||
-        winner.result !== 'allow' ||
-        winner.requiredApprovalKind !== 'permission' ||
-        winner.actor.id !== effect.responsibleUserId ||
-        !isDeepStrictEqual(winner.resourceSummary, sourceResource) ||
-        !isDeepStrictEqual(winner.subjectSummary, source.subjectSummary) ||
-        approval.status !== 'granted' ||
-        approval.resolvedAt !== winner.decidedAt
-      ) {
-        return [];
-      }
-      const consumed = workspaceDb.sqlite
-        .prepare('SELECT 1 FROM capability_calls WHERE call_id = ? LIMIT 1')
-        .get(mcpApprovalCapabilityCallId(approvalId));
-      return consumed
-        ? []
-        : [
-            {
-              approvalId,
-              decisionId: winner.decisionId,
-              resource: sourceResource as McpApprovalEffect & { expiresAt: string },
-            },
-          ];
-    } catch {
-      return [];
-    }
-  });
-
-  if (matches.length > 1) throw mcpDeniedError();
-  return matches[0] ?? null;
-}
-
-/** Opens one existing human-attention Gate for an exact MCP proposed effect. */
-function createMcpToolApprovalGate(
-  input: WorkerMcpToolCallInput,
-  call: StartedCapabilityCall,
-  effect: McpApprovalEffect
-): void {
-  const identity = createHash('sha256').update(call.id).digest('hex').slice(0, 24);
-  const now = new Date();
-  createPolicyApprovalGate({
-    action: 'tool.use',
-    approvalId: `ap_mcp_${identity}`,
-    approvalItemId: `it_mcp_approval_${identity}`,
-    contextSummary: {
-      agentSessionId: input.environmentPackage.scope.agentSessionId,
-      capabilityCallId: call.id,
-      packageSnapshotId: input.environmentPackage.snapshotId,
-      threadId: input.environmentPackage.scope.threadId,
-      turnId: input.environmentPackage.scope.turnId,
-      workspaceId: input.environmentPackage.scope.workspaceId,
-    },
-    decisionId: `pd_mcp_required_${identity}`,
-    description: `Allow one ${input.serverId}/${input.toolName} MCP tool call. After approving, send a new task message to continue.`,
-    reasonCode: 'mcp_tool_approval_required',
-    resourceSummary: {
-      ...effect,
-      expiresAt: new Date(now.getTime() + MCP_APPROVAL_TTL_MS).toISOString(),
-    },
-    store: input.input.store,
-    subjectSummary: {
-      agentId: effect.agentId,
-      responsibleUserId: effect.responsibleUserId,
-    },
-    title: `Approve MCP tool ${input.serverId}/${input.toolName}`,
-    turnId: input.environmentPackage.scope.turnId,
-    workspaceDb: input.workspaceDb,
-    workspaceId: input.environmentPackage.scope.workspaceId,
-    now,
-  });
 }
 
 /** Records the current tool.use decision, with prior Approval lineage only in context. */
@@ -1639,22 +1581,11 @@ function assertValidMcpToolArguments(
   }
 }
 
-/** Derives the durable one-shot CapabilityCall identity from its Approval id. */
-function mcpApprovalCapabilityCallId(approvalId: string): string {
-  return `cap_mcp_approval_${createHash('sha256').update(approvalId).digest('hex').slice(0, 24)}`;
-}
-
 /** Returns the closed worker-visible denial for a consumed or ambiguous Approval. */
 function mcpDeniedError(): ProtocolError {
   return new ProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool call was denied.', {
     code: 'mcp-denied',
   });
-}
-
-/** Returns whether one Approval expiry is valid and still in the future. */
-export function isMcpApprovalExpiryActive(expiresAt: string, now = Date.now()): boolean {
-  const expiry = Date.parse(expiresAt);
-  return Number.isFinite(expiry) && expiry > now;
 }
 
 /** Captures the full live schema and returns only the AEP-visible tool projection. */
@@ -1781,10 +1712,17 @@ async function observeWorkerMcpTools(input: {
 }
 
 /** Resolves every current Vault grant into the exact catalog-declared transport sink. */
-async function resolveWorkerMcpCredentials(input: {
-  readonly call: StartedCapabilityCall;
-  readonly environmentPackage: AgentEnvironmentPackage;
-  readonly input: RegisterWorkerMcpRoutesInput;
+export async function resolveWorkerMcpCredentials(input: {
+  readonly call: Pick<StartedCapabilityCall, 'id'>;
+  readonly environmentPackage: {
+    readonly snapshotId: string;
+    readonly scope: { readonly workspaceId: string; readonly agentSessionId: string };
+    readonly agent: { readonly agentId: string };
+  };
+  readonly input: Pick<
+    RegisterWorkerMcpRoutesInput,
+    'coreDb' | 'workerMcpGateway' | 'vaultUnlockState'
+  > & { readonly vaultBackend?: () => import('./vault/vault-backend.js').VaultBackend };
   readonly operation: 'mcp.list_tools' | 'mcp.call_tool';
   readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
   readonly workspaceDb: WorkspaceDb;
@@ -1800,7 +1738,8 @@ async function resolveWorkerMcpCredentials(input: {
   const injections: PendingMcpVaultInjection[] = [];
 
   try {
-    if (!input.input.vaultUnlockState) throw new Error('Vault is unavailable.');
+    if (!input.input.vaultUnlockState && !input.input.vaultBackend)
+      throw new Error('Vault is unavailable.');
     for (const binding of input.resolved.credentialBindings) {
       const grant = getVaultGrant(coreDb, binding.vaultGrantId);
       const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
@@ -1820,7 +1759,7 @@ async function resolveWorkerMcpCredentials(input: {
         revocationBehavior: 'close-gateway-session',
         now: () => now,
       });
-      const backend = input.input.vaultUnlockState.backend();
+      const backend = input.input.vaultBackend?.() ?? input.input.vaultUnlockState!.backend();
       if (reference!.backendKind !== backend.kind) throw new Error('Vault backend mismatch.');
       const material = createVaultUseAuditedBackend({
         agentSessionId: input.environmentPackage.scope.agentSessionId,
@@ -1875,9 +1814,13 @@ async function resolveWorkerMcpCredentials(input: {
 }
 
 /** Verifies current grant, reference, scope, target, path, and lifetime authority. */
-function assertCurrentMcpVaultAuthority(
+export function assertCurrentMcpVaultAuthority(
   input: {
-    readonly environmentPackage: AgentEnvironmentPackage;
+    readonly environmentPackage: {
+      readonly snapshotId: string;
+      readonly scope: { readonly workspaceId: string; readonly agentSessionId: string };
+      readonly agent: { readonly agentId: string };
+    };
     readonly operation: 'mcp.list_tools' | 'mcp.call_tool';
   },
   grant: VaultGrantRecord | null,
@@ -1927,7 +1870,7 @@ function assertCurrentMcpVaultBindings(input: WorkerMcpToolCallInput): void {
 }
 
 /** Creates receipts only after a successful credential-bearing upstream exchange. */
-function completeMcpVaultInjections(
+export function completeMcpVaultInjections(
   coreDb: CoreDb,
   call: StartedCapabilityCall,
   injections: readonly PendingMcpVaultInjection[]
@@ -1952,7 +1895,7 @@ function completeMcpVaultInjections(
 }
 
 /** Non-secret receipt metadata retained until an upstream sink succeeds. */
-interface PendingMcpVaultInjection {
+export interface PendingMcpVaultInjection {
   readonly backendSummary: string;
   readonly grant: VaultGrantRecord;
   readonly injectedAt: string;
@@ -1964,8 +1907,8 @@ interface PendingMcpVaultInjection {
 function mcpVaultRecordId(
   kind: 'plan' | 'receipt',
   input: {
-    readonly call: StartedCapabilityCall;
-    readonly environmentPackage: AgentEnvironmentPackage;
+    readonly call: Pick<StartedCapabilityCall, 'id'>;
+    readonly environmentPackage: { readonly snapshotId: string };
     readonly operation: string;
     readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
   },
@@ -2114,6 +2057,26 @@ function publishWorkerMcpItem(input: {
 }
 
 /** Resolves the exact AEP-selected server without caller-supplied topology. */
+function builtinWorkerMcpServer(serverId: string): {
+  readonly digest: string;
+  readonly tools: ReadonlyArray<{
+    readonly description: string;
+    readonly inputSchema: Record<string, unknown>;
+    readonly name: string;
+  }>;
+} | null {
+  if (serverId === OPENKIT_REPOSITORY_MCP_ID) {
+    return { digest: OPENKIT_REPOSITORY_CATALOG_DIGEST, tools: OPENKIT_REPOSITORY_TOOLS };
+  }
+  if (serverId === OPENKIT_GENERATIVE_MCP_ID) {
+    return { digest: OPENKIT_GENERATIVE_CATALOG_DIGEST, tools: OPENKIT_GENERATIVE_TOOLS };
+  }
+  if (serverId === OPENKIT_WORK_MCP_ID) {
+    return { digest: OPENKIT_WORK_CATALOG_DIGEST, tools: OPENKIT_WORK_TOOLS };
+  }
+  return null;
+}
+
 function requireSelectedMcpServer(environmentPackage: AgentEnvironmentPackage, serverId: string) {
   if (environmentPackage.capabilities.mode !== 'enabled') throw unavailableServer();
   const server = environmentPackage.supply.mcpServers.find(
@@ -2203,10 +2166,9 @@ function hasMcpCapabilityTurnAdmission(
 ): boolean {
   const turn = store.getTurnById(environmentPackage.scope.turnId);
   return (
-    (turn.workspaceId !== environmentPackage.scope.workspaceId ||
-      turn.threadId !== environmentPackage.scope.threadId ||
-      turn.status !== 'running' ||
-      turn.humanGate !== null) === false
+    turn.workspaceId === environmentPackage.scope.workspaceId &&
+    turn.threadId === environmentPackage.scope.threadId &&
+    turn.status === 'running'
   );
 }
 
@@ -2243,6 +2205,8 @@ function unavailableServer(): WorkerControlGatewayError {
 /** Maps one private route failure to the closed worker-visible vocabulary. */
 function normalizeWorkerMcpRouteError(error: unknown): WorkerControlGatewayError {
   if (error instanceof WorkerControlGatewayError) return error;
+  if (error instanceof PendingRequestCommandError)
+    return new WorkerControlGatewayError(error.code, error.message, error.status);
   return new WorkerControlGatewayError('mcp-call-failed', 'MCP tool call failed.', 503);
 }
 

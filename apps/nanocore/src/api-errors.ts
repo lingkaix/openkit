@@ -4,6 +4,7 @@ import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
+import { PendingRequestCommandError } from './runtime/pending-requests.js';
 
 /**
  * Creates a protocol-stamped API error response.
@@ -39,6 +40,10 @@ export function asCommandError(error: unknown, code: string, status = 404): Resp
   }
 
   if (error instanceof KnowledgePageValidationError) {
+    return asApiError(error.message, error.code, error.status);
+  }
+
+  if (error instanceof PendingRequestCommandError) {
     return asApiError(error.message, error.code, error.status);
   }
 

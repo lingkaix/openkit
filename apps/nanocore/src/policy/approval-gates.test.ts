@@ -44,7 +44,6 @@ describe('policy approval gates', () => {
       expect(store.getApproval(gate.approvalId).status).toBe('granted');
       expect(store.getTurnById(turn.id)).toMatchObject({
         status: 'running',
-        humanGate: null,
         completedAt: null,
       });
       expect(permissionDecision(workspaceDb, gate.decisionId)).toMatchObject({
@@ -56,7 +55,7 @@ describe('policy approval gates', () => {
       }
       const restored = new FsStore({ dataRoot });
       expect(restored.getApproval(gate.approvalId).status).toBe('granted');
-      expect(restored.getTurnById(turn.id)).toMatchObject({ status: finalStatus, humanGate: null });
+      expect(restored.getTurnById(turn.id).status).toBe(finalStatus);
       expect(restored.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
         expect.objectContaining({
           type: 'approval-decision',
@@ -110,17 +109,9 @@ describe('policy approval gates', () => {
         approvalItemId: 'it_policy_gate',
         decisionId: 'pd_policy_gate',
       });
-      expect(store.getTurnById(turn.id)).toMatchObject({
-        humanGate:
-          mode === 'auto_allow'
-            ? null
-            : {
-                approvalRequestId: 'ap_policy_gate',
-                itemId: 'it_policy_gate',
-                kind: 'approval',
-              },
-        status: mode === 'auto_allow' ? 'completed' : 'awaiting_human',
-      });
+      expect(store.getTurnById(turn.id).status).toBe(
+        mode === 'auto_allow' ? 'completed' : 'running'
+      );
       expect(
         store.listThreadItems('ws_demo', thread.id).find((item) => item.id === 'it_policy_gate')
       ).toMatchObject({ status: 'completed', completedAt: expect.any(String) });
@@ -136,8 +127,8 @@ describe('policy approval gates', () => {
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
       const rows = ListHumanAttentionResponseSchema.parse(await res.json()).items;
 
+      expect(rows).toEqual([]);
       if (mode === 'auto_allow') {
-        expect(rows).toEqual([]);
         expect(store.getApproval(gate.approvalId)).toMatchObject({
           status: 'granted',
           resolvedAt: expect.any(String),
@@ -149,15 +140,10 @@ describe('policy approval gates', () => {
             )
             .get(gate.decisionId)
         ).toEqual({ outcome: 'succeeded', actor_json: null });
-      } else
-        expect(rows).toContainEqual(
-          expect.objectContaining({
-            id: 'approval:ap_policy_gate',
-            itemId: 'it_policy_gate',
-            kind: 'approval',
-            title: 'Approve protected resource use',
-          })
-        );
+      } else {
+        expect(store.getApproval(gate.approvalId).status).toBe('pending');
+        store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      }
 
       expect(() =>
         createPolicyApprovalGate({
@@ -166,7 +152,8 @@ describe('policy approval gates', () => {
           approvalId: 'ap_duplicate_policy_gate',
           approvalItemId: 'it_duplicate_policy_gate',
           decisionId: 'pd_duplicate_policy_gate',
-          description: 'Do not create a second Gate on an awaiting-human Turn.',
+          description:
+            'Do not create a second policy approval on a Turn that is no longer running.',
           reasonCode: 'approval_required',
           resourceSummary: { kind: 'vault-reference', id: 'vault_demo' },
           store,

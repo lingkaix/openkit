@@ -1,5 +1,4 @@
 import { createRequestId } from '@openkit/core-client';
-import { isSealedTurnTerminal } from '@openkit/protocol';
 import { useEffect, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import { EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
@@ -10,6 +9,7 @@ import {
   useRespondApproval,
   useSubmitTurnAnswers,
   useThreadItems,
+  useWithdrawPendingRequest,
 } from './data';
 import { ItemView } from './ItemView';
 
@@ -43,7 +43,7 @@ function streamGroupsByTurn(
 export interface ThreadStreamProps {
   workspaceId: string | null;
   threadId: string;
-  /** When true (runtime disconnected), inline approval and Gate actions are read-only. */
+  /** When true (runtime disconnected), inline approval and input actions are read-only. */
   readOnly?: boolean;
   /** Empty-state title when the thread has no items yet. */
   emptyTitle?: string;
@@ -56,7 +56,7 @@ export interface ThreadStreamProps {
  * flight, an inline error with retry, a calm empty block, or the populated stream
  * grouped by Turn (Thread → Turn → Item). Each durable failed Turn that is not the
  * latest keeps its recorded dashboard error beside that Turn, including Turns with no
- * Items. Authorized runtime activity appears once at each Turn's final Item group, or an empty group, as plain text with explicit coverage and presentation omissions; it creates no human Gate or execution state. A failed dashboard refresh suppresses cached activity until a successful read, with retry owned by the existing dashboard query. Unresolved approvals and non-secret Gate answers are
+ * Items. Authorized runtime activity appears once at each Turn's final Item group, or an empty group, as plain text with explicit coverage and presentation omissions; it creates no pending request or execution state. A failed dashboard refresh suppresses cached activity until a successful read, with retry owned by the existing dashboard query. Unresolved approvals and non-secret input requests are
  * actionable inline unless read-only. Baseline readiness stays sticky only for the current
  * Workspace and Thread so later command refetches cannot tear down its live subscription.
  */
@@ -87,6 +87,7 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
   const dashboard = live.data;
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
+  const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
   const controlsReadOnly = Boolean(readOnly || !workspaceId || !connection.connected);
 
   if (items.isLoading) {
@@ -144,18 +145,15 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
     if (live.isError)
       return 'Approval status could not be loaded. Reload this conversation to try again.';
     if (!dashboard) return 'Checking approval status…';
-    const turn = dashboard.turns.find((candidate) => candidate.id === item.turnId);
-    if (!turn) return 'Task status is unavailable. Reload this conversation to check again.';
-    if (isSealedTurnTerminal(turn.status))
-      return 'This task has ended. This approval can no longer be answered.';
-    if (
-      item.status !== 'completed' ||
-      turn.status !== 'awaiting_human' ||
-      turn.humanGate?.kind !== 'approval' ||
-      turn.humanGate.itemId !== item.id ||
-      turn.humanGate.approvalRequestId !== item.approvalRequestId
-    )
-      return 'This request is not the task’s current approval. No decision can be submitted.';
+    const state = dashboard.pendingRequests?.find(
+      (record) => record.requestId === item.approvalRequestId
+    );
+    if (!state) return 'Request status is unavailable. Reload this conversation to check again.';
+    if (state.state !== 'pending')
+      return state.state === 'inspect-only'
+        ? 'This request requires inspection.'
+        : `This request is ${state.state}.`;
+    if (state.canRespond !== true) return 'Approval actions are unavailable for this viewer.';
     return undefined;
   }
 
@@ -185,7 +183,6 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
               (items.data ?? []).some(
                 (candidate) =>
                   candidate.type === 'user-input-response' &&
-                  candidate.turnId === item.turnId &&
                   candidate.userInputRequestId === item.userInputRequestId
               ) ? null : (
                 <ItemView
@@ -202,7 +199,14 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                       ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)?.objective
                       : undefined
                   }
-                  readOnly={controlsReadOnly}
+                  readOnly={
+                    controlsReadOnly ||
+                    (item.type === 'user-input-request' &&
+                      (live.isError ||
+                        dashboard?.pendingRequests?.find(
+                          (record) => record.requestId === item.userInputRequestId
+                        )?.state !== 'pending'))
+                  }
                   resolvedApproval={
                     item.type === 'approval-request'
                       ? (items.data ?? []).find(
@@ -213,14 +217,13 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                             { type: 'approval-decision' }
                           > =>
                             candidate.type === 'approval-decision' &&
-                            candidate.turnId === item.turnId &&
                             candidate.approvalRequestId === item.approvalRequestId
                         )
                       : undefined
                   }
                   approvalRequestTitle={
                     item.type === 'approval-decision'
-                      ? group.items.find(
+                      ? (items.data ?? []).find(
                           (
                             candidate
                           ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
@@ -229,19 +232,34 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                         )?.title
                       : undefined
                   }
+                  approvalEffect={
+                    item.type === 'approval-request'
+                      ? dashboard?.pendingRequests?.find(
+                          (row) => row.requestId === item.approvalRequestId
+                        )?.approvalEffect
+                      : undefined
+                  }
+                  onWithdrawApproval={(pendingRequestId) =>
+                    withdraw.mutate({ pendingRequestId, requestId: createRequestId() })
+                  }
                   approvalUnavailableReason={approvalUnavailableReason(item)}
                   approvalPending={
-                    respond.isPending &&
                     item.type === 'approval-request' &&
-                    respond.variables?.approvalRequestId === item.approvalRequestId
+                    ((respond.isPending &&
+                      respond.variables?.approvalRequestId === item.approvalRequestId) ||
+                      (withdraw.isPending &&
+                        withdraw.variables?.pendingRequestId === item.approvalRequestId))
                   }
                   approvalError={
-                    respond.isError &&
                     item.type === 'approval-request' &&
-                    respond.variables?.approvalRequestId === item.approvalRequestId
+                    ((respond.isError &&
+                      respond.variables?.approvalRequestId === item.approvalRequestId) ||
+                      (withdraw.isError &&
+                        withdraw.variables?.pendingRequestId === item.approvalRequestId))
                   }
                   onRetryApproval={() => {
-                    if (respond.variables) respond.mutate(respond.variables);
+                    if (withdraw.isError && withdraw.variables) withdraw.mutate(withdraw.variables);
+                    else if (respond.variables) respond.mutate(respond.variables);
                   }}
                   onApprovalDecision={(approvalRequestId, turnId, decision) =>
                     respond.mutate({
@@ -251,12 +269,22 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                       requestId: createRequestId(),
                     })
                   }
-                  onSubmitAnswers={(turnId, answers) => submitAnswers.mutate({ turnId, answers })}
+                  onSubmitAnswers={(userInputRequestId, answers) =>
+                    submitAnswers.mutate({
+                      userInputRequestId,
+                      answers,
+                      requestId: createRequestId(),
+                    })
+                  }
                   answerPending={
-                    submitAnswers.isPending && submitAnswers.variables?.turnId === item.turnId
+                    submitAnswers.isPending &&
+                    item.type === 'user-input-request' &&
+                    submitAnswers.variables?.userInputRequestId === item.userInputRequestId
                   }
                   answerError={
-                    submitAnswers.isError && submitAnswers.variables?.turnId === item.turnId
+                    submitAnswers.isError &&
+                    item.type === 'user-input-request' &&
+                    submitAnswers.variables?.userInputRequestId === item.userInputRequestId
                   }
                   onRetryAnswers={() => {
                     if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);

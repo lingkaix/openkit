@@ -16,17 +16,12 @@ import { readPendingGoalSteeringProjection } from './context/worker-context-proj
 import { GoalSteeringAuthorityError } from './goal-steering-authority.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
-import { isExactWorkerApprovalSourceDecision } from './policy/approval-gates.js';
-import { listPolicyApprovalSourceDecisions } from './policy/permission-decisions.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import { type GoalRecord, listGoalRecordsForThread, listGoalTasks } from './runtime/goal-store.js';
-import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import { pendingRequestPresentation } from './runtime/pending-request-flow.js';
+import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
-import {
-  hasExactActiveHumanGate,
-  materializeInterruptedWorkerStates,
-  recoverWorkerCheckpointStopReason,
-} from './runtime/worker-recovery.js';
+import { materializeInterruptedWorkerStates } from './runtime/worker-recovery.js';
 import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconciliation-records.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
@@ -36,12 +31,6 @@ import {
   type SchedulerOrphanWorkerEvidenceRecord,
 } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
-
-type StoreItem = ReturnType<FsStore['listAllItems']>[number];
-type ApprovalRequestStoreItem = Extract<StoreItem, { type: 'approval-request' }>;
-type ApprovalDecisionStoreItem = Extract<StoreItem, { type: 'approval-decision' }>;
-type UserInputRequestStoreItem = Extract<StoreItem, { type: 'user-input-request' }>;
-type UserInputResponseStoreItem = Extract<StoreItem, { type: 'user-input-response' }>;
 
 /**
  * Input used to build unified Human Attention rows.
@@ -120,13 +109,6 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
         mutating: true,
         policyOperation: 'approval.respond',
       }));
-  const turnDecisionAuthorized =
-    input.coreDb === undefined ||
-    (input.actor !== undefined &&
-      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
-        mutating: true,
-        policyOperation: 'turn.run',
-      }));
   const reviewDecisionAuthorized =
     input.coreDb === undefined ||
     (input.actor !== undefined &&
@@ -135,13 +117,7 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
         policyOperation: 'review.apply',
       }));
   const rows = [
-    ...(approvalDecisionAuthorized ? approvalRows(input) : []),
-    ...questionRows(
-      input.store,
-      input.workspaceId,
-      turnDecisionAuthorized ? (input.actor?.userId ?? null) : null,
-      input.actor?.userId
-    ),
+    ...(approvalDecisionAuthorized ? pendingRequestRows(input) : []),
     ...runtimeRows(input, reviewDecisionAuthorized),
     ...agentReadinessRows(input.store, input.workspaceId),
     ...(reviewDecisionAuthorized ? artifactReviewRows(input) : []),
@@ -356,272 +332,136 @@ function visibleWorkspaceReviewOrigin(
 }
 
 /**
- * Returns true when one item is an approval-decision item.
- *
- * @param item Store item to inspect.
- * @returns True when the item records an approval decision.
- */
-function isApprovalDecisionItem(item: StoreItem): item is ApprovalDecisionStoreItem {
-  return item.type === 'approval-decision';
-}
-
-/**
- * Returns true when one item is an approval-request item.
- *
- * @param item Store item to inspect.
- * @returns True when the item requests an approval decision.
- */
-function isApprovalRequestItem(item: StoreItem): item is ApprovalRequestStoreItem {
-  return item.type === 'approval-request';
-}
-
-/**
- * Returns true when one item is a user-input request item.
- *
- * @param item Store item to inspect.
- * @returns True when the item asks the user for input.
- */
-function isUserInputRequestItem(item: StoreItem): item is UserInputRequestStoreItem {
-  return item.type === 'user-input-request';
-}
-
-/**
- * Returns true when one item is a user-input response item.
- *
- * @param item Store item to inspect.
- * @returns True when the item answers a previous user-input request.
- */
-function isUserInputResponseItem(item: StoreItem): item is UserInputResponseStoreItem {
-  return item.type === 'user-input-response';
-}
-
-/**
- * Checks whether one approval Item has the exact pending Gate owners required for actionability.
- *
- * @param input Projection dependencies containing Product and worker owners.
- * @param item Approval request Item to validate.
- * @returns True only for one completed request owned by an actionable pending Approval Gate.
- */
-function isActionableApprovalRequest(
-  input: BuildHumanAttentionRowsInput,
-  item: ApprovalRequestStoreItem
-): boolean {
-  if (item.status !== 'completed') {
-    return false;
-  }
-  try {
-    const turn = input.store.getTurn(item.workspaceId, item.threadId, item.turnId);
-    if (
-      !hasExactActiveHumanGate(input.store, turn) ||
-      turn.humanGate.kind !== 'approval' ||
-      turn.humanGate.itemId !== item.id ||
-      turn.humanGate.approvalRequestId !== item.approvalRequestId
-    ) {
-      return false;
-    }
-    if (!input.coreDb || !input.workspaceDb) {
-      return true;
-    }
-    const checkpoint = getWorkerCheckpoint(
-      input.workspaceDb,
-      item.workspaceId,
-      item.threadId,
-      item.turnId
-    );
-    const policySources = listPolicyApprovalSourceDecisions(
-      input.workspaceDb,
-      item.workspaceId,
-      item.approvalRequestId
-    );
-    const aepBacked = checkpoint?.workerSessionId
-      ? input.store.getAgentSession(checkpoint.workerSessionId).environmentPackageSnapshotId !==
-        null
-      : false;
-    if (
-      policySources.length > 1 ||
-      (aepBacked &&
-        (policySources.length !== 1 ||
-          !policySources[0] ||
-          !isExactWorkerApprovalSourceDecision({
-            store: input.store,
-            approvalId: item.approvalRequestId,
-            approvalItemId: item.id,
-            approvalCreatedAt: input.store.getApproval(item.approvalRequestId).createdAt,
-            source: policySources[0],
-            threadId: item.threadId,
-            turnId: item.turnId,
-            workspaceDb: input.workspaceDb,
-            workspaceId: item.workspaceId,
-          }))) ||
-      (!aepBacked && policySources[0]?.action === 'tool.use')
-    ) {
-      return false;
-    }
-    return (
-      !checkpoint ||
-      (checkpoint.stage === 'waiting_for_user' &&
-        checkpoint.stopReason === 'ask_user' &&
-        recoverWorkerCheckpointStopReason(
-          input.coreDb,
-          input.store,
-          input.workspaceDb,
-          checkpoint
-        ) === 'ask_user')
-    );
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Checks whether one question Item has the exact active Gate owners required for visibility.
- *
- * @param store Product store containing the Turn owner.
- * @param item User-input request Item to validate.
- * @returns True only for one completed request with unique questions and an exact active Gate.
- */
-function isExactUserInputRequest(store: FsStore, item: UserInputRequestStoreItem): boolean {
-  const questionIds = item.questions.map((question) => question.id);
-  if (item.status !== 'completed' || new Set(questionIds).size !== questionIds.length) {
-    return false;
-  }
-  try {
-    const turn = store.getTurn(item.workspaceId, item.threadId, item.turnId);
-    return (
-      hasExactActiveHumanGate(store, turn) &&
-      turn.humanGate.kind === 'user-input' &&
-      turn.humanGate.itemId === item.id &&
-      turn.humanGate.userInputRequestId === item.userInputRequestId
-    );
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Projects unresolved approval requests into unified rows.
+ * Projects every pending request on a visible Thread.
  *
  * @param input Projection dependencies and Workspace scope.
- * @returns Approval rows.
+ * @returns Approval and question rows backed by the Workspace pending-request records.
  */
-function approvalRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
-  const items = input.store.listAllItems().filter((item) => item.workspaceId === input.workspaceId);
-  const decisions = new Set(
-    items.filter(isApprovalDecisionItem).map((item) => item.approvalRequestId)
-  );
-
-  return items
-    .filter(isApprovalRequestItem)
-    .filter((item) => !decisions.has(item.approvalRequestId))
-    .filter((item) =>
-      isThreadIdVisible(input.store, item.workspaceId, item.threadId, input.actor?.userId)
-    )
-    .filter((item) => isActionableApprovalRequest(input, item))
-    .map((item) => {
-      const approval = input.store.getApproval(item.approvalRequestId);
-      const thread = input.store.getThread(item.workspaceId, item.threadId);
-
-      return {
-        id: `approval:${approval.id}`,
-        kind: 'approval',
-        workspaceId: item.workspaceId,
-        threadId: item.threadId,
-        turnId: item.turnId,
-        itemId: item.id,
-        title: item.title,
-        summary: item.description,
+function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+  if (!input.workspaceDb) {
+    return [];
+  }
+  const rows: HumanAttentionRow[] = [];
+  for (const thread of visibleThreadsForActor(input)) {
+    let records: ReturnType<typeof listThreadPendingRequests>;
+    try {
+      records = listThreadPendingRequests(input.workspaceDb.sqlite, input.workspaceId, thread.id);
+    } catch {
+      continue;
+    }
+    const turns = input.store.listThreadTurns(input.workspaceId, thread.id);
+    for (const record of records) {
+      if (record.state !== 'pending') continue;
+      if (input.actor && record.responsibleUserId !== input.actor.userId) continue;
+      const contradiction = validateCanonicalLoad(
+        record,
+        input.store
+          .listThreads(input.workspaceId)
+          .flatMap((candidate) => input.store.listThreadTurns(input.workspaceId, candidate.id)),
+        input.store.listCommandRequests()
+      );
+      const presentation = pendingRequestPresentation(record, turns);
+      const secret = (record.questions ?? []).some((question) => question.isSecret === true);
+      if (record.kind === 'approval') {
+        rows.push({
+          id: `approval:${record.requestId}`,
+          kind: 'approval',
+          workspaceId: record.workspaceId,
+          threadId: record.threadId,
+          turnId: record.raisingTurnId,
+          itemId: record.requestItemId,
+          title: record.title ?? 'Approval required',
+          summary: record.description ?? 'Review and respond to the approval request.',
+          severity: 'needs_input',
+          createdAt: record.createdAt,
+          ageSeconds: presentation.ageSeconds,
+          turnsSince: presentation.turnsSince,
+          blocking: presentation.blocking,
+          recommendedAction: 'Review and respond to the approval request.',
+          source: {
+            type: 'approval',
+            approvalRequestId: record.requestId,
+            workspaceId: record.workspaceId,
+            threadId: record.threadId,
+            turnId: record.raisingTurnId,
+            itemId: record.requestItemId,
+          },
+          actions: contradiction
+            ? [openThreadAction(thread.id)]
+            : [
+                {
+                  kind: 'grant_approval',
+                  label: 'Approve',
+                  method: 'POST',
+                  href: `/api/approvals/${record.requestId}/respond`,
+                },
+                {
+                  kind: 'deny_approval',
+                  label: 'Deny',
+                  method: 'POST',
+                  href: `/api/approvals/${record.requestId}/respond`,
+                },
+                {
+                  kind: 'withdraw_request',
+                  label: 'Withdraw',
+                  method: 'POST',
+                  href: `/api/pending-requests/${record.requestId}/withdraw`,
+                },
+                openThreadAction(thread.id),
+              ],
+        });
+        continue;
+      }
+      rows.push({
+        id: `question:${record.requestId}`,
+        kind: 'question',
+        workspaceId: record.workspaceId,
+        threadId: record.threadId,
+        turnId: record.raisingTurnId,
+        itemId: record.requestItemId,
+        title: 'Answer required',
+        summary: 'Answer the question on its pending request.',
         severity: 'needs_input',
-        createdAt: item.createdAt,
-        recommendedAction: 'Review and respond to the approval request.',
+        createdAt: record.createdAt,
+        ageSeconds: presentation.ageSeconds,
+        turnsSince: presentation.turnsSince,
+        blocking: presentation.blocking,
+        recommendedAction: 'Answer the question before the next Turn can use it.',
         source: {
-          type: 'approval',
-          approvalRequestId: approval.id,
-          workspaceId: item.workspaceId,
-          threadId: item.threadId,
-          turnId: item.turnId,
-          itemId: item.id,
+          type: 'protocol_item',
+          itemType: 'user-input-request',
+          workspaceId: record.workspaceId,
+          threadId: record.threadId,
+          turnId: record.raisingTurnId,
+          itemId: record.requestItemId,
         },
-        actions: [
-          {
-            kind: 'grant_approval',
-            label: 'Approve',
-            method: 'POST',
-            href: `/api/approvals/${approval.id}/respond`,
-          },
-          {
-            kind: 'deny_approval',
-            label: 'Deny',
-            method: 'POST',
-            href: `/api/approvals/${approval.id}/respond`,
-          },
-          openThreadAction(thread.id),
-        ],
-      };
-    });
-}
-
-/**
- * Projects unresolved user-input requests into unified rows.
- *
- * @param store Request-scoped workspace store.
- * @param workspaceId Workspace id to inspect.
- * @param responsibleUserId Authorized actor id that must own the request.
- * @param viewerUserId Authenticated viewer used for Thread audience.
- * @returns Question rows.
- */
-function questionRows(
-  store: FsStore,
-  workspaceId: string,
-  responsibleUserId: string | null,
-  viewerUserId: string | undefined
-): HumanAttentionRow[] {
-  const items = store.listAllItems().filter((item) => item.workspaceId === workspaceId);
-  const responses = new Set(
-    items.filter(isUserInputResponseItem).map((item) => item.userInputRequestId)
-  );
-
-  return items
-    .filter(isUserInputRequestItem)
-    .filter((item) => item.responsibleUserId === responsibleUserId)
-    .filter((item) => !responses.has(item.userInputRequestId))
-    .filter((item) => isThreadIdVisible(store, item.workspaceId, item.threadId, viewerUserId))
-    .filter((item) => isExactUserInputRequest(store, item))
-    .map((item) => ({
-      id: `question:${item.id}`,
-      kind: 'question',
-      workspaceId: item.workspaceId,
-      threadId: item.threadId,
-      turnId: item.turnId,
-      itemId: item.id,
-      title: 'Answer required',
-      summary: item.prompt,
-      severity: 'needs_input',
-      createdAt: item.createdAt,
-      recommendedAction: 'Answer the question before the worker can continue.',
-      source: {
-        type: 'protocol_item',
-        itemType: item.type,
-        workspaceId: item.workspaceId,
-        threadId: item.threadId,
-        turnId: item.turnId,
-        itemId: item.id,
-      },
-      actions: [
-        {
-          kind: 'answer_question',
-          label: 'Answer',
-          method: 'POST',
-          href: '/api/turns',
-          ...(item.questions.some((question) => question.isSecret)
-            ? {
-                disabled: true,
-                reason: 'Secret answers require a future Vault-backed input contract.',
-              }
-            : {}),
-        },
-        openThreadAction(item.threadId),
-      ],
-    }));
+        actions: contradiction
+          ? [openThreadAction(thread.id)]
+          : [
+              {
+                kind: 'answer_question',
+                label: 'Answer',
+                method: 'POST',
+                href: `/api/user-input-requests/${record.requestId}/answer`,
+                ...(secret
+                  ? {
+                      disabled: true,
+                      reason: 'Secret answers are not supported.',
+                    }
+                  : {}),
+              },
+              {
+                kind: 'withdraw_request',
+                label: 'Withdraw',
+                method: 'POST',
+                href: `/api/pending-requests/${record.requestId}/withdraw`,
+              },
+              openThreadAction(thread.id),
+            ],
+      });
+    }
+  }
+  return rows;
 }
 
 /**
@@ -1473,10 +1313,6 @@ function goalKindForStopReason(stopReason: StopReason | null): HumanAttentionRow
     return 'review_cap';
   }
 
-  if (stopReason === 'ask_user') {
-    return 'question';
-  }
-
   return 'blocked_turn';
 }
 
@@ -1496,10 +1332,6 @@ function goalTitleForStopReason(stopReason: StopReason | null, status: string): 
     return 'Review cap reached';
   }
 
-  if (stopReason === 'ask_user') {
-    return 'Goal needs input';
-  }
-
   return `Goal is ${status}`;
 }
 
@@ -1517,10 +1349,6 @@ function goalSummaryForStopReason(stopReason: StopReason | null, status: string)
 
   if (stopReason === 'length') {
     return 'The worker reached the review cap or maximum iteration limit.';
-  }
-
-  if (stopReason === 'ask_user') {
-    return 'The worker needs human input before continuing.';
   }
 
   return `The goal entered ${status} state and needs review.`;

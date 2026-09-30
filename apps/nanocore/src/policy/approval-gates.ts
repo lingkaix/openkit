@@ -1,16 +1,14 @@
 import { isDeepStrictEqual } from 'node:util';
-
 import type { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { approvalCardCopy } from '../runtime/pending-request-disclosure.js';
+import { recordAutomaticPolicyGrant } from '../runtime/pending-requests.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import {
   type PolicyApprovalSourceDecision,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
-
-/** Exact lifetime of one MCP proposed-effect Approval. */
-export const MCP_APPROVAL_TTL_MS = 60 * 60 * 1_000;
 
 /** Input for creating one policy approval gate. */
 export interface CreatePolicyApprovalGateInput {
@@ -20,7 +18,7 @@ export interface CreatePolicyApprovalGateInput {
   store: FsStore;
   /** Workspace that owns the gated turn. */
   workspaceId: string;
-  /** Turn that should pause on approval. */
+  /** Turn that publishes the request and continues its bounded run. */
   turnId: string;
   /** Stable permission decision id. */
   decisionId: string;
@@ -61,11 +59,11 @@ export interface CreatePolicyApprovalGateResult {
 }
 
 /**
- * Records a policy grant or human approval gate using existing approval and Action Center records.
+ * Records a policy grant or human approval request using existing approval and Action Center records.
  *
  * @param input Approval gate input.
  * @returns Created record ids.
- * @throws Error when the Approval id is reserved for imported history or the Turn is not the exact running owner for a new Gate.
+ * @throws Error when the Approval id is reserved for imported history or the Turn is not the exact running owner for a new request.
  */
 export function createPolicyApprovalGate(
   input: CreatePolicyApprovalGateInput
@@ -74,16 +72,13 @@ export function createPolicyApprovalGate(
     throw new Error('Approval id uses the reserved portable-import authority namespace.');
   }
 
+  const copy = approvalCardCopy(input.title, input.description);
   const autoAllow = input.mode === 'auto_allow';
   if (autoAllow && input.action !== 'repo.push') {
     throw new Error('Automatic policy approval is supported only for repo.push.');
   }
   const turn = input.store.getTurnById(input.turnId);
-  if (
-    turn.workspaceId !== input.workspaceId ||
-    turn.status !== 'running' ||
-    turn.humanGate !== null
-  ) {
+  if (turn.workspaceId !== input.workspaceId || turn.status !== 'running') {
     throw new Error('Policy approval requires one exact running Turn owner.');
   }
   const createdAt = (input.now ?? new Date()).toISOString();
@@ -121,8 +116,8 @@ export function createPolicyApprovalGate(
     turnId: turn.id,
     kind: 'permission',
     status: autoAllow ? 'granted' : 'pending',
-    title: input.title,
-    description: input.description,
+    title: copy.title,
+    description: copy.description,
     createdAt,
     resolvedAt: autoAllow ? createdAt : null,
   });
@@ -134,8 +129,8 @@ export function createPolicyApprovalGate(
     type: 'approval-request',
     status: 'completed',
     approvalRequestId: approvalId,
-    title: input.title,
-    description: input.description,
+    title: copy.title,
+    description: copy.description,
     kind: 'permission',
     createdAt,
     completedAt: createdAt,
@@ -152,34 +147,41 @@ export function createPolicyApprovalGate(
       status: 'completed',
       approvalRequestId: approvalId,
       decision: 'granted',
+      decidedAt: createdAt,
       createdAt,
       completedAt: createdAt,
     });
+    recordAutomaticPolicyGrant(input.workspaceDb.sqlite, {
+      requestId: approvalId,
+      workspaceId: input.workspaceId,
+      threadId: turn.threadId,
+      raisingTurnId: turn.id,
+      requestItemId: approvalItemId,
+      kind: 'approval',
+      requesterKind: 'worker',
+      agentId: turn.agentId ?? 'agent_policy',
+      responsibleUserId: 'user_local',
+      approval: {
+        kind: 'permission',
+        title: copy.title,
+        description: copy.description,
+      },
+      now: createdAt,
+    });
     return { decisionId, approvalId, approvalItemId };
   }
-  input.store.updateTurn(
-    turn.id,
-    autoAllow
-      ? {
-          status: 'completed',
-          humanGate: null,
-          completedAt: createdAt,
-        }
-      : {
-          status: 'awaiting_human',
-          humanGate: {
-            kind: 'approval',
-            approvalRequestId: approvalId,
-            itemId: approvalItemId,
-          },
-        }
-  );
+  if (autoAllow) {
+    input.store.updateTurn(turn.id, {
+      status: 'completed',
+      completedAt: createdAt,
+    });
+  }
 
   return { decisionId, approvalId, approvalItemId };
 }
 
 /**
- * Validates the exact MCP denial ledger chain that owns one tool approval Gate.
+ * Validates the exact MCP denial ledger chain that owns one tool approval request.
  *
  * @param input Stored source decision and expected Product lineage.
  * @returns True only when the source, denied CapabilityCall, and terminal Audit agree exactly.
@@ -234,10 +236,6 @@ export function isExactMcpApprovalSourceDecision(input: {
     resource.workspaceId !== input.workspaceId ||
     resource.threadId !== input.threadId ||
     !Number.isFinite(Date.parse(input.approvalCreatedAt)) ||
-    !Number.isFinite(Date.parse(String(resource.expiresAt))) ||
-    Date.parse(String(resource.expiresAt)) !==
-      Date.parse(input.approvalCreatedAt) + MCP_APPROVAL_TTL_MS ||
-    Date.parse(String(resource.expiresAt)) <= Date.now() ||
     ![
       resource.agentId,
       resource.argumentsDigest,
@@ -367,7 +365,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 }
 
 /**
- * Verifies the exact denied selected-capability call and request receipt before a Worker Gate is actionable.
+ * Verifies the exact denied selected-capability call and request receipt before a Worker request is actionable.
  * @param input Stored approval owner, current product scope and receipt store.
  * @returns Whether existing MCP or repository evidence proves the exact original worker request.
  */
@@ -506,7 +504,7 @@ export function isExactWorkerApprovalSourceDecision(
       agentId: context.worker.agentId,
       schemaSnapshotId: null,
       serverId: 'openkit-repository',
-      toolName: 'repository_push_request_approval',
+      toolName: 'repository_push',
     }
   );
 }

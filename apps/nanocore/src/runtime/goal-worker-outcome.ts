@@ -71,12 +71,7 @@ export function recordGoalTaskWorkerOutcome(
     threadId: input.threadId,
     goalId: input.goalId,
     taskId: input.taskId,
-    status:
-      input.stopReason === 'completed'
-        ? 'completed'
-        : input.stopReason === 'ask_user'
-          ? 'running'
-          : 'failed',
+    status: input.stopReason === 'completed' ? 'completed' : 'failed',
   });
   const evidence = {
     itemIds: [...(input.itemIds ?? [])],

@@ -34,7 +34,9 @@ import type { FsStore } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import { registerAppApiRoute } from './openapi.js';
 import { listGoalRecordsForThread } from './runtime/goal-store.js';
-import { hasExactActiveHumanGate } from './runtime/worker-recovery.js';
+import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
+import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
+import { readCommandRequestRecordsFromSqlite } from './storage/command-request-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readThreadRuntimeActivity } from './storage/work-observations.js';
 
@@ -128,13 +130,8 @@ function pendingApprovalItems(
       return false;
     }
     try {
-      const turn = store.getTurn(item.workspaceId, item.threadId, item.turnId);
-      return (
-        hasExactActiveHumanGate(store, turn) &&
-        turn.humanGate.kind === 'approval' &&
-        turn.humanGate.itemId === item.id &&
-        turn.humanGate.approvalRequestId === item.approvalRequestId
-      );
+      store.getTurn(item.workspaceId, item.threadId, item.turnId);
+      return true;
     } catch {
       return false;
     }
@@ -182,13 +179,8 @@ function pendingQuestionItems(
       return false;
     }
     try {
-      const turn = store.getTurn(item.workspaceId, item.threadId, item.turnId);
-      return (
-        hasExactActiveHumanGate(store, turn) &&
-        turn.humanGate.kind === 'user-input' &&
-        turn.humanGate.itemId === item.id &&
-        turn.humanGate.userInputRequestId === item.userInputRequestId
-      );
+      store.getTurn(item.workspaceId, item.threadId, item.turnId);
+      return true;
     } catch {
       return false;
     }
@@ -284,7 +276,6 @@ function terminalAttentionKind(
     case 'completed':
     case 'pending':
     case 'running':
-    case 'awaiting_human':
       return null;
     default: {
       const exhaustive: never = status;
@@ -750,12 +741,55 @@ export function registerDashboardRoutes({
         (artifact) => artifact.threadId === threadId && visibleArtifactIds.has(artifact.id)
       );
       const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
+      let pendingRequests: ThreadDashboardResponse['pendingRequests'] = [];
       let taskInputs: ThreadDashboardResponse['taskInputs'] = [];
       let runtimeActivity: ThreadDashboardResponse['runtimeActivity'];
       if (coreDb) {
         let workspaceDb: WorkspaceDb | undefined;
         try {
           workspaceDb = repositoryWorkspaceDb(workspaceId);
+          const workspaceTurns = store
+            .listThreads(workspaceId)
+            .flatMap((candidate) => store.listThreadTurns(workspaceId, candidate.id));
+          const receipts = readCommandRequestRecordsFromSqlite(workspaceDb.sqlite);
+          pendingRequests = listThreadPendingRequests(
+            workspaceDb.sqlite,
+            workspaceId,
+            threadId
+          ).map((record) => ({
+            requestId: record.requestId,
+            canRespond:
+              actor?.userId === record.responsibleUserId &&
+              isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+                mutating: true,
+                policyOperation: 'approval.respond',
+              }),
+            ...(record.kind === 'approval' &&
+            !validateCanonicalLoad(record, workspaceTurns, receipts)
+              ? { approvalEffect: projectApprovalEffect({ record, store, coreDb, actor }) }
+              : {}),
+            state: validateCanonicalLoad(record, workspaceTurns, receipts)
+              ? 'inspect-only'
+              : record.state,
+            resolution: record.resolution,
+            ending: record.ending,
+            disposition: record.disposition,
+          }));
+          const projected = new Set(pendingRequests.map((record) => record.requestId));
+          const unreadable = workspaceDb.sqlite
+            .prepare(
+              'SELECT request_id FROM pending_requests WHERE workspace_id = ? AND thread_id = ?'
+            )
+            .all(workspaceId, threadId) as Array<{ request_id: string }>;
+          for (const row of unreadable)
+            if (!projected.has(row.request_id))
+              pendingRequests.push({
+                requestId: row.request_id,
+                state: 'inspect-only',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              });
           try {
             taskInputs = projectThreadTaskInputs({ coreDb, store, threadId, workspaceDb });
           } catch {
@@ -809,6 +843,7 @@ export function registerDashboardRoutes({
             href: `/api/app/workspaces/${workspaceId}/threads/${threadId}/items`,
           },
           taskInputs,
+          pendingRequests,
           runtimeActivity,
         })
       );

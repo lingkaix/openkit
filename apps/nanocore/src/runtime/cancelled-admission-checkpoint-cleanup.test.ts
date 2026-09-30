@@ -1029,7 +1029,6 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
             configVersion: null,
             durationMs: null,
             error: null,
-            humanGate: null,
             id: identity.turnId,
             items: [],
             startedAt: '2026-09-22T00:00:00.000Z',

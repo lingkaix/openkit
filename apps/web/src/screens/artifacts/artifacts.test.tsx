@@ -326,7 +326,6 @@ function introduceTurn(
     completedAt: completed ? TIMESTAMP : null,
     durationMs: completed ? 0 : null,
     status,
-    humanGate: null,
     contextPackageDigest: null,
   });
 }

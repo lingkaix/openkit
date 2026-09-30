@@ -16,7 +16,6 @@ import {
   dispatchNextSchedulerEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
-  markSchedulerSessionLeaseReleasing,
   requireSchedulerSessionLease,
   resolveSchedulerLeaseTokenBinding,
   upsertSchedulerCapacityRecord,
@@ -54,7 +53,6 @@ import {
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 
 class RecordingTurnExecutor implements TurnExecutor {
@@ -1428,7 +1426,6 @@ describe('scheduler dispatch loop', () => {
           configVersion: null,
           durationMs: null,
           error: null,
-          humanGate: null,
           id: 'turn_continuity_live',
           items: [],
           startedAt: '2026-07-05T00:00:02.000Z',
@@ -1870,144 +1867,6 @@ describe('scheduler dispatch loop', () => {
             .get('lease_cleanup_pending') as { state: string }
         ).state
       ).toBe('cleanup-pending');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('releases an exact interrupted human-gate fallback lease with recovery evidence required', async () => {
-    const coreDb = createMigratedCoreDb();
-    const store = createDemoStore();
-    const turnExecutor = new RecordingTurnExecutor();
-    turnExecutor.startTurn = async (ownerStore, turnId, _input, context) => {
-      if (!context?.agentSessionId) {
-        throw new Error('Expected scheduler-owned AgentSession lineage.');
-      }
-      seedBackendRuntimeTarget(coreDb);
-      const lease = requireSchedulerSessionLease(coreDb, 'lease_human_gate_fallback');
-      recordWorkerBackendSessionMaterializing(coreDb, {
-        backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
-        backendVersion: '0.0.99',
-        identity: {
-          agentSessionId: context.agentSessionId,
-          backendKind: 'openshell',
-          backendSessionId: 'openkit-as_human_gate_fallback',
-          deploymentId: 'deployment-test',
-          packageSnapshotId: lease.packageSnapshotId,
-          runtimeTargetId: 'runtime-target-test',
-          stagingDirectoryRef: 'server/runtime/worker-backend-sessions/human-gate-fallback',
-          transientProviderInstanceId: null,
-        },
-        lineage: { threadId: 'th_demo', turnId, workspaceId: 'ws_demo' },
-        now: () => '2026-07-05T00:00:03.000Z',
-        sandboxBindingRef: lease.sandboxBindingRef,
-      });
-      for (const [fromState, toState] of [
-        ['materializing', 'materialized'],
-        ['materialized', 'launching'],
-        ['launching', 'cleanup-pending'],
-        ['cleanup-pending', 'physical-cleaned'],
-        ['physical-cleaned', 'cleaned'],
-      ] as const) {
-        transitionWorkerBackendSessionState(coreDb, {
-          fromState,
-          leaseId: lease.leaseId,
-          toState,
-        });
-      }
-      recordWorkerControlAcceptedRecord(coreDb, {
-        acceptedAt: '2026-07-05T00:00:03.000Z',
-        lineage: {
-          agentSessionId: context.agentSessionId,
-          packageSnapshotId: lease.packageSnapshotId,
-          requestId: 'req_human_gate_fallback',
-          threadId: 'th_demo',
-          turnId,
-          workspaceId: 'ws_demo',
-        },
-        operation: 'final_status',
-        record: { sequence: 1, status: 'blocked', stopReason: 'ask_user' },
-        recordKey: '1',
-        sandboxBindingRef: lease.sandboxBindingRef,
-        sequence: 1,
-      });
-      markSchedulerSessionLeaseReleasing(coreDb, {
-        leaseId: lease.leaseId,
-        releaseReason: 'worker-final-status',
-      });
-      const message = 'Worker requested human input without an exact product Gate.';
-      ownerStore.createAgentSession({
-        agentId: 'agent_codex_host',
-        createdAt: '2026-07-05T00:00:02.000Z',
-        id: context.agentSessionId,
-        message: null,
-        status: 'busy',
-        threadId: 'th_demo',
-        updatedAt: '2026-07-05T00:00:02.000Z',
-        workspaceId: 'ws_demo',
-      });
-      ownerStore.updateTurn(turnId, {
-        agentSessionId: context.agentSessionId,
-        completedAt: '2026-07-05T00:00:03.000Z',
-        error: { code: 'worker_human_gate_unavailable', message },
-        status: 'interrupted',
-      });
-      ownerStore.updateAgentSession(context.agentSessionId, {
-        message,
-        status: 'interrupted',
-        updatedAt: '2026-07-05T00:00:03.000Z',
-      });
-      throw new TurnStartValidationError('recovery_required', message, 409);
-    };
-
-    try {
-      seedLocalSchedulerTarget(coreDb);
-      createSchedulerAdmissionEntry(coreDb, {
-        triggerActor: { kind: 'user', id: 'user_local' },
-        queueEntryId: 'queue_human_gate_fallback',
-        requestId: 'req_human_gate_fallback',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_human_gate_fallback',
-        turnInput: 'Ask for unavailable input',
-        requestedAgentId: 'agent_codex_host',
-        profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
-        now: () => '2026-07-05T00:00:01.000Z',
-      });
-
-      await expect(
-        runSchedulerDispatchLoop({
-          gatewayConfig: createTestGatewayConfig(),
-          coreDb,
-          createAgentSessionId: () => 'as_human_gate_fallback',
-          createLeaseId: () => 'lease_human_gate_fallback',
-          createPlanId: () => 'plan_human_gate_fallback',
-          expectedControlMode: 'poll',
-          expectedDataPlaneMode: 'openshell-files',
-          heartbeatIntervalMs: 10_000,
-          heartbeatTimeoutMs: 30_000,
-          leaseDurationMs: 900_000,
-          maxDispatches: 1,
-          now: () => '2026-07-05T00:00:02.000Z',
-          providerRegistry: localProviderRegistry(),
-          schedulerEpoch: 1,
-          startupTimeoutMs: 120_000,
-          store,
-          turnExecutor,
-          agentManifests: [agentManifest()],
-        })
-      ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
-
-      expect(requireSchedulerSessionLease(coreDb, 'lease_human_gate_fallback')).toMatchObject({
-        recoveryState: 'needs-evidence',
-        status: 'released',
-      });
-      expect(store.getTurnById('turn_human_gate_fallback')).toMatchObject({
-        error: { code: 'worker_human_gate_unavailable' },
-        status: 'interrupted',
-      });
     } finally {
       coreDb.sqlite.close();
     }

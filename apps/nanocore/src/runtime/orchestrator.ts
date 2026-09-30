@@ -318,15 +318,32 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     input.workspaceRoots ?? [],
     input.workspaceDataSourceCatalog
   );
-  const turn = input.store.createTurn(
-    input.workspaceId,
-    input.threadId,
-    input.input,
-    input.triggerActor,
-    input.configVersion ?? null,
-    input.turnId ? { turnId: input.turnId } : {}
-  );
-  input.store.updateTurn(turn.id, { agentId: selectedAgent.id });
+  const existing = input.turnId
+    ? input.store
+        .listThreadTurns(input.workspaceId, input.threadId)
+        .find((candidate) => candidate.id === input.turnId)
+    : undefined;
+  if (existing && (existing.status !== 'pending' || existing.agentId !== selectedAgent.id))
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'The reserved outcome Turn contradicts worker admission.',
+      409
+    );
+  const turn =
+    existing ??
+    input.store.createTurn(
+      input.workspaceId,
+      input.threadId,
+      input.input,
+      input.triggerActor,
+      input.configVersion ?? null,
+      {
+        ...(input.turnId ? { turnId: input.turnId } : {}),
+        agentId: selectedAgent.id,
+        executorKind: 'worker',
+      }
+    );
+  if (existing) input.store.updateTurn(turn.id, { status: 'running' });
   const agentSetupRecordId =
     agentSetupResult.setup && input.agentSetupWorkspaceDb
       ? recordResolvedAgentSetup(input.agentSetupWorkspaceDb, {

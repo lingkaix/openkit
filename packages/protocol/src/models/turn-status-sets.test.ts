@@ -32,14 +32,14 @@ describe('Turn status derived sets', () => {
     ]);
   });
 
-  it('lists settled-for-waiters as the sealed terminals plus awaiting_human', () => {
+  it('lists settled-for-waiters as the sealed terminals', () => {
     expect(included(SETTLED_FOR_WAITERS_TURN_STATUSES)).toEqual([
-      'awaiting_human',
       'completed',
       'interrupted',
       'cancelled',
       'failed',
     ]);
+    expect(TurnStatusSchema.safeParse('awaiting_human').success).toBe(false);
   });
 
   it('lists checkpoint-collectable as the sealed terminals minus interrupted', () => {

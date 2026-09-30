@@ -766,7 +766,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
             workspaceId: turn.workspaceId,
           },
           operation: 'final_status',
-          record: { sequence: 1, status: 'blocked', stopReason: 'ask_user' },
+          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
           recordKey: '1',
           sequence: 1,
         });
@@ -971,10 +971,11 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       causationId: requestId,
       userInputRequestId: state.userInputRequestId,
       answers,
+      answeredAt: timestamp,
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const runningTurn = store.updateTurn(turnId, { status: 'running', humanGate: null });
+    const runningTurn = store.updateTurn(turnId, { status: 'running' });
     const runningAgentSession = store.updateAgentSession(state.agentSessionId, {
       status: 'busy',
     });
@@ -1212,7 +1213,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Emits the deterministic non-secret user-input request and pauses the turn.
+   * Emits the deterministic non-secret user-input request and completes the Turn.
    *
    * @param store Product store containing the active Turn.
    * @param state Active simulator lineage.
@@ -1249,21 +1250,36 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const agentSession = store.updateAgentSession(state.agentSessionId, { status: 'suspended' });
-    const turn = store.updateTurn(state.turnId, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'user-input',
-        userInputRequestId: state.userInputRequestId,
-        itemId: requestItem.id,
-      },
-    });
-
-    this.pendingByTurnId.set(state.turnId, state);
     this.emitItemCreated(store, state, requestItem);
     this.emitItemCompleted(store, state, requestItem);
-    this.emitTurnUpdated(store, state, turn);
-    this.emitAgentSessionUpdated(store, state, agentSession);
+    if (state.requestId) {
+      this.emitArtifactAndComplete(store, state, 'Concise', state.requestId);
+      return;
+    }
+    const completedAt = new Date().toISOString();
+    const idleSession = store.updateAgentSession(state.agentSessionId, {
+      status: 'idle',
+      message: null,
+      updatedAt: completedAt,
+    });
+    const completedTurn = store.updateTurn(state.turnId, {
+      status: 'completed',
+      completedAt,
+    });
+    this.emitTurnUpdated(store, state, completedTurn);
+    this.emitAgentSessionUpdated(store, state, idleSession);
+    store.emitTurnEvent(
+      state.turnId,
+      {
+        event: 'turn.completed',
+        requestId: state.requestId,
+        workspaceId: state.workspaceId,
+        threadId: state.threadId,
+        turnId: state.turnId,
+        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
   }
 
   /**

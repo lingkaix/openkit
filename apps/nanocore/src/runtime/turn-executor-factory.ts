@@ -3652,8 +3652,11 @@ function nanoHostSandboxCompatibilityKey(
                 : file.target,
           })),
           id: environmentPackage.scope.workspaceId,
-          inputs: environmentPackage.workspace.inputs.map((input, index) =>
-            nanoHostStaticWorkspaceInput(input, materialization.inputs[index]?.slotId)
+          // Generated context files are Turn-dynamic inside the declared context slot.
+          inputs: environmentPackage.workspace.inputs.flatMap((input, index) =>
+            materialization.inputs[index]?.slotId === 'context'
+              ? []
+              : [nanoHostStaticWorkspaceInput(input, materialization.inputs[index]?.slotId)]
           ),
           layout: {
             ...layout,

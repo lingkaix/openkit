@@ -58,6 +58,9 @@ export type AcceptedWorkerFinalStatus = Pick<
 export function canonicalStopReasonForAcceptedWorkerFinalStatus(
   accepted: AcceptedWorkerFinalStatus
 ): StopReason {
+  if (accepted.stopReason === 'ask_user') {
+    throw new Error('recovery_required');
+  }
   const parsed = StopReasonSchema.safeParse(accepted.stopReason);
   if (!parsed.success) {
     throw new Error('Accepted worker final status has no canonical Core StopReason.');
@@ -67,9 +70,7 @@ export function canonicalStopReasonForAcceptedWorkerFinalStatus(
   const compatible =
     (accepted.status === 'completed' && stopReason === 'completed') ||
     (accepted.status === 'blocked' &&
-      (stopReason === 'length' ||
-        stopReason === 'budget_exhausted' ||
-        stopReason === 'ask_user')) ||
+      (stopReason === 'length' || stopReason === 'budget_exhausted')) ||
     ((accepted.status === 'cancelled' || accepted.status === 'interrupted') &&
       stopReason === 'aborted') ||
     ((accepted.status === 'failed' ||
@@ -91,19 +92,13 @@ export function canonicalStopReasonForAcceptedWorkerFinalStatus(
  */
 export function turnStatusForCanonicalWorkerStopReason(stopReason: 'aborted'): 'interrupted';
 export function turnStatusForCanonicalWorkerStopReason(
-  stopReason: Exclude<StopReason, 'ask_user'>
+  stopReason: StopReason
 ): Extract<TurnStatus, 'interrupted' | 'completed' | 'failed'>;
 export function turnStatusForCanonicalWorkerStopReason(
   stopReason: StopReason
-): Extract<TurnStatus, 'awaiting_human' | 'interrupted' | 'completed' | 'failed'>;
-export function turnStatusForCanonicalWorkerStopReason(
-  stopReason: StopReason
-): Extract<TurnStatus, 'awaiting_human' | 'interrupted' | 'completed' | 'failed'> {
+): Extract<TurnStatus, 'interrupted' | 'completed' | 'failed'> {
   if (stopReason === 'completed' || stopReason === 'length' || stopReason === 'budget_exhausted') {
     return 'completed';
-  }
-  if (stopReason === 'ask_user') {
-    return 'awaiting_human';
   }
   return stopReason === 'aborted' ? 'interrupted' : 'failed';
 }

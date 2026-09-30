@@ -206,6 +206,7 @@ describe('FsStore persistence', () => {
         causationId: 'request_foreign',
         userInputRequestId: 'uir_attribution',
         answers: { answer: ['no'] },
+        answeredAt: createdAt,
         createdAt,
         completedAt: createdAt,
       })
@@ -221,6 +222,7 @@ describe('FsStore persistence', () => {
       causationId: 'request_attribution',
       userInputRequestId: 'uir_attribution',
       answers: { answer: ['yes'] },
+      answeredAt: createdAt,
       createdAt,
       completedAt: createdAt,
     });

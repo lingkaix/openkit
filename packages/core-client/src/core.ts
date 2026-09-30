@@ -1,4 +1,9 @@
 import {
+  type AnswerUserInputRequestSchema,
+  PendingRequestOutcomeSchema,
+  type WithdrawPendingRequestSchema,
+} from '@openkit/app-api-schemas';
+import {
   ApprovalRequestSchema,
   type ArchiveThreadRequestSchema,
   type ArtifactSchema,
@@ -87,6 +92,18 @@ export type RespondApprovalInput = OptionalRequestId<
 >;
 /** Approval response body passed with the approval id in the URL. */
 export type RespondApprovalRequestBody = Omit<RespondApprovalInput, 'approvalRequestId'>;
+/** User-input answer input. */
+export type AnswerUserInputInput = OptionalRequestId<z.infer<typeof AnswerUserInputRequestSchema>>;
+/** User-input answer body passed with the request id in the URL. */
+export type AnswerUserInputRequestBody = Omit<AnswerUserInputInput, 'userInputRequestId'>;
+/** Pending-request withdrawal input. */
+export type WithdrawPendingRequestInput = OptionalRequestId<
+  z.infer<typeof WithdrawPendingRequestSchema>
+>;
+/** Pending-request withdrawal body passed with the request id in the URL. */
+export type WithdrawPendingRequestBody = Omit<WithdrawPendingRequestInput, 'pendingRequestId'>;
+/** Pending-request command outcome. */
+export type PendingRequestOutcome = z.infer<typeof PendingRequestOutcomeSchema>;
 /** Artifact list response. */
 export type ListArtifactsResponse = z.infer<typeof ListArtifactsResponseSchema>;
 /** Artifact response. */
@@ -155,6 +172,16 @@ export interface CoreProjectionClient {
     approvalRequestId: string,
     input: RespondApprovalRequestBody
   ): Promise<ApprovalRequest>;
+  /** Answers one pending user-input request. */
+  answerUserInput(
+    userInputRequestId: string,
+    input: AnswerUserInputRequestBody
+  ): Promise<PendingRequestOutcome>;
+  /** Withdraws one pending request. */
+  withdrawPendingRequest(
+    pendingRequestId: string,
+    input: WithdrawPendingRequestBody
+  ): Promise<PendingRequestOutcome>;
   /** Lists workspace artifacts. */
   listArtifacts(workspaceId: string): Promise<ListArtifactsResponse>;
   /** Reads one artifact. */
@@ -286,6 +313,18 @@ export function createCoreProjectionClient(
         `/api/approvals/${approvalRequestId}/respond`,
         withRequestId({ ...input, approvalRequestId }),
         ApprovalRequestSchema
+      ),
+    answerUserInput: (userInputRequestId, input) =>
+      transport.postJson(
+        `/api/user-input-requests/${userInputRequestId}/answer`,
+        withRequestId({ ...input, userInputRequestId }),
+        PendingRequestOutcomeSchema
+      ),
+    withdrawPendingRequest: (pendingRequestId, input) =>
+      transport.postJson(
+        `/api/pending-requests/${pendingRequestId}/withdraw`,
+        withRequestId({ ...input, pendingRequestId }),
+        PendingRequestOutcomeSchema
       ),
     listArtifacts: (workspaceId) =>
       transport.getJson(`/api/workspaces/${workspaceId}/artifacts`, ListArtifactsResponseSchema),

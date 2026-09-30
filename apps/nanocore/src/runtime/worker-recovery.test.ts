@@ -251,6 +251,7 @@ describe('worker recovery materialization', () => {
       createdAt: policyApproval.createdAt,
       decision: 'granted',
       id: 'it_policy_decision',
+      decidedAt: policyApproval.createdAt,
       status: 'completed',
       threadId: turn.threadId,
       turnId: turn.id,
@@ -291,6 +292,7 @@ describe('worker recovery materialization', () => {
       createdAt: '2026-09-04T00:01:00.000Z',
       decision,
       id: `it_worker_${decision}_decision`,
+      decidedAt: '2026-09-04T00:01:00.000Z',
       status: 'completed',
       threadId: turn.threadId,
       turnId: turn.id,
@@ -303,7 +305,6 @@ describe('worker recovery materialization', () => {
     });
     const closedTurn = store.updateTurn(turn.id, {
       completedAt: '2026-09-04T00:01:00.000Z',
-      humanGate: null,
       status: turnStatus,
     });
     store.emitTurnEvent(turn.id, {

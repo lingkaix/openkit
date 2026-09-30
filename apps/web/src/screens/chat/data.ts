@@ -876,17 +876,40 @@ export function useSubmitTurnAnswers(workspaceId: string, threadId: string) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { turnId: string; answers: Record<string, [string]> }) =>
-      client.core.startTurn({
+    mutationFn: (input: {
+      userInputRequestId: string;
+      answers: Record<string, [string]>;
+      requestId: string;
+    }) =>
+      client.core.answerUserInput(input.userInputRequestId, {
         workspaceId,
         threadId,
-        turnId: input.turnId,
         answers: input.answers,
+        requestId: input.requestId,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: chatKeys.items(workspaceId, threadId) });
       void queryClient.invalidateQueries({ queryKey: chatKeys.dashboard(workspaceId, threadId) });
     },
+  });
+}
+
+/** Withdraw a pending request, then refresh the existing authoritative projections. */
+export function useWithdrawPendingRequest(workspaceId: string, threadId: string) {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { pendingRequestId: string; requestId: string }) =>
+      client.core.withdrawPendingRequest(input.pendingRequestId, {
+        workspaceId,
+        threadId,
+        requestId: input.requestId,
+      }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: chatKeys.items(workspaceId, threadId) }),
+        queryClient.invalidateQueries({ queryKey: chatKeys.dashboard(workspaceId, threadId) }),
+      ]),
   });
 }
 

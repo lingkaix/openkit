@@ -90,14 +90,6 @@ describe('action center thread audience', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(privateTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: 'ap_hidden_malformed',
-        itemId: 'it_hidden_malformed_approval',
-      },
-    });
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
     try {

@@ -115,6 +115,14 @@ The workspace record `PendingRequest` holds:
 
 The ApprovalRequest projection reads its status from this record; approval state is never derived from Items. Arguments and results are sensitive work data: they are never copied into usage or audit rows, and the held result is cleared once its delivery is proved. The record is a Workspace SQLite family under the storage layout owner's schema rule.
 
+### Exact Effect Disclosure
+
+An approval's exact effect detail is a read-only projection of its immutable captured binding. For a captured MCP call it contains the server id, tool name, argument digest and the complete canonical arguments. For a repository push it contains the repository, source ref, commit ids and target branch. It never contains a resolved credential, a private endpoint or runtime internals.
+
+Cards, Items and attention lists carry a summary of at most 2,048 UTF-8 bytes and never the raw captured arguments. Only the request's responsible user, with current access to its Thread, can read the complete detail. The detail is at most 524,288 bytes of compact canonical UTF-8 JSON. Detail is unavailable if it exceeds that limit, cannot be loaded completely, or cannot be shown without omitting an effect-bearing value. Truncated or redacted content is never presented as exact.
+
+Grant requires available exact detail. The response command checks this before it records a grant. When detail is unavailable, the command returns `409 approval_preview_unavailable` with no grant, no claim and no upstream contact, and the request stays open. Deny and withdraw remain available. No preview-read record is created. The decision is recorded in [a decision record](../decisions/20261001-approval_exact_effect_disclosure.md).
+
 ### Raise
 
 Raising runs inside the governed call or command, in this order:
@@ -168,8 +176,10 @@ An outcome is a resolution with its disposition, where there is one, or an endin
 
 Matching an outcome to a Turn:
 - An outcome is delivered only by a Turn whose executor is its requester: a worker outcome by a worker Turn on that Thread, an Assistant outcome by an Assistant Turn, and a person's outcome by a Core-local Turn.
-- A Turn admitted for any cause, such as a user message or a retry, freezes into its input the ready, `undelivered` outcomes that match its executor, in readiness order, up to 16 per Turn and within the existing aggregate input bounds, and keeps its own trigger. Freezing sets `delivery=frozen` with that Turn id in the same write as the Turn's admission. The rest wait for the next Turn.
+- A Turn admitted for any cause, such as a user message or a retry, freezes into its input the ready, `undelivered` outcomes that match its executor, in readiness order, up to 16 per Turn, and keeps its own trigger. Freezing sets `delivery=frozen` with that Turn id in the same write as the Turn's admission. The rest wait for the next Turn.
 - When matching outcomes are ready and no Turn is being admitted, Core admits an outcome-initiated Turn for them. Its trigger is `approval-resolution` when it carries any approval outcome and `user-input` otherwise, with a summary naming the counts, and its trigger actor is the deciding user of the first outcome, or the system for an ending.
+
+The 16-outcome limit bounds how many outcomes a Turn carries, not their bytes. There is no aggregate input byte budget. Delivery carries every selected value completely and never truncates, drops or summarizes one. Each producer and transport keeps its own limits and typed refusals. A large input can therefore be refused downstream by an executor. That refusal is handled by the existing delivery rules. The decision is recorded in [a decision record](../decisions/20261001-pending_delivery_count_bound.md).
 
 When admission is attempted, with no polling process:
 - when an outcome becomes ready while the Thread has no non-terminal Turn, which is inside the response, answer, or withdraw command, after any execution;

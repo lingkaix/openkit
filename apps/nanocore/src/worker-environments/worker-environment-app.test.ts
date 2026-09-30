@@ -105,29 +105,39 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
     super({ coreDb: fixtureCoreDb });
   }
 
-  /** Records each real scheduler dispatch before delegating to the existing simulator. */
+  /** Leaves each scheduler-dispatched fixture Turn running until the test supplies its terminal. */
   public override async startTurn(
     store: FsStore,
     turnId: string,
-    input: string,
+    _input: string,
     context?: TurnStartRuntimeContext
   ): Promise<void> {
-    const isPredecessor = this.startedTurnIds.length === 0;
     this.startedTurnIds.push(turnId);
-    await super.startTurn(store, turnId, input, context);
-    if (isPredecessor) {
-      const turn = store.getTurnById(turnId);
-      if (!turn.agentSessionId) throw new Error('Started predecessor AgentSession is absent.');
-      store.updateAgentSession(turn.agentSessionId, {
+    const turn = store.getTurnById(turnId);
+    const agentSessionId = context?.agentSessionId;
+    if (!agentSessionId) throw new Error('Scheduler AgentSession identity is absent.');
+    let session: ReturnType<FsStore['getAgentSession']> | null = null;
+    try {
+      session = store.getAgentSession(agentSessionId);
+    } catch {
+      session = null;
+    }
+    const now = new Date().toISOString();
+    if (session) {
+      store.updateAgentSession(agentSessionId, { status: 'busy', updatedAt: now });
+    } else {
+      store.createAgentSession({
+        id: agentSessionId,
+        agentId: context.agentSetup?.manifest.id ?? AGENT_ID,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
         status: 'busy',
-        updatedAt: new Date().toISOString(),
-      });
-      store.updateTurn(turnId, {
-        completedAt: null,
-        humanGate: null,
-        status: 'running',
+        message: null,
+        createdAt: now,
+        updatedAt: now,
       });
     }
+    store.updateTurn(turnId, { agentSessionId, status: 'running' });
   }
 
   /** Acknowledges the interrupt command without claiming that runtime cleanup is terminal. */
@@ -728,11 +738,10 @@ describe('Worker environment App composition', () => {
         id: string;
         status: string;
       };
-      expect(predecessorResponse.status).toBe(202);
+      expect(predecessorResponse.status, JSON.stringify(predecessor)).toBe(202);
       const storedPredecessor = store.getTurnById(predecessor.id);
       expect(storedPredecessor).toMatchObject({
         agentSessionId: expect.any(String),
-        humanGate: null,
         status: 'running',
       });
       if (!storedPredecessor.agentSessionId) throw new Error('Predecessor AgentSession is absent.');
@@ -830,7 +839,7 @@ describe('Worker environment App composition', () => {
       expect(store.getTurnById(predecessor.id).status).toBe(terminalStatus);
       if (!successor) throw new Error('Same-storage successor Turn is absent.');
       await vi.waitFor(() =>
-        expect(store.getTurnById(successor.id)).toMatchObject({ status: 'awaiting_human' })
+        expect(store.getTurnById(successor.id)).toMatchObject({ status: 'running' })
       );
       expect(executor.startedTurnIds).toEqual([predecessor.id, successor.id]);
       expect(requireSchedulerSessionLease(coreDb, predecessorLease.leaseId)).toMatchObject({

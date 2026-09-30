@@ -876,7 +876,7 @@ describe('workspace repository app API', () => {
       });
       expect(store.getTurn('ws_demo', thread.id, sourceTurn.id).status).toBe('completed');
       expect(store.getTurn('ws_demo', thread.id, expectedPublicationTurnId).status).toBe(
-        'awaiting_human'
+        'completed'
       );
 
       const replayRes = await app.request(
@@ -924,9 +924,20 @@ describe('workspace repository app API', () => {
         status: 'completed',
       });
       expect(store.getTurn('ws_demo', thread.id, expectedPublicationTurnId)).toMatchObject({
-        humanGate: null,
         status: 'completed',
       });
+      const decisionTurn = store
+        .listThreadTurns('ws_demo', thread.id)
+        .find((turn) =>
+          turn.items.some(
+            (item) =>
+              item.type === 'approval-decision' &&
+              item.approvalRequestId === approvalPayload.approval.id
+          )
+        );
+      expect(decisionTurn).toMatchObject({ status: 'completed' });
+      expect(decisionTurn?.id).not.toBe(expectedPublicationTurnId);
+      expect(store.getApproval(approvalPayload.approval.id).status).toBe('granted');
 
       const executeRes = await app.request(
         '/api/app/workspaces/ws_demo/repositories/repo_default/git-push',
@@ -1029,15 +1040,15 @@ describe('workspace repository app API', () => {
         status: 'completed',
       });
       expect(store.getTurn('ws_demo', thread.id, expectedPublicationTurnId)).toMatchObject({
-        humanGate: null,
-        status: 'cancelled',
+        status: 'completed',
       });
+      expect(store.getApproval(approvalPayload.approval.id).status).toBe('denied');
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('keeps a running host Turn as the Git push approval owner', async () => {
+  it('completes the host request publication Turn as the Git push approval owner', async () => {
     const coreDb = createCoreDb();
     const store = new FsStore();
     const app = createApp({ coreDb, store });
@@ -1088,7 +1099,7 @@ describe('workspace repository app API', () => {
       await expect(approvalRes.json()).resolves.toMatchObject({
         approval: { threadId: thread.id, turnId: turn.id },
       });
-      expect(store.getTurn('ws_demo', thread.id, turn.id).status).toBe('awaiting_human');
+      expect(store.getTurn('ws_demo', thread.id, turn.id).status).toBe('completed');
       expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();

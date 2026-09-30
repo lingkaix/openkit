@@ -34,7 +34,6 @@
         "busy",
         "idle",
         "degraded",
-        "suspended",
         "interrupted",
         "failed",
         "closed"

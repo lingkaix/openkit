@@ -128,8 +128,8 @@ export interface RunWorkerTurnLoopInput {
   readonly requestInputHash: string;
   /** Whether a normal completion should stop for review. */
   readonly reviewRequired: boolean;
-  /** Remaining worker iterations after this turn. */
-  readonly remainingWorkerIterations: number;
+  /** Remaining worker iterations after this turn. Omitted means this attempt cannot continue. */
+  readonly remainingWorkerIterations?: number;
   /** Effect that prepares worker-visible context. */
   readonly prepare: WorkerTurnLoopPrepareEffect;
   /** Effect that reserves stable worker turn lineage before checkpointing. */
@@ -241,7 +241,9 @@ export async function runWorkerTurnLoop(
     const stopDecision = shouldStopAfterTurn({
       stopReason: worker.stopReason,
       reviewRequired: input.reviewRequired,
-      remainingWorkerIterations: input.remainingWorkerIterations,
+      ...(input.remainingWorkerIterations !== undefined
+        ? { remainingWorkerIterations: input.remainingWorkerIterations }
+        : {}),
     });
     const evidence = {
       itemIds: [...(worker.itemIds ?? [])],

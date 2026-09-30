@@ -19,6 +19,8 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
+import { archiveThreadWithCloseout } from './runtime/pending-request-flow.js';
+import type { WorkspaceDb } from './storage/db.js';
 
 /**
  * Registers the Core thread lifecycle routes and App API item history route.
@@ -28,10 +30,12 @@ import {
 export function registerThreadRoutes({
   app,
   inflightCommands,
+  repositoryWorkspaceDb,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   app.get('/api/workspaces/:workspaceId/threads', (c) => {
@@ -175,7 +179,24 @@ export function registerThreadRoutes({
         scope: { workspaceId: input.workspaceId, threadId: input.threadId },
         input,
         responseKind: 'thread',
-        execute: () => ThreadSchema.parse(store.archiveThread(input.workspaceId, input.threadId)),
+        execute: () => {
+          const actorId = c.get('actor')?.userId;
+          if (!actorId) {
+            throw new Error('Thread archive requires an authenticated actor.');
+          }
+          if (repositoryWorkspaceDb) {
+            archiveThreadWithCloseout(
+              store,
+              { openWorkspace: repositoryWorkspaceDb },
+              input.workspaceId,
+              input.threadId,
+              { kind: 'user', id: actorId }
+            );
+          } else {
+            store.archiveThread(input.workspaceId, input.threadId);
+          }
+          return ThreadSchema.parse(store.getThread(input.workspaceId, input.threadId));
+        },
         replay: (record) =>
           ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
         responseId: (result) => result.id,

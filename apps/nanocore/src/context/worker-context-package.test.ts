@@ -204,7 +204,6 @@ function createEnvironmentPackage(
       configVersion: null,
       durationMs: null,
       error: null,
-      humanGate: null,
       id: packageFiles.turnId,
       items: [],
       startedAt: TURN_STARTED_AT,

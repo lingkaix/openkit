@@ -20,7 +20,6 @@ import {
   getWorkerCheckpoint,
   listRecoverableWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
-  parseWorkerCheckpointEvidence,
   type WorkerCheckpointContextAssemblySummary,
   type WorkerCheckpointRecord,
 } from './worker-checkpoints.js';
@@ -275,17 +274,9 @@ export function recoverWorkerCheckpointStopReason(
     }
     const acceptedStopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
     if (stopReason && stopReason !== acceptedStopReason) {
-      const closedGate =
-        acceptedStopReason === 'ask_user'
-          ? (classifyClosedWorkerApprovalGate(store, turn) ??
-            classifyClosedWorkerUserInputGate(store, turn))
-          : null;
-      if (closedGate?.stopReason !== stopReason) {
-        throw new Error('Worker checkpoint contradicts its accepted final status.');
-      }
-    } else {
-      stopReason = acceptedStopReason;
+      throw new Error('Worker checkpoint contradicts its accepted final status.');
     }
+    stopReason = acceptedStopReason;
     if (
       !backendSession ||
       backendSession.workspaceId !== checkpoint.workspaceId ||
@@ -315,26 +306,6 @@ export function recoverWorkerCheckpointStopReason(
 
   if (!stopReason) {
     throw new Error('Worker checkpoint has no canonical StopReason.');
-  }
-
-  if (stopReason === 'ask_user') {
-    const evidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
-    const leaseMatchesWorkerKind = agentSession.environmentPackageSnapshotId
-      ? lease.status === 'releasing' &&
-        lease.releaseReason === 'worker-final-status' &&
-        lease.recoveryState === 'needs-evidence'
-      : ['acquired', 'starting', 'active', 'idle'].includes(lease.status) &&
-        lease.recoveryState === null;
-    if (
-      agentSession.status !== 'suspended' ||
-      !leaseMatchesWorkerKind ||
-      !turn.humanGate ||
-      !evidence?.itemIds.includes(turn.humanGate.itemId) ||
-      !hasExactActiveHumanGate(store, turn)
-    ) {
-      throw new Error('Worker ask_user checkpoint has no exact active human Gate.');
-    }
-    return stopReason;
   }
 
   const closedApprovalGate = classifyClosedWorkerApprovalGate(store, turn);
@@ -385,7 +356,7 @@ export function classifyClosedWorkerApprovalGate(
   readonly responseItemId: string;
   readonly stopReason: Extract<StopReason, 'aborted' | 'completed'>;
 } | null {
-  if (turn.humanGate || (turn.status !== 'completed' && turn.status !== 'interrupted')) {
+  if (turn.status !== 'completed' && turn.status !== 'interrupted') {
     return null;
   }
 
@@ -474,7 +445,7 @@ export function classifyClosedWorkerUserInputGate(
   readonly responseItemId: string;
   readonly stopReason: Extract<StopReason, 'completed'>;
 } | null {
-  if (turn.humanGate || turn.status !== 'completed') {
+  if (turn.status !== 'completed') {
     return null;
   }
   const candidates: Array<{
@@ -527,50 +498,12 @@ export function classifyClosedWorkerUserInputGate(
   return { ...closure, responseRequestId: terminalEvent.requestId };
 }
 
-/**
- * Validates the exact active Gate owned by one awaiting-human Turn.
- *
- * @param store Product store containing Gate Items and Approval owners.
- * @param turn Candidate awaiting-human Turn.
- * @returns True when the Gate tuple is complete and pending.
- */
+/** The human Gate is gone. Retained callers observe no active Gate. */
 export function hasExactActiveHumanGate(
-  store: FsStore,
-  turn: ReturnType<FsStore['getTurnById']>
-): turn is Extract<ReturnType<FsStore['getTurnById']>, { status: 'awaiting_human' }> {
-  const gate = turn.humanGate;
-  if (turn.status !== 'awaiting_human' || !gate) {
-    return false;
-  }
-  const item = turn.items.find((candidate) => candidate.id === gate.itemId);
-  if (
-    item?.workspaceId !== turn.workspaceId ||
-    item.threadId !== turn.threadId ||
-    item.turnId !== turn.id ||
-    item.status !== 'completed'
-  ) {
-    return false;
-  }
-  if (gate.kind === 'user-input') {
-    return (
-      item.type === 'user-input-request' && item.userInputRequestId === gate.userInputRequestId
-    );
-  }
-  if (item.type !== 'approval-request' || item.approvalRequestId !== gate.approvalRequestId) {
-    return false;
-  }
-  try {
-    const approval = store.getApproval(gate.approvalRequestId);
-    return (
-      approval.workspaceId === turn.workspaceId &&
-      approval.threadId === turn.threadId &&
-      approval.turnId === turn.id &&
-      approval.status === 'pending' &&
-      approval.resolvedAt === null
-    );
-  } catch {
-    return false;
-  }
+  _store: FsStore,
+  _turn: ReturnType<FsStore['getTurnById']>
+): boolean {
+  return false;
 }
 
 /**

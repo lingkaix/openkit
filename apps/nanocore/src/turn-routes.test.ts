@@ -12,6 +12,7 @@ import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { resolveAgentSessionCompatibilityKey } from './runtime/agent-environment.js';
+import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -20,7 +21,6 @@ import type {
   TurnExecutor,
   TurnStartRuntimeContext,
 } from './runtime/types.js';
-import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -536,57 +536,44 @@ describe('generic turn routes', () => {
         createdAt: acceptedAt,
         completedAt: acceptedAt,
       });
-      fixture.store.updateTurn(turn.id, {
-        status: 'awaiting_human',
-        humanGate: {
-          kind: 'user-input',
-          userInputRequestId: requestItem.userInputRequestId,
-          itemId: requestItem.id,
-        },
-      });
-      const lease = fixture.coreDb.sqlite
-        .prepare(
-          `SELECT agent_session_id AS agentSessionId
-           FROM scheduler_session_leases
-           WHERE turn_id = ?`
-        )
-        .get(turn.id) as { readonly agentSessionId: string } | undefined;
-      if (!lease) {
-        throw new Error('Expected one scheduler lease for the responsible-user fixture.');
-      }
       const workspaceDb = openWorkspaceDb(fixture.dataRoot, 'ws_demo');
       try {
         applyScopedMigrations(workspaceDb);
-        upsertWorkerCheckpoint(workspaceDb, {
+        raiseRecordedPendingRequest(fixture.store, workspaceDb.sqlite, {
+          requestId: requestItem.userInputRequestId,
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
-          turnId: turn.id,
-          requestId: startRequestId,
-          requestInputHash: 'sha256:responsible-user-fixture',
-          stage: 'waiting_for_user',
-          iteration: 1,
-          workerSessionId: lease.agentSessionId,
-          stopReason: 'ask_user',
+          raisingTurnId: turn.id,
+          requestItemId: requestItem.id,
+          kind: 'user-input',
+          requesterKind: 'assistant',
+          responsibleUserId: 'user_local',
+          questions: requestItem.type === 'user-input-request' ? requestItem.questions : [],
+          questionDigest: 'digest-responsible-user',
+          now: acceptedAt,
         });
       } finally {
         workspaceDb.sqlite.close();
       }
 
-      const response = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          answers: { choice: ['Continue'] },
-          requestId: '00000000-0000-4000-8000-000000000411',
-          threadId: 'th_demo',
-          turnId: turn.id,
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json', 'x-user-id': 'user_other' },
-      });
+      const response = await fixture.app.request(
+        `/api/user-input-requests/${requestItem.userInputRequestId}/answer`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            answers: { choice: ['Continue'] },
+            requestId: '00000000-0000-4000-8000-000000000411',
+            threadId: 'th_demo',
+            userInputRequestId: requestItem.userInputRequestId,
+            workspaceId: 'ws_demo',
+          }),
+          headers: { 'content-type': 'application/json', 'x-user-id': 'user_other' },
+        }
+      );
 
       expect(response.status, await response.clone().text()).toBe(403);
       expect(ApiErrorSchema.parse(await response.json()).code).toBe('workspace_access_denied');
-      expect(fixture.store.getTurn('ws_demo', 'th_demo', turn.id).status).toBe('awaiting_human');
+      expect(fixture.store.getTurn('ws_demo', 'th_demo', turn.id).status).toBe('running');
       expect(
         fixture.store
           .listThreadItems('ws_demo', 'th_demo')

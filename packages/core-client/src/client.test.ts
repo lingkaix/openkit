@@ -238,7 +238,6 @@ function turn() {
     items: [],
     error: null,
     status: 'running',
-    humanGate: null,
     configVersion: null,
     startedAt: timestamp,
     completedAt: null,

@@ -34,7 +34,6 @@ import {
   StopReasonSchema,
   SubmitTurnInputRequestSchema,
   ThreadSchema,
-  TurnHumanGateSchema,
   TurnReadProjectionSchema,
   TurnSchema,
   TurnStatusSchema,
@@ -50,12 +49,12 @@ describe('canonical enums', () => {
     expect(TurnStatusSchema.options).toEqual([
       'pending',
       'running',
-      'awaiting_human',
       'completed',
       'interrupted',
       'cancelled',
       'failed',
     ]);
+    expect(TurnStatusSchema.safeParse('awaiting_human').success).toBe(false);
   });
 
   it('exports the canonical approval status values', () => {
@@ -77,11 +76,11 @@ describe('canonical enums', () => {
       'busy',
       'idle',
       'degraded',
-      'suspended',
       'interrupted',
       'failed',
       'closed',
     ]);
+    expect(AgentSessionStatusSchema.safeParse('suspended').success).toBe(false);
   });
 
   it('exports the canonical item delta kind values', () => {
@@ -136,14 +135,13 @@ describe('canonical enums', () => {
       'error',
       'aborted',
       'length',
-      'ask_user',
       'budget_exhausted',
     ]);
     expect(StopReasonSchema.safeParse('completed' satisfies StopReason).success).toBe(true);
     expect(StopReasonSchema.safeParse('error').success).toBe(true);
     expect(StopReasonSchema.safeParse('aborted').success).toBe(true);
     expect(StopReasonSchema.safeParse('length').success).toBe(true);
-    expect(StopReasonSchema.safeParse('ask_user').success).toBe(true);
+    expect(StopReasonSchema.safeParse('ask_user').success).toBe(false);
     expect(StopReasonSchema.safeParse('budget_exhausted').success).toBe(true);
     expect(StopReasonSchema.safeParse('unknown').success).toBe(false);
   });
@@ -158,7 +156,6 @@ describe('protocol schemas', () => {
       triggerActor: { kind: 'user' as const, id: 'user_demo' },
       items: [],
       status: 'running' as const,
-      humanGate: null,
       error: null,
       agentSessionId: 'as_demo',
       configVersion: null,
@@ -470,28 +467,6 @@ describe('protocol schemas', () => {
     ).toThrow();
   });
 
-  it('accepts an exact structured response to a user-input Gate', () => {
-    const parsed = SubmitTurnInputRequestSchema.parse({
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-      requestId: '0190f4c8-0000-7000-8000-000000000129',
-      answers: {
-        branch: ['main'],
-      },
-    });
-
-    expect(parsed).toEqual({
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-      requestId: '0190f4c8-0000-7000-8000-000000000129',
-      answers: {
-        branch: ['main'],
-      },
-    });
-  });
-
   it.each([
     {
       name: 'mixed ordinary and Gate fields',
@@ -765,7 +740,6 @@ describe('protocol schemas', () => {
       triggerActor: { kind: 'user', id: 'user_demo' },
       items: [],
       status: 'running',
-      humanGate: null,
       error: null,
       configVersion: 7,
       startedAt: '2026-04-15T00:00:00Z',
@@ -785,7 +759,6 @@ describe('protocol schemas', () => {
       triggerActor: { kind: 'user', id: 'user_demo' },
       items: [],
       status: 'completed',
-      humanGate: null,
       error: null,
       configVersion: 7,
       startedAt: '2026-04-15T00:00:00Z',
@@ -814,7 +787,7 @@ describe('protocol schemas', () => {
         contextPackageDigest,
         undocumentedProjectionField: true,
       }).success
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('omits AgentSession identity from ordinary Turn projections while durable Turn retains it', () => {
@@ -825,7 +798,6 @@ describe('protocol schemas', () => {
       triggerActor: { kind: 'user', id: 'user_demo' },
       items: [],
       status: 'running' as const,
-      humanGate: null,
       error: null,
       agentSessionId: 'as_demo',
       configVersion: null,
@@ -914,7 +886,13 @@ describe('protocol schemas', () => {
         false
       );
       expect(
-        ItemSchema.safeParse({ ...item, actor: userActor, causationId: 'req_demo' }).success
+        ItemSchema.safeParse({
+          ...item,
+          actor: userActor,
+          causationId: 'req_demo',
+          ...(item.type === 'approval-decision' ? { decidedAt: baseItem.completedAt } : {}),
+          ...(item.type === 'user-input-response' ? { answeredAt: baseItem.completedAt } : {}),
+        }).success
       ).toBe(true);
     }
   });
@@ -947,7 +925,6 @@ describe('protocol schemas', () => {
       workspaceId: 'ws_demo',
       threadId: 'th_demo',
       status: 'running',
-      humanGate: null,
       error: null,
       configVersion: null,
       startedAt: '2026-04-15T00:00:00Z',
@@ -1023,7 +1000,6 @@ describe('protocol schemas', () => {
         threadId: 'th_demo',
         items: [],
         status: 'running',
-        humanGate: null,
         error: null,
         configVersion: null,
         startedAt: '2026-04-15T00:00:00Z',
@@ -1041,7 +1017,6 @@ describe('protocol schemas', () => {
         threadId: 'th_demo',
         items: [],
         status: 'running',
-        humanGate: null,
         error: null,
         startedAt: '2026-04-15T00:00:00Z',
         completedAt: null,
@@ -1117,59 +1092,16 @@ describe('protocol schemas', () => {
     });
   });
 
-  it('accepts an explicit user-input human gate for paused turns', () => {
-    const gate = TurnHumanGateSchema.parse({
-      kind: 'user-input',
-      userInputRequestId: 'ui_demo',
-      itemId: 'it_question_demo',
-    });
-    const parsed = TurnSchema.parse({
-      id: 'tu_demo',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      triggerActor: { kind: 'user', id: 'user_demo' },
-      items: [],
-      status: 'awaiting_human',
-      humanGate: gate,
-      error: null,
-      configVersion: null,
-      startedAt: '2026-04-15T00:00:00Z',
-      completedAt: null,
-      durationMs: null,
-    });
-
-    expect(parsed.humanGate?.kind).toBe('user-input');
-  });
-
-  it('requires humanGate only while a turn is awaiting a human', () => {
+  it('rejects the removed awaiting_human turn status', () => {
+    expect(TurnStatusSchema.safeParse('awaiting_human').success).toBe(false);
     expect(() =>
       TurnSchema.parse({
         id: 'tu_demo',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
+        triggerActor: { kind: 'user', id: 'user_demo' },
         items: [],
         status: 'awaiting_human',
-        humanGate: null,
-        error: null,
-        configVersion: null,
-        startedAt: '2026-04-15T00:00:00Z',
-        completedAt: null,
-        durationMs: null,
-      })
-    ).toThrow();
-
-    expect(() =>
-      TurnSchema.parse({
-        id: 'tu_demo',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        items: [],
-        status: 'running',
-        humanGate: {
-          kind: 'approval',
-          approvalRequestId: 'ap_demo',
-          itemId: 'it_approval_demo',
-        },
         error: null,
         configVersion: null,
         startedAt: '2026-04-15T00:00:00Z',
@@ -1187,7 +1119,6 @@ describe('protocol schemas', () => {
         threadId: 'th_demo',
         items: [],
         status: 'awaiting_approval',
-        humanGate: null,
         error: null,
         configVersion: null,
         startedAt: '2026-04-15T00:00:00Z',
@@ -1388,19 +1319,22 @@ describe('protocol schemas', () => {
       causationId: 'req_approval_decision_demo',
       approvalRequestId: 'ap_demo',
       decision: 'granted',
+      decidedAt: '2026-04-15T00:00:01Z',
       createdAt: '2026-04-15T00:00:01Z',
       completedAt: '2026-04-15T00:00:01Z',
     });
 
     expect(approvalRequest.type).toBe('approval-request');
     expect(approvalDecision.type).toBe('approval-decision');
-    const bootDenial = {
+    const unknownSystemDenial = {
       ...approvalDecision,
-      actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
+      actor: { kind: 'system', id: 'unknown-system', responsibleUserId: null },
       decision: 'denied',
     };
-    expect(ItemSchema.safeParse(bootDenial).success).toBe(true);
-    expect(ItemSchema.safeParse({ ...bootDenial, decision: 'granted' }).success).toBe(false);
+    expect(ItemSchema.safeParse(unknownSystemDenial).success).toBe(false);
+    expect(ItemSchema.safeParse({ ...unknownSystemDenial, decision: 'granted' }).success).toBe(
+      false
+    );
     const policyGrant = {
       ...approvalDecision,
       actor: { kind: 'system', id: 'nanocore-repo-push-policy', responsibleUserId: null },
@@ -1415,7 +1349,7 @@ describe('protocol schemas', () => {
     ).toBe(false);
     expect(
       ItemSchema.safeParse({
-        ...bootDenial,
+        ...unknownSystemDenial,
         actor: { kind: 'system', id: 'another-system', responsibleUserId: null },
       }).success
     ).toBe(false);
@@ -1463,6 +1397,7 @@ describe('protocol schemas', () => {
       answers: {
         branch: ['main'],
       },
+      answeredAt: '2026-04-15T00:00:01Z',
       createdAt: '2026-04-15T00:00:01Z',
       completedAt: '2026-04-15T00:00:01Z',
     });
@@ -1783,7 +1718,6 @@ describe('protocol schemas', () => {
       triggerActor: { kind: 'user', id: 'user_demo' },
       items: [],
       status: 'running',
-      humanGate: null,
       error: null,
       configVersion: null,
       startedAt: '2026-04-15T00:00:00Z',

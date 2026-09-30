@@ -4,13 +4,17 @@ Thread dashboard reads validate the authenticated viewer id and bounded particip
 
 The same dashboard preserves NanoCore's verified `taskInputs` objective summaries for Web and Skill consumers; the client does not infer summaries from message JSON.
 
-`client.app.getThreadGoalPlan` reads separate active and pending durable Goal Plans, the next planning action and answered-question lineage, whether a pending candidate is currently approvable, and whether an unheld ready Task may run without generating or approving one. The Plan payload includes exact remaining-work dispositions for a successor. `client.app.reviseThreadGoalIntent` records an exact same-Goal objective and revision instruction; `reviseThreadGoalPlan` records a Plan revision instruction, while `createThreadGoalPlan` drafts or continues its successor. Reconnecting clients use the read action rather than inferring a fresh draft from a missing Plan Item.
+`client.app.getThreadGoalPlan` reads separate active and pending durable Goal Plans, the next planning action and answered-question lineage, whether a pending candidate is currently approvable, and whether an unheld ready Task may run without generating or approving one. The Plan payload includes exact remaining-work dispositions for a successor. `client.app.reviseThreadGoalIntent`, `reviseThreadGoalPlan`, and `createThreadGoalPlan` currently return `409 goal_mode_unavailable` under the accepted Goal availability boundary. Reconnecting clients use the read action rather than inferring a fresh draft from a missing Plan Item.
 
 The Plan read also carries the pending Item's proposal summary and the selectable unfinished active Tasks for named intent scope. An omitted `affectedTaskIds` value and an explicit empty array remain distinct command inputs.
+
+During the communication redesign, new Goal entry and the specified planning and execution mutations return `409 goal_mode_unavailable`. Existing Goal reads, pause, resume, plan approval, and terminal steering remain available.
 
 `@openkit/core-client` is the composed typed HTTP and SSE client used by the SPA and protocol integration tests.
 
 The package owns transport, request-id insertion, response validation, capability helpers, and turn-event iteration.
+
+`client.core.respondApproval`, `answerUserInput`, and `withdrawPendingRequest` submit request-identified pending-request commands. The answer and withdrawal methods use their dedicated routes; clients do not resubmit the raising Turn to obtain an outcome.
 
 It does not own NanoCore App API schemas.
 

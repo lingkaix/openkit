@@ -20,8 +20,6 @@ import {
   dispatchNextSchedulerEntry,
   findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
-  requireSchedulerSessionLease,
-  requireSchedulerSessionLeaseAdmissionContext,
   type SchedulerDispatchResult,
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -41,8 +39,6 @@ import type {
   PreparedAgentSessionForTurn,
   TurnExecutor,
 } from './types.js';
-import { getWorkerBackendSession } from './worker-backend-sessions.js';
-import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 
 /** Input for one scheduler dispatch loop run. */
@@ -209,7 +205,6 @@ export async function runSchedulerDispatchLoop(
       configVersion: input.configVersion ?? null,
       durationMs: null,
       error: null,
-      humanGate: null,
       id: entry.turnId,
       items: [],
       startedAt: timestamp,
@@ -365,98 +360,19 @@ export async function runSchedulerDispatchLoop(
         agentSetupWorkspaceDb.sqlite.close();
       }
     } catch (error) {
-      const humanGateFallback = isExactUnavailableHumanGateCloseout(
-        input.coreDb,
-        dispatch,
-        store,
-        error
-      );
       completeSchedulerTurnLease(input.coreDb, {
         workspaceId: dispatch.entry.workspaceId,
         threadId: dispatch.entry.threadId,
         turnId: dispatch.entry.turnId,
         recoveryState: 'needs-evidence',
-        releaseReason: humanGateFallback ? 'worker-human-gate-unavailable' : 'turn-start-failed',
-        terminalStatus: humanGateFallback ? 'released' : 'failed',
+        releaseReason: 'turn-start-failed',
+        terminalStatus: 'failed',
       });
       throw error;
     }
   }
 
   return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
-}
-
-/**
- * Proves the bounded AEP fallback from existing Product, scheduler, backend, and worker owners.
- *
- * @param coreDb Open Core database handle.
- * @param dispatch Exact admission, plan, and lease dispatched by this loop iteration.
- * @param store Shared product store containing the dispatched Turn.
- * @param error Typed recovery failure returned after Product interruption.
- * @returns Whether scheduler capacity can be released without claiming recoverable completion.
- */
-function isExactUnavailableHumanGateCloseout(
-  coreDb: CoreDb,
-  dispatch: Extract<SchedulerDispatchResult, { status: 'dispatched' }>,
-  store: FsStore,
-  error: unknown
-): boolean {
-  if (
-    !(error instanceof TurnStartValidationError) ||
-    error.code !== 'recovery_required' ||
-    error.status !== 409
-  ) {
-    return false;
-  }
-
-  try {
-    const lease = requireSchedulerSessionLease(coreDb, dispatch.lease.leaseId);
-    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
-    const backendSession = getWorkerBackendSession(coreDb, lease.leaseId);
-    const accepted = getWorkerControlAcceptedFinalStatus(coreDb, {
-      agentSessionId: lease.agentSessionId,
-      packageSnapshotId: lease.packageSnapshotId,
-      requestId: admission.requestId,
-      threadId: lease.threadId,
-      turnId: lease.turnId,
-      workspaceId: lease.workspaceId,
-    });
-    const turn = store.getTurnById(lease.turnId);
-    const agentSession = store.getAgentSession(lease.agentSessionId);
-
-    return (
-      lease.planId === dispatch.plan.planId &&
-      lease.workspaceId === dispatch.entry.workspaceId &&
-      lease.threadId === dispatch.entry.threadId &&
-      lease.turnId === dispatch.entry.turnId &&
-      lease.agentSessionId === dispatch.lease.agentSessionId &&
-      lease.packageSnapshotId === dispatch.lease.packageSnapshotId &&
-      lease.status === 'releasing' &&
-      lease.releaseReason === 'worker-final-status' &&
-      admission.requestId === dispatch.entry.requestId &&
-      turn.workspaceId === lease.workspaceId &&
-      turn.threadId === lease.threadId &&
-      turn.agentSessionId === lease.agentSessionId &&
-      turn.status === 'interrupted' &&
-      turn.error?.code === 'worker_human_gate_unavailable' &&
-      turn.error.message === error.message &&
-      agentSession.workspaceId === lease.workspaceId &&
-      agentSession.threadId === lease.threadId &&
-      agentSession.status === 'interrupted' &&
-      agentSession.message === error.message &&
-      backendSession?.leaseId === lease.leaseId &&
-      backendSession.workspaceId === lease.workspaceId &&
-      backendSession.threadId === lease.threadId &&
-      backendSession.turnId === lease.turnId &&
-      backendSession.agentSessionId === lease.agentSessionId &&
-      backendSession.packageSnapshotId === lease.packageSnapshotId &&
-      backendSession.state === 'cleaned' &&
-      accepted?.status === 'blocked' &&
-      accepted.stopReason === 'ask_user'
-    );
-  } catch {
-    return false;
-  }
 }
 
 /** Resolves the exact authored setup needed by pre-lease static AEP planning. */

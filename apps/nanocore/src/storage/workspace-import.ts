@@ -316,7 +316,6 @@ type ExportedWorkspacePermissionDecision = z.infer<
 const ExportedStopReasonSchema = z.enum([
   'completed',
   'aborted',
-  'ask_user',
   'error',
   'length',
   'budget_exhausted',
@@ -1559,28 +1558,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
     currentItems.set(item.id, item);
   }
   const turns = exportedTurns.map((turn) => {
-    const humanGate =
-      turn.humanGate === null
-        ? null
-        : turn.humanGate.kind === 'approval'
-          ? {
-              ...turn.humanGate,
-              approvalRequestId: requiredMapValue(
-                approvalRequestIds,
-                turn.humanGate.approvalRequestId,
-                'approval request'
-              ),
-              itemId: requiredMapValue(itemIds, turn.humanGate.itemId, 'item'),
-            }
-          : {
-              ...turn.humanGate,
-              userInputRequestId: requiredMapValue(
-                userInputRequestIds,
-                turn.humanGate.userInputRequestId,
-                'user input request'
-              ),
-              itemId: requiredMapValue(itemIds, turn.humanGate.itemId, 'item'),
-            };
     return TurnSchema.parse({
       ...turn,
       id: requiredMapValue(turnIds, turn.id, 'turn'),
@@ -1589,7 +1566,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
       agentSessionId: turn.agentSessionId
         ? requiredMapValue(agentSessionIds, turn.agentSessionId, 'AgentSession')
         : turn.agentSessionId,
-      humanGate,
       items: turn.items.map((item) =>
         requiredMapValue(currentItems, requiredMapValue(itemIds, item.id, 'item'), 'item')
       ),

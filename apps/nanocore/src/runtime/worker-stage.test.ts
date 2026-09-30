@@ -23,7 +23,6 @@ describe('worker turn stage model', () => {
     const mappings: Array<[StopReason, WorkerTurnStage]> = [
       ['completed', 'completed'],
       ['aborted', 'aborted'],
-      ['ask_user', 'waiting_for_user'],
       ['error', 'failed'],
       ['length', 'completed'],
       ['budget_exhausted', 'completed'],

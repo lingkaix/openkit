@@ -121,7 +121,7 @@ describe('NanoCore deployment mode matrix', () => {
 
   it.each(
     MATRIX_CASES
-  )('runs one Goal Mode step loop for core=$coreMode runtime=$runtimeTargetKind', async ({
+  )('rejects Goal Mode step for core=$coreMode runtime=$runtimeTargetKind', async ({
     coreMode,
     runtimeTargetKind,
   }) => {
@@ -181,31 +181,8 @@ describe('NanoCore deployment mode matrix', () => {
       );
       const payload = await response.json();
 
-      expect(response.status, JSON.stringify(payload)).toBe(200);
-      expect(payload).toMatchObject({
-        goal: {
-          status: 'reviewing',
-          currentTask: {
-            status: 'reviewing',
-          },
-          pendingHumanAttention: {
-            required: true,
-          },
-        },
-      });
-      expect(payload).not.toHaveProperty('result');
-
-      const actionCenter = await app.request('/api/app/workspaces/ws_demo/action-center');
-      const actionCenterPayload = await actionCenter.json();
-
-      expect(actionCenter.status).toBe(200);
-      expect(
-        actionCenterPayload.items.some(
-          (item: { kind?: string; severity?: string }) =>
-            (item.kind === 'artifact_review' || item.kind === 'goal_review') &&
-            item.severity === 'needs_input'
-        )
-      ).toBe(true);
+      expect(response.status, JSON.stringify(payload)).toBe(409);
+      expect(payload).toMatchObject({ code: 'goal_mode_unavailable' });
     } finally {
       coreDb.sqlite.close();
     }

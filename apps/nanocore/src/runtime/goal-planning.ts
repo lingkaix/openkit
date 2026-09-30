@@ -201,33 +201,6 @@ export async function createGoalPlan(input: CreateGoalPlanInput): Promise<GoalPl
     threadId: input.threadId,
     goalId: input.goalId,
   });
-  const existingTurns = input.store.listThreadTurns(input.workspaceId, input.threadId);
-  const currentIntentTurnId = input.store
-    .listThreadItems(input.workspaceId, input.threadId)
-    .find((item) => item.id === goal.currentIntentItemId)?.turnId;
-  const currentIntentTurnIndex = existingTurns.findIndex((turn) => turn.id === currentIntentTurnId);
-  if (
-    existingTurns
-      .slice(currentIntentTurnIndex + 1)
-      .some(
-        (turn) =>
-          turn.id.startsWith('tu_goal_plan_') &&
-          turn.status === 'awaiting_human' &&
-          turn.humanGate?.kind === 'user-input' &&
-          turn.items.some(
-            (item) =>
-              item.type === 'user-input-request' &&
-              [goal.currentIntentItemId, goal.planItemId, goal.pendingPlanItemId].includes(
-                item.parentItemId ?? null
-              )
-          )
-      )
-  ) {
-    throw new GoalPlanRevisionError(
-      'stale',
-      'Goal planning question must be answered before another Plan request.'
-    );
-  }
   let sourceTaskEvidence: ReturnType<typeof captureGoalTaskEvidenceSnapshot> | null = null;
   if (goal.planItemId) {
     try {
@@ -631,14 +604,7 @@ function persistGoalPlanResult(
       completedAt: timestamp,
     });
 
-    input.store.updateTurn(turn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'user-input',
-        userInputRequestId: ids.userInputRequestId,
-        itemId: questionItem.id,
-      },
-    });
+    void questionItem;
     if (!revision) {
       updateGoalStatus(input.workspaceDb, {
         workspaceId: input.workspaceId,
@@ -939,7 +905,7 @@ export function readGoalPlanQuestionCreation(
   const item = input.store
     .listThreadItems(input.workspaceId, input.threadId)
     .find((candidate) => candidate.id === ids.questionItemId);
-  if (!item && turn?.status !== 'awaiting_human') return null;
+  if (!item) return null;
   if (
     turn?.items.some((entry) => entry.type === 'plan' || entry.type === 'status') ||
     getGoalPlanRecord(input.workspaceDb, input.workspaceId, input.threadId, ids.planItemId)
@@ -959,20 +925,11 @@ export function readGoalPlanQuestionCreation(
     item.userInputRequestId !== ids.userInputRequestId ||
     !item.parentItemId ||
     JSON.stringify(turn.triggerActor) !== JSON.stringify(input.triggerActor) ||
-    (turn.status !== 'awaiting_human' && turn.status !== 'completed')
+    turn.status !== 'completed'
   ) {
     throw new GoalPlanApprovalError(
       'recovery_required',
       'Goal planning question owners are incomplete.'
-    );
-  }
-  if (
-    turn.status === 'awaiting_human' &&
-    (turn.humanGate.kind !== 'user-input' || turn.humanGate.itemId !== item.id)
-  ) {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Goal planning question Gate is contradictory.'
     );
   }
   if (turn.status === 'completed') {
@@ -980,7 +937,6 @@ export function readGoalPlanQuestionCreation(
     const response = responses[0];
     const questionIds = item.questions.map((question) => question.id);
     if (
-      turn.humanGate !== null ||
       !turn.completedAt ||
       responses.length !== 1 ||
       response?.type !== 'user-input-response' ||
@@ -1036,8 +992,8 @@ export function readGoalPlanQuestionCreation(
   };
 }
 
-/** Closes one exact Goal planning question Gate on its existing Turn. */
-export function closeGoalPlanningQuestionGate(input: {
+/** Goal planning questions are unavailable until the Goal redesign. */
+export function closeGoalPlanningQuestionGate(_input: {
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
@@ -1047,124 +1003,7 @@ export function closeGoalPlanningQuestionGate(input: {
   readonly actorId: string;
   readonly answers: Readonly<Record<string, readonly string[]>>;
 }): ReturnType<FsStore['getTurn']> {
-  const turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
-  if (turn.status !== 'awaiting_human') {
-    throw new GoalPlanApprovalError('stale', 'Goal planning question Gate is already closed.');
-  }
-  const gate = turn.humanGate;
-  if (gate?.kind !== 'user-input') {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Goal planning Gate is not a user-input Gate.'
-    );
-  }
-  const request = turn.items.find((item) => item.id === gate.itemId);
-  if (
-    !turn.id.startsWith('tu_goal_plan_') ||
-    request?.type !== 'user-input-request' ||
-    request.status !== 'completed' ||
-    !request.parentItemId ||
-    !request.causationId ||
-    request.responsibleUserId !== input.actorId ||
-    request.userInputRequestId !== gate.userInputRequestId
-  ) {
-    throw new GoalPlanApprovalError('recovery_required', 'Goal planning Gate owner is incomplete.');
-  }
-  const ids = goalPlanCreationIds({
-    triggerActor: turn.triggerActor,
-    store: input.store,
-    workspaceDb: input.workspaceDb,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    requestId: request.causationId,
-  });
-  if (
-    ids.turnId !== turn.id ||
-    ids.questionItemId !== request.id ||
-    ids.userInputRequestId !== request.userInputRequestId
-  ) {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Goal planning Gate request lineage is contradictory.'
-    );
-  }
-  const questionIds = request.questions.map((question) => question.id);
-  if (
-    new Set(questionIds).size !== questionIds.length ||
-    Object.keys(input.answers).length !== questionIds.length ||
-    questionIds.some((id) => input.answers[id]?.length !== 1 || !input.answers[id]?.[0]?.trim()) ||
-    Object.keys(input.answers).some((id) => !questionIds.includes(id))
-  ) {
-    throw new GoalPlanApprovalError(
-      'goal_plan_invalid',
-      'Goal planning answers must match every question exactly.'
-    );
-  }
-  const goals = listGoalRecordsForThread(input.workspaceDb, {
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-  }).filter(
-    (goal) =>
-      goal.currentIntentItemId === request.parentItemId ||
-      goal.pendingPlanItemId === request.parentItemId ||
-      goal.planItemId === request.parentItemId
-  );
-  if (goals.length !== 1) {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Goal planning Gate has no exact Goal owner.'
-    );
-  }
-  const goal = goals[0]!;
-  const turns = input.store.listThreadTurns(input.workspaceId, input.threadId);
-  const questionTurnIndex = turns.findIndex((entry) => entry.id === turn.id);
-  const intentTurnId = input.store
-    .listThreadItems(input.workspaceId, input.threadId)
-    .find((entry) => entry.id === goal.currentIntentItemId)?.turnId;
-  if (turns.findIndex((entry) => entry.id === intentTurnId) > questionTurnIndex) {
-    throw new GoalPlanApprovalError(
-      'stale',
-      'Goal planning question belongs to a superseded intent.'
-    );
-  }
-  const initialGate = goal.planItemId === null && goal.pendingPlanItemId === null;
-  if (initialGate && goal.status !== 'awaiting_user') {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Initial Goal planning Gate contradicts Goal status.'
-    );
-  }
-  const timestamp = new Date().toISOString();
-  input.store.createItem({
-    id: `it_user_input_response_${turn.id}`,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: turn.id,
-    type: 'user-input-response',
-    status: 'completed',
-    actor: { kind: 'user', id: input.actorId },
-    causationId: input.requestId,
-    userInputRequestId: gate.userInputRequestId,
-    answers: Object.fromEntries(
-      Object.entries(input.answers).map(([id, values]) => [id, [values[0]!] as [string]])
-    ),
-    createdAt: timestamp,
-    completedAt: timestamp,
-  });
-  const closed = input.store.updateTurn(turn.id, {
-    status: 'completed',
-    humanGate: null,
-    completedAt: timestamp,
-  });
-  if (initialGate) {
-    updateGoalStatus(input.workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      goalId: goal.goalId,
-      status: 'planning',
-    });
-  }
-  return closed;
+  throw new GoalPlanApprovalError('recovery_required', 'Goal mode is unavailable.');
 }
 
 /**

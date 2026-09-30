@@ -71,7 +71,7 @@ export interface WorkerCoordinatorThreadState {
   /** Thread id. */
   readonly threadId: string;
   /** Thread status summarized for routing. */
-  readonly status: 'idle' | 'running' | 'awaiting_human' | 'failed' | 'completed';
+  readonly status: 'idle' | 'running' | 'failed' | 'completed';
 }
 
 /**
@@ -491,8 +491,6 @@ function rationaleForGoalStopDecision(outcome: StopAfterTurnDecision['outcome'])
   switch (outcome) {
     case 'review':
       return 'Worker turn completed and needs human review before Goal Mode continues.';
-    case 'ask_user':
-      return 'Worker turn requested user input before Goal Mode can continue.';
     case 'block':
       return 'Worker turn ended with a blocker that Goal Mode cannot resolve automatically.';
     case 'abort':

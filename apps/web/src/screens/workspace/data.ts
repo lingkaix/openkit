@@ -615,6 +615,13 @@ export function useDecideAttention() {
           requestId,
         });
       }
+      if (action.kind === 'withdraw_request' && row.source.type === 'approval') {
+        return client.core.withdrawPendingRequest(row.source.approvalRequestId, {
+          workspaceId: row.source.workspaceId,
+          threadId: row.source.threadId,
+          requestId,
+        });
+      }
       if (
         (action.kind === 'accept_review' || action.kind === 'request_refinement') &&
         row.source.type === 'artifact_review' &&
@@ -674,7 +681,9 @@ export function canDecideInline(
   action: AttentionRow['actions'][number]
 ): boolean {
   if (
-    (action.kind === 'grant_approval' || action.kind === 'deny_approval') &&
+    (action.kind === 'grant_approval' ||
+      action.kind === 'deny_approval' ||
+      action.kind === 'withdraw_request') &&
     row.source.type === 'approval' &&
     row.threadId &&
     row.turnId

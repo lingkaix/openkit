@@ -17,6 +17,7 @@ import {
 import {
   type ActorRef,
   isCheckpointCollectableTurnStatus,
+  responsibleUserIdForActor,
   type StopReason,
   TurnSchema,
 } from '@openkit/protocol';
@@ -33,7 +34,10 @@ import {
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
-import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
+import {
+  assertAuthorizedWorkspaceLineage,
+  currentWorkspaceAuthority,
+} from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   normalizeCapabilityRequestId,
@@ -45,11 +49,7 @@ import {
   type RuntimeConfigSnapshot,
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
-import {
-  goalStartOwnerIds,
-  startGoalModeObjective,
-  submitGoalSteeringCommand,
-} from './goal-routes.js';
+import { goalStartOwnerIds, submitGoalSteeringCommand } from './goal-routes.js';
 import { assembleBuiltInSystemPrompt } from './internal-agents/builtin-prompts.js';
 import {
   createStructuredWorkerDelegationRequest,
@@ -69,7 +69,6 @@ import {
   resolveWorkspaceKnowledgeReferenceProofs,
 } from './knowledge-manager.js';
 import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
   type CommandRequestRecord,
   type ConversationCommandReceiptMetadata,
   DISPLAY_PROJECTION_REFRESH_ADMISSION,
@@ -97,6 +96,13 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
+import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import {
+  frozenPendingOutcomeInput,
+  isBlockingPendingRequest,
+  listThreadPendingRequests,
+  proveFrozenDelivery,
+} from './runtime/pending-requests.js';
 import {
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
@@ -555,15 +561,6 @@ function replayConversationCommand(
           turn: {
             ...currentTurn,
             items: [userItem, resultItem],
-            status: 'awaiting_human',
-            humanGate: {
-              kind: 'user-input',
-              userInputRequestId: resultItem.userInputRequestId,
-              itemId: resultItem.id,
-            },
-            error: null,
-            completedAt: null,
-            durationMs: null,
           },
           item: resultItem,
           handoff: null,
@@ -803,11 +800,17 @@ function replayTaskModeCommand(
 
       try {
         return StartTaskModeResponseSchema.parse({
-          state: closedGate
-            ? closedGate.stopReason === 'aborted'
-              ? 'cancelled'
-              : 'blocked'
-            : taskModeStateForStopReason(stopReason),
+          state: pendingRequestTaskState(
+            store,
+            workspaceDb,
+            workspaceId,
+            threadId,
+            closedGate
+              ? closedGate.stopReason === 'aborted'
+                ? 'cancelled'
+                : 'blocked'
+              : taskModeStateForStopReason(stopReason)
+          ),
           turn: currentTurn,
           completion: closedGate
             ? null
@@ -1020,11 +1023,17 @@ function recoverDirectTaskModeCheckpoint(input: {
   }
 
   return StartTaskModeResponseSchema.parse({
-    state: closedGate
-      ? closedGate.stopReason === 'aborted'
-        ? 'cancelled'
-        : 'blocked'
-      : taskModeStateForStopReason(stopReason),
+    state: pendingRequestTaskState(
+      input.store,
+      input.workspaceDb,
+      input.workspaceId,
+      input.threadId,
+      closedGate
+        ? closedGate.stopReason === 'aborted'
+          ? 'cancelled'
+          : 'blocked'
+        : taskModeStateForStopReason(stopReason)
+    ),
     turn,
     completion: closedGate
       ? null
@@ -1037,7 +1046,7 @@ function recoverDirectTaskModeCheckpoint(input: {
  * Classifies one conversation-owned Task checkpoint or one direct task.start checkpoint after scheduler restart fencing.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
- * @returns `live` for a reconnectable or human-gated Turn, otherwise `complete` after receipt-first cleanup.
+ * @returns `live` for a reconnectable Turn, otherwise `complete` after receipt-first cleanup.
  * @throws TurnStartValidationError when the durable owner tuple cannot prove one safe outcome.
  */
 export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: {
@@ -2022,12 +2031,31 @@ function formatRepositoryFileRead(
  * @param status Stored turn status.
  * @returns Task Mode attempt state.
  */
+function pendingRequestTaskState(
+  store: FsStore,
+  workspaceDb: { sqlite: import('better-sqlite3').Database } | null,
+  workspaceId: string,
+  threadId: string,
+  fallback: 'awaiting-human' | 'blocked' | 'cancelled' | 'completed' | 'failed' | 'running'
+) {
+  const turns = store.listThreadTurns(workspaceId, threadId);
+  if (turns.some((turn) => turn.status === 'pending' || turn.status === 'running'))
+    return 'running';
+  if (
+    workspaceDb &&
+    listThreadPendingRequests(workspaceDb.sqlite, workspaceId, threadId).some((record) =>
+      isBlockingPendingRequest(record, turns)
+    )
+  ) {
+    return 'awaiting-human';
+  }
+  return fallback;
+}
+
 function taskModeStateForTurn(status: z.infer<typeof TurnSchema>['status']) {
   switch (status) {
     case 'completed':
       return 'completed';
-    case 'awaiting_human':
-      return 'awaiting-human';
     case 'failed':
       return 'failed';
     case 'cancelled':
@@ -2070,12 +2098,7 @@ function taskModeTerminalStopReason(store: FsStore, turnId: string): StopReason 
   const terminalEvent = terminalEvents[0];
   const eventStopReason =
     terminalEvent?.data.type === 'turn-completed' ? terminalEvent.data.stopReason : null;
-  if (eventStopReason && eventStopReason !== 'ask_user') {
-    return eventStopReason;
-  }
-
-  const turn = store.getTurnById(turnId);
-  return turn.status === 'awaiting_human' && turn.humanGate ? 'ask_user' : null;
+  return eventStopReason;
 }
 
 /**
@@ -2246,7 +2269,10 @@ export function registerQuickAndChatModeRoutes({
     store: FsStore,
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
-}): (store: FsStore, turnId: string) => Promise<boolean> {
+}): {
+  interrupt(store: FsStore, turnId: string): Promise<boolean>;
+  acceptPendingInput(store: FsStore, turnId: string): Promise<void>;
+} {
   // These process-local handles stop admitted model work; the Turn remains the durable owner.
   const activeChatRuns = new WeakMap<
     FsStore,
@@ -2954,19 +2980,34 @@ export function registerQuickAndChatModeRoutes({
           createdAt: turn.startedAt ?? completedAt,
           completedAt: turn.startedAt ?? completedAt,
         });
-        const waitingTurn = store.updateTurn(turn.id, {
-          status: 'awaiting_human',
-          humanGate: {
-            kind: 'user-input',
-            userInputRequestId: requestId,
-            itemId: questionItem.id,
-          },
+        const completedTurn = store.updateTurn(turn.id, {
+          status: 'completed',
+          completedAt,
         });
+        if (coreDb) {
+          const workspaceDb = repositoryWorkspaceDb(workspaceId);
+          try {
+            raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+              requestId,
+              workspaceId,
+              threadId,
+              raisingTurnId: turn.id,
+              requestItemId: questionItem.id,
+              kind: 'user-input',
+              requesterKind: 'assistant',
+              responsibleUserId: triggerActor.id,
+              questions: questionItem.type === 'user-input-request' ? questionItem.questions : [],
+              now: completedAt,
+            });
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        }
 
         return ConversationCommandBodySchema.parse({
           outcome: 'clarification-needed',
           explanation: 'The Assistant needs a concrete request before choosing a mode.',
-          turn: waitingTurn,
+          turn: completedTurn,
           item: questionItem,
           handoff: null,
         });
@@ -3210,7 +3251,6 @@ export function registerQuickAndChatModeRoutes({
               requestId: chatInput.requestId,
               requestInputHash: commandInputHash(conversationCommandInput(chatInput)),
               reviewRequired: false,
-              remainingWorkerIterations: 0,
               prepare: () => {
                 const dataRoot = store.getDataRoot();
                 if (!dataRoot) {
@@ -3518,7 +3558,6 @@ export function registerQuickAndChatModeRoutes({
             requestId: chatInput.requestId,
             requestInputHash: commandInputHash({ input: chatInput.input }),
             reviewRequired: false,
-            remainingWorkerIterations: 0,
             prepare: () => ({
               delegationRequest: workerRequest,
               contextPackageDigest: commandInputHash(workerRequest),
@@ -3575,29 +3614,11 @@ export function registerQuickAndChatModeRoutes({
       }
 
       if (delegation?.coordinator.decision === 'goal') {
-        const goalStart = startGoalModeObjective({
-          triggerActor,
-          assertProjectWorkspace,
-          coreDb,
-          repositoryWorkspaceDb,
-          store,
-          workspaceId,
-          threadId,
-          owningCommand: 'conversation.submit',
-          requestId: chatInput.requestId,
-          objective: chatInput.input,
-        });
-
-        return {
-          body: createHandoffResponse('goal', delegation.coordinator.explanation),
-          downstream: {
-            kind: 'goal',
-            goalId: goalStart.response.goal.goalId,
-            turnId: goalStart.turn.id,
-          },
-          resultKind: 'goal-handoff',
-          status: 202,
-        };
+        throw new TurnStartValidationError(
+          'goal_mode_unavailable',
+          'Goal mode is unavailable.',
+          409
+        );
       }
 
       if (delegation && delegation.coordinator.decision !== 'quick_chat') {
@@ -3984,13 +4005,262 @@ export function registerQuickAndChatModeRoutes({
     }
   });
 
-  return async (store, turnId) => {
-    const run = activeChatRuns.get(store)?.get(turnId);
-    if (!run) return false;
-    run.controller.abort();
-    // Success requires the product owner to persist interruption, not just signal the provider.
-    await run.finished;
-    return true;
+  return {
+    async interrupt(store, turnId) {
+      const run = activeChatRuns.get(store)?.get(turnId);
+      if (!run) return false;
+      run.controller.abort();
+      // Success requires the product owner to persist interruption, not just signal the provider.
+      await run.finished;
+      return true;
+    },
+    async acceptPendingInput(store, turnId) {
+      const turn = store.getTurnById(turnId);
+      const actorId = responsibleUserIdForActor(turn.triggerActor);
+      if (
+        !actorId ||
+        !coreDb ||
+        !currentWorkspaceAuthority(coreDb, turn.workspaceId, turn.triggerActor, 'turn.run', true)
+      )
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      const workspaceDb = repositoryWorkspaceDb(turn.workspaceId);
+      let prompt: string;
+      let sourceInputHash: string;
+      let sourceItemIds: string[];
+      let selection: ReturnType<typeof quickChatSelection>;
+      try {
+        const frozen = listThreadPendingRequests(
+          workspaceDb.sqlite,
+          turn.workspaceId,
+          turn.threadId
+        ).filter(
+          (record) =>
+            record.delivery === 'frozen' &&
+            record.deliveryTurnId === turn.id &&
+            record.requesterKind === 'assistant'
+        );
+        if (!frozen.length)
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The Assistant input association is missing.',
+            409
+          );
+        prompt = frozen.every((record) => record.resolution === 'answered')
+          ? frozen
+              .flatMap((record) => Object.values(record.answerMap ?? {}).map((answer) => answer[0]))
+              .join('\n')
+          : frozenPendingOutcomeInput(
+              workspaceDb.sqlite,
+              turn.id,
+              'Receive pending request outcomes.'
+            );
+        sourceInputHash = commandInputHash({
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          responsibleUserId: actorId,
+          input: frozen.map((record) => ({
+            requestId: record.requestId,
+            requestItemId: record.requestItemId,
+            publicationTurnId: record.publicationTurnId,
+            resolution: record.resolution,
+            ending: record.ending,
+            disposition: record.disposition,
+            answerMap: record.answerMap,
+            decidedAt: record.decidedAt,
+            endedAt: record.endedAt,
+          })),
+        });
+        sourceItemIds = frozen.map((record) => record.requestItemId);
+        selection = quickChatSelection(actorId, turn.workspaceId);
+        if (!selection)
+          throw new TurnStartValidationError(
+            'target_unavailable',
+            'The Assistant model is unavailable.',
+            409
+          );
+        // The frozen association and admitted Assistant Turn are the durable input owner.
+        // Acceptance precedes model contact and does not fabricate a conversation command.
+        proveFrozenDelivery(workspaceDb.sqlite, turn.id, new Date().toISOString());
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      try {
+        const delegation = createTaskModeDelegation({
+          store,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          prompt,
+          workerCoordinatorCandidates,
+        });
+        if (delegation.taskDecision && delegation.coordinator.workerRequest) {
+          assertProjectWorkspace(store.getWorkspace(turn.workspaceId), 'handle project work');
+          const requestId = `pending_${sourceInputHash}`;
+          const receivingThreadId = `th_task_${sourceInputHash.slice(0, 24)}`;
+          const taskTurnId = `tu_task_${sourceInputHash.slice(0, 24)}`;
+          if (store.listThreads(turn.workspaceId).some((thread) => thread.id === receivingThreadId))
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The Assistant handoff tuple already exists.',
+              409
+            );
+          store.createThread(
+            turn.workspaceId,
+            prompt.split(/\r?\n/, 1)[0] || 'Clarified task',
+            receivingThreadId,
+            'conversation',
+            { visibility: 'workspace' }
+          );
+          const taskDb = repositoryWorkspaceDb(turn.workspaceId);
+          const workerRequest = {
+            ...delegation.coordinator.workerRequest,
+            contextRefs: [
+              ...delegation.coordinator.workerRequest.contextRefs,
+              ...sourceItemIds.map((id) => ({ kind: 'item' as const, id })),
+            ],
+          };
+          try {
+            await runWorkerTurnLoop({
+              coreDb,
+              triggerActor: turn.triggerActor,
+              workspaceDb: taskDb,
+              workspaceId: turn.workspaceId,
+              threadId: receivingThreadId,
+              requestId,
+              requestInputHash: sourceInputHash,
+              reviewRequired: false,
+              prepare: () => ({
+                delegationRequest: workerRequest,
+                contextPackageDigest: commandInputHash(workerRequest),
+                knowledgeSelectionInput: null,
+              }),
+              reserveTurn: () => ({ turnId: taskTurnId }),
+              startWorker: async ({ turnId: reservedTurnId, prepared }) => {
+                const worker = await startModeWorkerTurn({
+                  store,
+                  triggerActor: turn.triggerActor,
+                  workspaceId: turn.workspaceId,
+                  threadId: receivingThreadId,
+                  prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+                  requestId,
+                  requestedAgentId: delegation.taskDecision!.worker.agentId,
+                  reservedTurnId,
+                });
+                return { workerSessionId: worker.agentSessionId ?? null };
+              },
+              awaitWorker: ({ turnId: workerTurnId }) => {
+                const worker = store.getTurnById(workerTurnId);
+                const stopReason = taskModeTerminalStopReason(store, workerTurnId);
+                if (!stopReason)
+                  throw new TurnStartValidationError(
+                    'recovery_required',
+                    'The Assistant Task has no unique terminal outcome.',
+                    409
+                  );
+                const evidence = taskModeEvidenceForTurn(
+                  store,
+                  taskDb,
+                  turn.workspaceId,
+                  receivingThreadId,
+                  worker
+                );
+                return {
+                  stopReason,
+                  itemIds: evidence.itemIds,
+                  artifactIds: evidence.artifactIds,
+                  diagnosticsSummary: worker.error?.message ?? null,
+                };
+              },
+            });
+          } finally {
+            taskDb.sqlite.close();
+          }
+          const completedAt = new Date().toISOString();
+          store.createItem({
+            id: `it_chat_task_${turn.id}`,
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            turnId: turn.id,
+            type: 'status',
+            status: 'completed',
+            level: 'info',
+            title: 'Task Mode handoff',
+            summary: delegation.taskDecision.rationale,
+            causationId: taskTurnId,
+            createdAt: turn.startedAt ?? completedAt,
+            completedAt,
+          });
+          store.updateTurn(turn.id, { status: 'completed', completedAt });
+          return;
+        }
+        if (delegation.coordinator.decision === 'goal')
+          throw new TurnStartValidationError(
+            'goal_mode_unavailable',
+            'Goal mode is unavailable.',
+            409
+          );
+        const history = store
+          .listThreadItems(turn.workspaceId, turn.threadId)
+          .flatMap<OpenAICompatibleChatMessage>((item) =>
+            item.status === 'completed' &&
+            (item.type === 'user-message' || item.type === 'assistant-message')
+              ? [{ role: item.type === 'user-message' ? 'user' : 'assistant', content: item.text }]
+              : []
+          );
+        const result = await withTurnModelCapture(
+          {
+            store,
+            turn,
+            environment: { systemPrompt: assembleBuiltInSystemPrompt('quick-chat'), tools: [] },
+          },
+          (capture) =>
+            callQuickChatProvider({
+              logicalModel: selection.logicalModel,
+              prompt,
+              history,
+              sessionId: `chat:${turn.workspaceId}:${turn.threadId}`,
+              workspaceId: turn.workspaceId,
+              signal: new AbortController().signal,
+              capture,
+            })
+        );
+        recordQuickChatLlmUsage({
+          coreDb,
+          authorityActor: turn.triggerActor,
+          model: selection.logicalModel.id,
+          providerId: result.providerId,
+          requestId: null,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          ...(result.usage === undefined ? {} : { usage: result.usage }),
+          workspaceId: turn.workspaceId,
+        });
+        const completedAt = new Date().toISOString();
+        store.createItem({
+          id: `it_chat_answer_${turn.id}`,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          type: 'assistant-message',
+          status: 'completed',
+          text: result.content,
+          createdAt: turn.startedAt ?? completedAt,
+          completedAt,
+        });
+        store.updateTurn(turn.id, { status: 'completed', completedAt });
+      } catch (error) {
+        store.updateTurn(turn.id, {
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          error: { code: 'chat_provider_failed', message: 'Chat model work did not complete.' },
+        });
+        throw error;
+      }
+    },
   };
 }
 
@@ -4120,50 +4390,11 @@ export function registerTaskModeRoute({
       });
 
       if (delegation.coordinator.decision === 'goal') {
-        const goalStart = startGoalModeObjective({
-          triggerActor,
-          assertProjectWorkspace,
-          coreDb,
-          repositoryWorkspaceDb,
-          store,
-          workspaceId,
-          threadId,
-          owningCommand: 'task.start',
-          requestId: taskInput.requestId,
-          objective: taskInput.input,
-          ...(taskInput.workerStorageChoice
-            ? { workerStorageChoice: taskInput.workerStorageChoice }
-            : {}),
-        });
-        const reason = delegation.coordinator.explanation;
-        const timestamp = new Date().toISOString();
-        store.createItem(
-          {
-            id: `it_task_goal_${goalStart.response.goal.goalId}_${goalStart.turn.id}`,
-            workspaceId,
-            threadId,
-            turnId: goalStart.turn.id,
-            type: 'status',
-            status: 'completed',
-            level: 'info',
-            title: 'Task Mode escalated to Goal Mode',
-            summary: reason,
-            createdAt: timestamp,
-            completedAt: timestamp,
-          },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        throw new TurnStartValidationError(
+          'goal_mode_unavailable',
+          'Goal mode is unavailable.',
+          409
         );
-
-        return StartTaskModeResponseSchema.parse({
-          state: 'escalated-to-goal',
-          turn: store.getTurnById(goalStart.turn.id),
-          evidence: taskModeEvidenceForTurn(store, null, workspaceId, threadId, goalStart.turn),
-          escalation: {
-            targetMode: 'goal',
-            goalId: goalStart.response.goal.goalId,
-            reason,
-          },
-        });
       }
 
       const taskDecision = delegation.taskDecision;
@@ -4189,7 +4420,6 @@ export function registerTaskModeRoute({
           requestId: taskInput.requestId,
           requestInputHash,
           reviewRequired: false,
-          remainingWorkerIterations: 0,
           prepare: () => {
             const dataRoot = store.getDataRoot();
             if (!dataRoot) {

@@ -804,9 +804,22 @@ function makeClient(
         };
       }),
       respondApproval: vi.fn().mockResolvedValue({}),
+      withdrawPendingRequest: vi.fn().mockResolvedValue({}),
       ...overrides.core,
     },
     app: {
+      getThreadDashboard: vi.fn().mockResolvedValue({
+        pendingRequests: ['ap1', 'ap2', 'ap_disabled'].map((requestId) => ({
+          requestId,
+          state: 'pending',
+          canRespond: true,
+          approvalEffect: {
+            status: 'available',
+            summary: 'Summary: One effect',
+            detail: '{"effect":"complete"}',
+          },
+        })),
+      }),
       listAuthorizedWorkspaces: vi
         .fn()
         .mockResolvedValue({ items: [] } satisfies Awaited<
@@ -1359,6 +1372,117 @@ describe('Overview / Action Center (board 07)', () => {
     expect(screen.queryByText('In progress')).not.toBeInTheDocument();
   });
 
+  it('waits for complete exact detail before enabling an attention grant', async () => {
+    const detail = createDeferred<unknown>();
+    const client = makeClient({
+      app: { getThreadDashboard: vi.fn().mockReturnValue(detail.promise) },
+      actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
+    });
+    renderApp('/', client);
+    expect(
+      await screen.findByText('Scout asks to sign in to the vendor portal')
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
+    await act(async () =>
+      detail.resolve({
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            state: 'pending',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: One effect',
+              detail: '{"recipient":"late complete argument"}',
+            },
+          },
+        ],
+      })
+    );
+    expect(await screen.findByText('{"recipient":"late complete argument"}')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeEnabled();
+  });
+
+  it('keeps authorized denial available when attention detail is unavailable', async () => {
+    const client = makeClient({
+      app: {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              state: 'pending',
+              canRespond: true,
+              approvalEffect: {
+                status: 'unavailable',
+                reason: 'Complete detail cannot be loaded.',
+              },
+            },
+          ],
+        }),
+      },
+      actionCenter: {
+        listHumanAttention: vi.fn().mockResolvedValue({
+          items: [
+            {
+              ...APPROVAL_ROW,
+              actions: [
+                ...APPROVAL_ROW.actions,
+                {
+                  kind: 'withdraw_request',
+                  label: 'Withdraw',
+                  method: 'POST',
+                  href: '/api/pending-requests/ap1/withdraw',
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    });
+    renderApp('/', client);
+    expect(
+      await screen.findByText(
+        'Exact effect unavailable; approval disabled: Complete detail cannot be loaded.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Deny' })).toBeEnabled();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Withdraw' }));
+    expect(client.core.withdrawPendingRequest).toHaveBeenCalledWith(
+      'ap1',
+      expect.objectContaining({ workspaceId: 'ws1', threadId: 'th1' })
+    );
+  });
+
+  it.each([
+    'resolved',
+    'inspect-only',
+    'read-only',
+  ])('keeps attention approval controls closed for %s authority/state', async (state) => {
+    const client = makeClient({
+      app: {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              state: state === 'read-only' ? 'pending' : state,
+              canRespond: state !== 'read-only',
+              approvalEffect: { status: 'available', summary: 'Summary', detail: '{}' },
+            },
+          ],
+        }),
+      },
+      actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
+    });
+    renderApp('/', client);
+    expect(
+      await screen.findByText('Scout asks to sign in to the vendor portal')
+    ).toBeInTheDocument();
+    expect(await screen.findByText('{}')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
+  });
+
   it('renders Needs-you rows longest-waiting first and decides approvals inline', async () => {
     const user = userEvent.setup();
     const respondApproval = vi.fn().mockResolvedValue({});
@@ -1380,7 +1504,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(titles[0]).toBe('Scout asks to sign in to the vendor portal');
     expect(titles[1]).toBe('Answer required');
 
-    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    await user.click(await screen.findByRole('button', { name: 'Allow' }));
     await waitFor(() =>
       expect(respondApproval).toHaveBeenCalledWith(
         'ap1',
@@ -1610,8 +1734,8 @@ describe('Overview / Action Center (board 07)', () => {
     const readOnly = screen
       .getByRole('heading', { name: 'Read-only approval' })
       .closest('[class*="border-b"]') as HTMLElement;
-    expect(within(activeRow).getByRole('button', { name: 'Allow' })).toBeEnabled();
-    expect(within(readOnly).getByRole('button', { name: 'Allow' })).toBeDisabled();
+    expect(await within(activeRow).findByRole('button', { name: 'Allow' })).toBeEnabled();
+    expect(await within(readOnly).findByRole('button', { name: 'Allow' })).toBeDisabled();
     expect(within(readOnly).getByRole('button', { name: 'Deny' })).toBeDisabled();
 
     await user.click(within(activeRow).getByRole('button', { name: 'Deny' }));
@@ -1647,7 +1771,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    await user.click(await screen.findByRole('button', { name: 'Allow' }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/Couldn't save that decision/i);
     expect(alert).not.toHaveTextContent('private-approval-failure');
@@ -1677,7 +1801,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Deny' }));
+    await user.click(await screen.findByRole('button', { name: 'Deny' }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/no longer current/i);
     expect(alert).not.toHaveTextContent('stale-private-denial');
@@ -1701,7 +1825,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    await user.click(await screen.findByRole('button', { name: 'Allow' }));
     await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(1));
     expect(screen.getByRole('button', { name: 'Allow' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Deny' })).toBeDisabled();
@@ -1734,7 +1858,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    await user.click(await screen.findByRole('button', { name: 'Allow' }));
     await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(1));
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     await act(async () => {
@@ -1777,6 +1901,7 @@ describe('Overview / Action Center (board 07)', () => {
       })
     );
     await screen.findByRole('heading', { name: 'Another approval' });
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Allow' })).toHaveLength(2));
     await user.click(screen.getAllByRole('button', { name: 'Allow' })[0]);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Access denied.');

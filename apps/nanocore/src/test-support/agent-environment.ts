@@ -180,7 +180,6 @@ export function recordTestAgentEnvironmentPackage(
         triggerActor: input.triggerActor,
         items: [],
         status: 'running',
-        humanGate: null,
         error: null,
         configVersion: null,
         startedAt: '2026-07-05T00:00:01.000Z',

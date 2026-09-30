@@ -47,6 +47,7 @@ import {
   createOpenkitRepositoryMcpSupply,
   OPENKIT_REPOSITORY_MCP_ID,
 } from './openkit-repository-mcp.js';
+import { createOpenkitWorkMcpSupply } from './openkit-work-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
   assertCurrentPublicNetworkGrants,
@@ -434,6 +435,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       input.workspaceMcpServerCatalog
     ),
     createOpenkitGenerativeMcpSupply(),
+    createOpenkitWorkMcpSupply(),
   ];
   const preparedContextPackage = input.preparedContextPackage
     ? requirePreparedWorkerContextPackage(
@@ -665,15 +667,13 @@ function resolveOpenShellAgentEnvironmentPackage(
             access: root.access,
             workerPath: root.workerPath,
           })),
-          ...(contextPackageWorkspaceRoot
-            ? [
-                {
-                  access: contextPackageWorkspaceRoot.access,
-                  id: CONTEXT_PACKAGE_FILESYSTEM_RULE_ID,
-                  workerPath: contextPackageWorkspaceRoot.workerPath,
-                },
-              ]
-            : []),
+          // Every native Turn reads the existing context slot, including ordinary outcome Turns.
+          // Its static access envelope must not change merely because this Turn carries S39 files.
+          {
+            access: 'read-only' as const,
+            id: CONTEXT_PACKAGE_FILESYSTEM_RULE_ID,
+            workerPath: contextRoot,
+          },
           ...(input.workspaceRoots.length === 0 && workingDirectory.startsWith('/workspace/')
             ? [
                 {

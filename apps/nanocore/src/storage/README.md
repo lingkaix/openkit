@@ -65,3 +65,5 @@ Run focused layout, migration, database, canonical reload, index rebuild, export
 - [Schema Evolution Record Envelope](../../../../docs/specs/20260703-schema_evolution_record_envelope.md)
 
 Data-root initialization seeds an empty editable `config/model-catalog.jsonc` alongside the other root config templates when absent and preserves administrator-authored contents.
+
+Pending requests live in the Workspace SQLite `pending_requests` family. Canonical load, command replay, publication recovery, and attention reads share the validator in `../runtime/pending-requests.ts`; contradictory rows remain inspect-only while valid siblings stay usable. `command-request-records.ts` exposes a read-only receipt scan on the caller's existing scoped connection so validation inside a request transaction never opens a second migration or pruning writer.

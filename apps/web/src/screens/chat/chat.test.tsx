@@ -1,3 +1,4 @@
+import type { ThreadDashboardResponse } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import {
   ArtifactReferenceItemSchema,
@@ -267,14 +268,14 @@ const ACTIVE_TURN = TurnSchema.parse({
   completedAt: null,
   durationMs: null,
   status: 'running',
-  humanGate: null,
 });
 
 const APPROVAL_TURN = TurnSchema.parse({
   ...ACTIVE_TURN,
-  status: 'awaiting_human',
+  status: 'completed',
+  completedAt: '2026-07-21T00:00:02.000Z',
+  durationMs: 2_000,
   items: ITEMS,
-  humanGate: { kind: 'approval', itemId: 'i3', approvalRequestId: 'ap1' },
 });
 
 const COMPLETED_TURN = TurnSchema.parse({
@@ -1254,7 +1255,24 @@ describe('chat thread (boards 02/03)', () => {
         listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
       },
       {
-        getThreadDashboard: vi.fn().mockResolvedValue({ turns: [APPROVAL_TURN] }),
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [APPROVAL_TURN],
+        }),
       }
     );
     renderApp('/chat/ws1/th1', client);
@@ -1267,6 +1285,42 @@ describe('chat thread (boards 02/03)', () => {
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
   });
 
+  it('hides grant for unavailable exact detail while retaining authorized denial and withdrawal', async () => {
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+        withdrawPendingRequest: vi.fn().mockResolvedValue({}),
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          turns: [APPROVAL_TURN],
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              state: 'pending',
+              canRespond: true,
+              approvalEffect: {
+                status: 'unavailable',
+                reason: 'Complete detail exceeds the limit.',
+              },
+            },
+          ],
+        }),
+      }
+    );
+    renderApp('/chat/ws1/th1', client);
+    expect(
+      await screen.findByText(/Exact effect unavailable; approval disabled/)
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Withdraw' }));
+    expect(client.core.withdrawPendingRequest).toHaveBeenCalledWith(
+      'ap1',
+      expect.objectContaining({ workspaceId: 'ws1', threadId: 'th1' })
+    );
+  });
+
   it('responds to an inline approval', async () => {
     const user = userEvent.setup();
     const respondApproval = vi.fn().mockResolvedValue({});
@@ -1276,9 +1330,25 @@ describe('chat thread (boards 02/03)', () => {
         respondApproval,
       },
       {
-        getThreadDashboard: vi
-          .fn()
-          .mockResolvedValue({ turns: [APPROVAL_TURN], runtimeActivity: RUNTIME_ACTIVITY }),
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [APPROVAL_TURN],
+          runtimeActivity: RUNTIME_ACTIVITY,
+        }),
       }
     );
     renderApp('/chat/ws1/th1', client);
@@ -1305,10 +1375,11 @@ describe('chat thread (boards 02/03)', () => {
       turnId: 't1',
       type: 'approval-decision',
       status: 'completed',
-      actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
+      actor: { kind: 'user', id: 'user_local' },
       causationId: 'i3',
       approvalRequestId: 'ap1',
       decision: 'denied',
+      decidedAt: '2026-07-21T00:00:03.000Z',
       createdAt: '2026-07-21T00:00:03.000Z',
       completedAt: '2026-07-21T00:00:03.000Z',
     });
@@ -1324,18 +1395,34 @@ describe('chat thread (boards 02/03)', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
 
-  it('explains why an unanswered approval on an ended task cannot be operated', async () => {
+  it('keeps an unanswered approval actionable after its raising Turn ends', async () => {
     renderApp(
       '/chat/ws1/th1',
       makeClient(
         { listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
-        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [COMPLETED_TURN] }) }
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'ap1',
+                canRespond: true,
+                approvalEffect: {
+                  status: 'available',
+                  summary: 'Summary: Approval',
+                  detail: '{"effect":{"amount":5}}',
+                },
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
+            turns: [COMPLETED_TURN],
+          }),
+        }
       )
     );
-    expect(
-      await screen.findByText('This task has ended. This approval can no longer be answered.')
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Approve' })).toBeEnabled();
   });
 
   it('shows pending approval and retries a failed decision with the same request identity', async () => {
@@ -1349,7 +1436,24 @@ describe('chat thread (boards 02/03)', () => {
           respondApproval,
         },
         {
-          getThreadDashboard: vi.fn().mockResolvedValue({ turns: [APPROVAL_TURN] }),
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'ap1',
+                canRespond: true,
+                approvalEffect: {
+                  status: 'available',
+                  summary: 'Summary: Approval',
+                  detail: '{"effect":{"amount":5}}',
+                },
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
+            turns: [APPROVAL_TURN],
+          }),
         }
       )
     );
@@ -1365,7 +1469,7 @@ describe('chat thread (boards 02/03)', () => {
   });
 
   it('waits for authoritative task status before exposing approval actions', async () => {
-    const dashboard = createDeferred<{ turns: (typeof COMPLETED_TURN)[] }>();
+    const dashboard = createDeferred<Pick<ThreadDashboardResponse, 'turns' | 'pendingRequests'>>();
     renderApp(
       '/chat/ws1/th1',
       makeClient(
@@ -1375,60 +1479,115 @@ describe('chat thread (boards 02/03)', () => {
     );
     expect(await screen.findByText('Checking approval status…')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
-    await act(async () => dashboard.resolve({ turns: [COMPLETED_TURN] }));
-    expect(
-      await screen.findByText('This task has ended. This approval can no longer be answered.')
-    ).toBeInTheDocument();
+    await act(async () =>
+      dashboard.resolve({
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: Approval',
+              detail: '{"effect":{"amount":5}}',
+            },
+            state: 'pending',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          },
+        ],
+        turns: [COMPLETED_TURN],
+      })
+    );
+    expect(await screen.findByRole('button', { name: 'Approve' })).toBeEnabled();
   });
 
-  it('enables only the exact active approval when its authoritative Turn update arrives', async () => {
-    const release = createDeferred<void>();
-    async function* stream() {
-      await release.promise;
-      yield turnStreamEvent(1, 'turn.updated', { type: 'turn-updated', turn: APPROVAL_TURN });
-    }
+  it('keeps an undecided approval decidable while its raising Turn is still running', async () => {
     renderApp(
       '/chat/ws1/th1',
       makeClient(
         {
           listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-          subscribeTurnEvents: vi.fn().mockReturnValue(stream()),
+          subscribeTurnEvents: vi.fn().mockReturnValue({
+            [Symbol.asyncIterator]() {
+              return { next: () => new Promise(() => {}) };
+            },
+          }),
         },
-        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'ap1',
+                canRespond: true,
+                approvalEffect: {
+                  status: 'available',
+                  summary: 'Summary: Approval',
+                  detail: '{"effect":{"amount":5}}',
+                },
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
+            turns: [ACTIVE_TURN],
+          }),
+        }
       )
     );
-    expect(
-      await screen.findByText(
-        'This request is not the task’s current approval. No decision can be submitted.'
-      )
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
-    await act(async () => release.resolve());
     expect(await screen.findByRole('button', { name: 'Approve' })).toBeEnabled();
   });
 
-  it('does not expose controls for a different approval on the same waiting Turn', async () => {
+  it('keeps an undecided approval available when another approval on the Turn is already decided', async () => {
     const turn = TurnSchema.parse({
       ...APPROVAL_TURN,
-      humanGate: {
-        kind: 'approval',
-        itemId: 'another-request',
-        approvalRequestId: 'another-approval',
-      },
+      items: ItemSchema.array().parse([
+        ...ITEMS,
+        {
+          id: 'i-other-decision',
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          turnId: 't1',
+          type: 'approval-decision',
+          status: 'completed',
+          actor: { kind: 'user', id: 'user_approver' },
+          causationId: 'req_other',
+          approvalRequestId: 'another-approval',
+          decision: 'denied',
+          decidedAt: '2026-07-21T00:00:03.000Z',
+          createdAt: '2026-07-21T00:00:03.000Z',
+          completedAt: '2026-07-21T00:00:03.000Z',
+        },
+      ]),
     });
     renderApp(
       '/chat/ws1/th1',
       makeClient(
         { listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
-        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [turn] }) }
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'ap1',
+                canRespond: true,
+                approvalEffect: {
+                  status: 'available',
+                  summary: 'Summary: Approval',
+                  detail: '{"effect":{"amount":5}}',
+                },
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
+            turns: [turn],
+          }),
+        }
       )
     );
-    expect(
-      await screen.findByText(
-        'This request is not the task’s current approval. No decision can be submitted.'
-      )
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Approve' })).toBeEnabled();
   });
 
   it('keeps a resolved approval request and decision legible without response controls', async () => {
@@ -1445,6 +1604,7 @@ describe('chat thread (boards 02/03)', () => {
         causationId: 'req_approval',
         approvalRequestId: 'ap1',
         decision: 'granted',
+        decidedAt: '2026-07-21T00:00:03.000Z',
         createdAt: '2026-07-21T00:00:03.000Z',
         completedAt: '2026-07-21T00:00:03.000Z',
       },
@@ -1464,24 +1624,35 @@ describe('chat thread (boards 02/03)', () => {
 
   it('renders every non-secret Gate question and submits one complete answer map', async () => {
     const user = userEvent.setup();
-    const startTurn = vi.fn().mockResolvedValue(COMPLETED_TURN);
+    const answerUserInput = vi.fn().mockResolvedValue({
+      requestId: 'uir1',
+      workspaceId: 'ws1',
+      threadId: 'th1',
+      state: 'resolved',
+      resolution: 'answered',
+      ending: null,
+    });
     const client = makeClient(
       {
         listThreadItems: vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
-        startTurn,
+        answerUserInput,
       },
       {
         getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'uir1',
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
           viewerUserId: 'user_editor',
           turns: [
             {
               ...APPROVAL_TURN,
               items: USER_INPUT_ITEMS,
-              humanGate: {
-                kind: 'user-input',
-                itemId: 'i-user-input',
-                userInputRequestId: 'uir1',
-              },
             },
           ],
           runtimeActivity: RUNTIME_ACTIVITY,
@@ -1499,12 +1670,15 @@ describe('chat thread (boards 02/03)', () => {
     await user.click(screen.getByRole('button', { name: 'Submit answers' }));
 
     await waitFor(() =>
-      expect(startTurn).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
-        threadId: 'th1',
-        turnId: 't1',
-        answers: { audience: ['Operators'], tone: ['Concise'] },
-      })
+      expect(answerUserInput).toHaveBeenCalledWith(
+        'uir1',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          answers: { audience: ['Operators'], tone: ['Concise'] },
+          requestId: expect.any(String),
+        })
+      )
     );
   });
 
@@ -1525,11 +1699,34 @@ describe('chat thread (boards 02/03)', () => {
       },
     ]);
     const user = userEvent.setup();
-    const startTurn = vi.fn().mockResolvedValue(COMPLETED_TURN);
-    const client = makeClient({
-      listThreadItems: vi.fn().mockResolvedValue({ items: otherItems, nextCursor: null }),
-      startTurn,
+    const answerUserInput = vi.fn().mockResolvedValue({
+      requestId: 'uir1',
+      workspaceId: 'ws1',
+      threadId: 'th1',
+      state: 'resolved',
+      resolution: 'answered',
+      ending: null,
     });
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: otherItems, nextCursor: null }),
+        answerUserInput,
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          turns: [APPROVAL_TURN],
+          pendingRequests: [
+            {
+              requestId: 'uir1',
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+        }),
+      }
+    );
     renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByRole('radio', { name: 'Concise' })).toBeInTheDocument();
@@ -1538,26 +1735,49 @@ describe('chat thread (boards 02/03)', () => {
     await user.click(screen.getByRole('button', { name: 'Submit answers' }));
 
     await waitFor(() =>
-      expect(startTurn).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
-        threadId: 'th1',
-        turnId: 't1',
-        answers: { tone: ['Warm and direct'] },
-      })
+      expect(answerUserInput).toHaveBeenCalledWith(
+        'uir1',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          answers: { tone: ['Warm and direct'] },
+          requestId: expect.any(String),
+        })
+      )
     );
   });
 
   it('keeps Gate answers pending, exposes failure, and retries the same complete map', async () => {
     const user = userEvent.setup();
     const pending = createDeferred<unknown>();
-    const startTurn = vi
-      .fn()
-      .mockReturnValueOnce(pending.promise)
-      .mockResolvedValueOnce(COMPLETED_TURN);
-    const client = makeClient({
-      listThreadItems: vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
-      startTurn,
+    const answerUserInput = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce({
+      requestId: 'uir1',
+      workspaceId: 'ws1',
+      threadId: 'th1',
+      state: 'resolved',
+      resolution: 'answered',
+      ending: null,
     });
+    const client = makeClient(
+      {
+        listThreadItems: vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
+        answerUserInput,
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          turns: [APPROVAL_TURN],
+          pendingRequests: [
+            {
+              requestId: 'uir1',
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+        }),
+      }
+    );
     renderApp('/chat/ws1/th1', client);
 
     await user.type(await screen.findByRole('textbox', { name: 'Audience' }), 'Operators');
@@ -1567,11 +1787,11 @@ describe('chat thread (boards 02/03)', () => {
     pending.reject(new Error('answer rejected'));
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't submit answers.");
     await user.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(startTurn).toHaveBeenCalledTimes(2));
-    expect(startTurn.mock.calls[1]).toEqual(startTurn.mock.calls[0]);
+    await waitFor(() => expect(answerUserInput).toHaveBeenCalledTimes(2));
+    expect(answerUserInput.mock.calls[1]).toEqual(answerUserInput.mock.calls[0]);
   });
 
-  it('suppresses answered Gate controls while retaining the matching response projection', async () => {
+  it('correlates an answered request with its response on a later Turn', async () => {
     const userInputItem = USER_INPUT_ITEMS.find((item) => item.type === 'user-input-request');
     if (!userInputItem) {
       throw new Error('The Gate fixture must contain one user-input request.');
@@ -1584,13 +1804,14 @@ describe('chat thread (boards 02/03)', () => {
             id: 'i-user-input-response',
             workspaceId: userInputItem.workspaceId,
             threadId: userInputItem.threadId,
-            turnId: userInputItem.turnId,
+            turnId: 't-later-answer',
             type: 'user-input-response',
             status: 'completed',
             actor: { kind: 'user', id: 'user_responder' },
             causationId: 'req_user_input_response',
             userInputRequestId: userInputItem.userInputRequestId,
             answers: { audience: ['Operators'], tone: ['Concise'] },
+            answeredAt: '2026-07-21T00:00:03.000Z',
             createdAt: '2026-07-21T00:00:03.000Z',
             completedAt: '2026-07-21T00:00:03.000Z',
           },
@@ -1679,6 +1900,92 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient({ listThreadItems: vi.fn().mockRejectedValue(new Error('boom')) });
     renderApp('/chat/ws1/th1', client);
     expect(await screen.findByText(/Couldn't load this thread\./i)).toBeInTheDocument();
+  });
+
+  it.each([
+    'resolved',
+    'ended',
+    'inspect-only',
+    'invalidated',
+  ] as const)('hides controls for an authoritative %s request before publication', async (state) => {
+    const client = makeClient(
+      {
+        subscribeTurnEvents: vi.fn().mockReturnValue({
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise(() => {}),
+              return: async () => ({ done: true, value: undefined }),
+            };
+          },
+        }),
+        listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          turns: [APPROVAL_TURN, { ...ACTIVE_TURN, id: 't-unrelated' }],
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: state === 'invalidated' ? 'ended' : state,
+              resolution: state === 'resolved' ? 'granted' : null,
+              ending:
+                state === 'ended' ? 'withdrawn' : state === 'invalidated' ? 'invalidated' : null,
+              disposition: null,
+            },
+          ],
+        }),
+      }
+    );
+    renderApp('/chat/ws1/th1', client);
+    await screen.findByText('Approve $5 spend');
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    );
+    expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    'resolved',
+    'withdrawn',
+    'invalidated',
+    'inspect-only',
+  ] as const)('hides input controls for authoritative %s input during unrelated work', async (state) => {
+    const client = makeClient(
+      {
+        subscribeTurnEvents: vi.fn().mockReturnValue({
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise(() => {}),
+              return: async () => ({ done: true, value: undefined }),
+            };
+          },
+        }),
+        listThreadItems: vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
+      },
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          turns: [ACTIVE_TURN],
+          pendingRequests: [
+            {
+              requestId: 'uir1',
+              state: state === 'withdrawn' || state === 'invalidated' ? 'ended' : state,
+              resolution: state === 'resolved' ? 'answered' : null,
+              ending: state === 'withdrawn' || state === 'invalidated' ? state : null,
+              disposition: null,
+            },
+          ],
+        }),
+      }
+    );
+    renderApp('/chat/ws1/th1', client);
+    expect(await screen.findByRole('textbox', { name: 'Audience' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Submit answers' })).not.toBeInTheDocument();
   });
 
   it('makes approvals read-only and disables the composer when disconnected', async () => {
@@ -1829,6 +2136,21 @@ describe('thread lifecycle and attribution (S7)', () => {
       { interruptTurn, subscribeTurnEvents },
       {
         getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
           turns: [ACTIVE_TURN],
         }),
       }
@@ -2203,7 +2525,26 @@ describe('thread lifecycle and attribution (S7)', () => {
     });
     const client = makeClient(
       { interruptTurn, subscribeTurnEvents },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
     const queryClient = renderApp('/chat/ws1/th1', client);
 
@@ -2313,7 +2654,26 @@ describe('thread lifecycle and attribution (S7)', () => {
     });
     const client = makeClient(
       { interruptTurn, subscribeTurnEvents },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
 
     renderApp('/chat/ws1/th1', client);
@@ -2368,6 +2728,7 @@ describe('thread lifecycle and attribution (S7)', () => {
             causationId: 'req_approval',
             approvalRequestId: 'ap1',
             decision: 'granted',
+            decidedAt: '2026-07-21T00:00:03.000Z',
             createdAt: '2026-07-21T00:00:03.000Z',
             completedAt: '2026-07-21T00:00:03.000Z',
           },
@@ -2382,6 +2743,7 @@ describe('thread lifecycle and attribution (S7)', () => {
             causationId: 'req_response',
             userInputRequestId: 'input1',
             answers: { question1: ['Yes'] },
+            answeredAt: '2026-07-21T00:00:04.000Z',
             createdAt: '2026-07-21T00:00:04.000Z',
             completedAt: '2026-07-21T00:00:04.000Z',
           },
@@ -2465,6 +2827,15 @@ describe('thread lifecycle and attribution (S7)', () => {
       },
       {
         getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'uir1',
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
           viewerUserId: 'user_admin',
           participants: [{ kind: 'user', id: 'user_admin', displayName: 'Administrator' }],
           turns: [TurnSchema.parse({ ...ACTIVE_TURN, triggerActor })],
@@ -2494,7 +2865,26 @@ describe('thread lifecycle and attribution (S7)', () => {
 
 describe('live turn subscription (S6)', () => {
   it('refreshes a newly arriving author even with a cached dashboard', async () => {
-    const dashboard = { viewerUserId: 'user_editor', participants: [], turns: [ACTIVE_TURN] };
+    const dashboard = {
+      viewerUserId: 'user_editor',
+      participants: [],
+      pendingRequests: [
+        {
+          requestId: 'ap1',
+          canRespond: true,
+          approvalEffect: {
+            status: 'available',
+            summary: 'Summary: Approval',
+            detail: '{"effect":{"amount":5}}',
+          },
+          state: 'pending',
+          resolution: null,
+          ending: null,
+          disposition: null,
+        },
+      ],
+      turns: [ACTIVE_TURN],
+    };
     const getThreadDashboard = vi
       .fn()
       .mockResolvedValueOnce(dashboard)
@@ -2537,9 +2927,41 @@ describe('live turn subscription (S6)', () => {
     const getThreadDashboard = vi
       .fn()
       .mockResolvedValueOnce({
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: Approval',
+              detail: '{"effect":{"amount":5}}',
+            },
+            state: 'pending',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          },
+        ],
         turns: command === 'approval' ? [APPROVAL_TURN] : [],
       })
-      .mockResolvedValue({ turns: [ACTIVE_TURN] });
+      .mockResolvedValue({
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: Approval',
+              detail: '{"effect":{"amount":5}}',
+            },
+            state: 'pending',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          },
+        ],
+        turns: [ACTIVE_TURN],
+      });
     const subscribeTurnEvents = vi.fn().mockReturnValue({
       [Symbol.asyncIterator]() {
         return {
@@ -2627,7 +3049,26 @@ describe('live turn subscription (S6)', () => {
     const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
     const client = makeClient(
       { listThreadItems, subscribeTurnEvents },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
 
     renderApp('/chat/ws1/th1', client);
@@ -2668,7 +3109,26 @@ describe('live turn subscription (S6)', () => {
         listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         subscribeTurnEvents,
       },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
     const queryClient = renderApp('/chat/ws1/th1', client);
 
@@ -2680,7 +3140,7 @@ describe('live turn subscription (S6)', () => {
 
     await waitFor(() =>
       expect(
-        queryClient.getQueryData<{ turns: (typeof ACTIVE_TURN)[] }>(
+        queryClient.getQueryData<Pick<ThreadDashboardResponse, 'turns' | 'pendingRequests'>>(
           chatKeys.dashboard('ws1', 'th1')
         )?.turns
       ).toEqual([COMPLETED_TURN])
@@ -2715,7 +3175,26 @@ describe('live turn subscription (S6)', () => {
         listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         subscribeTurnEvents,
       },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
     const itemsKey = chatKeys.items('ws1', 'th1');
     const dashboardKey = chatKeys.dashboard('ws1', 'th1');
@@ -2735,7 +3214,24 @@ describe('live turn subscription (S6)', () => {
       await processed.promise;
     });
 
-    expect.soft(queryClient.getQueryData(dashboardKey)).toEqual({ turns: [terminalTurn] });
+    expect.soft(queryClient.getQueryData(dashboardKey)).toEqual({
+      pendingRequests: [
+        {
+          requestId: 'ap1',
+          canRespond: true,
+          approvalEffect: {
+            status: 'available',
+            summary: 'Summary: Approval',
+            detail: '{"effect":{"amount":5}}',
+          },
+          state: 'pending',
+          resolution: null,
+          ending: null,
+          disposition: null,
+        },
+      ],
+      turns: [terminalTurn],
+    });
     expect.soft(cancelQueries).toHaveBeenCalledTimes(1);
     expect.soft(cancelQueries).toHaveBeenCalledWith({ queryKey: dashboardKey, exact: true });
     expect.soft(cancelQueries).not.toHaveBeenCalledWith({ queryKey: itemsKey, exact: true });
@@ -2777,7 +3273,26 @@ describe('live turn subscription (S6)', () => {
     const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
     const client = makeClient(
       { listThreadItems, subscribeTurnEvents },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
 
     renderApp('/chat/ws1/th1', client, (queryClient) => {
@@ -2844,7 +3359,24 @@ describe('live turn subscription (S6)', () => {
     const client = makeClient(
       { listThreadItems, subscribeTurnEvents },
       {
-        getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }),
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
         submitConversation,
       }
     );
@@ -2898,7 +3430,24 @@ describe('live turn subscription (S6)', () => {
     const getThreadDashboard = vi
       .fn()
       .mockResolvedValueOnce({ turns: [] })
-      .mockResolvedValue({ turns: [ACTIVE_TURN] });
+      .mockResolvedValue({
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: Approval',
+              detail: '{"effect":{"amount":5}}',
+            },
+            state: 'pending',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          },
+        ],
+        turns: [ACTIVE_TURN],
+      });
     async function* streamThenDrop() {
       yield turnStreamEvent(1, 'item.created', {
         type: 'item-created',
@@ -2962,16 +3511,20 @@ describe('live turn subscription (S6)', () => {
       completedAt: '2026-07-21T00:00:01.500Z',
     };
     let resolveBaseline!: (value: { items: (typeof serverOnlyItem)[]; nextCursor: null }) => void;
-    let resolveDashboard!: (value: { turns: (typeof ACTIVE_TURN)[] }) => void;
+    let resolveDashboard!: (
+      value: Pick<ThreadDashboardResponse, 'turns' | 'pendingRequests'>
+    ) => void;
     let releaseStream!: () => void;
     const baseline = new Promise<{ items: (typeof serverOnlyItem)[]; nextCursor: null }>(
       (resolve) => {
         resolveBaseline = resolve;
       }
     );
-    const dashboard = new Promise<{ turns: (typeof ACTIVE_TURN)[] }>((resolve) => {
-      resolveDashboard = resolve;
-    });
+    const dashboard = new Promise<Pick<ThreadDashboardResponse, 'turns' | 'pendingRequests'>>(
+      (resolve) => {
+        resolveDashboard = resolve;
+      }
+    );
     const streamReady = new Promise<void>((resolve) => {
       releaseStream = resolve;
     });
@@ -3017,7 +3570,24 @@ describe('live turn subscription (S6)', () => {
 
     await waitFor(() => expect(listThreadItems).toHaveBeenCalledTimes(1));
     await act(async () => {
-      resolveDashboard({ turns: [ACTIVE_TURN] });
+      resolveDashboard({
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: Approval',
+              detail: '{"effect":{"amount":5}}',
+            },
+            state: 'pending',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          },
+        ],
+        turns: [ACTIVE_TURN],
+      });
       await dashboard;
     });
     await waitFor(() =>
@@ -3075,7 +3645,26 @@ describe('live turn subscription (S6)', () => {
         listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         subscribeTurnEvents,
       },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
 
     renderApp('/chat/ws1/th1', client);
@@ -3119,7 +3708,26 @@ describe('live turn subscription (S6)', () => {
         listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         subscribeTurnEvents,
       },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
 
     renderApp('/chat/ws1/th1', client);
@@ -3135,12 +3743,7 @@ describe('live turn subscription (S6)', () => {
       expect(screen.queryByText("Couldn't reach the local runtime.")).not.toBeInTheDocument()
     );
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
-    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
-    expect(
-      screen.getByText(
-        'This request is not the task’s current approval. No decision can be submitted.'
-      )
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
   });
 
   it('preserves an authoritative completed item across replayed creation and a drop', async () => {
@@ -3168,7 +3771,26 @@ describe('live turn subscription (S6)', () => {
         listThreadItems: vi.fn().mockResolvedValue({ items: [completedItem], nextCursor: null }),
         subscribeTurnEvents: vi.fn().mockReturnValue(replayThenDrop()),
       },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [ACTIVE_TURN],
+        }),
+      }
     );
 
     renderApp('/chat/ws1/th1', client);
@@ -3272,7 +3894,24 @@ describe('open thread external activity', () => {
         ? { turns: [] }
         : path === 'idle dashboard poll'
           ? { turns: [idleTurn] }
-          : { turns: [ACTIVE_TURN] }
+          : {
+              pendingRequests: [
+                {
+                  requestId: 'ap1',
+                  canRespond: true,
+                  approvalEffect: {
+                    status: 'available',
+                    summary: 'Summary: Approval',
+                    detail: '{"effect":{"amount":5}}',
+                  },
+                  state: 'pending',
+                  resolution: null,
+                  ending: null,
+                  disposition: null,
+                },
+              ],
+              turns: [ACTIVE_TURN],
+            }
     );
     if (path !== 'SSE terminal refresh') {
       vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
@@ -3355,6 +3994,21 @@ describe('open thread external activity', () => {
   }) => {
     const user = userEvent.setup();
     const initialDashboard = {
+      pendingRequests: [
+        {
+          requestId: 'ap1',
+          canRespond: true,
+          approvalEffect: {
+            status: 'available',
+            summary: 'Summary: Approval',
+            detail: '{"effect":{"amount":5}}',
+          },
+          state: 'pending',
+          resolution: null,
+          ending: null,
+          disposition: null,
+        },
+      ],
       turns: [hasItems ? APPROVAL_TURN : { ...idleTurn, items: [] }],
       runtimeActivity: RUNTIME_ACTIVITY.map((activity) => ({
         ...activity,
@@ -3479,6 +4133,21 @@ describe('open thread external activity', () => {
     const item = ItemSchema.parse({ ...ITEMS[0], text: requestText });
     let verified = false;
     const getThreadDashboard = vi.fn(async (_workspaceId: string, _threadId: string) => ({
+      pendingRequests: [
+        {
+          requestId: 'ap1',
+          canRespond: true,
+          approvalEffect: {
+            status: 'available',
+            summary: 'Summary: Approval',
+            detail: '{"effect":{"amount":5}}',
+          },
+          state: 'pending',
+          resolution: null,
+          ending: null,
+          disposition: null,
+        },
+      ],
       turns: [ACTIVE_TURN],
       taskInputs: verified ? [{ itemId: item.id, objective }] : [],
     }));
@@ -3535,7 +4204,25 @@ describe('open thread external activity', () => {
       expect(screen.queryByRole('button', { name: 'Stop turn' })).not.toBeInTheDocument()
     );
     await act(async () => {
-      late.resolve({ turns: [ACTIVE_TURN], taskInputs: [] });
+      late.resolve({
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: Approval',
+              detail: '{"effect":{"amount":5}}',
+            },
+            state: 'pending',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          },
+        ],
+        turns: [ACTIVE_TURN],
+        taskInputs: [],
+      });
     });
     expect(
       queryClient.getQueryData<{ turns: Array<{ status: string }> }>(
@@ -3555,7 +4242,26 @@ describe('open thread external activity', () => {
       '/chat/ws1/th1',
       makeClient(
         { listThreadItems, subscribeTurnEvents: vi.fn().mockReturnValue(hang()) },
-        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
+        {
+          getThreadDashboard: vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'ap1',
+                canRespond: true,
+                approvalEffect: {
+                  status: 'available',
+                  summary: 'Summary: Approval',
+                  detail: '{"effect":{"amount":5}}',
+                },
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
+            turns: [ACTIVE_TURN],
+          }),
+        }
       )
     );
     expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
@@ -3714,6 +4420,15 @@ describe('task thread (board 04)', () => {
         { listThreadItems: vi.fn().mockResolvedValue({ items: [item], nextCursor: null }) },
         {
           getThreadDashboard: vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'uir1',
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
             viewerUserId: 'user_editor',
             turns: [],
             taskInputs: [{ itemId: item.id, objective: INITIATING_OBJECTIVE }],
@@ -3759,6 +4474,15 @@ describe('task thread (board 04)', () => {
         },
         {
           getThreadDashboard: vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'uir1',
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
             viewerUserId: 'user_editor',
             turns: [],
             taskInputs: [{ itemId: 'it_user_other', objective: INITIATING_OBJECTIVE }],
@@ -3799,6 +4523,15 @@ describe('task thread (board 04)', () => {
         },
         {
           getThreadDashboard: vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'uir1',
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
             viewerUserId: 'user_editor',
             participants: [{ kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' }],
             turns: [],
@@ -3943,7 +4676,26 @@ describe('mode entry and feedback (S8)', () => {
       {
         listThreadItems: vi.fn().mockResolvedValue({ items: [ITEMS[0]], nextCursor: null }),
       },
-      { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [COMPLETED_TURN] }) }
+      {
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [COMPLETED_TURN],
+        }),
+      }
     );
 
     renderApp('/chat/ws1/th1', client);
@@ -4076,7 +4828,24 @@ describe('mode entry and feedback (S8)', () => {
         }),
       },
       {
-        getThreadDashboard: vi.fn().mockResolvedValue({ turns: [COMPLETED_TURN] }),
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [COMPLETED_TURN],
+        }),
         submitTurnFeedback,
       }
     );
@@ -4141,7 +4910,24 @@ describe('mode entry and feedback (S8)', () => {
         listThreadItems: vi.fn().mockResolvedValue({ items: [ITEMS[1]], nextCursor: null }),
       },
       {
-        getThreadDashboard: vi.fn().mockResolvedValue({ turns: [COMPLETED_TURN] }),
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [COMPLETED_TURN],
+        }),
         submitTurnFeedback,
       }
     );
@@ -4197,7 +4983,24 @@ describe('mode entry and feedback (S8)', () => {
         listThreadItems: vi.fn().mockResolvedValue({ items: [ITEMS[1]], nextCursor: null }),
       },
       {
-        getThreadDashboard: vi.fn().mockResolvedValue({ turns: [COMPLETED_TURN] }),
+        getThreadDashboard: vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
+            },
+          ],
+          turns: [COMPLETED_TURN],
+        }),
         submitTurnFeedback,
       }
     );
@@ -4413,31 +5216,11 @@ describe('approval decision evidence', () => {
     ...ITEMS[0],
     id: 'decision-evidence',
     type: 'approval-decision',
-    actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
+    actor: { kind: 'user', id: 'user_reviewer' },
     approvalRequestId: 'ap1',
     causationId: 'i3',
     decision: 'denied',
-  });
-
-  it('explains recovery denial and labels its inherited timestamp instead of inventing a decision time', async () => {
-    renderApp(
-      '/chat/ws1/th1',
-      makeClient({
-        listThreadItems: vi
-          .fn()
-          .mockResolvedValue({ items: [...ITEMS, decision], nextCursor: null }),
-      })
-    );
-    expect(await screen.findByText('by OpenKit system')).toBeInTheDocument();
-    expect(screen.getByText('Request: Approve $5 spend')).toBeInTheDocument();
-    expect(
-      screen.getByText(/The task had already ended without an approval decision/)
-    ).toBeInTheDocument();
-    expect(screen.getByText('Inherited timestamp')).toBeInTheDocument();
-    expect(screen.getByText(/The actual recovery time was not recorded/)).toBeInTheDocument();
-    expect(screen.getByText('Server recovery')).toBeInTheDocument();
-    expect(screen.getByText('Not applicable — automatic server action')).toBeInTheDocument();
-    expect(document.querySelector('time')).toHaveAttribute('datetime', decision.createdAt);
+    decidedAt: '2026-07-21T00:00:03.000Z',
   });
 
   it('uses the recorded human identity and time without guessing a reason or client', async () => {
@@ -4457,6 +5240,15 @@ describe('approval decision evidence', () => {
         {
           getThreadDashboard: vi.fn().mockResolvedValue({
             turns: [],
+            pendingRequests: [
+              {
+                requestId: 'uir1',
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
             viewerUserId: 'user_someone_else',
             participants: [{ kind: 'user', id: 'user_reviewer', displayName: 'Alex Chen' }],
           }),
@@ -4895,7 +5687,7 @@ describe('Worker environment Advanced choice', () => {
     });
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Original Chat draft');
     expect(
-      screen.getByRole('button', { name: /Alternate model.*Logical model/ })
+      await screen.findByRole('button', { name: /Alternate model.*Logical model/ })
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
     expect(randomUUID).toHaveBeenCalledTimes(1);

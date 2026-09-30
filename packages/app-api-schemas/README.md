@@ -8,6 +8,8 @@ Thread dashboard schemas include the nullable authenticated viewer id and a narr
 
 These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the App API remains an implementation projection over the stable Core protocol.
 
+`src/pending-request.ts` validates the dedicated user-input answer and pending-request withdrawal commands and their outcome projection. NanoCore owns the durable request, grant, execution, and delivery lifecycle; a completed raising Turn does not close its request.
+
 The private administration configuration candidate Artifact schema is shared by the server proposal/apply owner and Web human review. Its exact version and digest remain the application identity; the schema grants no configuration authority.
 
 The current Goal plan response projects the durable Goal and its exact plan reference for reload and reconnect. It adds no durable plan owner or approval authority.
@@ -62,3 +64,5 @@ Workspace Vault CRUD schemas admit bounded request-only material and return the 
 Conversation navigation projects visible active Threads with current/latest Chat, Task, Goal, or unknown activity; working, viewer-actionable, or idle state; and actual conversation recency. It defines neither a durable Thread kind nor unread state.
 
 `WorkspaceWorkersResponseSchema` is the selected-Workspace, viewer-filtered current Worker read model, separate from the Agent Catalog. It validates exact known work, recorded state, bounded package details and last-used model attribution, with distinct unavailable and restricted states; it exposes no AgentSession or native runtime identifier.
+
+The Thread dashboard pending-request projection includes derived `approvalEffect` (available complete detail or a safe unavailable reason) and `canRespond`; these are read-model fields, not durable request state.

@@ -279,6 +279,90 @@ async function waitForSelectedWorkerLoopCloseout(input: {
   });
 }
 
+describe('Assistant pending input', () => {
+  it('hands a clarified task to a new shared Task Thread without command receipts', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-assistant-outcome-task-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const executor = new CompletingTurnExecutor();
+    const setup = createTestAgentSetup();
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      agentManifests: [setup.manifest],
+      turnExecutor: executor,
+    });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    try {
+      const initial = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: conversationBody({
+            input: 'Help',
+            requestId: '00000000-0000-4000-8000-000000000881',
+            targetRef: 'internal-role:assistant',
+          }),
+        }
+      );
+      expect(initial.status, await initial.clone().text()).toBe(202);
+      const first = SubmitConversationResponseSchema.parse(await initial.json());
+      expect(first.outcome).toBe('clarification-needed');
+      const requestId = `ui_chat_clarify_${first.turn.id}`;
+      const response = await app.request(`/api/user-input-requests/${requestId}/answer`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          userInputRequestId: requestId,
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          requestId: '00000000-0000-4000-8000-000000000882',
+          answers: {
+            chat_clarification: [
+              'Implement a bounded README correction and run its focused tests.',
+            ],
+          },
+        }),
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      for (
+        let i = 0;
+        i < 1000 &&
+        !store
+          .listThreadItems('ws_demo', 'th_demo')
+          .some((item) => item.type === 'status' && item.title === 'Task Mode handoff');
+        i++
+      )
+        await setImmediate();
+      const handoff = store
+        .listThreadItems('ws_demo', 'th_demo')
+        .find((item) => item.type === 'status' && item.title === 'Task Mode handoff');
+      expect(handoff).toBeDefined();
+      expect(handoff!.turnId).not.toBe(first.turn.id);
+      const tasks = store.listThreads('ws_demo').filter((thread) => thread.id !== 'th_demo');
+      const task = tasks.find((thread) =>
+        store
+          .listThreadTurns('ws_demo', thread.id)
+          .some((turn) => turn.agentId === setup.manifest.id)
+      );
+      expect(task).toMatchObject({ visibility: 'workspace' });
+      expect(executor.startContexts).toHaveLength(1);
+      expect(
+        store.listCommandRequests().filter((receipt) => receipt.command === 'conversation.submit')
+      ).toHaveLength(1);
+      expect(
+        store.listCommandRequests().filter((receipt) => receipt.command === 'task.start')
+      ).toHaveLength(0);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+});
+
 describe('conversation.submit worker storage choice', () => {
   it('rejects oversized objectives before worker effects and starts the exact 2000-character boundary', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-conversation-objective-limit-'));

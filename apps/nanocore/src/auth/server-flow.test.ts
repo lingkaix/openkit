@@ -451,8 +451,10 @@ describe('server auth flow', () => {
         }
       );
 
-      expect(firstGoal.ok).toBe(true);
-      expect(secondGoal.ok).toBe(true);
+      expect(firstGoal.status).toBe(409);
+      expect(await firstGoal.json()).toMatchObject({ code: 'goal_mode_unavailable' });
+      expect(secondGoal.status).toBe(409);
+      expect(await secondGoal.json()).toMatchObject({ code: 'goal_mode_unavailable' });
     } finally {
       coreDb.sqlite.close();
     }

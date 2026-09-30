@@ -267,53 +267,6 @@ describe('goal planning path', () => {
     }
   });
 
-  it('fails closed without a responsible user before writing a question or Gate', async () => {
-    const { workspaceDb, store } = createPlanningFixture();
-    const thread = store.createThread('ws_demo', 'Unassigned question thread');
-
-    try {
-      createGoalRecord(store, workspaceDb, {
-        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
-        goalId: 'goal_unassigned_question',
-        workspaceId: 'ws_demo',
-        threadId: thread.id,
-        title: 'Unassigned question',
-        objective: 'Require a human without assigning one.',
-      });
-      const plan = createDeterministicGoalPlanFallback({
-        goalTitle: 'Unassigned question',
-        objective: 'Require a human without assigning one.',
-      });
-
-      await expect(
-        createGoalPlan({
-          triggerActor: {
-            kind: 'system',
-            id: 'scheduler',
-            responsibleUserId: null,
-          },
-          workspaceDb,
-          store,
-          workspaceId: 'ws_demo',
-          threadId: thread.id,
-          goalId: 'goal_unassigned_question',
-          requestId: 'req_goal_plan_unassigned',
-          planner: () => ({ ...plan, questions: ['Who should answer?'] }),
-        })
-      ).rejects.toMatchObject({ code: 'recovery_required' });
-      expect(
-        store
-          .listThreadItems('ws_demo', thread.id)
-          .filter((item) => item.type === 'user-input-request')
-      ).toEqual([]);
-      expect(
-        store.listThreadTurns('ws_demo', thread.id).some((turn) => turn.status === 'awaiting_human')
-      ).toBe(false);
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  });
-
   it('retains planner failures without terminalizing the Goal', async () => {
     const { workspaceDb, store } = createPlanningFixture();
     const thread = store.createThread('ws_demo', 'Failing goal thread');

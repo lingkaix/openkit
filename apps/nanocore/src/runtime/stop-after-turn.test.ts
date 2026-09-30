@@ -65,18 +65,7 @@ describe('shouldStopAfterTurn', () => {
     });
   });
 
-  it('routes ask-user, error, and aborted outcomes explicitly', () => {
-    expect(
-      shouldStopAfterTurn({
-        stopReason: 'ask_user',
-        reviewRequired: true,
-        remainingWorkerIterations: 1,
-      })
-    ).toEqual({
-      outcome: 'ask_user',
-      shouldStop: true,
-      stopReason: 'ask_user',
-    });
+  it('routes error and aborted outcomes explicitly', () => {
     expect(
       shouldStopAfterTurn({
         stopReason: 'error',
@@ -105,7 +94,6 @@ describe('shouldStopAfterTurn', () => {
     const mappings: Array<[TurnStatus, ReturnType<typeof stopReasonForTurnStatus>]> = [
       ['completed', 'completed'],
       ['interrupted', 'aborted'],
-      ['awaiting_human', 'ask_user'],
       ['failed', 'error'],
       ['cancelled', 'error'],
       ['pending', 'error'],

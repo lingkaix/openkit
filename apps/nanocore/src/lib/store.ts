@@ -32,7 +32,7 @@ import type {
 } from '@openkit/protocol';
 import {
   type AgentSessionSchema,
-  ApprovalRequestSchema,
+  type ApprovalRequestSchema,
   ArtifactSchema,
   ItemSchema,
   isSealedTurnTerminal,
@@ -56,6 +56,7 @@ import {
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
+import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
 import {
@@ -224,6 +225,8 @@ export type CommandRequestName =
   | 'git_push.approval.request'
   | 'git_push.execute'
   | 'approval.respond'
+  | 'user_input.answer'
+  | 'pending_request.withdraw'
   | 'workspace_sync.review.decide'
   | 'workspace_sync.recovery.decide'
   | 'knowledge.proposal.draft'
@@ -281,6 +284,7 @@ export type CommandRequestResponseKind =
   | 'thread'
   | 'turn'
   | 'approval'
+  | 'pending_request'
   | 'git_push_record'
   | 'artifact'
   | 'artifact_review'
@@ -540,6 +544,24 @@ interface CreateTurnOptions {
   startedAt?: string;
   /** Admission-time capture pair when the caller already resolved the effective setting. */
   captureCoverage?: CaptureCoverageBinding;
+  /** Initial status. Ordinary turns start running. Outcome turns may start pending. */
+  status?: 'pending' | 'running';
+  /** Agent bound at admission. */
+  agentId?: string | null;
+  /** AgentSession bound at admission. */
+  agentSessionId?: string | null;
+  /** Trigger recorded at admission. */
+  triggerSource?: Turn['triggerSource'];
+  /** Executor that this admission may freeze outcomes for. */
+  executorKind?: 'worker' | 'assistant' | 'person';
+}
+
+/** Hooks invoked when a Turn is admitted or first becomes terminal. */
+export interface TurnAdmissionHooks {
+  /** Freezes matching ready outcomes into the admitted Turn. */
+  onAdmitted?: (turn: Turn) => void;
+  /** Admits the next outcome Turn after a terminal barrier. */
+  onTerminal?: (turn: Turn) => void;
 }
 
 /** Completes an already-decided publication against a sealed-terminal Turn. */
@@ -725,7 +747,6 @@ function decidedTurnFieldsConflict(current: Turn, next: Turn): boolean {
   const keys = [
     'error',
     'completedAt',
-    'humanGate',
     'agentId',
     'agentProfileId',
     'agentSessionId',
@@ -1133,6 +1154,9 @@ export class FsStore {
   private streams = new Map<string, TurnStreamState>();
   private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
   private turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
+  private turnExecutors = new Map<string, 'worker' | 'assistant' | 'person'>();
+  private turnAdmissionHooks: TurnAdmissionHooks | null = null;
+  private terminalHookDepth = 0;
   private readonly dataRoot: string | null;
 
   public constructor(options: FsStoreOptions = {}) {
@@ -1175,6 +1199,27 @@ export class FsStore {
         this.threads.set(thread.id, thread);
       }
       for (const turn of records.turns) {
+        for (const item of turn.items) {
+          if (
+            item.type === 'user-input-request' &&
+            item.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
+          ) {
+            throw new Error(`User-input request has invalid responsible user: ${item.id}`);
+          }
+          if (item.type === 'user-input-response') {
+            const request = turn.items.find(
+              (candidate) =>
+                candidate.type === 'user-input-request' &&
+                candidate.userInputRequestId === item.userInputRequestId
+            );
+            if (
+              request?.type === 'user-input-request' &&
+              request.responsibleUserId !== item.actor.id
+            ) {
+              throw new Error(`User-input response has invalid responsible user: ${item.id}`);
+            }
+          }
+        }
         this.turns.set(turn.id, turn);
         for (const item of turn.items) {
           this.items.set(item.id, item);
@@ -1214,20 +1259,16 @@ export class FsStore {
       }
     }
 
-    const approvalState = deriveApprovalStateFromItems(
-      [...this.items.values()],
-      [...this.turns.values()]
-    );
-    for (const item of approvalState.repairItems) {
-      appendWorkspaceItemRevision(this.workspaceRootPath(item.workspaceId), item);
+    if (this.dataRoot) {
+      for (const approval of loadApprovalProjections(
+        this.dataRoot,
+        [...this.turns.values()],
+        [...this.commandRequests.values()]
+      )) {
+        this.approvals.set(approval.id, approval);
+      }
     }
-    this.turns = new Map(approvalState.turns.map((turn) => [turn.id, turn]));
-    this.approvals = new Map(approvalState.approvals.map((approval) => [approval.id, approval]));
-    for (const item of approvalState.repairItems) {
-      this.items.set(item.id, item);
-      this.itemRevisions.push(item);
-    }
-    return approvalState.repaired;
+    return false;
   }
 
   /**
@@ -2020,7 +2061,6 @@ export class FsStore {
     }
 
     const currentItems = history.turns.flatMap((turn) => turn.items);
-    const approvalState = deriveApprovalStateFromItems(currentItems, history.turns);
 
     for (const turn of history.turns) {
       if (this.turns.has(turn.id)) {
@@ -2071,7 +2111,7 @@ export class FsStore {
       workspace,
       knowledge: [...input.knowledge],
       threads: history.threads,
-      turns: approvalState.turns,
+      turns: history.turns,
       turnCaptureCoverage: captureCoverage,
       itemRevisions: history.itemRevisions,
       artifacts: history.artifacts,
@@ -2096,7 +2136,7 @@ export class FsStore {
     for (const thread of history.threads) {
       this.threads.set(thread.id, thread);
     }
-    for (const turn of approvalState.turns) {
+    for (const turn of history.turns) {
       this.turns.set(turn.id, turn);
       const binding = captureCoverage.get(turn.id);
       if (binding) this.turnCaptureCoverage.set(turn.id, binding);
@@ -2122,8 +2162,14 @@ export class FsStore {
     for (const source of history.knowledgeSources) {
       this.knowledgeSources.set(source.id, source);
     }
-    for (const approval of approvalState.approvals) {
-      this.approvals.set(approval.id, approval);
+    if (this.dataRoot) {
+      for (const approval of loadApprovalProjections(
+        this.dataRoot,
+        [...this.turns.values()],
+        [...this.commandRequests.values()]
+      )) {
+        if (approval.workspaceId === workspace.id) this.approvals.set(approval.id, approval);
+      }
     }
 
     return workspace;
@@ -2619,15 +2665,18 @@ export class FsStore {
       threadId,
       triggerActor,
       items: [],
-      status: 'running',
-      humanGate: null,
+      status: options.status ?? 'running',
       error: null,
       configVersion,
       startedAt: timestamp,
       completedAt: null,
       durationMs: null,
+      ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+      ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
+      ...(options.triggerSource !== undefined ? { triggerSource: options.triggerSource } : {}),
     });
     this.turns.set(turn.id, turn);
+    if (options.executorKind) this.turnExecutors.set(turn.id, options.executorKind);
     this.threads.set(threadId, {
       ...thread,
       preview: input,
@@ -2641,7 +2690,27 @@ export class FsStore {
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
     this.persist(workspaceId);
-    return turn;
+    this.turnAdmissionHooks?.onAdmitted?.(turn);
+    return this.getTurnById(turn.id);
+  }
+
+  /**
+   * Registers admission and terminal hooks for pending-request delivery.
+   *
+   * @param hooks Hooks invoked by Turn admission and the first terminal transition.
+   */
+  public setTurnAdmissionHooks(hooks: TurnAdmissionHooks | null): void {
+    this.turnAdmissionHooks = hooks;
+  }
+
+  /**
+   * Returns the executor declared when the Turn was admitted.
+   *
+   * @param turnId Turn id.
+   * @returns Executor, or null when admission did not declare one.
+   */
+  public getTurnExecutor(turnId: string): 'worker' | 'assistant' | 'person' | null {
+    return this.turnExecutors.get(turnId) ?? null;
   }
 
   /**
@@ -2707,7 +2776,7 @@ export class FsStore {
   }
 
   /**
-   * Updates a turn and revalidates the derived human-gate invariant.
+   * Updates a turn and revalidates the protocol record.
    *
    * @param turnId Turn identifier to update.
    * @param input Partial turn fields to merge onto the stored turn.
@@ -2727,7 +2796,6 @@ export class FsStore {
         | 'configVersion'
         | 'durationMs'
         | 'error'
-        | 'humanGate'
         | 'status'
         | 'triggerSource'
       >
@@ -2750,7 +2818,6 @@ export class FsStore {
           'configVersion',
           'durationMs',
           'error',
-          'humanGate',
           'status',
           'triggerSource',
         ].includes(field)
@@ -2759,16 +2826,9 @@ export class FsStore {
       throw new Error(`Turn update cannot change field: ${unsupportedField}`);
     }
 
-    const nextStatus = input.status ?? turn.status;
     const updated = TurnSchema.parse({
       ...turn,
       ...input,
-      humanGate:
-        input.humanGate !== undefined
-          ? input.humanGate
-          : nextStatus === 'awaiting_human'
-            ? turn.humanGate
-            : null,
       durationMs:
         (input.completedAt ?? turn.completedAt) && turn.startedAt
           ? Math.max(
@@ -2798,7 +2858,19 @@ export class FsStore {
     if (updated.status === 'completed' && !turn.completedAt && updated.completedAt) {
       ensureTurnFeedback(this, updated, updated.agentId ?? null);
     }
-    return updated;
+    if (
+      !isSealedTurnTerminal(turn.status) &&
+      isSealedTurnTerminal(updated.status) &&
+      this.terminalHookDepth < 8
+    ) {
+      this.terminalHookDepth += 1;
+      try {
+        this.turnAdmissionHooks?.onTerminal?.(updated);
+      } finally {
+        this.terminalHookDepth -= 1;
+      }
+    }
+    return this.getTurnById(turnId);
   }
 
   /**
@@ -2837,7 +2909,7 @@ export class FsStore {
           candidate.type === 'user-input-request' &&
           candidate.userInputRequestId === item.userInputRequestId
       );
-      if (request?.type !== 'user-input-request' || request.responsibleUserId !== item.actor.id) {
+      if (request?.type === 'user-input-request' && request.responsibleUserId !== item.actor.id) {
         throw new Error(`User-input response has invalid responsible user: ${item.id}`);
       }
     }
@@ -3378,7 +3450,6 @@ export class FsStore {
       triggerActor: input.triggerActor,
       items: [reference],
       status: 'completed',
-      humanGate: null,
       error: null,
       configVersion: null,
       startedAt: input.acceptedAt,
@@ -4546,158 +4617,4 @@ export class FsStore {
     }
     timers.clear();
   }
-}
-
-/**
- * Derives approval read models and repairs their turn-gate projections.
- *
- * @param items Latest canonical item revisions.
- * @param turns Canonical turns that project pending approval gates.
- * @returns Derived approvals, reconciled turns, durable denial items, and whether a projection changed.
- * @throws Error when approval items conflict or cross lineage.
- */
-function deriveApprovalStateFromItems(items: readonly Item[], turns: readonly Turn[]) {
-  const requests = new Map<string, Extract<Item, { type: 'approval-request' }>>();
-  const decisions = new Map<string, Extract<Item, { type: 'approval-decision' }>>();
-  const repairItems: Extract<Item, { type: 'approval-decision' }>[] = [];
-  const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
-
-  for (const item of items) {
-    if (item.type === 'approval-request') {
-      if (requests.has(item.approvalRequestId)) {
-        throw new Error(`Duplicate approval request item: ${item.approvalRequestId}.`);
-      }
-      requests.set(item.approvalRequestId, item);
-    } else if (item.type === 'approval-decision') {
-      if (decisions.has(item.approvalRequestId)) {
-        throw new Error(`Duplicate approval decision item: ${item.approvalRequestId}.`);
-      }
-      decisions.set(item.approvalRequestId, item);
-    }
-  }
-
-  for (const approvalRequestId of decisions.keys()) {
-    if (!requests.has(approvalRequestId)) {
-      throw new Error(`Approval decision references a missing request: ${approvalRequestId}.`);
-    }
-  }
-
-  const pendingByTurnId = new Map<string, Extract<Item, { type: 'approval-request' }>>();
-  const approvals = [...requests.values()].map((request) => {
-    let decision = decisions.get(request.approvalRequestId);
-    const turn = turnsById.get(request.turnId);
-
-    if (
-      decision &&
-      (decision.workspaceId !== request.workspaceId ||
-        decision.threadId !== request.threadId ||
-        decision.turnId !== request.turnId)
-    ) {
-      throw new Error(`Approval decision has invalid lineage: ${request.approvalRequestId}.`);
-    }
-    if (!turn || turn.workspaceId !== request.workspaceId || turn.threadId !== request.threadId) {
-      throw new Error(`Approval request has invalid turn lineage: ${request.approvalRequestId}.`);
-    }
-    if (!decision && isSealedTurnTerminal(turn.status)) {
-      decision = ItemSchema.parse({
-        id: `it_approval_terminal_denial_${request.approvalRequestId}`,
-        workspaceId: request.workspaceId,
-        threadId: request.threadId,
-        turnId: request.turnId,
-        type: 'approval-decision',
-        actor: { kind: 'system', id: 'nanocore-boot-reconciliation', responsibleUserId: null },
-        causationId: request.id,
-        status: 'completed',
-        approvalRequestId: request.approvalRequestId,
-        decision: 'denied',
-        createdAt: turn.completedAt ?? turn.startedAt ?? request.createdAt,
-        completedAt: turn.completedAt ?? turn.startedAt ?? request.createdAt,
-      }) as Extract<Item, { type: 'approval-decision' }>;
-      if (
-        items.some((item) => item.id === decision?.id) ||
-        repairItems.some((item) => item.id === decision?.id)
-      ) {
-        throw new Error(`Terminal approval denial item id conflicts: ${decision.id}.`);
-      }
-      repairItems.push(decision);
-    }
-    if (!decision) {
-      if (pendingByTurnId.has(request.turnId)) {
-        throw new Error(`Turn has multiple pending approval requests: ${request.turnId}.`);
-      }
-      pendingByTurnId.set(request.turnId, request);
-    }
-
-    return ApprovalRequestSchema.parse({
-      id: request.approvalRequestId,
-      workspaceId: request.workspaceId,
-      threadId: request.threadId,
-      turnId: request.turnId,
-      kind: request.kind,
-      status: decision?.decision ?? 'pending',
-      title: request.title,
-      description: request.description,
-      createdAt: request.createdAt,
-      resolvedAt: decision ? (decision.completedAt ?? decision.createdAt) : null,
-    });
-  });
-
-  for (const turn of turns) {
-    if (turn.humanGate?.kind !== 'approval') {
-      continue;
-    }
-    const request = requests.get(turn.humanGate.approvalRequestId);
-    if (
-      !request ||
-      request.id !== turn.humanGate.itemId ||
-      request.workspaceId !== turn.workspaceId ||
-      request.threadId !== turn.threadId ||
-      request.turnId !== turn.id
-    ) {
-      throw new Error(`Approval gate is missing its canonical request item: ${turn.id}.`);
-    }
-  }
-
-  let repaired = repairItems.length > 0;
-  const reconciledTurns = turns.map((turn) => {
-    const pending = pendingByTurnId.get(turn.id);
-
-    if (pending) {
-      if (
-        turn.status === 'awaiting_human' &&
-        turn.humanGate?.kind === 'approval' &&
-        turn.humanGate.approvalRequestId === pending.approvalRequestId &&
-        turn.humanGate.itemId === pending.id
-      ) {
-        return turn;
-      }
-      repaired = true;
-      return TurnSchema.parse({
-        ...turn,
-        status: 'awaiting_human',
-        humanGate: {
-          kind: 'approval',
-          approvalRequestId: pending.approvalRequestId,
-          itemId: pending.id,
-        },
-      });
-    }
-
-    if (turn.humanGate?.kind === 'approval') {
-      repaired = true;
-      return TurnSchema.parse({
-        ...turn,
-        status: isSealedTurnTerminal(turn.status) ? turn.status : 'running',
-        humanGate: null,
-        items: [...turn.items, ...repairItems.filter((item) => item.turnId === turn.id)],
-      });
-    }
-
-    const denials = repairItems.filter((item) => item.turnId === turn.id);
-    return denials.length > 0
-      ? TurnSchema.parse({ ...turn, items: [...turn.items, ...denials] })
-      : turn;
-  });
-
-  return { approvals, repairItems, repaired, turns: reconciledTurns };
 }

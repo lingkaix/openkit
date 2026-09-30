@@ -419,7 +419,6 @@ describe('accepted worker final-status canonicalization', () => {
     ['completed', 'completed'],
     ['blocked', 'length'],
     ['blocked', 'budget_exhausted'],
-    ['blocked', 'ask_user'],
     ['cancelled', 'aborted'],
     ['interrupted', 'aborted'],
     ['failed', 'error'],
@@ -433,6 +432,16 @@ describe('accepted worker final-status canonicalization', () => {
         stopReason,
       })
     ).toBe(stopReason);
+  });
+
+  it('fails closed when an accepted final status still carries the removed ask_user stop reason', () => {
+    expect(() =>
+      canonicalStopReasonForAcceptedWorkerFinalStatus({
+        acceptedAt: '2026-07-15T00:01:01.000Z',
+        status: 'blocked',
+        stopReason: 'ask_user',
+      })
+    ).toThrow('recovery_required');
   });
 
   it.each([

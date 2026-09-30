@@ -289,6 +289,15 @@ export function getCommandRequestRecordFromDb(
   return record;
 }
 
+/** Reads retained receipts on the caller's scoped connection without migration, pruning, or another write connection. */
+export function readCommandRequestRecordsFromSqlite(
+  sqlite: Database.Database
+): CommandRequestRecord[] {
+  return (sqlite.prepare(COMMAND_REQUEST_SELECT).all() as CommandRequestRow[]).map(
+    mapCommandRequestRow
+  );
+}
+
 /** Read-only inventory of command receipts, including expired rows. */
 export type DurableCommandRequestRead =
   | { readonly records: readonly CommandRequestRecord[]; readonly status: 'readable' }

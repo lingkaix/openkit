@@ -8,7 +8,6 @@ import {
   ConvertGoalSteeringToFollowUpRequestSchema,
   ConvertGoalSteeringToFollowUpResponseSchema,
   CreateThreadGoalPlanRequestSchema,
-  CreateThreadGoalPlanResponseSchema,
   type GoalPendingHumanAttention,
   type GoalTaskCounts,
   type GoalTerminalState,
@@ -18,13 +17,10 @@ import {
   ResumeThreadGoalRequestSchema,
   ResumeThreadGoalResponseSchema,
   ReviseThreadGoalIntentRequestSchema,
-  ReviseThreadGoalIntentResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
-  ReviseThreadGoalPlanResponseSchema,
   RunThreadGoalStepRequestSchema,
   RunThreadGoalStepResponseSchema,
   RunThreadGoalTestSuperviseStepRequestSchema,
-  RunThreadGoalTestSuperviseStepResponseSchema,
   StartThreadGoalRequestSchema,
   StartThreadGoalResponseSchema,
   SubmitThreadGoalSteeringRequestSchema,
@@ -51,7 +47,6 @@ import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { CoreMode } from './config/mode.js';
-import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { requireVerifiedGoalSteeringTrace } from './context/worker-context-projection.js';
 import {
   claimPendingUserTurnRecord,
@@ -67,48 +62,18 @@ import {
   requireGoalSteeringSendProof,
   type SteeringTerminalOutcome,
 } from './goal-steering-authority.js';
-import { serializeStructuredWorkerDelegationRequest } from './internal-agents/delegation.js';
-import { redactInternalAgentText } from './internal-agents/redaction.js';
-import {
-  createWorkerCoordinatorDecision,
-  createWorkerCoordinatorGoalStopDecision,
-  type WorkerCoordinatorCandidate,
-  type WorkerCoordinatorDecision,
-} from './internal-agents/worker-coordinator.js';
+import { createWorkerCoordinatorGoalStopDecision } from './internal-agents/worker-coordinator.js';
 import type { CommandRequestRecord, FsStore } from './lib/store.js';
-import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
-import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from './openapi.js';
-import { recordGoalWorkerLaunchDecision } from './policy/permission-decisions.js';
-import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
-import {
-  GoalIntentRevisionError,
-  readGoalIntentRevision,
-  reviseGoalIntent,
-} from './runtime/goal-intent.js';
 import {
   approveGoalPlan,
   canApproveGoalPlan,
   GoalPlanApprovalError,
-  type ReviseGoalPlanResult,
-  readGoalPlanRevision,
-  reviseGoalPlan,
 } from './runtime/goal-plan-approval.js';
-import { createGoalPlanPlanner } from './runtime/goal-plan-propose-tool.js';
-import {
-  createGoalPlan,
-  GoalPlanRevisionError,
-  readGoalPlanCreation,
-  readGoalPlanQuestionCreation,
-  readPreApprovalGoalPlanRevision,
-  runExclusiveGoalPlanCommand,
-} from './runtime/goal-planning.js';
 import {
   createGoalReviewRecord,
-  GoalReviewResolutionError,
   listGoalReviewRecordsForTask,
-  resolveGoalReviewRecord,
 } from './runtime/goal-review-records.js';
 import {
   createGoalRecord,
@@ -120,19 +85,15 @@ import {
   listDispatchableGoalTasks,
   listGoalRecordsForThread,
   listGoalTasks,
-  reserveGoalTaskForWorkerTurn,
   updateGoalStatus,
   updateGoalTask,
 } from './runtime/goal-store.js';
 import { advanceGoalAfterReview } from './runtime/goal-supervise-advance.js';
-import { prepareGoalTaskDelegation } from './runtime/goal-task-delegation.js';
-import { selectNextReadyGoalTask } from './runtime/goal-task-selector.js';
 import {
   type GoalVerificationRecord,
   listGoalVerificationRecordsForGoal,
 } from './runtime/goal-verification-records.js';
 import { recordGoalTaskWorkerOutcome } from './runtime/goal-worker-outcome.js';
-import { startGoalTaskWorkerTurn } from './runtime/goal-worker-start.js';
 import {
   commandInputHash,
   IdempotencyKeyConflictError,
@@ -140,17 +101,10 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
-import type { PreparedNextTurn } from './runtime/prepare-next-turn.js';
-import {
-  type StopAfterTurnDecision,
-  shouldStopAfterTurn,
-  stopReasonForTurnStatus,
-} from './runtime/stop-after-turn.js';
-import type { TurnExecutor } from './runtime/types.js';
+import { type StopAfterTurnDecision, shouldStopAfterTurn } from './runtime/stop-after-turn.js';
 import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import {
   getWorkerCheckpoint,
-  listThreadWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
   parseWorkerCheckpointEvidence,
   type WorkerCheckpointContextAssemblySummary,
@@ -162,16 +116,13 @@ import {
   resolveInterruptedWorkerRetryDecision,
 } from './runtime/worker-recovery.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
-import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import {
-  completeSchedulerLeaseForTerminalTurn,
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
   type SchedulerSessionLeaseRecord,
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import { interruptProductTurn } from './turn-routes.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from './workspace-materials.js';
 
 /** Parsed turn read model used by Goal worker lifecycle guards. */
@@ -606,7 +557,6 @@ function inspectSteeringFollowUpProof(
     turn.threadId !== owner.threadId ||
     JSON.stringify(turn.triggerActor) !== JSON.stringify(sourceItem.actor) ||
     turn.status !== 'completed' ||
-    turn.humanGate !== null ||
     turn.error !== null ||
     turn.configVersion !== null ||
     (turn.agentId ?? null) !== null ||
@@ -1229,53 +1179,6 @@ function goalStepTurnId(input: {
   return `tu_goal_step_${digest}`;
 }
 
-/** Exact request-owned Item id for one applied Goal execution refinement. */
-function goalRefinementItemId(turnId: string): string {
-  return `it_goal_refinement_${turnId}`;
-}
-
-/** Readable projection of the caller's bounded action against one selected approved Task. */
-function goalRefinementSummary(
-  refinement: NonNullable<z.infer<typeof RunThreadGoalStepRequestSchema>['refinement']>
-): string {
-  return [
-    `Active Plan: ${refinement.activePlanItemId}`,
-    `Selected Task: ${refinement.taskId}`,
-    `Reason: ${refinement.reason}`,
-    `Evidence Items: ${refinement.evidenceItemIds.join(', ') || 'none'}`,
-    `Evidence Artifacts: ${refinement.evidenceArtifactIds.join(', ') || 'none'}`,
-    `Bounded changed action: ${refinement.changedAction}`,
-  ].join('\n');
-}
-
-/** Validates the deterministic refinement Item before acknowledging a replayed Goal step. */
-function requireGoalRefinementItem(input: {
-  readonly store: FsStore;
-  readonly workspaceId: string;
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly requestId: string;
-  readonly refinement: z.infer<typeof RunThreadGoalStepRequestSchema>['refinement'];
-}): void {
-  const item = input.store
-    .listThreadItems(input.workspaceId, input.threadId)
-    .find((candidate) => candidate.id === goalRefinementItemId(input.turnId));
-  if (!input.refinement) {
-    if (item) throw goalStepRecoveryError('Goal step has an unexpected refinement Item.');
-    return;
-  }
-  if (
-    !item ||
-    item.type !== 'status' ||
-    item.status !== 'completed' ||
-    item.turnId !== input.turnId ||
-    item.causationId !== input.requestId ||
-    item.summary !== goalRefinementSummary(input.refinement)
-  ) {
-    throw goalStepRecoveryError('Goal step refinement Item is missing or contradictory.');
-  }
-}
-
 /**
  * Creates the stable fail-closed error for an unprovable Goal step tuple.
  *
@@ -1396,16 +1299,6 @@ function commitGoalStepOwnerOutcome(input: {
             threadId: input.threadId,
             goalId: input.goal.goalId,
             status: 'reviewing',
-            currentTaskId: input.task.taskId,
-            terminalStopReason: null,
-          });
-          break;
-        case 'ask_user':
-          updateGoalStatus(input.workspaceDb, {
-            workspaceId: input.workspaceId,
-            threadId: input.threadId,
-            goalId: input.goal.goalId,
-            status: 'awaiting_user',
             currentTaskId: input.task.taskId,
             terminalStopReason: null,
           });
@@ -1555,14 +1448,6 @@ function hasCommittedGoalStepOwnerOutcome(input: {
         task.status === 'reviewing'
       );
     }
-    case 'ask_user':
-      return (
-        reviews.length === 0 &&
-        goal.status === 'awaiting_user' &&
-        goal.currentTaskId === input.taskId &&
-        goal.terminalStopReason === null &&
-        task.status === 'running'
-      );
     case 'block':
       return (
         reviews.length === 0 &&
@@ -1639,7 +1524,6 @@ function isProvenNeverLaunchedGoalAttempt(
   const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
   if (
     turn.status !== 'failed' ||
-    turn.humanGate !== null ||
     (turn.agentSessionId != null && turn.agentSessionId !== lease.agentSessionId) ||
     admission.requestId !== checkpoint.requestId ||
     admission.triggerActor.kind !== 'user' ||
@@ -1696,7 +1580,7 @@ function isProvenNeverLaunchedGoalAttempt(
  * Classifies one Goal step checkpoint after scheduler restart fencing.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
- * @returns `live` for a reconnectable or human-gated Turn, otherwise `complete` after receipt-first cleanup.
+ * @returns `live` for a reconnectable Turn, otherwise `complete` after receipt-first cleanup.
  * @throws TurnStartValidationError when the durable owner tuple cannot prove one safe outcome.
  */
 export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
@@ -1853,32 +1737,6 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
     task.status === 'running' &&
     reviews.length === 0;
 
-  if (stopReason === 'ask_user') {
-    if (
-      !receipt ||
-      !hasCommittedGoalStepOwnerOutcome({
-        workspaceDb: input.workspaceDb,
-        workspaceId: checkpoint.workspaceId,
-        threadId: checkpoint.threadId,
-        requestId: checkpoint.requestId,
-        goalId: checkpoint.goalId,
-        taskId: checkpoint.taskId,
-        turnId: checkpoint.turnId,
-        stopDecision,
-        evidence,
-      })
-    ) {
-      throw goalStepRecoveryError('The active Goal Gate has no complete command owner tuple.');
-    }
-    projectGoalStepResponse({
-      workspaceDb: input.workspaceDb,
-      workspaceId: checkpoint.workspaceId,
-      threadId: checkpoint.threadId,
-      record: receipt,
-    });
-    return 'live';
-  }
-
   if (!receipt && uncommitted) {
     input.workspaceDb.sqlite.transaction(() => {
       commitGoalStepOwnerOutcome({
@@ -1953,78 +1811,6 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
     throw goalStepRecoveryError('The boot Goal checkpoint is not ready for cleanup.');
   }
   return 'complete';
-}
-
-/**
- * Builds the public response from one complete request-owned Goal Plan tuple.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace that owns the Goal.
- * @param threadId Thread that owns the Goal.
- * @param created Validated approvable Plan owners.
- * @returns Schema-validated public Plan response.
- * @throws GoalPlanApprovalError when the deterministic Plan or Goal projection is contradictory.
- */
-function buildGoalPlanCreationResponse(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  threadId: string,
-  created: NonNullable<ReturnType<typeof readGoalPlanCreation>>
-): z.output<typeof CreateThreadGoalPlanResponseSchema> {
-  const goal = getGoalRecord(workspaceDb, workspaceId, threadId, created.goalId);
-  if (!goal) {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Goal is unavailable for its request-owned Plan.'
-    );
-  }
-  const planner = {
-    mode: 'goal' as const,
-    sourceAgentId: 'goal-orchestrator' as const,
-    confidence: null,
-    rationale: 'Goal Orchestrator submitted this exact Plan proposal for approval.',
-    contextRefs: [
-      { kind: 'workspace' as const, id: workspaceId },
-      { kind: 'thread' as const, id: threadId },
-    ],
-    requiredApprovals: ['plan_approval'],
-    plan: created.plan,
-  };
-  const summary = buildThreadGoalSummary(workspaceDb, workspaceId, threadId, created.goalId);
-  if (!summary) {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Goal summary is unavailable for its request-owned Plan.'
-    );
-  }
-  return CreateThreadGoalPlanResponseSchema.parse({
-    status: created.status,
-    goal: summary,
-    planItemId: created.planItem.id,
-    planner,
-    plan: created.plan,
-  });
-}
-
-/** Projects an exact planning question Gate as a public command result. */
-function buildGoalPlanQuestionResponse(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  threadId: string,
-  question: NonNullable<ReturnType<typeof readGoalPlanQuestionCreation>>
-): z.output<typeof CreateThreadGoalPlanResponseSchema> {
-  const summary = buildThreadGoalSummary(workspaceDb, workspaceId, threadId, question.goalId);
-  if (!summary) {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Goal question has no current Goal summary.'
-    );
-  }
-  return CreateThreadGoalPlanResponseSchema.parse({
-    status: 'awaiting_user',
-    goal: summary,
-    questionItemId: question.questionItem.id,
-  });
 }
 
 /**
@@ -2138,14 +1924,12 @@ function buildThreadGoalPlanReadResponse(
       .slice(instruction ? instructionTurnIndex + 1 : 0)
       .filter((turn) => turn.id.startsWith('tu_goal_plan_'));
     const latestAttempt = attempts.at(-1);
-    const openQuestion =
-      latestAttempt?.status === 'awaiting_human' && latestAttempt.humanGate?.kind === 'user-input';
+    const openQuestion = false;
     const failedAttempt = latestAttempt?.status === 'failed' && Boolean(latestAttempt.completedAt);
     const inProgress =
-      latestAttempt &&
-      !['completed', 'failed', 'interrupted', 'awaiting_human'].includes(latestAttempt.status);
+      latestAttempt && !['completed', 'failed', 'interrupted'].includes(latestAttempt.status);
     const answeredRequest =
-      latestAttempt?.status === 'completed' && latestAttempt.humanGate === null
+      latestAttempt?.status === 'completed'
         ? latestAttempt.items.find((item) => item.type === 'user-input-request')
         : null;
     const answeredResponse =
@@ -2232,36 +2016,6 @@ function buildThreadGoalPlanReadResponse(
       'Current Goal Plan record is contradictory.'
     );
   }
-}
-
-/**
- * Builds the public response only after one Plan revision owner tuple is durable.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace that owns the Goal.
- * @param threadId Thread that owns the Goal.
- * @param revised Validated Plan revision owners.
- * @returns Schema-validated public revision response.
- * @throws GoalPlanApprovalError when the exact Goal read projection is unavailable.
- */
-function buildGoalPlanRevisionResponse(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  threadId: string,
-  revised: ReviseGoalPlanResult
-): z.output<typeof ReviseThreadGoalPlanResponseSchema> {
-  const summary = buildThreadGoalSummary(workspaceDb, workspaceId, threadId, revised.goalId);
-  if (!summary) {
-    throw new GoalPlanApprovalError(
-      'recovery_required',
-      'Goal summary is unavailable after Plan revision.'
-    );
-  }
-  return ReviseThreadGoalPlanResponseSchema.parse({
-    goal: summary,
-    revisionItemId: revised.revisionItem.id,
-    startsWorkerTurn: false,
-  });
 }
 
 /**
@@ -2441,37 +2195,6 @@ function runGoalLifecycleCommand(input: {
     );
     return response;
   })();
-}
-
-/**
- * Creates the minimal prepared worker payload used by deterministic supervise e2e routes.
- *
- * @param task Goal task selected for deterministic worker execution.
- * @returns Prepared worker payload with no provider-visible context.
- */
-function createDeterministicPreparedGoalTask(task: GoalTaskRecord): PreparedNextTurn {
-  return {
-    contextPackageDigest: `deterministic:${task.taskId}`,
-    delegationRequest: {
-      objective: task.objective,
-    } as PreparedNextTurn['delegationRequest'],
-    knowledgeSelectionInput: null,
-  };
-}
-
-/**
- * Selects the task eligible for the next real Goal Mode worker step.
- *
- * @param tasks Goal tasks for one active goal.
- * @returns Running task when present, otherwise the next ready task.
- */
-function selectNextGoalWorkerTask(tasks: readonly GoalTaskRecord[]): GoalTaskRecord | null {
-  return (
-    tasks
-      .filter((task) => task.status === 'running')
-      .sort((left, right) => left.orderIndex - right.orderIndex)[0] ??
-    selectNextReadyGoalTask(tasks)
-  );
 }
 
 const WORKER_TURN_AWAIT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -2922,65 +2645,24 @@ function requireAuthorizedGoalThread(
  */
 export function registerGoalRoutes({
   app,
-  assertProjectWorkspace,
   coreDb,
   inflightCommands,
-  llmGatewayDispatcher,
   mode,
-  providerSubscriptionAccountManager,
   repositoryWorkspaceDb,
   requestStore,
-  resolveGatewayProvider,
-  runtimeConfig,
-  startModeWorkerTurn,
-  turnExecutor,
-  workerCoordinatorCandidates,
 }: {
   /** Hono app that owns the public route catalog. */
   readonly app: Hono<{ Variables: AuthVariables }>;
-  /** Enforces project-only Goal startup. */
-  readonly assertProjectWorkspace: (
-    workspace: ReturnType<FsStore['getWorkspace']>,
-    action: string
-  ) => void;
   /** Optional Core database that enables Goal persistence. */
   readonly coreDb: CoreDb | undefined;
   /** Process-local duplicate collapse for durable Goal commands. */
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  /** Existing logical Gateway dispatcher used by Goal planning Turns. */
-  readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   /** Deployment mode that gates deterministic local-only routes. */
   readonly mode: CoreMode;
-  /** Optional subscription-backed account manager for revision model dispatch. */
-  readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Opens the migrated workspace database. */
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   /** Resolves request-scoped storage. */
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  /** Resolves one dispatchable provider profile for the shared Gateway projection. */
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
-  /** Current runtime configuration snapshot. */
-  readonly runtimeConfig: () => RuntimeConfigSnapshot;
-  /** Starts one reserved worker turn through the durable scheduler. */
-  readonly startModeWorkerTurn: (input: {
-    readonly triggerActor: ActorRef;
-    readonly store: FsStore;
-    readonly workspaceId: string;
-    readonly threadId: string;
-    readonly prompt: string;
-    readonly requestId: string;
-    readonly requestedAgentId: string;
-    readonly reservedTurnId: string;
-    readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
-    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
-  }) => Promise<z.infer<typeof TurnSchema>>;
-  /** Starts and observes governed worker turns. */
-  readonly turnExecutor: TurnExecutor;
-  /** Projects the workspace agent catalog into Coordinator candidates. */
-  readonly workerCoordinatorCandidates: (
-    store: FsStore,
-    workspaceId: string
-  ) => WorkerCoordinatorCandidate[];
 }): void {
   /** Handles either terminal route. @param c Request context. @param state Requested state. @returns Command or error response. */
   async function handleSteeringTerminal(
@@ -3120,178 +2802,16 @@ export function registerGoalRoutes({
 
   registerAppApiRoute(app, 'startThreadGoal', async (c) => {
     const parsed = StartThreadGoalRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-      const workspace = store.getWorkspace(workspaceId);
-      const triggerActor = {
-        kind: 'user',
-        id: c.get('actor').userId,
-      } as const satisfies ActorRef;
-
-      assertProjectWorkspace(workspace, 'start Goal Mode');
-      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
-      const ownerInput = {
-        triggerActor,
-        owningCommand: 'goal.start' as const,
-        requestId: parsed.data.requestId,
-        store,
-        workspaceId,
-        threadId,
-        objective: parsed.data.objective,
-        title: parsed.data.title,
-        ...(parsed.data.workerStorageChoice
-          ? { workerStorageChoice: parsed.data.workerStorageChoice }
-          : {}),
-      };
-      /** Reads direct Goal start owners through one scoped database handle. */
-      const readOwners = (): GoalStartResult | null => {
-        const workspaceDb = repositoryWorkspaceDb(workspaceId);
-        try {
-          return readGoalStartOwners({ ...ownerInput, workspaceDb });
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-      };
-
-      const response = await runIdempotentCommand({
-        store,
-        inflightCommands,
-        command: 'goal.start',
-        requestId: parsed.data.requestId,
-        scope: { actorId: ownerInput.triggerActor.id, workspaceId, threadId },
-        input: {
-          objective: parsed.data.objective,
-          title: parsed.data.title,
-          workerStorageChoice: parsed.data.workerStorageChoice,
-        },
-        responseKind: 'goal',
-        execute: () =>
-          startGoalModeObjective({
-            ...ownerInput,
-            assertProjectWorkspace,
-            coreDb,
-            repositoryWorkspaceDb,
-          }).response,
-        replay: (record) => {
-          if (record.response.kind !== 'goal') {
-            throw new TurnStartValidationError(
-              'recovery_required',
-              'Goal start receipt has invalid response lineage.',
-              409
-            );
-          }
-          const owners = readOwners();
-          if (!owners || owners.response.goal.goalId !== record.response.id) {
-            throw new TurnStartValidationError(
-              'recovery_required',
-              'Goal start owners are missing or contradict the receipt.',
-              409
-            );
-          }
-          return owners.response;
-        },
-        responseId: (result) => result.goal.goalId,
-      }).catch((error) => {
-        if (
-          error instanceof IdempotencyKeyConflictError ||
-          error instanceof TurnStartValidationError
-        ) {
-          throw error;
-        }
-        if (readOwners()) {
-          throw new TurnStartValidationError(
-            'recovery_required',
-            'Goal start owners exist without a matching command receipt.',
-            409
-          );
-        }
-        throw error;
-      });
-      return c.json(response);
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
-      }
-      if (error instanceof TurnStartValidationError) {
-        return asApiError(error.message, error.code, error.status);
-      }
-
-      return asCommandError(error, 'goal_create_failed', 400);
-    }
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
   });
 
   registerAppApiRoute(app, 'submitThreadGoalSteering', async (c) => {
     const parsed = SubmitThreadGoalSteeringRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
-      if (!coreDb) {
-        return asApiError(
-          'Goal storage is unavailable for this NanoCore instance.',
-          'goal_storage_unavailable',
-          503
-        );
-      }
-
-      const { requestId, ...input } = parsed.data;
-      const workspaceDb = repositoryWorkspaceDb(workspaceId);
-      try {
-        return c.json(
-          await submitGoalSteeringCommand({
-            coreDb,
-            store,
-            workspaceDb,
-            inflightCommands,
-            actorId: c.get('actor').userId,
-            workspaceId,
-            threadId,
-            requestId,
-            commandInput: input,
-          }),
-          202
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
-      }
-      if (error instanceof GoalSteeringAuthorityError) {
-        return asApiError(error.message, error.code, error.status);
-      }
-      const candidate = error as {
-        readonly code?: unknown;
-        readonly message?: unknown;
-        readonly status?: unknown;
-      };
-      if (
-        typeof candidate.code === 'string' &&
-        typeof candidate.message === 'string' &&
-        typeof candidate.status === 'number'
-      ) {
-        return asApiError(candidate.message, candidate.code, candidate.status);
-      }
-      return asCommandError(error, 'goal_steering_failed', 400);
-    }
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
   });
 
   registerAppApiRoute(app, 'convertGoalSteeringToFollowUp', (c) =>
@@ -3304,256 +2824,8 @@ export function registerGoalRoutes({
     const parsed = CreateThreadGoalPlanRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Goal storage is unavailable for this NanoCore instance.',
-          'goal_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(workspaceId);
-      try {
-        const response = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'goal.plan',
-          requestId: parsed.data.requestId,
-          scope: { actorId: c.get('actor').userId, workspaceId, threadId },
-          input: {},
-          responseKind: 'goal_plan',
-          execute: async () =>
-            runExclusiveGoalPlanCommand({
-              inflightCommands,
-              store,
-              workspaceId,
-              threadId,
-              actorId: c.get('actor').userId,
-              goalId: requireLatestActiveGoal(workspaceDb, workspaceId, threadId).goalId,
-              requestId: parsed.data.requestId,
-              run: async () => {
-                const existingQuestion = readGoalPlanQuestionCreation({
-                  triggerActor: { kind: 'user', id: c.get('actor').userId },
-                  workspaceDb,
-                  store,
-                  workspaceId,
-                  threadId,
-                  requestId: parsed.data.requestId,
-                });
-                if (existingQuestion) {
-                  const questionTurn = store.getTurn(
-                    workspaceId,
-                    threadId,
-                    existingQuestion.questionItem.turnId
-                  );
-                  const current = getGoalRecord(
-                    workspaceDb,
-                    workspaceId,
-                    threadId,
-                    existingQuestion.goalId
-                  );
-                  if (
-                    questionTurn.status !== 'awaiting_human' ||
-                    !current ||
-                    isTerminalGoalStatus(current.status) ||
-                    ![
-                      current.currentIntentItemId,
-                      current.planItemId,
-                      current.pendingPlanItemId,
-                    ].includes(existingQuestion.questionItem.parentItemId ?? null)
-                  ) {
-                    throw new GoalPlanApprovalError(
-                      'recovery_required',
-                      'Goal question cannot recover after its source changed or Gate closed.'
-                    );
-                  }
-                  return buildGoalPlanQuestionResponse(
-                    workspaceDb,
-                    workspaceId,
-                    threadId,
-                    existingQuestion
-                  );
-                }
-                const existing = readGoalPlanCreation({
-                  triggerActor: { kind: 'user', id: c.get('actor').userId },
-                  workspaceDb,
-                  store,
-                  workspaceId,
-                  threadId,
-                  requestId: parsed.data.requestId,
-                });
-                if (existing) {
-                  return buildGoalPlanCreationResponse(
-                    workspaceDb,
-                    workspaceId,
-                    threadId,
-                    existing
-                  );
-                }
-                const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-                const revision = readPreApprovalGoalPlanRevision({
-                  store,
-                  workspaceDb,
-                  workspaceId,
-                  threadId,
-                  goalId: goal.goalId,
-                });
-                const initialPlanning =
-                  goal.status === 'planning' &&
-                  goal.planItemId === null &&
-                  goal.pendingPlanItemId === null;
-                if (!initialPlanning && !revision) {
-                  throw new TurnStartValidationError(
-                    'goal_not_planning',
-                    'Goal is not ready for planning.',
-                    409
-                  );
-                }
-                const authorityActor = {
-                  kind: 'user',
-                  id: c.get('actor').userId,
-                } as const satisfies ActorRef;
-                const planner = createGoalPlanPlanner({
-                  runtimeConfig,
-                  llmGatewayDispatcher,
-                  resolveGatewayProvider,
-                  workspaceId,
-                  userId: authorityActor.id,
-                  authorityActor,
-                  coreDb,
-                  signal: c.req.raw.signal,
-                  ...(providerSubscriptionAccountManager
-                    ? { providerSubscriptionAccountManager }
-                    : {}),
-                });
-                const result = await createGoalPlan({
-                  triggerActor: authorityActor,
-                  workspaceDb,
-                  store,
-                  workspaceId,
-                  threadId,
-                  goalId: goal.goalId,
-                  requestId: parsed.data.requestId,
-                  planner,
-                });
-                if (result.status === 'awaiting_user') {
-                  return buildGoalPlanQuestionResponse(workspaceDb, workspaceId, threadId, {
-                    goalId: goal.goalId,
-                    status: 'awaiting_user',
-                    questionItem: result.questionItem,
-                  });
-                }
-                if (result.status === 'failed') {
-                  throw new GoalPlanRevisionError(
-                    'goal_plan_revision_unavailable',
-                    result.errorMessage
-                  );
-                }
-                if (result.status !== 'awaiting_plan_approval') {
-                  throw new GoalPlanApprovalError(
-                    'recovery_required',
-                    'Goal Plan request produced owners that the public command cannot acknowledge.'
-                  );
-                }
-                return buildGoalPlanCreationResponse(workspaceDb, workspaceId, threadId, {
-                  goalId: goal.goalId,
-                  ...result,
-                });
-              },
-            }),
-          replay: (record) => {
-            if (record.response.kind !== 'goal_plan') {
-              throw new GoalPlanApprovalError(
-                'recovery_required',
-                'Goal Plan receipt has invalid response lineage.'
-              );
-            }
-            const question = readGoalPlanQuestionCreation({
-              triggerActor: { kind: 'user', id: c.get('actor').userId },
-              workspaceDb,
-              store,
-              workspaceId,
-              threadId,
-              requestId: parsed.data.requestId,
-            });
-            if (question) {
-              if (question.questionItem.id !== record.response.id) {
-                throw new GoalPlanApprovalError(
-                  'recovery_required',
-                  'Goal question contradicts its command receipt.'
-                );
-              }
-              return buildGoalPlanQuestionResponse(workspaceDb, workspaceId, threadId, question);
-            }
-            const existing = readGoalPlanCreation({
-              triggerActor: { kind: 'user', id: c.get('actor').userId },
-              workspaceDb,
-              store,
-              workspaceId,
-              threadId,
-              requestId: parsed.data.requestId,
-            });
-            if (existing && existing.planItem.id === record.response.id) {
-              return buildGoalPlanCreationResponse(workspaceDb, workspaceId, threadId, existing);
-            }
-            throw new GoalPlanApprovalError(
-              'recovery_required',
-              'Goal Plan owners are missing or contradict the receipt.'
-            );
-          },
-          responseId: (result) =>
-            result.status === 'awaiting_user' ? result.questionItemId : result.planItemId,
-        }).catch((error) => {
-          if (
-            error instanceof GoalPlanApprovalError ||
-            error instanceof GoalPlanRevisionError ||
-            error instanceof IdempotencyKeyConflictError ||
-            error instanceof TurnStartValidationError
-          ) {
-            throw error;
-          }
-          const existing = readGoalPlanCreation({
-            triggerActor: { kind: 'user', id: c.get('actor').userId },
-            workspaceDb,
-            store,
-            workspaceId,
-            threadId,
-            requestId: parsed.data.requestId,
-          });
-          if (existing) {
-            throw new GoalPlanApprovalError(
-              'recovery_required',
-              'Goal Plan owners exist without a matching command receipt.'
-            );
-          }
-          throw error;
-        });
-        return c.json(response);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
-      }
-      if (error instanceof GoalPlanApprovalError || error instanceof GoalPlanRevisionError) {
-        return asApiError(error.message, error.code, error.status);
-      }
-      return asCommandError(error, 'goal_plan_create_failed', 400);
-    }
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
   });
 
   registerAppApiRoute(app, 'approveThreadGoalPlan', async (c) => {
@@ -3721,332 +2993,15 @@ export function registerGoalRoutes({
       await c.req.json().catch(() => ({}))
     );
     if (!parsed.success) return asInvalidRequestError(parsed.error);
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-      store.getWorkspace(workspaceId);
-      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
-      if (!coreDb) {
-        return asApiError(
-          'Goal storage is unavailable for this NanoCore instance.',
-          'goal_storage_unavailable',
-          503
-        );
-      }
-      const workspaceDb = repositoryWorkspaceDb(workspaceId);
-      try {
-        const triggerActor = {
-          kind: 'user',
-          id: c.get('actor').userId,
-        } as const satisfies ActorRef;
-        const readOwners = () =>
-          readGoalIntentRevision({
-            triggerActor,
-            store,
-            workspaceDb,
-            workspaceId,
-            threadId,
-            requestId: parsed.data.requestId,
-          });
-        const interruptHeldTurn = async (goalId: string): Promise<void> => {
-          const current = getGoalRecord(workspaceDb, workspaceId, threadId, goalId);
-          if (!current?.currentTaskId) return;
-          const eligible = listDispatchableGoalTasks(workspaceDb, {
-            workspaceId,
-            threadId,
-            goalId,
-          });
-          if (eligible.some((task) => task.taskId === current.currentTaskId)) return;
-          const selectedTask = listGoalTasks(workspaceDb, { workspaceId, threadId, goalId }).find(
-            (task) => task.taskId === current.currentTaskId
-          );
-          if (selectedTask?.status === 'reviewing') return;
-          if (selectedTask?.status !== 'running') {
-            throw new GoalIntentRevisionError(
-              'recovery_required',
-              'Held current Task has contradictory state.'
-            );
-          }
-          const checkpoints = listThreadWorkerCheckpoints(
-            workspaceDb,
-            workspaceId,
-            threadId
-          ).filter(
-            (checkpoint) =>
-              checkpoint.goalId === goalId && checkpoint.taskId === current.currentTaskId
-          );
-          const active = checkpoints.filter((checkpoint) => {
-            const turn = store.getTurn(workspaceId, threadId, checkpoint.turnId);
-            return !isSealedTurnTerminal(turn.status);
-          });
-          if (active.length > 1 || checkpoints.length === 0) {
-            throw new GoalIntentRevisionError(
-              'recovery_required',
-              'Held Task has contradictory worker Turn lineage.'
-            );
-          }
-          if (active.length === 1) {
-            await interruptProductTurn({
-              store,
-              inflightCommands,
-              coreDb,
-              turnExecutor,
-              workspaceId,
-              threadId,
-              turnId: active[0]!.turnId,
-              requestId: `${parsed.data.requestId}:held-task`,
-            });
-          }
-        };
-        const response = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'goal.intent.revise',
-          requestId: parsed.data.requestId,
-          scope: { actorId: triggerActor.id, workspaceId, threadId },
-          input: {
-            objective: parsed.data.objective,
-            revision: parsed.data.revision,
-            affectedTaskIds: parsed.data.affectedTaskIds ?? null,
-          },
-          responseKind: 'goal',
-          execute: async () => {
-            const existing = readOwners();
-            if (existing) {
-              throw new GoalIntentRevisionError(
-                'recovery_required',
-                'Goal intent request has retained owners without a command receipt.'
-              );
-            }
-            const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-            const revised = reviseGoalIntent({
-              triggerActor,
-              store,
-              workspaceDb,
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              requestId: parsed.data.requestId,
-              objective: parsed.data.objective,
-              revision: parsed.data.revision,
-              ...(parsed.data.affectedTaskIds === undefined
-                ? {}
-                : { affectedTaskIds: parsed.data.affectedTaskIds }),
-            });
-            try {
-              await interruptHeldTurn(revised.goalId);
-            } catch {
-              throw new GoalIntentRevisionError(
-                'recovery_required',
-                'Goal intent is retained, but held Task interruption needs inspection.'
-              );
-            }
-            const summary = buildThreadGoalSummary(
-              workspaceDb,
-              workspaceId,
-              threadId,
-              revised.goalId
-            );
-            if (!summary)
-              throw new GoalIntentRevisionError(
-                'recovery_required',
-                'Revised Goal summary is missing.'
-              );
-            return ReviseThreadGoalIntentResponseSchema.parse({
-              goal: summary,
-              intentItemId: revised.intentItem.id,
-            });
-          },
-          replay: (record) => {
-            const owners = readOwners();
-            if (
-              !owners ||
-              record.response.kind !== 'goal' ||
-              owners.goalId !== record.response.id
-            ) {
-              throw new GoalIntentRevisionError(
-                'recovery_required',
-                'Goal intent receipt contradicts durable owners.'
-              );
-            }
-            const summary = buildThreadGoalSummary(
-              workspaceDb,
-              workspaceId,
-              threadId,
-              owners.goalId
-            );
-            if (!summary)
-              throw new GoalIntentRevisionError(
-                'recovery_required',
-                'Revised Goal summary is missing.'
-              );
-            return ReviseThreadGoalIntentResponseSchema.parse({
-              goal: summary,
-              intentItemId: owners.intentItem.id,
-            });
-          },
-          responseId: (result) => result.goal.goalId,
-        });
-        return c.json(response);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      if (error instanceof HTTPException) throw error;
-      if (error instanceof GoalIntentRevisionError)
-        return asApiError(error.message, error.code, error.status);
-      return asCommandError(error, 'goal_intent_revise_failed', 400);
-    }
+    return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
   });
 
   registerAppApiRoute(app, 'reviseThreadGoalPlan', async (c) => {
     const parsed = ReviseThreadGoalPlanRequestSchema.safeParse(
       await c.req.json().catch(() => ({}))
     );
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-
-      store.getWorkspace(workspaceId);
-      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Goal storage is unavailable for this NanoCore instance.',
-          'goal_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(workspaceId);
-      try {
-        const revised = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'goal.plan.revise',
-          requestId: parsed.data.requestId,
-          scope: { actorId: c.get('actor').userId, workspaceId, threadId },
-          input: { revision: parsed.data.revision },
-          responseKind: 'goal',
-          execute: () => {
-            const existing = readGoalPlanRevision({
-              triggerActor: { kind: 'user', id: c.get('actor').userId },
-              workspaceDb,
-              store,
-              workspaceId,
-              threadId,
-              requestId: parsed.data.requestId,
-            });
-            if (existing) {
-              if (existing.revisionItem.text !== parsed.data.revision) {
-                throw new IdempotencyKeyConflictError();
-              }
-              throw new GoalPlanApprovalError(
-                'recovery_required',
-                'Goal Plan revision owners exist without a matching command receipt.'
-              );
-            }
-
-            const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-            const pendingCandidate = goal.pendingPlanItemId
-              ? getGoalPlanRecord(workspaceDb, workspaceId, threadId, goal.pendingPlanItemId)
-              : null;
-            const predecessorPlanItemId =
-              pendingCandidate?.sourceIntentItemId === goal.currentIntentItemId
-                ? goal.pendingPlanItemId
-                : goal.planItemId;
-            if (!predecessorPlanItemId || isTerminalGoalStatus(goal.status)) {
-              throw new TurnStartValidationError(
-                'goal_plan_revision_unavailable',
-                'Goal has no Plan available for revision.',
-                409
-              );
-            }
-            const revised = reviseGoalPlan({
-              triggerActor: { kind: 'user', id: c.get('actor').userId },
-              workspaceDb,
-              store,
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              planItemId: predecessorPlanItemId,
-              requestId: parsed.data.requestId,
-              revision: parsed.data.revision,
-            });
-            return buildGoalPlanRevisionResponse(workspaceDb, workspaceId, threadId, revised);
-          },
-          replay: (record) => {
-            if (record.response.kind !== 'goal') {
-              throw new GoalPlanApprovalError(
-                'recovery_required',
-                'Goal Plan revision receipt has invalid response lineage.'
-              );
-            }
-            const existing = readGoalPlanRevision({
-              triggerActor: { kind: 'user', id: c.get('actor').userId },
-              workspaceDb,
-              store,
-              workspaceId,
-              threadId,
-              requestId: parsed.data.requestId,
-            });
-            if (
-              !existing ||
-              existing.goalId !== record.response.id ||
-              existing.revisionItem.text !== parsed.data.revision
-            ) {
-              throw new GoalPlanApprovalError(
-                'recovery_required',
-                'Goal Plan revision owners are missing or contradict the receipt.'
-              );
-            }
-            return buildGoalPlanRevisionResponse(workspaceDb, workspaceId, threadId, existing);
-          },
-          responseId: (result) => result.goal.goalId,
-        }).catch((error) => {
-          if (
-            error instanceof GoalPlanApprovalError ||
-            error instanceof IdempotencyKeyConflictError ||
-            error instanceof TurnStartValidationError
-          ) {
-            throw error;
-          }
-          const existing = readGoalPlanRevision({
-            triggerActor: { kind: 'user', id: c.get('actor').userId },
-            workspaceDb,
-            store,
-            workspaceId,
-            threadId,
-            requestId: parsed.data.requestId,
-          });
-          if (existing) {
-            throw new GoalPlanApprovalError(
-              'recovery_required',
-              'Goal Plan revision owners exist without a matching command receipt.'
-            );
-          }
-          throw error;
-        });
-        return c.json(revised);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
-      }
-      if (error instanceof GoalPlanApprovalError) {
-        return asApiError(error.message, error.code, error.status);
-      }
-      return asCommandError(error, 'goal_plan_revise_failed', 400);
-    }
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
   });
 
   registerAppApiRoute(app, 'pauseThreadGoal', async (c) => {
@@ -4143,499 +3098,8 @@ export function registerGoalRoutes({
 
   registerAppApiRoute(app, 'runThreadGoalStep', async (c) => {
     const parsed = RunThreadGoalStepRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    let workerLaunchFenced = false;
-    let workerTurnTerminalized = false;
-
-    try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-      const triggerActor = {
-        kind: 'user',
-        id: c.get('actor').userId,
-      } as const satisfies ActorRef;
-
-      store.getWorkspace(workspaceId);
-      requireAuthorizedGoalThread(c, store, workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Goal storage is unavailable for this NanoCore instance.',
-          'goal_storage_unavailable',
-          503
-        );
-      }
-
-      const workspaceDb = repositoryWorkspaceDb(workspaceId);
-      try {
-        const commandInput = parsed.data.refinement ? { refinement: parsed.data.refinement } : {};
-        const requestInputHash = commandInputHash(commandInput);
-        const reservedTurnId = goalStepTurnId({
-          actorId: triggerActor.id,
-          workspaceId,
-          threadId,
-          requestId: parsed.data.requestId,
-        });
-        const response = await runIdempotentCommand({
-          store,
-          workspaceDb,
-          inflightCommands,
-          command: 'goal.step',
-          requestId: parsed.data.requestId,
-          scope: { actorId: triggerActor.id, workspaceId, threadId },
-          input: commandInput,
-          responseKind: 'goal',
-          responseId: (result) => result.goal.goalId,
-          replay: (record) => {
-            requireGoalRefinementItem({
-              store,
-              workspaceId,
-              threadId,
-              turnId: reservedTurnId,
-              requestId: parsed.data.requestId,
-              refinement: parsed.data.refinement,
-            });
-            return projectGoalStepResponse({
-              workspaceDb,
-              workspaceId,
-              threadId,
-              record,
-            });
-          },
-          execute: async () => {
-            const checkpoint = getWorkerCheckpoint(
-              workspaceDb,
-              workspaceId,
-              threadId,
-              reservedTurnId
-            );
-            if (checkpoint) {
-              const outcome = await classifyGoalStepCheckpointAfterSchedulerRecovery({
-                coreDb,
-                store,
-                workspaceDb,
-                checkpoint,
-              });
-              if (outcome === 'live') {
-                throw new TurnStartValidationError(
-                  'thread_busy',
-                  'The original Goal step is still active, awaiting reconnection, or waiting for a human response.',
-                  409
-                );
-              }
-              const recovered = store.getCommandRequest(
-                'goal.step',
-                parsed.data.requestId,
-                { actorId: triggerActor.id, workspaceId, threadId },
-                workspaceDb
-              );
-              if (!recovered) {
-                throw goalStepRecoveryError(
-                  'Goal step effects exist without a completed command receipt.'
-                );
-              }
-              requireGoalRefinementItem({
-                store,
-                workspaceId,
-                threadId,
-                turnId: reservedTurnId,
-                requestId: parsed.data.requestId,
-                refinement: parsed.data.refinement,
-              });
-              return projectGoalStepResponse({
-                workspaceDb,
-                workspaceId,
-                threadId,
-                record: recovered,
-              });
-            }
-            let reservedTurnExists = false;
-            try {
-              store.getTurn(workspaceId, threadId, reservedTurnId);
-              reservedTurnExists = true;
-            } catch {
-              reservedTurnExists = false;
-            }
-            if (reservedTurnExists) {
-              throw goalStepRecoveryError(
-                'Goal step Turn exists without a completed command receipt.'
-              );
-            }
-            const activeTurn = store.listThreadTurns(workspaceId, threadId).find(isNonTerminalTurn);
-            if (activeTurn) {
-              throw new TurnStartValidationError(
-                'thread_busy',
-                'Thread already has an active worker turn.',
-                409
-              );
-            }
-            const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-
-            if (goal.status === 'paused') {
-              throw new TurnStartValidationError('goal_paused', 'Goal is paused.', 409);
-            }
-
-            if (goal.status !== 'running') {
-              throw new TurnStartValidationError('goal_not_running', 'Goal is not running.', 409);
-            }
-
-            const tasks = listDispatchableGoalTasks(workspaceDb, {
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-            });
-            const task = selectNextGoalWorkerTask(tasks);
-
-            if (!task) {
-              throw new TurnStartValidationError(
-                'goal_no_ready_task',
-                'Goal does not have a ready task.',
-                409
-              );
-            }
-            const refinement = parsed.data.refinement;
-            if (refinement) {
-              if (
-                refinement.activePlanItemId !== goal.planItemId ||
-                refinement.taskId !== task.taskId
-              ) {
-                throw new TurnStartValidationError(
-                  'stale',
-                  'Goal refinement does not match the selected approved Task.',
-                  409
-                );
-              }
-              if (
-                new Set(refinement.evidenceItemIds).size !== refinement.evidenceItemIds.length ||
-                new Set(refinement.evidenceArtifactIds).size !==
-                  refinement.evidenceArtifactIds.length
-              ) {
-                throw new TurnStartValidationError(
-                  'invalid_request',
-                  'Goal refinement evidence ids must be distinct.',
-                  400
-                );
-              }
-              const visibleItems = new Map(
-                store.listThreadItems(workspaceId, threadId).map((item) => [item.id, item])
-              );
-              if (
-                refinement.evidenceItemIds.some(
-                  (id) => visibleItems.get(id)?.status !== 'completed'
-                )
-              ) {
-                throw new TurnStartValidationError(
-                  'stale',
-                  'Goal refinement Item evidence is unavailable.',
-                  409
-                );
-              }
-              if (
-                refinement.evidenceArtifactIds.some((id) => {
-                  const artifact = store
-                    .listArtifacts(workspaceId)
-                    .find((entry) => entry.id === id);
-                  return (
-                    !artifact ||
-                    (artifact.threadId !== null && artifact.threadId !== threadId) ||
-                    !task.resources.some(
-                      (resource) => resource.kind === 'artifact' && resource.reference === id
-                    )
-                  );
-                })
-              ) {
-                throw new TurnStartValidationError(
-                  'stale',
-                  'Goal refinement Artifact evidence is outside this Task.',
-                  409
-                );
-              }
-            }
-
-            let workerCoordinator: WorkerCoordinatorDecision | null = null;
-            const reviewRequired = task.reviewPolicy.required;
-
-            const loop = await runWorkerTurnLoop({
-              coreDb,
-              triggerActor,
-              workspaceDb,
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              taskId: task.taskId,
-              requestId: parsed.data.requestId,
-              requestInputHash,
-              reviewRequired,
-              remainingWorkerIterations: 0,
-              prepare: () => {
-                const preparedContext = prepareGoalTaskDelegation(workspaceDb, {
-                  store,
-                  workspaceId,
-                  userId: c.get('actor').userId,
-                  threadId,
-                  goalId: goal.goalId,
-                  taskId: task.taskId,
-                  threadItems: store.listThreadItems(workspaceId, threadId),
-                });
-                if (
-                  refinement?.evidenceItemIds.some(
-                    (id) =>
-                      !preparedContext.contextRefs.some(
-                        (ref) => ref.kind === 'item' && ref.id === id
-                      )
-                  )
-                ) {
-                  throw new TurnStartValidationError(
-                    'stale',
-                    'Goal refinement Item evidence is not deliverable in the Task context.',
-                    409
-                  );
-                }
-                const coordinator = createWorkerCoordinatorDecision({
-                  prompt: refinement
-                    ? `${preparedContext.objective}\n\nExecution refinement within this approved Task: ${refinement.changedAction}`
-                    : preparedContext.objective,
-                  readiness: workerCoordinatorCandidates(store, workspaceId),
-                  routingContext: 'goal_step',
-                  threadState: { status: 'idle', threadId },
-                  workspaceSummary: {
-                    name: store.getWorkspace(workspaceId).name,
-                    workspaceId,
-                  },
-                  contextRefs: preparedContext.contextRefs,
-                  workerRequestDetails: preparedContext.workerRequestDetails,
-                });
-
-                if (
-                  coordinator.decision !== 'worker_turn' ||
-                  !coordinator.selectedWorkerCandidate ||
-                  !coordinator.workerRequest ||
-                  coordinator.requiredUserAction !== 'none'
-                ) {
-                  throw new Error(
-                    `Goal step Coordinator did not select a worker: ${coordinator.explanation}`
-                  );
-                }
-
-                workerCoordinator = coordinator;
-                return {
-                  delegationRequest: coordinator.workerRequest,
-                  contextPackageDigest: preparedContext.contextPackageDigest,
-                  knowledgeSelectionInput: null,
-                };
-              },
-              reserveTurn: ({ prepared }) => {
-                const pending = getPendingUserTurnRecord(workspaceDb, workspaceId, threadId);
-                if (pending?.goalId === goal.goalId) {
-                  requireGoalSteeringSendProof(workspaceDb, store, pending);
-                  if (pending.inputKind === 'material') {
-                    if (!pending.materialId || !pending.revisionId || !pending.contentDigest) {
-                      throw goalStepRecoveryError(
-                        'Goal steering Material authority is incomplete before reservation.'
-                      );
-                    }
-                    let steeringRevision: ReturnType<typeof getWorkspaceMaterialRevision>;
-                    try {
-                      steeringRevision = getWorkspaceMaterialRevision(
-                        workspaceDb,
-                        pending.materialId,
-                        pending.revisionId
-                      );
-                    } catch {
-                      throw goalStepRecoveryError(
-                        'Goal steering Material authority is unavailable before reservation.'
-                      );
-                    }
-                    if (steeringRevision.contentDigest !== pending.contentDigest) {
-                      throw goalStepRecoveryError(
-                        'Goal steering Material digest is contradictory before reservation.'
-                      );
-                    }
-                    const workerRequestBytes = serializeStructuredWorkerDelegationRequest(
-                      prepared.delegationRequest
-                    );
-                    if (
-                      Math.ceil(
-                        (Buffer.byteLength(workerRequestBytes, 'utf8') +
-                          Buffer.byteLength(steeringRevision.content, 'utf8')) /
-                          4
-                      ) > prepared.delegationRequest.constraints.maxContextTokens
-                    ) {
-                      throw new TurnStartValidationError(
-                        'goal_steering_delivery_unavailable',
-                        'Goal steering Material exceeds the worker Context Package budget.',
-                        503
-                      );
-                    }
-                  }
-                }
-                const reservation = reserveGoalTaskForWorkerTurn(workspaceDb, {
-                  workspaceId,
-                  threadId,
-                  goalId: goal.goalId,
-                  taskId: task.taskId,
-                });
-                if (!reservation) {
-                  throw new TurnStartValidationError(
-                    'recovery_required',
-                    'Goal or Task changed before worker-turn reservation.',
-                    409
-                  );
-                }
-
-                if (pending?.goalId === goal.goalId) {
-                  claimPendingUserTurnRecord(workspaceDb, {
-                    workspaceId,
-                    threadId,
-                    pendingTurnId: pending.pendingTurnId,
-                    terminalClaimKind: 'applied',
-                    terminalClaimId: `ctxpkg_${reservedTurnId}`,
-                    terminalClaimedAt: new Date().toISOString(),
-                  });
-                }
-
-                return { turnId: reservedTurnId };
-              },
-              startWorker: async ({ turnId, prepared }) => {
-                workerLaunchFenced = true;
-                const worker = workerCoordinator?.selectedWorkerCandidate;
-                if (!worker) {
-                  throw new Error(
-                    'Goal step Coordinator decision is unavailable before worker start.'
-                  );
-                }
-                const workerStorageChoice = goalChildWorkerStorageChoice(coreDb, goal, task);
-
-                await startModeWorkerTurn({
-                  triggerActor,
-                  store,
-                  workspaceId,
-                  threadId,
-                  prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
-                  requestId: parsed.data.requestId,
-                  requestedAgentId: worker.agentId,
-                  reservedTurnId: turnId,
-                  workerStorageChoice,
-                  ...(refinement
-                    ? {
-                        onTurnCreated: (turn) => {
-                          const timestamp = turn.startedAt ?? new Date().toISOString();
-                          store.createItem({
-                            id: goalRefinementItemId(turn.id),
-                            workspaceId,
-                            threadId,
-                            turnId: turn.id,
-                            type: 'status',
-                            status: 'completed',
-                            level: 'info',
-                            title: 'Goal execution refinement',
-                            summary: goalRefinementSummary(refinement),
-                            causationId: parsed.data.requestId,
-                            createdAt: timestamp,
-                            completedAt: timestamp,
-                          });
-                        },
-                      }
-                    : {}),
-                });
-                const session =
-                  turnExecutor.getAgentSession?.(store, workspaceId, threadId) ?? null;
-
-                return { workerSessionId: session?.id ?? null };
-              },
-              awaitWorker: async ({ turnId }) => {
-                const turn = await waitForWorkerTurnTerminalState(store, turnId);
-                completeSchedulerLeaseForTerminalTurn(coreDb, turn);
-                const evidence = collectWorkerTurnEvidence(
-                  store.listThreadItems(workspaceId, threadId),
-                  turnId
-                );
-                const message =
-                  turn.error?.message ??
-                  (turn.status === 'completed' ? null : 'Worker turn ended without success.');
-
-                return {
-                  stopReason: stopReasonForTurnStatus(turn.status),
-                  itemIds: evidence.itemIds,
-                  artifactIds: evidence.artifactIds,
-                  diagnosticsSummary: message,
-                };
-              },
-            });
-
-            workerTurnTerminalized = true;
-            if (loop.stopDecision.outcome === 'continue') {
-              throw new TurnStartValidationError(
-                'goal_stop_decision_invalid',
-                'Goal Mode does not permit lower-level worker continuation.',
-                409
-              );
-            }
-            if (!workerCoordinator) {
-              throw new Error(
-                'Goal step Coordinator decision is unavailable after worker completion.'
-              );
-            }
-            return commitGoalStepOwnerOutcome({
-              authorityActor: triggerActor,
-              workspaceDb,
-              workspaceId,
-              threadId,
-              requestId: parsed.data.requestId,
-              goal,
-              task,
-              tasks,
-              turnId: loop.turnId,
-              stopDecision: loop.stopDecision,
-              evidence: loop.evidence,
-              contextAssembly: loop.contextAssembly,
-            });
-          },
-        });
-        const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, reservedTurnId);
-        if (checkpoint && checkpoint.stage !== 'waiting_for_user') {
-          workerTurnTerminalized = true;
-          const checkpointCleared = await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-            workspaceId,
-            threadId,
-            turnId: reservedTurnId,
-          });
-          if (!checkpointCleared) {
-            throw goalStepRecoveryError(
-              'Goal worker checkpoint is not ready for terminal cleanup.'
-            );
-          }
-        }
-
-        return c.json(response);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
-      }
-      if (error instanceof GoalReviewResolutionError) {
-        return asApiError(error.message, error.code, error.status);
-      }
-      if (error instanceof IdempotencyKeyConflictError) {
-        return asApiError(error.message, error.code, error.status);
-      }
-      const recoveryRequired = workerLaunchFenced || workerTurnTerminalized;
-      if (error instanceof TurnStartValidationError && !recoveryRequired) {
-        return asApiError(error.message, error.code, error.status);
-      }
-      return asApiError(
-        redactInternalAgentText((error as Error).message),
-        recoveryRequired ? 'recovery_required' : 'goal_step_failed',
-        recoveryRequired ? 409 : 400
-      );
-    }
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
   });
 
   if (mode === 'local') {
@@ -4645,186 +3109,8 @@ export function registerGoalRoutes({
         const parsed = RunThreadGoalTestSuperviseStepRequestSchema.safeParse(
           await c.req.json().catch(() => ({}))
         );
-
-        if (!parsed.success) {
-          return asInvalidRequestError(parsed.error);
-        }
-
-        try {
-          const workspaceId = c.req.param('workspaceId');
-          const threadId = c.req.param('threadId');
-          const store = requestStore(c);
-
-          store.getWorkspace(workspaceId);
-          store.getThread(workspaceId, threadId);
-
-          if (!coreDb) {
-            return asApiError(
-              'Goal storage is unavailable for this NanoCore instance.',
-              'goal_storage_unavailable',
-              503
-            );
-          }
-
-          const workspaceDb = repositoryWorkspaceDb(workspaceId);
-          try {
-            const goal = requireLatestActiveGoal(workspaceDb, workspaceId, threadId);
-
-            if (goal.status !== 'running') {
-              return asApiError('Goal is not running.', 'goal_not_running', 409);
-            }
-
-            const task = selectNextReadyGoalTask(
-              listGoalTasks(workspaceDb, { workspaceId, threadId, goalId: goal.goalId })
-            );
-
-            if (!task) {
-              return asApiError('Goal does not have a ready task.', 'goal_no_ready_task', 409);
-            }
-
-            recordGoalWorkerLaunchDecision({
-              workspaceDb,
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              taskId: task.taskId,
-              enforcementPoint: 'goal.test.supervise.worker_start',
-            });
-            const worker = await startGoalTaskWorkerTurn({
-              workspaceDb,
-              store,
-              triggerActor: { kind: 'user', id: c.get('actor').userId },
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              taskId: task.taskId,
-              requestId: `goal-test-supervise:${goal.goalId}:${task.taskId}`,
-              requestInputHash: commandInputHash(parsed.data),
-              prepared: createDeterministicPreparedGoalTask(task),
-              startWorker: () => ({ workerSessionId: null }),
-            });
-            const timestamp = worker.turn.startedAt ?? new Date().toISOString();
-            const evidenceItem = store.createItem({
-              id: `it_goal_worker_${goal.goalId}_${task.taskId}`,
-              workspaceId,
-              threadId,
-              turnId: worker.turn.id,
-              type: 'status',
-              status: 'completed',
-              level: 'info',
-              title: 'Deterministic worker completed',
-              summary: task.objective,
-              createdAt: timestamp,
-              completedAt: timestamp,
-            });
-
-            store.updateTurn(worker.turn.id, {
-              status: 'completed',
-              completedAt: timestamp,
-              durationMs: 0,
-            });
-
-            const workerOutcome = recordGoalTaskWorkerOutcome(workspaceDb, {
-              authorityActor: worker.turn.triggerActor,
-              workspaceDb,
-              workspaceId,
-              threadId,
-              goalId: goal.goalId,
-              taskId: task.taskId,
-              turnId: worker.turn.id,
-              stopReason: 'completed',
-              itemIds: [evidenceItem.id],
-            });
-            const requestId = `goal-test-supervise:${goal.goalId}:${task.taskId}`;
-            const { review, advance } = workspaceDb.sqlite.transaction(() => {
-              const unresolved = createGoalReviewRecord(workspaceDb, {
-                reviewId: `review_${goal.goalId}_${task.taskId}`,
-                workspaceId,
-                threadId,
-                goalId: goal.goalId,
-                taskId: task.taskId,
-                turnId: worker.turn.id,
-                itemIds: [evidenceItem.id],
-                prompt: 'Review the deterministic worker evidence.',
-                createdByRequestId: requestId,
-              });
-              updateGoalTask(workspaceDb, {
-                workspaceId,
-                threadId,
-                goalId: goal.goalId,
-                taskId: task.taskId,
-                status: 'reviewing',
-              });
-              updateGoalStatus(workspaceDb, {
-                workspaceId,
-                threadId,
-                goalId: goal.goalId,
-                status: 'reviewing',
-                currentTaskId: task.taskId,
-                terminalStopReason: null,
-              });
-              const advance = advanceGoalAfterReview(workspaceDb, {
-                workspaceId,
-                threadId,
-                goalId: goal.goalId,
-                taskId: task.taskId,
-                verdict: parsed.data.verdict,
-              });
-              const review = resolveGoalReviewRecord(workspaceDb, {
-                workspaceId,
-                threadId,
-                goalId: goal.goalId,
-                reviewId: unresolved.reviewId,
-                requestId,
-                actorId: c.get('actor').userId,
-                verdict: parsed.data.verdict,
-                ...(parsed.data.verdict === 'retry' || parsed.data.verdict === 'abort'
-                  ? { reason: 'Deterministic test decision.' }
-                  : {}),
-                ...(parsed.data.verdict === 'refine'
-                  ? { revisionInstruction: 'Deterministic refinement instruction.' }
-                  : {}),
-                resolutionSnapshot: advance,
-              });
-
-              return { review, advance };
-            })();
-            const summary = buildThreadGoalSummary(workspaceDb, workspaceId, threadId);
-
-            if (!summary) {
-              return asApiError('Goal summary is unavailable.', 'goal_summary_unavailable', 500);
-            }
-
-            return c.json(
-              RunThreadGoalTestSuperviseStepResponseSchema.parse({
-                goal: summary,
-                task: {
-                  taskId: advance.task.taskId,
-                  title: task.title,
-                  status: advance.task.status,
-                  orderIndex: task.orderIndex,
-                },
-                worker: {
-                  turnId: worker.turn.id,
-                  stopReason: 'completed',
-                  checkpointStage: workerOutcome.checkpointStage,
-                },
-                review: {
-                  reviewId: review.reviewId,
-                  verdict: review.verdict,
-                },
-                advance: {
-                  outcome: advance.outcome,
-                  nextReadyTaskId: advance.nextReadyTaskId,
-                },
-              })
-            );
-          } finally {
-            workspaceDb.sqlite.close();
-          }
-        } catch (error) {
-          return asApiError((error as Error).message, 'goal_supervise_step_failed', 400);
-        }
+        if (!parsed.success) return asInvalidRequestError(parsed.error);
+        return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
       }
     );
   }

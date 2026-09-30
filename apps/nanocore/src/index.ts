@@ -60,6 +60,10 @@ import {
   startOpenShellRefreshStatusPollingService,
 } from './runtime/openshell-refresh-status-polling-service.js';
 import {
+  installPendingRequestAdmission,
+  recoverPendingRequestsAtBoot,
+} from './runtime/pending-request-flow.js';
+import {
   type SchedulerDispatchRetryService,
   startSchedulerDispatchRetryService,
 } from './runtime/scheduler-dispatch-service.js';
@@ -383,6 +387,17 @@ const bootResult = await runBootPhases({
           .schedulerEpoch;
         const checkpointRecoveryFailures =
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
+        const pendingWorkspace = {
+          coreDb: recoveryCoreDb,
+          agentAuthority: (record: import('./runtime/pending-requests.js').PendingRequestRecord) =>
+            runtimeConfigSnapshot!.agentManifests.some(
+              (manifest) => manifest.id === record.agentId
+            ),
+          openWorkspace: (workspaceId: string) =>
+            openBootVerifiedWorkspaceDb(dataRoot, workspaceId),
+        };
+        installPendingRequestAdmission(recoveryStore, pendingWorkspace);
+        recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
         runRecoveryMaintenance = () =>
           runSchedulerRecoveryMaintenance(recoveryCoreDb, schedulerEpoch, recoveryInput);
         for (const row of recoveryCoreDb.sqlite

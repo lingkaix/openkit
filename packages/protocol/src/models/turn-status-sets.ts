@@ -12,7 +12,6 @@ import type { TurnStatus } from './turn.js';
 export const SEALED_TURN_TERMINALS: Record<TurnStatus, boolean> = {
   pending: false,
   running: false,
-  awaiting_human: false,
   completed: true,
   interrupted: true,
   cancelled: true,
@@ -22,9 +21,7 @@ export const SEALED_TURN_TERMINALS: Record<TurnStatus, boolean> = {
 /**
  * Exhaustive membership for Turn statuses that are settled for waiters.
  *
- * Settled for waiters is the sealed terminals plus awaiting_human.
- *
- * awaiting_human does not advance on its own but can still be moved by an outside actor.
+ * No Turn state pauses for a person, so settled for waiters is the sealed terminals.
  *
  * Authority lives in docs/core/protocol.md Turn Semantics.
  *
@@ -33,7 +30,6 @@ export const SEALED_TURN_TERMINALS: Record<TurnStatus, boolean> = {
 export const SETTLED_FOR_WAITERS_TURN_STATUSES: Record<TurnStatus, boolean> = {
   pending: false,
   running: false,
-  awaiting_human: true,
   completed: true,
   interrupted: true,
   cancelled: true,
@@ -52,7 +48,6 @@ export const SETTLED_FOR_WAITERS_TURN_STATUSES: Record<TurnStatus, boolean> = {
 export const CHECKPOINT_COLLECTABLE_TURN_STATUSES: Record<TurnStatus, boolean> = {
   pending: false,
   running: false,
-  awaiting_human: false,
   completed: true,
   interrupted: false,
   cancelled: true,
@@ -71,7 +66,6 @@ export const CHECKPOINT_COLLECTABLE_TURN_STATUSES: Record<TurnStatus, boolean> =
 export const RECOVERY_REWRITABLE_TURN_STATUSES: Record<TurnStatus, boolean> = {
   pending: true,
   running: true,
-  awaiting_human: false,
   completed: false,
   interrupted: false,
   cancelled: false,
@@ -92,7 +86,7 @@ export function isSealedTurnTerminal(status: TurnStatus): boolean {
  * Returns whether a Turn status is settled for waiters.
  *
  * @param status Turn status to classify.
- * @returns True for sealed terminals plus awaiting_human.
+ * @returns True for the sealed terminals.
  */
 export function isSettledForWaitersTurnStatus(status: TurnStatus): boolean {
   return SETTLED_FOR_WAITERS_TURN_STATUSES[status] === true;

@@ -145,7 +145,7 @@ describe('runtime config reload API', () => {
     expect(diagnostics.providers.registry[0]?.models).toContain('openai/gpt-5.1');
   });
 
-  it('keeps the active AgentSession suspended across a restart-required provider reload', async () => {
+  it('keeps the active AgentSession across a restart-required provider reload', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -229,7 +229,7 @@ describe('runtime config reload API', () => {
       expect(turn).not.toHaveProperty('agentSessionId');
       const sessionsBeforeReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
       expect(sessionsBeforeReload).toEqual([
-        expect.objectContaining({ configVersion: 1, stale: false, status: 'suspended' }),
+        expect.objectContaining({ configVersion: 1, stale: false, status: 'idle' }),
       ]);
 
       writeServerConfig(dataRoot, 'openai/gpt-5.2');

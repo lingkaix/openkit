@@ -247,7 +247,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
  * @param coreDb Open Core database handle.
  * @param input Exact queued admission owner.
  */
-function cancelOwnedDeferredAdmission(
+export function cancelOwnedDeferredAdmission(
   coreDb: CoreDb,
   input: { readonly queueEntryId: string; readonly workspaceId: string }
 ): void {

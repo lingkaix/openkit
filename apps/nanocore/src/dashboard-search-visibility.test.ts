@@ -79,7 +79,9 @@ describe('dashboard and search Thread audiences', () => {
         }
       );
       expect(response.status).toBe(409);
-      expect(await response.json()).toMatchObject({ code: 'shared_thread_required' });
+      expect(await response.json()).toMatchObject({
+        code: mode === 'goal' ? 'goal_mode_unavailable' : 'shared_thread_required',
+      });
       expect(store.getThread(workspace.id, thread.id).visibility).toBe('private');
       expect(store.listThreadTurns(workspace.id, thread.id)).toEqual([]);
     }

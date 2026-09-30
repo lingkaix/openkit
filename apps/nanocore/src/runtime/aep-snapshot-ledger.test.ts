@@ -91,7 +91,6 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
         threadId: 'th_1',
         items: [],
         status: 'running',
-        humanGate: null,
         error: null,
         configVersion: null,
         startedAt: '2026-07-06T00:00:00.000Z',

@@ -190,6 +190,7 @@ describe('worker Context Package authority reader', () => {
       causationId: request.id,
       userInputRequestId: 'ui_gate',
       answers: { path: ['Use path A'] },
+      answeredAt: '2026-07-18T00:00:01.000Z',
       createdAt: '2026-07-18T00:00:01.000Z',
       completedAt: '2026-07-18T00:00:01.000Z',
     });

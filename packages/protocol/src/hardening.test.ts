@@ -149,7 +149,6 @@ describe('protocol hardening boundary', () => {
       triggerSource: { kind: 'user-input', summary: 'User started a worker turn.' },
       items: [],
       status: 'running',
-      humanGate: null,
       error: null,
       configVersion: null,
       startedAt: '2026-05-27T00:00:00Z',

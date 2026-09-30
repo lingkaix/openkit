@@ -11,6 +11,7 @@ import {
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createApp } from './app.js';
+import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
@@ -482,7 +483,6 @@ describe('quick chat app API', () => {
       'created',
       'initializing',
       'degraded',
-      'suspended',
       'interrupted',
       'failed',
       'closed',
@@ -1304,9 +1304,16 @@ describe('quick chat app API', () => {
   });
 
   it('asks a bounded clarification question for vague Chat Mode requests', async () => {
-    const store = createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-clarify-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     const app = createApp({
       ...createQuickChatProviderOptions(),
+      coreDb,
+      dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -1338,11 +1345,7 @@ describe('quick chat app API', () => {
         prompt: 'Chat Mode needs a more specific request.',
       },
     });
-    expect(parsed.turn.status).toBe('awaiting_human');
-    expect(parsed.turn.humanGate).toMatchObject({
-      kind: 'user-input',
-      itemId: parsed.item.id,
-    });
+    expect(parsed.turn.status).toBe('completed');
     expect(store.listThreadItems('ws_demo', 'th_demo').map((item) => item.type)).toEqual([
       'user-message',
       'user-input-request',
@@ -1364,11 +1367,14 @@ describe('quick chat app API', () => {
     });
 
     const actionCenterRes = await app.request('/api/app/workspaces/ws_demo/action-center');
-    const actionCenter = (await actionCenterRes.json()) as { items: Array<{ source: unknown }> };
+    const actionCenter = (await actionCenterRes.json()) as {
+      items: Array<{ kind: string; source: unknown }>;
+    };
 
-    expect(actionCenter.items).toEqual([
+    expect(actionCenter.items.filter((item) => item.kind === 'question')).toEqual([
       expect.objectContaining({
         kind: 'question',
+        id: `question:ui_chat_clarify_${parsed.turn.id}`,
         source: expect.objectContaining({
           type: 'protocol_item',
           itemType: 'user-input-request',
@@ -1376,9 +1382,6 @@ describe('quick chat app API', () => {
         }),
       }),
     ]);
-
-    const completedAt = new Date().toISOString();
-    store.updateTurn(parsed.turn.id, { status: 'completed', humanGate: null, completedAt });
 
     const replayRes = await app.request(
       '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
@@ -1411,6 +1414,157 @@ describe('quick chat app API', () => {
     );
     expect(contradictedReplay.status).toBe(409);
     await expect(contradictedReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+    coreDb.sqlite.close();
+  });
+
+  it('delivers a clarified answer through the Assistant service without a conversation receipt', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-clarify-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      coreDb,
+      dataRoot,
+      store,
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async () => {
+          const accepted = openWorkspaceDb(dataRoot, 'ws_demo');
+          expect(
+            accepted.sqlite
+              .prepare('SELECT delivery FROM pending_requests WHERE request_id = ?')
+              .get(`ui_chat_clarify_${parsed.turn.id}`)
+          ).toEqual({ delivery: 'delivered' });
+          accepted.sqlite.close();
+          return {
+            id: 'clarified-answer',
+            choices: [{ message: { content: 'Four is the answer.', role: 'assistant' } }],
+          };
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const res = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest('Help', 'req_chat_clarify')),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+
+    expect(res.status).toBe(202);
+    const parsed = SubmitConversationResponseSchema.parse(await res.json());
+
+    expect(parsed).toMatchObject({
+      outcome: 'clarification-needed',
+      explanation: 'The Assistant needs a concrete request before choosing a mode.',
+      handoff: null,
+      item: {
+        type: 'user-input-request',
+        status: 'completed',
+        prompt: 'Chat Mode needs a more specific request.',
+      },
+    });
+    expect(parsed.turn.status).toBe('completed');
+    expect(store.listThreadItems('ws_demo', 'th_demo').map((item) => item.type)).toEqual([
+      'user-message',
+      'user-input-request',
+    ]);
+    expect(
+      store.getCommandRequest('conversation.submit', 'req_chat_clarify', {
+        actorId: 'user_local',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+      })?.response.conversationMetadata
+    ).toEqual({
+      downstream: null,
+      logicalModelId: 'quick-chat',
+      receivingThreadId: 'th_demo',
+      receivingWorkspaceId: 'ws_demo',
+      resultKind: 'clarification',
+      status: 202,
+      targetRef: 'internal-role:assistant',
+    });
+
+    const actionCenterRes = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const actionCenter = (await actionCenterRes.json()) as {
+      items: Array<{ kind: string; source: unknown }>;
+    };
+
+    expect(actionCenter.items.filter((item) => item.kind === 'question')).toEqual([
+      expect.objectContaining({
+        kind: 'question',
+        id: `question:ui_chat_clarify_${parsed.turn.id}`,
+        source: expect.objectContaining({
+          type: 'protocol_item',
+          itemType: 'user-input-request',
+          itemId: parsed.item.id,
+        }),
+      }),
+    ]);
+
+    const replayRes = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest('Help', 'req_chat_clarify')),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+    const replay = SubmitConversationResponseSchema.parse(await replayRes.json());
+
+    expect(replayRes.status).toBe(202);
+    expect(replay.turn).toEqual(parsed.turn);
+    expect(replay.item).toEqual(parsed.item);
+
+    const answer = await app.request(
+      `/api/user-input-requests/ui_chat_clarify_${parsed.turn.id}/answer`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          userInputRequestId: `ui_chat_clarify_${parsed.turn.id}`,
+          requestId: '00000000-0000-4000-8000-00000000aa01',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          answers: { chat_clarification: ['What is two plus two?'] },
+        }),
+      }
+    );
+    expect(answer.status, await answer.clone().text()).toBe(200);
+    for (
+      let attempt = 0;
+      attempt < 1000 &&
+      !store
+        .listThreadItems('ws_demo', 'th_demo')
+        .some((item) => item.type === 'assistant-message' && item.text === 'Four is the answer.');
+      attempt += 1
+    )
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    const result = store
+      .listThreadItems('ws_demo', 'th_demo')
+      .find((item) => item.type === 'assistant-message' && item.text === 'Four is the answer.');
+    expect(
+      result,
+      JSON.stringify(
+        store.listThreadTurns('ws_demo', 'th_demo').map((turn) => ({
+          status: turn.status,
+          error: turn.error,
+          trigger: turn.triggerSource,
+          items: turn.items.map((item) => item.type),
+        }))
+      )
+    ).toBeDefined();
+    expect(result?.turnId).not.toBe(parsed.turn.id);
+    expect(store.getTurnById(result!.turnId!).agentSessionId).toBeFalsy();
+    expect(
+      store.listCommandRequests().filter((receipt) => receipt.command === 'conversation.submit')
+    ).toHaveLength(1);
+    coreDb.sqlite.close();
   });
 
   it('fails Chat Mode replay closed when durable owners contradict', async () => {
@@ -1531,6 +1685,7 @@ describe('quick chat app API', () => {
         artifactRefs: [],
       };
 
+      const turnsBefore = store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id);
       const goalRes = await app.request(
         '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
         {
@@ -1540,13 +1695,19 @@ describe('quick chat app API', () => {
         }
       );
 
-      expect(goalRes.status).toBe(202);
-      const accepted = SubmitConversationResponseSchema.parse(await goalRes.json());
-      expect(accepted).toMatchObject({
-        outcome: 'goal-handoff',
-        handoff: { targetMode: 'goal' },
-        item: { type: 'status', title: 'Goal Mode handoff' },
-      });
+      expect(goalRes.status).toBe(409);
+      await expect(goalRes.json()).resolves.toMatchObject({ code: 'goal_mode_unavailable' });
+      expect(store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id)).toEqual(
+        turnsBefore
+      );
+      expect(
+        store.getCommandRequest('conversation.submit', request.requestId, {
+          actorId: 'user_local',
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        })
+      ).toBeNull();
+
       const replayRes = await app.request(
         '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
         {
@@ -1556,36 +1717,12 @@ describe('quick chat app API', () => {
         }
       );
 
-      expect(replayRes.status).toBe(202);
-      expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(accepted);
-      expect(store.listCommandRequests().map((record) => record.command)).toEqual([
-        'conversation.submit',
-      ]);
-
-      const goalTurn = store
-        .listThreadTurns('ws_demo', 'th_demo')
-        .find((turn) => turn.id !== accepted.turn.id);
-      const creationItem = goalTurn?.items.find((item) => item.type === 'user-message');
-
-      if (!creationItem) {
-        throw new Error('Expected the Goal creation Item.');
-      }
-
-      creationItem.status = 'in_progress';
-      creationItem.completedAt = null;
-      const contradictedReplayRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: JSON.stringify(request),
-          headers: { 'content-type': 'application/json' },
-        }
+      expect(replayRes.status).toBe(409);
+      await expect(replayRes.json()).resolves.toMatchObject({ code: 'goal_mode_unavailable' });
+      expect(store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id)).toEqual(
+        turnsBefore
       );
-
-      expect(contradictedReplayRes.status).toBe(409);
-      await expect(contradictedReplayRes.json()).resolves.toMatchObject({
-        code: 'recovery_required',
-      });
+      expect(store.listCommandRequests().map((record) => record.command)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }

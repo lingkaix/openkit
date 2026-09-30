@@ -361,7 +361,6 @@ function workerStatusTone(status: WorkspaceWorkerRow['status']): StatusChipProps
     case 'ready':
       return 'positive';
     case 'degraded':
-    case 'suspended':
       return 'notice';
     default:
       return 'neutral';

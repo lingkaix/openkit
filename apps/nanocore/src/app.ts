@@ -1,5 +1,5 @@
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-
 import {
   AppDiagnosticsResponseSchema,
   type BootReadinessSnapshot,
@@ -27,6 +27,7 @@ import { projectAgentCatalogEntries } from './agents/catalog-projection.js';
 import { registerAgentCatalogRoutes } from './agents/catalog-routes.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
+import { resolveAgentSetup } from './agents/setup-resolver.js';
 import { registerWorkspaceWorkerRoutes } from './agents/workspace-workers.js';
 import { asApiError } from './api-errors.js';
 import { registerDashboardRoutes } from './app-dashboard.js';
@@ -115,6 +116,11 @@ import { registerRepositoryRoutes } from './repository-routes.js';
 import { registerReviewDecisionRoutes } from './review-decision-routes.js';
 import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-routes.js';
 import { registerAgentHealthRoutes } from './runtime/agent-health-routes.js';
+import {
+  evaluateCapturedPendingCall,
+  executeCapturedPendingCall,
+  prepareCapturedPendingCall,
+} from './runtime/captured-pending-call.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { recordNanoHostRuntimeTargetConnectionClose } from './runtime/nanohost-runtime-target.js';
 import {
@@ -124,7 +130,8 @@ import {
   registerNanoHostSessionSemanticRoutes,
 } from './runtime/nanohost-session-dispatch.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
-import { startProductTurn } from './runtime/product-turn-start.js';
+import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
+import { cancelOwnedDeferredAdmission, startProductTurn } from './runtime/product-turn-start.js';
 import { registerSchedulerAdmissionRoutes } from './runtime/scheduler-admission-routes.js';
 import {
   type ConfiguredWorkerLifecycleRuntime,
@@ -157,6 +164,7 @@ import {
   acceptSchedulerLeaseHeartbeatByBinding,
   adoptSchedulerLeaseReconnect,
   completeSchedulerLeaseForTerminalTurn,
+  listSchedulerAdmissionEntriesForWorkspace,
   markSchedulerSessionLeaseReleasing,
   resolveSchedulerLeaseTokenBinding,
   SchedulerLeaseHeartbeatRejectedError,
@@ -1555,7 +1563,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfigFiles: runtimeConfigFileService,
   });
 
-  const interruptInternalChatTurn = registerQuickAndChatModeRoutes({
+  const chatService = registerQuickAndChatModeRoutes({
     app,
     assertProjectWorkspace,
     coreDb: options.coreDb,
@@ -1570,7 +1578,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
   });
 
-  registerThreadRoutes({ app, inflightCommands, requestStore });
+  const interruptInternalChatTurn = chatService.interrupt;
+  const pendingAssistantDelivery = { startTurn: chatService.acceptPendingInput };
+
+  registerThreadRoutes({
+    app,
+    inflightCommands,
+    requestStore,
+    ...(options.coreDb ? { repositoryWorkspaceDb } : {}),
+  });
 
   registerMaterialRoutes({
     app,
@@ -1675,19 +1691,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerGoalRoutes({
     app,
-    assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,
-    llmGatewayDispatcher,
     mode,
-    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     repositoryWorkspaceDb,
     requestStore,
-    resolveGatewayProvider,
-    runtimeConfig,
-    startModeWorkerTurn,
-    turnExecutor,
-    workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
   });
 
   registerWorkerRecoveryRoutes({
@@ -1751,9 +1759,154 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workerPlacement,
   });
 
+  const pendingWorkerDelivery = {
+    async startTurn(store: FsStore, turnId: string) {
+      const turn = store.getTurnById(turnId);
+      if (!turn.agentId) throw new Error('Outcome Turn has no worker Agent.');
+      // An existing queued admission belongs to the scheduler dispatch loop after restart.
+      if (
+        options.coreDb?.sqlite
+          .prepare(
+            "SELECT 1 FROM scheduler_admission_entries WHERE turn_id = ? AND status = 'queued'"
+          )
+          .get(turn.id)
+      )
+        return;
+      const identity = createHash('sha256')
+        .update(JSON.stringify([turn.workspaceId, turn.threadId, turn.id]))
+        .digest('hex');
+      const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
+
+      const handle = await startProductTurn({
+        input: {
+          input: 'Receive pending request outcomes.',
+          requestId,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+        },
+        requestedAgentId: turn.agentId,
+        reservedTurnId: turn.id,
+        cancelDeferredAdmission: false,
+        providerCredentialResolver,
+        schedulerEpoch,
+        snapshot: runtimeConfig(),
+        store,
+        triggerActor: turn.triggerActor,
+        turnExecutor,
+        workerPlacement,
+        ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+      }).catch((error: unknown) => {
+        // Only this refused outcome attempt retires its still-queued scheduler ownership.
+        if (
+          options.coreDb &&
+          error instanceof TurnStartValidationError &&
+          error.code !== 'scheduler_admission_deferred'
+        ) {
+          const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
+            workspaceId: turn.workspaceId,
+            statuses: ['queued'],
+          }).find((candidate) => candidate.turnId === turn.id && candidate.requestId === requestId);
+          if (entry)
+            cancelOwnedDeferredAdmission(options.coreDb, {
+              queueEntryId: entry.queueEntryId,
+              workspaceId: turn.workspaceId,
+            });
+        }
+        throw error;
+      });
+      completeSchedulerLeaseForTerminalTurn(options.coreDb, handle.turn);
+    },
+  };
+
+  if (options.coreDb || sharedStore.getDataRoot())
+    installPendingRequestAdmission(sharedStore, {
+      agentAuthority: (record) =>
+        runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
+      workerDelivery: pendingWorkerDelivery,
+      assistantDelivery: pendingAssistantDelivery,
+      ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+      openWorkspace(workspaceId) {
+        if (options.coreDb) return repositoryWorkspaceDb(workspaceId);
+        const root = sharedStore.getDataRoot();
+        if (!root) throw new Error('Pending requests have no workspace database.');
+        const workspaceDb = openWorkspaceDb(root, workspaceId);
+        applyScopedMigrations(workspaceDb);
+        return workspaceDb;
+      },
+    });
   registerApprovalRoutes({
     app,
+    workerDelivery: pendingWorkerDelivery,
+    assistantDelivery: pendingAssistantDelivery,
+    agentAuthority: (record) =>
+      runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
     coreDb: options.coreDb,
+    prepareCapturedCall: (record, workspaceDb, actor) =>
+      prepareCapturedPendingCall({
+        actor,
+        record,
+        workspaceDb,
+        coreDb: options.coreDb,
+        catalog:
+          runtimeConfig().workspaceMcpServerCatalogs.find(
+            (entry) => entry.workspaceId === record.workspaceId
+          )?.catalog ?? null,
+        vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,
+        workerMcpGateway,
+      }),
+    evaluateCapturedCall: (record, sqlite, prepared) => {
+      const snapshot = runtimeConfig();
+      const manifest = snapshot.agentManifests.find((candidate) => candidate.id === record.agentId);
+      const workspaceConfig = snapshot.workspaceConfigs.find(
+        (entry) => entry.workspaceId === record.workspaceId
+      )?.config;
+      const userConfig = snapshot.userConfigs.find(
+        (entry) => entry.userId === record.responsibleUserId
+      )?.config;
+      const setup = manifest
+        ? resolveAgentSetup(manifest, {
+            gatewayConfig: snapshot.gatewayConfig,
+            providerRegistry: snapshot.providerRegistry,
+            workspaceId: record.workspaceId,
+            ...(workspaceConfig ? { workspaceConfig } : {}),
+            ...(userConfig ? { userConfig } : {}),
+          }).setup
+        : null;
+      return evaluateCapturedPendingCall({
+        selectedMcpServerIds: setup?.manifest.mcp?.map((server) => server.id) ?? [],
+        manifest:
+          snapshot.agentManifests.find((manifest) => manifest.id === record.agentId) ?? null,
+        catalog:
+          snapshot.workspaceMcpServerCatalogs.find(
+            (entry) => entry.workspaceId === record.workspaceId
+          )?.catalog ?? null,
+        coreDb: options.coreDb,
+        record,
+        sqlite,
+        approvalPolicy: snapshot.openKitConfig.policy,
+        prepared,
+      });
+    },
+    executeCapturedCall: (record, actor, workspaceDb, prepared, executionCall) => {
+      const snapshot = runtimeConfig();
+      return executeCapturedPendingCall({
+        actor,
+        approvalPolicy: snapshot.openKitConfig.policy,
+        catalog:
+          snapshot.workspaceMcpServerCatalogs.find(
+            (entry) => entry.workspaceId === record.workspaceId
+          )?.catalog ?? null,
+        coreDb: options.coreDb,
+        inflightCommands,
+        record,
+        store: sharedStore,
+        vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,
+        workerMcpGateway,
+        workspaceDb,
+        prepared,
+        executionCall,
+      });
+    },
     inflightCommands,
     repositoryWorkspaceDb,
     requestStore,

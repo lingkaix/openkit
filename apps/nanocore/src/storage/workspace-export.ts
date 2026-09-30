@@ -101,6 +101,11 @@ export const WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES = [
     reason: 'short-lived request replay state is local to the source workspace',
   },
   {
+    table: 'pending_requests',
+    reason:
+      'pending-request lifecycle stays in the workspace database and has no portable export family',
+  },
+  {
     table: 'pending_user_turn_records',
     reason: 'active Goal steering delivery proof is local to the source workspace',
   },

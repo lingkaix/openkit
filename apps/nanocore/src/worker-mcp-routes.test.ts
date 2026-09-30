@@ -4,7 +4,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   ListHumanAttentionResponseSchema,
@@ -20,7 +19,6 @@ import {
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createApp, createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -30,12 +28,8 @@ import {
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
-import {
-  recordAgentEnvironmentPackageSnapshot,
-  requireAgentEnvironmentPackageSnapshot,
-} from './runtime/aep-snapshot-ledger.js';
+import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
   importMcpToolSchemaSnapshots,
@@ -55,11 +49,10 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from './runtime/nanohost-session-dispatch.js';
+import { approvalCardCopy, projectApprovalEffect } from './runtime/pending-request-disclosure.js';
+import { readPendingRequest } from './runtime/pending-requests.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
-import type { TurnStartRuntimeContext } from './runtime/types.js';
-import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
-import { recordWorkerControlAcceptedRecord } from './runtime/worker-control-records.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
   createDefaultWorkerMcpGateway,
@@ -75,7 +68,6 @@ import {
   openWorkspaceDb,
   verifyAndMigrateExistingScopedDatabases,
 } from './storage/db.js';
-import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -88,36 +80,9 @@ import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
-import {
-  isMcpApprovalExpiryActive,
-  reconcileWorkerMcpItems,
-  registerWorkerMcpRoutes,
-} from './worker-mcp-routes.js';
+import { reconcileWorkerMcpItems, registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
-
-const OPENKIT_GENERATIVE_SERVER = {
-  health: 'ready',
-  id: 'openkit-generative',
-  toolNames: [
-    'kernel_apps_list',
-    'kernel_apps_create',
-    'kernel_apps_get',
-    'kernel_schema_update',
-    'kernel_apps_retire',
-    'kernel_records_list',
-    'kernel_records_get',
-    'kernel_records_create',
-    'kernel_records_update',
-    'kernel_records_batch',
-    'generative_ui_publish',
-    'generative_ui_get',
-    'generative_ui_resource',
-    'generative_ui_refresh',
-    'generative_ui_action',
-  ],
-  transport: 'stdio',
-} as const;
 
 /** Records the admission and lease that own a manually resolved MCP worker package. */
 function recordMcpWorkerLineage(
@@ -238,16 +203,114 @@ describe('worker MCP routes', () => {
       fetch: fetchMcp,
       requestInit: { headers: { authorization: 'Bearer capability-token' } },
     });
+    const workClient = new Client({ name: 'work-input', version: '1.0.0' });
+    const workTransport = new StreamableHTTPClientTransport(
+      new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
+      {
+        fetch: fetchMcp,
+        requestInit: { headers: { authorization: 'Bearer capability-token' } },
+      }
+    );
     try {
       await sessionClient.connect(sessionTransport);
       await statelessClient.connect(statelessTransport);
+      await workClient.connect(workTransport);
       expect(sessionClient.getProtocolEra()).toBe('legacy');
       expect(statelessClient.getProtocolEra()).toBe('modern');
       const sessionTools = await sessionClient.listTools();
       const statelessTools = await statelessClient.listTools();
       expect(sessionTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect(statelessTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
+      expect((await workClient.listTools()).tools.map((tool) => tool.name)).toEqual([
+        'work_request_input',
+      ]);
+      const pending = await workClient.callTool({
+        name: 'work_request_input',
+        arguments: {
+          requestId: '00000000-0000-4000-8000-000000000144',
+          prompt: 'Choose a direction.',
+          futureSafeField: 'ignored-metadata',
+          questions: [
+            {
+              id: 'direction',
+              header: 'Direction',
+              question: 'Which direction should the worker take?',
+              options: null,
+              isOther: false,
+              isSecret: false,
+            },
+          ],
+        },
+      });
+      expect(pending.isError).toBe(false);
+      expect(pending.structuredContent).toMatchObject({
+        status: 'pending-input',
+        requestId: '00000000-0000-4000-8000-000000000144',
+      });
+      const questionArgs = (index: number) => ({
+        requestId: `00000000-0000-4000-8000-${String(144 + index).padStart(12, '0')}`,
+        prompt: `Choose direction ${index}.`,
+        questions: [
+          {
+            id: `direction_${index}`,
+            header: 'Direction',
+            question: `Which direction ${index}?`,
+            options: null,
+            isOther: false,
+            isSecret: false,
+          },
+        ],
+      });
+      for (let index = 1; index < 16; index += 1) {
+        expect(
+          (
+            await workClient.callTool({
+              name: 'work_request_input',
+              arguments: questionArgs(index),
+            })
+          ).isError
+        ).toBe(false);
+      }
+      const countDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const beforeCalls = (
+        countDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get() as {
+          count: number;
+        }
+      ).count;
+      await expect(
+        workClient.callTool({ name: 'work_request_input', arguments: questionArgs(16) })
+      ).rejects.toMatchObject({ data: { code: 'request_limit_reached' } });
+      expect(
+        (
+          countDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get() as {
+            count: number;
+          }
+        ).count
+      ).toBe(beforeCalls);
+      const duplicate = await workClient.callTool({
+        name: 'work_request_input',
+        arguments: questionArgs(15),
+      });
+      expect(duplicate.structuredContent).toMatchObject({ requestId: questionArgs(15).requestId });
+      expect(
+        (
+          countDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get() as {
+            count: number;
+          }
+        ).count
+      ).toBe(beforeCalls);
+      expect(
+        JSON.stringify(countDb.sqlite.prepare('SELECT * FROM pending_requests').all())
+      ).not.toContain('ignored-metadata');
+      countDb.sqlite.close();
+      expect(store.getTurnById(turn.id).status).toBe('running');
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.type === 'user-input-request')
+      ).toHaveLength(16);
     } finally {
+      await workClient.close().catch(() => undefined);
       await sessionClient.close().catch(() => undefined);
       await statelessClient.close().catch(() => undefined);
       await workerMcpGateway.close();
@@ -394,413 +457,369 @@ describe('worker MCP routes', () => {
   });
 
   it.each([
-    'same',
-    'changed',
-  ])('rechecks an exact MCP grant with %s successor arguments', async (argumentCase) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-route-'));
+    'unchanged',
+    'tool-removed',
+    'agent-removed',
+    'known-error',
+    'unknown-effect',
+    'no-contact',
+    'credential-before-claim',
+    'credential-after-claim',
+  ] as const)('re-evaluates current authority before granting a captured MCP call: %s', async (change) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-mcp-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
-    });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Call the echo tool', {
-      id: 'user_local',
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Call echo', {
       kind: 'user',
+      id: 'user_local',
     });
     store.createAgentSession({
+      id: 'as_pending_echo',
       agentId: 'agent_codex_host',
-      createdAt: '2026-09-03T00:00:00.000Z',
-      id: 'as_mcp_route',
-      message: null,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
       status: 'busy',
-      threadId: turn.threadId,
-      updatedAt: '2026-09-03T00:00:00.000Z',
-      workspaceId: turn.workspaceId,
+      message: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     });
-    store.updateTurn(turn.id, { agentSessionId: 'as_mcp_route' });
+    store.updateTurn(turn.id, { agentId: 'agent_codex_host', agentSessionId: 'as_pending_echo' });
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
+    vaultUnlockState.backend().store({
+      material: 'pending-secret-canary',
+      metadata: { ownerScope: 'workspace', workspaceId: 'ws_demo' },
+      referenceId: 'vault_pending_echo',
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://workspace/vault_pending_echo',
+      displayName: 'Pending echo credential',
+      ownerScope: 'workspace',
+      referenceId: 'vault_pending_echo',
+      secretKind: 'api-key',
+      workspaceId: 'ws_demo',
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['gateway-only'],
+      grantId: 'grant_pending_echo',
+      lifetime: 'agent-session',
+      ownerScope: 'workspace',
+      targetAgentSessionId: 'as_pending_echo',
+      targetCapabilityId: 'mcp',
+      vaultReferenceId: 'vault_pending_echo',
+      workspaceId: 'ws_demo',
+    });
     const catalog = {
       schemaVersion: 1 as const,
       servers: [
         {
-          allowedTools: ['echo'],
-          approvalRequiredTools: ['echo'],
-          credentialBindings: [],
-          deniedTools: [],
-          enabled: true,
           id: 'echo',
+          enabled: true,
+          allowedTools: ['echo'],
+          deniedTools: [],
+          approvalRequiredTools: ['echo'],
+          credentialBindings: [
+            {
+              sink: { kind: 'env' as const, name: 'PENDING_ECHO_SECRET' },
+              slot: 'auth',
+              vaultGrantId: 'grant_pending_echo',
+            },
+          ],
           pinnedSchemaSnapshotId: null,
           schemaPolicy: 'tracking' as const,
           timeoutMs: 2_000,
           transport: {
-            args: [fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url))],
-            command: process.execPath,
-            environment: { OPENKIT_MCP_CALL_DELAY_MS: '200' },
             kind: 'stdio' as const,
+            command: process.execPath,
+            args: [fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url))],
+            environment: {},
           },
         },
       ],
     };
-    let environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: 'as_mcp_route',
+      agentSessionId: 'as_pending_echo',
       agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
       backend: { kind: 'openshell' },
-      createdAt: '2026-09-03T00:00:00.000Z',
-      requestId: 'req_mcp_route',
+      createdAt: new Date().toISOString(),
+      requestId: 'req_pending_echo',
       triggerActor: turn.triggerActor,
       turn,
       workspaceCwd: '/workspace',
-      workspaceMcpServerCatalog: catalog,
       workspaceRoots: [],
+      workspaceMcpServerCatalog: catalog,
     });
     recordMcpWorkerLineage(coreDb, environmentPackage);
-    const workerControlGateway = {
-      authenticatePackageToken: vi.fn(() => environmentPackage),
-    } as unknown as WorkerControlGateway;
-    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-    const callTool = vi.spyOn(workerMcpGateway, 'callTool');
-    const listTools = vi.spyOn(workerMcpGateway, 'listTools');
-    const requestHumanGateStop = vi.fn();
-    const app = new Hono();
     const snapshot = createInMemoryRuntimeConfigSnapshot({
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Agent OpenRouter',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
       dataRoot,
-      agentManifests: [],
+      agentManifests: [createTestAgentSetup({ mcpIds: ['echo'] }).manifest],
       workspaceMcpServerCatalogs: [
-        { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId: 'ws_demo' },
+        { catalog, path: join(dataRoot, 'catalog.json'), workspaceId: 'ws_demo' },
       ],
     });
+    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+    const originalCallTool = workerMcpGateway.callTool.bind(workerMcpGateway);
+    const upstream = vi.spyOn(workerMcpGateway, 'callTool');
+    const route = new Hono();
     registerWorkerMcpRoutes({
-      app,
+      app: route,
       coreDb,
       runtimeConfig: () => snapshot,
-      requestHumanGateStop,
       store,
-      workerControlGateway,
+      workerControlGateway: {
+        authenticatePackageToken: vi.fn(() => environmentPackage),
+      } as unknown as WorkerControlGateway,
       workerMcpGateway,
+      vaultUnlockState,
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     });
-    const client = new Client({ name: 'route-test', version: '1.0.0' });
-    let cancelInFlightToolCall: AbortController | undefined;
-    const transport = new StreamableHTTPClientTransport(
-      new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
-      {
-        fetch: (input, init) => {
-          const request = new Request(input, init);
-          const cancellation = cancelInFlightToolCall;
-          if (cancellation) {
-            void request
-              .clone()
-              .text()
-              .then((body) => {
-                if (
-                  cancelInFlightToolCall !== cancellation ||
-                  !body.includes('"method":"tools/call"')
-                ) {
-                  return;
-                }
-                cancelInFlightToolCall = undefined;
-                cancellation.abort();
-              });
-          }
-          return app.fetch(request);
-        },
-        requestInit: { headers: { authorization: 'Bearer capability-token' } },
-      }
-    );
-    const lifecycleAuditDb = openWorkspaceDb(dataRoot, 'ws_demo');
-    applyScopedMigrations(lifecycleAuditDb);
-    lifecycleAuditDb.sqlite.exec(`
-      CREATE TRIGGER reject_mcp_lifecycle_audit
-      BEFORE INSERT ON audit_events
-      WHEN NEW.action LIKE 'mcp.server.lifecycle.%'
-      BEGIN
-        SELECT RAISE(ABORT, 'injected lifecycle audit failure');
-      END
-    `);
-    lifecycleAuditDb.sqlite.close();
-
+    const client = new Client({ name: 'pending-echo', version: '1' });
     try {
-      const inactiveServers = await app.request('/api/worker-capabilities/mcp/_list-servers', {
-        body: '{}',
-        headers: {
-          authorization: 'Bearer capability-token',
-          'content-type': 'application/json',
-        },
-        method: 'POST',
+      await client.connect(
+        new StreamableHTTPClientTransport(
+          new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
+          {
+            fetch: (input, init) => route.fetch(new Request(input, init)),
+            requestInit: { headers: { authorization: 'Bearer capability-token' } },
+          }
+        )
+      );
+      await client.listTools();
+      const pending = await client.callTool({
+        name: 'echo',
+        arguments: { message: 'captured effect' },
       });
-      expect({ body: await inactiveServers.json(), status: inactiveServers.status }).toEqual({
-        body: {
-          servers: [
-            { health: 'inactive', id: 'echo', toolNames: [], transport: 'stdio' },
-            OPENKIT_GENERATIVE_SERVER,
-          ],
-        },
-        status: 200,
-      });
-      await client.connect(transport);
-      const firstTools = await client.listTools();
-      const secondTools = await client.listTools();
-      expect(firstTools).toEqual(secondTools);
-      expect(firstTools).toEqual({
-        tools: [expect.objectContaining({ inputSchema: expect.any(Object), name: 'echo' })],
-      });
-      expect(JSON.stringify(firstTools)).not.toContain('Echoes one message.');
-      expect(listTools).toHaveBeenCalledTimes(1);
-      const listedServers = await app.request('/api/worker-capabilities/mcp/_list-servers', {
-        body: '{}',
-        headers: {
-          authorization: 'Bearer capability-token',
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const listedServersBody = await listedServers.json();
-      expect({ body: listedServersBody, status: listedServers.status }).toEqual({
-        body: {
-          servers: [
-            { health: 'ready', id: 'echo', toolNames: ['echo'], transport: 'stdio' },
-            OPENKIT_GENERATIVE_SERVER,
-          ],
-        },
-        status: 200,
-      });
-      await expect(
-        client.callTool({ arguments: { message: 'hello' }, name: 'echo' })
-      ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      expect(requestHumanGateStop).toHaveBeenCalledWith(environmentPackage.snapshotId);
-      expect(listTools).toHaveBeenCalledTimes(1);
+      expect(pending.isError).toBe(true);
+      expect(pending.structuredContent).toMatchObject({ status: 'pending-approval' });
+      expect(upstream).not.toHaveBeenCalled();
+      if (change === 'unchanged') {
+        const boundDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const countCalls = () =>
+          (
+            boundDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get() as {
+              count: number;
+            }
+          ).count;
+        const beforeDuplicate = countCalls();
+        const duplicate = await client.callTool({
+          name: 'echo',
+          arguments: { message: 'captured effect' },
+        });
+        expect(duplicate.structuredContent).toEqual(pending.structuredContent);
+        expect(countCalls()).toBe(beforeDuplicate);
+        for (let index = 1; index < 16; index += 1)
+          expect(
+            (
+              await client.callTool({
+                name: 'echo',
+                arguments: { message: `different captured ${index}` },
+              })
+            ).isError
+          ).toBe(true);
+        const beforeLimit = countCalls();
+        await expect(
+          client.callTool({ name: 'echo', arguments: { message: 'seventeenth captured' } })
+        ).rejects.toMatchObject({ data: { code: 'request_limit_reached' } });
+        expect(countCalls()).toBe(beforeLimit);
+        boundDb.sqlite.close();
+      }
+      if (change === 'unchanged') {
+        const evidenceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const captured = evidenceDb.sqlite
+          .prepare('SELECT request_id FROM pending_requests ORDER BY request_id')
+          .all() as { request_id: string }[];
+        const project = (id: string, userId = 'user_local') =>
+          projectApprovalEffect({
+            record: readPendingRequest(evidenceDb.sqlite, id)!,
+            store,
+            coreDb,
+            actor: { kind: 'local', userId },
+          });
+        const details = captured.map((row) => project(row.request_id));
+        expect(details.every((detail) => detail.status === 'available')).toBe(true);
+        expect(
+          new Set(details.map((detail) => detail.status === 'available' && detail.detail)).size
+        ).toBe(16);
+        expect(project(captured[0]!.request_id, 'another-user')).toEqual({
+          status: 'unavailable',
+          reason: 'Current Thread access is unavailable.',
+        });
+        const beforeRead = evidenceDb.sqlite
+          .prepare('SELECT * FROM pending_requests ORDER BY request_id')
+          .all();
+        project(captured[0]!.request_id);
+        expect(
+          evidenceDb.sqlite.prepare('SELECT * FROM pending_requests ORDER BY request_id').all()
+        ).toEqual(beforeRead);
+        expect(JSON.stringify(details)).not.toContain('pending-secret-canary');
+        expect(JSON.stringify(store.listAllItems())).not.toContain('captured effect');
+        const copy = approvalCardCopy('多'.repeat(4000), '🙂'.repeat(4000));
+        expect(Buffer.byteLength(`${copy.title}\n${copy.description}`)).toBeLessThanOrEqual(2048);
+        expect(copy.title).toMatch(/^Summary:/);
+        evidenceDb.sqlite.close();
+      }
+      expect(store.getTurnById(turn.id).status).toBe('running');
       const approvalItem = store
-        .listThreadItems(turn.workspaceId, turn.threadId)
+        .listThreadItems('ws_demo', 'th_demo')
         .find((item) => item.type === 'approval-request');
-      expect(approvalItem).toMatchObject({ approvalRequestId: expect.stringMatching(/^ap_mcp_/) });
-      const approvalId = approvalItem?.approvalRequestId;
-      if (!approvalId) throw new Error('Expected the MCP Approval request.');
-      const approvalApp = createApp({
+      if (!approvalItem || approvalItem.type !== 'approval-request')
+        throw new Error('Missing approval request.');
+      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      const currentSnapshot = {
+        ...snapshot,
+        agentManifests:
+          change === 'agent-removed'
+            ? []
+            : snapshot.agentManifests.map((manifest) =>
+                change === 'tool-removed' ? { ...manifest, mcp: [] } : manifest
+              ),
+      };
+      const app = createApp({
         coreDb,
         store,
-        turnExecutor: new SimulatedTurnExecutor(),
         workerMcpGateway,
-      });
-      const approvalResponse = await approvalApp.request(`/api/approvals/${approvalId}/respond`, {
-        body: JSON.stringify({
-          decision: 'granted',
-          requestId: '00000000-0000-4000-8000-000000000115',
-          threadId: turn.threadId,
-          turnId: turn.id,
-          workspaceId: turn.workspaceId,
+        vaultUnlockState,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: currentSnapshot,
         }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
       });
-      expect(approvalResponse.status).toBe(409);
-      await expect(approvalResponse.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      const approvalRequestId = '00000000-0000-4000-8000-000000000115';
-      const closedAt = '2026-09-03T00:04:00.000Z';
-      const approvalWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-      applyScopedMigrations(approvalWorkspaceDb);
-      try {
-        const source = approvalWorkspaceDb.sqlite
-          .prepare(
-            `SELECT
-               context_summary_json AS contextSummary,
-               resource_summary_json AS resourceSummary,
-               subject_summary_json AS subjectSummary
-             FROM permission_decisions
-             WHERE approval_id = ? AND action = 'tool.use' AND result = 'require_approval'`
-          )
-          .get(approvalId) as {
-          readonly contextSummary: string;
-          readonly resourceSummary: string;
-          readonly subjectSummary: string;
-        };
-        recordProductPermissionDecision({
-          action: 'tool.use',
-          approvalId,
-          auditActor: { id: 'user_local', kind: 'user' },
-          contextSummary: {
-            ...JSON.parse(source.contextSummary),
-            requestId: approvalRequestId,
-          },
-          decisionId: `pd_tool_use_granted_${approvalId}`,
-          enforcementPoint: 'test.accepted_worker_gate_closeout',
-          now: new Date(closedAt),
-          ownerScope: 'workspace',
-          policyEngineVersion: 'test:v1',
-          policySnapshotId: environmentPackage.policy.snapshotId,
-          reasonCode: 'mcp_tool_approved',
-          requiredApprovalKind: 'permission',
-          resourceSummary: JSON.parse(source.resourceSummary),
-          result: 'allow',
-          subjectSummary: JSON.parse(source.subjectSummary),
-          workspaceDb: approvalWorkspaceDb,
-          workspaceId: 'ws_demo',
+      const backend = vaultUnlockState.backend();
+      const resolve = backend.resolve.bind(backend);
+      const resolved = vi.spyOn(backend, 'resolve').mockImplementation((input) => {
+        const material = resolve(input);
+        if (change === 'credential-before-claim') currentSnapshot.agentManifests.splice(0);
+        return material;
+      });
+      if (change === 'credential-after-claim') {
+        const callTool = originalCallTool;
+        upstream.mockImplementationOnce(async (input) => {
+          expect(resolved).toHaveBeenCalled();
+          const db = openWorkspaceDb(dataRoot, 'ws_demo');
+          try {
+            expect(
+              db.sqlite
+                .prepare('SELECT claim FROM pending_requests WHERE request_id = ?')
+                .get(approvalItem.approvalRequestId)
+            ).toMatchObject({ claim: 'claimed' });
+          } finally {
+            db.sqlite.close();
+          }
+          currentSnapshot.agentManifests.splice(0);
+          return callTool(input);
         });
-      } finally {
-        approvalWorkspaceDb.sqlite.close();
       }
-      store.createItem({
-        actor: { id: 'user_local', kind: 'user' },
-        approvalRequestId: approvalId,
-        causationId: approvalRequestId,
-        completedAt: closedAt,
-        createdAt: closedAt,
-        decision: 'granted',
-        id: `it_approval_decision_${turn.id}`,
-        status: 'completed',
-        threadId: turn.threadId,
-        turnId: turn.id,
-        type: 'approval-decision',
-        workspaceId: turn.workspaceId,
-      });
-      store.updateApproval(approvalId, { resolvedAt: closedAt, status: 'granted' });
-      store.updateAgentSession('as_mcp_route', { status: 'closed', updatedAt: closedAt });
-      const closedTurn = store.updateTurn(turn.id, {
-        completedAt: closedAt,
-        humanGate: null,
-        status: 'completed',
-      });
-      store.emitTurnEvent(turn.id, {
-        data: { stopReason: 'completed', turn: closedTurn, type: 'turn-completed' },
-        event: 'turn.completed',
-        requestId: approvalRequestId,
-        threadId: turn.threadId,
-        turnId: turn.id,
-        workspaceId: turn.workspaceId,
-      });
-      const approvedTurn = store.createTurn(
-        'ws_demo',
-        'th_demo',
-        'Call the approved echo tool',
-        turn.triggerActor
+      if (change === 'known-error' || change === 'unknown-effect' || change === 'no-contact') {
+        upstream.mockRejectedValueOnce(
+          new WorkerMcpGatewayCallError(
+            'mcp-call-failed',
+            'Synthetic captured failure.',
+            502,
+            change === 'known-error'
+              ? 'contacted'
+              : change === 'no-contact'
+                ? 'not-contacted'
+                : 'unknown'
+          )
+        );
+      }
+      const executed =
+        change !== 'tool-removed' &&
+        change !== 'agent-removed' &&
+        change !== 'credential-before-claim';
+      const disposition =
+        change === 'unknown-effect'
+          ? 'outcome-unknown'
+          : change === 'known-error' || change === 'no-contact'
+            ? 'execution-error'
+            : 'approved-executed';
+      const response = await app.request(
+        `/api/approvals/${approvalItem.approvalRequestId}/respond`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: turn.id,
+            requestId: '00000000-0000-4000-8000-000000000117',
+            decision: 'granted',
+          }),
+        }
       );
-      environmentPackage = resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: 'as_mcp_route_approved',
-        agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
-        backend: { kind: 'openshell' },
-        createdAt: '2026-09-03T00:05:00.000Z',
-        requestId: 'req_mcp_route_approved',
-        triggerActor: approvedTurn.triggerActor,
-        turn: approvedTurn,
-        workspaceCwd: '/workspace',
-        workspaceMcpServerCatalog: catalog,
-        workspaceRoots: [],
-      });
-      recordMcpWorkerLineage(coreDb, environmentPackage);
-      if (argumentCase === 'changed') {
-        await expect(
-          client.callTool({ arguments: { message: 'different effect' }, name: 'echo' })
-        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-        expect(callTool).not.toHaveBeenCalled();
-        const nextGate = store.getTurnById(approvedTurn.id).humanGate;
-        expect(nextGate?.kind).toBe('approval');
-        if (nextGate?.kind !== 'approval') throw new Error('Expected a new exact-effect Approval.');
-        expect(nextGate.approvalRequestId).not.toBe(approvalId);
-        expect(store.getApproval(approvalId).status).toBe('granted');
-        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-        try {
+      resolved.mockRestore();
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(upstream).toHaveBeenCalledTimes(executed ? 1 : 0);
+      if (change === 'unchanged') {
+        expect(upstream.mock.calls[0]?.[0]).toMatchObject({
+          toolName: 'echo',
+          arguments: { message: 'captured effect' },
+        });
+      }
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      try {
+        if (executed) {
           expect(
             workspaceDb.sqlite
               .prepare(
-                "SELECT status FROM capability_calls WHERE operation = 'mcp.call_tool' ORDER BY rowid"
+                'SELECT status FROM capability_calls WHERE call_id = (SELECT execution_call_id FROM pending_requests WHERE request_id = ?)'
               )
-              .all()
-          ).toEqual([{ status: 'denied' }, { status: 'denied' }]);
+              .get(approvalItem.approvalRequestId)
+          ).toMatchObject({
+            status:
+              disposition === 'approved-executed'
+                ? 'succeeded'
+                : disposition === 'outcome-unknown'
+                  ? 'unknown'
+                  : 'failed',
+          });
           expect(
-            workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM usage_records').get()
-          ).toEqual({ count: 0 });
-        } finally {
-          workspaceDb.sqlite.close();
+            workspaceDb.sqlite
+              .prepare(
+                'SELECT count(*) AS count FROM usage_records WHERE capability_call_id = (SELECT execution_call_id FROM pending_requests WHERE request_id = ?)'
+              )
+              .get(approvalItem.approvalRequestId)
+          ).toMatchObject({ count: change === 'no-contact' ? 0 : 1 });
+          expect(
+            workspaceDb.sqlite
+              .prepare(
+                'SELECT count(*) AS count FROM permission_decisions WHERE approval_id = ? AND result = ?'
+              )
+              .get(approvalItem.approvalRequestId, 'allow')
+          ).toMatchObject({ count: 1 });
         }
-        return;
-      }
-      const winner = client.callTool({ arguments: { message: 'hello' }, name: 'echo' });
-      await vi.waitFor(() => expect(callTool).toHaveBeenCalledTimes(1));
-      const loserCancellation = new AbortController();
-      // v2 reads its output-schema cache before it writes the request, so a
-      // synchronous abort never reaches the route. Abort from the fetch that
-      // carries this call, while the winner still holds the one-shot grant.
-      cancelInFlightToolCall = loserCancellation;
-      const loser = client.callTool(
-        { arguments: { message: 'hello' }, name: 'echo' },
-        { signal: loserCancellation.signal }
-      );
-      const loserOutcome = loser.then(
-        () => null,
-        (error: unknown) => error
-      );
-      await expect(winner).resolves.toMatchObject({
-        content: [{ text: 'hello', type: 'text' }],
-        structuredContent: { message: 'hello' },
-      });
-      expect(String(await loserOutcome)).toMatch(/AbortError/);
-      await vi.waitFor(() => expect(requestHumanGateStop).toHaveBeenCalledTimes(2));
-      expect(callTool).toHaveBeenCalledTimes(1);
-      expect(listTools).toHaveBeenCalledTimes(2);
-
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-      applyScopedMigrations(workspaceDb);
-      try {
         expect(
           workspaceDb.sqlite
             .prepare(
-              'SELECT family, operation, status, item_id, schema_snapshot_id FROM capability_calls ORDER BY rowid'
+              'SELECT state, resolution, disposition FROM pending_requests WHERE request_id = ?'
             )
-            .all()
-        ).toEqual([
-          expect.objectContaining({
-            family: 'mcp',
-            operation: 'mcp.list_servers',
-            schema_snapshot_id: null,
-            status: 'succeeded',
-          }),
-          expect.objectContaining({
-            family: 'mcp',
-            operation: 'mcp.list_tools',
-            schema_snapshot_id: null,
-            status: 'succeeded',
-          }),
-          expect.objectContaining({
-            family: 'mcp',
-            operation: 'mcp.list_tools',
-            schema_snapshot_id: null,
-            status: 'succeeded',
-          }),
-          expect.objectContaining({
-            family: 'mcp',
-            operation: 'mcp.list_servers',
-            schema_snapshot_id: null,
-            status: 'succeeded',
-          }),
-          expect.objectContaining({
-            family: 'mcp',
-            item_id: expect.stringMatching(/^it_mcp_/),
-            operation: 'mcp.call_tool',
-            schema_snapshot_id: expect.stringMatching(/^mcpsnap_echo_/),
-            status: 'denied',
-          }),
-          expect.objectContaining({
-            family: 'mcp',
-            item_id: expect.stringMatching(/^it_mcp_/),
-            operation: 'mcp.call_tool',
-            schema_snapshot_id: expect.stringMatching(/^mcpsnap_echo_/),
-            status: 'succeeded',
-          }),
-          expect.objectContaining({
-            family: 'mcp',
-            item_id: expect.stringMatching(/^it_mcp_/),
-            operation: 'mcp.call_tool',
-            schema_snapshot_id: expect.stringMatching(/^mcpsnap_echo_/),
-            status: 'denied',
-          }),
-        ]);
-        expect(
-          workspaceDb.sqlite.prepare('SELECT category, unit, quantity FROM usage_records').all()
-        ).toEqual([{ category: 'tool', quantity: 1, unit: 'tool_calls' }]);
+            .get(approvalItem.approvalRequestId)
+        ).toMatchObject(
+          change === 'agent-removed' || change === 'credential-before-claim'
+            ? { state: 'ended', resolution: null }
+            : {
+                state: 'resolved',
+                resolution: 'granted',
+                disposition: change === 'tool-removed' ? 'denied-not-executed' : disposition,
+              }
+        );
         expect(
           workspaceDb.sqlite
             .prepare('SELECT source, catalog_entry_id FROM mcp_tool_schema_snapshots')
@@ -950,48 +969,11 @@ describe('worker MCP routes', () => {
             .prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots')
             .get()
         ).toEqual({ count: 9 });
-        const decisions = workspaceDb.sqlite
-          .prepare(
-            `SELECT approval_id, context_summary_json, result
-             FROM permission_decisions
-             WHERE action = 'tool.use'
-             ORDER BY rowid`
-          )
-          .all() as Array<{
-          approval_id: string | null;
-          context_summary_json: string;
-          result: string;
-        }>;
-        expect(decisions.map(({ approval_id, result }) => ({ approval_id, result }))).toEqual([
-          { approval_id: approvalId, result: 'require_approval' },
-          { approval_id: approvalId, result: 'allow' },
-          { approval_id: null, result: 'allow' },
-          { approval_id: expect.stringMatching(/^ap_mcp_/), result: 'require_approval' },
-        ]);
-        expect(JSON.parse(decisions[2]!.context_summary_json)).toMatchObject({
-          capabilityCallId: expect.stringMatching(/^cap_mcp_approval_/),
-          grantedPermissionDecisionId: `pd_tool_use_granted_${approvalId}`,
-        });
       } finally {
         workspaceDb.sqlite.close();
       }
-      expect(store.getTurnById(approvedTurn.id).items).toContainEqual(
-        expect.objectContaining({
-          arguments: null,
-          error: null,
-          result: null,
-          server: 'echo',
-          status: 'completed',
-          tool: 'echo',
-          type: 'tool-call',
-        })
-      );
-      expect(workerControlGateway.authenticatePackageToken).toHaveBeenCalledWith(
-        'Bearer capability-token',
-        { tokenFamily: 'capability' }
-      );
     } finally {
-      await client.close();
+      await client.close().catch(() => undefined);
       await workerMcpGateway.close();
       coreDb.sqlite.close();
     }
@@ -1000,13 +982,23 @@ describe('worker MCP routes', () => {
   it.each([
     {
       entry: 'direct Task',
+      refuseFirst: false,
       repository: false,
       decision: 'granted' as const,
       ownerCommand: 'task.start',
       path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
     },
     {
+      entry: 'refused warm Worker conversation',
+      refuseFirst: true,
+      repository: false,
+      decision: 'granted' as const,
+      ownerCommand: 'conversation.submit',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+    },
+    {
       entry: 'selected warm Worker conversation',
+      refuseFirst: false,
       repository: false,
       decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
@@ -1014,14 +1006,16 @@ describe('worker MCP routes', () => {
     },
     ...(['granted', 'denied'] as const).map((decision) => ({
       entry: `repository ${decision}`,
+      refuseFirst: false,
       repository: true,
       decision,
       ownerCommand: 'task.start',
       path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
     })),
-  ])('runs a public $entry Gate and one approved successor call through the real worker lifecycle', async ({
+  ])('delivers a public $entry pending outcome through native worker admission', async ({
     ownerCommand,
     path,
+    refuseFirst,
     repository,
     decision,
   }) => {
@@ -1235,13 +1229,29 @@ describe('worker MCP routes', () => {
             })
           : null;
         if (command) {
+          if (operation === 'turn.start' && command.operation === 'session.inspect') {
+            workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
+            settle(
+              { command, integrationRef: binding!.integrationRef },
+              {
+                childState: 'absent',
+                cleanupState: 'clean',
+                nativeHandleDigest: 'b'.repeat(64),
+                nativeHandleState: 'ready',
+                state: 'open',
+              }
+            );
+            continue;
+          }
           expect(command.operation).toBe(operation);
           workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
           return { command, integrationRef: binding!.integrationRef };
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 1));
       }
-      throw new Error(`Expected queued NanoHost Harness operation: ${operation}`);
+      throw new Error(
+        `Expected queued NanoHost Harness operation: ${operation}; Turns: ${JSON.stringify(store.listThreadTurns('ws_demo', 'th_demo').map((turn) => ({ id: turn.id, status: turn.status, error: turn.error })))}; Queue: ${JSON.stringify(coreDb.sqlite.prepare('SELECT status, denial_reason FROM scheduler_admission_entries').all())}`
+      );
     };
     const settle = (
       dispatched: Awaited<ReturnType<typeof dispatchNext>>,
@@ -1262,20 +1272,23 @@ describe('worker MCP routes', () => {
       });
       workerLifecycleRuntime.acceptNanoHostHarnessResult(result);
     };
-    const driveTask = async (blocked: boolean, taskSettled: () => boolean) => {
-      const opened = await dispatchNext('session.open');
-      settle(opened, {
-        maxActiveTurns: 1,
-        nativeHandleDigest: null,
-        nativeHandleState: 'pending',
-        state: 'open',
-      });
+    const driveTask = async (blocked: boolean) => {
+      if (blocked) {
+        const opened = await dispatchNext('session.open');
+        settle(opened, {
+          maxActiveTurns: 1,
+          nativeHandleDigest: null,
+          nativeHandleState: 'pending',
+          state: 'open',
+        });
+      }
       const started = await dispatchNext('turn.start');
       settle(started, {
-        nativeHandleDigest: null,
-        nativeHandleState: 'pending',
+        nativeHandleDigest: blocked ? null : 'b'.repeat(64),
+        nativeHandleState: blocked ? 'pending' : 'ready',
         state: 'started',
       });
+      await new Promise<void>((resolve) => setImmediate(resolve));
       const commandBody = started.command.body as Record<string, unknown>;
       const capabilityToken = String(commandBody.capabilityToken);
       const workerControlToken = String(commandBody.workerControlToken);
@@ -1329,56 +1342,47 @@ describe('worker MCP routes', () => {
         )
       );
       await client.listTools();
-      const toolCall = await Promise.allSettled([
-        client.callTool(
+      let toolCall: unknown = null;
+      if (blocked) {
+        const result = await client.callTool(
           repository
             ? {
-                name: blocked ? 'repository_push_request_approval' : 'repository_push_execute',
-                arguments: blocked
-                  ? {
-                      requestId: '0190f4c8-0000-7000-8000-000000000504',
-                      resourceId: 'repo_default',
-                      sourceRef: hostCommit,
-                      targetBranch: 'feature/issue84',
-                      commitIds: [hostCommit],
-                    }
-                  : {
-                      requestId: '0190f4c8-0000-7000-8000-000000000505',
-                      resourceId: 'repo_default',
-                      approvalRequestId: repositoryApprovalId,
-                    },
+                name: 'repository_push',
+                arguments: {
+                  requestId: '0190f4c8-0000-7000-8000-000000000504',
+                  resourceId: 'repo_default',
+                  sourceRef: hostCommit,
+                  targetBranch: 'feature/issue84',
+                  commitIds: [hostCommit],
+                },
               }
-            : { arguments: { message: 'public-task' }, name: 'echo' }
-        ),
-      ]);
-      await client.close();
-      expect(toolCall[0]?.status).toBe(blocked && !repository ? 'rejected' : 'fulfilled');
-      if (repository) {
-        expect(toolCall[0]).toMatchObject({
-          status: 'fulfilled',
-          value: {
-            structuredContent: blocked
-              ? { approval: { status: 'pending' } }
-              : { outcome: 'auth-failed' },
-          },
+            : { name: 'echo', arguments: { message: 'public-task' } }
+        );
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: { status: 'pending-approval' },
         });
-        if (blocked && toolCall[0]?.status === 'fulfilled')
-          repositoryApprovalId = (
-            toolCall[0].value.structuredContent as { approval: { id: string } }
-          ).approval.id;
-      }
-      if (blocked && !repository) {
-        expect(toolCall[0]).toMatchObject({
-          reason: expect.objectContaining({ data: { code: 'mcp-denied' } }),
-          status: 'rejected',
-        });
+        repositoryApprovalId = String(result.structuredContent!.requestId);
+        toolCall = result;
         expect(existsSync(callFile)).toBe(false);
+      } else {
+        const deliveryDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        try {
+          expect(readPendingRequest(deliveryDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
+            'delivered'
+          );
+          const inputText = JSON.stringify(environmentPackage);
+          expect(inputText).toContain(repositoryApprovalId);
+          if (refuseFirst) expect(inputText).toContain('Continue after refused admission.');
+        } finally {
+          deliveryDb.sqlite.close();
+        }
       }
-
+      await client.close();
       const terminalBody = {
         evidenceManifestDigests: {},
-        status: blocked ? ('blocked' as const) : ('completed' as const),
-        stopReason: blocked ? 'ask_user' : 'completed',
+        status: 'completed' as const,
+        stopReason: 'completed',
       };
       terminalEvents.set(
         environmentPackage.snapshotId,
@@ -1392,10 +1396,6 @@ describe('worker MCP routes', () => {
           )}\n`
         )
       );
-      const interrupt = blocked ? await dispatchNext('turn.interrupt') : null;
-      if (interrupt) {
-        expect(interrupt.command.body).toMatchObject({ purpose: 'human-gate' });
-      }
       const finalStatus = await app.request('/api/worker-control/final-status', {
         body: JSON.stringify({
           body: terminalBody,
@@ -1411,39 +1411,14 @@ describe('worker MCP routes', () => {
         method: 'POST',
       });
       expect(finalStatus.status, await finalStatus.clone().text()).toBe(200);
-      if (interrupt) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        if (ownerCommand !== 'conversation.submit') {
-          expect(taskSettled()).toBe(false);
-        }
-        expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT operation, operation_state AS operationState
-               FROM harness_instance_records
-               WHERE harness_instance_id = ?`
-            )
-            .get(interrupt.command.harnessInstanceId)
-        ).toEqual({ operation: 'turn.interrupt', operationState: 'dispatched' });
-        expect(
-          dispatchNanoHostHarnessOperation(coreDb, {
-            sandboxIntegrationBindingRef: interrupt.integrationRef,
-          })
-        ).toBeNull();
-        settle(interrupt, { childState: 'absent', state: 'interrupted' });
-      }
       const inspected = await dispatchNext('session.inspect');
       settle(inspected, {
         childState: 'absent',
         cleanupState: 'clean',
-        nativeHandleDigest: blocked ? null : 'b'.repeat(64),
-        nativeHandleState: blocked ? 'pending' : 'ready',
+        nativeHandleDigest: 'b'.repeat(64),
+        nativeHandleState: 'ready',
         state: 'open',
       });
-      if (blocked) {
-        const closed = await dispatchNext('session.close');
-        settle(closed, { childState: 'absent', privateState: 'absent', state: 'closed' });
-      }
       return { agentSessionId: environmentPackage.scope.agentSessionId, toolCall };
     };
 
@@ -1472,7 +1447,6 @@ describe('worker MCP routes', () => {
       );
       expect(repositoryResponse.status).toBe(200);
 
-      let firstSettled = false;
       const firstRequest = app.request(path, {
         body: JSON.stringify({
           input: 'Implement the bounded MCP Task fix.',
@@ -1487,142 +1461,22 @@ describe('worker MCP routes', () => {
         headers: { 'content-type': 'application/json' },
         method: 'POST',
       });
-      void firstRequest.then(
-        () => {
-          firstSettled = true;
-        },
-        () => {
-          firstSettled = true;
-        }
-      );
-      const [firstResponse, firstRun] = await Promise.all([
-        firstRequest,
-        driveTask(true, () => firstSettled),
-      ]);
+      const [firstResponse, firstRun] = await Promise.all([firstRequest, driveTask(true)]);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const firstTask =
         ownerCommand === 'conversation.submit'
           ? SubmitConversationResponseSchema.parse(await firstResponse.json())
           : StartTaskModeResponseSchema.parse(await firstResponse.json());
+      for (
+        let attempt = 0;
+        attempt < 1000 && store.getTurnById(firstTask.turn.id).status === 'running';
+        attempt += 1
+      )
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
       const durableTurn = store.getTurnById(firstTask.turn.id);
-      expect(durableTurn).toMatchObject({
-        humanGate: { kind: 'approval' },
-        status: 'awaiting_human',
-      });
-      if (ownerCommand !== 'conversation.submit') {
-        expect(firstTask.turn).toMatchObject({
-          humanGate: { kind: 'approval' },
-          status: 'awaiting_human',
-        });
-      }
-      if ('outcome' in firstTask) {
-        expect(firstTask).toMatchObject({
-          outcome: 'accepted',
-          receivingThreadId: 'th_demo',
-          targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
-        });
-      } else {
-        expect(firstTask.state).toBe('awaiting-human');
-      }
-      expect(store.getAgentSession(firstRun.agentSessionId).status).toBe('suspended');
-      const firstBackend = coreDb.sqlite
-        .prepare(
-          `SELECT state, workspace_handoff_state AS workspaceHandoffState
-           FROM worker_backend_sessions
-           WHERE turn_id = ?`
-        )
-        .get(firstTask.turn.id);
-      expect(firstBackend).toEqual({ state: 'cleaned', workspaceHandoffState: 'complete' });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT status
-             FROM scheduler_session_leases
-             WHERE turn_id = ?`
-          )
-          .get(firstTask.turn.id)
-      ).toEqual({ status: 'releasing' });
-      let firstCheckpoint: ReturnType<typeof getWorkerCheckpoint> = null;
-      const checkpointDeadline = Date.now() + 2000;
-      while (Date.now() < checkpointDeadline) {
-        const firstWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-        try {
-          firstCheckpoint = getWorkerCheckpoint(
-            firstWorkspaceDb,
-            'ws_demo',
-            'th_demo',
-            firstTask.turn.id
-          );
-        } finally {
-          firstWorkspaceDb.sqlite.close();
-        }
-        if (firstCheckpoint?.stage === 'waiting_for_user') {
-          break;
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 20));
-      }
-      expect(firstCheckpoint).toMatchObject({
-        stage: 'waiting_for_user',
-        stopReason: 'ask_user',
-      });
-
-      const firstGate = durableTurn.humanGate;
-      if (firstGate?.kind !== 'approval') throw new Error('Expected the public Task MCP Gate.');
-      expect(
-        store
-          .listThreadItems(firstTask.turn.workspaceId, firstTask.turn.threadId)
-          .find(
-            (item) =>
-              item.type === 'approval-request' &&
-              item.approvalRequestId === firstGate.approvalRequestId
-          )
-      ).toMatchObject({
-        description: repository
-          ? expect.stringContaining('to feature/issue84')
-          : 'Allow one echo/echo MCP tool call. After approving, send a new task message to continue.',
-      });
-      const attentionResponse = await app.request('/api/app/workspaces/ws_demo/action-center');
-      const attention = ListHumanAttentionResponseSchema.parse(await attentionResponse.json());
-      expect(attention.items).toContainEqual(
-        expect.objectContaining({
-          id: `approval:${firstGate.approvalRequestId}`,
-          actions: expect.arrayContaining([
-            expect.objectContaining({ kind: 'grant_approval' }),
-            expect.objectContaining({ kind: 'deny_approval' }),
-          ]),
-        })
-      );
-      const approvalResponse = await app.request(
-        `/api/approvals/${firstGate.approvalRequestId}/respond`,
-        {
-          body: JSON.stringify({
-            decision,
-            requestId: '0190f4c8-0000-7000-8000-000000000502',
-            threadId: firstTask.turn.threadId,
-            turnId: firstTask.turn.id,
-            workspaceId: firstTask.turn.workspaceId,
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      );
-      expect(approvalResponse.status, await approvalResponse.clone().text()).toBe(200);
-      expect(store.getTurnById(firstTask.turn.id).status).toBe(
-        decision === 'granted' ? 'completed' : 'interrupted'
-      );
-      expect(store.getAgentSession(firstRun.agentSessionId).status).toBe(
-        decision === 'granted' ? 'closed' : 'interrupted'
-      );
-      const approvedWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-      expect(
-        getWorkerCheckpoint(approvedWorkspaceDb, 'ws_demo', 'th_demo', firstTask.turn.id)
-      ).toBeNull();
-      approvedWorkspaceDb.sqlite.close();
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_session_leases WHERE turn_id = ?')
-          .get(firstTask.turn.id)
-      ).toEqual({ status: 'released' });
+      expect(durableTurn.status).toBe('completed');
+      if ('outcome' in firstTask) expect(firstTask.outcome).toBe('accepted');
+      expect(store.getAgentSession(firstRun.agentSessionId).status).toBe('idle');
       expect(
         store
           .listCommandRequests()
@@ -1632,78 +1486,140 @@ describe('worker MCP routes', () => {
           )
           .map((receipt) => receipt.command)
       ).toEqual([ownerCommand]);
-
-      if (decision === 'denied') {
-        expect(store.getApproval(firstGate.approvalRequestId).status).toBe('denied');
-        expect(
-          store.getTurnEvents(firstTask.turn.id).filter((event) => event.event === 'turn.completed')
-        ).toContainEqual(
-          expect.objectContaining({ data: expect.objectContaining({ stopReason: 'aborted' }) })
-        );
-        approvedWorkspaceDb.sqlite.close();
-        return;
-      }
-      approvedWorkspaceDb.sqlite.close();
-      const originalApproval = store.getApproval(firstGate.approvalRequestId);
-      let secondSettled = false;
-      const secondRequest = app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        body: JSON.stringify({
-          input: 'Use the approved MCP call.',
-          requestId: '0190f4c8-0000-7000-8000-000000000503',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
-      void secondRequest.then(
-        () => {
-          secondSettled = true;
-        },
-        () => {
-          secondSettled = true;
-        }
+      expect(repositoryApprovalId).not.toBeNull();
+      const attentionResponse = await app.request('/api/app/workspaces/ws_demo/action-center');
+      expect(
+        ListHumanAttentionResponseSchema.parse(await attentionResponse.json()).items
+      ).toContainEqual(
+        expect.objectContaining({
+          id: `approval:${repositoryApprovalId}`,
+          actions: expect.arrayContaining([expect.objectContaining({ kind: 'grant_approval' })]),
+        })
       );
-      const [secondResponse, secondRun] = await Promise.all([
-        secondRequest,
-        driveTask(false, () => secondSettled),
-      ]);
-      expect(secondResponse.status, await secondResponse.clone().text()).toBe(202);
-      const secondTask = StartTaskModeResponseSchema.parse(await secondResponse.json());
-      expect(secondTask).toMatchObject({ state: 'completed', turn: { status: 'completed' } });
-      expect(secondTask.turn.id).not.toBe(firstTask.turn.id);
-      expect(secondRun.agentSessionId).not.toBe(firstRun.agentSessionId);
-      expect(secondRun.toolCall[0]).toMatchObject({ status: 'fulfilled' });
-      if (repository) {
-        expect(store.getApproval(firstGate.approvalRequestId)).toEqual(originalApproval);
-        expect(existsSync(callFile)).toBe(false);
-      } else expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
+      const originalSnapshot = runtimeConfigManager.current();
+      const providerFault = refuseFirst
+        ? vi
+            .spyOn(runtimeConfigManager, 'current')
+            .mockReturnValue({ ...originalSnapshot, providerRegistry: new ProviderRegistry([]) })
+        : undefined;
+      const detailResponse = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/dashboard'
+      );
+      expect(detailResponse.status, await detailResponse.clone().text()).toBe(200);
+      const detailDashboard = await detailResponse.json();
+      expect(
+        detailDashboard.pendingRequests.find(
+          (row: { requestId: string }) => row.requestId === repositoryApprovalId
+        )
+      ).toMatchObject({ approvalEffect: { status: 'available' }, canRespond: true });
+      const responseInput = {
+        decision,
+        requestId: '0190f4c8-0000-7000-8000-000000000502',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: firstTask.turn.id,
+      };
+      const approvalResponse = app.request(`/api/approvals/${repositoryApprovalId}/respond`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(responseInput),
+      });
+      let responded: Response;
+      let continuation: Awaited<ReturnType<typeof driveTask>>;
+      if (refuseFirst) {
+        responded = await approvalResponse;
+        const reviewDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        for (let n = 0; n < 2000; n++) {
+          const record = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!);
+          if (record?.delivery === 'undelivered' && record.publicationTurnId) break;
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+        const refused = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
+        expect(refused.delivery).toBe('undelivered');
+        expect(refused.disposition).toBe('denied-not-executed');
+        expect(store.getTurnById(refused.publicationTurnId!).status).toBe('failed');
+        expect(
+          reviewDb.sqlite
+            .prepare('SELECT count(*) AS count FROM pending_requests WHERE delivery = ?')
+            .get('frozen')
+        ).toEqual({ count: 0 });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              "SELECT count(*) AS count FROM scheduler_admission_entries WHERE turn_id = ? AND status = 'queued'"
+            )
+            .get(refused.publicationTurnId)
+        ).toEqual({ count: 0 });
+        const count = store.listThreadTurns('ws_demo', 'th_demo').length;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(count);
+        providerFault!.mockRestore();
+        const user = app.request(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Continue after refused admission.',
+            requestId: '0190f4c8-0000-7000-8000-000000000599',
+            artifactRefs: [],
+            targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
+          }),
+        });
+        const [userResponse, resumed] = await Promise.all([user, driveTask(false)]);
+        expect(userResponse.status, await userResponse.clone().text()).toBe(202);
+        continuation = resumed;
+        const delivered = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
+        expect(delivered.delivery).toBe('delivered');
+        expect(delivered.publicationTurnId).toBe(refused.publicationTurnId);
+        expect(delivered.deliveryTurnId).not.toBe(refused.publicationTurnId);
+        expect(store.getTurnById(delivered.deliveryTurnId!).items).toContainEqual(
+          expect.objectContaining({
+            type: 'user-message',
+            text: expect.stringContaining('Continue after refused admission.'),
+          })
+        );
+        const trigger = store
+          .getTurnById(delivered.deliveryTurnId!)
+          .items.find((item) => item.type === 'user-message');
+        if (!trigger || trigger.type !== 'user-message')
+          throw new Error('Missing independent user trigger');
+        expect(JSON.parse(trigger.text).objective).toBe('Continue after refused admission.');
+        reviewDb.sqlite.close();
+      } else {
+        [responded, continuation] = await Promise.all([approvalResponse, driveTask(false)]);
+      }
+      expect(responded.status, await responded.clone().text()).toBe(200);
+      expect(store.getTurnById(firstTask.turn.id).status).toBe('completed');
+      expect(continuation.agentSessionId).toBe(firstRun.agentSessionId);
+      const replay = await app.request(`/api/approvals/${repositoryApprovalId}/respond`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(responseInput),
+      });
+      expect(replay.status).toBe(200);
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-      expect(
-        workspaceDb.sqlite
-          .prepare(
-            `SELECT status
-             FROM capability_calls
-             WHERE operation = 'mcp.call_tool'
-             ORDER BY rowid`
-          )
-          .all()
-      ).toEqual([{ status: 'denied' }, { status: 'succeeded' }]);
-      expect(
-        workspaceDb.sqlite
-          .prepare(
-            `SELECT COUNT(*) AS count
-             FROM permission_decisions
-             WHERE action = 'tool.use' AND reason_code = 'mcp_approval_grant_reauthorized'`
-          )
-          .get()
-      ).toEqual({ count: repository ? 0 : 1 });
-      expect(
-        workspaceDb.sqlite
-          .prepare(
-            "SELECT quantity, unit FROM usage_records WHERE unit = 'tool_calls' ORDER BY rowid"
-          )
-          .all()
-      ).toEqual(repository ? [] : [{ quantity: 1, unit: 'tool_calls' }]);
-      workspaceDb.sqlite.close();
+      try {
+        expect(readPendingRequest(workspaceDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
+          'delivered'
+        );
+        expect(
+          store
+            .listThreadItems('ws_demo', 'th_demo')
+            .filter(
+              (item) =>
+                item.type === 'approval-decision' && item.approvalRequestId === repositoryApprovalId
+            )
+        ).toHaveLength(1);
+        expect(
+          store
+            .listThreadTurns('ws_demo', 'th_demo')
+            .filter((turn) => turn.triggerSource?.kind === 'approval-resolution')
+        ).toHaveLength(1);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      if (!repository && !refuseFirst)
+        expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
+      else expect(existsSync(callFile)).toBe(false);
     } finally {
       await workerMcpGateway.close();
       coreDb.sqlite.close();
@@ -1712,399 +1628,6 @@ describe('worker MCP routes', () => {
       rmSync(dataRoot, { force: true, recursive: true });
     }
   }, 30_000);
-
-  it('keeps corrupted public Task MCP Approval sources fail-closed', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-public-task-'));
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-task-repository-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    seedWritableGitRepository(repositoryPath);
-    const agentSetup = createTestAgentSetup({ mcpIds: ['echo'] });
-    const catalog = parseWorkspaceMcpServerCatalog({
-      schemaVersion: 1,
-      servers: [
-        {
-          allowedTools: ['echo'],
-          approvalRequiredTools: ['echo'],
-          enabled: true,
-          id: 'echo',
-          schemaPolicy: 'tracking',
-          timeoutMs: 2_000,
-          transport: {
-            args: [fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url))],
-            command: process.execPath,
-            kind: 'stdio',
-          },
-        },
-      ],
-    });
-    const providerRegistry = new ProviderRegistry([
-      {
-        displayName: 'Agent OpenRouter',
-        id: 'agent-openrouter',
-        kind: 'local',
-        models: ['openai/gpt-5.2'],
-      },
-    ]);
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot,
-      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
-        agentManifests: [agentSetup.manifest],
-        dataRoot,
-        gatewayConfig: createTestGatewayConfig(),
-        openKitConfig: { defaults: { defaultAgentId: agentSetup.manifest.id } },
-        providerRegistry,
-        workspaceMcpServerCatalogs: [
-          {
-            catalog,
-            path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'catalog/catalog.json'),
-            workspaceId: 'ws_demo',
-          },
-        ],
-      }),
-    });
-    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
-      identityId: 'identity_local',
-      observedAt: '2026-09-03T00:00:00.000Z',
-      targetId: 'target_local',
-    });
-    upsertNanoHostRuntimeTarget(coreDb, {
-      ...runtimeTarget,
-      freshEmpty: true,
-      observedAt: '2026-09-03T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-    let activePackage: AgentEnvironmentPackage | null = null;
-    let gateStopCount = 0;
-    const workerControlGateway = {
-      authenticatePackageToken: vi.fn(() => {
-        if (!activePackage) throw new Error('The public Task AEP is unavailable.');
-        return activePackage;
-      }),
-    } as unknown as WorkerControlGateway;
-    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-    const mcpApp = new Hono();
-    registerWorkerMcpRoutes({
-      app: mcpApp,
-      coreDb,
-      requestHumanGateStop: (packageSnapshotId) => {
-        if (!activePackage || activePackage.snapshotId !== packageSnapshotId) {
-          throw new Error('The MCP Gate stop has no exact public Task AEP.');
-        }
-        const turn = store.getTurnById(activePackage.scope.turnId);
-        if (!turn.agentSessionId) throw new Error('The MCP Gate stop has no AgentSession.');
-        store.updateAgentSession(turn.agentSessionId, { status: 'suspended' });
-        gateStopCount += 1;
-      },
-      runtimeConfig: runtimeConfigManager.current,
-      store,
-      workerControlGateway,
-      workerMcpGateway,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-    });
-    const executor = new (class extends SimulatedTurnExecutor {
-      public readonly outcomes: Array<PromiseSettledResult<unknown>[]> = [];
-
-      public override async startTurn(
-        requestStore: typeof store,
-        turnId: string,
-        input: string,
-        context: TurnStartRuntimeContext
-      ): Promise<void> {
-        await super.startTurn(requestStore, turnId, input, context);
-        const turn = requestStore.getTurnById(turnId);
-        if (!turn.agentSessionId) throw new Error('The public Task has no AgentSession.');
-        const agentSession = requestStore.getAgentSession(turn.agentSessionId);
-        if (!agentSession.environmentPackageSnapshotId) {
-          throw new Error('The public Task has no AEP snapshot.');
-        }
-        const workspaceDb = openWorkspaceDb(dataRoot, turn.workspaceId);
-        try {
-          applyScopedMigrations(workspaceDb);
-          activePackage = requireAgentEnvironmentPackageSnapshot(
-            workspaceDb,
-            turn.workspaceId,
-            agentSession.environmentPackageSnapshotId
-          ).snapshot;
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-        requestStore.updateTurn(turnId, { humanGate: null, status: 'running' });
-        requestStore.updateAgentSession(turn.agentSessionId, { status: 'busy' });
-
-        const client = new Client({ name: 'public-task-route-test', version: '1.0.0' });
-        const transport = new StreamableHTTPClientTransport(
-          new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
-          {
-            fetch: (requestInput, init) => mcpApp.fetch(new Request(requestInput, init)),
-            requestInit: { headers: { authorization: 'Bearer capability-token' } },
-          }
-        );
-        try {
-          await client.connect(transport);
-          await client.listTools();
-          const calls = [client.callTool({ arguments: { message: 'public-task' }, name: 'echo' })];
-          if (this.outcomes.length === 1) {
-            calls.push(client.callTool({ arguments: { message: 'public-task' }, name: 'echo' }));
-          }
-          this.outcomes.push(await Promise.allSettled(calls));
-        } finally {
-          await client.close();
-        }
-        const lease = coreDb.sqlite
-          .prepare(
-            `SELECT lease_id AS leaseId, sandbox_binding_ref AS sandboxBindingRef
-             FROM scheduler_session_leases
-             WHERE turn_id = ?`
-          )
-          .get(turnId) as { leaseId: string; sandboxBindingRef: string };
-        recordWorkerControlAcceptedRecord(coreDb, {
-          acceptedAt: new Date().toISOString(),
-          lineage: {
-            agentSessionId: activePackage.scope.agentSessionId,
-            packageSnapshotId: activePackage.snapshotId,
-            requestId: activePackage.scope.requestId,
-            threadId: activePackage.scope.threadId,
-            turnId: activePackage.scope.turnId,
-            workspaceId: activePackage.scope.workspaceId,
-          },
-          operation: 'final_status',
-          record: { sequence: 1, status: 'blocked', stopReason: 'ask_user' },
-          recordKey: '1',
-          sandboxBindingRef: lease.sandboxBindingRef,
-          sequence: 1,
-        });
-      }
-    })({ coreDb });
-    const app = createApp({
-      coreDb,
-      dataRoot,
-      runtimeConfigManager,
-      schedulerEpoch: 12,
-      store,
-      turnExecutor: executor,
-      workerMcpGateway,
-    });
-
-    try {
-      const repositoryResponse = await app.request(
-        '/api/app/workspaces/ws_demo/repositories/default',
-        {
-          body: JSON.stringify({ displayName: 'MCP Task repository', localPath: repositoryPath }),
-          headers: { 'content-type': 'application/json' },
-          method: 'PUT',
-        }
-      );
-      expect(repositoryResponse.status).toBe(200);
-      const firstResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        body: JSON.stringify({
-          input: 'Implement the bounded MCP Task fix.',
-          requestId: '0190f4c8-0000-7000-8000-000000000401',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
-      expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
-      const firstTask = StartTaskModeResponseSchema.parse(await firstResponse.json());
-      expect(firstTask).toMatchObject({
-        state: 'awaiting-human',
-        turn: { humanGate: { kind: 'approval' }, status: 'awaiting_human' },
-      });
-      expect(executor.outcomes[0]).toEqual([
-        expect.objectContaining({
-          reason: expect.objectContaining({ data: { code: 'mcp-denied' } }),
-          status: 'rejected',
-        }),
-      ]);
-      const firstGate = firstTask.turn.humanGate;
-      if (firstGate?.kind !== 'approval') throw new Error('Expected the public Task MCP Gate.');
-
-      const approvalResponse = await app.request(
-        `/api/approvals/${firstGate.approvalRequestId}/respond`,
-        {
-          body: JSON.stringify({
-            decision: 'granted',
-            requestId: '0190f4c8-0000-7000-8000-000000000402',
-            threadId: firstTask.turn.threadId,
-            turnId: firstTask.turn.id,
-            workspaceId: firstTask.turn.workspaceId,
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      );
-      expect(approvalResponse.status, await approvalResponse.clone().text()).toBe(200);
-      await expect(approvalResponse.json()).resolves.toMatchObject({ status: 'granted' });
-
-      const secondResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        body: JSON.stringify({
-          input: 'Implement the next bounded MCP Task fix.',
-          requestId: '0190f4c8-0000-7000-8000-000000000403',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
-      expect(secondResponse.status, await secondResponse.clone().text()).toBe(202);
-      const secondTask = StartTaskModeResponseSchema.parse(await secondResponse.json());
-      expect(secondTask).toMatchObject({
-        state: 'awaiting-human',
-        turn: { humanGate: { kind: 'approval' }, status: 'awaiting_human' },
-      });
-      expect(
-        executor.outcomes[1]?.filter((outcome) => outcome.status === 'fulfilled')
-      ).toHaveLength(1);
-      expect(executor.outcomes[1]?.filter((outcome) => outcome.status === 'rejected')).toHaveLength(
-        1
-      );
-      expect(gateStopCount).toBe(2);
-      const secondGate = secondTask.turn.humanGate;
-      if (secondGate?.kind !== 'approval') throw new Error('Expected the second public Task Gate.');
-      const actionableBeforeSourceLoss = ListHumanAttentionResponseSchema.parse(
-        await (await app.request('/api/app/workspaces/ws_demo/action-center')).json()
-      );
-      expect(actionableBeforeSourceLoss.items.map((item) => item.id)).toContain(
-        `approval:${secondGate.approvalRequestId}`
-      );
-      const actionCenterIds = async () =>
-        ListHumanAttentionResponseSchema.parse(
-          await (await app.request('/api/app/workspaces/ws_demo/action-center')).json()
-        ).items.map((item) => item.id);
-      const rejectCorruptApproval = async (requestId: string) => {
-        const response = await app.request(
-          `/api/approvals/${secondGate.approvalRequestId}/respond`,
-          {
-            body: JSON.stringify({
-              decision: 'granted',
-              requestId,
-              threadId: secondTask.turn.threadId,
-              turnId: secondTask.turn.id,
-              workspaceId: secondTask.turn.workspaceId,
-            }),
-            headers: { 'content-type': 'application/json' },
-            method: 'POST',
-          }
-        );
-        expect(response.status, await response.clone().text()).toBe(409);
-        await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      };
-
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-      try {
-        applyScopedMigrations(workspaceDb);
-        expect(
-          workspaceDb.sqlite
-            .prepare(
-              `SELECT COUNT(*) AS count
-               FROM permission_decisions
-               WHERE action = 'tool.use' AND reason_code = 'mcp_approval_grant_reauthorized'`
-            )
-            .get()
-        ).toEqual({ count: 1 });
-        expect(
-          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', firstTask.turn.id)
-        ).toBeNull();
-        expect(
-          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', secondTask.turn.id)
-        ).toMatchObject({ stage: 'waiting_for_user', stopReason: 'ask_user' });
-        expect(
-          store.getCommandRequest(
-            'task.start',
-            '0190f4c8-0000-7000-8000-000000000401',
-            { actorId: 'user_local', threadId: 'th_demo', workspaceId: 'ws_demo' },
-            workspaceDb
-          )
-        ).not.toBeNull();
-        const source = workspaceDb.sqlite
-          .prepare(
-            `SELECT decision_id, context_summary_json, resource_summary_json
-             FROM permission_decisions
-             WHERE approval_id = ? AND action = 'tool.use' AND result = 'require_approval'`
-          )
-          .get(secondGate.approvalRequestId) as {
-          context_summary_json: string;
-          decision_id: string;
-          resource_summary_json: string;
-        };
-        const context = JSON.parse(source.context_summary_json) as Record<string, unknown>;
-        const resource = JSON.parse(source.resource_summary_json) as Record<string, unknown>;
-        const capabilityCallId = String(context.capabilityCallId);
-
-        const { packageSnapshotId: _packageSnapshotId, ...incompleteContext } = context;
-        workspaceDb.sqlite
-          .prepare('UPDATE permission_decisions SET context_summary_json = ? WHERE decision_id = ?')
-          .run(JSON.stringify(incompleteContext), source.decision_id);
-        expect(await actionCenterIds()).not.toContain(`approval:${secondGate.approvalRequestId}`);
-        workspaceDb.sqlite
-          .prepare('UPDATE permission_decisions SET context_summary_json = ? WHERE decision_id = ?')
-          .run(source.context_summary_json, source.decision_id);
-
-        workspaceDb.sqlite
-          .prepare('UPDATE capability_calls SET status = ? WHERE call_id = ?')
-          .run('failed', capabilityCallId);
-        expect(await actionCenterIds()).not.toContain(`approval:${secondGate.approvalRequestId}`);
-        await rejectCorruptApproval('0190f4c8-0000-7000-8000-000000000405');
-        workspaceDb.sqlite
-          .prepare('UPDATE capability_calls SET status = ? WHERE call_id = ?')
-          .run('denied', capabilityCallId);
-
-        workspaceDb.sqlite
-          .prepare(
-            `UPDATE audit_events SET outcome = ?
-             WHERE capability_call_id = ? AND action = 'capability.finish'`
-          )
-          .run('failed', capabilityCallId);
-        expect(await actionCenterIds()).not.toContain(`approval:${secondGate.approvalRequestId}`);
-        await rejectCorruptApproval('0190f4c8-0000-7000-8000-000000000406');
-        workspaceDb.sqlite
-          .prepare(
-            `UPDATE audit_events SET outcome = ?
-             WHERE capability_call_id = ? AND action = 'capability.finish'`
-          )
-          .run('denied', capabilityCallId);
-
-        workspaceDb.sqlite
-          .prepare(
-            'UPDATE permission_decisions SET resource_summary_json = ? WHERE decision_id = ?'
-          )
-          .run(
-            JSON.stringify({ ...resource, expiresAt: '2999-01-01T00:00:00.000Z' }),
-            source.decision_id
-          );
-        expect(await actionCenterIds()).not.toContain(`approval:${secondGate.approvalRequestId}`);
-        await rejectCorruptApproval('0190f4c8-0000-7000-8000-000000000407');
-        workspaceDb.sqlite
-          .prepare(
-            'UPDATE permission_decisions SET resource_summary_json = ? WHERE decision_id = ?'
-          )
-          .run(
-            JSON.stringify({ ...resource, expiresAt: '1970-01-01T00:00:00.000Z' }),
-            source.decision_id
-          );
-        expect(await actionCenterIds()).not.toContain(`approval:${secondGate.approvalRequestId}`);
-        await rejectCorruptApproval('0190f4c8-0000-7000-8000-000000000408');
-        workspaceDb.sqlite
-          .prepare('DELETE FROM permission_decisions WHERE approval_id = ?')
-          .run(secondGate.approvalRequestId);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-      const actionableAfterSourceLoss = ListHumanAttentionResponseSchema.parse(
-        await (await app.request('/api/app/workspaces/ws_demo/action-center')).json()
-      );
-      expect(actionableAfterSourceLoss.items.map((item) => item.id)).not.toContain(
-        `approval:${secondGate.approvalRequestId}`
-      );
-    } finally {
-      await workerMcpGateway.close();
-      coreDb.sqlite.close();
-    }
-  });
 
   it('maps the bounded MCP failure table without extra tool effects', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-failures-'));
@@ -2577,28 +2100,6 @@ describe('worker MCP routes', () => {
         )
         .run(new Date().toISOString());
 
-      const gateRace = await connect('gate-race');
-      const gateBarrier = createListBarrier('gate-race');
-      const upstreamCallsBeforeGateRace = callTool.mock.calls.length;
-      const gateRaceCall = gateRace.callTool({
-        arguments: { message: 'gate-race' },
-        name: 'echo',
-      });
-      await gateBarrier.entered;
-      store.updateTurn(turn.id, {
-        humanGate: {
-          approvalRequestId: 'ap_concurrent_gate',
-          itemId: 'it_concurrent_gate',
-          kind: 'approval',
-        },
-        status: 'awaiting_human',
-      });
-      gateBarrier.release();
-      await expect(gateRaceCall).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      expect(callTool).toHaveBeenCalledTimes(upstreamCallsBeforeGateRace);
-      store.updateTurn(turn.id, { humanGate: null, status: 'running' });
-      listBarrier = undefined;
-
       const itemCountBeforeAuditFailure = store.listAllItems().length;
       const auditFailureDb = openWorkspaceDb(dataRoot, 'ws_demo');
       try {
@@ -2745,7 +2246,6 @@ describe('worker MCP routes', () => {
           { error_code: 'mcp-server-unavailable', status: 'failed' },
           { error_code: 'mcp-server-unavailable', status: 'aborted' },
           { error_code: 'mcp-denied', status: 'denied' },
-          { error_code: 'mcp-denied', status: 'denied' },
           { error_code: 'capability_call_recovered_after_restart', status: 'unknown' },
           { error_code: 'usage_record_failed', status: 'failed' },
           { error_code: null, status: 'succeeded' },
@@ -2848,14 +2348,6 @@ describe('worker MCP routes', () => {
       await Promise.all(clients.map((client) => client.close()));
       coreDb.sqlite.close();
     }
-  });
-
-  it('rejects malformed and expired Approval timestamps', () => {
-    const now = Date.parse('2026-09-03T01:00:00.000Z');
-
-    expect(isMcpApprovalExpiryActive('not-a-date', now)).toBe(false);
-    expect(isMcpApprovalExpiryActive('2026-09-03T01:00:00.000Z', now)).toBe(false);
-    expect(isMcpApprovalExpiryActive('2026-09-03T01:00:00.001Z', now)).toBe(true);
   });
 
   it('recreates a missing terminal Item without changing its successful call', () => {

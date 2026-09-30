@@ -142,7 +142,7 @@ describe('goal worker terminal outcome', () => {
     }
   });
 
-  it('keeps a worker task running while the worker is awaiting human input', () => {
+  it('fails a worker task when the outcome still carries the removed ask_user stop reason', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -160,9 +160,9 @@ describe('goal worker terminal outcome', () => {
         itemIds: ['it_approval_request'],
       });
 
-      expect(result.task.status).toBe('running');
+      expect(result.task.status).toBe('failed');
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_demo')).toMatchObject({
-        stage: 'waiting_for_user',
+        stage: 'failed',
         stopReason: 'ask_user',
         diagnosticsSummary: '{"itemIds":["it_approval_request"],"artifactIds":[]}',
       });

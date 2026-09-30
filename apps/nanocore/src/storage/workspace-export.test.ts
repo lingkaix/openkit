@@ -512,6 +512,7 @@ describe('workspace export verifier', () => {
       status: 'completed',
       userInputRequestId: userInputRequestItem.userInputRequestId,
       answers: { question_portable: ['Yes'] as [string] },
+      answeredAt: timestamp,
       createdAt: timestamp,
       completedAt: timestamp,
     } as const;
@@ -537,12 +538,7 @@ describe('workspace export verifier', () => {
         userInputRequestItem,
         userInputResponseItem,
       ],
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: approvalItem.approvalRequestId,
-        itemId: approvalItem.id,
-      },
+      status: 'running',
       agentSessionId: null,
       error: null,
       configVersion: null,
@@ -701,7 +697,7 @@ describe('workspace export verifier', () => {
         workspaceId: targetWorkspaceId,
         threadId: importedThread.id,
         agentSessionId: null,
-        humanGate: { itemId: importedApprovalItem.id },
+        status: 'running',
         triggerActor: localActor,
         items: [
           importedCurrentItem,
@@ -1696,7 +1692,6 @@ describe('workspace export verifier', () => {
       triggerActor: localActor,
       items: [],
       status: 'completed' as const,
-      humanGate: null,
       error: null,
       configVersion: null,
       startedAt: timestamp,
@@ -1928,6 +1923,11 @@ describe('workspace export verifier', () => {
         {
           table: 'idempotency_requests',
           reason: 'short-lived request replay state is local to the source workspace',
+        },
+        {
+          table: 'pending_requests',
+          reason:
+            'pending-request lifecycle stays in the workspace database and has no portable export family',
         },
         {
           table: 'pending_user_turn_records',

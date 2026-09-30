@@ -194,7 +194,6 @@ function recordWorkerPackage(
         configVersion: null,
         durationMs: null,
         error: null,
-        humanGate: null,
         id: input.turnId,
         items: [],
         startedAt: timestamp,

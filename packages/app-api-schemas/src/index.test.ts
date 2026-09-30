@@ -3559,7 +3559,6 @@ describe('app api schemas', () => {
       triggerActor: { kind: 'user', id: 'user_1' },
       items: [],
       status: 'running' as const,
-      humanGate: null,
       error: null,
       agentSessionId: 'as_hidden',
       configVersion: null,
@@ -3763,7 +3762,6 @@ describe('app api schemas', () => {
         configVersion: null,
         feedback: null,
         error: null,
-        humanGate: null,
         startedAt: timestamp,
         completedAt: timestamp,
         durationMs: 1,
@@ -3813,7 +3811,6 @@ describe('app api schemas', () => {
           configVersion: null,
           feedback: null,
           error: null,
-          humanGate: null,
           startedAt: timestamp,
           completedAt: timestamp,
           durationMs: 1,
@@ -3895,7 +3892,6 @@ describe('app api schemas', () => {
           configVersion: null,
           feedback: null,
           error: null,
-          humanGate: null,
           startedAt: timestamp,
           completedAt: timestamp,
           durationMs: 1,
@@ -7320,6 +7316,77 @@ describe('WP5 Workspace sharing schemas', () => {
         message: 'Another Workspace deletion request is in progress.',
         details: { ...workspaceDeletion, path: '/private/workspace' },
         requestId,
+      }).success
+    ).toBe(false);
+  });
+});
+
+describe('pending request additive command content', () => {
+  it('accepts and strips additive answer and withdrawal fields', () => {
+    const answer = {
+      requestId: 'command',
+      workspaceId: 'workspace',
+      threadId: 'thread',
+      userInputRequestId: 'question',
+      answers: { path: ['left'] },
+      futureHint: 'untrusted canary',
+    };
+    const withdraw = {
+      requestId: 'command',
+      workspaceId: 'workspace',
+      threadId: 'thread',
+      pendingRequestId: 'pending',
+      futureHint: 'untrusted canary',
+    };
+    expect(appApiSchemas.AnswerUserInputRequestSchema.parse(answer)).not.toHaveProperty(
+      'futureHint'
+    );
+    expect(appApiSchemas.WithdrawPendingRequestSchema.parse(withdraw)).not.toHaveProperty(
+      'futureHint'
+    );
+    expect(
+      appApiSchemas.PendingRequestOutcomeSchema.safeParse({
+        requestId: 'pending',
+        workspaceId: 'workspace',
+        threadId: 'thread',
+        state: 'future-state',
+        resolution: null,
+        ending: null,
+      }).success
+    ).toBe(false);
+  });
+});
+
+describe('derived approval exact effect', () => {
+  it('accepts complete detail and strips additive non-authoritative fields', () => {
+    expect(
+      appApiSchemas.ApprovalEffectPreviewSchema.parse({
+        status: 'available',
+        summary: 'Summary: Publish',
+        detail: '{"commitIds":["abc"]}',
+        futureOptional: true,
+      })
+    ).toEqual({
+      status: 'available',
+      summary: 'Summary: Publish',
+      detail: '{"commitIds":["abc"]}',
+    });
+    expect(
+      appApiSchemas.ApprovalEffectPreviewSchema.parse({
+        status: 'unavailable',
+        reason: 'Complete detail could not be loaded.',
+      })
+    ).toEqual({ status: 'unavailable', reason: 'Complete detail could not be loaded.' });
+  });
+  it('refuses unknown availability and absent complete detail', () => {
+    expect(
+      appApiSchemas.ApprovalEffectPreviewSchema.safeParse({ status: 'future', detail: '{}' })
+        .success
+    ).toBe(false);
+    expect(
+      appApiSchemas.ApprovalEffectPreviewSchema.safeParse({
+        status: 'available',
+        summary: 'Summary',
       }).success
     ).toBe(false);
   });

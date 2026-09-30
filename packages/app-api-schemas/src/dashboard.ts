@@ -11,6 +11,7 @@ import {
 import { z } from 'zod';
 import { GoalReviewResolutionOutcomeSchema, GoalReviewVerdictSchema } from './action-center.js';
 import { WorkspaceMaterialRevisionSummarySchema } from './material.js';
+import { ApprovalEffectPreviewSchema } from './pending-request.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
 import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
 
@@ -795,6 +796,22 @@ export const ThreadDashboardResponseSchema = z.object({
     href: z.string().min(1),
   }),
   taskInputs: z.array(ThreadTaskInputSchema),
+  /** Authoritative request state; Items remain historical communication. */
+  pendingRequests: z
+    .array(
+      z.object({
+        requestId: z.string().min(1),
+        approvalEffect: ApprovalEffectPreviewSchema.optional(),
+        canRespond: z.boolean().optional(),
+        state: z.enum(['pending', 'resolved', 'ended', 'inspect-only']),
+        resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
+        ending: z.enum(['withdrawn', 'invalidated']).nullable(),
+        disposition: z
+          .enum(['approved-executed', 'denied-not-executed', 'execution-error', 'outcome-unknown'])
+          .nullable(),
+      })
+    )
+    .optional(),
   /** Lossy outward activity, never retained bodies, execution authority, or proof of completeness. */
   runtimeActivity: z
     .array(

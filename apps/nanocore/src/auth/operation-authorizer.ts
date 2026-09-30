@@ -1,7 +1,9 @@
 import {
+  AnswerUserInputRequestSchema,
   CreateAutomationRequestSchema,
   ExecuteGitPushRequestSchema,
   RequestGitPushApprovalRequestSchema,
+  WithdrawPendingRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
@@ -838,6 +840,14 @@ async function bodyWorkspaceId(
   }
   if (operationKey === 'POST /api/turns') {
     const parsed = SubmitTurnInputRequestSchema.safeParse(body);
+    return parsed.success ? parsed.data.workspaceId : null;
+  }
+  if (operationKey === 'POST /api/user-input-requests/:userInputRequestId/answer') {
+    const parsed = AnswerUserInputRequestSchema.safeParse(body);
+    return parsed.success ? parsed.data.workspaceId : null;
+  }
+  if (operationKey === 'POST /api/pending-requests/:pendingRequestId/withdraw') {
+    const parsed = WithdrawPendingRequestSchema.safeParse(body);
     return parsed.success ? parsed.data.workspaceId : null;
   }
   return null;

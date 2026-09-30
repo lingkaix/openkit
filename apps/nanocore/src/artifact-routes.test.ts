@@ -883,7 +883,7 @@ describe('Core artifact routes', () => {
         expect(
           getWorkerCheckpoint(checkpointDb, 'ws_demo', thread.id, followUpTurnId)
         ).toMatchObject({
-          stage: 'waiting_for_user',
+          stage: 'completed',
           workerSessionId: expect.any(String),
         });
       } finally {

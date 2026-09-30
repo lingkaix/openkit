@@ -1,1145 +1,380 @@
-import { isDeepStrictEqual } from 'node:util';
-
 import {
-  ApprovalRequestSchema,
-  RespondToApprovalRequestSchema,
-  TurnSchema,
-} from '@openkit/protocol';
+  AnswerUserInputRequestSchema,
+  PendingRequestOutcomeSchema,
+  WithdrawPendingRequestSchema,
+} from '@openkit/app-api-schemas';
+import { ApprovalRequestSchema, RespondToApprovalRequestSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
-import { apiErrorPayload, asCommandError, asInvalidRequestError } from './api-errors.js';
+import { asCommandError, asInvalidRequestError } from './api-errors.js';
+import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
-import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
-import { isExactWorkerApprovalSourceDecision } from './policy/approval-gates.js';
+import type { StartedCapabilityCall } from './capability/usage-ledger.js';
+import type { FsStore } from './lib/store.js';
+import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
+import { admitCapturedPendingCall } from './runtime/captured-pending-call.js';
 import {
-  listPolicyApprovalSourceDecisions,
-  type PolicyApprovalSourceDecision,
-  type PolicyApprovalTerminalWinner,
-  readPolicyApprovalTerminalWinner,
-  recordProductPermissionDecision,
-} from './policy/permission-decisions.js';
-import {
-  getGoalRecord,
-  listGoalTasks,
-  updateGoalStatus,
-  updateGoalTask,
-} from './runtime/goal-store.js';
-import {
-  commandInputHash,
-  findExactConversationWorkerOwnerReceipt,
-  IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
-import { TurnStartValidationError } from './runtime/orchestrator.js';
 import {
-  createWorkerCheckpointEvidenceDiagnostics,
-  getWorkerCheckpoint,
-  parseWorkerCheckpointContextAssembly,
-  parseWorkerCheckpointEvidence,
-  updateWorkerCheckpoint,
-  type WorkerCheckpointRecord,
-} from './runtime/worker-checkpoints.js';
+  answerRecordedUserInput,
+  type PendingAdmissionDependencies,
+  type PendingWorkerDelivery,
+  requireUsableRecord,
+  respondRecordedApproval,
+  withdrawRecordedPendingRequest,
+} from './runtime/pending-request-flow.js';
 import {
-  classifyClosedWorkerApprovalGate,
-  clearWorkerCheckpointAfterTerminalState,
-  hasExactActiveHumanGate,
-  recoverWorkerCheckpointStopReason,
-  requireWorkerCheckpointHumanCommandScope,
-} from './runtime/worker-recovery.js';
-import {
-  completeSchedulerLeaseForTerminalTurn,
-  listSchedulerSessionLeasesForTurn,
-} from './scheduler-records.js';
+  PendingRequestCommandError,
+  type PendingRequestRecord,
+  projectApprovalRequest,
+  readPendingRequest,
+} from './runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
+/** Executes one captured approval call inside the approval response. */
+export type CapturedPendingCallExecutor = (
+  record: PendingRequestRecord,
+  actor: Actor,
+  workspaceDb: WorkspaceDb,
+  prepared?: PreparedCapturedPendingCall,
+  executionCall?: StartedCapabilityCall
+) => Promise<{
+  readonly disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown';
+  readonly reason: string | null;
+  readonly result: unknown;
+}>;
+
+/** Re-evaluates one captured call at grant time. Absent fields keep the route default. */
+export type CapturedPendingCallEvaluator = (
+  record: PendingRequestRecord,
+  sqlite: import('better-sqlite3').Database,
+  prepared?: PreparedCapturedPendingCall
+) => {
+  readonly membership?: boolean;
+  readonly agentAuthority?: boolean;
+  readonly toolInSupply: boolean;
+  readonly schemaCurrent: boolean;
+  readonly policyAllows: boolean;
+  readonly credentialsValid: boolean;
+};
+
 /**
- * Registers the approval response lifecycle route.
+ * Registers approval response, user-input answer, and pending-request withdrawal.
  *
- * @param dependencies Hono app and concrete approval persistence and runtime dependencies.
+ * @param dependencies Hono app and the workspace database that owns pending requests.
  */
 export function registerApprovalRoutes({
   app,
   coreDb,
+  evaluateCapturedCall,
+  executeCapturedCall,
+  prepareCapturedCall,
+  agentAuthority,
   inflightCommands,
   repositoryWorkspaceDb,
   requestStore,
+  workerDelivery,
+  assistantDelivery,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
+  readonly evaluateCapturedCall?: CapturedPendingCallEvaluator;
+  readonly executeCapturedCall?: CapturedPendingCallExecutor;
+  readonly agentAuthority?: (record: PendingRequestRecord) => boolean;
+  readonly prepareCapturedCall?: (
+    record: PendingRequestRecord,
+    workspaceDb: WorkspaceDb,
+    actor: Actor
+  ) => Promise<PreparedCapturedPendingCall>;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
+  readonly workerDelivery?: PendingWorkerDelivery;
+  readonly assistantDelivery?: PendingWorkerDelivery;
 }): void {
+  const admission = (): PendingAdmissionDependencies => ({
+    ...(coreDb ? { coreDb } : {}),
+    ...(agentAuthority ? { agentAuthority } : {}),
+    openWorkspace: repositoryWorkspaceDb,
+    ...(workerDelivery ? { workerDelivery } : {}),
+    ...(assistantDelivery ? { assistantDelivery } : {}),
+  });
+
   app.post('/api/approvals/:approvalRequestId/respond', async (c) => {
     const parsed = RespondToApprovalRequestSchema.safeParse({
       ...(await c.req.json().catch(() => ({}))),
       approvalRequestId: c.req.param('approvalRequestId'),
     });
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    const input = parsed.data;
+    const store = requestStore(c);
+    const actor = c.get('actor');
     try {
-      const input = parsed.data;
-      const store = requestStore(c);
-      const storedApproval = store.getApproval(input.approvalRequestId);
-      const actor = { kind: 'user' as const, id: c.get('actor').userId };
-
-      if (
-        storedApproval.workspaceId !== input.workspaceId ||
-        storedApproval.threadId !== input.threadId ||
-        storedApproval.turnId !== input.turnId
-      ) {
-        throw new Error(`Approval request scope mismatch: ${input.approvalRequestId}`);
-      }
-
-      const commandScope = {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        turnId: input.turnId,
-        approvalRequestId: input.approvalRequestId,
-      };
-      const workerLeases = coreDb
-        ? listSchedulerSessionLeasesForTurn(coreDb, {
-            workspaceId: input.workspaceId,
-            threadId: input.threadId,
-            turnId: input.turnId,
-          })
-        : [];
-      const approvalResponseReceipt = store.getCommandRequest(
-        'approval.respond',
-        input.requestId,
-        commandScope
-      );
-
-      if (coreDb) {
-        const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
-        try {
-          const workerCheckpoint = getWorkerCheckpoint(
-            workspaceDb,
-            input.workspaceId,
-            input.threadId,
-            input.turnId
-          );
-          let policySources: ReturnType<typeof listPolicyApprovalSourceDecisions>;
-          try {
-            policySources = listPolicyApprovalSourceDecisions(
-              workspaceDb,
-              input.workspaceId,
-              input.approvalRequestId
-            );
-          } catch {
-            throw taskGateRecoveryError('The policy approval source tuple is invalid.');
-          }
-          if (policySources.length > 1 || workerLeases.length > 1) {
-            throw taskGateRecoveryError('The policy approval owner tuple is not unique.');
-          }
-          const policyApproval = policySources[0] ?? null;
-          if (!policyApproval) {
-            let orphanWinner: PolicyApprovalTerminalWinner | null;
-            try {
-              orphanWinner = readPolicyApprovalTerminalWinner(
-                workspaceDb,
-                input.workspaceId,
-                input.approvalRequestId,
-                input.threadId,
-                input.turnId
-              );
-            } catch {
-              throw taskGateRecoveryError('The policy approval terminal claim is invalid.');
-            }
-            if (orphanWinner) {
-              throw taskGateRecoveryError('The policy approval winner has no exact source.');
-            }
-          }
-          if (policyApproval && !isSupportedPolicyApprovalAction(policyApproval.action)) {
-            throw taskGateRecoveryError('The policy approval action is not supported.');
-          }
-          if (policyApproval?.action === 'tool.use' && workerLeases.length !== 1) {
-            throw taskGateRecoveryError('The worker tool approval has no exact active lease.');
-          }
-          const closedWorkerGate =
-            workerLeases.length === 1
-              ? classifyClosedWorkerApprovalGate(
-                  store,
-                  store.getTurn(input.workspaceId, input.threadId, input.turnId)
-                )
-              : null;
-          if (policyApproval && (!workerCheckpoint || closedWorkerGate)) {
-            const decisionItemId = `it_approval_decision_${
-              workerLeases.length === 1 ? input.turnId : input.approvalRequestId
-            }`;
-            let approval: ReturnType<FsStore['getApproval']>;
-            try {
-              approval = await runIdempotentCommand({
-                store,
-                inflightCommands,
-                command: 'approval.respond',
-                requestId: input.requestId,
-                scope: commandScope,
-                input,
-                responseKind: 'approval',
-                execute: () => {
-                  if (workerLeases.length === 1) {
-                    if (closedWorkerGate) {
-                      claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor);
-                      throw taskGateRecoveryError(
-                        'The closed worker approval has no command receipt.'
-                      );
-                    }
-                    // Policy-local repo.push Gates may sit on a leased Turn without a
-                    // worker checkpoint. Resolve the Gate locally; tool.use still needs
-                    // the exact worker stop path.
-                    if (policyApproval.action !== 'repo.push' || workerCheckpoint) {
-                      throw taskGateRecoveryError(
-                        'The worker approval Gate has no supported exact checkpoint.'
-                      );
-                    }
-                  }
-                  const approval = finishPolicyApprovalProjection(
-                    store,
-                    claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor),
-                    input,
-                    decisionItemId
-                  );
-                  if (workerLeases.length === 1 && !workerCheckpoint && !closedWorkerGate) {
-                    releasePolicyLocalSchedulerLease(
-                      coreDb,
-                      store.getTurn(input.workspaceId, input.threadId, input.turnId)
-                    );
-                  }
-                  return approval;
-                },
-                replay: (record) => {
-                  if (
-                    record.response.kind !== 'approval' ||
-                    record.response.id !== input.approvalRequestId
-                  ) {
-                    throw taskGateRecoveryError(
-                      'The policy approval receipt has no exact Approval owner.'
-                    );
-                  }
-                  if (workerLeases.length === 1 && !closedWorkerGate) {
-                    if (policyApproval.action !== 'repo.push' || workerCheckpoint) {
-                      throw taskGateRecoveryError(
-                        'The closed worker approval projection is incomplete.'
-                      );
-                    }
-                  }
-                  const approval = finishPolicyApprovalProjection(
-                    store,
-                    claimPolicyApprovalOutcome(workspaceDb, store, policyApproval, input, actor),
-                    input,
-                    decisionItemId
-                  );
-                  if (workerLeases.length === 1 && !workerCheckpoint && !closedWorkerGate) {
-                    releasePolicyLocalSchedulerLease(
-                      coreDb,
-                      store.getTurn(input.workspaceId, input.threadId, input.turnId)
-                    );
-                  }
-                  return approval;
-                },
-                responseId: (result) => result.id,
-              });
-            } catch (error) {
-              if (error instanceof IdempotencyKeyConflictError) {
-                throw error;
-              }
-              const receipt = store.getCommandRequest(
-                'approval.respond',
-                input.requestId,
-                commandScope
-              );
-              let winner: PolicyApprovalTerminalWinner | null = null;
-              try {
-                winner = readPolicyApprovalTerminalWinner(
-                  workspaceDb,
-                  input.workspaceId,
-                  input.approvalRequestId,
-                  input.threadId,
-                  input.turnId
-                );
-              } catch {
-                throw taskGateRecoveryError(
-                  'The policy approval terminal claim is incomplete or contradictory.'
-                );
-              }
-              if (!receipt && winner?.requestId === input.requestId) {
-                throw taskGateRecoveryError(
-                  'The policy approval winner exists without its command receipt.'
-                );
-              }
-              throw error;
-            }
-
-            if (workerCheckpoint && closedWorkerGate) {
-              await clearWorkerApprovalGateCheckpoint(coreDb, store, workspaceDb, input);
-            }
-            return c.json(approval);
-          }
-
-          if (workerCheckpoint) {
-            if (!policyApproval) {
-              throw new TurnStartValidationError(
-                'approvals_not_supported',
-                'The Approval has no supported durable policy claim.',
-                501
-              );
-            }
-            let approval: ReturnType<FsStore['getApproval']>;
-            try {
-              approval = await runIdempotentCommand({
-                store,
-                inflightCommands,
-                command: 'approval.respond',
-                requestId: input.requestId,
-                scope: commandScope,
-                input,
-                responseKind: 'approval',
-                execute: () =>
-                  closeWorkerApprovalGate(coreDb, store, workspaceDb, policyApproval, input, actor),
-                replay: (record) =>
-                  ApprovalRequestSchema.parse(store.getApproval(record.response.id)),
-                responseId: (result) => result.id,
-              });
-            } catch (error) {
-              if (error instanceof IdempotencyKeyConflictError) {
-                throw error;
-              }
-              const currentCheckpoint = getWorkerCheckpoint(
-                workspaceDb,
-                input.workspaceId,
-                input.threadId,
-                input.turnId
-              );
-              if (!(error instanceof TurnStartValidationError) && currentCheckpoint) {
-                throw taskGateRecoveryError('The worker approval receipt was not published.');
-              }
-              throw error;
-            }
-            await clearWorkerApprovalGateCheckpoint(coreDb, store, workspaceDb, input);
-            return c.json(approval);
-          }
-          if (workerLeases.length > 0 && !approvalResponseReceipt) {
-            throw taskGateRecoveryError(
-              'The worker approval Gate has no supported exact checkpoint.'
-            );
-          }
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-      }
-
-      return c.json(
-        apiErrorPayload({
-          code: 'approvals_not_supported',
-          message: 'The Approval has no supported durable policy claim.',
-        }),
-        501
-      );
-    } catch (error) {
-      return asCommandError(error, 'approval_response_failed');
-    }
-  });
-}
-
-/**
- * Claims or reuses the complete terminal PermissionDecision for one policy Approval.
- *
- * @param workspaceDb Workspace database containing the source decision and terminal winner.
- * @param store Product store containing the exact Approval Gate.
- * @param source Sole exact policy decision that opened the Approval.
- * @param input Exact Approval response command.
- * @param actor Authenticated human actor used only when creating the first winner.
- * @returns Complete terminal winner and its linked Audit attribution.
- * @throws A typed conflict, stale, or recovery error when this request is not the winner.
- */
-function claimPolicyApprovalOutcome(
-  workspaceDb: WorkspaceDb,
-  store: FsStore,
-  source: PolicyApprovalSourceDecision,
-  input: {
-    readonly approvalRequestId: string;
-    readonly decision: 'granted' | 'denied';
-    readonly requestId: string;
-    readonly threadId: string;
-    readonly turnId: string;
-    readonly workspaceId: string;
-  },
-  actor: { readonly id: string; readonly kind: 'user' }
-): PolicyApprovalTerminalWinner {
-  let winner: PolicyApprovalTerminalWinner | null;
-  try {
-    winner = readPolicyApprovalTerminalWinner(
-      workspaceDb,
-      input.workspaceId,
-      input.approvalRequestId,
-      input.threadId,
-      input.turnId
-    );
-  } catch {
-    throw taskGateRecoveryError(
-      'The policy approval source or terminal claim is incomplete or contradictory.'
-    );
-  }
-
-  const approval = store.getApproval(input.approvalRequestId);
-  if (
-    !isSupportedPolicyApprovalAction(source.action) ||
-    source.requiredApprovalKind !== approval.kind ||
-    ((source.action === 'tool.use' ||
-      (source.action === 'repo.push' &&
-        typeof source.contextSummary === 'object' &&
-        source.contextSummary !== null &&
-        'worker' in source.contextSummary)) &&
-      !isExactWorkerApprovalSourceDecision({
+      const approval = await runIdempotentCommand({
         store,
-        approvalId: input.approvalRequestId,
-        approvalItemId:
-          store
-            .listThreadItems(input.workspaceId, input.threadId)
-            .find(
-              (item) =>
-                item.type === 'approval-request' &&
-                item.approvalRequestId === input.approvalRequestId
-            )?.id ?? '',
-        approvalCreatedAt: approval.createdAt,
-        source,
-        threadId: input.threadId,
-        turnId: input.turnId,
-        workspaceDb,
-        workspaceId: input.workspaceId,
-      }))
-  ) {
-    throw taskGateRecoveryError('The policy approval source tuple is not exact.');
-  }
-  const sourceContext = source.contextSummary;
-  if (
-    !sourceContext ||
-    typeof sourceContext !== 'object' ||
-    Array.isArray(sourceContext) ||
-    !('workspaceId' in sourceContext) ||
-    sourceContext.workspaceId !== input.workspaceId ||
-    !('threadId' in sourceContext) ||
-    sourceContext.threadId !== input.threadId ||
-    !('turnId' in sourceContext) ||
-    sourceContext.turnId !== input.turnId
-  ) {
-    throw taskGateRecoveryError('The policy approval source context is not exact.');
-  }
-
-  if (!winner) {
-    const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
-    if (
-      approval.status !== 'pending' ||
-      approval.resolvedAt !== null ||
-      !hasExactActiveHumanGate(store, turn) ||
-      turn.humanGate.kind !== 'approval' ||
-      turn.humanGate.approvalRequestId !== input.approvalRequestId
-    ) {
-      throw taskGateRecoveryError('The policy approval Gate is not exact and active.');
-    }
-    try {
-      recordProductPermissionDecision({
-        workspaceDb,
-        decisionId: `pd_${policyActionSlug(source.action)}_${input.decision}_${input.approvalRequestId}`,
-        ownerScope: 'workspace',
-        workspaceId: input.workspaceId,
-        policyEngineVersion: 'nanocore-approval-policy:v1',
-        policySnapshotId: 'policy_snapshot_runtime',
-        subjectSummary: source.subjectSummary,
-        action: source.action,
-        resourceSummary: source.resourceSummary,
-        contextSummary: {
-          ...sourceContext,
-          requestId: input.requestId,
+        inflightCommands,
+        command: 'approval.respond',
+        requestId: input.requestId,
+        scope: {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          approvalRequestId: input.approvalRequestId,
         },
-        result: input.decision === 'granted' ? 'allow' : 'deny',
-        reasonCode: `${policyActionSlug(source.action)}_${input.decision === 'granted' ? 'approved' : 'denied'}`,
-        enforcementPoint: `${source.action}.approval_response`,
-        requiredApprovalKind: source.requiredApprovalKind,
-        approvalId: input.approvalRequestId,
-        auditActor: actor,
+        input,
+        responseKind: 'approval',
+        execute: async () => {
+          const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+          try {
+            const current = readPendingRequest(workspaceDb.sqlite, input.approvalRequestId);
+            if (!current) {
+              throw new PendingRequestCommandError(
+                'recovery_required',
+                'The pending request is missing.',
+                409
+              );
+            }
+            if (
+              current.workspaceId !== input.workspaceId ||
+              current.threadId !== input.threadId ||
+              current.raisingTurnId !== input.turnId
+            ) {
+              throw new PendingRequestCommandError(
+                'invalid_request',
+                'Approval request scope mismatch.',
+                400
+              );
+            }
+            let prepared: PreparedCapturedPendingCall | undefined;
+            let executionCall: StartedCapabilityCall | undefined;
+            const record = await respondRecordedApproval({
+              store,
+              sqlite: workspaceDb.sqlite,
+              workspaceId: input.workspaceId,
+              threadId: input.threadId,
+              approvalRequestId: input.approvalRequestId,
+              decision: input.decision,
+              actorId: actor.userId,
+              coreDb,
+              requestActor: actor,
+              dependencies: admission(),
+              admitExecution: () => {
+                executionCall = admitCapturedPendingCall(current, workspaceDb, input.requestId);
+              },
+              ...(prepareCapturedCall
+                ? {
+                    prepare: async () => {
+                      prepared = await prepareCapturedCall(current, workspaceDb, actor);
+                    },
+                  }
+                : {}),
+              ...(executeCapturedCall
+                ? {
+                    execute: (record: PendingRequestRecord) =>
+                      executeCapturedCall(record, actor, workspaceDb, prepared, executionCall),
+                  }
+                : {}),
+              ...(evaluateCapturedCall
+                ? { evaluate: () => evaluateCapturedCall(current, workspaceDb.sqlite, prepared) }
+                : {}),
+            });
+            const projected = projectApprovalRequest(record);
+            if (!projected) {
+              throw new PendingRequestCommandError(
+                'recovery_required',
+                'The approval projection is missing.',
+                409
+              );
+            }
+            return ApprovalRequestSchema.parse(projected);
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        replay: () => {
+          const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+          try {
+            const record = requireUsableRecord(
+              store,
+              workspaceDb.sqlite,
+              input.approvalRequestId,
+              input.workspaceId,
+              input.threadId
+            );
+            const projected = record ? projectApprovalRequest(record) : null;
+            if (!projected) {
+              throw new PendingRequestCommandError(
+                'recovery_required',
+                'The approval projection is missing.',
+                409
+              );
+            }
+            return ApprovalRequestSchema.parse(projected);
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        responseId: (result) => result.id,
       });
-    } catch {
-      // The terminal unique index may have selected a concurrent request. Read and classify it.
+      return c.json(approval);
+    } catch (error) {
+      return asCommandError(error, 'approval_respond_failed');
     }
+  });
 
-    try {
-      winner = readPolicyApprovalTerminalWinner(
-        workspaceDb,
-        input.workspaceId,
-        input.approvalRequestId,
-        input.threadId,
-        input.turnId
-      );
-    } catch {
-      throw taskGateRecoveryError('The policy approval terminal claim is incomplete.');
-    }
-  }
-
-  if (
-    !winner ||
-    winner.action !== source.action ||
-    winner.requiredApprovalKind !== source.requiredApprovalKind ||
-    !isDeepStrictEqual(winner.resourceSummary, source.resourceSummary) ||
-    !isDeepStrictEqual(winner.subjectSummary, source.subjectSummary)
-  ) {
-    throw taskGateRecoveryError('The policy approval terminal claim does not match its source.');
-  }
-
-  if (winner.requestId !== input.requestId) {
-    throw new TurnStartValidationError(
-      'stale',
-      'Another request already resolved the policy Approval.',
-      409
-    );
-  }
-  if ((winner.result === 'allow' ? 'granted' : 'denied') !== input.decision) {
-    throw new IdempotencyKeyConflictError();
-  }
-
-  return winner;
-}
-
-/** Returns whether the current response route owns this policy action. */
-function isSupportedPolicyApprovalAction(action: string): action is 'repo.push' | 'tool.use' {
-  return action === 'repo.push' || action === 'tool.use';
-}
-
-/** Produces the existing identifier-safe action segment. */
-function policyActionSlug(action: 'repo.push' | 'tool.use'): string {
-  return action.replace('.', '_');
-}
-
-/**
- * Completes only deterministic product projections from a proven policy Approval winner.
- *
- * @param store Product store containing the Approval, Item, Turn, event, and receipt projection.
- * @param winner Complete terminal PermissionDecision and linked AuditEvent.
- * @param input Exact Approval response command.
- * @param decisionItemId Deterministic decision Item identity for this Gate family.
- * @returns Current resolved Approval projection.
- * @throws A recovery error when any existing projection contradicts the winner.
- */
-function finishPolicyApprovalProjection(
-  store: FsStore,
-  winner: PolicyApprovalTerminalWinner,
-  input: {
-    readonly approvalRequestId: string;
-    readonly decision: 'granted' | 'denied';
-    readonly requestId: string;
-    readonly threadId: string;
-    readonly turnId: string;
-    readonly workspaceId: string;
-  },
-  decisionItemId: string
-): ReturnType<FsStore['getApproval']> {
-  let approval = store.getApproval(input.approvalRequestId);
-  if (
-    approval.workspaceId !== input.workspaceId ||
-    approval.threadId !== input.threadId ||
-    approval.turnId !== input.turnId ||
-    approval.kind !== winner.requiredApprovalKind
-  ) {
-    throw taskGateRecoveryError('The policy approval projection has invalid lineage.');
-  }
-
-  const decisionItems = store
-    .listThreadItems(input.workspaceId, input.threadId)
-    .filter((item) => item.type === 'approval-decision')
-    .filter((item) => item.approvalRequestId === input.approvalRequestId);
-  if (decisionItems.length > 1) {
-    throw taskGateRecoveryError('The policy approval has multiple decision Items.');
-  }
-  const decisionItem = decisionItems[0];
-  if (decisionItem) {
-    if (
-      decisionItem.id !== decisionItemId ||
-      decisionItem.workspaceId !== input.workspaceId ||
-      decisionItem.threadId !== input.threadId ||
-      decisionItem.turnId !== input.turnId ||
-      decisionItem.decision !== input.decision ||
-      decisionItem.causationId !== winner.requestId ||
-      decisionItem.createdAt !== winner.decidedAt ||
-      decisionItem.completedAt !== winner.decidedAt ||
-      !isDeepStrictEqual(decisionItem.actor, winner.actor)
-    ) {
-      throw taskGateRecoveryError('The policy approval decision Item contradicts its winner.');
-    }
-  } else {
-    store.createItem(
-      {
-        id: decisionItemId,
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        turnId: input.turnId,
-        type: 'approval-decision',
-        status: 'completed',
-        actor: winner.actor,
-        causationId: winner.requestId,
-        approvalRequestId: input.approvalRequestId,
-        decision: input.decision,
-        createdAt: winner.decidedAt,
-        completedAt: winner.decidedAt,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
-  }
-
-  if (approval.status === 'pending' && approval.resolvedAt === null) {
-    approval = store.updateApproval(input.approvalRequestId, {
-      status: input.decision,
-      resolvedAt: winner.decidedAt,
+  app.post('/api/user-input-requests/:userInputRequestId/answer', async (c) => {
+    const parsed = AnswerUserInputRequestSchema.safeParse({
+      ...(await c.req.json().catch(() => ({}))),
+      userInputRequestId: c.req.param('userInputRequestId'),
     });
-  } else if (approval.status !== input.decision || approval.resolvedAt !== winner.decidedAt) {
-    throw taskGateRecoveryError('The policy Approval projection contradicts its winner.');
-  }
-
-  const stopReason = input.decision === 'denied' ? 'aborted' : 'completed';
-  const terminalStatus = input.decision === 'denied' ? 'cancelled' : 'completed';
-  let turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
-  const exactActiveGate =
-    turn.status === 'awaiting_human' &&
-    turn.humanGate.kind === 'approval' &&
-    turn.humanGate.approvalRequestId === input.approvalRequestId;
-  const exactTerminalTurn =
-    turn.status === terminalStatus &&
-    turn.humanGate === null &&
-    turn.completedAt === winner.decidedAt;
-  if (!exactTerminalTurn) {
-    if (!exactActiveGate) {
-      throw taskGateRecoveryError('The policy Approval Turn contradicts its winner.');
-    }
-    turn = store.updateTurn(
-      input.turnId,
-      {
-        status: terminalStatus,
-        humanGate: null,
-        completedAt: winner.decidedAt,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
-  }
-
-  const completedEvents = store
-    .getTurnEvents(input.turnId)
-    .filter((event) => event.event === 'turn.completed');
-  if (completedEvents.length > 1) {
-    throw taskGateRecoveryError('The policy Approval Turn has duplicate completion events.');
-  }
-  if (completedEvents.length === 1) {
-    const event = completedEvents[0]!;
-    if (
-      event.requestId !== winner.requestId ||
-      event.data.type !== 'turn-completed' ||
-      event.data.stopReason !== stopReason ||
-      !isDeepStrictEqual(event.data.turn, turn)
-    ) {
-      throw taskGateRecoveryError('The policy Approval completion event contradicts its winner.');
-    }
-  } else {
-    store.emitTurnEvent(
-      input.turnId,
-      {
-        event: 'turn.completed',
-        requestId: winner.requestId,
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        turnId: input.turnId,
-        data: { type: 'turn-completed', stopReason, turn },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
-  }
-
-  return ApprovalRequestSchema.parse(approval);
-}
-
-/**
- * Checks whether one checkpoint belongs to a direct Task worker envelope.
- *
- * @param checkpoint Stored checkpoint, or null.
- * @returns True only for the Task Mode shape with no Goal or Goal Task owner.
- */
-function isDirectTaskCheckpoint(
-  checkpoint: WorkerCheckpointRecord | null
-): checkpoint is WorkerCheckpointRecord {
-  return checkpoint !== null && checkpoint.goalId === null && checkpoint.taskId === null;
-}
-
-/**
- * Verifies the exact outer mode-command receipt that owns one worker approval Gate.
- *
- * @param store Product store containing command receipts.
- * @param workspaceDb Workspace receipt owner for Goal steps.
- * @param checkpoint Exact worker checkpoint awaiting closeout.
- * @param ownerScope Authenticated actor, Workspace, and Thread owner scope.
- * @param turnId Worker Turn whose deterministic origin must match the receipt.
- * @returns Whether the receipt proves the checkpoint's exact Goal, conversation, or Task origin.
- */
-function hasExactWorkerApprovalOwnerReceipt(
-  store: FsStore,
-  workspaceDb: WorkspaceDb,
-  checkpoint: WorkerCheckpointRecord,
-  ownerScope: ReturnType<typeof requireWorkerCheckpointHumanCommandScope>,
-  turnId: string
-): boolean {
-  if (checkpoint.goalId && checkpoint.taskId) {
-    const receipt = store.getCommandRequest(
-      'goal.step',
-      checkpoint.requestId,
-      ownerScope,
-      workspaceDb
-    );
-    return (
-      receipt?.inputHash === checkpoint.requestInputHash &&
-      receipt.scope.actorId === ownerScope.actorId &&
-      receipt.scope.workspaceId === ownerScope.workspaceId &&
-      receipt.scope.threadId === ownerScope.threadId &&
-      receipt.response.kind === 'goal' &&
-      receipt.response.id === checkpoint.goalId
-    );
-  }
-
-  if (
-    findExactConversationWorkerOwnerReceipt(store, {
-      actorId: ownerScope.actorId,
-      workspaceId: ownerScope.workspaceId,
-      receivingThreadId: ownerScope.threadId,
-      requestId: checkpoint.requestId,
-      requestInputHash: checkpoint.requestInputHash,
-      turnId,
-    })
-  ) {
-    return true;
-  }
-
-  const receipt = store.getCommandRequest('task.start', checkpoint.requestId, ownerScope);
-  return (
-    receipt?.inputHash === checkpoint.requestInputHash &&
-    receipt.scope.actorId === ownerScope.actorId &&
-    receipt.scope.workspaceId === ownerScope.workspaceId &&
-    receipt.scope.threadId === ownerScope.threadId &&
-    receipt.response.kind === 'turn' &&
-    receipt.response.id === turnId
-  );
-}
-
-/**
- * Closes one worker approval Gate without resuming its worker executor.
- *
- * @param coreDb Core database containing scheduler and worker lineage.
- * @param store Product store containing the Approval, Turn, AgentSession, Items, and receipts.
- * @param workspaceDb Workspace database containing the worker checkpoint.
- * @param source Sole exact policy decision that opened the Approval.
- * @param input Exact approval command input.
- * @param actor Authenticated human actor used only when creating the first winner.
- * @returns Resolved Approval owner.
- * @throws TurnStartValidationError when the Gate tuple is absent or contradictory.
- */
-function closeWorkerApprovalGate(
-  coreDb: CoreDb,
-  store: FsStore,
-  workspaceDb: WorkspaceDb,
-  source: PolicyApprovalSourceDecision,
-  input: {
-    readonly approvalRequestId: string;
-    readonly decision: 'granted' | 'denied';
-    readonly requestId: string;
-    readonly threadId: string;
-    readonly turnId: string;
-    readonly workspaceId: string;
-  },
-  actor: { readonly id: string; readonly kind: 'user' }
-): ReturnType<FsStore['getApproval']> {
-  const checkpoint = getWorkerCheckpoint(
-    workspaceDb,
-    input.workspaceId,
-    input.threadId,
-    input.turnId
-  );
-  const goalId = checkpoint?.goalId ?? null;
-  const taskId = checkpoint?.taskId ?? null;
-  const goalTaskCheckpoint = goalId !== null && taskId !== null;
-  if (
-    !checkpoint?.workerSessionId ||
-    (!isDirectTaskCheckpoint(checkpoint) && !goalTaskCheckpoint)
-  ) {
-    throw taskGateRecoveryError('The worker approval has no exact checkpoint.');
-  }
-  if (checkpoint.stage !== 'waiting_for_user' || checkpoint.stopReason !== 'ask_user') {
-    throw taskGateRecoveryError('The worker approval checkpoint is not waiting.');
-  }
-
-  try {
-    if (recoverWorkerCheckpointStopReason(coreDb, store, workspaceDb, checkpoint) !== 'ask_user') {
-      throw new Error('Unexpected worker Gate outcome.');
-    }
-  } catch {
-    throw taskGateRecoveryError('The worker approval has no exact active Gate.');
-  }
-  const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
-  const gate = turn.humanGate;
-  if (
-    turn.status !== 'awaiting_human' ||
-    gate?.kind !== 'approval' ||
-    gate.approvalRequestId !== input.approvalRequestId
-  ) {
-    throw taskGateRecoveryError('The worker approval does not own the active Gate.');
-  }
-  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
-  const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
-  try {
-    if (
-      initiatingItem?.type !== 'user-message' ||
-      initiatingItem.status !== 'completed' ||
-      initiatingItem.workspaceId !== input.workspaceId ||
-      initiatingItem.threadId !== input.threadId ||
-      initiatingItem.turnId !== input.turnId ||
-      !checkpoint.contextDigest
-    ) {
-      throw new Error('Worker input mismatch.');
-    }
-    const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
-      JSON.parse(initiatingItem.text)
-    );
-    if (
-      isDirectTaskCheckpoint(checkpoint) &&
-      commandInputHash(workerRequest) !== checkpoint.contextDigest
-    ) {
-      throw new Error('Worker input mismatch.');
-    }
-    if (
-      goalTaskCheckpoint &&
-      (!contextAssembly ||
-        contextAssembly.contextDigest !== checkpoint.contextDigest ||
-        JSON.stringify(contextAssembly.contextRefs) !== JSON.stringify(workerRequest.contextRefs))
-    ) {
-      throw new Error('Worker context mismatch.');
-    }
-  } catch {
-    throw taskGateRecoveryError('The worker approval has no authoritative worker input.');
-  }
-  const evidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
-  let ownerScope: ReturnType<typeof requireWorkerCheckpointHumanCommandScope>;
-  try {
-    ownerScope = requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint);
-  } catch {
-    throw taskGateRecoveryError('The worker approval has no exact human command identity.');
-  }
-  if (
-    !evidence ||
-    !hasExactWorkerApprovalOwnerReceipt(store, workspaceDb, checkpoint, ownerScope, input.turnId)
-  ) {
-    throw taskGateRecoveryError('The worker approval has no exact mode-command receipt.');
-  }
-  if (goalTaskCheckpoint) {
-    const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, goalId);
-    const task = listGoalTasks(workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      goalId,
-    }).find((candidate) => candidate.taskId === taskId);
-    if (
-      goal?.status !== 'awaiting_user' ||
-      goal.currentTaskId !== taskId ||
-      goal.terminalStopReason !== null ||
-      task?.status !== 'running'
-    ) {
-      throw taskGateRecoveryError('The worker approval contradicts its Goal Task owner.');
-    }
-  }
-
-  const currentApproval = store.getApproval(input.approvalRequestId);
-  if (currentApproval.status !== 'pending') {
-    throw taskGateRecoveryError('The worker approval is no longer pending.');
-  }
-  const winner = claimPolicyApprovalOutcome(workspaceDb, store, source, input, actor);
-  const timestamp = winner.decidedAt;
-  const decisionItemId = `it_approval_decision_${input.turnId}`;
-  store.createItem({
-    id: decisionItemId,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    type: 'approval-decision',
-    status: 'completed',
-    actor: winner.actor,
-    causationId: winner.requestId,
-    approvalRequestId: input.approvalRequestId,
-    decision: input.decision,
-    createdAt: timestamp,
-    completedAt: timestamp,
-  });
-  store.updateAgentSession(checkpoint.workerSessionId, {
-    status: input.decision === 'denied' ? 'interrupted' : 'closed',
-    updatedAt: timestamp,
-  });
-  const expectedStopReason = input.decision === 'denied' ? 'aborted' : 'completed';
-  const closedTurn = store.updateTurn(input.turnId, {
-    status: input.decision === 'denied' ? 'interrupted' : 'completed',
-    humanGate: null,
-    completedAt: timestamp,
-  });
-  store.emitTurnEvent(input.turnId, {
-    event: 'turn.completed',
-    requestId: input.requestId,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    data: { type: 'turn-completed', stopReason: expectedStopReason, turn: closedTurn },
-  });
-  const terminalCheckpoint = updateWorkerCheckpoint(workspaceDb, {
-    authorityActor: turn.triggerActor,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    stage: expectedStopReason === 'aborted' ? 'aborted' : 'completed',
-    stopReason: expectedStopReason,
-    diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
-      {
-        itemIds: [...new Set([...evidence.itemIds, decisionItemId])],
-        artifactIds: evidence.artifactIds,
-      },
-      contextAssembly
-    ),
-  });
-  const approval = ApprovalRequestSchema.parse(
-    store.updateApproval(input.approvalRequestId, {
-      status: input.decision,
-      resolvedAt: timestamp,
-    })
-  );
-  if (goalTaskCheckpoint) {
-    workspaceDb.sqlite.transaction(() => {
-      updateGoalTask(workspaceDb, {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        goalId,
-        taskId,
-        status: 'ready',
-        latestGateContextItemId: decisionItemId,
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    const input = parsed.data;
+    const store = requestStore(c);
+    const actor = c.get('actor');
+    try {
+      const outcome = await runIdempotentCommand({
+        store,
+        inflightCommands,
+        command: 'user_input.answer',
+        requestId: input.requestId,
+        scope: {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          userInputRequestId: input.userInputRequestId,
+        },
+        input,
+        responseKind: 'pending_request',
+        execute: () => {
+          const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+          try {
+            const record = answerRecordedUserInput(
+              store,
+              workspaceDb.sqlite,
+              {
+                requestId: input.userInputRequestId,
+                workspaceId: input.workspaceId,
+                threadId: input.threadId,
+                answers: input.answers,
+              },
+              actor.userId,
+              coreDb,
+              actor as Actor,
+              admission()
+            );
+            return PendingRequestOutcomeSchema.parse(outcomeOf(record));
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        replay: () => {
+          const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+          try {
+            const record = requireUsableRecord(
+              store,
+              workspaceDb.sqlite,
+              input.userInputRequestId,
+              input.workspaceId,
+              input.threadId
+            );
+            if (!record) {
+              throw new PendingRequestCommandError(
+                'recovery_required',
+                'The pending request is missing.',
+                409
+              );
+            }
+            return PendingRequestOutcomeSchema.parse(outcomeOf(record));
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        responseId: (result) => result.requestId,
       });
-      updateGoalStatus(workspaceDb, {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        goalId,
-        status: 'running',
-        currentTaskId: null,
-        terminalStopReason: null,
+      return c.json(outcome);
+    } catch (error) {
+      return asCommandError(error, 'user_input_answer_failed');
+    }
+  });
+
+  app.post('/api/pending-requests/:pendingRequestId/withdraw', async (c) => {
+    const parsed = WithdrawPendingRequestSchema.safeParse({
+      ...(await c.req.json().catch(() => ({}))),
+      pendingRequestId: c.req.param('pendingRequestId'),
+    });
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    const input = parsed.data;
+    const store = requestStore(c);
+    const actor = c.get('actor');
+    try {
+      const outcome = await runIdempotentCommand({
+        store,
+        inflightCommands,
+        command: 'pending_request.withdraw',
+        requestId: input.requestId,
+        scope: {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          pendingRequestId: input.pendingRequestId,
+        },
+        input,
+        responseKind: 'pending_request',
+        execute: () => {
+          const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+          try {
+            const record = withdrawRecordedPendingRequest(
+              store,
+              workspaceDb.sqlite,
+              input.pendingRequestId,
+              input.workspaceId,
+              input.threadId,
+              actor.userId,
+              admission()
+            );
+            return PendingRequestOutcomeSchema.parse(outcomeOf(record));
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        replay: () => {
+          const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+          try {
+            const record = requireUsableRecord(
+              store,
+              workspaceDb.sqlite,
+              input.pendingRequestId,
+              input.workspaceId,
+              input.threadId
+            );
+            if (!record) {
+              throw new PendingRequestCommandError(
+                'recovery_required',
+                'The pending request is missing.',
+                409
+              );
+            }
+            return PendingRequestOutcomeSchema.parse(outcomeOf(record));
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
+        responseId: (result) => result.requestId,
       });
-    })();
-  }
-  completeSchedulerLeaseForTerminalTurn(coreDb, TurnSchema.parse(closedTurn));
-  try {
-    if (
-      recoverWorkerCheckpointStopReason(coreDb, store, workspaceDb, terminalCheckpoint) !==
-      expectedStopReason
-    ) {
-      throw new Error('Unexpected terminal outcome.');
+      return c.json(outcome);
+    } catch (error) {
+      return asCommandError(error, 'pending_request_withdraw_failed');
     }
-  } catch {
-    throw taskGateRecoveryError('The worker approval did not release scheduler ownership.');
-  }
-  return approval;
+  });
 }
 
-/**
- * Validates both Gate receipts and removes the completed worker checkpoint.
- *
- * @param coreDb Core database containing the released scheduler lease.
- * @param store Product store containing Gate and Task owners.
- * @param workspaceDb Workspace database containing the terminal checkpoint.
- * @param input Exact approval command input.
- * @throws TurnStartValidationError when any closeout owner is absent or contradictory.
- */
-async function clearWorkerApprovalGateCheckpoint(
-  coreDb: CoreDb,
-  store: FsStore,
-  workspaceDb: WorkspaceDb,
-  input: {
-    readonly approvalRequestId: string;
-    readonly decision: 'granted' | 'denied';
-    readonly requestId: string;
-    readonly threadId: string;
-    readonly turnId: string;
-    readonly workspaceId: string;
-  }
-): Promise<void> {
-  const checkpoint = getWorkerCheckpoint(
-    workspaceDb,
-    input.workspaceId,
-    input.threadId,
-    input.turnId
-  );
-  const expectedStopReason = input.decision === 'denied' ? 'aborted' : 'completed';
-  const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
-  const closure = classifyClosedWorkerApprovalGate(store, turn);
-  const evidence = checkpoint ? parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary) : null;
-  let hasOwnerReceipt = false;
-  try {
-    hasOwnerReceipt = checkpoint
-      ? hasExactWorkerApprovalOwnerReceipt(
-          store,
-          workspaceDb,
-          checkpoint,
-          requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
-          input.turnId
-        )
-      : false;
-  } catch {
-    hasOwnerReceipt = false;
-  }
-  const gateReceipt = store.getCommandRequest('approval.respond', input.requestId, {
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    approvalRequestId: input.approvalRequestId,
-  });
-  let goalOwnerComplete = true;
-  try {
-    if (checkpoint?.goalId && checkpoint.taskId && closure) {
-      const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, checkpoint.goalId);
-      const task = listGoalTasks(workspaceDb, {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        goalId: checkpoint.goalId,
-      }).find((candidate) => candidate.taskId === checkpoint.taskId);
-      goalOwnerComplete =
-        goal?.status === 'running' &&
-        goal.currentTaskId === null &&
-        goal.terminalStopReason === null &&
-        task?.status === 'ready' &&
-        task.latestGateContextItemId === closure.responseItemId;
-    }
-  } catch {
-    goalOwnerComplete = false;
-  }
-  try {
-    if (
-      !checkpoint ||
-      recoverWorkerCheckpointStopReason(coreDb, store, workspaceDb, checkpoint) !==
-        expectedStopReason ||
-      closure?.stopReason !== expectedStopReason ||
-      !evidence?.itemIds.includes(closure.requestItemId) ||
-      !evidence.itemIds.includes(closure.responseItemId) ||
-      !hasOwnerReceipt ||
-      gateReceipt?.response.kind !== 'approval' ||
-      gateReceipt.response.id !== input.approvalRequestId ||
-      !goalOwnerComplete
-    ) {
-      throw new Error('Incomplete Gate closeout.');
-    }
-  } catch {
-    throw taskGateRecoveryError('The worker approval closeout is incomplete.');
-  }
-  if (
-    !(await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      turnId: input.turnId,
-    }))
-  ) {
-    throw taskGateRecoveryError('The worker approval checkpoint could not be cleared.');
-  }
-}
-
-/**
- * Releases the exact Turn scheduler lease after a policy-local repo.push Gate closeout.
- * Used when the Turn held a lease but never established a worker Gate checkpoint.
- *
- * @param coreDb Core database containing scheduler leases.
- * @param turn Terminal Turn after finishPolicyApprovalProjection.
- * @throws TurnStartValidationError when lease ownership cannot be released cleanly.
- */
-function releasePolicyLocalSchedulerLease(
-  coreDb: CoreDb,
-  turn: {
-    readonly id: string;
-    readonly workspaceId: string;
-    readonly threadId: string;
-    readonly status: 'completed' | 'cancelled' | 'interrupted' | 'failed' | string;
-  }
-): void {
-  const leases = listSchedulerSessionLeasesForTurn(coreDb, {
-    workspaceId: turn.workspaceId,
-    threadId: turn.threadId,
-    turnId: turn.id,
-  });
-  if (leases.length === 0) {
-    return;
-  }
-  if (leases.length !== 1) {
-    throw taskGateRecoveryError('The policy approval Turn has multiple scheduler leases.');
-  }
-  const lease = leases[0];
-  if (!lease) {
-    throw taskGateRecoveryError('The policy approval Turn has no exact scheduler lease.');
-  }
-  if (lease.status === 'released' || lease.status === 'lost' || lease.status === 'failed') {
-    return;
-  }
-
-  try {
-    completeSchedulerLeaseForTerminalTurn(coreDb, TurnSchema.parse(turn));
-  } catch {
-    // Formal completion needs placement/backend closeout. Policy-local Gates never
-    // established that worker checkpoint, so fall through to a Turn-bound fence.
-  }
-
-  const remaining = listSchedulerSessionLeasesForTurn(coreDb, {
-    workspaceId: turn.workspaceId,
-    threadId: turn.threadId,
-    turnId: turn.id,
-  });
-  const after = remaining[0];
-  if (
-    remaining.length === 1 &&
-    after &&
-    (after.status === 'released' || after.status === 'failed' || after.status === 'lost')
-  ) {
-    return;
-  }
-  if (remaining.length !== 1 || !after || after.leaseId !== lease.leaseId) {
-    throw taskGateRecoveryError('The policy approval Turn lost its exact scheduler lease.');
-  }
-
-  const releaseReason =
-    turn.status === 'cancelled' || turn.status === 'interrupted'
-      ? 'policy-approval-turn-interrupted'
-      : 'policy-approval-turn-closed';
-  const fenced = coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_session_leases
-       SET status = 'released',
-           release_reason = ?,
-           recovery_state = NULL,
-           recovery_deadline = NULL
-       WHERE lease_id = ?
-         AND workspace_id = ?
-         AND thread_id = ?
-         AND turn_id = ?
-         AND status = ?`
-    )
-    .run(releaseReason, lease.leaseId, turn.workspaceId, turn.threadId, turn.id, lease.status);
-  if (fenced.changes !== 1) {
-    throw taskGateRecoveryError(
-      'The policy approval could not release scheduler ownership for the leased Turn.'
-    );
-  }
-}
-
-/**
- * Creates the typed fail-closed error for worker Gate contradictions.
- *
- * @param message Product-safe contradiction summary.
- * @returns Recovery-required route error.
- */
-function taskGateRecoveryError(message: string): TurnStartValidationError {
-  return new TurnStartValidationError('recovery_required', message, 409);
+function outcomeOf(record: PendingRequestRecord) {
+  return {
+    requestId: record.requestId,
+    workspaceId: record.workspaceId,
+    threadId: record.threadId,
+    state: record.state,
+    resolution: record.resolution,
+    ending: record.ending,
+  };
 }

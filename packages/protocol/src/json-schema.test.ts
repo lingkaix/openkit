@@ -65,7 +65,6 @@ function createTurnCompletedEnvelope(stopReason: string = 'completed') {
         triggerActor: { kind: 'user', id: 'user_demo' },
         items: [],
         status: 'completed',
-        humanGate: null,
         error: null,
         configVersion: null,
         startedAt: '2026-05-27T00:00:00Z',
@@ -169,7 +168,7 @@ describe('generated JSON Schema event parity', () => {
     expect(validate(envelope)).toBe(false);
   });
 
-  it('requires human gates to match awaiting human turns', () => {
+  it('rejects the removed awaiting_human turn status', () => {
     const validate = createValidator(turnSchemaUrl);
     const baseTurn = {
       id: 'tu_demo',
@@ -185,40 +184,17 @@ describe('generated JSON Schema event parity', () => {
     };
     const { triggerActor: _triggerActor, ...turnWithoutTriggerActor } = baseTurn;
 
-    expect(validate({ ...turnWithoutTriggerActor, status: 'running', humanGate: null })).toBe(
-      false
-    );
-    expect(
-      validate({
-        ...baseTurn,
-        status: 'awaiting_human',
-        humanGate: {
-          kind: 'approval',
-          approvalRequestId: 'ap_demo',
-          itemId: 'it_approval_demo',
-        },
-      })
-    ).toBe(true);
-    expect(validate({ ...baseTurn, status: 'awaiting_human', humanGate: null })).toBe(false);
-    expect(
-      validate({
-        ...baseTurn,
-        status: 'running',
-        humanGate: {
-          kind: 'user-input',
-          userInputRequestId: 'ui_demo',
-          itemId: 'it_question_demo',
-        },
-      })
-    ).toBe(false);
-    expect(validate({ ...baseTurn, status: 'awaiting_approval', humanGate: null })).toBe(false);
+    expect(validate({ ...turnWithoutTriggerActor, status: 'running' })).toBe(false);
+    expect(validate({ ...baseTurn, status: 'running' })).toBe(true);
+    expect(validate({ ...baseTurn, status: 'awaiting_human' })).toBe(false);
+    expect(validate({ ...baseTurn, status: 'awaiting_approval' })).toBe(false);
   });
 
   it('accepts terminal turn completion records with stop reasons', () => {
     const validate = validateEvent;
 
     expect(validate(createTurnCompletedEnvelope('completed'))).toBe(true);
-    expect(validate(createTurnCompletedEnvelope('ask_user'))).toBe(true);
+    expect(validate(createTurnCompletedEnvelope('ask_user'))).toBe(false);
     expect(validate(createTurnCompletedEnvelope('budget_exhausted'))).toBe(true);
   });
 
@@ -238,7 +214,7 @@ describe('generated JSON Schema event parity', () => {
     expect(validate('error')).toBe(true);
     expect(validate('aborted')).toBe(true);
     expect(validate('length')).toBe(true);
-    expect(validate('ask_user')).toBe(true);
+    expect(validate('ask_user')).toBe(false);
     expect(validate('budget_exhausted')).toBe(true);
     expect(validate('unknown')).toBe(false);
   });

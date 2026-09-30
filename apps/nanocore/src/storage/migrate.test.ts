@@ -84,6 +84,7 @@ const WORKSPACE_TABLES = [
   'goal_verification_records',
   'idempotency_requests',
   'mcp_tool_schema_snapshots',
+  'pending_requests',
   'pending_user_turn_records',
   'permission_decisions',
   'resolved_agent_setups',

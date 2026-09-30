@@ -8,6 +8,7 @@ import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { createPolicyApprovalGate } from './policy/approval-gates.js';
+import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -50,6 +51,25 @@ function createPolicyApprovalFixture(action: 'repo.push' | 'tool.use' = 'repo.pu
     workspaceDb,
     workspaceId: 'ws_demo',
   });
+  if (action === 'repo.push') {
+    raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+      requestId: gate.approvalId,
+      workspaceId: 'ws_demo',
+      threadId: turn.threadId,
+      raisingTurnId: turn.id,
+      requestItemId: gate.approvalItemId,
+      kind: 'approval',
+      requesterKind: 'person',
+      responsibleUserId: 'user_local',
+      governedIntent: { action: 'repo.push' },
+      approval: {
+        kind: 'permission',
+        title: store.getApproval(gate.approvalId).title,
+        description: store.getApproval(gate.approvalId).description,
+      },
+      now: '2026-09-30T00:00:00.000Z',
+    });
+  }
   workspaceDb.sqlite.close();
 
   return {
@@ -159,13 +179,13 @@ describe('approval response routes', () => {
         fixture,
         '00000000-0000-4000-8000-000000000171'
       );
-      expect(response.status).toBe(200);
+      expect(response.status, await response.clone().text()).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
         id: fixture.gate.approvalId,
         status: 'granted',
       });
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
-      expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('completed');
+      expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
       expect(
         fixture.coreDb.sqlite
           .prepare(
@@ -174,7 +194,7 @@ describe('approval response routes', () => {
              WHERE turn_id = ?`
           )
           .get(fixture.turn.id)
-      ).toEqual({ status: 'released', releaseReason: 'policy-approval-turn-closed' });
+      ).toEqual({ status: 'acquired', releaseReason: null });
     } finally {
       fixture.coreDb.sqlite.close();
     }
@@ -228,9 +248,10 @@ describe('approval response routes', () => {
     }
   });
 
-  it('finishes deterministic policy approval projections when the winning receipt is missing', async () => {
+  it('keeps a committed person grant when the command receipt write fails', async () => {
     const fixture = createPolicyApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000101';
+    const otherRequestId = '00000000-0000-4000-8000-000000000102';
 
     try {
       vi.spyOn(fixture.store, 'recordCommandRequest').mockImplementationOnce(() => {
@@ -238,116 +259,31 @@ describe('approval response routes', () => {
       });
 
       const failed = await respondToPolicyApproval(fixture, requestId);
-      expect(failed.status).toBe(409);
-      await expect(failed.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(failed.status).toBe(404);
+      await expect(failed.json()).resolves.toMatchObject({
+        code: 'approval_respond_failed',
+        message: 'Injected approval response receipt failure.',
+      });
+      expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
+      expect(fixture.store.listCommandRequests()).toEqual([]);
 
-      const changed = await respondToPolicyApproval(fixture, requestId, 'denied');
+      const changed = await respondToPolicyApproval(fixture, otherRequestId, 'denied');
       expect(changed.status).toBe(409);
       await expect(changed.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
 
-      const corruptedWorkspaceDb = openWorkspaceDb(
-        fixture.coreDb.dataRoot,
-        fixture.turn.workspaceId
-      );
-      try {
-        corruptedWorkspaceDb.sqlite
-          .prepare(
-            `UPDATE audit_events
-             SET turn_id = 'turn_wrong'
-             WHERE permission_decision_id = ?`
-          )
-          .run(`pd_repo_push_granted_${fixture.gate.approvalId}`);
-      } finally {
-        corruptedWorkspaceDb.sqlite.close();
-      }
-      const mismatchedAudit = await respondToPolicyApproval(fixture, requestId);
-      expect(mismatchedAudit.status).toBe(409);
-      await expect(mismatchedAudit.json()).resolves.toMatchObject({ code: 'recovery_required' });
-
-      const repairedWorkspaceDb = openWorkspaceDb(
-        fixture.coreDb.dataRoot,
-        fixture.turn.workspaceId
-      );
-      try {
-        repairedWorkspaceDb.sqlite
-          .prepare(
-            `UPDATE audit_events
-             SET turn_id = ?
-             WHERE permission_decision_id = ?`
-          )
-          .run(fixture.turn.id, `pd_repo_push_granted_${fixture.gate.approvalId}`);
-      } finally {
-        repairedWorkspaceDb.sqlite.close();
-      }
       const retried = await respondToPolicyApproval(fixture, requestId);
-      expect(retried.status).toBe(200);
-      await expect(retried.json()).resolves.toMatchObject({ status: 'granted' });
-      expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
-      expect(
-        fixture.store
-          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
-          .filter((item) => item.id === `it_approval_decision_${fixture.gate.approvalId}`)
-      ).toHaveLength(1);
-      expect(
-        fixture.store
-          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
-          .find((item) => item.id === `it_approval_decision_${fixture.gate.approvalId}`)
-      ).toMatchObject({
-        actor: { id: 'user_local', kind: 'user' },
-        causationId: requestId,
-      });
-      expect(
-        fixture.store.getTurn(fixture.turn.workspaceId, fixture.turn.threadId, fixture.turn.id)
-      ).toMatchObject({ status: 'completed', humanGate: null, completedAt: expect.any(String) });
-      expect(
-        fixture.store
-          .getTurnEvents(fixture.turn.id)
-          .filter((event) => event.event === 'turn.completed')
-      ).toEqual([
-        expect.objectContaining({
-          data: expect.objectContaining({ stopReason: 'completed' }),
-        }),
-      ]);
-      expect(fixture.store.listCommandRequests()).toHaveLength(1);
-
-      const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
-      try {
-        expect(
-          workspaceDb.sqlite
-            .prepare(
-              `SELECT
-                 decision.decision_id AS decisionId,
-                 decision.result,
-                 audit.actor_json AS actorJson,
-                 audit.request_id AS requestId
-               FROM permission_decisions AS decision
-               JOIN audit_events AS audit
-                 ON audit.audit_event_id = decision.audit_event_id
-                AND audit.permission_decision_id = decision.decision_id
-               WHERE decision.approval_id = ?
-                 AND decision.result IN ('allow', 'deny')`
-            )
-            .all(fixture.gate.approvalId)
-        ).toEqual([
-          {
-            actorJson: JSON.stringify({ kind: 'user', id: 'user_local' }),
-            decisionId: `pd_repo_push_granted_${fixture.gate.approvalId}`,
-            requestId,
-            result: 'allow',
-          },
-        ]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
+      expect(retried.status).toBe(409);
+      await expect(retried.json()).resolves.toMatchObject({ code: 'request_not_pending' });
+      expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
     } finally {
       fixture.coreDb.sqlite.close();
     }
   });
 
   it.each([
-    ['granted', 'completed', 'completed', 'allow', '00000000-0000-4000-8000-000000000104'],
-    ['denied', 'cancelled', 'aborted', 'deny', '00000000-0000-4000-8000-000000000107'],
-  ] as const)('closes and replays one receipt-backed %s policy approval response', async (decision, turnStatus, stopReason, policyResult, requestId) => {
+    ['granted', '00000000-0000-4000-8000-000000000104'],
+    ['denied', '00000000-0000-4000-8000-000000000107'],
+  ] as const)('replays one receipt-backed %s approval without closing the raising Turn', async (decision, requestId) => {
     const fixture = createPolicyApprovalFixture();
 
     try {
@@ -357,35 +293,22 @@ describe('approval response routes', () => {
       const replayed = await respondToPolicyApproval(fixture, requestId, decision);
       expect(replayed.status).toBe(200);
       await expect(replayed.json()).resolves.toMatchObject({ status: decision });
-      expect(
-        fixture.store.getTurn(fixture.turn.workspaceId, fixture.turn.threadId, fixture.turn.id)
-      ).toMatchObject({ status: turnStatus, humanGate: null, completedAt: expect.any(String) });
+      expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
       expect(
         fixture.store
           .getTurnEvents(fixture.turn.id)
           .filter((event) => event.event === 'turn.completed')
-      ).toEqual([
-        expect.objectContaining({
-          data: expect.objectContaining({ stopReason }),
-        }),
-      ]);
-
+      ).toEqual([]);
       const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
       try {
         expect(
           workspaceDb.sqlite
             .prepare(
-              `SELECT decision_id AS decisionId, result
-               FROM permission_decisions
+              `SELECT result FROM permission_decisions
                WHERE approval_id = ? AND result IN ('allow', 'deny')`
             )
             .all(fixture.gate.approvalId)
-        ).toEqual([
-          {
-            decisionId: `pd_repo_push_${decision}_${fixture.gate.approvalId}`,
-            result: policyResult,
-          },
-        ]);
+        ).toEqual([]);
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -410,8 +333,9 @@ describe('approval response routes', () => {
       expect(
         fixture.store
           .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
-          .filter((item) => item.id === `it_approval_decision_${fixture.gate.approvalId}`)
-      ).toHaveLength(1);
+          .filter((item) => item.type === 'approval-decision')
+      ).toHaveLength(0);
+      expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
       expect(fixture.store.listCommandRequests()).toHaveLength(1);
     } finally {
       fixture.coreDb.sqlite.close();
@@ -431,42 +355,19 @@ describe('approval response routes', () => {
       const payloads = await Promise.all(responses.map((response) => response.json()));
 
       expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
-      expect(payloads).toContainEqual(expect.objectContaining({ code: 'stale' }));
-
-      const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
-      try {
-        const winners = workspaceDb.sqlite
-          .prepare(
-            `SELECT
-               decision.result,
-               audit.actor_json AS actorJson,
-               audit.request_id AS requestId
-             FROM permission_decisions AS decision
-             JOIN audit_events AS audit
-               ON audit.audit_event_id = decision.audit_event_id
-              AND audit.permission_decision_id = decision.decision_id
-             WHERE decision.approval_id = ?
-               AND decision.result IN ('allow', 'deny')`
-          )
-          .all(fixture.gate.approvalId);
-        expect(winners).toHaveLength(1);
-        expect(winners[0]).toMatchObject({
-          actorJson: JSON.stringify({ kind: 'user', id: 'user_local' }),
-          requestId: expect.stringMatching(/^00000000-0000-4000-8000-00000000011[12]$/),
-        });
-      } finally {
-        workspaceDb.sqlite.close();
-      }
+      expect(payloads).toContainEqual(
+        expect.objectContaining({ code: 'idempotency_key_conflict' })
+      );
       expect(
         fixture.store
           .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
           .filter((item) => item.type === 'approval-decision')
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       expect(
         fixture.store
           .getTurnEvents(fixture.turn.id)
           .filter((event) => event.event === 'turn.completed')
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       expect(fixture.store.listCommandRequests()).toHaveLength(1);
     } finally {
       fixture.coreDb.sqlite.close();
@@ -478,20 +379,21 @@ describe('approval response routes', () => {
     const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
 
     try {
-      workspaceDb.sqlite
-        .prepare(
-          `UPDATE permission_decisions
-           SET context_summary_json = ?
-           WHERE decision_id = ?`
-        )
-        .run(
-          JSON.stringify({
-            threadId: fixture.turn.threadId,
-            turnId: 'turn_wrong',
-            workspaceId: fixture.turn.workspaceId,
-          }),
-          fixture.gate.decisionId
-        );
+      fixture.store.createItem({
+        id: 'it_ahead_decision',
+        workspaceId: fixture.turn.workspaceId,
+        threadId: fixture.turn.threadId,
+        turnId: fixture.turn.id,
+        type: 'approval-decision',
+        status: 'completed',
+        actor: { kind: 'user', id: 'user_local' },
+        causationId: 'req_ahead',
+        approvalRequestId: fixture.gate.approvalId,
+        decision: 'granted',
+        decidedAt: '2026-09-30T00:00:01.000Z',
+        createdAt: '2026-09-30T00:00:01.000Z',
+        completedAt: '2026-09-30T00:00:01.000Z',
+      });
       workspaceDb.sqlite.close();
 
       const response = await respondToPolicyApproval(
@@ -506,7 +408,8 @@ describe('approval response routes', () => {
         fixture.store
           .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
           .filter((item) => item.type === 'approval-decision')
-      ).toEqual([]);
+          .map((item) => item.id)
+      ).toEqual(['it_ahead_decision']);
       expect(fixture.store.listCommandRequests()).toEqual([]);
     } finally {
       if (workspaceDb.sqlite.open) {
@@ -566,10 +469,9 @@ describe('approval response routes', () => {
         }),
       });
 
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(409);
       await expect(response.json()).resolves.toMatchObject({
-        code: 'approval_response_failed',
-        message: expect.stringContaining('scope mismatch'),
+        code: 'recovery_required',
       });
       expect(respondApproval).not.toHaveBeenCalled();
       expect(store.getApproval('ap_runtime_scope').status).toBe('pending');
@@ -622,8 +524,8 @@ describe('approval response routes', () => {
     });
 
     try {
-      expect(response.status).toBe(501);
-      await expect(response.json()).resolves.toMatchObject({ code: 'approvals_not_supported' });
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(respondApproval).not.toHaveBeenCalled();
       expect(store.getApproval('ap_runtime_unsupported').status).toBe('pending');
       expect(store.listCommandRequests()).toEqual([]);

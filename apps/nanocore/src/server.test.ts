@@ -97,10 +97,7 @@ import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
-import {
-  listExportableAgentEnvironmentPackageSnapshots,
-  recordAgentEnvironmentPackageSnapshot,
-} from './runtime/aep-snapshot-ledger.js';
+import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
   resolveAgentEnvironmentPackage,
   resolveAgentSessionCompatibilityKey,
@@ -134,11 +131,7 @@ import {
 } from './runtime/goal-verification-records.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from './runtime/nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
@@ -148,13 +141,10 @@ import type {
   TurnExecutor,
   TurnStartRuntimeContext,
 } from './runtime/types.js';
-import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import {
-  createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
   listExportableWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
-  parseWorkerCheckpointEvidence,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
 } from './runtime/worker-checkpoints.js';
@@ -187,7 +177,6 @@ import {
   denySchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
-  listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLease,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
@@ -1051,45 +1040,6 @@ class DelayedTurnExecutor extends FakeTurnExecutor {
     this.starts += 1;
     await this.startGate;
     await super.startTurn(store, turnId, input, context);
-  }
-}
-
-class InteractiveTurnExecutor extends FakeTurnExecutor {
-  public interrupts = 0;
-  public userInputResponses = 0;
-
-  /**
-   * Counts one interrupt command before delegating to the fake executor.
-   */
-  public override async interruptTurn(
-    store: FsStore,
-    turnId: string,
-    context: TurnCommandRuntimeContext = { requestId: null }
-  ): Promise<void> {
-    this.interrupts += 1;
-    await super.interruptTurn(store, turnId, context);
-  }
-
-  /**
-   * Records one follow-up answer and resumes the turn.
-   */
-  public async respondUserInput(
-    store: FsStore,
-    turnId: string,
-    _answers: Record<string, [string]>,
-    context: TurnCommandRuntimeContext = { requestId: null }
-  ): Promise<unknown> {
-    this.userInputResponses += 1;
-    const turn = store.updateTurn(turnId, { status: 'running', humanGate: null });
-    store.emitTurnEvent(turnId, {
-      event: 'turn.updated',
-      requestId: context.requestId,
-      workspaceId: turn.workspaceId,
-      threadId: turn.threadId,
-      turnId,
-      data: { type: 'turn-updated', turn },
-    });
-    return turn;
   }
 }
 
@@ -3314,6 +3264,7 @@ describe('nanocore server', () => {
       createdAt: '2026-07-06T00:01:01.000Z',
       decision: 'granted',
       id: 'it_source_repo_push_decision',
+      decidedAt: '2026-07-06T00:01:01.000Z',
       status: 'completed',
       actor: { kind: 'user', id: 'user_local' },
       causationId: 'it_source_repo_push_request',
@@ -3419,11 +3370,9 @@ describe('nanocore server', () => {
         workspace_id: body.importedWorkspaceId,
       });
       const importedApprovalId = `apr_imported_${body.importedWorkspaceId}_1`;
-      expect(store.getApproval(importedApprovalId)).toMatchObject({
-        id: importedApprovalId,
-        status: 'granted',
-        workspaceId: body.importedWorkspaceId,
-      });
+      expect(() => store.getApproval(importedApprovalId)).toThrow(
+        `Approval request not found: ${importedApprovalId}`
+      );
       expect(
         importedDb.sqlite
           .prepare(
@@ -6723,178 +6672,8 @@ describe('nanocore server', () => {
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toMatchObject({
         code: 'workspace_kind_not_supported',
-        message: expect.stringContaining('Quick Chat workspace'),
       });
       expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('keeps a direct Task non-secret Gate on its own task.start closeout contract', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-paused-repository-'));
-    const taskRequestId = '0190f4c8-0000-7000-8000-000000000308';
-    const taskInput = 'Implement the bounded Task Mode simulator fix.';
-
-    seedWritableGitRepository(repositoryPath);
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Task Mode paused repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId: taskRequestId, input: taskInput }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      expect(res.status).toBe(202);
-      const parsed = StartTaskModeResponseSchema.parse(await res.json());
-
-      expect(parsed.state).toBe('awaiting-human');
-      expect(parsed.turn.status).toBe('awaiting_human');
-      expect(parsed.completion).toBeNull();
-      expect(parsed.evidence.itemIds).toEqual(
-        expect.arrayContaining([
-          `it_assistant_${parsed.turn.id}`,
-          `it_user_input_request_${parsed.turn.id}`,
-        ])
-      );
-      expect(parsed.turn.humanGate?.kind).toBe('user-input');
-      if (parsed.turn.humanGate?.kind !== 'user-input') {
-        throw new Error('Expected the simulator user-input Gate.');
-      }
-      const close = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000309',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: parsed.turn.id,
-          answers: { tone: ['Concise'] },
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      expect(close.status, await close.clone().text()).toBe(202);
-      await expect(close.json()).resolves.toMatchObject({ status: 'completed', humanGate: null });
-      expect(
-        store
-          .listAllItems()
-          .filter(
-            (item) =>
-              item.workspaceId === 'ws_demo' &&
-              (item.type === 'approval-request' || item.type === 'approval-decision')
-          )
-      ).toEqual([]);
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', parsed.turn.id)).toBeNull();
-        expect(
-          store.getCommandRequest(
-            'task.start',
-            taskRequestId,
-            { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
-            workspaceDb
-          )
-        ).not.toBeNull();
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('recovers a direct Task user-input receipt without duplicating its closeout', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-gate-response-recovery-'));
-    const taskRequestId = '0190f4c8-0000-7000-8000-000000000310';
-    const responseRequestId = '0190f4c8-0000-7000-8000-000000000311';
-
-    seedWritableGitRepository(repositoryPath);
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Task Gate response recovery repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const taskRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: taskRequestId,
-          input: 'Implement the bounded Task Gate response recovery fix.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const task = StartTaskModeResponseSchema.parse(await taskRes.json());
-      if (task.turn.humanGate?.kind !== 'user-input') {
-        throw new Error('Expected the simulator user-input Gate.');
-      }
-
-      const responseBody = {
-        requestId: responseRequestId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: task.turn.id,
-        answers: { tone: ['Concise'] },
-      };
-
-      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('simulated user-input response receipt write failure');
-      });
-      const responseRes = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(responseBody),
-        headers: { 'content-type': 'application/json' },
-      });
-      receiptWrite.mockRestore();
-
-      expect(responseRes.status).toBe(409);
-      await expect(responseRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      expect(
-        store.getCommandRequest('turn.input.submit', responseRequestId, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: task.turn.id,
-        })
-      ).toBeNull();
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', task.turn.id);
-        expect(checkpoint).toMatchObject({ stage: 'waiting_for_user', stopReason: 'ask_user' });
-        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', task.turn.id)).not.toBeNull();
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-
-      const retry = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(responseBody),
-        headers: { 'content-type': 'application/json' },
-      });
-      expect(retry.status, await retry.clone().text()).toBe(202);
-      await expect(retry.json()).resolves.toMatchObject({ status: 'completed', humanGate: null });
-      expect(
-        store
-          .listThreadItems('ws_demo', 'th_demo')
-          .filter((item) => item.turnId === task.turn.id && item.type === 'user-input-response')
-      ).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7117,756 +6896,6 @@ describe('nanocore server', () => {
           .map((turn) => turn.id)
           .sort()
       ).toEqual([...acceptedTurnIds, directTask.turn.id].sort());
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('closes one deterministic Chat-subordinate non-secret Gate under the sole outer Chat receipt', async () => {
-    const coreDb = createCoreDb();
-    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
-      identityId: 'identity_local',
-      observedAt: '2026-06-16T00:00:00.000Z',
-      targetId: 'target_local',
-    });
-    upsertNanoHostRuntimeTarget(coreDb, {
-      ...runtimeTarget,
-      freshEmpty: true,
-      observedAt: '2026-06-16T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({
-      agentManifests: [createTestAgentSetup().manifest],
-      coreDb,
-      providerRegistry: new ProviderRegistry([
-        {
-          defaultModel: 'openai/gpt-5.2',
-          displayName: 'Simulator backend inference',
-          id: 'agent-openrouter',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-      store,
-      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-    });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-checkpoint-repository-'));
-    const requestId = '0190f4c8-0000-7000-8000-000000000306';
-    const input = 'Implement the focused Task Mode fix.';
-
-    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.name', 'Repository Local'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n', 'utf8');
-    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'initial'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat checkpoint repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const response = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-      const body = await response.json();
-
-      expect(response.status, JSON.stringify(body)).toBe(202);
-      const accepted = SubmitConversationResponseSchema.parse(body);
-      expect(accepted).toMatchObject({
-        outcome: 'task-handoff',
-        handoff: { targetMode: 'task' },
-      });
-      const workerTurns = store
-        .listThreadTurns('ws_demo', 'th_demo')
-        .filter((turn) => turn.id !== accepted.turn.id);
-      expect(workerTurns).toHaveLength(1);
-      const workerTurn = workerTurns[0]!;
-      expect(workerTurn).toMatchObject({
-        status: 'awaiting_human',
-        humanGate: { kind: 'user-input' },
-      });
-      expect(workerTurn.id).toMatch(new RegExp(`^turn_${requestId}_`));
-
-      const replay = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-      const conflict = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input: 'Use a conflicting Chat handoff input.' }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-
-      expect(replay.status).toBe(202);
-      expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(accepted);
-      expect(conflict.status).toBe(409);
-      await expect(conflict.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
-      expect(
-        store.listThreadTurns('ws_demo', 'th_demo').filter((turn) => turn.id === workerTurn.id)
-      ).toHaveLength(1);
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id);
-        expect(checkpoint).toMatchObject({
-          goalId: null,
-          requestId,
-          stage: 'waiting_for_user',
-          stopReason: 'ask_user',
-          taskId: null,
-          turnId: workerTurn.id,
-        });
-        expect(
-          parseWorkerCheckpointContextAssembly(checkpoint?.diagnosticsSummary ?? null)
-        ).toMatchObject({ knowledgeSelectionInput: null });
-        expect(
-          store.getCommandRequest(
-            'task.start',
-            requestId,
-            {
-              actorId: LOCAL_USER_ID,
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
-            },
-            workspaceDb
-          )
-        ).toBeNull();
-
-        const chatReceiptBefore = store.getCommandRequest(
-          'conversation.submit',
-          requestId,
-          {
-            actorId: LOCAL_USER_ID,
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
-          },
-          workspaceDb
-        );
-        expect(chatReceiptBefore).not.toBeNull();
-        const responseBody = {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: workerTurn.id,
-          requestId: '0190f4c8-0000-7000-8000-000000000336',
-          answers: { tone: ['Concise'] },
-        };
-        const close = await app.request('/api/turns', {
-          method: 'POST',
-          body: JSON.stringify(responseBody),
-          headers: { 'content-type': 'application/json' },
-        });
-        const closeBody = await close.json();
-        expect(close.status, JSON.stringify(closeBody)).toBe(202);
-        expect(closeBody).toMatchObject({ id: workerTurn.id, status: 'completed' });
-        const afterClose = {
-          checkpoint: getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id),
-          responseReceipt: store.getCommandRequest('turn.input.submit', responseBody.requestId, {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: workerTurn.id,
-          }),
-          responseItems: store
-            .listThreadItems('ws_demo', 'th_demo')
-            .filter((item) => item.turnId === workerTurn.id && item.type === 'user-input-response'),
-          chatReceipt: store.getCommandRequest(
-            'conversation.submit',
-            requestId,
-            {
-              actorId: LOCAL_USER_ID,
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
-            },
-            workspaceDb
-          ),
-          taskReceipt: store.getCommandRequest(
-            'task.start',
-            requestId,
-            {
-              actorId: LOCAL_USER_ID,
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
-            },
-            workspaceDb
-          ),
-          aepSnapshots: listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo'),
-          backendSessions: listWorkerBackendSessions(coreDb).filter(
-            (session) => session.turnId === workerTurn.id
-          ),
-          leases: listSchedulerSessionLeasesForTurn(coreDb, {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: workerTurn.id,
-          }),
-          capacities: coreDb.sqlite
-            .prepare(
-              `SELECT target_id, in_use_count, queue_depth, version
-                 FROM scheduler_capacity_records
-             ORDER BY target_id`
-            )
-            .all(),
-          pools: coreDb.sqlite
-            .prepare(
-              `SELECT pool_id, current_admitted_session_count, current_queue_depth
-                 FROM scheduler_worker_pools
-             ORDER BY pool_id`
-            )
-            .all(),
-        };
-        expect(afterClose).toMatchObject({
-          checkpoint: null,
-          responseReceipt: {
-            response: { id: workerTurn.id, kind: 'turn' },
-          },
-          responseItems: [
-            expect.objectContaining({ answers: responseBody.answers, turnId: workerTurn.id }),
-          ],
-          chatReceipt: chatReceiptBefore,
-          taskReceipt: null,
-          aepSnapshots: [
-            expect.objectContaining({ turnId: workerTurn.id, workspaceId: 'ws_demo' }),
-          ],
-          backendSessions: [
-            expect.objectContaining({
-              state: 'cleaned',
-              turnId: workerTurn.id,
-              physicalCleanedAt: expect.any(String),
-            }),
-          ],
-          leases: [
-            expect.objectContaining({
-              releaseReason: 'turn-completed',
-              status: 'released',
-              turnId: workerTurn.id,
-            }),
-          ],
-          capacities: [expect.objectContaining({ in_use_count: 0, queue_depth: 0 })],
-          pools: [
-            expect.objectContaining({
-              current_admitted_session_count: 0,
-              current_queue_depth: 0,
-            }),
-          ],
-        });
-
-        const exactReplay = await app.request('/api/turns', {
-          method: 'POST',
-          body: JSON.stringify(responseBody),
-          headers: { 'content-type': 'application/json' },
-        });
-        expect(exactReplay.status).toBe(202);
-        expect(await exactReplay.json()).toEqual(closeBody);
-        expect(
-          store
-            .listThreadItems('ws_demo', 'th_demo')
-            .filter((item) => item.turnId === workerTurn.id && item.type === 'user-input-response')
-        ).toEqual(afterClose.responseItems);
-        expect({
-          checkpoint: getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id),
-          responseReceipt: store.getCommandRequest('turn.input.submit', responseBody.requestId, {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: workerTurn.id,
-          }),
-          aepSnapshots: listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo'),
-          backendSessions: listWorkerBackendSessions(coreDb).filter(
-            (session) => session.turnId === workerTurn.id
-          ),
-          leases: listSchedulerSessionLeasesForTurn(coreDb, {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: workerTurn.id,
-          }),
-          capacities: coreDb.sqlite
-            .prepare(
-              `SELECT target_id, in_use_count, queue_depth, version
-                 FROM scheduler_capacity_records
-             ORDER BY target_id`
-            )
-            .all(),
-          pools: coreDb.sqlite
-            .prepare(
-              `SELECT pool_id, current_admitted_session_count, current_queue_depth
-                 FROM scheduler_worker_pools
-             ORDER BY pool_id`
-            )
-            .all(),
-        }).toEqual({
-          checkpoint: afterClose.checkpoint,
-          responseReceipt: afterClose.responseReceipt,
-          aepSnapshots: afterClose.aepSnapshots,
-          backendSessions: afterClose.backendSessions,
-          leases: afterClose.leases,
-          capacities: afterClose.capacities,
-          pools: afterClose.pools,
-        });
-
-        const changedAnswers = await app.request('/api/turns', {
-          method: 'POST',
-          body: JSON.stringify({ ...responseBody, answers: { tone: ['Detailed'] } }),
-          headers: { 'content-type': 'application/json' },
-        });
-        expect(changedAnswers.status).toBe(409);
-        await expect(changedAnswers.json()).resolves.toMatchObject({
-          code: 'idempotency_key_conflict',
-        });
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-      expect(
-        existsSync(join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))
-      ).toBe(false);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    ['baseline', 12],
-    ['direct-task-receipt', 0],
-    ['goal-receipt', 1],
-    ['wrong-actor', 2],
-    ['wrong-workspace', 3],
-    ['wrong-thread', 4],
-    ['wrong-request', 5],
-    ['wrong-result-kind', 7],
-    ['wrong-status', 8],
-    ['wrong-downstream-kind', 9],
-    ['missing-receipt', 10],
-    ['forged-subordinate-turn', 11],
-  ] as const)('validates the Chat-subordinate Gate closeout owner for %s', async (fault, caseIndex) => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
-    const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-chat-gate-${fault}-`));
-    const requestId = `0190f4c8-0000-7000-8000-00000000034${caseIndex.toString(16)}`;
-    const input = 'Implement the focused Chat-subordinate Gate fix.';
-
-    seedWritableGitRepository(repositoryPath);
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({ displayName: 'Chat Gate repository', localPath: repositoryPath }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const start = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-      expect(start.status, await start.clone().text()).toBe(202);
-      const chat = SubmitConversationResponseSchema.parse(await start.json());
-      const workerTurn = store
-        .listThreadTurns('ws_demo', 'th_demo')
-        .find((turn) => turn.id !== chat.turn.id);
-      if (!workerTurn) throw new Error('Chat-subordinate Turn was not created.');
-      // Simulator Gate selection is proved separately; every owner fault starts at this exact Gate.
-      const gateItem = store.createItem({
-        id: `it_chat_gate_matrix_${workerTurn.id}`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: workerTurn.id,
-        type: 'user-input-request',
-        status: 'completed',
-        responsibleUserId: LOCAL_USER_ID,
-        userInputRequestId: `ui_chat_gate_matrix_${workerTurn.id}`,
-        prompt: 'Which summary tone should the worker use?',
-        questions: [
-          {
-            id: 'tone',
-            header: 'Tone',
-            question: 'Which summary tone should the worker use?',
-            options: null,
-            isOther: false,
-            isSecret: false,
-          },
-        ],
-        createdAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-      });
-      const pausedWorkerTurn = store.updateTurn(workerTurn.id, {
-        status: 'awaiting_human',
-        humanGate: {
-          kind: 'user-input',
-          itemId: gateItem.id,
-          userInputRequestId: gateItem.userInputRequestId,
-        },
-      });
-      expect(pausedWorkerTurn).toMatchObject({
-        status: 'awaiting_human',
-        humanGate: { kind: 'user-input' },
-      });
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id);
-        expect(checkpoint).not.toBeNull();
-        if (!checkpoint) throw new Error('Chat-subordinate checkpoint was not created.');
-        const originalEvidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
-        expect(originalEvidence).not.toBeNull();
-        if (!originalEvidence) throw new Error('Chat-subordinate checkpoint evidence is missing.');
-        const completeCheckpoint = updateWorkerCheckpoint(workspaceDb, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: workerTurn.id,
-          diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
-            {
-              itemIds: [...new Set([...originalEvidence.itemIds, gateItem.id])],
-              artifactIds: originalEvidence.artifactIds,
-            },
-            parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)
-          ),
-        });
-        expect(parseWorkerCheckpointEvidence(completeCheckpoint.diagnosticsSummary)).toMatchObject({
-          itemIds: expect.arrayContaining([gateItem.id]),
-        });
-        const outerReceipt = store.getCommandRequest(
-          'conversation.submit',
-          requestId,
-          { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
-          workspaceDb
-        );
-        expect(outerReceipt).toMatchObject({
-          response: {
-            conversationMetadata: {
-              downstream: { kind: 'task', turnId: workerTurn.id },
-              resultKind: 'task-handoff',
-              status: 202,
-            },
-          },
-        });
-
-        if (fault === 'direct-task-receipt' || fault === 'goal-receipt') {
-          workspaceDb.sqlite
-            .prepare(
-              `DELETE FROM idempotency_requests
-                  WHERE command_name = 'conversation.submit' AND request_id = ?`
-            )
-            .run(requestId);
-          store.recordCommandRequest(
-            {
-              command: fault === 'direct-task-receipt' ? 'task.start' : 'goal.step',
-              requestId,
-              scope: {
-                actorId: LOCAL_USER_ID,
-                workspaceId: 'ws_demo',
-                threadId: 'th_demo',
-              },
-              inputHash: completeCheckpoint.requestInputHash,
-              response:
-                fault === 'direct-task-receipt'
-                  ? { kind: 'turn', id: workerTurn.id }
-                  : { kind: 'goal', id: 'goal_forged_chat_gate' },
-            },
-            workspaceDb
-          );
-        } else if (fault === 'missing-receipt') {
-          workspaceDb.sqlite
-            .prepare(
-              `DELETE FROM idempotency_requests
-                  WHERE command_name = 'conversation.submit' AND request_id = ?`
-            )
-            .run(requestId);
-        } else if (fault === 'wrong-request') {
-          workspaceDb.sqlite
-            .prepare(
-              `UPDATE worker_turn_checkpoints
-                    SET request_id = 'req_wrong_chat_gate'
-                  WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?`
-            )
-            .run('ws_demo', 'th_demo', workerTurn.id);
-        } else if (
-          fault === 'wrong-actor' ||
-          fault === 'wrong-workspace' ||
-          fault === 'wrong-thread'
-        ) {
-          const row = workspaceDb.sqlite
-            .prepare(
-              `SELECT scope_json AS scopeJson
-                   FROM idempotency_requests
-                  WHERE command_name = 'conversation.submit' AND request_id = ?`
-            )
-            .get(requestId) as { scopeJson: string };
-          const scope = JSON.parse(row.scopeJson) as Record<string, string>;
-          if (fault === 'wrong-actor') scope.actorId = 'user_wrong_chat_gate';
-          if (fault === 'wrong-workspace') scope.workspaceId = 'ws_wrong_chat_gate';
-          if (fault === 'wrong-thread') scope.threadId = 'th_wrong_chat_gate';
-          workspaceDb.sqlite
-            .prepare(
-              `UPDATE idempotency_requests
-                    SET scope_json = ?
-                  WHERE command_name = 'conversation.submit' AND request_id = ?`
-            )
-            .run(JSON.stringify(scope), requestId);
-        } else {
-          const row = workspaceDb.sqlite
-            .prepare(
-              `SELECT response_json AS responseJson
-                   FROM idempotency_requests
-                  WHERE command_name = 'conversation.submit' AND request_id = ?`
-            )
-            .get(requestId) as { responseJson: string };
-          const response = JSON.parse(row.responseJson) as {
-            downstream: { kind: string; goalId?: string; turnId?: string } | null;
-            resultKind: string;
-            status: number;
-          };
-          if (fault === 'wrong-result-kind') response.resultKind = 'knowledge-answer';
-          if (fault === 'wrong-status') response.status = 200;
-          if (fault === 'wrong-downstream-kind') {
-            response.downstream = {
-              kind: 'goal',
-              goalId: 'goal_wrong_chat_gate',
-              turnId: workerTurn.id,
-            };
-          }
-          if (fault === 'forged-subordinate-turn') {
-            response.downstream = {
-              kind: 'task',
-              turnId: 'turn_forged_chat_subordinate',
-            };
-          }
-          workspaceDb.sqlite
-            .prepare(
-              `UPDATE idempotency_requests
-                    SET response_json = ?
-                  WHERE command_name = 'conversation.submit' AND request_id = ?`
-            )
-            .run(JSON.stringify(response), requestId);
-        }
-
-        const storedOuter = workspaceDb.sqlite
-          .prepare(
-            `SELECT scope_json AS scopeJson, input_hash AS inputHash, response_json AS responseJson
-               FROM idempotency_requests
-              WHERE command_name = 'conversation.submit' AND request_id = ?`
-          )
-          .get(requestId) as
-          | { scopeJson: string; inputHash: string; responseJson: string }
-          | undefined;
-        const storedCheckpoint = getWorkerCheckpoint(
-          workspaceDb,
-          'ws_demo',
-          'th_demo',
-          workerTurn.id
-        );
-        expect(storedCheckpoint).not.toBeNull();
-        if (!storedCheckpoint) throw new Error('The faulted checkpoint must remain readable.');
-        if (fault === 'baseline') {
-          expect(JSON.parse(storedOuter?.responseJson ?? '{}')).toMatchObject({
-            downstream: { kind: 'task', turnId: workerTurn.id },
-            resultKind: 'task-handoff',
-            status: 202,
-          });
-        } else if (fault === 'direct-task-receipt' || fault === 'goal-receipt') {
-          expect(storedOuter).toBeUndefined();
-          expect(
-            store.getCommandRequest(
-              fault === 'direct-task-receipt' ? 'task.start' : 'goal.step',
-              requestId,
-              { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
-              workspaceDb
-            )
-          ).toMatchObject({
-            command: fault === 'direct-task-receipt' ? 'task.start' : 'goal.step',
-          });
-        } else if (fault === 'missing-receipt') {
-          expect(storedOuter).toBeUndefined();
-        } else if (fault === 'wrong-request') {
-          expect(storedCheckpoint.requestId).toBe('req_wrong_chat_gate');
-        } else if (
-          fault === 'wrong-actor' ||
-          fault === 'wrong-workspace' ||
-          fault === 'wrong-thread'
-        ) {
-          const scope = JSON.parse(storedOuter?.scopeJson ?? '{}') as Record<string, string>;
-          expect(scope).toMatchObject(
-            fault === 'wrong-actor'
-              ? { actorId: 'user_wrong_chat_gate' }
-              : fault === 'wrong-workspace'
-                ? { workspaceId: 'ws_wrong_chat_gate' }
-                : { threadId: 'th_wrong_chat_gate' }
-          );
-        } else {
-          const response = JSON.parse(storedOuter?.responseJson ?? '{}') as {
-            downstream?: { kind: string; goalId?: string; turnId?: string };
-            resultKind?: string;
-            status?: number;
-          };
-          if (fault === 'wrong-result-kind') expect(response.resultKind).toBe('knowledge-answer');
-          if (fault === 'wrong-status') expect(response.status).toBe(200);
-          if (fault === 'wrong-downstream-kind') {
-            expect(response.downstream).toEqual({
-              kind: 'goal',
-              goalId: 'goal_wrong_chat_gate',
-              turnId: workerTurn.id,
-            });
-          }
-          if (fault === 'forged-subordinate-turn') {
-            expect(response.downstream).toEqual({
-              kind: 'task',
-              turnId: 'turn_forged_chat_subordinate',
-            });
-          }
-        }
-
-        const turnBefore = store.getTurnById(workerTurn.id);
-        const checkpointBefore = storedCheckpoint;
-        const responseItemsBefore = store
-          .listThreadItems('ws_demo', 'th_demo')
-          .filter((item) => item.turnId === workerTurn.id && item.type === 'user-input-response');
-        const responseRequestId = `0190f4c8-0000-7000-8000-10000000034${caseIndex.toString(16)}`;
-        const responseReceiptBefore = store.getCommandRequest(
-          'turn.input.submit',
-          responseRequestId,
-          {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: workerTurn.id,
-          },
-          workspaceDb
-        );
-        expect(responseReceiptBefore).toBeNull();
-        const leasesBefore = listSchedulerSessionLeasesForTurn(coreDb, {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: workerTurn.id,
-        });
-        const receiptRead = vi.spyOn(store, 'getCommandRequest');
-        const close = await app.request('/api/turns', {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: responseRequestId,
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: workerTurn.id,
-            answers: { tone: ['Concise'] },
-          }),
-          headers: { 'content-type': 'application/json' },
-        });
-
-        const ownerReceiptReads = receiptRead.mock.calls.map(
-          ([command, commandRequestId, scope]) => ({
-            command,
-            requestId: commandRequestId,
-            scope,
-          })
-        );
-        receiptRead.mockRestore();
-        const expectedChatReceiptRead = {
-          command: 'conversation.submit',
-          requestId: storedCheckpoint.requestId,
-          scope: { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
-        };
-        if (fault === 'wrong-request') {
-          expect(ownerReceiptReads).not.toContainEqual(expectedChatReceiptRead);
-        } else {
-          expect(ownerReceiptReads).toContainEqual(expectedChatReceiptRead);
-        }
-        if (fault === 'baseline') {
-          expect(close.status, await close.clone().text()).toBe(202);
-          await expect(close.json()).resolves.toMatchObject({
-            id: workerTurn.id,
-            status: 'completed',
-          });
-          expect(
-            store
-              .listThreadItems('ws_demo', 'th_demo')
-              .filter(
-                (item) => item.turnId === workerTurn.id && item.type === 'user-input-response'
-              )
-          ).toHaveLength(responseItemsBefore.length + 1);
-          expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id)).toBeNull();
-          expect(
-            listSchedulerSessionLeasesForTurn(coreDb, {
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
-              turnId: workerTurn.id,
-            })
-          ).toEqual([
-            expect.objectContaining({
-              releaseReason: 'turn-completed',
-              status: 'released',
-            }),
-          ]);
-        } else {
-          expect(close.status, await close.clone().text()).toBe(409);
-          await expect(close.json()).resolves.toMatchObject(
-            fault === 'wrong-request'
-              ? {
-                  code: 'recovery_required',
-                  message: 'The worker user-input Gate has no exact human command identity.',
-                }
-              : { code: 'recovery_required' }
-          );
-          expect(store.getTurnById(workerTurn.id)).toEqual(turnBefore);
-          expect(
-            store
-              .listThreadItems('ws_demo', 'th_demo')
-              .filter(
-                (item) => item.turnId === workerTurn.id && item.type === 'user-input-response'
-              )
-          ).toEqual(responseItemsBefore);
-          expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id)).toEqual(
-            checkpointBefore
-          );
-          expect(
-            store.getCommandRequest(
-              'turn.input.submit',
-              responseRequestId,
-              {
-                workspaceId: 'ws_demo',
-                threadId: 'th_demo',
-                turnId: workerTurn.id,
-              },
-              workspaceDb
-            )
-          ).toEqual(responseReceiptBefore);
-          expect(
-            listSchedulerSessionLeasesForTurn(coreDb, {
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
-              turnId: workerTurn.id,
-            })
-          ).toEqual(leasesBefore);
-        }
-      } finally {
-        workspaceDb.sqlite.close();
-      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -8190,23 +7219,9 @@ describe('nanocore server', () => {
         }
       );
 
-      expect(res.status).toBe(202);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'goal-handoff',
-        handoff: { targetMode: 'goal' },
-        item: { type: 'status', title: 'Goal Mode handoff' },
-      });
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'goal_mode_unavailable' });
       expect(executor.startContexts).toHaveLength(0);
-
-      const goalRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/goal');
-      const goal = ThreadGoalSummaryResponseSchema.parse(await goalRes.json()).goal;
-
-      expect(goal).toMatchObject({
-        objective: 'Plan a multi-step release goal for NanoCore.',
-        status: 'planning',
-      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -8237,7 +7252,7 @@ describe('nanocore server', () => {
         expect(parsed).toMatchObject({
           outcome: 'clarification-needed',
           item: { type: 'user-input-request' },
-          turn: { status: 'awaiting_human' },
+          turn: { status: 'completed' },
         });
       }
       expect(executor.startContexts).toHaveLength(0);
@@ -8272,7 +7287,7 @@ describe('nanocore server', () => {
       expect(parsed).toMatchObject({
         outcome: 'clarification-needed',
         handoff: null,
-        turn: { workspaceId: 'ws_quick_chat', threadId: thread.id, status: 'awaiting_human' },
+        turn: { workspaceId: 'ws_quick_chat', threadId: thread.id, status: 'completed' },
       });
       expect(executor.startContexts).toHaveLength(0);
     } finally {
@@ -9059,10 +8074,9 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(409);
       await expect(res.json()).resolves.toMatchObject({
-        code: 'workspace_kind_not_supported',
-        message: expect.stringContaining('Quick Chat workspace'),
+        code: 'goal_mode_unavailable',
       });
     } finally {
       coreDb.sqlite.close();
@@ -9118,7 +8132,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('escalates Task Mode requests that need Goal Mode planning', async () => {
+  it('refuses Task Mode requests that need unavailable Goal Mode planning', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
@@ -9133,46 +8147,23 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(202);
-      const parsed = StartTaskModeResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        state: 'escalated-to-goal',
-        escalation: {
-          targetMode: 'goal',
-          goalId: expect.stringMatching(/^goal_/),
-        },
-      });
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'goal_mode_unavailable' });
       expect(executor.startContexts).toHaveLength(0);
-      expect(parsed).not.toHaveProperty('decision');
       const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
         body: JSON.stringify({ requestId, input }),
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(replayRes.status).toBe(202);
-      expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+      expect(replayRes.status).toBe(409);
+      await expect(replayRes.json()).resolves.toMatchObject({ code: 'goal_mode_unavailable' });
 
       const goalRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/goal');
       const goal = ThreadGoalSummaryResponseSchema.parse(await goalRes.json()).goal;
 
-      expect(goal).toMatchObject({
-        objective: 'Plan a multi-step release goal for NanoCore.',
-        status: 'planning',
-      });
-      expect(goal?.goalId).toBe(parsed.escalation?.goalId);
-      expect(store.listCommandRequests().map((record) => record.command)).toEqual(['task.start']);
-
-      const creationItem = parsed.turn.items.find((item) => item.type === 'user-message');
-
-      if (!creationItem) {
-        throw new Error('Expected the Goal creation Item.');
-      }
-
-      expect(() =>
-        store.updateItem(creationItem.id, { status: 'in_progress', completedAt: null })
-      ).toThrow(/is terminal and does not admit this write/);
+      expect(goal).toBeNull();
+      expect(store.listCommandRequests()).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -9670,213 +8661,6 @@ describe('nanocore server', () => {
     }
   });
 
-  it('deduplicates follow-up input and interrupt while unsupported approvals fail closed', async () => {
-    const store = createDemoStore();
-    const interactiveExecutor = new InteractiveTurnExecutor();
-    const interactiveApp = createApp({ store, turnExecutor: interactiveExecutor });
-    const createdFollowUpTurn = store.createTurn('ws_demo', 'th_demo', 'Await input', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const followUpItem = store.createItem({
-      id: 'it_follow_up_question',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: createdFollowUpTurn.id,
-      type: 'user-input-request',
-      status: 'completed',
-      responsibleUserId: 'user_local',
-      userInputRequestId: 'ui_follow_up',
-      prompt: 'Continue?',
-      questions: [
-        {
-          id: 'continue',
-          header: 'Continue',
-          question: 'Continue?',
-          options: null,
-          isOther: true,
-          isSecret: false,
-        },
-      ],
-      createdAt: createdFollowUpTurn.startedAt ?? new Date().toISOString(),
-      completedAt: createdFollowUpTurn.startedAt ?? new Date().toISOString(),
-    });
-    const followUpTurn = store.updateTurn(createdFollowUpTurn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'user-input',
-        userInputRequestId: 'ui_follow_up',
-        itemId: followUpItem.id,
-      },
-    });
-    const followUpBody = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: followUpTurn.id,
-      requestId: '0190f4c8-0000-7000-8000-000000000510',
-      answers: { continue: ['Continue'] },
-    };
-    const followUpFirst = await interactiveApp.request('/api/turns', {
-      method: 'POST',
-      body: JSON.stringify(followUpBody),
-      headers: jsonHeaders(),
-    });
-    const followUpSecond = await interactiveApp.request('/api/turns', {
-      method: 'POST',
-      body: JSON.stringify(followUpBody),
-      headers: jsonHeaders(),
-    });
-
-    expect((await followUpFirst.json()) as { id: string }).toMatchObject({ id: followUpTurn.id });
-    expect((await followUpSecond.json()) as { id: string }).toMatchObject({ id: followUpTurn.id });
-    expect(interactiveExecutor.userInputResponses).toBe(1);
-
-    const interruptTurn = store.createTurn('ws_demo', 'th_demo', 'Interrupt once', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const interruptBody = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: interruptTurn.id,
-      requestId: '0190f4c8-0000-7000-8000-000000000511',
-    };
-    const interruptPath = `/api/workspaces/ws_demo/threads/th_demo/turns/${interruptTurn.id}/interrupt`;
-    const interruptFirst = await interactiveApp.request(interruptPath, {
-      method: 'POST',
-      body: JSON.stringify(interruptBody),
-      headers: jsonHeaders(),
-    });
-    const interruptSecond = await interactiveApp.request(interruptPath, {
-      method: 'POST',
-      body: JSON.stringify(interruptBody),
-      headers: jsonHeaders(),
-    });
-
-    expect((await interruptFirst.json()) as { id: string; status: string }).toMatchObject({
-      id: interruptTurn.id,
-      status: 'interrupted',
-    });
-    expect((await interruptSecond.json()) as { id: string; status: string }).toMatchObject({
-      id: interruptTurn.id,
-      status: 'interrupted',
-    });
-    expect(interactiveExecutor.interrupts).toBe(1);
-
-    const approvalExecutor = new ApprovalTurnExecutor();
-    const approvalApp = createApp({ store, turnExecutor: approvalExecutor });
-    const approvalTurn = store.createTurn('ws_demo', 'th_demo', 'Approve once', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    store.createApproval({
-      id: 'ap_idempotent',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: approvalTurn.id,
-      kind: 'permission',
-      status: 'pending',
-      title: 'Approve',
-      description: 'Approve once.',
-      createdAt: new Date().toISOString(),
-      resolvedAt: null,
-    });
-    const approvalBody = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: approvalTurn.id,
-      requestId: '0190f4c8-0000-7000-8000-000000000512',
-      decision: 'granted',
-    };
-    const approvalFirst = await approvalApp.request('/api/approvals/ap_idempotent/respond', {
-      method: 'POST',
-      body: JSON.stringify(approvalBody),
-      headers: jsonHeaders(),
-    });
-    const approvalSecond = await approvalApp.request('/api/approvals/ap_idempotent/respond', {
-      method: 'POST',
-      body: JSON.stringify(approvalBody),
-      headers: jsonHeaders(),
-    });
-
-    expect(approvalFirst.status).toBe(501);
-    await expect(approvalFirst.json()).resolves.toMatchObject({ code: 'approvals_not_supported' });
-    expect(approvalSecond.status).toBe(501);
-    await expect(approvalSecond.json()).resolves.toMatchObject({ code: 'approvals_not_supported' });
-    expect(approvalExecutor.approvalResponses).toBe(0);
-  });
-
-  it('rejects turn input submissions while the turn waits on approval', async () => {
-    const store = createDemoStore();
-    const turnExecutor = new InteractiveTurnExecutor();
-    const app = createApp({ store, turnExecutor });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Await approval', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const approvalItem = store.createItem({
-      id: 'it_approval_gate',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: turn.id,
-      type: 'approval-request',
-      status: 'completed',
-      approvalRequestId: 'ap_gate',
-      title: 'Approve',
-      description: 'Approval is required before user input can resume the turn.',
-      kind: 'permission',
-      createdAt: turn.startedAt ?? new Date().toISOString(),
-      completedAt: turn.startedAt ?? new Date().toISOString(),
-    });
-    store.updateTurn(turn.id, {
-      status: 'awaiting_human',
-      humanGate: {
-        kind: 'approval',
-        approvalRequestId: 'ap_gate',
-        itemId: approvalItem.id,
-      },
-    });
-
-    const res = await app.request('/api/turns', {
-      method: 'POST',
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: turn.id,
-        requestId: '0190f4c8-0000-7000-8000-000000000513',
-        answers: { approval: ['This should not answer an approval.'] },
-      }),
-      headers: jsonHeaders(),
-    });
-
-    expect(res.status).toBe(409);
-    await expect(res.json()).resolves.toMatchObject({
-      code: 'not_awaiting_input',
-    });
-    expect(turnExecutor.userInputResponses).toBe(0);
-    expect(
-      store.getCommandRequest('turn.input.submit', '0190f4c8-0000-7000-8000-000000000513', {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: turn.id,
-      })
-    ).toBeNull();
-
-    const implicit = await app.request('/api/turns', {
-      method: 'POST',
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '0190f4c8-0000-7000-8000-000000000514',
-        input: 'This must not become implicit steering.',
-      }),
-      headers: jsonHeaders(),
-    });
-
-    expect(implicit.status).toBe(409);
-    await expect(implicit.json()).resolves.toMatchObject({ code: 'thread_busy' });
-  });
-
   it('returns an idempotency conflict for the same request id with different input', async () => {
     const app = createApp({ turnExecutor: new FakeTurnExecutor() });
     const requestId = '0190f4c8-0000-7000-8000-000000000513';
@@ -9901,17 +8685,10 @@ describe('nanocore server', () => {
   it('returns invalid_request for missing request ids on all protocol mutating routes', async () => {
     const store = createDemoStore();
     const app = createApp({ store, turnExecutor: new ApprovalTurnExecutor() });
-    const turn = store.updateTurn(
-      store.createTurn('ws_demo', 'th_demo', 'Need input', { kind: 'user', id: 'user_local' }).id,
-      {
-        status: 'awaiting_human',
-        humanGate: {
-          kind: 'approval',
-          approvalRequestId: 'ap_missing_request',
-          itemId: 'it_missing_request_approval',
-        },
-      }
-    );
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Need input', {
+      kind: 'user',
+      id: 'user_local',
+    });
     store.createApproval({
       id: 'ap_missing_request',
       workspaceId: 'ws_demo',
@@ -9964,14 +8741,18 @@ describe('nanocore server', () => {
         }),
         headers: jsonHeaders(),
       }),
-      app.request('/api/turns', {
+      app.request('/api/user-input-requests/ui_missing_request/answer', {
         method: 'POST',
         body: JSON.stringify({
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
-          turnId: turn.id,
           answers: { question: ['Missing request id'] },
         }),
+        headers: jsonHeaders(),
+      }),
+      app.request('/api/pending-requests/ui_missing_request/withdraw', {
+        method: 'POST',
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
         headers: jsonHeaders(),
       }),
       app.request('/api/approvals/ap_missing_request/respond', {
@@ -10821,7 +9602,6 @@ describe('nanocore server', () => {
           threadId: 'th_aep_readback',
           items: [],
           status: 'running',
-          humanGate: null,
           error: null,
           configVersion: null,
           startedAt: '2026-07-06T00:00:00.000Z',
@@ -11140,7 +9920,6 @@ describe('nanocore server', () => {
           threadId: 'th_foreign_aep_child_lineage',
           items: [],
           status: 'running',
-          humanGate: null,
           error: null,
           configVersion: null,
           startedAt: '2026-07-19T00:00:00.000Z',
@@ -13324,9 +12103,7 @@ describe('nanocore server', () => {
           turnId: turn.id,
         },
       });
-      expect(store.getTurn(workspace.id, thread.id, turn.id).status).toBe(
-        mode === 'auto_allow' ? 'completed' : 'awaiting_human'
-      );
+      expect(store.getTurn(workspace.id, thread.id, turn.id).status).toBe('completed');
 
       execFileSync('git', ['remote', 'remove', 'origin'], {
         cwd: repositoryPath,
@@ -13392,7 +12169,7 @@ describe('nanocore server', () => {
             : [
                 expect.objectContaining({
                   kind: 'approval',
-                  title: 'Approve Git push to main',
+                  title: 'Summary: Approve Git push to main',
                 }),
               ],
       });
@@ -13466,7 +12243,7 @@ describe('nanocore server', () => {
         store
           .listThreadItems(workspace.id, thread.id)
           .find((item) => item.turnId === receiptGapTurn.id && item.type === 'approval-request')
-      ).toMatchObject({ title: 'Approve Git push to main' });
+      ).toMatchObject({ title: 'Summary: Approve Git push to main' });
 
       if (mode !== 'auto_allow') {
         const decisionRes = await app.request(
@@ -13489,7 +12266,6 @@ describe('nanocore server', () => {
       }
       expect(store.getTurn(workspace.id, thread.id, turn.id)).toMatchObject({
         status: 'completed',
-        humanGate: null,
         completedAt: expect.any(String),
       });
 
@@ -13520,11 +12296,15 @@ describe('nanocore server', () => {
                   result: 'require_approval',
                 }),
               ]),
-          expect.objectContaining({
-            action: 'repo.push',
-            approvalId: approvalPayload.approval.id,
-            result: 'allow',
-          }),
+          ...(mode === 'auto_allow'
+            ? [
+                expect.objectContaining({
+                  action: 'repo.push',
+                  approvalId: approvalPayload.approval.id,
+                  result: 'allow',
+                }),
+              ]
+            : []),
         ]);
         for (const decision of decisions) {
           expect(JSON.parse(decision.resourceSummary)).toMatchObject({

@@ -3,13 +3,7 @@ import type { StopReason, TurnStatus } from '@openkit/protocol';
 /**
  * Loop outcome after one worker turn completes.
  */
-export type StopAfterTurnOutcome =
-  | 'continue'
-  | 'review'
-  | 'ask_user'
-  | 'block'
-  | 'abort'
-  | 'complete';
+export type StopAfterTurnOutcome = 'continue' | 'review' | 'block' | 'abort' | 'complete';
 
 /**
  * Input used to decide whether the worker or Goal Mode loop should stop.
@@ -19,8 +13,8 @@ export interface ShouldStopAfterTurnInput {
   readonly stopReason: StopReason;
   /** Whether normal completion should pass through review before final completion. */
   readonly reviewRequired: boolean;
-  /** Remaining worker iterations available after the completed turn. */
-  readonly remainingWorkerIterations: number;
+  /** Remaining worker iterations available after the completed turn. Omitted means this attempt cannot continue. */
+  readonly remainingWorkerIterations?: number;
 }
 
 /**
@@ -48,10 +42,8 @@ export function shouldStopAfterTurn(input: ShouldStopAfterTurnInput): StopAfterT
     case 'length':
       return createDecision(
         input.stopReason,
-        input.remainingWorkerIterations > 0 ? 'continue' : 'block'
+        (input.remainingWorkerIterations ?? 0) > 0 ? 'continue' : 'block'
       );
-    case 'ask_user':
-      return createDecision(input.stopReason, 'ask_user');
     case 'aborted':
       return createDecision(input.stopReason, 'abort');
     case 'error':
@@ -63,7 +55,7 @@ export function shouldStopAfterTurn(input: ShouldStopAfterTurnInput): StopAfterT
 /**
  * Maps a stored turn read-model status to the protocol stop reason vocabulary.
  *
- * Product projection that differs from sealed terminals: awaiting_human maps to ask_user, cancelled maps to error, and pending and running also map to error.
+ * Product projection: cancelled, pending, and running map to error.
  *
  * @param status Stored turn status after worker execution.
  * @returns Stop reason for the worker envelope.
@@ -74,8 +66,6 @@ export function stopReasonForTurnStatus(status: TurnStatus): StopReason {
       return 'completed';
     case 'interrupted':
       return 'aborted';
-    case 'awaiting_human':
-      return 'ask_user';
     case 'failed':
     case 'cancelled':
     case 'pending':

@@ -44,6 +44,8 @@ const NON_APP_API_ROUTE_PATTERNS = [
   /^\/api\/nanohost\/transport\/effects\/(?:sandbox\.(?:create|delete)|storage\.(?:inspect|purge)|bridge\.(?:open|close)|image\.(?:acquire|build|inspect)|file\.export|reference\.import)(?:\/result)?$/,
   /^\/api\/workspaces(?:\/|$)/,
   /^\/api\/approvals(?:\/|$)/,
+  /^\/api\/user-input-requests(?:\/|$)/,
+  /^\/api\/pending-requests(?:\/|$)/,
   /^\/(?:api\/)?health$/,
   /^\/api\/(?:meta|diagnostics|openapi\.json)$/,
   /^\/api\/turns$/,
@@ -110,6 +112,8 @@ const DIRECT_CORE_GATEWAY_OPERATION_KEYS = [
   'GET /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId',
   'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
   'POST /api/approvals/:approvalRequestId/respond',
+  'POST /api/user-input-requests/:userInputRequestId/answer',
+  'POST /api/pending-requests/:pendingRequestId/withdraw',
   'POST /api/turns',
   'POST /v1/chat/completions',
   'POST /v1/responses',
@@ -3119,6 +3123,8 @@ describe('app api openapi projection', () => {
           (path === '/api/workspaces' ||
             path.startsWith('/api/workspaces/') ||
             (method === 'POST' && path === '/api/approvals/:approvalRequestId/respond') ||
+            (method === 'POST' && path === '/api/user-input-requests/:userInputRequestId/answer') ||
+            (method === 'POST' && path === '/api/pending-requests/:pendingRequestId/withdraw') ||
             (method === 'POST' && path === '/api/turns') ||
             (method === 'POST' && path === '/v1/chat/completions') ||
             (method === 'POST' && path === '/v1/responses'))

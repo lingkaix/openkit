@@ -357,7 +357,7 @@ describe('agent environment package resolver', () => {
     expect(resolve(['openkit-repository']).supply.mcpServers).toContainEqual(
       expect.objectContaining({
         id: 'openkit-repository',
-        allowedTools: ['repository_push_request_approval', 'repository_push_execute'],
+        allowedTools: ['repository_push'],
         approvalRequiredTools: [],
         catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       })
@@ -907,6 +907,12 @@ describe('agent environment package resolver', () => {
       expect.objectContaining({
         catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         id: 'openkit-generative',
+        schemaPolicy: 'pinned',
+      }),
+      expect.objectContaining({
+        allowedTools: ['work_request_input'],
+        catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        id: 'openkit-work',
         schemaPolicy: 'pinned',
       }),
     ]);

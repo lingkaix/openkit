@@ -87,7 +87,7 @@ const INSPECT_WORKER = interruptedWorker({
   stage: 'waiting_for_user',
   diagnosticsSummary: 'Waiting for a human decision.',
   contextDigest: 'sha256:inspect-context-digest',
-  stopReason: 'ask_user',
+  stopReason: 'aborted',
   choices: [
     { kind: 'inspect', label: 'Inspect interrupted worker evidence', recommended: true },
     { kind: 'request_human', label: 'Ask the user how to recover this worker turn' },

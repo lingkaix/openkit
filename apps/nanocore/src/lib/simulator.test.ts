@@ -243,7 +243,7 @@ describe('SimulatedTurnExecutor', () => {
     delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
   });
 
-  it('pauses a scheduled worker directly on one non-secret user-input Gate', async () => {
+  it('records simulator input and completes the bounded Turn', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const executor = new SimulatedTurnExecutor();
@@ -285,13 +285,13 @@ describe('SimulatedTurnExecutor', () => {
         agentId: 'agent_codex_host',
         agentProfileId: 'default',
         agentSessionId: expect.stringMatching(/^as_/),
-        status: 'awaiting_human',
-        humanGate: {
-          kind: 'user-input',
-          userInputRequestId: `ui_${turn.id}`,
-          itemId: `it_user_input_request_${turn.id}`,
-        },
+        status: 'completed',
       });
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .some((item) => item.turnId === turn.id && item.type === 'user-input-request')
+      ).toBe(true);
       expect(executor.getAgentSession(store, 'ws_demo', 'th_demo').id).toBe(
         storedTurn.agentSessionId
       );
@@ -307,6 +307,7 @@ describe('SimulatedTurnExecutor', () => {
         'reasoning',
         'command-execution',
         'user-input-request',
+        'artifact-reference',
       ]);
       expect(
         store
@@ -392,22 +393,12 @@ describe('SimulatedTurnExecutor', () => {
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
       const storedFirstTurn = store.getTurnById(first.turn.id);
-      if (first.turn.humanGate?.kind !== 'user-input' || !storedFirstTurn.agentSessionId) {
-        throw new Error('Expected the first simulator Turn and its AgentSession Gate.');
+      if (!storedFirstTurn.agentSessionId) {
+        throw new Error('Expected the first simulator Turn and its AgentSession.');
       }
+      expect(storedFirstTurn.status).toBe('completed');
       const agentSessionId = storedFirstTurn.agentSessionId;
-      const closeResponse = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000213',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: first.turn.id,
-          answers: { tone: ['Concise'] },
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      expect(closeResponse.status, await closeResponse.clone().text()).toBe(202);
+      expect(store.getAgentSession(agentSessionId).status).toBe('idle');
       expect(store.getAgentSession(agentSessionId)).toMatchObject({
         sessionCompatibilityKey: expect.any(String),
         stale: false,
@@ -429,7 +420,7 @@ describe('SimulatedTurnExecutor', () => {
         .find((turn) => turn.id !== first.turn.id && turn.agentId === 'agent_codex_host');
       expect.soft(secondTurn).toMatchObject({
         agentSessionId,
-        status: 'awaiting_human',
+        status: 'completed',
       });
       const leases = coreDb.sqlite
         .prepare(
@@ -505,22 +496,12 @@ describe('SimulatedTurnExecutor', () => {
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
       const storedFirstTurn = store.getTurnById(first.turn.id);
-      if (first.turn.humanGate?.kind !== 'user-input' || !storedFirstTurn.agentSessionId) {
-        throw new Error('Expected the first simulator Turn and its AgentSession Gate.');
+      if (!storedFirstTurn.agentSessionId) {
+        throw new Error('Expected the first simulator Turn and its AgentSession.');
       }
+      expect(storedFirstTurn.status).toBe('completed');
       const predecessorId = storedFirstTurn.agentSessionId;
-      const closeResponse = await firstApp.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000222',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: first.turn.id,
-          answers: { tone: ['Concise'] },
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      expect(closeResponse.status, await closeResponse.clone().text()).toBe(202);
+      expect(store.getAgentSession(predecessorId).status).toBe('idle');
       expect(store.getAgentSession(predecessorId)).toMatchObject({
         sessionCompatibilityKey: expect.any(String),
         stale: false,
@@ -562,7 +543,7 @@ describe('SimulatedTurnExecutor', () => {
           secondTurn?.agentSessionId && secondTurn.agentSessionId !== predecessorId
             ? secondTurn.agentSessionId
             : undefined;
-        expect.soft(secondTurn?.status, JSON.stringify(secondTurn ?? null)).toBe('awaiting_human');
+        expect.soft(secondTurn?.status, JSON.stringify(secondTurn ?? null)).toBe('completed');
         expect.soft(successorId).not.toBe(predecessorId);
 
         const predecessor = store.getAgentSession(predecessorId);
@@ -725,22 +706,30 @@ describe('SimulatedTurnExecutor', () => {
       const task = StartTaskModeResponseSchema.parse(turnBody);
       const workerTurn = store.getTurnById(task.turn.id);
       expect(workerTurn).toMatchObject({
-        status: 'awaiting_human',
-        humanGate: { kind: 'user-input' },
+        status: 'completed',
       });
       const proposals = store.listArtifacts('ws_demo');
-      expect(proposals).toHaveLength(2);
-      expect(new Set(proposals.map((artifact) => artifact.contentDigest)).size).toBe(2);
+      expect(proposals).toHaveLength(3);
+      expect(new Set(proposals.map((artifact) => artifact.contentDigest)).size).toBe(3);
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
       try {
-        const reviews = proposals.map((artifact) =>
+        const reviewedProposals = proposals.filter((artifact) => {
+          try {
+            getArtifactReview(workspaceDb, artifact.id, artifact.version);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+        expect(reviewedProposals).toHaveLength(2);
+        const reviews = reviewedProposals.map((artifact) =>
           getArtifactReview(workspaceDb, artifact.id, artifact.version)
         );
         expect(
           new Set(reviews.map((review) => `${review.artifactId}@${review.artifactVersion}`)).size
         ).toBe(2);
         expect(reviews).toEqual(
-          proposals.map((artifact) =>
+          reviewedProposals.map((artifact) =>
             expect.objectContaining({
               artifactId: artifact.id,
               artifactVersion: artifact.version,
@@ -765,7 +754,7 @@ describe('SimulatedTurnExecutor', () => {
       expect(projectionResponse.status, JSON.stringify(projectionBody)).toBe(200);
       expect(GetThreadMaterialResponseSchema.parse(projectionBody)).toMatchObject({
         material: {
-          currentTurnRevisionId: revision.revisionId,
+          currentTurnRevisionId: null,
           lastWorkerSeenRevisionId: revision.revisionId,
           latestQueuedRevisionId: null,
           resource: { materialId: material.materialId },
@@ -857,8 +846,6 @@ describe('SimulatedTurnExecutor', () => {
       store.getTurnById(turn.id).agentSessionId
     );
 
-    await executor.interruptTurn(store, turn.id);
-
     expect(executor.getAgentSession(store, 'ws_demo', 'th_demo').id).toBe(firstSession.id);
   });
 
@@ -885,44 +872,21 @@ describe('SimulatedTurnExecutor', () => {
     const agentSetup = createTestAgentSetup({ provider: null, requiredCapabilities: [] });
     const actor = { kind: 'user', id: 'user_local' } as const;
     const turn = store.createTurn('ws_demo', 'th_demo', 'Create one simulator Artifact', actor);
-    const artifactRequestId = '0190f4c8-0000-7000-8000-000000000232';
+    const artifactRequestId = '0190f4c8-0000-7000-8000-000000000230';
     const body = 'Simulator answer: Concise';
 
     store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
     await executor.startTurn(store, turn.id, 'Create one simulator Artifact', {
       agentSetup,
-      requestId: '0190f4c8-0000-7000-8000-000000000230',
+      requestId: artifactRequestId,
       triggerActor: actor,
       workspaceRoots: [],
     });
-    const beforeMissingProof = {
-      artifacts: store.listArtifacts('ws_demo'),
-      events: store.getTurnEvents(turn.id),
-      items: store.listThreadItems('ws_demo', 'th_demo'),
-      session: store.getAgentSession(`session_sim_turn_${turn.id}`),
-      turn: store.getTurnById(turn.id),
-    };
 
     await expect(
       executor.respondUserInput(store, turn.id, { tone: ['Concise'] }, { actor, requestId: null })
-    ).rejects.toThrow('Simulator Artifact creation requires the current request identity.');
-    expect({
-      artifacts: store.listArtifacts('ws_demo'),
-      events: store.getTurnEvents(turn.id),
-      items: store.listThreadItems('ws_demo', 'th_demo'),
-      session: store.getAgentSession(`session_sim_turn_${turn.id}`),
-      turn: store.getTurnById(turn.id),
-    }).toEqual(beforeMissingProof);
-
-    await executor.respondUserInput(
-      store,
-      turn.id,
-      { tone: ['Concise'] },
-      {
-        actor,
-        requestId: artifactRequestId,
-      }
-    );
+    ).rejects.toThrow('Simulator user-input request is not active');
+    expect(store.getTurnById(turn.id).status).toBe('completed');
 
     expect(store.listArtifacts('ws_demo')).toEqual([
       expect.objectContaining({
@@ -947,13 +911,13 @@ describe('SimulatedTurnExecutor', () => {
           type: 'user-input-request',
           responsibleUserId: actor.id,
         }),
-        expect.objectContaining({
-          type: 'user-input-response',
-          actor,
-          causationId: artifactRequestId,
-        }),
       ])
     );
+    expect(
+      store
+        .listThreadItems('ws_demo', 'th_demo')
+        .some((item) => item.type === 'user-input-response')
+    ).toBe(false);
     expect(
       store
         .getTurnEvents(turn.id)

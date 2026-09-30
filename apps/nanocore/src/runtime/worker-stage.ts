@@ -49,9 +49,5 @@ export function workerTurnStageForStopReason(stopReason: StopReason): WorkerTurn
     return 'aborted';
   }
 
-  if (stopReason === 'ask_user') {
-    return 'waiting_for_user';
-  }
-
   return 'failed';
 }

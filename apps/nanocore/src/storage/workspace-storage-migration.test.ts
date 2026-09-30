@@ -265,7 +265,6 @@ function writeLegacyAepSnapshot(
           triggerActor,
           items: [],
           status: 'completed',
-          humanGate: null,
           error: null,
           agentId: environmentPackage.agent.agentId,
           agentSessionId: environmentPackage.scope.agentSessionId,
