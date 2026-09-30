@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -150,9 +151,9 @@ function fakeAdapter(
             : { state: 'pending' };
         },
         async startTurn(turnInput) {
-          resident.turns.push(turnInput);
           const next = script.shift() ?? { kind: 'complete' };
           if (next.kind === 'reject') throw new Error('native turn refused');
+          resident.turns.push(turnInput);
           let interrupt!: () => void;
           const interrupted = new Promise<WorkerAdapterResult>((resolve) => {
             interrupt = () =>
@@ -1002,7 +1003,9 @@ describe('Worker Harness resident AgentSessions', () => {
         ? { cleanupState: 'clean', state: 'open' }
         : { cleanupState: 'unknown', state: 'failed' },
     });
-    expect(f.integration.finalStatuses.at(-1)?.body.status).not.toBe('completed');
+    expect(
+      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')
+    ).toMatchObject({ body: { status: 'failed' } });
     expect(await f.send('harness.drain', {})).toMatchObject({
       body: { activeTurns: stopProved ? 0 : 1, openSessions: 1 },
     });
@@ -1138,30 +1141,111 @@ describe('Worker Harness resident AgentSessions', () => {
     }
   });
 
-  it('fences a binding when native Turn acceptance is not proved', async () => {
+  it('keeps a pending binding non-reusable after a refused first native Turn', async () => {
     const f = harnessFixture();
     await f.open('as-a');
     f.fake.script.push({ kind: 'reject' });
-    expect(await f.start('as-a', 'turn-1')).toEqual(
-      expect.objectContaining({
-        body: expect.objectContaining({
-          reasonCode: 'dependency_failed',
-          startupFailure: expect.objectContaining({ reason: 'failed', stage: 'native_spawn' }),
-        }),
-        disposition: 'refused',
-      })
-    );
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
-      body: { cleanupState: 'unknown', state: 'failed' },
+    expect(await f.start('as-a', 'turn-1')).toMatchObject({
+      body: {
+        reasonCode: 'dependency_failed',
+        startupFailure: { reason: 'failed', stage: 'native_spawn' },
+      },
+      disposition: 'refused',
     });
-    expect(await f.start('as-a', 'turn-2')).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
-    );
-    expect(await f.send('session.close', f.selector('as-a'))).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'cleanup_required' }, disposition: 'refused' })
-    );
+    await f.settle('as-a');
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: {
+        childState: 'running',
+        cleanupState: 'clean',
+        nativeHandleState: 'pending',
+        nativeHandleDigest: null,
+        state: 'open',
+      },
+    });
+    expect(f.fake.residents[0]?.turns).toHaveLength(0);
+    expect(
+      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')
+    ).toMatchObject({ body: { status: 'failed' } });
+    expect(f.integration.calls).toContain('clear:as-a');
+    expect(existsSync(f.packagePath('as-a'))).toBe(false);
+    expect(await f.start('as-a', 'turn-2')).toMatchObject({
+      body: { reasonCode: 'conflict' },
+      disposition: 'refused',
+    });
+    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      body: { state: 'closed', privateState: 'absent' },
+      disposition: 'succeeded',
+    });
     expect(await f.send('harness.drain', {})).toMatchObject({
-      body: { activeTurns: 1, openSessions: 1, state: 'draining' },
+      body: { activeTurns: 0, openSessions: 0 },
+    });
+  });
+
+  it('keeps an established binding usable and resumable after a refused later native Turn', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    expect(await f.start('as-a', 'turn-established')).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as-a');
+    const digest = sha256('reference-as-a');
+    const before = f.fake.residents[0]?.turns.length ?? 0;
+    f.fake.script.push({ kind: 'reject' });
+    expect(await f.start('as-a', 'turn-refused')).toMatchObject({
+      body: {
+        reasonCode: 'dependency_failed',
+        startupFailure: { stage: 'native_spawn', reason: 'failed' },
+      },
+      disposition: 'refused',
+    });
+    await f.settle('as-a');
+    expect(f.fake.residents[0]?.turns).toHaveLength(before);
+    expect(f.fake.residents[0]?.interrupts).toBe(0);
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: {
+        childState: 'running',
+        cleanupState: 'clean',
+        nativeHandleState: 'ready',
+        nativeHandleDigest: digest,
+        state: 'open',
+      },
+    });
+    expect(f.integration.calls.at(-1)).toBe('clear:as-a');
+    expect(existsSync(f.packagePath('as-a'))).toBe(false);
+    expect(existsSync(f.contextRoot('as-a'))).toBe(false);
+    expect(
+      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-refused')
+    ).toMatchObject({ body: { status: 'failed' } });
+    // The next original-supply Turn requires free occupancy and an undrained Harness.
+    expect(await f.start('as-a', 'turn-reused')).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as-a');
+    expect(
+      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-reused')
+    ).toMatchObject({ body: { status: 'completed' } });
+    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      body: { state: 'closed', privateState: 'absent' },
+      disposition: 'succeeded',
+    });
+    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
+    expect(await f.open('as-b', { resume: { locator: 'as-a', digest } })).toMatchObject({
+      disposition: 'succeeded',
+      body: { nativeHandleState: 'ready', nativeHandleDigest: digest },
+    });
+    expect(f.fake.residents[1]?.input.resumeReference).toEqual(
+      new Uint8Array(Buffer.from('reference-as-a'))
+    );
+    expect(await f.start('as-b', 'turn-successor')).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as-b');
+    expect(
+      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-successor')
+    ).toMatchObject({ body: { status: 'completed' } });
+    expect(await f.send('session.inspect', f.selector('as-b'))).toMatchObject({
+      body: { cleanupState: 'clean', nativeHandleState: 'ready', nativeHandleDigest: digest },
+    });
+    expect(readFileSync(f.referencePath('as-b'), 'utf8')).toBe('reference-as-a');
+    expect(await f.send('session.close', f.selector('as-b'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+    expect(await f.send('harness.drain', {})).toMatchObject({
+      body: { activeTurns: 0, openSessions: 0 },
     });
   });
 
@@ -1858,6 +1942,80 @@ describe('N4b independent route admission probes', () => {
         inputModalities: ['text'],
         reasoning: false,
       },
+    });
+  });
+});
+
+describe('N4c local input cleanup proof', () => {
+  it.each([
+    'reject',
+    'complete',
+  ] as const)('retains occupancy and fences siblings after %s with failed input cleanup', async (outcome) => {
+    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+    await f.open('as-a');
+    await f.open('as-b', { threadId: 'thread-two' });
+    f.fake.script.push({ kind: outcome });
+    f.writePackage('as-a', 'turn-cleanup');
+    const inputRoot = join(f.sandboxRoot, 'sessions', 'as-a');
+    const mode = statSync(inputRoot).mode & 0o777;
+    let result: Awaited<ReturnType<typeof f.send>>;
+    let inspection: Awaited<ReturnType<typeof f.send>>;
+    try {
+      // The slots stay writable internally, but their parent cannot unlink them.
+      chmodSync(inputRoot, 0o500);
+      result = await f.send('turn.start', f.startBody('as-a', 'turn-cleanup'));
+      await f.settle('as-a');
+      inspection = await f.send('session.inspect', f.selector('as-a'));
+    } finally {
+      chmodSync(inputRoot, mode);
+    }
+    f.writePackage('as-b', 'turn-sibling', { threadId: 'thread-two' });
+    const sibling = await f.send('turn.start', {
+      ...f.startBody('as-b', 'turn-sibling'),
+      threadId: 'thread-two',
+    });
+    await f.settle('as-b');
+    const newSession = await f.open('as-c', { threadId: 'thread-three' });
+    const drain = await f.send('harness.drain', {});
+    expect(result).toMatchObject(
+      outcome === 'reject'
+        ? {
+            disposition: 'refused',
+            body: {
+              reasonCode: 'dependency_failed',
+              startupFailure: { stage: 'native_spawn', reason: 'failed' },
+            },
+          }
+        : { disposition: 'succeeded' }
+    );
+    expect(f.fake.residents[0]?.turns).toHaveLength(outcome === 'reject' ? 0 : 1);
+    expect({
+      inspection,
+      sibling,
+      activeTurns: drain.body.activeTurns,
+      nativeSiblingStarts: f.fake.residents[1]?.turns.length,
+    }).toMatchObject({
+      inspection: {
+        body: {
+          state: 'failed',
+          cleanupState: 'unknown',
+          childState: 'running',
+          nativeHandleState: 'ready',
+          nativeHandleDigest: sha256('reference-as-a'),
+        },
+      },
+      sibling: { disposition: 'refused', body: { reasonCode: 'busy' } },
+      activeTurns: 1,
+      nativeSiblingStarts: 0,
+    });
+    expect(
+      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-cleanup')
+    ).toMatchObject({ body: { status: outcome === 'reject' ? 'failed' : 'completed' } });
+    expect(newSession).toMatchObject({ disposition: 'refused', body: { reasonCode: 'busy' } });
+    expect(f.integration.calls).toContain('clear:as-a');
+    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'cleanup_required' },
     });
   });
 });

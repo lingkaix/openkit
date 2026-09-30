@@ -31,12 +31,7 @@ import {
   SANDBOX_NATIVE_INFERENCE_BASE_URL,
   type SandboxIntegrationClient,
 } from './integration-client.js';
-import {
-  isNativeAcceptanceUnknown,
-  isNativeSettlementUnknown,
-  runResidentTurn,
-  type WorkerShimEnvironment,
-} from './turn.js';
+import { isNativeSettlementUnknown, runResidentTurn, type WorkerShimEnvironment } from './turn.js';
 
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
@@ -490,17 +485,15 @@ export class WorkerHarness {
       },
       turnDirectory,
     });
-    let nativeUnknown = false;
     const promise = run.then(
       async (turn) => {
         if (turn.status === 'completed') session.established = true;
         await this.cleanTurnInputs(session);
       },
       async (error: unknown) => {
-        if (isNativeSettlementUnknown(error) || isNativeAcceptanceUnknown(error)) {
+        if (isNativeSettlementUnknown(error)) {
           // Native work may still be live. Fence before any await so disposable cleanup cannot
           // overwrite unknown state or drop the Turn.
-          nativeUnknown = true;
           this.fenceSession(session);
         } else {
           await this.cleanTurnInputs(session);
@@ -511,7 +504,8 @@ export class WorkerHarness {
     const settled = promise
       .catch(() => undefined)
       .finally(() => {
-        if (!nativeUnknown && session.activeTurn?.turnId === body.turnId) {
+        // Capacity returns only after native settlement and local input cleanup are proved.
+        if (session.cleanupState === 'clean' && session.activeTurn?.turnId === body.turnId) {
           session.activeTurn = null;
         }
       });
@@ -654,7 +648,7 @@ export class WorkerHarness {
   }
 
   /**
-   * Fences one binding whose native settlement or native close could not be proved: it takes no
+   * Fences one binding whose native settlement, native close, or local input cleanup could not be proved: it takes no
    * Turn, reports unknown cleanup, and the whole Harness drains so the NanoHost owner widens the
    * fence. Disposable cleanup never overwrites this state.
    */
@@ -664,7 +658,7 @@ export class WorkerHarness {
     this.draining = true;
   }
 
-  /** Removes the Turn's disposable input slots after collection. */
+  /** Removes disposable Turn input slots; unproved removal fences admission and retains occupancy. */
   private async cleanTurnInputs(session: HarnessSession): Promise<void> {
     session.cleanupState = 'pending';
     try {
@@ -676,7 +670,7 @@ export class WorkerHarness {
       );
       session.cleanupState = 'clean';
     } catch {
-      session.cleanupState = 'unknown';
+      this.fenceSession(session);
     }
   }
 

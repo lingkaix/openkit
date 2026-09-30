@@ -106,28 +106,6 @@ export function isNativeSettlementUnknown(error: unknown): boolean {
 }
 
 /**
- * Rejection of `startTurn` when native acceptance could not be proved. The Harness must fence
- * the binding and keep the Turn occupied; a known-absent acceptance stays an ordinary failure.
- */
-class NativeAcceptanceUnknownError extends Error {
-  /** Creates the rejection, keeping the adapter failure as its cause. */
-  public constructor(cause: unknown) {
-    super('Resident native Turn acceptance could not be proved.', { cause });
-    this.name = 'NativeAcceptanceUnknownError';
-  }
-}
-
-/**
- * Whether a rejected resident Turn left native acceptance unproved.
- *
- * @param error Rejection of {@link runResidentTurn}.
- * @returns True when `startTurn` itself rejected.
- */
-export function isNativeAcceptanceUnknown(error: unknown): boolean {
-  return error instanceof NativeAcceptanceUnknownError;
-}
-
-/**
  * Requests native interruption and reports whether it was proved within the bound.
  *
  * @param turn Started resident Turn.
@@ -318,34 +296,30 @@ async function runResidentTurnImplementation(
     }
 
     progress.stage = 'native_spawn';
-    // Only this call can leave a native Turn accepted without proof. Earlier failures are absent.
-    let startedTurn: WorkerResidentTurn;
-    try {
-      startedTurn = await options.resident.startTurn({
-        llmRoute,
-        allowedLlmRoutes,
-        mcpServerIds,
-        runtimeCapture: {
-          captureCoverage,
-          credentialValues,
-          emit: (record, body) => writer.writeObservation(record, body),
-          packageSnapshotId: lineage.packageSnapshotId,
-        },
-        ...(provenanceDeclaration
-          ? { runtimeProvenance: { ...provenanceDeclaration, lineage } }
-          : {}),
-        skillTargetPaths: skillSupply.map((skill) => ({
-          id: skill.id,
-          targetPath: skill.materialization.targetPath,
-        })),
-        turnDirectory: options.turnDirectory,
-        turnId: lineage.turnId,
-        turnInput,
-        workingDirectory: cwd,
-      });
-    } catch (error) {
-      throw new NativeAcceptanceUnknownError(error);
-    }
+    // Rejection guarantees no live native Turn. Unproved attempts must be returned with
+    // rejecting settlement so the existing bounded stop/fence path retains cleanup ownership.
+    const startedTurn = await options.resident.startTurn({
+      llmRoute,
+      allowedLlmRoutes,
+      mcpServerIds,
+      runtimeCapture: {
+        captureCoverage,
+        credentialValues,
+        emit: (record, body) => writer.writeObservation(record, body),
+        packageSnapshotId: lineage.packageSnapshotId,
+      },
+      ...(provenanceDeclaration
+        ? { runtimeProvenance: { ...provenanceDeclaration, lineage } }
+        : {}),
+      skillTargetPaths: skillSupply.map((skill) => ({
+        id: skill.id,
+        targetPath: skill.materialization.targetPath,
+      })),
+      turnDirectory: options.turnDirectory,
+      turnId: lineage.turnId,
+      turnInput,
+      workingDirectory: cwd,
+    });
     // Observe both outcomes before transcript I/O; the derived promise never rejects, so a
     // pending writer cannot expose exceptional settlement at the process rejection boundary.
     const settlement = startedTurn.settled.then(
