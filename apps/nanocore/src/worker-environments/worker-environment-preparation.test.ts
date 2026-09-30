@@ -116,12 +116,19 @@ function createFixture() {
   };
   const order: string[] = [];
   const runtimeEffects: WorkerEnvironmentRuntimeEffects = {
+    inspectImage: vi.fn(),
     inspectStorage: vi.fn(),
     prepareImage: vi.fn(async (input) => {
       order.push('prepare');
       if (!input.authorize()) throw new Error('authorization lost');
       return {
         imageDigest,
+        environmentDefaults: {
+          defaultsDigest: sha256(
+            JSON.stringify({ CANARY_DEFAULT: 'must-not-publish-before-confirmation' })
+          ),
+          values: { CANARY_DEFAULT: 'must-not-publish-before-confirmation' },
+        },
         layout: {
           family: 'openkit-worker',
           gid: 1000,
@@ -202,11 +209,44 @@ function prepareRequest(
 }
 
 describe('Worker environment preparation', () => {
+  it('allows confirmation preparation for an already selected image whose defaults still need admission', async () => {
+    const fixture = createFixture();
+    const request = prepareRequest(
+      fixture.thread.id,
+      fixture.configuration,
+      manifest().runtime.image as WorkerEnvironmentImageDeclaration
+    );
+    const result = await fixture.createService().prepare({ actor }, request);
+    expect(fixture.runtimeEffects.prepareImage).toHaveBeenCalledTimes(1);
+    expect(result.image.environmentDefaults?.classification).toBe('unadmitted');
+    expect(result.activationConfirmation).toContain(
+      result.image.environmentDefaults!.defaultsDigest
+    );
+    expect(JSON.stringify(fixture.store.listArtifacts(fixture.workspace.id))).not.toContain(
+      'must-not-publish-before-confirmation'
+    );
+  });
+
   it('persists canonical A and B Artifacts and reads them after an FsStore restart', async () => {
     const fixture = createFixture();
     const request = prepareRequest(fixture.thread.id, fixture.configuration, buildDeclaration());
     const response = await fixture.createService().prepare({ actor }, request);
 
+    expect(response.image.environmentDefaults).toEqual({
+      names: ['CANARY_DEFAULT'],
+      classification: 'unadmitted',
+      defaultsDigest: sha256(
+        JSON.stringify({ CANARY_DEFAULT: 'must-not-publish-before-confirmation' })
+      ),
+    });
+    expect(JSON.stringify(response)).not.toContain('must-not-publish-before-confirmation');
+    expect(JSON.stringify(fixture.store.listArtifacts(fixture.workspace.id))).not.toContain(
+      'must-not-publish-before-confirmation'
+    );
+    expect(response.activationConfirmation).toContain(response.image.digest);
+    expect(response.activationConfirmation).toContain(
+      response.image.environmentDefaults!.defaultsDigest
+    );
     expect(response.activationConfirmation).toContain(response.resolvedCandidate.artifactId);
     expect(fixture.store.listArtifacts(fixture.workspace.id)).toHaveLength(2);
     expect(fixture.runtimeEffects.prepareImage).toHaveBeenCalledWith(

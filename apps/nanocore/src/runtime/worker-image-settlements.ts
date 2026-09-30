@@ -1,3 +1,8 @@
+import { createHash } from 'node:crypto';
+import {
+  canonicalNativeEnvironment,
+  NativeEnvironmentRecordSchema,
+} from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { CoreDb } from '../storage/db.js';
 
@@ -94,4 +99,73 @@ export function writeWorkerImageSettlement(coreDb: CoreDb, input: WorkerImageSet
   ) {
     throw new WorkerImageSettlementConflict();
   }
+}
+
+/** Validates admitted default bytes again on durable read; corruption never becomes empty defaults. */
+function checkedImageEnvironment(value: unknown) {
+  const record = NativeEnvironmentRecordSchema.parse(value);
+  if (
+    `sha256:${createHash('sha256').update(canonicalNativeEnvironment(record.values), 'utf8').digest('hex')}` !==
+    record.defaultsDigest
+  )
+    throw new WorkerImageSettlementConflict();
+  return {
+    ...record,
+    values: Object.fromEntries(
+      Object.entries(record.values).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    ),
+  };
+}
+
+/** Adds exact confirmed defaults to the existing acquisition/build settlement, without rewriting its result. */
+export function admitWorkerImageEnvironment(
+  coreDb: CoreDb,
+  candidate: WorkerImageSettlementIdentity,
+  input: unknown
+): void {
+  const environment = checkedImageEnvironment(input);
+  const identity = WorkerImageSettlementIdentitySchema.parse(candidate);
+  const previous = readAdmittedWorkerImageEnvironment(coreDb, environment.imageDigest);
+  if (previous && JSON.stringify(previous) !== JSON.stringify(environment))
+    throw new WorkerImageSettlementConflict();
+  const rows = coreDb.sqlite
+    .prepare(`SELECT request_id AS requestId FROM worker_image_settlements
+    WHERE authored_artifact_id = ? AND authored_artifact_version = ? AND authored_content_digest = ? AND input_digest = ? AND outcome = 'success' AND image_digest = ?`)
+    .all(
+      identity.authoredArtifactId,
+      identity.authoredArtifactVersion,
+      identity.authoredContentDigest,
+      identity.inputDigest,
+      environment.imageDigest
+    ) as { requestId: string }[];
+  if (rows.length !== 1) throw new WorkerImageSettlementConflict();
+  const row = rows[0]!;
+  const bytes = JSON.stringify(environment);
+  coreDb.sqlite
+    .prepare(
+      'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ? AND native_environment_json IS NULL'
+    )
+    .run(bytes, row.requestId);
+  const admitted = readAdmittedWorkerImageEnvironment(coreDb, environment.imageDigest);
+  if (JSON.stringify(admitted) !== bytes) throw new WorkerImageSettlementConflict();
+}
+
+/** Finds only confirmed exact-image defaults; mere successful acquisition is not admission. */
+export function readAdmittedWorkerImageEnvironment(coreDb: CoreDb, imageDigest: string) {
+  digest.parse(imageDigest);
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT native_environment_json AS environment FROM worker_image_settlements WHERE image_digest = ? AND outcome = 'success' AND native_environment_json IS NOT NULL`
+    )
+    .all(imageDigest) as { environment: string }[];
+  if (!rows.length) return null;
+  const records = rows.map((row) => checkedImageEnvironment(JSON.parse(row.environment)));
+  if (
+    records.some(
+      (record) =>
+        record.imageDigest !== imageDigest || JSON.stringify(record) !== JSON.stringify(records[0])
+    )
+  )
+    throw new WorkerImageSettlementConflict();
+  return records[0]!;
 }

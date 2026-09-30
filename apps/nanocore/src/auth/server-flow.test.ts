@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { resolveAgentSessionCompatibilityKey } from '../runtime/agent-environment.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -25,6 +24,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
+import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { importUnboundWorkspaceVaultReference } from '../vault/vault-references.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { createBetterAuth } from './better-auth.js';

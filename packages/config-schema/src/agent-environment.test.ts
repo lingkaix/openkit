@@ -1967,3 +1967,19 @@ describe('resolved public network evidence', () => {
     expect(AgentEnvironmentPackageSchema.safeParse(fixture).success).toBe(false);
   });
 });
+
+/** Public literal names and values do not become credential or host-reference projections. */
+it('preserves admitted native settings in package validation and snapshot redaction', () => {
+  const fixture = openshellPackageFixture() as { runtime: Record<string, unknown> };
+  const environment = {
+    imageDigest: `sha256:${'a'.repeat(64)}`,
+    defaultsDigest: `sha256:${'b'.repeat(64)}`,
+    values: JSON.parse(
+      '{"token":"public literal","PATH":"/Users/public/tools","VENDOR":"runtime://public/literal","__proto__":"literal"}'
+    ),
+  };
+  fixture.runtime.environment = environment;
+  const parsed = AgentEnvironmentPackageSchema.parse(fixture);
+  expect(parsed.runtime.environment).toEqual(environment);
+  expect(redactAgentEnvironmentPackageSnapshot(parsed).runtime.environment).toEqual(environment);
+});

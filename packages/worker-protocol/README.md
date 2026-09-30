@@ -22,3 +22,9 @@ Unavailable content may identify one earlier expected observation for exact fail
 - `pnpm --filter @openkit/worker-protocol typecheck`
 - `pnpm --filter @openkit/worker-protocol build`
 - `pnpm --filter @openkit/worker-protocol lint`
+
+## Public Native Environment
+
+`native-environment.ts` owns the shared literal namespace, canonical ASCII-key JSON, authored string/null map and measured AEP record. `session.open.nativeEnvironment` is public, session-static and distinct from private `runtimeEnvironment`; its bytes participate in durable queued identity. Command bodies discard inert additions and reject unsupported execution, credential and required semantics before forwarding. Public maps use the authored/AEP 128-entry, 128-character-name and 16 KiB aggregate limits; private credentials retain their separate bounds.
+
+Protected public names follow the actual adapter bindings: DeepSeek owns `DSH_HOME`, `DSH_PERMISSION_MODE`, `DSH_TELEMETRY_MODE` and `DSH_TELEMETRY_OTLP_URL`; `CODEX_HOME` is protected only for Codex. Unknown adapter IDs receive the shared bootstrap protections without inheriting another adapter's names.

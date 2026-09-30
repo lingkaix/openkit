@@ -6,6 +6,7 @@ import {
   ActivateWorkerEnvironmentRequestSchema,
   ActivateWorkerEnvironmentResponseSchema,
   AgentHealthRefreshResponseSchema,
+  AgentNativeEnvironmentResponseSchema,
   AppDiagnosticsResponseSchema,
   ApplyAdministrationConfigurationRequestSchema,
   ApplyAdministrationConfigurationResponseSchema,
@@ -269,6 +270,7 @@ import {
   TurnFeedbackResponseSchema,
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
+  UpdateAgentNativeEnvironmentRequestSchema,
   UpdateAutomationRequestSchema,
   UpdateLightAppRecordRequestSchema,
   UpdateLightAppRecordResponseSchema,
@@ -1410,6 +1412,61 @@ export function createAppOpenApiDocument() {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/ApiError' },
                 },
+              },
+            },
+          },
+        },
+      },
+      '/api/admin/config/agent-environment': {
+        get: {
+          operationId: 'getAgentNativeEnvironment',
+          tags: ['runtime-config'],
+          summary: 'View an Agent native environment.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [{ in: 'query', name: 'fileId', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': {
+              description: 'Private desired, reloaded and acknowledged applied configuration.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/AgentNativeEnvironmentResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+        put: {
+          operationId: 'updateAgentNativeEnvironment',
+          tags: ['runtime-config'],
+          summary: 'Edit the Agent native environment for later Turns.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/UpdateAgentNativeEnvironmentRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Persisted revision and distinct application states.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/AgentNativeEnvironmentResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
               },
             },
           },
@@ -6645,6 +6702,10 @@ export function createAppOpenApiDocument() {
         RotateOpenKitAccessTokenResponse: toJsonSchema(RotateOpenKitAccessTokenResponseSchema),
         RuntimeConfigFileListResponse: toJsonSchema(RuntimeConfigFileListResponseSchema),
         RuntimeConfigFileReadResponse: toJsonSchema(RuntimeConfigFileReadResponseSchema),
+        AgentNativeEnvironmentResponse: toJsonSchema(AgentNativeEnvironmentResponseSchema),
+        UpdateAgentNativeEnvironmentRequest: toJsonSchema(
+          UpdateAgentNativeEnvironmentRequestSchema
+        ),
         RuntimeConfigFileWriteRequest: toJsonSchema(RuntimeConfigFileWriteRequestSchema),
         RuntimeConfigFileWriteResponse: toJsonSchema(RuntimeConfigFileWriteResponseSchema),
         RuntimeConfigReloadRequest: toJsonSchema(RuntimeConfigReloadRequestSchema),

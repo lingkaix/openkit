@@ -1,3 +1,8 @@
+import {
+  AuthoredNativeEnvironmentSchema,
+  NativeEnvironmentRecordSchema,
+  NativeEnvironmentValuesSchema,
+} from '@openkit/config-schema';
 import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -255,3 +260,55 @@ export type RuntimeConfigValidationResponse = z.infer<typeof RuntimeConfigValida
 export type RuntimeConfigSchemaCatalogResponse = z.infer<
   typeof RuntimeConfigSchemaCatalogResponseSchema
 >;
+
+/** Agent-scoped literal override map; null removes a default, omission restores inheritance. */
+const AgentNativeEnvironmentOverridesSchema = AuthoredNativeEnvironmentSchema;
+const AgentNativeEnvironmentValuesSchema = NativeEnvironmentValuesSchema;
+const AgentNativeEnvironmentIdentitySchema = NativeEnvironmentRecordSchema;
+
+/** Exact configuration revision and current verified defaults bound to an ordinary public edit. */
+export const UpdateAgentNativeEnvironmentRequestSchema = z
+  .object({
+    fileId: z.string().min(1),
+    expectedRevision: z.string().min(1),
+    imageDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    defaultsDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    environment: AgentNativeEnvironmentOverridesSchema,
+  })
+  .strip();
+
+/** Private administration view; values describe launch configuration rather than process dumps. */
+export const AgentNativeEnvironmentResponseSchema = z
+  .object({
+    agentId: z.string().min(1),
+    fileId: z.string().min(1),
+    persistedRevision: z.string().min(1),
+    defaults: AgentNativeEnvironmentValuesSchema,
+    overrides: AgentNativeEnvironmentOverridesSchema,
+    managedNames: z.array(z.string()),
+    desired: AgentNativeEnvironmentIdentitySchema,
+    reload: z
+      .object({
+        matchesDesired: z.boolean(),
+        snapshotVersion: z.number().int().nonnegative(),
+      })
+      .strip(),
+    applied: z.array(
+      z
+        .object({
+          workspaceId: z.string(),
+          threadId: z.string(),
+          state: z.enum(['acknowledged', 'pending', 'unknown']),
+          environment: AgentNativeEnvironmentIdentitySchema.nullable(),
+          matchesDesired: z.boolean(),
+        })
+        .strip()
+    ),
+    sharedAgentImpact: z.literal('All later Turns using this Agent.'),
+  })
+  .strip();
+
+export type UpdateAgentNativeEnvironmentRequest = z.infer<
+  typeof UpdateAgentNativeEnvironmentRequestSchema
+>;
+export type AgentNativeEnvironmentResponse = z.infer<typeof AgentNativeEnvironmentResponseSchema>;

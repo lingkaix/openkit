@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ApiErrorSchema, TurnReadProjectionSchema, TurnSchema } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -942,4 +942,13 @@ describe('generic turn routes', () => {
       fixture.coreDb.sqlite.close();
     }
   });
+});
+
+// Simulated continuity receives fixture-owned confirmed image evidence before metadata resolution.
+vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./runtime/agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    './test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
 });

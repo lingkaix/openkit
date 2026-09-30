@@ -20,6 +20,8 @@ export const workerImageSettlements = sqliteTable('worker_image_settlements', {
   imageDigest: text('image_digest'),
   /** Exact effect_failed code on failure only. */
   failureCode: text('failure_code'),
+  /** Confirmed non-secret defaults, absent before exact activation admission. */
+  nativeEnvironmentJson: text('native_environment_json'),
   /** First persistence time, excluded from duplicate comparison. */
   createdAt: text('created_at').notNull(),
 });

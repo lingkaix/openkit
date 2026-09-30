@@ -3,13 +3,14 @@ import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import { type AgentManifest, AuthoredAgentConfigSchema } from '../agents/manifest.js';
 import { parseJsoncObject } from './jsonc.js';
+import { unknownConfigKeyMessage, unknownConfigKeys } from './unknown-config-keys.js';
 
 /**
  * Agent manifest loader diagnostic.
  */
 export interface AgentManifestDiagnostic {
   /** Stable diagnostic code. */
-  code: 'agent.invalid_manifest';
+  code: 'agent.invalid_manifest' | 'authored_config.unknown_key';
   /** Source file path that produced the diagnostic. */
   path: string;
   /** Agent id when it could be read from the source document. */
@@ -26,7 +27,7 @@ export interface AgentManifestDiagnostic {
 export interface AgentManifestLoadResult {
   /** Loaded agent manifests. */
   manifests: AgentManifest[];
-  /** Blocking diagnostics discovered while loading manifests. */
+  /** Errors and located warnings discovered while loading manifests. */
   diagnostics: AgentManifestDiagnostic[];
 }
 
@@ -78,6 +79,15 @@ export function loadAgentManifests(dataRoot: string): AgentManifestLoadResult {
       continue;
     }
 
+    result.diagnostics.push(
+      ...unknownConfigKeys('agent', parsed, authoredResult.data).map((key) => ({
+        code: 'authored_config.unknown_key' as const,
+        message: unknownConfigKeyMessage(key),
+        path,
+        severity: 'warning' as const,
+        agentId: authoredResult.data.id,
+      }))
+    );
     result.manifests.push(authoredResult.data);
   }
 

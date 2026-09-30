@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import {
   type ActivateWorkerEnvironmentRequest,
   type WorkerEnvironmentAffectedStorage,
@@ -13,11 +12,12 @@ import {
 } from '@openkit/app-api-schemas';
 import { parse } from 'jsonc-parser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { type Actor, ensureLocalUser } from '../auth/identity.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
+import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import {
   activateWorkerStorageAttachment,
   createWorkerStorageBinding,
@@ -33,11 +33,13 @@ import {
   createWorkerEnvironmentAffectedStorageDeriver,
 } from './worker-environment-activation.js';
 import type { ReadWorkerEnvironmentResolvedCandidate } from './worker-environment-preparation.js';
+import { materializeRuntimeImage } from './worker-environment-preparation.js';
 
 const NOW = '2026-09-11T00:00:00.000Z';
 const CONFIG_REVISION = `sha256:${'a'.repeat(64)}`;
 const WRITTEN_REVISION = `sha256:${'b'.repeat(64)}`;
 const CANDIDATE_DIGEST = `sha256:${'c'.repeat(64)}`;
+const DEFAULTS_DIGEST = 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a';
 const IMAGE_DIGEST = `sha256:${'d'.repeat(64)}`;
 const TARGET = { agentId: 'agent_worker_fixture', kind: 'agent' as const };
 const CONFIGURATION = {
@@ -182,6 +184,11 @@ function candidatePair(
     configuration: CONFIGURATION,
     image: {
       digest: IMAGE_DIGEST,
+      environmentDefaults: {
+        defaultsDigest: DEFAULTS_DIGEST,
+        names: [],
+        classification: 'unadmitted',
+      },
       platform: LAYOUT.platform,
       storageLayout: {
         family: LAYOUT.family,
@@ -197,6 +204,15 @@ function candidatePair(
     schemaVersion: 1,
     target: TARGET,
   };
+  writeWorkerImageSettlement(fixture.coreDb, {
+    authoredArtifactId: authoredCandidate.artifactId,
+    authoredArtifactVersion: 1,
+    authoredContentDigest: authoredCandidate.contentDigest,
+    inputDigest: commandInputHash(materializeRuntimeImage(declaration)),
+    requestId: '1'.repeat(64),
+    operation: declaration.kind === 'build' ? 'image.build' : 'image.acquire',
+    outcome: { kind: 'success', imageDigest: IMAGE_DIGEST },
+  });
   return {
     authored,
     authoredCandidate,
@@ -221,7 +237,7 @@ function activationRequest(
   };
   return {
     ...facts,
-    confirmation: workerEnvironmentActivationConfirmation(facts),
+    confirmation: workerEnvironmentActivationConfirmation({ ...facts, image: pair.resolved.image }),
     requestId,
   };
 }
@@ -281,6 +297,14 @@ describe('Worker environment activation', () => {
     const config = configurationService();
     const replaceResidentWork = vi.fn();
     const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: {
+        inspectImage: async () => ({
+          imageDigest: IMAGE_DIGEST,
+          layout: LAYOUT,
+          layoutDigest: 'sha256:' + 'f'.repeat(64),
+          environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+        }),
+      },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
       now: () => NOW,
@@ -312,12 +336,150 @@ describe('Worker environment activation', () => {
     expect(JSON.parse(activationArtifacts[0]!.content.body)).toEqual(first);
   });
 
+  it.each([
+    'absent',
+    'stale-defaults',
+    'wrong-image',
+  ] as const)('refuses %s fresh inspection before admission or configuration effects', async (variant) => {
+    const fixture = createBaseFixture();
+    const pair = candidatePair(fixture, [], null);
+    const config = configurationService();
+    const replaceResidentWork = vi.fn();
+    const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: {
+        inspectImage: async () => ({
+          imageDigest: variant === 'wrong-image' ? `sha256:${'f'.repeat(64)}` : IMAGE_DIGEST,
+          layout: LAYOUT,
+          layoutDigest: `sha256:${'f'.repeat(64)}`,
+          ...(variant === 'absent'
+            ? {}
+            : {
+                environmentDefaults: {
+                  defaultsDigest:
+                    variant === 'stale-defaults'
+                      ? `sha256:${createHash('sha256')
+                          .update(JSON.stringify({ NEW_SETTING: 'changed' }))
+                          .digest('hex')}`
+                      : DEFAULTS_DIGEST,
+                  values: variant === 'stale-defaults' ? { NEW_SETTING: 'changed' } : {},
+                },
+              }),
+        }),
+      },
+      configFilesForActor: () => config.files,
+      coreDb: fixture.coreDb,
+      now: () => NOW,
+      preparation: { readResolved: () => pair },
+      reloadRuntimeConfig: () => reloadResult('applied'),
+      replaceResidentWork,
+      requireCurrentAdministrator: vi.fn(),
+      store: fixture.store,
+    });
+    await expect(
+      activation.activate({ actor: ACTOR }, activationRequest(pair))
+    ).rejects.toMatchObject({ code: 'candidate_conflict' });
+    expect(config.updateFile).not.toHaveBeenCalled();
+    expect(replaceResidentWork).not.toHaveBeenCalled();
+    expect(
+      fixture.coreDb.sqlite
+        .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+        .get()
+    ).toEqual({ environment: null });
+  });
+
+  it('binds explicit non-secret admission to exact image/default confirmation before inspection', async () => {
+    const fixture = createBaseFixture();
+    const pair = candidatePair(fixture, [], null);
+    const request = activationRequest(pair);
+    const config = configurationService();
+    const inspectImage = vi.fn();
+    const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: { inspectImage },
+      configFilesForActor: () => config.files,
+      coreDb: fixture.coreDb,
+      now: () => NOW,
+      preparation: { readResolved: () => pair },
+      reloadRuntimeConfig: () => reloadResult('applied'),
+      replaceResidentWork: vi.fn(),
+      requireCurrentAdministrator: vi.fn(),
+      store: fixture.store,
+    });
+    request.confirmation = workerEnvironmentActivationConfirmation({
+      ...request,
+      image: {
+        digest: `sha256:${'e'.repeat(64)}`,
+        environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST },
+      },
+    });
+    await expect(activation.activate({ actor: ACTOR }, request)).rejects.toMatchObject({
+      code: 'candidate_conflict',
+    });
+    expect(inspectImage).not.toHaveBeenCalled();
+    expect(config.updateFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'administrator',
+    'revision',
+  ] as const)('rechecks %s after fresh inspection and before admitting raw values', async (variant) => {
+    const fixture = createBaseFixture();
+    const pair = candidatePair(fixture, [], null);
+    const config = configurationService();
+    let revoked = false;
+    const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: {
+        inspectImage: async (input) => {
+          input.authorize();
+          if (variant === 'administrator') revoked = true;
+          else {
+            const source = config.readFile(CONFIGURATION.fileId);
+            config.readFile.mockReturnValue({
+              ...source,
+              file: { ...source.file, revision: WRITTEN_REVISION },
+            });
+          }
+          return {
+            imageDigest: IMAGE_DIGEST,
+            layout: LAYOUT,
+            layoutDigest: `sha256:${'f'.repeat(64)}`,
+            environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+          };
+        },
+      },
+      configFilesForActor: () => config.files,
+      coreDb: fixture.coreDb,
+      now: () => NOW,
+      preparation: { readResolved: () => pair },
+      reloadRuntimeConfig: () => reloadResult('applied'),
+      replaceResidentWork: vi.fn(),
+      requireCurrentAdministrator: () => {
+        if (revoked) throw new Error('administrator revoked');
+      },
+      store: fixture.store,
+    });
+    await expect(activation.activate({ actor: ACTOR }, activationRequest(pair))).rejects.toThrow();
+    expect(config.updateFile).not.toHaveBeenCalled();
+    expect(
+      fixture.coreDb.sqlite
+        .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+        .get()
+    ).toEqual({ environment: null });
+  });
+
   it('never repeats configuration effects after a result-Artifact write failure', async () => {
     const fixture = createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService();
     const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: {
+        inspectImage: async () => ({
+          imageDigest: IMAGE_DIGEST,
+          layout: LAYOUT,
+          layoutDigest: 'sha256:' + 'f'.repeat(64),
+          environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+        }),
+      },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
       now: () => NOW,
@@ -357,6 +519,14 @@ describe('Worker environment activation', () => {
       },
     }));
     const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: {
+        inspectImage: async () => ({
+          imageDigest: IMAGE_DIGEST,
+          layout: LAYOUT,
+          layoutDigest: 'sha256:' + 'f'.repeat(64),
+          environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+        }),
+      },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
       now: () => NOW,
@@ -420,6 +590,14 @@ describe('Worker environment activation', () => {
       throw new Error('ordinary successor outcome unavailable');
     });
     const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: {
+        inspectImage: async () => ({
+          imageDigest: IMAGE_DIGEST,
+          layout: LAYOUT,
+          layoutDigest: 'sha256:' + 'f'.repeat(64),
+          environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+        }),
+      },
       configFilesForActor: () => config.files,
       coreDb: resident.coreDb,
       now: () => NOW,

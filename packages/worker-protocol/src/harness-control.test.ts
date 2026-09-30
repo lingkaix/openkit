@@ -273,3 +273,23 @@ describe('private Harness results', () => {
     ).toBe(true);
   });
 });
+
+/** Inert extensions cannot add native execution or required command semantics. */
+describe('open Harness core extensions', () => {
+  it('strips metadata and refuses unowned authority before forwarding', () => {
+    const schema = HarnessQueuedCommandBodySchemas['session.inspect'];
+    const core = { agentSessionId: 'as_1', agentSessionRuntimeBindingId: 'asrb_1' };
+    expect(schema.parse({ ...core, note: 'ignored' })).toEqual(core);
+    for (const field of [
+      'command',
+      'env',
+      'nativeEnvironment',
+      'runtimeEnvironment',
+      'requiredFeatures',
+      'minCoreVersion',
+      'token',
+      'resume',
+    ])
+      expect(schema.safeParse({ ...core, [field]: {} }).success).toBe(false);
+  });
+});

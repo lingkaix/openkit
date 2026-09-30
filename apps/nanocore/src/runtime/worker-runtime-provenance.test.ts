@@ -29,7 +29,7 @@ import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import {
   createWorkerRuntimeOriginRef,

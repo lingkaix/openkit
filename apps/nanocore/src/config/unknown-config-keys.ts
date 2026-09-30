@@ -9,8 +9,8 @@ export interface UnknownConfigKey {
   path: string;
 }
 
-/** Authored files whose optional unknown fields have an explicit tolerance contract. */
-export type TolerantConfigKind = 'server' | 'user' | 'workspace' | 'data-source';
+/** Authored files with readers that discard optional unknown fields. */
+export type TolerantConfigKind = 'server' | 'user' | 'workspace' | 'data-source' | 'agent';
 
 /** Narrows a JSON object while excluding arrays and null. */
 function record(value: unknown): Record<string, unknown> | null {
@@ -45,7 +45,7 @@ function keysOutside(raw: unknown, known: Set<string>, path: string): UnknownCon
     .map((key) => ({ key, path: childPath(path, key) }));
 }
 
-/** Lists only keys tolerated by the four hand-written configuration readers after successful validation. */
+/** Lists ignored keys after successful validation, excluding consumed maps and authority sections. */
 export function unknownConfigKeys(
   kind: TolerantConfigKind,
   raw: unknown,
@@ -72,6 +72,10 @@ export function unknownConfigKeys(
   const source = record(raw);
   const accepted = record(parsed);
   if (kind === 'server' || !source || !accepted) return keys;
+
+  if (kind === 'agent') {
+    return [...keys, ...strippedKeys(source.runtime, accepted.runtime, '$.runtime')];
+  }
 
   if (kind === 'user') {
     const rawWorkspaces = source.workspaces;

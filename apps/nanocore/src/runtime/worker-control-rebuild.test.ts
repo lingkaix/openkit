@@ -18,8 +18,8 @@ import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
 

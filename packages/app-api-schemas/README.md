@@ -66,3 +66,9 @@ Conversation navigation projects visible active Threads with current/latest Chat
 `WorkspaceWorkersResponseSchema` is the selected-Workspace, viewer-filtered current Worker read model, separate from the Agent Catalog. It validates exact known work, recorded state, bounded package details and last-used model attribution, with distinct unavailable and restricted states; it exposes no AgentSession or native runtime identifier.
 
 The Thread dashboard pending-request projection includes derived `approvalEffect` (available complete detail or a safe unavailable reason) and `canRespond`; these are read-model fields, not durable request state.
+
+## Native Environment Administration
+
+The private administration GET/PUT projection exposes admitted defaults, literal authored overrides, managed names, desired image/default identities, file revision, reload agreement and audience-scoped native acknowledgement. PUT binds the existing configuration CAS to the current image/default identities. Preparation carries names, classification and defaults digest only; activation confirmation explicitly names the image/default digests. Raw defaults enter Core evidence only after fresh exact-image inspection at confirmed activation.
+
+Native environment administration request and response readers, including nested identities and application status, discard inert additive envelope metadata. Image inspection readers likewise discard metadata and emit only the owned image, layout and names-only defaults core. Optional envelope keys are ignored regardless of their name; known core fields, literal maps and identity bounds remain validated. Measured native environment records retain their declared exclusions.

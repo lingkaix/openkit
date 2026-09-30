@@ -1,5 +1,6 @@
 import { GitFailureExplanationSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { NativeEnvironmentValuesSchema } from './native-environment.js';
 
 /**
  * Private Harness control vocabulary owned by `docs/specs/20260703-worker_control_protocol.md`
@@ -113,20 +114,21 @@ const AgentSessionSelectorShape = {
 };
 
 /** `session.open` fields NanoCore queues; the two loopback credentials are minted at dispatch. */
-export const HarnessSessionOpenQueuedBodySchema = z
+const HarnessSessionOpenQueuedBodyCoreSchema = z
   .object({
     ...AgentSessionSelectorShape,
     adapterId: HarnessIdentitySchema,
+    nativeEnvironment: NativeEnvironmentValuesSchema.optional(),
     agentSessionCompatibilityKey: HarnessSha256HexSchema,
     effectiveSetupGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     resume: HarnessResumeSchema.nullable(),
     threadId: HarnessIdentitySchema,
     workspaceId: HarnessIdentitySchema,
   })
-  .strict();
+  .strip();
 
 /** `turn.start` fields NanoCore queues; the three upstream route tokens are minted at dispatch. */
-export const HarnessTurnStartQueuedBodySchema = z
+const HarnessTurnStartQueuedBodyCoreSchema = z
   .object({
     ...AgentSessionSelectorShape,
     aepRef: HarnessIdentitySchema,
@@ -140,26 +142,26 @@ export const HarnessTurnStartQueuedBodySchema = z
     turnSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     workspaceId: HarnessIdentitySchema,
   })
-  .strict();
+  .strip();
 
 /** Exact `session.open` wire body delivered in the live dispatch response. */
-export const HarnessSessionOpenBodySchema = HarnessSessionOpenQueuedBodySchema.extend({
+const HarnessSessionOpenBodyCoreSchema = HarnessSessionOpenQueuedBodyCoreSchema.extend({
   capabilityLoopbackCredential: HarnessRouteCredentialSchema,
   inferenceLoopbackCredential: HarnessRouteCredentialSchema,
   runtimeEnvironment: HarnessRuntimeEnvironmentSchema.optional(),
 })
-  .strict()
+  .strip()
   .refine((body) => body.capabilityLoopbackCredential !== body.inferenceLoopbackCredential, {
     message: 'Session loopback credentials must be distinct.',
   });
 
 /** Exact `turn.start` wire body delivered in the live dispatch response. */
-export const HarnessTurnStartBodySchema = HarnessTurnStartQueuedBodySchema.extend({
+const HarnessTurnStartBodyCoreSchema = HarnessTurnStartQueuedBodyCoreSchema.extend({
   capabilityToken: HarnessRouteCredentialSchema,
   inferenceToken: HarnessRouteCredentialSchema,
   workerControlToken: HarnessRouteCredentialSchema,
 })
-  .strict()
+  .strip()
   .refine(
     (body) =>
       new Set([body.capabilityToken, body.inferenceToken, body.workerControlToken]).size === 3,
@@ -167,20 +169,102 @@ export const HarnessTurnStartBodySchema = HarnessTurnStartQueuedBodySchema.exten
   );
 
 /** Exact `session.inspect` and `session.close` body. */
-export const HarnessSessionSelectorBodySchema = z.object(AgentSessionSelectorShape).strict();
+const HarnessSessionSelectorBodyCoreSchema = z.object(AgentSessionSelectorShape).strip();
 
 /** Exact `turn.interrupt` body; the purpose is never inferred and has one value. */
-export const HarnessTurnInterruptBodySchema = z
+const HarnessTurnInterruptBodyCoreSchema = z
   .object({
     ...AgentSessionSelectorShape,
     leaseId: HarnessIdentitySchema,
     purpose: z.literal('interrupt'),
     turnId: HarnessIdentitySchema,
   })
-  .strict();
+  .strip();
 
 /** Exact `harness.drain` body. */
-export const HarnessDrainBodySchema = z.object({}).strict();
+const HarnessDrainBodyCoreSchema = z.object({}).strip();
+
+/** Ignores additive metadata while refusing unowned execution and required semantics. */
+function guardedCore<T extends z.ZodType>(schema: T, fields: readonly string[]) {
+  const authority = new Set([
+    'command',
+    'executable',
+    'argv',
+    'cwd',
+    'env',
+    'environment',
+    'shell',
+    'hostPath',
+    'providerEndpoint',
+    'apiKey',
+    'token',
+    'password',
+    'requiredFeatures',
+    'minCoreVersion',
+    'nativeEnvironment',
+    'runtimeEnvironment',
+    'storageRef',
+    'workSlotRef',
+    'resume',
+    'inferenceLoopbackCredential',
+    'capabilityLoopbackCredential',
+    'workerControlToken',
+    'inferenceToken',
+    'capabilityToken',
+  ]);
+  return z.preprocess((value, context) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const key of Object.keys(value))
+        if (authority.has(key) && !fields.includes(key))
+          context.addIssue({
+            code: 'custom',
+            message: 'Unsupported Harness authority field.',
+            path: [key],
+          });
+    }
+    return value;
+  }, schema);
+}
+
+/** Validated operation core; ignored metadata is never forwarded. */
+export const HarnessSessionOpenQueuedBodySchema = guardedCore(
+  HarnessSessionOpenQueuedBodyCoreSchema,
+  Object.keys(HarnessSessionOpenQueuedBodyCoreSchema.shape)
+);
+/** Validated operation core; ignored metadata is never forwarded. */
+export const HarnessTurnStartQueuedBodySchema = guardedCore(
+  HarnessTurnStartQueuedBodyCoreSchema,
+  Object.keys(HarnessTurnStartQueuedBodyCoreSchema.shape)
+);
+/** Validated operation core; ignored metadata is never forwarded. */
+export const HarnessSessionSelectorBodySchema = guardedCore(
+  HarnessSessionSelectorBodyCoreSchema,
+  Object.keys(HarnessSessionSelectorBodyCoreSchema.shape)
+);
+/** Validated operation core; ignored metadata is never forwarded. */
+export const HarnessTurnInterruptBodySchema = guardedCore(
+  HarnessTurnInterruptBodyCoreSchema,
+  Object.keys(HarnessTurnInterruptBodyCoreSchema.shape)
+);
+/** Validated operation core; ignored metadata is never forwarded. */
+export const HarnessDrainBodySchema = guardedCore(
+  HarnessDrainBodyCoreSchema,
+  Object.keys(HarnessDrainBodyCoreSchema.shape)
+);
+/** Session delivery owns the two loopback credentials and the separate private map. */
+export const HarnessSessionOpenBodySchema = guardedCore(HarnessSessionOpenBodyCoreSchema, [
+  ...Object.keys(HarnessSessionOpenQueuedBodyCoreSchema.shape),
+  'capabilityLoopbackCredential',
+  'inferenceLoopbackCredential',
+  'runtimeEnvironment',
+]);
+/** Turn delivery owns exactly three route-token fields. */
+export const HarnessTurnStartBodySchema = guardedCore(HarnessTurnStartBodyCoreSchema, [
+  ...Object.keys(HarnessTurnStartQueuedBodyCoreSchema.shape),
+  'workerControlToken',
+  'inferenceToken',
+  'capabilityToken',
+]);
 
 /** Parsed `session.open` wire body. */
 export type HarnessSessionOpenBody = z.infer<typeof HarnessSessionOpenBodySchema>;

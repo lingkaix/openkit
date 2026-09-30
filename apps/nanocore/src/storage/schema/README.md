@@ -13,3 +13,7 @@ This directory defines the Drizzle table schemas for NanoCore's Core, User, and 
 ## Verification
 
 Run the focused repository tests for the changed record family, then the storage setup tests and NanoCore package gates described in the [NanoCore source guide](../../README.md).
+
+## Native Environment Projections
+
+`worker-image-settlements.ts` adds nullable confirmed default bytes to the existing immutable image outcome. `nanohost-harness-runtime.ts` stores a binding's immutable non-secret package projection and a separate native-start acknowledgement bit. Neither field introduces another environment registry or an image-effect replay path. The pre-first-release baseline SQL remains aligned with these schema projections.

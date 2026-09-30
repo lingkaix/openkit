@@ -1,4 +1,6 @@
 import {
+  type AgentNativeEnvironmentResponse,
+  AgentNativeEnvironmentResponseSchema,
   type RuntimeConfigFileListResponse,
   RuntimeConfigFileListResponseSchema,
   type RuntimeConfigFileReadResponse,
@@ -17,11 +19,19 @@ import {
   RuntimeConfigValidationRequestSchema,
   type RuntimeConfigValidationResponse,
   RuntimeConfigValidationResponseSchema,
+  type UpdateAgentNativeEnvironmentRequest,
+  UpdateAgentNativeEnvironmentRequestSchema,
 } from '@openkit/app-api-schemas';
 import type { ClientTransport } from './transport.js';
 
 /** Runtime config App API client. */
 export interface RuntimeConfigClient {
+  /** Views the private Agent configuration and acknowledged native application. */
+  getAgentNativeEnvironment(fileId: string): Promise<AgentNativeEnvironmentResponse>;
+  /** Uses exact file and image evidence CAS for later-Turn public environment edits. */
+  updateAgentNativeEnvironment(
+    input: UpdateAgentNativeEnvironmentRequest
+  ): Promise<AgentNativeEnvironmentResponse>;
   /** Reloads runtime config. */
   reload(input?: Partial<RuntimeConfigReloadRequest>): Promise<RuntimeConfigReloadResponse>;
   /** Lists runtime config files available to the Settings editor. */
@@ -41,6 +51,17 @@ export interface RuntimeConfigClient {
 /** Creates the runtime config App API client. */
 export function createRuntimeConfigClient(transport: ClientTransport): RuntimeConfigClient {
   return {
+    getAgentNativeEnvironment: (fileId) =>
+      transport.getJson(
+        `/api/admin/config/agent-environment?fileId=${encodeURIComponent(fileId)}`,
+        AgentNativeEnvironmentResponseSchema
+      ),
+    updateAgentNativeEnvironment: (input) =>
+      transport.putJson(
+        '/api/admin/config/agent-environment',
+        UpdateAgentNativeEnvironmentRequestSchema.parse(input),
+        AgentNativeEnvironmentResponseSchema
+      ),
     reload: (input = {}) =>
       transport.postJson(
         '/api/admin/config/reload',

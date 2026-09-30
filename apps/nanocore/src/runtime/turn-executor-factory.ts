@@ -2121,17 +2121,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     if (!sharedSandbox) {
       const localImageDigest =
-        image.kind === 'reference' &&
+        environmentPackage.runtime.environment?.imageDigest ??
+        (image.kind === 'reference' &&
         image.pullPolicy === 'never' &&
         /^sha256:[0-9a-f]{64}$/.test(image.ref)
           ? image.ref
-          : null;
+          : null);
       let imageResult: Record<string, unknown>;
       let imageDigest: string;
       let imageInspection: ReturnType<typeof parseNanoHostImageInspection>;
       try {
-        imageResult =
-          image.kind === 'reference'
+        imageResult = environmentPackage.runtime.environment
+          ? await this.effect(identity, leaseId, 'image.acquire', {
+              imageReference: environmentPackage.runtime.environment.imageDigest,
+            })
+          : image.kind === 'reference'
             ? await this.effect(identity, leaseId, 'image.acquire', {
                 imageReference: image.ref,
               })
@@ -2154,7 +2158,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         imageInspection = parseNanoHostImageInspection(
           await this.effect(identity, leaseId, 'image.inspect', { imageDigest })
         );
-        if (imageInspection.imageDigest !== imageDigest) {
+        if (
+          imageInspection.imageDigest !== imageDigest ||
+          (environmentPackage.runtime.environment &&
+            imageInspection.environmentDefaults?.defaultsDigest !==
+              environmentPackage.runtime.environment.defaultsDigest)
+        ) {
           throw new Error('NanoHost image inspection returned a different digest.');
         }
       } catch (error) {
@@ -2414,6 +2423,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
       }
       openNanoHostAgentSessionBinding(this.coreDb, {
+        nativeEnvironment: session.environmentPackage.runtime.environment
+          ? {
+              agentId: session.environmentPackage.agent.agentId,
+              ...session.environmentPackage.runtime.environment,
+            }
+          : undefined,
         agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -2425,6 +2440,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       });
       const opened = await this.queueAndWaitForHarnessOperation(session, 'session.open', {
         adapterId: session.sharedHarness.adapterId,
+        nativeEnvironment: session.environmentPackage.runtime.environment?.values,
         agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,

@@ -4,6 +4,7 @@ import { ActorRefSchema } from '@openkit/protocol';
 import {
   type CaptureCoverageBinding as AgentEnvironmentCaptureCoverage,
   CaptureCoverageBindingSchema as AgentEnvironmentCaptureCoverageSchema,
+  NativeEnvironmentRecordSchema,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
 } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -322,13 +323,19 @@ export const AgentEnvironmentRuntimeSessionSchema = z
  */
 export const AgentEnvironmentRuntimeSchema = z
   .object({
+    env: z.never().optional(),
+    nativeEnvironment: z.never().optional(),
+    runtimeEnvironment: z.never().optional(),
+    requiredFeatures: z.never().optional(),
+    minCoreVersion: z.never().optional(),
     image: AgentEnvironmentRuntimeImageSchema,
+    environment: NativeEnvironmentRecordSchema.optional(),
     binaries: z.array(AgentEnvironmentBinarySchema).min(1),
     command: AgentEnvironmentRuntimeCommandSchema,
     process: AgentEnvironmentRuntimeProcessSchema.optional(),
     session: AgentEnvironmentRuntimeSessionSchema.optional(),
   })
-  .strict();
+  .strip();
 
 /**
  * Workspace input source declaration.
@@ -1102,6 +1109,14 @@ export const AgentEnvironmentBackendRequirementsSchema = z
  */
 export const AgentEnvironmentPackageSchema = z
   .object({
+    // Known unowned authority cannot become ignorable extension metadata.
+    backendContainerId: z.never().optional(),
+    providers: z.never().optional(),
+    requiredFeatures: z.never().optional(),
+    minCoreVersion: z.never().optional(),
+    env: z.never().optional(),
+    nativeEnvironment: z.never().optional(),
+    runtimeEnvironment: z.never().optional(),
     schemaVersion: z.literal(4),
     packageId: z.string().min(1),
     snapshotId: z.string().min(1),
@@ -1126,7 +1141,7 @@ export const AgentEnvironmentPackageSchema = z
     backend: AgentEnvironmentBackendRequirementsSchema,
     extensions: z.record(z.string(), z.unknown()).default({}),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     addRawSecretIssues(value, ctx, []);
 
@@ -1562,6 +1577,9 @@ function addRawSecretIssues(
   ctx: z.RefinementCtx,
   path: Array<string | number>
 ): void {
+  // These exact validated entries are public settings, not credential field declarations.
+  if (path.join('.') === 'runtime.environment.values') return;
+
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
       addRawSecretIssues(item, ctx, [...path, index]);
@@ -1592,9 +1610,12 @@ function addRawSecretIssues(
  * @param value Candidate value.
  * @returns Redacted clone.
  */
-function redactRuntimeReferences(value: unknown): unknown {
+function redactRuntimeReferences(value: unknown, path: string[] = []): unknown {
+  // Preserve admitted literal bytes and names; paths and runtime-looking strings are public here.
+  if (path.join('.') === 'runtime.environment.values')
+    return Object.fromEntries(Object.entries(value as Record<string, string>));
   if (Array.isArray(value)) {
-    return value.map((item) => redactRuntimeReferences(item));
+    return value.map((item, index) => redactRuntimeReferences(item, [...path, String(index)]));
   }
 
   if (!value || typeof value !== 'object') {
@@ -1624,7 +1645,7 @@ function redactRuntimeReferences(value: unknown): unknown {
       continue;
     }
 
-    output[key] = redactRuntimeReferences(nested);
+    output[key] = redactRuntimeReferences(nested, [...path, key]);
   }
 
   return output;

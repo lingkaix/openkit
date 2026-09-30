@@ -3570,6 +3570,8 @@ describe('app api openapi projection', () => {
       'importWorkspace',
       'deleteWorkspace',
       'recoverDeletedWorkspace',
+      'getAgentNativeEnvironment',
+      'updateAgentNativeEnvironment',
       'reloadRuntimeConfig',
       'listRuntimeConfigFiles',
       'getRuntimeConfigFile',

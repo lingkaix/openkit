@@ -138,14 +138,33 @@ export const SelectWorkerEnvironmentResponseSchema = z
   })
   .strict();
 
-/** Exact host-observed installed image and inherited persistent storage layout. */
+/** Host-observed installed image core, discarding inert producer metadata at each boundary. */
 export const WorkerEnvironmentImageInspectionSchema = z
   .object({
     digest: Sha256DigestSchema,
-    platform: WorkerEnvironmentStorageLayoutSchema.shape.platform,
-    storageLayout: WorkerEnvironmentStorageLayoutSchema.omit({ platform: true }),
+    environmentDefaults: z
+      .object({
+        defaultsDigest: Sha256DigestSchema,
+        names: z
+          .array(
+            z
+              .string()
+              .max(128)
+              .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+          )
+          .max(128),
+        classification: z.literal('unadmitted'),
+      })
+      .strip()
+      .optional(),
+    platform: WorkerEnvironmentStorageLayoutSchema.shape.platform.strip(),
+    storageLayout: WorkerEnvironmentStorageLayoutSchema.omit({ platform: true })
+      .extend({
+        targets: z.array(WorkerEnvironmentStorageLayoutSchema.shape.targets.element.strip()).min(1),
+      })
+      .strip(),
   })
-  .strict();
+  .strip();
 
 /** Exact host-observed retained storage facts without host paths, native handles, or credentials. */
 export const WorkerEnvironmentStorageInspectionSchema = z
@@ -422,7 +441,7 @@ export const ActivateWorkerEnvironmentRequestSchema = z
   .superRefine((value, context) => {
     addRawSecretIssues(value, context, []);
     addWorkerEnvironmentImpactIssues(value, context);
-    if (value.confirmation !== workerEnvironmentActivationConfirmation(value)) {
+    if (!isCanonicalWorkerEnvironmentConfirmation(value)) {
       context.addIssue({
         code: 'custom',
         message: 'Confirmation must bind the exact resolved candidate and affected group.',
@@ -440,6 +459,10 @@ export function workerEnvironmentActivationConfirmation(input: {
   readonly configuration: z.infer<typeof WorkerEnvironmentConfigurationSchema>;
   readonly replaceNow: z.infer<typeof WorkerEnvironmentReplaceNowSchema> | null;
   readonly resolvedCandidate: WorkerEnvironmentCandidateRef;
+  readonly image: {
+    readonly digest: string;
+    readonly environmentDefaults?: { readonly defaultsDigest: string } | undefined;
+  };
   readonly target: z.infer<typeof WorkerEnvironmentTargetSchema>;
 }): string {
   const affectedStorage = [...input.affectedStorage]
@@ -447,6 +470,8 @@ export function workerEnvironmentActivationConfirmation(input: {
     .map(({ expectedRevision, storageRef }) => ({ expectedRevision, storageRef }));
   return `activate-worker-environment:${JSON.stringify({
     affectedStorage,
+    imageDigest: input.image.digest,
+    defaultsDigest: input.image.environmentDefaults?.defaultsDigest ?? null,
     configuration: {
       expectedRevision: input.configuration.expectedRevision,
       fileId: input.configuration.fileId,
@@ -655,3 +680,23 @@ export type ActivateWorkerEnvironmentResponse = z.infer<
 export type PurgeWorkerEnvironmentRequest = z.infer<typeof PurgeWorkerEnvironmentRequestSchema>;
 /** Whole-environment purge response. */
 export type PurgeWorkerEnvironmentResponse = z.infer<typeof PurgeWorkerEnvironmentResponseSchema>;
+
+/** Checks canonical payload identity; the server additionally binds image facts to the exact Artifact. */
+function isCanonicalWorkerEnvironmentConfirmation(
+  value: Omit<Parameters<typeof workerEnvironmentActivationConfirmation>[0], 'image'> & {
+    readonly confirmation: string;
+  }
+): boolean {
+  try {
+    const prefix = 'activate-worker-environment:';
+    if (!value.confirmation.startsWith(prefix)) return false;
+    const payload = JSON.parse(value.confirmation.slice(prefix.length)) as Record<string, unknown>;
+    const image = {
+      digest: Sha256DigestSchema.parse(payload.imageDigest),
+      environmentDefaults: { defaultsDigest: Sha256DigestSchema.parse(payload.defaultsDigest) },
+    };
+    return value.confirmation === workerEnvironmentActivationConfirmation({ ...value, image });
+  } catch {
+    return false;
+  }
+}

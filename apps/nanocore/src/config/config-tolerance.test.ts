@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { loadAgentManifests } from './agents-loader.js';
 import { loadOpenKitConfigWithDiagnostics } from './openkit-config.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
@@ -24,6 +25,89 @@ function authoredFile(relativePath: string, content: string): { dataRoot: string
 }
 
 describe('authored configuration tolerance', () => {
+  it.each([
+    'environmnt',
+    'credentials',
+    'credentialRef',
+    'credentialDeclarations',
+    'token',
+    'process',
+  ])('reports stripped Agent runtime keys through loader, snapshot and file diagnostics for %s without warning about variable names', (key) => {
+    const authored = {
+      schemaVersion: 1,
+      id: 'agent_future',
+      displayName: 'Future',
+      models: { preferredLogicalModelId: 'reasoning', allowedLogicalModelIds: ['reasoning'] },
+      runtime: {
+        kind: 'pi',
+        adapter: 'pi',
+        image: { kind: 'reference', ref: 'test:image', pullPolicy: 'never' },
+        binaries: [{ id: 'shim', path: '/usr/local/bin/shim' }],
+        environment: { PUBLIC: '', environmnt: 'legitimate variable name' },
+        [key]: { SETTING: 'canary-ignored-value' },
+        'future.note': 'canary-ignored-value',
+      },
+    };
+    const content = JSON.stringify(authored);
+    const { dataRoot, path } = authoredFile('config/agents/future.agent.jsonc', content);
+    const loaded = loadAgentManifests(dataRoot);
+    expect(loaded.manifests[0]?.runtime.environment).toEqual(authored.runtime.environment);
+    expect(loaded.manifests[0]?.runtime).not.toHaveProperty(key);
+    expect(loaded.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        path,
+        agentId: 'agent_future',
+        message: `Unknown configuration key "${key}" at $.runtime.${key} was ignored.`,
+      }),
+      expect.objectContaining({
+        severity: 'warning',
+        path,
+        message: 'Unknown configuration key "future.note" at $.runtime["future.note"] was ignored.',
+      }),
+    ]);
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const warnings = manager
+      .current()
+      .diagnostics.filter((diagnostic) => diagnostic.severity === 'warning');
+    expect(warnings).toHaveLength(2);
+    expect(warnings).toEqual(
+      loaded.diagnostics.map(({ code, message, severity }) => ({
+        code,
+        message,
+        severity,
+        source: 'config/agents/future.agent.jsonc',
+      }))
+    );
+    const files = new RuntimeConfigFileService({
+      dataRoot,
+      userId: 'user_demo',
+      workspaceIds: [],
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    const validation = files.validate({
+      files: [{ id: 'agents/future.agent.jsonc', content }],
+      mode: 'safe',
+    });
+    expect(validation.valid).toBe(true);
+    expect(validation.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        source: 'agents/future.agent.jsonc',
+        jsonPath: `$.runtime.${key}`,
+      }),
+      expect.objectContaining({
+        severity: 'warning',
+        source: 'agents/future.agent.jsonc',
+        jsonPath: '$.runtime["future.note"]',
+      }),
+    ]);
+    expect(JSON.stringify([...loaded.diagnostics, ...validation.diagnostics])).not.toContain(
+      'canary-ignored-value'
+    );
+  });
+
   it('loads an unknown optional Server key, reports its location, and preserves authored bytes on edit', () => {
     const content =
       '{\n  "schemaVersion": 1,\n  "mode": "server",\n  "futureDisplayHint": "compact" // newer release\n}\n';

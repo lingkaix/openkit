@@ -25,7 +25,6 @@ import type {
 } from './llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import {
   createSchedulerAdmissionEntry,
@@ -37,6 +36,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 interface WorkerInferenceDispatchCall {
@@ -2042,4 +2042,13 @@ describe('worker inference routes', () => {
     expect(source).toContain("tokenFamily: 'inference'");
     expect(source).not.toContain('authenticatePackageToken(authorization)');
   });
+});
+
+// This fixture supplies confirmed image evidence; the production resolver and subject checks still run.
+vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./runtime/agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    './test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
 });

@@ -715,7 +715,7 @@ function serverEnvironment(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(input.environment)) {
-    if (key.startsWith('OPENCODE_') || secrets.some((secret) => value.includes(secret))) continue;
+    if (secrets.some((secret) => value.includes(secret))) continue;
     env[key] = value;
   }
   env.HOME = directories.homeDir;

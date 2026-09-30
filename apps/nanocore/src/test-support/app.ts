@@ -1,7 +1,8 @@
 import { type CreateAppOptions, createApp as createNanoCoreApp } from '../app.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { createTestGatewayConfig } from './agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
+import { admitTestNativeEnvironment } from './native-environment.js';
 
 export type { CreateAppOptions } from '../app.js';
 
@@ -12,6 +13,13 @@ export type { CreateAppOptions } from '../app.js';
  * @returns NanoCore app configured for deterministic unit tests.
  */
 export function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNanoCoreApp> {
+  if (options.coreDb) {
+    admitTestNativeEnvironment(options.coreDb, createTestAgentSetup().manifest);
+    for (const manifest of options.agentManifests ??
+      options.runtimeConfigManager?.current().agentManifests ??
+      [])
+      admitTestNativeEnvironment(options.coreDb, manifest);
+  }
   const ownsRuntimeConfig = !options.runtimeConfigManager && !options.gatewayConfig;
   const defaultProviderRegistry = new ProviderRegistry([
     {

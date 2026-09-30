@@ -41,6 +41,10 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import {
+  admitTestNativeEnvironment,
+  createTestNativeEnvironmentDb,
+} from '../test-support/native-environment.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -49,14 +53,30 @@ import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
-  resolveAgentEnvironmentPackage,
-  resolveAgentEnvironmentPackageMetadata,
-  resolveAgentSessionCompatibilityKey,
+  resolveAgentSessionCompatibilityKey as resolveCompatibility,
+  resolveAgentEnvironmentPackageMetadata as resolveMetadata,
+  resolveAgentEnvironmentPackage as resolvePackage,
 } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import type { PrepareAgentSessionForTurnInput } from './types.js';
+
+// Other-contract fixtures explicitly confirm synthetic image defaults before resolution.
+const environmentFixtureDb = createTestNativeEnvironmentDb();
+function preparedInput<T extends Parameters<typeof resolveMetadata>[0]>(
+  input: T
+): T & { coreDb: typeof environmentFixtureDb } {
+  const coreDb = input.coreDb ?? environmentFixtureDb;
+  admitTestNativeEnvironment(coreDb, input.agentSetup.manifest);
+  return { ...input, coreDb };
+}
+const resolveAgentEnvironmentPackage: typeof resolvePackage = (input) =>
+  resolvePackage(preparedInput(input));
+const resolveAgentEnvironmentPackageMetadata: typeof resolveMetadata = (input) =>
+  resolveMetadata(preparedInput(input));
+const resolveAgentSessionCompatibilityKey: typeof resolveCompatibility = (input) =>
+  resolveCompatibility(preparedInput(input));
 
 const USER_TRIGGER_ACTOR = { kind: 'user', id: 'user_local' } as const satisfies ActorRef;
 const AUTOMATION_TRIGGER_ACTOR = {

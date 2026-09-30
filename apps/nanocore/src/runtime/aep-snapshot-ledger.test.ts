@@ -18,13 +18,13 @@ import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   importAgentEnvironmentPackageSnapshots,
   listExportableAgentEnvironmentPackageSnapshots,
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 
 /**
  * Creates one migrated workspace database for AEP snapshot ledger tests.

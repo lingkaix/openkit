@@ -24,7 +24,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { readThreadRuntimeActivity, readWorkObservations } from '../storage/work-observations.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   hashWorkerRouteToken,
   WorkerControlGateway,

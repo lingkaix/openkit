@@ -67,6 +67,7 @@ import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { registerResourceCatalogRoutes } from './catalog/catalog-routes.js';
+import { createAgentNativeEnvironmentService } from './config/agent-native-environment.js';
 import type { CoreMode } from './config/mode.js';
 import { loadOpenKitConfig, type OpenKitConfig } from './config/openkit-config.js';
 import {
@@ -850,6 +851,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           coreDb: options.coreDb,
           store: sharedStore,
           preparation: workerEnvironmentPreparation,
+          runtimeEffects: workerEnvironmentRuntimeEffects,
           inflightCommands,
           configFilesForActor: (actor) => runtimeConfigFileService({ get: () => actor }),
           requireCurrentAdministrator: (actor) => {
@@ -1509,15 +1511,25 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
   app.get('/api/openapi.json', (c) => c.json(APP_OPENAPI_DOCUMENT));
 
+  const onRuntimeConfigReloadApplied = () =>
+    sharedStore.refreshWorkspaceConfigNames(
+      runtimeConfigManager.current().workspaceConfigs.map(({ config, workspaceId }) => ({
+        name: config.workspace.name,
+        workspaceId,
+      }))
+    );
   registerRuntimeConfigRoutes({
     app,
-    onReloadApplied: () =>
-      sharedStore.refreshWorkspaceConfigNames(
-        runtimeConfigManager.current().workspaceConfigs.map(({ config, workspaceId }) => ({
-          name: config.workspace.name,
-          workspaceId,
-        }))
-      ),
+    agentNativeEnvironment: options.coreDb
+      ? createAgentNativeEnvironmentService({
+          coreDb: options.coreDb,
+          store: sharedStore,
+          manager: runtimeConfigManager,
+          onReloadApplied: onRuntimeConfigReloadApplied,
+          filesForActor: (actor) => runtimeConfigFileService({ get: () => actor }),
+        })
+      : undefined,
+    onReloadApplied: onRuntimeConfigReloadApplied,
     runtimeConfigFileService,
     runtimeConfigManager,
   });

@@ -19,3 +19,9 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 Run the tests that consume the changed fixture and the NanoCore package test suite.
 
 See [NanoCore README](../../README.md) for the package test model.
+
+## Confirmed Synthetic Images
+
+`native-environment.ts` explicitly confirms synthetic image defaults through the production settlement path for fixtures whose subject is another contract. `prepared-agent-environment.ts` resolves production AEP/metadata/compatibility against that fixture evidence. Missing/stale admission regressions call the production resolver directly. Historical image-effect fixtures may retain a package without the optional environment record; newly resolved packages always require confirmed evidence.
+
+Simulated and metadata-only consumers may explicitly install `withTestPreparedNativeEnvironment` in their test module. It runs the production resolver with fixture-owned confirmed evidence and preserves capture, credential and scheduler checks. Fixture-only databases are removed after the test module; real production paths retain no automatic admission or empty-default fallback.

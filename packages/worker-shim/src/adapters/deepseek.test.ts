@@ -262,7 +262,11 @@ describe('deepseek resident adapter', () => {
       const hostEnv = deepseekHostEnvironment({
         agentSessionId: 'as',
         controlRoot: roots.control,
-        environment: { ACP_CLIENT_MODULE: '/tmp/not-the-production-client', CUSTOM: INFERENCE },
+        environment: {
+          ACP_CLIENT_MODULE: '/tmp/not-the-production-client',
+          DSH_PUBLIC_SETTING: 'public-canary',
+          CUSTOM: INFERENCE,
+        },
         loopback: {
           capabilityBaseUrl: 'http://127.0.0.1:9',
           capabilityCredential: CAPABILITY,
@@ -278,6 +282,7 @@ describe('deepseek resident adapter', () => {
       expect(hostEnv.DSH_PERMISSION_MODE).toBe('danger-full-access');
       expect(hostEnv.DSH_TELEMETRY_MODE).toBe('DISABLED');
       expect(hostEnv.ACP_CLIENT_MODULE).toBe('/tmp/not-the-production-client');
+      expect(hostEnv.DSH_PUBLIC_SETTING).toBe('public-canary');
       const patch = readFileSync(join(roots.control, 'deepseek-loopback.patch.yml'), 'utf8');
       expect(patch).toContain(INFERENCE);
       expect(statSync(join(roots.control, 'deepseek-loopback.patch.yml')).mode & 0o777).toBe(0o600);

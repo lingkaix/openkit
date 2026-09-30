@@ -423,6 +423,8 @@ describe('database setup', () => {
         'created_at',
         'updated_at',
         'image_digest',
+        'native_environment_json',
+        'native_environment_applied',
         'inference_loopback_credential_digest',
         'capability_loopback_credential_digest',
       ]);

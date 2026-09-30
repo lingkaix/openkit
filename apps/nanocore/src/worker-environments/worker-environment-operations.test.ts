@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { type Actor, ensureLocalUser } from '../auth/identity.js';
@@ -120,6 +120,7 @@ function createFixture(effectOverride: Partial<WorkerEnvironmentRuntimeEffects> 
     storageRef: created.storageRef,
   });
   const runtimeEffects: WorkerEnvironmentRuntimeEffects = {
+    inspectImage: vi.fn(),
     inspectStorage: async ({ authorize, binding: current }) => {
       if (!authorize()) throw new Error('Current administrator authority is required.');
       return {

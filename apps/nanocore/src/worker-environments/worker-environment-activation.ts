@@ -10,6 +10,7 @@ import {
   type WorkerEnvironmentConfiguration,
   type WorkerEnvironmentReplaceNow,
   type WorkerEnvironmentTarget,
+  workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import { isSealedTurnTerminal } from '@openkit/protocol';
@@ -25,6 +26,8 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
+import { admitWorkerImageEnvironment } from '../runtime/worker-image-settlements.js';
 import {
   getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
@@ -37,6 +40,7 @@ import type {
   ReadWorkerEnvironmentResolvedCandidate,
   WorkerEnvironmentPreparation,
 } from './worker-environment-preparation.js';
+import { materializeRuntimeImage } from './worker-environment-preparation.js';
 
 type ConfigFiles = Pick<RuntimeConfigFileService, 'readFile' | 'updateFile'>;
 type WrittenConfiguration = NonNullable<ActivateWorkerEnvironmentResponse['configuration']>;
@@ -93,6 +97,9 @@ export interface CreateWorkerEnvironmentAffectedStorageDeriverInput {
 export interface CreateWorkerEnvironmentActivationInput {
   /** Core runtime and retained-storage authority. */
   readonly coreDb: CoreDb;
+  /** Fixed read-only exact-image observation at the confirmation boundary. */
+  readonly runtimeEffects: Pick<WorkerEnvironmentRuntimeEffects, 'inspectImage'>;
+
   /** Supplies the existing current-user configuration file service. */
   readonly configFilesForActor: (actor: Actor) => ConfigFiles;
   /** Optional process-local duplicate collapse shared by public commands. */
@@ -189,6 +196,63 @@ export function createWorkerEnvironmentActivation(
             request.target,
             currentCandidate.resolved.image
           );
+          const confirmedDefaults = currentCandidate.resolved.image.environmentDefaults;
+          if (
+            !confirmedDefaults ||
+            request.confirmation !==
+              workerEnvironmentActivationConfirmation({
+                ...request,
+                image: currentCandidate.resolved.image,
+              })
+          ) {
+            throw new WorkerEnvironmentOperationError(
+              'candidate_conflict',
+              'Exact image defaults confirmation is required.'
+            );
+          }
+          const inspection = await dependencies.runtimeEffects.inspectImage({
+            authorize: () => {
+              dependencies.requireCurrentAdministrator(context.actor);
+              requireCurrentCandidateAudiences(dependencies, context.actor, request);
+              return true;
+            },
+            imageDigest: currentCandidate.resolved.image.digest,
+            requestId: request.requestId,
+          });
+          if (
+            !inspection.environmentDefaults ||
+            inspection.imageDigest !== currentCandidate.resolved.image.digest ||
+            inspection.environmentDefaults.defaultsDigest !== confirmedDefaults.defaultsDigest
+          ) {
+            throw new WorkerEnvironmentOperationError(
+              'candidate_conflict',
+              'Confirmed image defaults changed or are unavailable.'
+            );
+          }
+          dependencies.requireCurrentAdministrator(context.actor);
+          requireCurrentCandidateAudiences(dependencies, context.actor, request);
+          prepareAgentConfigurationUpdate(
+            configFiles,
+            request.configuration,
+            request.target,
+            currentCandidate.resolved.image
+          );
+          // Admission is written before configuration reload can resolve a package. The immutable
+          // acquisition result remains unchanged; only this human-confirmed non-secret projection is added.
+          admitWorkerImageEnvironment(
+            dependencies.coreDb,
+            {
+              authoredArtifactId: currentCandidate.authoredCandidate.artifactId,
+              authoredArtifactVersion: 1,
+              authoredContentDigest: currentCandidate.authoredCandidate.contentDigest,
+              inputDigest: commandInputHash(
+                materializeRuntimeImage(currentCandidate.authored.declaration)
+              ),
+            },
+            { imageDigest: inspection.imageDigest, ...inspection.environmentDefaults }
+          );
+          dependencies.requireCurrentAdministrator(context.actor);
+          requireCurrentCandidateAudiences(dependencies, context.actor, request);
           const turn = createActivationTurn(
             dependencies.store,
             context.actor,

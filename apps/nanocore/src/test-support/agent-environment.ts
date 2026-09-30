@@ -14,6 +14,7 @@ import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-l
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { seedWritableGitRepository } from './git-repository.js';
+import { admitTestNativeEnvironment, createTestNativeEnvironmentDb } from './native-environment.js';
 
 /**
  * Creates one complete setup fixture for tests whose subject is not manifest resolution.
@@ -163,8 +164,11 @@ export function recordTestAgentEnvironmentPackage(
 ): AgentEnvironmentPackage {
   const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-agent-environment-'));
   seedWritableGitRepository(repositoryPath);
+  const coreDb = createTestNativeEnvironmentDb();
+  admitTestNativeEnvironment(coreDb, createTestAgentSetup().manifest);
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
+      coreDb,
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup(),
       agentSessionId: `as_${input.suffix}`,

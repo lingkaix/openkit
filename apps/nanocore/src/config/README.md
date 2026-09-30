@@ -7,7 +7,7 @@ This directory owns NanoCore-specific configuration discovery, loading, preceden
 - Keep environment, mode, bind-host, data-root, server, workspace, agent, and provider configuration loading here.
 - Load Server resources and fallbacks, shared Workspace composition, and User preferences as distinct owners; resolve explicit selection, User, Workspace, then Server without treating Server supply as a Workspace ceiling.
 - Keep `gateway.jsonc`, `internal-role-profiles.jsonc`, `providers/*.provider.jsonc`, `agents/*.agent.jsonc`, `workspaces/*/config/workspace.jsonc`, `workspaces/*/config/data-sources.jsonc`, `workspaces/*/catalog/catalog.json`, and `users/*/config/user.jsonc` distinct in snapshots and diagnostics.
-- Accept only configuration that has a current runtime consumer; bind, CORS, public URL, sign-up, and gateway policy are startup-owned. Unknown optional keys in the owner-approved Server, User, Workspace preference, and data-source locations produce located warnings; unknown authority-section keys and unsupported required features still fail closed.
+- Accept only configuration that has a current runtime consumer; bind, CORS, public URL, sign-up, and gateway policy are startup-owned. Ignored optional Server, User, Workspace preference, data-source and Agent runtime envelope keys produce located warnings through the existing loader, snapshot and file-validation diagnostics; environment variable names remain consumed settings; unknown authority-section keys and unsupported required features still fail closed.
 - Cross-package contract schemas remain in their owning packages; this directory performs NanoCore-specific file I/O and runtime projection.
 - `../agents/` and `../providers/` own resolved runtime concepts after loading, so configuration code must not introduce parallel registries.
 - Secret values must remain behind explicit references or backend-private state and must not enter snapshots, diagnostics, or generated configuration.
@@ -28,3 +28,7 @@ Run the focused loader, precedence, runtime snapshot, reload, file, and route te
 `server.jsonc.policy.workspaceApprovalModes` is startup-owned deployment policy keyed by exact Workspace ID and action. Changes require restart; Workspace files and request data cannot override it.
 
 `server.jsonc.policy.workDataCapture` is the default-off work-data capture switch. Its resolved value is fixed at Turn admission, so a change is applied at the next Turn and never interrupts a running Turn; unlike `workspaceApprovalModes`, it does not require restart.
+
+## Public Native Environment
+
+`agent-native-environment.ts` derives the administrator view from confirmed image settlements, the existing Agent file revision, the live configuration snapshot and audience-checked AgentSession bindings. Updates use `RuntimeConfigFileService.updateFile` CAS and safe reload; failed reload keeps the previous snapshot. Native application is pending until exact native-start acknowledgement, and uncertain or cleanup-unproved bindings expose unknown state without applied values.

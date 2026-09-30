@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
 import type { WorkerEnvironmentCandidateRef } from '@openkit/app-api-schemas';
-
 import {
   type AgentEnvironmentPackage,
   EMPTY_BUILD_CONTEXT_DIGEST,
   EMPTY_BUILD_CONTEXT_REF,
 } from '@openkit/config-schema';
+import {
+  canonicalNativeEnvironment,
+  NativeEnvironmentValuesSchema,
+} from '@openkit/worker-protocol';
 import { commandInputHash } from './idempotent-command.js';
 import type { NanoHostSessionDispatch } from './nanohost-session-dispatch.js';
 import type { WorkerStorageBinding, WorkerStorageLayout } from './worker-storage-bindings.js';
@@ -13,6 +16,11 @@ import { workerStorageLayoutDigest } from './worker-storage-bindings.js';
 
 /** Exact prepared image fact returned by the existing NanoHost image owner. */
 export interface PreparedWorkerEnvironmentImage {
+  /** Unadmitted values remain transient until exact activation confirmation. */
+  readonly environmentDefaults?: {
+    readonly defaultsDigest: string;
+    readonly values: Record<string, string>;
+  };
   readonly imageDigest: string;
   readonly layout: WorkerStorageLayout;
   readonly layoutDigest: string;
@@ -53,6 +61,12 @@ export interface WorkerEnvironmentRuntimeEffects {
     readonly authorize: () => boolean;
     readonly candidate: WorkerEnvironmentCandidateRef;
     readonly image: AgentEnvironmentPackage['runtime']['image'];
+  }): Promise<PreparedWorkerEnvironmentImage>;
+  /** Re-inspects a confirmed image without acquisition, building or mutable-reference resolution. */
+  inspectImage(input: {
+    readonly authorize: () => boolean;
+    readonly imageDigest: string;
+    readonly requestId: string;
   }): Promise<PreparedWorkerEnvironmentImage>;
   /** Awaits one already-dispatched image result after restart without replay authority. */
   recoverImageEffect(input: {
@@ -140,6 +154,21 @@ export function createWorkerEnvironmentRuntimeEffects(
       if (inspection.imageDigest !== imageDigest) {
         throw new Error('NanoHost image inspection returned a different digest.');
       }
+      return inspection;
+    },
+
+    async inspectImage(input) {
+      requireAuthorized(input.authorize);
+      const imageDigest = requiredDigest(input.imageDigest, 'image');
+      const inspection = parseNanoHostImageInspection(
+        await dispatch.effect({
+          input: { imageDigest },
+          kind: 'image.inspect',
+          requestId: effectRequestId(input.requestId, 'image.inspect'),
+        })
+      );
+      if (inspection.imageDigest !== imageDigest)
+        throw new Error('NanoHost image inspection returned a different digest.');
       return inspection;
     },
 
@@ -233,18 +262,11 @@ export function workerEnvironmentPreparationIdentity(
   return commandInputHash({ candidate, image }).slice('sha256:'.length);
 }
 
-/** Parses the strict image inspection result. */
+/** Reads the image inspection core without retaining inert producer metadata. */
 export function parseNanoHostImageInspection(value: unknown): PreparedWorkerEnvironmentImage {
   const record = requireRecord(value, 'image inspection');
-  requireExactFields(record, ['digest', 'platform', 'storageLayout'], 'image inspection');
   const storageLayout = requireRecord(record.storageLayout, 'image storage layout');
-  requireExactFields(
-    storageLayout,
-    ['family', 'gid', 'targets', 'uid', 'version', 'workingDirectory'],
-    'image storage layout'
-  );
   const platform = requireRecord(record.platform, 'image platform');
-  requireExactFields(platform, ['architecture', 'os'], 'image platform');
   if (!Array.isArray(storageLayout.targets)) {
     throw new Error('NanoHost image storage targets are invalid.');
   }
@@ -260,11 +282,13 @@ export function parseNanoHostImageInspection(value: unknown): PreparedWorkerEnvi
     },
     targets: storageLayout.targets.map((target) => {
       const entry = requireRecord(target, 'image storage target');
-      requireExactFields(entry, ['target'], 'image storage target');
       return { target: requiredString(entry.target, 'storage target') };
     }),
   };
   return {
+    ...(record.environmentDefaults === undefined
+      ? {}
+      : { environmentDefaults: parseImageEnvironmentDefaults(record.environmentDefaults) }),
     imageDigest: requiredDigest(record.digest, 'image'),
     layout,
     layoutDigest: workerStorageLayoutDigest(layout),
@@ -434,4 +458,22 @@ function imageSettlementIdentity(
     authoredContentDigest: candidate.contentDigest,
     inputDigest: commandInputHash(image),
   };
+}
+
+/** Checks the primary-settled image-default core without exposing unadmitted bytes. */
+function parseImageEnvironmentDefaults(value: unknown): {
+  defaultsDigest: string;
+  values: Record<string, string>;
+} {
+  const record = requireRecord(value, 'environment defaults');
+  const defaultsDigest = requiredDigest(record.defaultsDigest, 'environment defaults');
+  const input = requireRecord(record.values, 'environment defaults values');
+  const parsed = NativeEnvironmentValuesSchema.safeParse(input);
+  if (!parsed.success) throw new Error('NanoHost environment defaults are invalid.');
+  const canonical = canonicalNativeEnvironment(parsed.data);
+  const values = JSON.parse(canonical) as Record<string, string>;
+  if (`sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}` !== defaultsDigest) {
+    throw new Error('NanoHost environment defaults digest mismatch.');
+  }
+  return { defaultsDigest, values };
 }

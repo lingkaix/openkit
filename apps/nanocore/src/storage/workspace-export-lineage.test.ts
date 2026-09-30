@@ -7,7 +7,7 @@ import {
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   ArtifactReviewFollowUpRequestSchema,
@@ -28,10 +28,10 @@ import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { computeGoalPlanDigest, GoalPlanOutputSchema } from '../runtime/goal-plan.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   type WriteWorkspaceExportTreeInput,
   writeWorkspaceExportTree,
@@ -3208,4 +3208,13 @@ describe('workspace auxiliary lineage reminting', () => {
       readWorkspaceImportSnapshot({ verified: unmatched, targetWorkspaceId: 'ws_unmatched' })
     ).toThrow(/runtime origin.*normalized index/i);
   });
+});
+
+// This fixture supplies confirmed image evidence; the production resolver and subject checks still run.
+vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../runtime/agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    '../test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
 });

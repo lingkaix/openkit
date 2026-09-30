@@ -7,7 +7,7 @@ import type {
   AgentEnvironmentValidationDiagnostic,
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -647,3 +647,12 @@ function createSignedInAuthStub(): BetterAuthServer {
     handler: async () => Response.json({ status: 'auth-ok' }),
   };
 }
+
+// This fixture supplies confirmed image evidence; the production resolver and subject checks still run.
+vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./runtime/agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    './test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
+});

@@ -1169,3 +1169,12 @@ describe('SimulatedTurnExecutor', () => {
     }
   });
 });
+
+// This fixture supplies confirmed image evidence; the production resolver and subject checks still run.
+vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../runtime/agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    '../test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
+});

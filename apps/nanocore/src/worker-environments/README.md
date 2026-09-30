@@ -11,3 +11,9 @@ Preparation creates separate immutable authored and resolved Artifact version 1 
 An exact local image digest still performs `image.acquire` and has an ordinary durable image-effect result. Recovery must recover that result before read-only inspection and candidate publication; it never treats the old preload assumption as proof or replays acquisition.
 
 Run focused checks with `pnpm --dir apps/nanocore exec vitest run src/worker-environments` and `pnpm --dir apps/nanocore typecheck`.
+
+## Confirmed Image Defaults
+
+Preparation and result-only recovery publish only names, unadmitted classification and the defaults digest in candidate/preview Artifacts. The existing activation confirmation binds the exact image/default digests. Activation repeats read-only exact-image inspection, recomputes its digest and refuses stale or unavailable defaults before configuration effects, then admits values into the existing image settlement. No values are persisted before that confirmation; omitted inspection is unavailable rather than empty.
+
+An already selected image may use ordinary preparation and activation to confirm defaults that have not yet been admitted. Configuration equality does not substitute for that confirmation.

@@ -1494,7 +1494,7 @@ describe('private NanoHost Harness records', () => {
         { ...body, purpose: 'unknown' },
         // The human-gate stop was retired with bounded Turns; interrupt is the only purpose.
         { ...body, purpose: 'human-gate' },
-        { ...body, extra: 'forbidden', purpose: 'interrupt' },
+        { ...body, command: 'forbidden', purpose: 'interrupt' },
       ]) {
         expect(() =>
           queueNanoHostHarnessOperation(coreDb, {
@@ -1508,7 +1508,7 @@ describe('private NanoHost Harness records', () => {
       }
 
       queueNanoHostHarnessOperation(coreDb, {
-        body: { ...body, purpose: 'interrupt' },
+        body: { ...body, note: 'inert', purpose: 'interrupt' },
         harnessInstanceId: 'harness-1',
         operation: 'turn.interrupt',
         timestamp: now,

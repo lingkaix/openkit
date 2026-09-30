@@ -7,7 +7,6 @@ import {
   listExportableAgentEnvironmentPackageSnapshots,
   recordAgentEnvironmentPackageSnapshot,
 } from '../runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import {
   createGoalRecord,
   createGoalTask,
@@ -19,6 +18,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 
 describe('worker Context Package authority reader', () => {

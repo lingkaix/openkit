@@ -917,6 +917,7 @@ function PreparedCandidateReview({
   );
 }
 
+/** Displays immutable candidate identity and names-only defaults before confirmed admission. */
 function CandidateFacts({
   candidate,
   compact = false,
@@ -944,6 +945,15 @@ function CandidateFacts({
         Image {details.image.digest} · {details.image.platform.os}/
         {details.image.platform.architecture}
       </p>
+      {details.image.environmentDefaults ? (
+        <>
+          <p className="break-all">
+            Environment defaults {details.image.environmentDefaults.defaultsDigest}
+          </p>
+          <p>Default names: {details.image.environmentDefaults.names.join(', ') || 'None'}</p>
+          <p>Default values are admitted only by this activation.</p>
+        </>
+      ) : null}
       <p>
         Storage layout {details.image.storageLayout.family ?? 'unlabeled'} /
         {details.image.storageLayout.version ?? 'unversioned'} · user{' '}
@@ -1211,6 +1221,7 @@ async function discoverAdministrationCandidates(
       const binding = {
         affectedStorage: resolved.data.affectedStorage,
         configuration: resolved.data.configuration,
+        image: resolved.data.image,
         replaceNow: resolved.data.replaceNow,
         resolvedCandidate: artifactRef,
         target: resolved.data.target,

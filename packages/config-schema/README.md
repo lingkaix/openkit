@@ -59,3 +59,9 @@ AEP `observability.captureCoverage` uses the shared Worker protocol schema as a 
 `server.jsonc.policy.workspaceApprovalModes` maps exact Workspace IDs to strict per-action modes for `repo.push`: `require_human_approval` or `auto_allow`. Missing entries require human approval. The policy catalog marks this deployment-owned setting restart-required and forbids request or Workspace overrides.
 
 Exact REST network grants may carry the closed `publicAccess: { kind: 'credential-free-non-llm' }` admission marker. Presets and unsupported marker semantics fail closed. Resolved AEP policy preserves the marker as immutable evidence; NanoCore owns current classification, while OpenShell receives only the existing exact network tuple. See the accepted public-route decision and Agent Manifest And AEP Resolution owner when integrating the frozen communication redesign amendments.
+
+## Public Native Environment
+
+Server Agent `runtime.environment` is a bounded literal string/null override map. Omission inherits confirmed image defaults, an empty string remains a value, and null suppresses a default. The resolved AEP carries `{ imageDigest, defaultsDigest, values }`; protected bootstrap and adapter names are managed, and runtime credential names cannot collide. Inert additions to the affected runtime/package cores are discarded; unsupported authority and required semantics fail closed. The shared literal validators preserve legal prototype-looking variable names rather than silently dropping them.
+
+Authored Agent runtime readers discard unknown optional envelope metadata regardless of its name, while preserving the declared runtime exclusions and protected-name checks. NanoCore reports ignored runtime keys through its existing located configuration warnings; environment variable names are consumed literal settings, not envelope metadata.

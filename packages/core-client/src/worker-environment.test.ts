@@ -74,6 +74,13 @@ describe('Worker environment App API client', () => {
         }
         return Response.json({
           activationConfirmation: workerEnvironmentActivationConfirmation({
+            image: {
+              digest: DIGEST,
+              environmentDefaults: {
+                defaultsDigest:
+                  'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+              },
+            },
             affectedStorage,
             configuration,
             replaceNow,
@@ -84,6 +91,12 @@ describe('Worker environment App API client', () => {
           authoredCandidate,
           configuration,
           image: {
+            environmentDefaults: {
+              defaultsDigest:
+                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+              names: [],
+              classification: 'unadmitted',
+            },
             digest: DIGEST,
             platform: environment.layout.platform,
             storageLayout: {
@@ -123,6 +136,13 @@ describe('Worker environment App API client', () => {
       affectedStorage,
       configuration,
       confirmation: workerEnvironmentActivationConfirmation({
+        image: {
+          digest: DIGEST,
+          environmentDefaults: {
+            defaultsDigest:
+              'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+          },
+        },
         affectedStorage,
         configuration,
         replaceNow,

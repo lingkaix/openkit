@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   CaptureCoverageBindingSchema,
+  canonicalNativeEnvironment,
   GitFailureExplanationSchema,
+  NativeEnvironmentRecordSchema,
   WorkerCanonicalTerminalEventDataSchema,
   type WorkerLineage,
   type WorkerStartupFailure,
@@ -73,6 +75,8 @@ export interface ResidentTurnOptions {
   readonly resident: WorkerResidentSession;
   /** Names of the session-static runtime environment delivered with `session.open`. */
   readonly runtimeEnvironmentNames: ReadonlySet<string>;
+  /** Public projection fixed at session.open; null means no environment-aware delivery. */
+  readonly nativeEnvironment: Readonly<Record<string, string>> | null;
   /** Fixed Turn output root exported through the file-effect slots. */
   readonly sessionDir: string;
   /** Private `turn.interrupt` cancellation for this Turn. */
@@ -185,6 +189,18 @@ async function runResidentTurnImplementation(
   }
   const captureCoverage = captureCoverageResult.data;
   requireSessionRuntimeEnvironment(packageManifest, options.runtimeEnvironmentNames);
+  const nativeEnvironment = packageManifest.runtime?.environment;
+  if (nativeEnvironment !== undefined) {
+    const record = NativeEnvironmentRecordSchema.parse(nativeEnvironment);
+    if (
+      options.nativeEnvironment === null ||
+      canonicalNativeEnvironment(record.values) !==
+        canonicalNativeEnvironment(options.nativeEnvironment)
+    )
+      throw new Error('Session-static public native environment does not match the AEP.');
+  } else if (options.nativeEnvironment !== null) {
+    throw new Error('Session-static public native environment requires an environment-aware AEP.');
+  }
   const provenanceDeclaration = parseRuntimeProvenanceDeclaration(
     packageManifest.control?.transcript?.runtimeProvenance
   );
@@ -524,6 +540,8 @@ interface WorkerShimPackageManifest {
   };
   /** Generic shim process declaration. */
   runtime?: {
+    /** Immutable resolved public environment core. */
+    environment?: unknown;
     /** Fixed generic shim command and worker cwd. */
     command?: {
       /** Exact generic shim argv. */

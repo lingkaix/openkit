@@ -12,7 +12,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { projectOpenShellWorkerPolicy } from './openshell-policy.js';
 import {
   openShellNetworkEndpointsFromPackagePolicy,
@@ -104,6 +104,16 @@ describe('NanoHost worker governance helpers', () => {
       expect(JSON.parse(imports[0]?.body.toString('utf8') ?? '')).toEqual(environmentPackage);
     }
 
+    // Contract Evolution ignores inert additions before publishing worker-consumed bytes.
+    const additiveImports = await prepareNanoHostContextPackageImports(
+      {
+        ...environmentPackage,
+        rawSecret: 'must-not-enter-package-bytes',
+      } as AgentEnvironmentPackage,
+      { workspaceRoots: [] }
+    );
+    expect(additiveImports[0]?.body).toEqual(expectedBytes);
+
     const cyclic = structuredClone(environmentPackage) as AgentEnvironmentPackage & {
       self?: unknown;
     };
@@ -114,7 +124,13 @@ describe('NanoHost worker governance helpers', () => {
       { ...environmentPackage, resources: { cpu: Number.NaN } },
       cyclic,
       nonPlain,
-      { ...environmentPackage, rawSecret: 'must-not-enter-package-bytes' },
+      {
+        ...environmentPackage,
+        runtime: {
+          ...environmentPackage.runtime,
+          runtimeEnvironment: { TOKEN: 'must-not-enter-package-bytes' },
+        },
+      },
     ]) {
       await expect(
         prepareNanoHostContextPackageImports(invalid as AgentEnvironmentPackage, {

@@ -14,6 +14,7 @@ import {
   type HarnessSessionSelectorBody,
   type HarnessTurnInterruptBody,
   type HarnessTurnStartBody,
+  isProtectedNativeEnvironmentName,
   type WorkerStartupFailure,
   WorkerStartupFailureSchema,
   workerSessionInputPaths,
@@ -68,19 +69,6 @@ const SAFE_RESIDENT_ENVIRONMENT_KEYS = [
   'https_proxy',
   'no_proxy',
 ] as const;
-/** Names a session-static runtime environment may never set. */
-const RESERVED_RUNTIME_ENVIRONMENT_NAMES = new Set<string>([
-  ...SAFE_RESIDENT_ENVIRONMENT_KEYS,
-  'CODEX_HOME',
-  'LD_LIBRARY_PATH',
-  'LD_PRELOAD',
-  'NODE_EXTRA_CA_CERTS',
-  'NODE_OPTIONS',
-  'TEMP',
-  'TMP',
-  'TMPDIR',
-]);
-
 interface ActiveTurn {
   readonly abort: AbortController;
   barrierReached: boolean;
@@ -120,6 +108,7 @@ interface HarnessSession {
   handleDigest: string | null;
   readonly resident: WorkerResidentSession;
   readonly runtimeEnvironmentNames: ReadonlySet<string>;
+  readonly nativeEnvironment: Readonly<Record<string, string>> | null;
   readonly sessionDirectory: string;
   readonly threadId: string;
   turnsStarted: number;
@@ -260,7 +249,17 @@ export class WorkerHarness {
       throw harnessError('conflict');
     }
     const runtimeEnvironment = body.runtimeEnvironment ?? {};
-    if (Object.keys(runtimeEnvironment).some(isReservedRuntimeEnvironmentName)) {
+    const nativeEnvironment = body.nativeEnvironment ? { ...body.nativeEnvironment } : null;
+    if (
+      Object.keys(runtimeEnvironment).some((name) =>
+        isProtectedNativeEnvironmentName(name, body.adapterId)
+      ) ||
+      Object.keys(nativeEnvironment ?? {}).some(
+        (name) =>
+          isProtectedNativeEnvironmentName(name, body.adapterId) ||
+          Object.hasOwn(runtimeEnvironment, name)
+      )
+    ) {
       throw harnessError('unsupported');
     }
     const resumeReference = body.resume ? await this.readResumeReference(body.resume) : null;
@@ -305,7 +304,12 @@ export class WorkerHarness {
         .openSession({
           agentSessionId: body.agentSessionId,
           controlRoot,
-          environment: residentEnvironment(this.environment, runtimeEnvironment),
+          environment: residentEnvironment(
+            this.environment,
+            runtimeEnvironment,
+            nativeEnvironment,
+            body.adapterId
+          ),
           loopback: {
             capabilityBaseUrl: SANDBOX_NATIVE_CAPABILITY_BASE_URL,
             capabilityCredential: body.capabilityLoopbackCredential,
@@ -335,6 +339,7 @@ export class WorkerHarness {
         handleDigest: null,
         resident,
         runtimeEnvironmentNames: new Set(Object.keys(runtimeEnvironment)),
+        nativeEnvironment,
         sessionDirectory,
         threadId: body.threadId,
         turnsStarted: 0,
@@ -476,6 +481,7 @@ export class WorkerHarness {
       packagePath,
       resident: session.resident,
       runtimeEnvironmentNames: session.runtimeEnvironmentNames,
+      nativeEnvironment: session.nativeEnvironment,
       sessionDir: this.turnOutputDirectory,
       signal: abort.signal,
       tokens: {
@@ -821,10 +827,13 @@ function parseBody(operation: HarnessCommandEnvelope['operation'], body: unknown
  */
 function residentEnvironment(
   environment: WorkerShimEnvironment,
-  runtimeEnvironment: Readonly<Record<string, string>>
+  runtimeEnvironment: Readonly<Record<string, string>>,
+  nativeEnvironment: Readonly<Record<string, string>> | null,
+  adapterId: string
 ): Record<string, string> {
   const selected: Record<string, string> = {};
   for (const key of SAFE_RESIDENT_ENVIRONMENT_KEYS) {
+    if (nativeEnvironment !== null && !isProtectedNativeEnvironmentName(key, adapterId)) continue;
     const value = environment[key];
     if (typeof value === 'string' && value.length > 0) selected[key] = value;
   }
@@ -845,16 +854,7 @@ function residentEnvironment(
     if (!entries.includes('127.0.0.1')) entries.push('127.0.0.1');
     selected[key] = entries.join(',');
   }
-  return { ...selected, ...runtimeEnvironment };
-}
-
-/** Whether a runtime environment name would override Harness-owned process settings. */
-function isReservedRuntimeEnvironmentName(name: string): boolean {
-  return (
-    name.startsWith('OPENKIT_') ||
-    name.toLowerCase() === 'npm_config_nodedir' ||
-    RESERVED_RUNTIME_ENVIRONMENT_NAMES.has(name)
-  );
+  return { ...nativeEnvironment, ...selected, ...runtimeEnvironment };
 }
 
 /** Builds one exact result envelope. */

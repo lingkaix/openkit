@@ -19,9 +19,9 @@ import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { chatTaskModeTurnId, commandInputHash } from '../runtime/idempotent-command.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
   createWorkerContextPackageFiles,

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
 import { commandInputHash } from './idempotent-command.js';
@@ -8,6 +9,7 @@ import type {
 } from './nanohost-session-dispatch.js';
 import {
   createWorkerEnvironmentRuntimeEffects,
+  parseNanoHostImageInspection,
   workerEnvironmentEffectRequestId,
   workerEnvironmentPreparationIdentity,
 } from './worker-environment-runtime-effects.js';
@@ -281,5 +283,147 @@ describe('Worker environment runtime effects', () => {
       })
     ).rejects.toThrow('not authorized');
     expect(effect).not.toHaveBeenCalled();
+  });
+});
+
+/** Locates an image envelope while leaving the literal values map outside metadata handling. */
+function imageEnvelope(input: unknown, location: string): Record<string, unknown> {
+  const paths: Record<string, (string | number)[]> = {
+    outer: [],
+    defaults: ['environmentDefaults'],
+    platform: ['platform'],
+    layout: ['storageLayout'],
+    target: ['storageLayout', 'targets', 0],
+  };
+  let envelope = input;
+  for (const key of paths[location]!) envelope = (envelope as Record<string, unknown>)[key];
+  return envelope as Record<string, unknown>;
+}
+
+/** Shared NanoHost/NanoCore JCS vectors from the primary defaults settlement. */
+describe('image environment defaults', () => {
+  it.each([
+    [{}, 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a'],
+    [
+      { B: '', A: 'x=y\n' },
+      'sha256:c80a567369da09cf9b70c49c5b2b16b392a94912d1726f2e88ecf1e5901cad4d',
+    ],
+  ])('pins the shared canonical defaults digest for %j', (values, defaultsDigest) => {
+    expect(
+      parseNanoHostImageInspection({
+        ...IMAGE_INSPECTION,
+        environmentDefaults: { defaultsDigest, values },
+      })
+    ).toMatchObject({ environmentDefaults: { defaultsDigest, values } });
+  });
+
+  it.each([
+    'outer',
+    'defaults',
+    'platform',
+    'layout',
+    'target',
+  ])('strips inert image metadata at %s', (location) => {
+    const input = {
+      ...IMAGE_INSPECTION,
+      environmentDefaults: {
+        defaultsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+        values: {},
+      },
+    };
+    const extended = structuredClone(input);
+    const envelope = imageEnvelope(extended, location);
+    envelope.note = { future: 'inert' };
+    expect(parseNanoHostImageInspection(extended)).toEqual(parseNanoHostImageInspection(input));
+  });
+
+  it.each([
+    'outer',
+    'defaults',
+    'platform',
+    'layout',
+    'target',
+  ])('strips optional image metadata names at %s', (location) => {
+    for (const key of [
+      'requiredFeatures',
+      'minCoreVersion',
+      'command',
+      'env',
+      'runtimeEnvironment',
+      'nativeEnvironment',
+      'credentials',
+      'credentialRef',
+      'credentialDeclarations',
+      'token',
+      'process',
+    ]) {
+      const input = structuredClone({
+        ...IMAGE_INSPECTION,
+        environmentDefaults: {
+          defaultsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+          values: {},
+        },
+      });
+      const envelope = imageEnvelope(input, location);
+      envelope[key] = { description: 'inert metadata' };
+      const baseline = structuredClone(input);
+      delete imageEnvelope(baseline, location)[key];
+      expect(parseNanoHostImageInspection(input), key).toEqual(
+        parseNanoHostImageInspection(baseline)
+      );
+    }
+  });
+
+  it('distinguishes unavailable inspection from verified empty defaults', () => {
+    expect(parseNanoHostImageInspection(IMAGE_INSPECTION).environmentDefaults).toBeUndefined();
+  });
+
+  it.each([
+    ['invalid name', { 'BAD-NAME': 'canary-default' }],
+    ['long name', { ['A'.repeat(129)]: 'canary-default' }],
+    ['NUL', { A: 'canary-default\0' }],
+    ['invalid Unicode', { A: '\ud800' }],
+    ['nonstring', { A: null }],
+    ['entry count', Object.fromEntries(Array.from({ length: 129 }, (_, i) => [`A${i}`, '']))],
+    ['bytes', { A: 'x'.repeat(16377) }],
+  ])('refuses %s metadata even with a matching digest and value-free diagnostics', (_name, values) => {
+    const sorted = Object.fromEntries(
+      Object.entries(values as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b, 'en'))
+    );
+    const defaultsDigest = `sha256:${createHash('sha256').update(JSON.stringify(sorted)).digest('hex')}`;
+    try {
+      parseNanoHostImageInspection({
+        ...IMAGE_INSPECTION,
+        environmentDefaults: { defaultsDigest, values },
+      });
+      throw new Error('accepted invalid metadata');
+    } catch (error) {
+      expect((error as Error).message).not.toContain('canary-default');
+      expect((error as Error).message).not.toBe('accepted invalid metadata');
+    }
+  });
+  it('refuses digest mismatch while stripping an unknown envelope declaration', () => {
+    expect(() =>
+      parseNanoHostImageInspection({
+        ...IMAGE_INSPECTION,
+        environmentDefaults: { defaultsDigest: `sha256:${'0'.repeat(64)}`, values: {} },
+      })
+    ).toThrow();
+    const core = {
+      ...IMAGE_INSPECTION,
+      environmentDefaults: {
+        defaultsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+        values: {},
+      },
+    };
+    expect(
+      parseNanoHostImageInspection({
+        ...core,
+        environmentDefaults: {
+          ...core.environmentDefaults,
+          requiredFeatures: ['future.environment'],
+        },
+      })
+    ).toEqual(parseNanoHostImageInspection(core));
   });
 });

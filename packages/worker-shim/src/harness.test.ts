@@ -338,6 +338,7 @@ function harnessFixture(
     extra: {
       resume?: { digest: string; locator: string } | null;
       runtimeEnvironment?: Record<string, string>;
+      nativeEnvironment?: Record<string, string>;
       threadId?: string;
     } = {}
   ) =>
@@ -350,6 +351,7 @@ function harnessFixture(
       inferenceLoopbackCredential: credential(`inference-${agentSessionId}`),
       resume: extra.resume ?? null,
       ...(extra.runtimeEnvironment ? { runtimeEnvironment: extra.runtimeEnvironment } : {}),
+      ...(extra.nativeEnvironment ? { nativeEnvironment: extra.nativeEnvironment } : {}),
       threadId: extra.threadId ?? 'thread-one',
       workspaceId: 'workspace-one',
     });
@@ -1346,7 +1348,7 @@ describe('Worker Harness resident AgentSessions', () => {
       );
     }
     for (const name of [
-      'PATH',
+      'SHELL',
       'HOME',
       'NODE_OPTIONS',
       'OPENKIT_ROUTE',
@@ -2034,5 +2036,91 @@ describe('N4c local input cleanup proof', () => {
       disposition: 'refused',
       body: { reasonCode: 'cleanup_required' },
     });
+  });
+});
+
+describe('session-static public native environment', () => {
+  it.each([
+    { nativeEnvironment: { HOME: '/user' } },
+    { nativeEnvironment: { OPENKIT_ROUTE: 'user' } },
+    { nativeEnvironment: { SETTING: 'public' }, runtimeEnvironment: { SETTING: 'credential' } },
+  ])('refuses protected or credential-colliding public delivery before child creation: %j', async (extra) => {
+    const f = harnessFixture();
+    expect(await f.open('as-public', extra)).toMatchObject({ disposition: 'refused' });
+    expect(f.fake.residents).toHaveLength(0);
+  });
+
+  it.each([
+    'missing',
+    'different',
+    'extra',
+    'omitted-package',
+  ] as const)('refuses %s session/AEP public delivery before native work', async (variant) => {
+    const f = harnessFixture();
+    await f.open(
+      'as-public',
+      variant === 'missing' ? {} : { nativeEnvironment: { SETTING: 'session' } }
+    );
+    f.writePackage('as-public', 'turn-public');
+    const pkg = JSON.parse(readFileSync(f.packagePath('as-public'), 'utf8'));
+    if (variant !== 'omitted-package')
+      pkg.runtime.environment = {
+        imageDigest: `sha256:${'a'.repeat(64)}`,
+        defaultsDigest: `sha256:${'b'.repeat(64)}`,
+        values:
+          variant === 'different'
+            ? { SETTING: 'changed' }
+            : variant === 'extra'
+              ? { SETTING: 'session', EXTRA: '' }
+              : { SETTING: 'session' },
+      };
+    writeFileSync(f.packagePath('as-public'), JSON.stringify(pkg));
+    expect(await f.send('turn.start', f.startBody('as-public', 'turn-public'))).toMatchObject({
+      disposition: 'refused',
+    });
+    expect(f.fake.residents[0]?.turns).toHaveLength(0);
+  });
+
+  it('checks exact values on every Turn and never mutates an already resident map', async () => {
+    const f = harnessFixture();
+    await f.open('as-public', { nativeEnvironment: { SETTING: 'session', EMPTY: '' } });
+    f.writePackage('as-public', 'turn-public');
+    const pkg = JSON.parse(readFileSync(f.packagePath('as-public'), 'utf8'));
+    pkg.runtime.environment = {
+      imageDigest: `sha256:${'a'.repeat(64)}`,
+      defaultsDigest: `sha256:${'b'.repeat(64)}`,
+      values: { EMPTY: '', SETTING: 'session' },
+      inertMetadata: true,
+    };
+    writeFileSync(f.packagePath('as-public'), JSON.stringify(pkg));
+    expect(await f.send('turn.start', f.startBody('as-public', 'turn-public'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+    await f.settle('as-public');
+    f.writePackage('as-public', 'turn-changed');
+    const changed = JSON.parse(readFileSync(f.packagePath('as-public'), 'utf8'));
+    changed.runtime.environment = {
+      ...pkg.runtime.environment,
+      values: { SETTING: 'changed', EMPTY: '' },
+    };
+    writeFileSync(f.packagePath('as-public'), JSON.stringify(changed));
+    expect(await f.send('turn.start', f.startBody('as-public', 'turn-changed'))).toMatchObject({
+      disposition: 'refused',
+    });
+    expect(f.fake.residents[0]?.input.environment.SETTING).toBe('session');
+    expect(f.fake.residents[0]?.turns).toHaveLength(1);
+  });
+
+  it('applies benign and empty values only to the addressed child', async () => {
+    const f = harnessFixture();
+    const opened = await f.open('as-public', {
+      nativeEnvironment: { HELLO_NATIVE: 'hello', EMPTY_NATIVE: '' },
+    });
+    expect(opened.disposition).toBe('succeeded');
+    await f.open('as-sibling', { threadId: 'thread-sibling' });
+    expect(f.fake.residents[0]?.input.environment.HELLO_NATIVE).toBe('hello');
+    expect(f.fake.residents[0]?.input.environment.EMPTY_NATIVE).toBe('');
+    expect(f.fake.residents[1]?.input.environment.HELLO_NATIVE).toBeUndefined();
+    expect(process.env.HELLO_NATIVE).toBeUndefined();
   });
 });

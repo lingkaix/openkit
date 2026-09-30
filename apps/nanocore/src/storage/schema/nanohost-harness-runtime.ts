@@ -162,6 +162,10 @@ export const agentSessionRuntimeBindings = sqliteTable(
     updatedAt: text('updated_at').notNull(),
     /** Measured sandbox image digest copied as a value at binding time. */
     imageDigest: text('image_digest').notNull(),
+    /** Non-secret admitted package projection, distinct from acknowledged native application. */
+    nativeEnvironmentJson: text('native_environment_json'),
+    /** Set only after exact turn.start native-start acknowledgement. */
+    nativeEnvironmentApplied: integer('native_environment_applied').notNull().default(0),
     /**
      * Lowercase hex SHA-256 of the UTF-8 bytes of the inference loopback credential that
      * `session.open` delivered; null until that dispatch. The raw value is never stored.

@@ -30,7 +30,6 @@ import {
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
   importMcpToolSchemaSnapshots,
   mcpToolSchemaContentDigest,
@@ -77,6 +76,8 @@ import {
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
+import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -1032,6 +1033,7 @@ describe('worker MCP routes', () => {
     const agentSetup = createTestAgentSetup({
       mcpIds: [repository ? 'openkit-repository' : 'echo'],
     });
+    admitTestNativeEnvironment(coreDb, agentSetup.manifest);
     const hostCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: repositoryPath,
       encoding: 'utf8',
@@ -1125,6 +1127,11 @@ describe('worker MCP routes', () => {
         if (request.kind === 'image.inspect') {
           return {
             digest: request.input.imageDigest,
+            environmentDefaults: {
+              defaultsDigest:
+                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+              values: {},
+            },
             platform: { architecture: 'arm64', os: 'linux' },
             storageLayout: {
               family: 'openkit-worker',
@@ -2791,3 +2798,12 @@ function mcpEchoTool() {
     name: 'echo',
   };
 }
+
+// This fixture supplies confirmed image evidence; the production resolver and subject checks still run.
+vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./runtime/agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    './test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
+});

@@ -3,12 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   bindThreadMaterial,
   createWorkspaceMaterial,
@@ -1946,4 +1946,13 @@ describe('workspace export verifier', () => {
       workspaceDb.sqlite.close();
     }
   });
+});
+
+// This fixture supplies confirmed image evidence; the production resolver and subject checks still run.
+vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../runtime/agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    '../test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
 });

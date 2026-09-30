@@ -18,6 +18,7 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
@@ -134,6 +135,7 @@ describe('scheduler dispatch service', () => {
     });
     const providerCredentialResolver = vi.fn(() => null);
     const manifest = createTestAgentSetup({ mcpIds: ['echo'] }).manifest;
+    admitTestNativeEnvironment(coreDb, manifest);
     const gatewayConfig = createTestGatewayConfig();
     const providerRegistry = new ProviderRegistry([
       {

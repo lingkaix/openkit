@@ -2589,11 +2589,16 @@ describe('minimal scheduler reconnect contract', () => {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
         if (request.kind === 'image.acquire') {
-          return { digest: `sha256:${'c'.repeat(64)}` };
+          return { digest: request.input.imageReference };
         }
         if (request.kind === 'image.inspect') {
           return {
             digest: request.input.imageDigest,
+            environmentDefaults: {
+              defaultsDigest:
+                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+              values: {},
+            },
             platform: { architecture: 'amd64', os: 'linux' },
             storageLayout: {
               family: 'openkit-worker',

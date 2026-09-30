@@ -1,3 +1,4 @@
+import { NativeEnvironmentRecordSchema } from '@openkit/config-schema';
 import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -20,6 +21,31 @@ export const AgentEnvironmentPackageSnapshotRecordSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    const runtime = value.snapshot.runtime;
+    if (runtime && typeof runtime === 'object' && runtime.environment !== undefined) {
+      const publicEnvironment = NativeEnvironmentRecordSchema.safeParse(runtime.environment);
+      if (!publicEnvironment.success) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Public native environment is invalid.',
+          path: ['snapshot', 'runtime', 'environment'],
+        });
+        return;
+      }
+      // Validated public literals are never classified as credentials by string shape.
+      addRawSecretIssues(
+        {
+          ...value,
+          snapshot: {
+            ...value.snapshot,
+            runtime: { ...runtime, environment: { ...publicEnvironment.data, values: {} } },
+          },
+        },
+        ctx,
+        []
+      );
+      return;
+    }
     addRawSecretIssues(value, ctx, []);
   });
 
@@ -28,10 +54,7 @@ export const ListAgentEnvironmentPackageSnapshotsResponseSchema = z
   .object({
     items: z.array(AgentEnvironmentPackageSnapshotRecordSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response reading one durable redacted AEP snapshot. */
 export const GetAgentEnvironmentPackageSnapshotResponseSchema =

@@ -3,14 +3,12 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import type {
   ActivateWorkerEnvironmentResponse,
   PrepareWorkerEnvironmentResponse,
 } from '@openkit/app-api-schemas';
 import { parse } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
@@ -22,6 +20,7 @@ import type {
   NanoHostSessionEffectRequest,
 } from '../runtime/nanohost-session-dispatch.js';
 import type { TurnCommandRuntimeContext, TurnStartRuntimeContext } from '../runtime/types.js';
+import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import {
   activateWorkerStorageAttachment,
   createWorkerStorageBinding,
@@ -44,6 +43,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import {
   ensureUserQuickChatWorkspace,
   recordWorkspaceOwnerMembership,
@@ -262,9 +262,26 @@ function insertCanonicalUser(coreDb: CoreDb): void {
 }
 
 /** Creates the fixed image acquire and inspect boundary used by the real App composition. */
-function createNanoHostDispatch(effect: ReturnType<typeof vi.fn>): NanoHostSessionDispatch {
+function createNanoHostDispatch(
+  coreDb: CoreDb,
+  effect: ReturnType<typeof vi.fn>
+): NanoHostSessionDispatch {
   return {
-    effect: effect as NanoHostSessionDispatch['effect'],
+    async effect(requestOrConnection, carriedRequest) {
+      const request = (carriedRequest ?? requestOrConnection) as NanoHostSessionEffectRequest;
+      const result = (await effect(request)) as { digest?: string };
+      if (
+        request.imageSettlement &&
+        (request.kind === 'image.acquire' || request.kind === 'image.build')
+      )
+        writeWorkerImageSettlement(coreDb, {
+          ...request.imageSettlement,
+          requestId: request.requestId,
+          operation: request.kind,
+          outcome: { kind: 'success', imageDigest: result.digest! },
+        });
+      return result;
+    },
     async fileExportResult() {},
     async imageBuildInput() {
       throw new Error('Unexpected image build input request.');
@@ -524,7 +541,15 @@ describe('Worker environment App composition', () => {
       const initialRevision = contentRevision(initialAgentContent);
       const nanoHostEffect = vi.fn(async (request: NanoHostSessionEffectRequest) => {
         if (request.kind === 'image.acquire') return { digest: IMAGE_DIGEST };
-        if (request.kind === 'image.inspect') return IMAGE_INSPECTION;
+        if (request.kind === 'image.inspect')
+          return {
+            ...IMAGE_INSPECTION,
+            environmentDefaults: {
+              defaultsDigest:
+                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+              values: {},
+            },
+          };
         throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
       });
       const createResponses = vi.fn(async () => {
@@ -536,7 +561,7 @@ describe('Worker environment App composition', () => {
         dataRoot,
         llmGatewayDispatcher: { createResponses },
         mode: 'server',
-        nanoHostSessionDispatch: createNanoHostDispatch(nanoHostEffect),
+        nanoHostSessionDispatch: createNanoHostDispatch(coreDb, nanoHostEffect),
         store,
       });
       const adminHeaders = {
@@ -569,7 +594,15 @@ describe('Worker environment App composition', () => {
           expectedRevision: initialRevision,
           fileId: CONFIGURATION_FILE_ID,
         },
-        image: IMAGE_INSPECTION,
+        image: {
+          ...IMAGE_INSPECTION,
+          environmentDefaults: {
+            defaultsDigest:
+              'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+            classification: 'unadmitted',
+            names: [],
+          },
+        },
         replaceNow: null,
         target: { agentId: AGENT_ID, kind: 'agent' },
       });
@@ -603,7 +636,7 @@ describe('Worker environment App composition', () => {
       const activated = (await activatedResponse.json()) as ActivateWorkerEnvironmentResponse;
       const activatedAgentContent = readFileSync(agentPath, 'utf8');
 
-      expect(activatedResponse.status).toBe(200);
+      expect(activatedResponse.status, JSON.stringify(activated)).toBe(200);
       expect(activated).toMatchObject({
         affected: [],
         configuration: {
@@ -689,7 +722,15 @@ describe('Worker environment App composition', () => {
       const initialRevision = contentRevision(readFileSync(agentPath, 'utf8'));
       const nanoHostEffect = vi.fn(async (request: NanoHostSessionEffectRequest) => {
         if (request.kind === 'image.acquire') return { digest: IMAGE_DIGEST };
-        if (request.kind === 'image.inspect') return IMAGE_INSPECTION;
+        if (request.kind === 'image.inspect')
+          return {
+            ...IMAGE_INSPECTION,
+            environmentDefaults: {
+              defaultsDigest:
+                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+              values: {},
+            },
+          };
         throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
       });
       const executor = new DeferredInterruptTurnExecutor(coreDb);
@@ -701,6 +742,7 @@ describe('Worker environment App composition', () => {
         },
       } as const;
       const agentSetup = createTestAgentSetup(agentSetupOptions);
+      admitTestNativeEnvironment(coreDb, agentSetup.manifest, {}, IMAGE_DIGEST);
       const app = createApp({
         agentManifests: [agentSetup.manifest],
         auth: ownerSessionAuth(),
@@ -708,7 +750,7 @@ describe('Worker environment App composition', () => {
         dataRoot,
         gatewayConfig: createTestGatewayConfig(agentSetupOptions),
         mode: 'server',
-        nanoHostSessionDispatch: createNanoHostDispatch(nanoHostEffect),
+        nanoHostSessionDispatch: createNanoHostDispatch(coreDb, nanoHostEffect),
         openKitConfig: { defaults: { defaultAgentId: AGENT_ID } },
         providerRegistry: new ProviderRegistry([
           {

@@ -1,3 +1,7 @@
+import {
+  AuthoredNativeEnvironmentSchema,
+  isProtectedNativeEnvironmentName,
+} from '@openkit/worker-protocol';
 import { z } from 'zod';
 import {
   AgentEnvironmentBinarySchema,
@@ -71,7 +75,14 @@ const AuthoredAgentRuntimeImageBuildSchema = z
  */
 export const AuthoredAgentRuntimeSchema = z
   .object({
+    command: z.never().optional(),
+    env: z.never().optional(),
+    runtimeEnvironment: z.never().optional(),
+    nativeEnvironment: z.never().optional(),
+    requiredFeatures: z.never().optional(),
+    minCoreVersion: z.never().optional(),
     adapter: z.string().min(1),
+    environment: AuthoredNativeEnvironmentSchema.optional(),
     binaries: z.array(AgentEnvironmentBinarySchema).min(1),
     image: z.discriminatedUnion('kind', [
       AuthoredAgentRuntimeImageReferenceSchema,
@@ -80,7 +91,17 @@ export const AuthoredAgentRuntimeSchema = z
     kind: z.string().min(1),
     version: z.string().min(1).optional(),
   })
-  .strict();
+  .strip()
+  .superRefine((runtime, context) => {
+    for (const name of Object.keys(runtime.environment ?? {})) {
+      if (isProtectedNativeEnvironmentName(name, runtime.adapter))
+        context.addIssue({
+          code: 'custom',
+          path: ['environment', name],
+          message: 'Native environment name is managed.',
+        });
+    }
+  });
 
 /** Worker-visible logical model preference and admitted model set. */
 export const AuthoredAgentLogicalModelsSchema = z

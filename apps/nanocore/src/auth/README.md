@@ -45,3 +45,6 @@ Run authentication middleware, server flow, access-token, bootstrap, administrat
 - [Remote Auth Credential Bootstrap](../../../../docs/specs/20260704-remote_auth_credential_bootstrap.md)
 - [NanoHost Runtime And Transport](../../../../docs/specs/20260802-nanohost_runtime_and_transport.md)
 - [Architecture](../../../../docs/core/architecture.md)
+
+
+The native-environment administration GET and PUT operations use the existing deployment-admin read and mutation classifications. Their per-Thread applied projections additionally check current Workspace eligibility and the exact Thread audience.

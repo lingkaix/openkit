@@ -63,3 +63,9 @@ Deprecated flat aliases are not exported.
 `client.app.listConversationNavigation` validates the selected-Workspace conversation activity projection; NanoCore owns ordering, current activity classification, and viewer-relative attention.
 
 `client.app.listWorkspaceWorkers` reads the selected-Workspace current Worker projection, including exact recorded work and separately labeled package preference and last-used model. NanoCore owns Thread visibility and the additional audit permission for usage; the client validates the response without joining records or exposing hidden runtime identity.
+
+## Native Environment Administration
+
+`client.runtimeConfig.getAgentNativeEnvironment(fileId)` reads the private administration projection; `updateAgentNativeEnvironment` sends literal overrides/removals with the existing file revision and exact image/default identities. Both validate the shared App API contract. Persisted, reloaded and acknowledged native state remain separate; an edit applies to later Turns through a successor.
+
+The private native environment configuration client discards inert additive response metadata, including nested status and environment identities, through the shared App API readers before returning the owned core.

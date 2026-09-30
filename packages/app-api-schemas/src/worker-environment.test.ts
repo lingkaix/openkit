@@ -306,13 +306,47 @@ describe('Worker environment App API schemas', () => {
     };
     const request = {
       ...exact,
-      confirmation: workerEnvironmentActivationConfirmation(exact),
+      confirmation: workerEnvironmentActivationConfirmation({
+        ...exact,
+        image: {
+          digest: DIGEST,
+          environmentDefaults: {
+            defaultsDigest:
+              'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+          },
+        },
+      }),
       requestId: REQUEST_ID,
     };
 
     expect(ActivateWorkerEnvironmentRequestSchema.parse(request)).toEqual(request);
+    const payload = JSON.parse(request.confirmation.slice('activate-worker-environment:'.length));
+    for (const field of ['imageDigest', 'defaultsDigest']) {
+      const unbound = { ...payload };
+      delete unbound[field];
+      expect(
+        ActivateWorkerEnvironmentRequestSchema.safeParse({
+          ...request,
+          confirmation: `activate-worker-environment:${JSON.stringify(unbound)}`,
+        }).success
+      ).toBe(false);
+    }
+    expect(
+      ActivateWorkerEnvironmentRequestSchema.safeParse({
+        ...request,
+        confirmation: `activate-worker-environment:${JSON.stringify({ ...payload, defaultsDigest: null })}`,
+      }).success
+    ).toBe(false);
+
     expect(
       workerEnvironmentActivationConfirmation({
+        image: {
+          digest: DIGEST,
+          environmentDefaults: {
+            defaultsDigest:
+              'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+          },
+        },
         affectedStorage: [{ storageRef: STORAGE_REF, expectedRevision: 4 }],
         configuration: {
           fileId: exact.configuration.fileId,
@@ -373,7 +407,10 @@ describe('Worker environment App API schemas', () => {
 
     const response = {
       ...exact,
-      activationConfirmation: workerEnvironmentActivationConfirmation(exact),
+      activationConfirmation: workerEnvironmentActivationConfirmation({
+        ...exact,
+        image: { digest: DIGEST },
+      }),
       authoredCandidate: {
         artifactId: 'artifact_authored',
         artifactVersion: 1,
@@ -425,7 +462,16 @@ describe('Worker environment App API schemas', () => {
     expect(
       ActivateWorkerEnvironmentRequestSchema.parse({
         ...exact,
-        confirmation: workerEnvironmentActivationConfirmation(exact),
+        confirmation: workerEnvironmentActivationConfirmation({
+          ...exact,
+          image: {
+            digest: DIGEST,
+            environmentDefaults: {
+              defaultsDigest:
+                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+            },
+          },
+        }),
         requestId: REQUEST_ID,
       }).affectedStorage
     ).toEqual([]);
@@ -434,6 +480,13 @@ describe('Worker environment App API schemas', () => {
         ...exact,
         affectedStorage: [{ expectedRevision: 4, storageRef: STORAGE_REF }],
         confirmation: workerEnvironmentActivationConfirmation({
+          image: {
+            digest: DIGEST,
+            environmentDefaults: {
+              defaultsDigest:
+                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+            },
+          },
           ...exact,
           affectedStorage: [{ expectedRevision: 4, storageRef: STORAGE_REF }],
         }),

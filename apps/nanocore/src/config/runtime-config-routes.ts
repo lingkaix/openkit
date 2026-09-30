@@ -2,6 +2,7 @@ import {
   RuntimeConfigFileWriteRequestSchema,
   RuntimeConfigReloadRequestSchema,
   RuntimeConfigValidationRequestSchema,
+  UpdateAgentNativeEnvironmentRequestSchema,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
@@ -9,6 +10,7 @@ import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerAppApiRoute } from '../openapi.js';
+import type { createAgentNativeEnvironmentService } from './agent-native-environment.js';
 import type { RuntimeConfigManager } from './runtime-config.js';
 import {
   type RuntimeConfigFileService,
@@ -48,17 +50,57 @@ function requireRuntimeConfigAdminActor(c: Context<{ Variables: AuthVariables }>
  */
 export function registerRuntimeConfigRoutes({
   app,
+  agentNativeEnvironment,
   onReloadApplied,
   runtimeConfigFileService,
   runtimeConfigManager,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly agentNativeEnvironment?:
+    | ReturnType<typeof createAgentNativeEnvironmentService>
+    | undefined;
   readonly onReloadApplied?: () => void;
   readonly runtimeConfigFileService: (
     context: Context<{ Variables: AuthVariables }>
   ) => RuntimeConfigFileService;
   readonly runtimeConfigManager: RuntimeConfigManager;
 }): void {
+  registerAppApiRoute(app, 'getAgentNativeEnvironment', (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) return adminError;
+    if (!agentNativeEnvironment)
+      return asApiError(
+        'Native environment administration is unavailable.',
+        'runtime_unavailable',
+        503
+      );
+    const fileId = c.req.query('fileId');
+    if (!fileId) return asApiError('Agent file id is required.', 'invalid_request', 400);
+    try {
+      return c.json(agentNativeEnvironment.view(c.get('actor')!, fileId));
+    } catch (error) {
+      return asRuntimeConfigFileError(error);
+    }
+  });
+  registerAppApiRoute(app, 'updateAgentNativeEnvironment', async (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) return adminError;
+    if (!agentNativeEnvironment)
+      return asApiError(
+        'Native environment administration is unavailable.',
+        'runtime_unavailable',
+        503
+      );
+    const parsed = UpdateAgentNativeEnvironmentRequestSchema.safeParse(
+      await c.req.json().catch(() => ({}))
+    );
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    try {
+      return c.json(agentNativeEnvironment.update(c.get('actor')!, parsed.data));
+    } catch (error) {
+      return asRuntimeConfigFileError(error);
+    }
+  });
   registerAppApiRoute(app, 'reloadRuntimeConfig', async (c) => {
     const adminError = requireRuntimeConfigAdminActor(c);
     if (adminError) {

@@ -1,5 +1,6 @@
 export { type GitFailureExplanation, GitFailureExplanationSchema } from '@openkit/protocol';
 export * from './harness-control.js';
+export * from './native-environment.js';
 
 import { z } from 'zod';
 

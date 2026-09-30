@@ -80,6 +80,11 @@ const CANDIDATE_PAYLOAD = {
   },
   image: {
     digest: `sha256:${'f'.repeat(64)}`,
+    environmentDefaults: {
+      classification: 'unadmitted',
+      defaultsDigest: `sha256:${'e'.repeat(64)}`,
+      names: ['LANG', 'PUBLIC_SETTING'],
+    },
     platform: { architecture: 'arm64', os: 'linux' },
     storageLayout: {
       family: 'openkit-worker',
@@ -668,6 +673,15 @@ describe('Administration', () => {
       )
     ).not.toHaveLength(0);
     expect(screen.getAllByText('Persistent targets: /workspace, /sandbox')).not.toHaveLength(0);
+    expect(
+      screen.getAllByText(
+        `Environment defaults ${CANDIDATE_PAYLOAD.image.environmentDefaults.defaultsDigest}`
+      )
+    ).not.toHaveLength(0);
+    expect(screen.getAllByText('Default names: LANG, PUBLIC_SETTING')).not.toHaveLength(0);
+    expect(
+      screen.getAllByText('Default values are admitted only by this activation.')
+    ).not.toHaveLength(0);
     expect(activateWorkerEnvironment).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Activate candidate' }));
@@ -677,10 +691,15 @@ describe('Administration', () => {
       configuration: CANDIDATE_PAYLOAD.configuration,
       replaceNow: CANDIDATE_PAYLOAD.replaceNow,
       resolvedCandidate: RESOLVED_CANDIDATE,
+      image: CANDIDATE_PAYLOAD.image,
       target: CANDIDATE_PAYLOAD.target,
     };
     expect(activateWorkerEnvironment).toHaveBeenCalledWith({
-      ...binding,
+      affectedStorage: binding.affectedStorage,
+      configuration: binding.configuration,
+      replaceNow: binding.replaceNow,
+      resolvedCandidate: binding.resolvedCandidate,
+      target: binding.target,
       confirmation: workerEnvironmentActivationConfirmation(binding),
       requestId: expect.any(String),
     });
@@ -714,6 +733,7 @@ describe('Administration', () => {
           configuration: input.configuration,
           replaceNow: input.replaceNow,
           resolvedCandidate: RESOLVED_CANDIDATE,
+          image: CANDIDATE_PAYLOAD.image,
           target: input.target,
         }),
         authoredCandidate: AUTHORED_CANDIDATE,
@@ -829,6 +849,7 @@ describe('Administration', () => {
           configuration: CANDIDATE_PAYLOAD.configuration,
           replaceNow: CANDIDATE_PAYLOAD.replaceNow,
           resolvedCandidate: RESOLVED_CANDIDATE,
+          image: CANDIDATE_PAYLOAD.image,
           target: CANDIDATE_PAYLOAD.target,
         }),
         authoredCandidate: AUTHORED_CANDIDATE,

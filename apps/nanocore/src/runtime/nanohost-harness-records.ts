@@ -1,6 +1,11 @@
 import { Buffer } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
-import { WorkerStartupFailureSchema } from '@openkit/worker-protocol';
+import {
+  canonicalNativeEnvironment,
+  HarnessQueuedCommandBodySchemas,
+  NativeEnvironmentRecordSchema,
+  WorkerStartupFailureSchema,
+} from '@openkit/worker-protocol';
 
 import { bindSchedulerLeaseRouteTokenHashes } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
@@ -62,6 +67,15 @@ export interface CreateNanoHostHarnessRuntimeInput {
 
 /** Input for opening one Core AgentSession binding on the current Harness. */
 export interface OpenNanoHostAgentSessionBindingInput {
+  /** Existing binding's admitted package projection; application is acknowledged separately. */
+  readonly nativeEnvironment?:
+    | {
+        readonly agentId: string;
+        readonly imageDigest: string;
+        readonly defaultsDigest: string;
+        readonly values: Record<string, string>;
+      }
+    | undefined;
   readonly agentSessionCompatibilityKey: string;
   readonly agentSessionId: string;
   readonly agentSessionRuntimeBindingId: string;
@@ -642,6 +656,16 @@ export function openNanoHostAgentSessionBinding(
       throw new Error('NanoHost Harness cannot admit another AgentSession.');
     }
     const measuredImageDigest = readSandboxMeasuredImageDigest(coreDb, input.harnessInstanceId);
+    if (input.nativeEnvironment) {
+      requireIdentity(input.nativeEnvironment.agentId, 'Agent');
+      const record = NativeEnvironmentRecordSchema.parse(input.nativeEnvironment);
+      if (record.imageDigest !== measuredImageDigest)
+        throw new Error('Native environment image conflicts with the measured Sandbox.');
+      input = {
+        ...input,
+        nativeEnvironment: { agentId: input.nativeEnvironment.agentId, ...record },
+      };
+    }
     const threadBinding = coreDb.sqlite
       .prepare(
         `SELECT 1 FROM agent_session_runtime_bindings
@@ -658,8 +682,8 @@ export function openNanoHostAgentSessionBinding(
            workspace_id, thread_id, agent_session_compatibility_key,
            effective_setup_generation, native_handle_state, native_handle_digest,
            lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence, cleanup_state,
-           created_at, updated_at, image_digest
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
+           created_at, updated_at, image_digest, native_environment_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 'opening', NULL, NULL, 0, 'clean', ?, ?, ?, ?)`
       )
       .run(
         input.agentSessionRuntimeBindingId,
@@ -671,7 +695,8 @@ export function openNanoHostAgentSessionBinding(
         input.effectiveSetupGeneration,
         input.timestamp,
         input.timestamp,
-        measuredImageDigest
+        measuredImageDigest,
+        input.nativeEnvironment ? JSON.stringify(input.nativeEnvironment) : null
       );
     persistCopiedMeasuredHarnessIdentity(
       coreDb,
@@ -811,7 +836,7 @@ export function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: QueueNanoHostHarnessOperationInput
 ): void {
-  requireHarnessOperationBody(input.operation, input.body);
+  input = { ...input, body: requireHarnessOperationBody(input.operation, input.body) };
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
     const harness = requireHarness(coreDb, input.harnessInstanceId);
@@ -893,8 +918,10 @@ export function dispatchNanoHostHarnessOperation(
     ) {
       throw new Error('NanoHost Harness queued operation is incomplete.');
     }
-    const body = readJsonObject(harness.command_body_json);
-    requireHarnessOperationBody(harness.operation, body);
+    const body = requireHarnessOperationBody(
+      harness.operation,
+      readJsonObject(harness.command_body_json)
+    );
     let wireBody = body;
     let durableBody = body;
     if (harness.operation === 'turn.start') {
@@ -1203,7 +1230,7 @@ function projectSuccessfulResult(
     const started = coreDb.sqlite
       .prepare(
         `UPDATE agent_session_runtime_bindings
-         SET lifecycle_state = 'active', current_turn_id = ?, current_lease_id = ?,
+         SET lifecycle_state = 'active', current_turn_id = ?, current_lease_id = ?, native_environment_applied = 1,
              native_handle_state = ?, native_handle_digest = ?,
              next_turn_sequence = next_turn_sequence + 1, updated_at = ?
          WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?
@@ -1294,7 +1321,7 @@ function requireOperationLineage(
       `SELECT agent_session_id AS agentSessionId, workspace_id AS workspaceId,
               thread_id AS threadId, lifecycle_state AS lifecycleState,
               current_turn_id AS currentTurnId, current_lease_id AS currentLeaseId,
-              next_turn_sequence AS nextTurnSequence
+              next_turn_sequence AS nextTurnSequence, native_environment_json AS nativeEnvironment
        FROM agent_session_runtime_bindings
        WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`
     )
@@ -1307,10 +1334,24 @@ function requireOperationLineage(
         readonly threadId: string;
         readonly lifecycleState: string;
         readonly nextTurnSequence: number;
+        readonly nativeEnvironment: string | null;
       }
     | undefined;
   if (!binding || binding.agentSessionId !== body.agentSessionId) {
     throw new Error('NanoHost Harness AgentSession binding lineage conflicts.');
+  }
+  if (operation === 'session.open') {
+    const expected =
+      binding.nativeEnvironment === null
+        ? null
+        : NativeEnvironmentRecordSchema.parse(JSON.parse(binding.nativeEnvironment)).values;
+    if (
+      (expected === null) !== (body.nativeEnvironment === undefined) ||
+      (expected !== null &&
+        canonicalNativeEnvironment(expected) !==
+          canonicalNativeEnvironment(body.nativeEnvironment as Record<string, string>))
+    )
+      throw new Error('NanoHost public native environment conflicts with the exact binding.');
   }
   if (operation === 'turn.interrupt') {
     if (
@@ -1414,77 +1455,14 @@ function requireOperationLineage(
   }
 }
 
-/** Validates the closed command-body field set and scalar shapes for one operation. */
+/** Validates consumed core semantics and strips inert additions before identity or forwarding. */
 function requireHarnessOperationBody(
   operation: NanoHostHarnessOperation,
   body: Readonly<Record<string, unknown>>
-): void {
-  const fields: Record<NanoHostHarnessOperation, readonly string[]> = {
-    'session.open': [
-      'adapterId',
-      'agentSessionCompatibilityKey',
-      'agentSessionId',
-      'agentSessionRuntimeBindingId',
-      'effectiveSetupGeneration',
-      'resume',
-      'threadId',
-      'workspaceId',
-    ],
-    'session.inspect': ['agentSessionId', 'agentSessionRuntimeBindingId'],
-    'turn.start': [
-      'aepRef',
-      'agentSessionId',
-      'agentSessionRuntimeBindingId',
-      'contextPackageId',
-      'contextRef',
-      'deadline',
-      'leaseId',
-      'packageSnapshotId',
-      'threadId',
-      'turnId',
-      'turnSequence',
-      'workspaceId',
-    ],
-    'turn.interrupt': [
-      'agentSessionId',
-      'agentSessionRuntimeBindingId',
-      'leaseId',
-      'purpose',
-      'turnId',
-    ],
-    'session.close': ['agentSessionId', 'agentSessionRuntimeBindingId'],
-    'harness.drain': [],
-  };
-  requireExactFields(body, fields[operation], `${operation} command body`);
-  for (const [name, value] of Object.entries(body)) {
-    if (name === 'effectiveSetupGeneration' || name === 'turnSequence') {
-      if (!Number.isSafeInteger(value) || (value as number) < 0) {
-        throw new Error(`NanoHost Harness ${name} is invalid.`);
-      }
-      continue;
-    }
-    if (name === 'resume') {
-      if (value === null) continue;
-      if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        throw new Error('NanoHost Harness session.open resume is invalid.');
-      }
-      const resume = value as Readonly<Record<string, unknown>>;
-      requireExactFields(resume, ['digest', 'locator'], 'session.open resume');
-      requireIdentity(resume.locator, 'Harness resume locator');
-      requireSha256(resume.digest, 'Harness resume digest');
-      continue;
-    }
-    requireIdentity(value, `Harness ${name}`);
-  }
-  if (operation === 'session.open') {
-    requireSha256(body.agentSessionCompatibilityKey, 'AgentSession compatibility key');
-    if ((body.effectiveSetupGeneration as number) < 1) {
-      throw new Error('NanoHost Harness session.open setup generation is unsupported.');
-    }
-  }
-  if (operation === 'turn.interrupt' && body.purpose !== 'interrupt') {
-    throw new Error('NanoHost Harness turn.interrupt purpose is unsupported.');
-  }
+): Readonly<Record<string, unknown>> {
+  const parsed = HarnessQueuedCommandBodySchemas[operation].safeParse(body);
+  if (!parsed.success) throw new Error(`NanoHost ${operation} command body fields are invalid.`);
+  return parsed.data;
 }
 
 /** Validates one exact result envelope and its operation-specific body. */

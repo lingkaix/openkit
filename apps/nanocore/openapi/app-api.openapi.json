@@ -1771,6 +1771,102 @@
         }
       }
     },
+    "/api/admin/config/agent-environment": {
+      "get": {
+        "operationId": "getAgentNativeEnvironment",
+        "tags": [
+          "runtime-config"
+        ],
+        "summary": "View an Agent native environment.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "fileId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Private desired, reloaded and acknowledged applied configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNativeEnvironmentResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateAgentNativeEnvironment",
+        "tags": [
+          "runtime-config"
+        ],
+        "summary": "Edit the Agent native environment for later Turns.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAgentNativeEnvironmentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Persisted revision and distinct application states.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNativeEnvironmentResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/config/reload": {
       "post": {
         "operationId": "reloadRuntimeConfig",
@@ -43512,6 +43608,34 @@
                 "type": "string",
                 "pattern": "^sha256:[a-f0-9]{64}$"
               },
+              "environmentDefaults": {
+                "type": "object",
+                "properties": {
+                  "defaultsDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "names": {
+                    "maxItems": 128,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    }
+                  },
+                  "classification": {
+                    "type": "string",
+                    "const": "unadmitted"
+                  }
+                },
+                "required": [
+                  "defaultsDigest",
+                  "names",
+                  "classification"
+                ],
+                "additionalProperties": false
+              },
               "platform": {
                 "type": "object",
                 "properties": {
@@ -46974,6 +47098,271 @@
         "required": [
           "file",
           "content"
+        ],
+        "additionalProperties": false
+      },
+      "AgentNativeEnvironmentResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "persistedRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "defaults": {
+            "type": "object",
+            "maxProperties": 128,
+            "propertyNames": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "overrides": {
+            "type": "object",
+            "maxProperties": 128,
+            "propertyNames": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "managedNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "desired": {
+            "type": "object",
+            "properties": {
+              "requiredFeatures": {
+                "not": {}
+              },
+              "minCoreVersion": {
+                "not": {}
+              },
+              "env": {
+                "not": {}
+              },
+              "runtimeEnvironment": {
+                "not": {}
+              },
+              "imageDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "defaultsDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "values": {
+                "type": "object",
+                "maxProperties": 128,
+                "propertyNames": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "imageDigest",
+              "defaultsDigest",
+              "values"
+            ],
+            "additionalProperties": false
+          },
+          "reload": {
+            "type": "object",
+            "properties": {
+              "matchesDesired": {
+                "type": "boolean"
+              },
+              "snapshotVersion": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "matchesDesired",
+              "snapshotVersion"
+            ],
+            "additionalProperties": false
+          },
+          "applied": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workspaceId": {
+                  "type": "string"
+                },
+                "threadId": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "acknowledged",
+                    "pending",
+                    "unknown"
+                  ]
+                },
+                "environment": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "requiredFeatures": {
+                          "not": {}
+                        },
+                        "minCoreVersion": {
+                          "not": {}
+                        },
+                        "env": {
+                          "not": {}
+                        },
+                        "runtimeEnvironment": {
+                          "not": {}
+                        },
+                        "imageDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "defaultsDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "values": {
+                          "type": "object",
+                          "maxProperties": 128,
+                          "propertyNames": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                          },
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "imageDigest",
+                        "defaultsDigest",
+                        "values"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "matchesDesired": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "workspaceId",
+                "threadId",
+                "state",
+                "environment",
+                "matchesDesired"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "sharedAgentImpact": {
+            "type": "string",
+            "const": "All later Turns using this Agent."
+          }
+        },
+        "required": [
+          "agentId",
+          "fileId",
+          "persistedRevision",
+          "defaults",
+          "overrides",
+          "managedNames",
+          "desired",
+          "reload",
+          "applied",
+          "sharedAgentImpact"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateAgentNativeEnvironmentRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "imageDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "defaultsDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "environment": {
+            "type": "object",
+            "maxProperties": 128,
+            "propertyNames": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "fileId",
+          "expectedRevision",
+          "imageDigest",
+          "defaultsDigest",
+          "environment"
         ],
         "additionalProperties": false
       },
@@ -69140,5 +69529,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:a8db72beba233414616d5bbadb55c0311589cd9a56d058ca8e90b9c081c6cf29"
+  "x-openkit-source-digest": "sha256:2a1e7187ff54ec38227035bd89d834eb93ed4b32930c3a21b66c2cc4a1c72803"
 }

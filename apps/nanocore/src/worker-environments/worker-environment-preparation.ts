@@ -345,16 +345,12 @@ export function createWorkerEnvironmentPreparation(
       );
     }
 
-    const manifest = readWorkerEnvironmentTargetManifest(
-      dependencies.configFilesForActor(context.actor),
-      { configuration: request.configuration, target: request.target }
-    );
-    if (JSON.stringify(manifest.runtime.image) === JSON.stringify(declaration)) {
-      throw new WorkerEnvironmentOperationError(
-        'invalid_request',
-        'Agent configuration already contains the requested image declaration.'
-      );
-    }
+    // An unchanged selection may still need exact non-secret default admission. Validate its
+    // current revision and target, then retain the ordinary candidate/confirmation lifecycle.
+    readWorkerEnvironmentTargetManifest(dependencies.configFilesForActor(context.actor), {
+      configuration: request.configuration,
+      target: request.target,
+    });
     const affectedStorage = currentAffectedStorage(context.actor, request);
     const authored = WorkerEnvironmentAuthoredCandidateArtifactSchema.parse({
       affectedStorage,
@@ -742,7 +738,7 @@ function requireNoRunningTurn(store: FsStore, workspaceId: string, threadId: str
 }
 
 /** Materializes the authored manifest image into the content-addressed runtime effect shape. */
-function materializeRuntimeImage(
+export function materializeRuntimeImage(
   image: WorkerEnvironmentAuthoredCandidateArtifact['declaration']
 ): RuntimeImage {
   if (image.kind === 'reference') return image;
@@ -867,7 +863,20 @@ function candidateRef(artifact: CandidateArtifact): WorkerEnvironmentCandidateRe
 /** Projects host image facts into the public inspection contract. */
 function imageInspection(image: PreparedWorkerEnvironmentImage) {
   const { platform, ...storageLayout } = image.layout;
-  return { digest: image.imageDigest, platform, storageLayout };
+  return {
+    digest: image.imageDigest,
+    platform,
+    storageLayout,
+    ...(image.environmentDefaults
+      ? {
+          environmentDefaults: {
+            defaultsDigest: image.environmentDefaults.defaultsDigest,
+            names: Object.keys(image.environmentDefaults.values).sort(),
+            classification: 'unadmitted' as const,
+          },
+        }
+      : {}),
+  };
 }
 
 /** Returns one fully parsed preparation response. */
@@ -882,6 +891,7 @@ function responseFromCandidate(
     activationConfirmation: workerEnvironmentActivationConfirmation({
       affectedStorage: resolved.affectedStorage,
       configuration: resolved.configuration,
+      image: resolved.image,
       replaceNow: resolved.replaceNow,
       resolvedCandidate,
       target: resolved.target,

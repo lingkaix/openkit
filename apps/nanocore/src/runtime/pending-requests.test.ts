@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -1375,7 +1375,7 @@ describe('pending requests', () => {
     const outcome = store
       .listThreadTurns('ws_demo', 'th_demo')
       .find((candidate) => candidate.id !== turn.id);
-    expect(outcome).toMatchObject({
+    expect(outcome, outcome?.error?.message).toMatchObject({
       status: 'completed',
       triggerSource: { kind: 'approval-resolution' },
     });
@@ -1724,4 +1724,13 @@ describe('pending requests', () => {
     expect(() => reloaded.getApproval('ap_bad')).toThrow(/not found/i);
     coreDb.sqlite.close();
   });
+});
+
+// This fixture supplies confirmed image evidence; the pending delivery owner still runs unchanged.
+vi.mock('./agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    '../test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
 });

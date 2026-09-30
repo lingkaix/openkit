@@ -37,10 +37,14 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import {
+  admitTestNativeEnvironment,
+  createTestNativeEnvironmentDb,
+} from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
-  resolveAgentEnvironmentPackage,
-  resolveAgentEnvironmentPackageMetadata,
+  resolveAgentEnvironmentPackageMetadata as resolveMetadata,
+  resolveAgentEnvironmentPackage as resolvePackage,
 } from './agent-environment.js';
 import {
   createNanoHostHarnessRuntime,
@@ -88,12 +92,32 @@ import {
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
 
+const packageFixtureDb = createTestNativeEnvironmentDb();
+function preparedInput<T extends Parameters<typeof resolveMetadata>[0]>(
+  input: T
+): T & { coreDb: typeof packageFixtureDb } {
+  const coreDb = input.coreDb ?? packageFixtureDb;
+  admitTestNativeEnvironment(coreDb, input.agentSetup.manifest);
+  return { ...input, coreDb };
+}
+const resolveAgentEnvironmentPackage: typeof resolvePackage = (input) =>
+  resolvePackage(preparedInput(input));
+const resolveAgentEnvironmentPackageMetadata: typeof resolveMetadata = (input) =>
+  resolveMetadata(preparedInput(input));
+
 /** Creates the durable deployment identity required by real executor construction. */
 function createFactoryCoreDb() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-executor-factory-'));
   ensureLayout(dataRoot);
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  for (const adapter of ['codex', 'pi', 'opencode'])
+    admitTestNativeEnvironment(coreDb, createTestAgentSetup({ adapter }).manifest);
+  for (const digit of ['1', '2', '3', '4', '5', '6', '7', 'a', 'f'])
+    admitTestNativeEnvironment(
+      coreDb,
+      createTestAgentSetup({ imageRef: `sha256:${digit.repeat(64)}` }).manifest
+    );
   return coreDb;
 }
 
@@ -103,6 +127,10 @@ const factoryCoreDb = createFactoryCoreDb();
 function nanoHostImageInspection(request: NanoHostSessionEffectRequest) {
   return {
     digest: request.input.imageDigest,
+    environmentDefaults: {
+      defaultsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+      values: {},
+    },
     platform: { architecture: 'amd64', os: 'linux' },
     storageLayout: {
       family: 'openkit-worker',
@@ -450,6 +478,9 @@ function completeNanoHostPackage(input: {
     workspaceCwd: '/workspace',
     workspaceRoots: [],
   });
+  // These image-effect fixtures represent retained pre-environment-aware packages.
+  // New-resolution and native-environment regressions use explicit admitted records.
+  delete base.runtime.environment;
   const runtime = input.runtime as Partial<AgentEnvironmentPackage['runtime']> | undefined;
   const extensions = input.extensions as AgentEnvironmentPackage['extensions'] | undefined;
   const baseOpenkit = base.extensions.openkit as Record<string, unknown>;
@@ -2062,10 +2093,34 @@ describe('createConfiguredTurnExecutor', () => {
    * @param label Fixture suffix.
    * @returns The resident package and the backend that still owns its Harness.
    */
-  async function admitIdleSupplyResident(label: string) {
+  async function admitIdleSupplyResident(
+    label: string,
+    nativeValues?: Record<string, string>,
+    probe?: { inspection?: 'unavailable' | 'stale'; effects: NanoHostSessionEffectRequest[] }
+  ) {
     const coreDb = createFactoryCoreDb();
-    const effects: NanoHostSessionEffectRequest[] = [];
+    const effects: NanoHostSessionEffectRequest[] = probe?.effects ?? [];
     const sessionDispatch = createFactoryNanoHostDispatch(effects);
+    const effect = sessionDispatch.effect.bind(sessionDispatch);
+    if (probe?.inspection)
+      sessionDispatch.effect = async (...args) => {
+        const result = await effect(...args);
+        const request = (args[1] ?? args[0]) as NanoHostSessionEffectRequest;
+        if (request.kind !== 'image.inspect') return result;
+        const inspection = result as Record<string, unknown>;
+        if (probe.inspection === 'unavailable') {
+          const { environmentDefaults: _defaults, ...rest } = inspection;
+          return rest;
+        }
+        const values = { CHANGED: 'literal' };
+        return {
+          ...inspection,
+          environmentDefaults: {
+            values,
+            defaultsDigest: `sha256:${createHash('sha256').update(JSON.stringify(values)).digest('hex')}`,
+          },
+        };
+      };
     const readyDigest = 'a'.repeat(64);
     const workspaceId = `workspace_${label}`;
     const threadId = `thread_${label}`;
@@ -2100,6 +2155,34 @@ describe('createConfiguredTurnExecutor', () => {
       }
     ).backend;
     const environmentPackage = completeNanoHostPackage({
+      ...(nativeValues
+        ? {
+            runtime: {
+              image: {
+                kind: 'build',
+                arguments: {},
+                argumentsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+                contextRef: 'build-context://empty/v1',
+                contextDigest: `sha256:${createHash('sha256').update('').digest('hex')}`,
+                input: {
+                  kind: 'dockerfile',
+                  content: 'FROM scratch\n',
+                  digest: `sha256:${createHash('sha256').update('FROM scratch\n').digest('hex')}`,
+                },
+                egress: [{ host: 'example.com', port: 443 }],
+                layerLimit: 128,
+                outputLimitBytes: 1024 * 1024,
+                timeLimitSeconds: 60,
+              },
+              environment: {
+                imageDigest: `sha256:${'a'.repeat(64)}`,
+                defaultsDigest:
+                  'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+                values: nativeValues,
+              },
+            },
+          }
+        : {}),
       extensions: {
         openkit: {
           workerStorage: {
@@ -2125,7 +2208,12 @@ describe('createConfiguredTurnExecutor', () => {
       selectedTargetId: `target_${label}`,
     });
     anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
-    const materialization = await backend.materialize(environmentPackage, { workspaceRoots: [] });
+    const materialization = await backend
+      .materialize(environmentPackage, { workspaceRoots: [] })
+      .catch((error) => {
+        coreDb.sqlite.close();
+        throw error;
+      });
     const recordedDigests: string[] = [];
     backend.bindNativeHandleRecorder(environmentPackage.snapshotId, (digest) => {
       recordedDigests.push(digest);
@@ -2258,6 +2346,66 @@ describe('createConfiguredTurnExecutor', () => {
     };
   }
 
+  /** Builds a new immutable effective map and its ordinary session compatibility projection. */
+  function packageWithChangedNative(
+    environmentPackage: AgentEnvironmentPackage,
+    scope: AgentEnvironmentPackage['scope'],
+    snapshotId: string
+  ): AgentEnvironmentPackage {
+    const next = {
+      ...environmentPackage,
+      scope,
+      snapshotId,
+      runtime: {
+        ...environmentPackage.runtime,
+        environment: {
+          ...environmentPackage.runtime.environment!,
+          values: { NATIVE_SETTING: 'changed', EMPTY: '' },
+        },
+      },
+    };
+    const plan = planSessionWorkspaceMaterialization({ environmentPackage: next });
+    return {
+      ...next,
+      extensions: {
+        ...next.extensions,
+        openkit: {
+          ...(next.extensions.openkit as Record<string, unknown>),
+          sessionWorkspace: plan,
+        },
+      },
+    };
+  }
+
+  it.each([
+    'unavailable',
+    'stale',
+  ] as const)('refuses %s confirmed default inspection before Sandbox creation without repeating the authored build', async (inspection) => {
+    const effects: NanoHostSessionEffectRequest[] = [];
+    await expect(
+      admitIdleSupplyResident(`native_${inspection}`, {}, { inspection, effects })
+    ).rejects.toThrow('different digest');
+    expect(effects.filter((effect) => effect.kind === 'image.acquire')).toHaveLength(1);
+    expect(effects.map((effect) => effect.kind)).not.toContain('image.build');
+    expect(effects.map((effect) => effect.kind)).not.toContain('sandbox.create');
+  });
+  it('materializes the confirmed measured image instead of repeating its authored build', async () => {
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const admitted = await admitIdleSupplyResident('native_confirmed_build', {}, { effects });
+    try {
+      expect(effects.filter((effect) => effect.kind === 'image.acquire')).toEqual([
+        expect.objectContaining({
+          input: expect.objectContaining({
+            imageReference: `sha256:${'a'.repeat(64)}`,
+          }),
+        }),
+      ]);
+      expect(effects.map((effect) => effect.kind)).not.toContain('image.build');
+    } finally {
+      admitted.coreDb.sqlite.close();
+    }
+  });
+
   it('reuses the resident binding when supply is unchanged', async () => {
     const admitted = await admitIdleSupplyResident('supply_same');
     const { backend, coreDb, environmentPackage, settleNext } = admitted;
@@ -2317,19 +2465,30 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('replaces the resident binding when only MCP supply changes and resumes its recorded pair', async () => {
-    const admitted = await admitIdleSupplyResident('supply_mcp');
+  it.each([
+    'mcp',
+    'native',
+  ] as const)('replaces the resident binding when only %s changes and resumes its exact recorded pair', async (change) => {
+    const admitted = await admitIdleSupplyResident(
+      'supply_mcp',
+      change === 'native' ? {} : undefined
+    );
+    const withChange = change === 'native' ? packageWithChangedNative : packageWithAddedMcp;
     const { backend, coreDb, environmentPackage, readyDigest, settleNext } = admitted;
     try {
-      const decisionPackage = packageWithAddedMcp(
+      const decisionPackage = withChange(
         environmentPackage,
         { ...environmentPackage.scope, turnId: 'turn_supply_mcp_next' },
         'snapshot_supply_mcp_next'
       );
-      // The SessionCompatibilityKey ignores supply, so only the Harness key can see this change.
-      expect(sessionCompatibilityDigest(decisionPackage)).toBe(
-        sessionCompatibilityDigest(environmentPackage)
-      );
+      if (change === 'mcp')
+        expect(sessionCompatibilityDigest(decisionPackage)).toBe(
+          sessionCompatibilityDigest(environmentPackage)
+        );
+      else
+        expect(sessionCompatibilityDigest(decisionPackage)).not.toBe(
+          sessionCompatibilityDigest(environmentPackage)
+        );
       await expect(
         backend.prepareAgentSessionContinuity?.({
           agentSessionCompatibilityKey: sessionCompatibilityDigest(decisionPackage),
@@ -2368,7 +2527,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
       ).toEqual({ count: 0 });
-      const successorPackage = packageWithAddedMcp(
+      const successorPackage = withChange(
         environmentPackage,
         {
           ...environmentPackage.scope,
@@ -2401,12 +2560,33 @@ describe('createConfiguredTurnExecutor', () => {
         state: 'open',
       });
       expect(opened.body.resume).toEqual(resume);
+      if (change === 'native') {
+        expect(opened.body.nativeEnvironment).toEqual({ NATIVE_SETTING: 'changed', EMPTY: '' });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT native_environment_applied AS applied FROM agent_session_runtime_bindings'
+            )
+            .get()
+        ).toEqual({ applied: 0 });
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        ).toEqual({ count: 1 });
+      }
       await settleNext('turn.start', {
         nativeHandleDigest: readyDigest,
         nativeHandleState: 'ready',
         state: 'started',
       });
       await successorLaunch;
+      if (change === 'native')
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT native_environment_applied AS applied FROM agent_session_runtime_bindings'
+            )
+            .get()
+        ).toEqual({ applied: 1 });
       expect(
         coreDb.sqlite
           .prepare('SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings')
@@ -2937,7 +3117,7 @@ describe('createConfiguredTurnExecutor', () => {
       const environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: 'as_selected_slot_successor',
-        agentSetup: createTestAgentSetup(),
+        agentSetup: createTestAgentSetup({ imageRef: `sha256:${'6'.repeat(64)}` }),
         backend: { kind: 'openshell' },
         createdAt: '2026-09-11T00:00:01.000Z',
         requestId: 'request_selected_slot_successor',
@@ -3053,7 +3233,7 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).previewAgentEnvironmentPackage.bind(runtime.turnExecutor);
       const successorPreparation = {
-        agentSetup: createTestAgentSetup(),
+        agentSetup: createTestAgentSetup({ imageRef: `sha256:${'6'.repeat(64)}` }),
         freshAgentSessionId: 'as_selected_slot_no_choice',
         requestId: 'request_selected_slot_no_choice',
         turn: successorTurn,
@@ -8885,7 +9065,7 @@ describe('createConfiguredTurnExecutor', () => {
         workerControlGateway: new WorkerControlGateway(),
       });
       const previewInput = {
-        agentSetup: createTestAgentSetup(),
+        agentSetup: createTestAgentSetup({ imageRef: `sha256:${'4'.repeat(64)}` }),
         freshAgentSessionId: 'as_restart_selected_next',
         requestId,
         turn: {
@@ -8990,7 +9170,7 @@ describe('createConfiguredTurnExecutor', () => {
       let observedError: unknown;
       try {
         await runSchedulerDispatchLoop({
-          agentManifests: [createTestAgentSetup().manifest],
+          agentManifests: [createTestAgentSetup({ imageRef: `sha256:${'4'.repeat(64)}` }).manifest],
           coreDb,
           createAgentSessionId: () => 'as_restart_selected_next',
           createLeaseId: () => 'lease_restart_selected_next',

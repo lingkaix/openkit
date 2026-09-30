@@ -42,6 +42,7 @@ import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-ref
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receipts.js';
+import { resolvePublicNativeEnvironment } from './native-environment.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
 import {
   createOpenkitRepositoryMcpSupply,
@@ -540,6 +541,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       capabilityRequests: [],
     },
     runtime: {
+      environment: resolvePublicNativeEnvironment(input.coreDb, manifest),
       image: resolveRuntimeImage(manifest.runtime.image),
       binaries: manifest.runtime.binaries,
       command: {
