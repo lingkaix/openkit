@@ -949,13 +949,24 @@ describe('AI interface deployment-admin workflow', () => {
 
   it('loads auto-top-up only from costs expand and clears stale usage after a failed refresh', async () => {
     const user = userEvent.setup();
-    const getAccountAutoTopup = vi.fn().mockResolvedValue({
+    const autoTopupResponse = {
       subscriptionProviderId: 'xai',
       accountSlotId: 'primary',
       observedAt: TIMESTAMP,
       availability: 'available',
       currency: 'USD',
-    });
+    };
+    // Billing is already visible when the separate lazy auto-top-up read is still pending.
+    let finishAutoTopup = () => {};
+    const getAccountAutoTopup = vi
+      .fn()
+      .mockResolvedValue(autoTopupResponse)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishAutoTopup = () => resolve(autoTopupResponse);
+          })
+      );
     const getAccountQuota = vi.fn().mockImplementation((providerId: string) =>
       providerId === 'xai'
         ? Promise.resolve({
@@ -1013,10 +1024,14 @@ describe('AI interface deployment-admin workflow', () => {
     expect(await within(xai).findByText('Prepaid $0.00')).toBeInTheDocument();
     expect(within(xai).getByText('Extra spend not reported')).toBeInTheDocument();
     expect(within(xai).getByText('Spend cap not reported')).toBeInTheDocument();
-    expect(within(xai).getByText('Auto top-up not reported')).toBeInTheDocument();
+    expect(await within(xai).findByText('Checking auto top-up…')).toBeInTheDocument();
+    expect(within(xai).queryByText('Auto top-up not reported')).not.toBeInTheDocument();
     expect(within(xai).queryByText(/exhaust/i)).not.toBeInTheDocument();
     await waitFor(() => expect(getAccountAutoTopup).toHaveBeenCalledTimes(1));
     expect(getAccountAutoTopup).toHaveBeenCalledWith('xai', 'primary');
+    finishAutoTopup();
+    expect(await within(xai).findByText('Auto top-up not reported')).toBeInTheDocument();
+    expect(within(xai).queryByText('Checking auto top-up…')).not.toBeInTheDocument();
 
     getAccountQuota.mockImplementation((providerId: string) =>
       providerId === 'xai'

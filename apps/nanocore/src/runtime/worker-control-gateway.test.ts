@@ -381,7 +381,8 @@ describe('WorkerControlGateway', () => {
         credentialValues: [],
         emit: (record, body) => writer.writeObservation(record, body),
       },
-      home
+      home,
+      '0.153.4'
     );
     try {
       writeFileSync(
@@ -526,7 +527,8 @@ describe('WorkerControlGateway', () => {
             throw error;
           }),
       },
-      home
+      home,
+      '0.153.4'
     );
     // Same pinned rollout metadata and native frame shapes as worker-shim's nested live fixture.
     const lines = (...records: unknown[]) =>
