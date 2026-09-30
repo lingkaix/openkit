@@ -14,10 +14,10 @@ It is intentionally separate from `@openkit/protocol`.
 
 ## Refresh Procedure
 
-1. Confirm the intended Codex CLI version from the official npm `latest` dist-tag and GitHub non-prerelease tag, never from a local installed CLI or a development branch.
-2. Take snapshot evidence from a complete non-shallow checkout of the exact immutable upstream tag and record the resolved tag and peeled commit in `metadata.json`.
-3. Generate the schema into a clean temporary directory with the matching pinned Codex CLI, then synchronize the generated JSON tree into this package while preserving `generated-schema/README.md`.
-4. Update `metadata.json` with the generator version, upstream package, release tag, resolved commit, `refreshedAt`, individual SHA-256 checksums for every generated JSON file, consumed implementation values, consumed-surface dispositions, and any maintenance note.
+1. Confirm the intended Codex CLI version from the official npm `latest` dist-tag, never from a local installed CLI or a development branch.
+2. Record that npm package in `metadata.json`. The 0.159.2 packument has no `gitHead`, so `sourceCommit` records `packument-has-no-gitHead` instead of an invented revision.
+3. Generate the schema with the pinned package's vendor binary, `codex app-server generate-json-schema`, into a clean temporary directory, then synchronize the generated JSON tree into this package while preserving `generated-schema/README.md`.
+4. Update `metadata.json` with the generator version, upstream package, release, the recorded `sourceCommit`, `refreshedAt`, individual SHA-256 checksums for every generated JSON file, consumed implementation values, consumed-surface dispositions, and any maintenance note.
 5. Review the generated schema diff before committing.
 6. Give every consumed-surface difference an explicit compatible, adapted, or blocking disposition, and record the result of every feasibility or realization gate the consuming specification defines.
 7. Reconcile NanoCore's Codex adapter if request, response, notification, or error schemas changed in a way that affects normalization.

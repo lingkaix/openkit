@@ -63,7 +63,7 @@ async function fixture(value: 'off' | 'on') {
 describe('incremental Codex capture', () => {
   it('retains a complete native ancestry fault as a gap without failing collection finalization', async () => {
     const f = await fixture('on');
-    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
     try {
       await writeFile(f.path('root'), lines(meta('root')));
       await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
@@ -119,7 +119,8 @@ describe('incremental Codex capture', () => {
           }
         },
       },
-      f.home
+      f.home,
+      '0.153.4'
     );
     try {
       await writeFile(f.path('root'), lines(meta('root')));
@@ -173,7 +174,7 @@ describe('incremental Codex capture', () => {
 
   it('does not tail a descendant through duplicated child ancestry', async () => {
     const f = await fixture('on');
-    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
     try {
       await writeFile(f.path('root'), lines(meta('root')));
       await writeFile(f.path('child'), lines(meta('child', 'root')));
@@ -230,7 +231,8 @@ describe('incremental Codex capture', () => {
           await f.input.emit(record, body);
         },
       },
-      f.home
+      f.home,
+      '0.153.4'
     );
     try {
       await writeFile(f.path('root'), lines(meta('root')));
@@ -265,7 +267,7 @@ describe('incremental Codex capture', () => {
     'off',
   ] as const)('retains nested child activity before quiet parent completion with capture %s', async (value) => {
     const f = await fixture(value);
-    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
     const text = '  child outward 💡\n\n';
     const args = ' {"command":"read file"}  ';
     const result = '  exact result\n';
@@ -405,7 +407,7 @@ describe('incremental Codex capture', () => {
         payload: { type: 'agent_message', message: 'foreign-canary' },
       })
     );
-    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
     try {
       await appendFile(
         f.path('root'),
@@ -446,7 +448,7 @@ describe('incremental Codex capture', () => {
 
   it('preserves empty/Unicode bodies, rejects credentials and reports partial or missing sources', async () => {
     const f = await fixture('on');
-    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
     try {
       await writeFile(f.path('root'), lines(meta('root')));
       const bytes = Buffer.from(
@@ -509,7 +511,7 @@ describe('incremental Codex capture', () => {
 
   it('does not re-admit copied ancestor history before the child-owned settings boundary', async () => {
     const f = await fixture('on');
-    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
     try {
       const childMeta = meta('child', 'root');
       await writeFile(f.path('root'), lines(meta('root')));
@@ -544,7 +546,7 @@ describe('incremental Codex capture', () => {
 
   it('reports a removed reachable source after admitting its earlier complete content', async () => {
     const f = await fixture('on');
-    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
     try {
       await writeFile(f.path('root'), lines(meta('root')));
       await writeFile(
@@ -569,7 +571,7 @@ describe('incremental Codex capture', () => {
 
   it('records a reachable version mismatch without admitting its body', async () => {
     const f = await fixture('on');
-    const capture = await CodexRuntimeCapture.create(f.input, f.home);
+    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
     try {
       await writeFile(f.path('root'), lines(meta('root')));
       await writeFile(
@@ -606,7 +608,7 @@ it('restores resumed child parser eligibility at the pre-launch watermark withou
       { type: 'event_msg', payload: { type: 'agent_message', message: 'historical body' } }
     )
   );
-  const capture = await CodexRuntimeCapture.create(f.input, f.home);
+  const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
   try {
     await appendFile(
       f.path('child'),
@@ -634,7 +636,7 @@ it('does not report a watermarked child as current-Turn activity without new sou
       payload: { type: 'agent_message', message: 'earlier Turn only' },
     })
   );
-  const capture = await CodexRuntimeCapture.create(f.input, f.home);
+  const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
   try {
     await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
     await capture.finalize();
@@ -655,7 +657,7 @@ it('does not report a watermarked child as current-Turn activity without new sou
 
 it('treats all anonymous outward message fields as one credential-admission unit', async () => {
   const f = await fixture('on');
-  const capture = await CodexRuntimeCapture.create(f.input, f.home);
+  const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
   try {
     await writeFile(f.path('root'), lines(meta('root')));
     await writeFile(
@@ -683,6 +685,37 @@ it('treats all anonymous outward message fields as one credential-admission unit
     ).toBe(true);
   } finally {
     await capture.invalidate();
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+it('trusts an App Server rollout only when create is given that cli_version', async () => {
+  const f = await fixture('on');
+  const mismatched = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
+  try {
+    await writeFile(f.path('root'), lines(meta('root', undefined, '0.159.2')));
+    await mismatched.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+    await mismatched.finalize();
+    expect(
+      f.received.some(
+        ({ record }) => record.fact.kind === 'coverage' && record.fact.reason === 'version-mismatch'
+      )
+    ).toBe(true);
+  } finally {
+    await mismatched.invalidate();
+  }
+  f.received.length = 0;
+  const matched = await CodexRuntimeCapture.create(f.input, f.home, '0.159.2');
+  try {
+    await matched.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+    await matched.finalize();
+    expect(
+      f.received.some(
+        ({ record }) => record.fact.kind === 'coverage' && record.fact.reason === 'version-mismatch'
+      )
+    ).toBe(false);
+  } finally {
+    await matched.invalidate();
     await rm(f.home, { recursive: true, force: true });
   }
 });

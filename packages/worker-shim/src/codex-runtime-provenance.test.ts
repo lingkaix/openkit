@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -7,7 +8,7 @@ import {
   WorkerRuntimeNativeOriginIndexEntrySchema,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CodexRuntimeProvenanceCapture } from './codex-runtime-provenance.js';
 
 const LINEAGE: WorkerLineage = {
@@ -372,6 +373,35 @@ describe('Codex runtime provenance capture', () => {
     });
   });
 
+  it('does not index bytes that a failed raw-file write never retained', async () => {
+    const fixture = provenanceFixture();
+    installRollout(fixture.codexHome, 'root.jsonl', [
+      sessionMeta({ sessionId: 'session-root', threadId: 'thread-root' }),
+    ]);
+    const capture = new CodexRuntimeProvenanceCapture(fixture.options);
+    const probe = await open(join(fixture.codexHome, 'write-probe'), 'w');
+    const writes = vi.spyOn(Object.getPrototypeOf(probe), 'write');
+    await probe.close();
+    writes.mockRejectedValueOnce(new Error('injected raw write failure'));
+    try {
+      await expect(capture.writePrimaryChunk(primaryExec('thread-root'))).rejects.toThrow(
+        'injected raw write failure'
+      );
+    } finally {
+      writes.mockRestore();
+    }
+    await capture.finalize();
+    const manifest = WorkerRuntimeRawStreamManifestSchema.parse(
+      readJson(fixture.streamManifestPath)
+    );
+    expect(manifest.captureStatus).toBe('failed');
+    expect(manifest.streams[0]).toMatchObject({ bytes: 0, frameCount: 0 });
+    expect(readFileSync(join(fixture.rawStreamsRoot, 'stream-0000.jsonl'))).toEqual(
+      Buffer.alloc(0)
+    );
+    expect(readIndex(fixture.nativeOriginIndexPath)).toEqual([]);
+  });
+
   it('stops retaining raw bytes at the global frame hard cap and indexes every retained frame', async () => {
     const fixture = provenanceFixture({ maxStreamCount: 2 });
     installRollout(fixture.codexHome, 'root.jsonl', [
@@ -386,8 +416,19 @@ describe('Codex runtime provenance capture', () => {
     const retainedPrimary = Buffer.from(`${frames.slice(0, RETAINED_FRAME_HARD_CAP).join('\n')}\n`);
     const capture = new CodexRuntimeProvenanceCapture(fixture.options);
 
-    await capture.writePrimaryChunk(Buffer.from(`${frames.join('\n')}\n`));
-    await capture.finalize();
+    // Count actual filesystem writes: a bounded frame cap must not require one syscall per frame.
+    const probe = await open(join(fixture.codexHome, 'write-probe'), 'w');
+    const writes = vi.spyOn(Object.getPrototypeOf(probe), 'write');
+    await probe.close();
+    let writeCount: number;
+    try {
+      await capture.writePrimaryChunk(Buffer.from(`${frames.join('\n')}\n`));
+      await capture.finalize();
+      writeCount = writes.mock.calls.length;
+    } finally {
+      writes.mockRestore();
+    }
+    expect(writeCount).toBeLessThan(128);
 
     const manifest = WorkerRuntimeRawStreamManifestSchema.parse(
       readJson(fixture.streamManifestPath)

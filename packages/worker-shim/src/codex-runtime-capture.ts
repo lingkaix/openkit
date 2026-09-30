@@ -59,10 +59,14 @@ export class CodexRuntimeCapture {
   private initialScanFailed = false;
   private readonly primaryRef: string;
 
-  /** Creates the reader; use create() to establish pre-launch retained-file watermarks. */
+  /**
+   * Creates the reader. `adapterVersion` is the rollout `cli_version` this capture trusts.
+   * The caller passes that version. Historical fixtures pass `0.153.4`. The resident adapter passes its pin.
+   */
   private constructor(
     private readonly input: RuntimeCaptureInput,
-    private readonly codexHome: string
+    private readonly codexHome: string,
+    private readonly adapterVersion: string
   ) {
     this.primaryRef = runtimeRef('rts', input.packageSnapshotId, 'stdout');
     this.semantic = new RuntimeSemanticCapture(input);
@@ -98,9 +102,10 @@ export class CodexRuntimeCapture {
   /** Snapshots source positions before native launch, without reading historical bodies. */
   public static async create(
     input: RuntimeCaptureInput,
-    codexHome: string
+    codexHome: string,
+    adapterVersion: string
   ): Promise<CodexRuntimeCapture> {
-    const capture = new CodexRuntimeCapture(input, codexHome);
+    const capture = new CodexRuntimeCapture(input, codexHome, adapterVersion);
     let files: Awaited<ReturnType<typeof listRolloutFiles>>;
     try {
       files = await listRolloutFiles(join(codexHome, 'sessions'));
@@ -112,7 +117,7 @@ export class CodexRuntimeCapture {
     for (const path of files.paths) {
       let candidate: RolloutCandidate | null;
       try {
-        candidate = await readRolloutCandidate(path, '0.153.4');
+        candidate = await readRolloutCandidate(path, capture.adapterVersion);
       } catch {
         capture.untrustedPaths.add(path);
         continue;
@@ -251,7 +256,7 @@ export class CodexRuntimeCapture {
       if (this.untrustedPaths.has(path)) continue;
       let candidate: RolloutCandidate | null;
       try {
-        candidate = await readRolloutCandidate(path, '0.153.4');
+        candidate = await readRolloutCandidate(path, this.adapterVersion);
       } catch {
         this.untrustedPaths.add(path);
         await this.gap(this.primaryRef, 'child-metadata', 'collector-failed');

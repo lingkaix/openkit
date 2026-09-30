@@ -208,6 +208,10 @@ export class CodexRuntimeProvenanceCapture {
 
   private indexHandle: FileHandle | null = null;
 
+  private indexChunks: Buffer[] = [];
+
+  private indexChunkBytes = 0;
+
   private primary: RawStreamCapture | null = null;
 
   private initialized = false;
@@ -330,7 +334,8 @@ export class CodexRuntimeProvenanceCapture {
         const parsed = this.parsePrimaryFrame(frame.bytes, frame.truncated);
         await this.writeIndexEntry(PRIMARY_STREAM_REF, coordinates, frame.sha256, parsed);
       },
-      canStartFrame: () => this.retainedFrames < MAX_RETAINED_FRAMES,
+      canStartFrame: (completedFramesAhead = 0) =>
+        this.retainedFrames + completedFramesAhead < MAX_RETAINED_FRAMES,
       path: join(this.options.rawStreamsRoot, PRIMARY_STREAM_REF),
       sourceKind: 'primary',
       streamRef: PRIMARY_STREAM_REF,
@@ -496,7 +501,8 @@ export class CodexRuntimeProvenanceCapture {
         const parsed = this.parseRolloutFrame(frame.bytes, frame.truncated, context);
         await this.writeIndexEntry(streamRef, coordinates, frame.sha256, parsed);
       },
-      canStartFrame: () => this.retainedFrames < MAX_RETAINED_FRAMES,
+      canStartFrame: (completedFramesAhead = 0) =>
+        this.retainedFrames + completedFramesAhead < MAX_RETAINED_FRAMES,
       path: join(this.options.rawStreamsRoot, streamRef),
       sourceKind: 'runtime-thread',
       streamRef,
@@ -612,8 +618,20 @@ export class CodexRuntimeProvenanceCapture {
       schemaVersion: 1,
       streamRef,
     });
-    await writeAll(this.indexHandle, Buffer.from(`${JSON.stringify(entry)}\n`));
+    const bytes = Buffer.from(`${JSON.stringify(entry)}\n`);
+    this.indexChunks.push(bytes);
+    this.indexChunkBytes += bytes.byteLength;
     this.retainedFrames += 1;
+    if (this.indexChunkBytes >= 64 * 1024) await this.flushIndex();
+  }
+
+  /** Batches bounded validated entries; only the manifest makes the completed index observable. */
+  private async flushIndex(): Promise<void> {
+    if (!this.indexHandle) throw new Error('Codex runtime provenance index is not initialized.');
+    if (this.indexChunkBytes === 0) return;
+    await writeAll(this.indexHandle, Buffer.concat(this.indexChunks, this.indexChunkBytes));
+    this.indexChunks = [];
+    this.indexChunkBytes = 0;
   }
 
   /** Atomically publishes the index first and the manifest commit marker last. */
@@ -621,6 +639,7 @@ export class CodexRuntimeProvenanceCapture {
     if (!this.indexHandle) {
       throw new Error('Codex runtime provenance index is not initialized.');
     }
+    await this.flushIndex();
     await this.indexHandle.close();
     this.indexHandle = null;
     await rename(this.temporaryIndexPath(), this.options.nativeOriginIndexPath);
@@ -998,8 +1017,8 @@ interface FinalizedFrame {
 
 /** Creation options for one streamed raw file. */
 interface RawStreamCaptureOptions {
-  /** Returns whether another physical frame may be retained globally. */
-  canStartFrame: () => boolean;
+  /** Checks the shared budget after the proposed completed frames, before retaining another frame. */
+  canStartFrame: (completedFramesAhead?: number) => boolean;
   /** Frame callback used to append index entries. */
   onFrame: (frame: FinalizedFrame, coordinates: FrameCoordinates) => Promise<void>;
   /** Synthetic raw file path. */
@@ -1056,7 +1075,7 @@ class RawStreamCapture {
   }
 
   /**
-   * Writes exact retained bytes and emits every LF-terminated physical frame.
+   * Writes the capped raw prefix before indexing its LF-terminated physical frames.
    *
    * @param chunk Retained raw bytes.
    * @returns Number of input bytes retained before any global frame cap.
@@ -1066,17 +1085,30 @@ class RawStreamCapture {
       throw new Error(`Runtime stream ${this.options.streamRef} is already finished.`);
     }
     const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-    let cursor = 0;
-
-    while (cursor < bytes.byteLength) {
-      if (this.frameBytes === 0 && !this.options.canStartFrame()) {
+    let retainedEnd = 0;
+    let completedFramesAhead = 0;
+    let startingFrame = this.frameBytes === 0;
+    // Plan the capped prefix without publishing frame accounting before its physical write.
+    while (retainedEnd < bytes.byteLength) {
+      if (startingFrame && !this.options.canStartFrame(completedFramesAhead)) {
         this.markTruncated();
         break;
       }
-      const newline = bytes.indexOf(0x0a, cursor);
-      const end = newline === -1 ? bytes.byteLength : newline + 1;
-      const segment = bytes.subarray(cursor, end);
-      await writeAll(this.handle, segment);
+      const newline = bytes.indexOf(0x0a, retainedEnd);
+      retainedEnd = newline === -1 ? bytes.byteLength : newline + 1;
+      if (newline !== -1) {
+        completedFramesAhead += 1;
+        startingFrame = true;
+      }
+    }
+    const retained = bytes.subarray(0, retainedEnd);
+    await writeAll(this.handle, retained);
+    let cursor = 0;
+
+    while (cursor < retained.byteLength) {
+      const newline = retained.indexOf(0x0a, cursor);
+      const end = newline === -1 ? retained.byteLength : newline + 1;
+      const segment = retained.subarray(cursor, end);
       this.streamHash.update(segment);
       this.bytes += segment.byteLength;
       this.appendFrameSegment(segment);
