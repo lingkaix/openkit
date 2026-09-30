@@ -23,6 +23,7 @@ const WORKER_CONTROL_MAX_BYTES = 1024 * 1024;
 const INFERENCE_MAX_BYTES = 16 * 1024 * 1024;
 const CAPABILITY_MAX_BYTES = 512 * 1024;
 const MAX_HTTP2_WRITE_BYTES = 64 * 1024;
+const LOOPBACK_CREDENTIAL_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const FORBIDDEN_REQUEST_HEADERS = new Set([
   'connection',
   'host',
@@ -38,8 +39,20 @@ const FORBIDDEN_REQUEST_HEADERS = new Set([
 /** Fixed image-owned loopback target dialed by the stock OpenShell Supervisor. */
 export const SANDBOX_INTEGRATION_TARGET = '127.0.0.1:17891' as const;
 
-/** Fixed image-owned HTTP/1 ingress used only by native inference clients. */
+/** Fixed image-owned HTTP/1 ingress used only by native inference and capability clients. */
 export const SANDBOX_NATIVE_INFERENCE_TARGET = '127.0.0.1:17892' as const;
+
+/** Fixed native inference base URL a resident runtime calls with its inference loopback credential. */
+export const SANDBOX_NATIVE_INFERENCE_BASE_URL = `http://${SANDBOX_NATIVE_INFERENCE_TARGET}/inference/v1`;
+
+/** Fixed native capability base URL; an MCP server id follows `/mcp/`. */
+export const SANDBOX_NATIVE_CAPABILITY_BASE_URL = `http://${SANDBOX_NATIVE_INFERENCE_TARGET}/capabilities`;
+
+/**
+ * Bound on the Turn-barrier drain of one AgentSession's in-flight loopback requests, owned by
+ * Worker Agent Capability; requests still open when it expires are cut and their results refused.
+ */
+export const SANDBOX_TURN_DRAIN_MS = 10_000;
 
 /** Complete route surface carried by the sandbox's single standard HTTP/2 session. */
 export const SANDBOX_INTEGRATION_ROUTE_NAMESPACES = [
@@ -54,6 +67,24 @@ const HARNESS_CONTROL_PATHS = new Set([
   '/worker-control/harness/poll',
   '/worker-control/harness/result',
 ]);
+
+/** The three upstream route tokens of the Turn bound to one AgentSession. */
+interface BoundTurnRoutes {
+  readonly capabilityToken: string;
+  readonly controlToken: string;
+  /** Set at the Turn barrier; new loopback requests are refused from then on. */
+  draining: boolean;
+  readonly inferenceToken: string;
+}
+
+/** One AgentSession's session loopback credentials and its current Turn binding. */
+interface LoopbackSession {
+  readonly capabilityCredential: string;
+  readonly inferenceCredential: string;
+  /** In-flight native requests attributed to the bound Turn. */
+  readonly inflight: Set<AbortController>;
+  turn: BoundTurnRoutes | null;
+}
 
 /** One streaming response returned by the route-bound Integration client. */
 type SandboxIntegrationResponse = {
@@ -70,9 +101,7 @@ type SandboxIntegrationResponse = {
 /** One accepted socket and its single standard HTTP/2 client session. */
 export class SandboxIntegrationClient {
   private acceptedSocket: Socket | null = null;
-  private capabilityToken: string | null = null;
-  private controlToken: string | null = null;
-  private inferenceToken: string | null = null;
+  private readonly loopbackSessions = new Map<string, LoopbackSession>();
   private readonly nativeRequests = new Set<AbortController>();
   private readonly nativeServer: HttpServer;
   private readyState = false;
@@ -130,37 +159,141 @@ export class SandboxIntegrationClient {
     return collectBoundedResponse(response, WORKER_CONTROL_MAX_BYTES, 'Harness-control');
   }
 
-  /** Binds the distinct route tokens for one active Turn only. */
-  public bindTurnRouteTokens(tokens: {
-    capabilityToken?: string | undefined;
-    controlToken: string;
-    inferenceToken: string;
-  }): void {
-    const capabilityToken = tokens.capabilityToken?.trim() || null;
-    const controlToken = tokens.controlToken.trim();
-    const inferenceToken = tokens.inferenceToken.trim();
+  /**
+   * Registers one AgentSession's two session loopback credentials delivered by `session.open`.
+   *
+   * @param agentSessionId Exact AgentSession the credentials belong to.
+   * @param credentials The inference and capability loopback credentials.
+   */
+  public registerSessionLoopback(
+    agentSessionId: string,
+    credentials: { readonly capabilityCredential: string; readonly inferenceCredential: string }
+  ): void {
+    const { capabilityCredential, inferenceCredential } = credentials;
     if (
+      !LOOPBACK_CREDENTIAL_PATTERN.test(capabilityCredential) ||
+      !LOOPBACK_CREDENTIAL_PATTERN.test(inferenceCredential) ||
+      capabilityCredential === inferenceCredential
+    ) {
+      throw new Error('Sandbox Integration requires two distinct session loopback credentials.');
+    }
+    if (this.loopbackSessions.has(agentSessionId)) {
+      throw new Error('Sandbox Integration AgentSession loopback is already registered.');
+    }
+    for (const session of this.loopbackSessions.values()) {
+      if (
+        [session.capabilityCredential, session.inferenceCredential].some(
+          (value) => value === capabilityCredential || value === inferenceCredential
+        )
+      ) {
+        throw new Error('Sandbox Integration session loopback credential is already in use.');
+      }
+    }
+    this.loopbackSessions.set(agentSessionId, {
+      capabilityCredential,
+      inferenceCredential,
+      inflight: new Set(),
+      turn: null,
+    });
+  }
+
+  /**
+   * Destroys one AgentSession's loopback credentials at `session.close`, cutting any request.
+   *
+   * @param agentSessionId Exact closed AgentSession.
+   */
+  public destroySessionLoopback(agentSessionId: string): void {
+    const session = this.loopbackSessions.get(agentSessionId);
+    if (!session) {
+      return;
+    }
+    this.loopbackSessions.delete(agentSessionId);
+    for (const request of session.inflight) {
+      request.abort();
+    }
+    session.inflight.clear();
+    session.turn = null;
+  }
+
+  /**
+   * Binds the three distinct upstream route tokens of one AgentSession's active Turn.
+   *
+   * @param agentSessionId AgentSession whose loopback requests the Turn now authorizes.
+   * @param tokens The Turn's upstream worker-control, inference, and capability tokens.
+   */
+  public bindTurnRouteTokens(
+    agentSessionId: string,
+    tokens: {
+      readonly capabilityToken: string;
+      readonly controlToken: string;
+      readonly inferenceToken: string;
+    }
+  ): void {
+    const session = this.loopbackSessions.get(agentSessionId);
+    if (!session) {
+      throw new Error('Sandbox Integration AgentSession loopback is not registered.');
+    }
+    if (session.turn) {
+      throw new Error('Sandbox Integration Turn route tokens are already bound.');
+    }
+    const { capabilityToken, controlToken, inferenceToken } = tokens;
+    if (
+      !capabilityToken ||
       !controlToken ||
       !inferenceToken ||
-      controlToken === inferenceToken ||
-      capabilityToken === controlToken ||
-      capabilityToken === inferenceToken
+      new Set([capabilityToken, controlToken, inferenceToken]).size !== 3
     ) {
       throw new Error('Sandbox Integration requires distinct non-empty Turn route tokens.');
     }
-    if (this.capabilityToken || this.controlToken || this.inferenceToken) {
-      throw new Error('Sandbox Integration Turn route tokens are already bound.');
-    }
-    this.capabilityToken = capabilityToken;
-    this.controlToken = controlToken;
-    this.inferenceToken = inferenceToken;
+    session.turn = { capabilityToken, controlToken, draining: false, inferenceToken };
   }
 
-  /** Clears all Turn-scoped route tokens at the Turn barrier. */
-  public clearTurnRouteTokens(): void {
-    this.capabilityToken = null;
-    this.controlToken = null;
-    this.inferenceToken = null;
+  /**
+   * Starts the Turn barrier: refuses new loopback requests, waits at most `timeoutMs` for the
+   * in-flight ones, then cuts the rest so their results never reach the runtime.
+   *
+   * @param agentSessionId AgentSession whose bound Turn reached its barrier.
+   * @param timeoutMs Drain bound; the owner's value is {@link SANDBOX_TURN_DRAIN_MS}.
+   * @returns The number of requests that were cut.
+   */
+  public async drainTurn(
+    agentSessionId: string,
+    timeoutMs = SANDBOX_TURN_DRAIN_MS
+  ): Promise<number> {
+    const session = this.loopbackSessions.get(agentSessionId);
+    if (!session?.turn) {
+      return 0;
+    }
+    session.turn.draining = true;
+    const deadline = performance.now() + timeoutMs;
+    while (session.inflight.size > 0 && performance.now() < deadline) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(1, Math.min(25, deadline - performance.now())))
+      );
+    }
+    const cut = session.inflight.size;
+    for (const request of session.inflight) {
+      request.abort();
+    }
+    session.inflight.clear();
+    return cut;
+  }
+
+  /**
+   * Clears one AgentSession's Turn route tokens after its barrier.
+   *
+   * @param agentSessionId AgentSession whose Turn ended.
+   */
+  public clearTurnRouteTokens(agentSessionId: string): void {
+    const session = this.loopbackSessions.get(agentSessionId);
+    if (!session) {
+      return;
+    }
+    for (const request of session.inflight) {
+      request.abort();
+    }
+    session.inflight.clear();
+    session.turn = null;
   }
 
   /**
@@ -233,13 +366,7 @@ export class SandboxIntegrationClient {
     if (HARNESS_CONTROL_PATHS.has(path)) {
       requireCredentialFreeHarnessHeaders(init.headers);
     } else {
-      requireRouteToken(
-        family,
-        init.headers,
-        this.capabilityToken,
-        this.controlToken,
-        this.inferenceToken
-      );
+      requireRouteToken(family, init.headers, this.boundTurns());
     }
     const session = this.session;
     if (!session || session.closed || session.destroyed) {
@@ -291,19 +418,23 @@ export class SandboxIntegrationClient {
       return;
     }
     let headers: Record<string, string>;
+    let session: LoopbackSession;
     try {
       headers = nativeRequestHeaders(request);
-      requireRouteToken(
-        family,
-        headers,
-        this.capabilityToken,
-        this.controlToken,
-        this.inferenceToken
-      );
+      session = this.requireLoopbackSession(family, headers.authorization);
     } catch {
       rejectNativeRequest(request, response, 401);
       return;
     }
+    const turn = session.turn;
+    if (!turn || turn.draining) {
+      // Idle supplies no authority: with no Turn bound every loopback request is refused.
+      rejectNativeRequest(request, response, 403);
+      return;
+    }
+    headers.authorization = `Bearer ${
+      family === 'inference' ? turn.inferenceToken : turn.capabilityToken
+    }`;
     const maxBytes = family === 'inference' ? INFERENCE_MAX_BYTES : CAPABILITY_MAX_BYTES;
     const declaredLength = Number(request.headers['content-length'] ?? 0);
     if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
@@ -318,11 +449,20 @@ export class SandboxIntegrationClient {
         cancel();
       }
     };
+    // A cut covers the whole HTTP/1 lifetime: a body still uploading and a response still
+    // streaming end at once, and no late byte reaches the runtime or a later Turn.
+    const cut = () => {
+      request.destroy();
+      response.destroy();
+    };
     this.nativeRequests.add(abort);
+    session.inflight.add(abort);
+    abort.signal.addEventListener('abort', cut, { once: true });
     request.once('aborted', cancel);
     response.once('close', cancelIfIncomplete);
     try {
       const body = await collectNativeRequest(request, maxBytes);
+      abort.signal.throwIfAborted();
       const upstream = await this.request(path, {
         body,
         headers,
@@ -343,12 +483,46 @@ export class SandboxIntegrationClient {
         } else {
           response.destroy();
         }
+      } else {
+        // A cut request's result is refused: the runtime never receives its response.
+        response.destroy();
       }
     } finally {
+      abort.signal.removeEventListener('abort', cut);
       request.off('aborted', cancel);
       response.off('close', cancelIfIncomplete);
       this.nativeRequests.delete(abort);
+      session.inflight.delete(abort);
     }
+  }
+
+  /** Lists the route tokens of every currently bound Turn. */
+  private boundTurns(): BoundTurnRoutes[] {
+    return [...this.loopbackSessions.values()].flatMap((session) =>
+      session.turn ? [session.turn] : []
+    );
+  }
+
+  /**
+   * Maps one native bearer to the AgentSession that owns it for exactly that route family.
+   *
+   * @param family Route family of the requested path.
+   * @param authorization The single native authorization header value.
+   * @returns The owning AgentSession.
+   */
+  private requireLoopbackSession(
+    family: RouteFamily,
+    authorization: string | undefined
+  ): LoopbackSession {
+    const credential = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
+    for (const session of this.loopbackSessions.values()) {
+      const expected =
+        family === 'inference' ? session.inferenceCredential : session.capabilityCredential;
+      if (credential === expected) {
+        return session;
+      }
+    }
+    throw new TypeError(`Sandbox Integration rejected the ${family} loopback credential.`);
   }
 
   /** Closes both listeners, active native requests, accepted socket, and H2 session. */
@@ -445,27 +619,26 @@ function routeFamily(path: string): RouteFamily {
   throw new TypeError('Sandbox Integration route namespace is not declared.');
 }
 
-/** Rejects missing, shared, or cross-family bearer credentials before carriage. */
+/** Rejects a bearer that is not the same-family route token of a currently bound Turn. */
 function requireRouteToken(
   family: RouteFamily,
   headers: Record<string, string>,
-  capabilityToken: string | null,
-  controlToken: string | null,
-  inferenceToken: string | null
+  turns: readonly BoundTurnRoutes[]
 ): void {
   const authorization = Object.entries(headers).find(
     ([name]) => name.toLowerCase() === 'authorization'
   )?.[1];
-  const expected =
+  const expected = turns.map((turn) =>
     family === 'worker-control'
-      ? controlToken
+      ? turn.controlToken
       : family === 'inference'
-        ? inferenceToken
-        : capabilityToken;
-  if (!expected) {
+        ? turn.inferenceToken
+        : turn.capabilityToken
+  );
+  if (expected.length === 0) {
     throw new TypeError(`Sandbox Integration ${family} route token is not bound.`);
   }
-  if (authorization !== `Bearer ${expected}`) {
+  if (!expected.some((token) => authorization === `Bearer ${token}`)) {
     throw new TypeError(`Sandbox Integration rejected the ${family} route token.`);
   }
 }

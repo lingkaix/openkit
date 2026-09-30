@@ -125,6 +125,7 @@ import {
   type WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceCapacityUnavailableError,
   type WorkerGovernanceEvidenceRecord,
+  type WorkerGovernanceNativeResume,
   type WorkerGovernanceWorkspaceChangeRecord,
 } from './worker-governance-backend.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
@@ -159,6 +160,45 @@ function workerGovernanceContinuityDisposition(
   result: WorkerGovernanceAgentSessionContinuityDisposition
 ): 'reusable' | 'replacement-required' | 'sandbox-replacement-required' | 'closed' | 'absent' {
   return typeof result === 'string' ? result : result.disposition;
+}
+
+/**
+ * Selects the resume pair a successor's new binding presents, or null to start a new native
+ * conversation. The predecessor is the Thread's latest-created other AgentSession: a Thread holds
+ * at most one current AgentSession, and a successor is created only after its predecessor is
+ * terminal, so creation order is predecessor order. A predecessor with an accepted ready proof
+ * supplies its own pair. One without proof never had a resumed open accepted, or lost only the
+ * record of one, because a resumed open proves the resume pair's exact digest; either way the
+ * Thread's retained conversation is the one the predecessor would have resumed, so the walk moves
+ * to the next earlier AgentSession. Unproved native state is never inherited, so a Thread with no
+ * accepted proof starts a new conversation.
+ *
+ * @param agentSessions Every AgentSession of the Thread.
+ * @param successorId AgentSession the new binding belongs to, excluded from the walk.
+ * @throws TurnStartValidationError when equal creation times leave the walked order unproved.
+ */
+function selectThreadNativeResume(
+  agentSessions: readonly ReturnType<FsStore['getAgentSession']>[],
+  successorId: string
+): WorkerGovernanceNativeResume | null {
+  const ordered = agentSessions
+    .filter((candidate) => candidate.id !== successorId)
+    .sort((left, right) =>
+      left.createdAt === right.createdAt ? 0 : left.createdAt < right.createdAt ? 1 : -1
+    );
+  for (const [index, candidate] of ordered.entries()) {
+    if (ordered[index + 1]?.createdAt === candidate.createdAt) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The Thread AgentSession order is ambiguous, so its resume predecessor is unproved.',
+        409
+      );
+    }
+    if (candidate.nativeHandleDigest !== null) {
+      return { digest: candidate.nativeHandleDigest, locator: candidate.id };
+    }
+  }
+  return null;
 }
 
 /** Mutable exact-backend lifecycle retained while one turn executes and cleans up. */
@@ -668,7 +708,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.capabilities = {
       approvals: false,
       artifacts: true,
-      interrupts: Boolean(options.workerControlGateway),
+      interrupts: Boolean(options.workerControlGateway && options.backend.interruptTurn),
       questions: false,
       workspaceConfig: true,
       workspaceKnowledgeEditing: false,
@@ -1478,6 +1518,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
+      let nativeResume: WorkerGovernanceNativeResume | null;
+      try {
+        nativeResume = selectThreadNativeResume(threadAgentSessions, resolvedAgentSessionId);
+      } catch (error) {
+        agentSessionId = null;
+        throw error;
+      }
       const agentSession = existingAgentSession
         ? store.updateAgentSession(existingAgentSession.id, {
             configVersion: turn.configVersion,
@@ -1579,10 +1626,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ...(context.workerStorageChoice
           ? { workerStorageChoice: context.workerStorageChoice }
           : {}),
+        nativeResume,
         workspaceRoots: preparedWorkerContext
           ? [...context.workspaceRoots, preparedWorkerContext.preparedContextPackage.workspaceRoot]
           : context.workspaceRoots,
       });
+      this.bindNativeHandleRecorder(store, environmentPackage);
       if (backendLifecycle.session) {
         backendLifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
           fromState: 'materializing',
@@ -1658,8 +1707,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       await this.backend.launch(materialization);
-      for (const receipt of credentialReceipts) {
-        createVaultInjectionReceipt(this.coreDb!, { ...receipt, injectedAt: this.now() });
+      // Credential material is delivered once at `session.open`; a reused binding receives none.
+      if (!existingAgentSession) {
+        for (const receipt of credentialReceipts) {
+          createVaultInjectionReceipt(this.coreDb!, { ...receipt, injectedAt: this.now() });
+        }
       }
 
       if (this.awaitWorkerCompletion && completionLeaseId) {
@@ -1819,6 +1871,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       session,
       this.backend.planSession(environmentPackage)
     );
+    this.bindNativeHandleRecorder(store, environmentPackage);
     const turn = store.getTurnById(environmentPackage.scope.turnId);
     const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
       agentSessionId: environmentPackage.scope.agentSessionId,
@@ -1973,13 +2026,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Enqueues one interrupt for the exact live worker attempt without terminalizing it.
+   * Interrupts the exact live worker attempt through the backend's private Harness channel
+   * without terminalizing it; the Turn settles through its normal closeout.
    *
    * @param store Store that owns the turn and AgentSession.
    * @param turnId Turn id to interrupt.
    * @param _context Runtime command context.
-   * @returns Promise resolved after the interrupt is queued.
-   * @throws Error when no shared gateway or exact live lineage exists.
+   * @returns Promise resolved after the backend accepted the interrupt.
+   * @throws Error when the backend cannot interrupt or no exact live lineage exists.
    */
   public async interruptTurn(
     store: FsStore,
@@ -1987,7 +2041,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     _context: TurnCommandRuntimeContext = { requestId: null }
   ): Promise<void> {
     const gateway = this.workerControlGateway;
-    if (!gateway) {
+    if (!gateway || !this.backend.interruptTurn) {
       throw new Error('The worker governance executor does not support turn interruption.');
     }
 
@@ -2014,11 +2068,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw new Error(`Turn worker lineage is not live and exact: ${turnId}`);
     }
 
-    if (this.backend.interruptTurn) {
-      await this.backend.interruptTurn(snapshot.packageSnapshotId);
-      return;
-    }
-    gateway.enqueueInterrupt(snapshot.packageSnapshotId, null);
+    await this.backend.interruptTurn(snapshot.packageSnapshotId);
   }
 
   /**
@@ -2231,6 +2281,30 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     } finally {
       releaseMutation?.();
     }
+  }
+
+  /**
+   * Binds the Turn's AgentSession as the durable owner of native ready proof the backend accepts,
+   * so the resume pair survives a failed Turn, a NanoCore restart, and the binding's close. With
+   * that AgentSession's id the digest forms the resume pair a successor presents.
+   *
+   * @param store Store that owns the AgentSession.
+   * @param environmentPackage Package of the live or restored Turn whose binding the backend holds.
+   * @throws Error when an accepted digest contradicts the recorded one.
+   */
+  public bindNativeHandleRecorder(
+    store: FsStore,
+    environmentPackage: AgentEnvironmentPackage
+  ): void {
+    const agentSessionId = environmentPackage.scope.agentSessionId;
+    this.backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
+      if (store.getAgentSession(agentSessionId).nativeHandleDigest !== digest) {
+        store.updateAgentSession(agentSessionId, {
+          nativeHandleDigest: digest,
+          updatedAt: this.now(),
+        });
+      }
+    });
   }
 
   /**
@@ -2763,6 +2837,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     packageSnapshotId: string | null
   ): void {
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
+    // Closeout already closed a binding it could not prove reusable; one that survives keeps its
+    // AgentSession current, because an unsuccessful Turn does not by itself end the conversation.
+    const agentSessionRetained =
+      this.backend.readThreadAgentSessionBinding?.({
+        threadId: turnScope.threadId,
+        workspaceId: turnScope.workspaceId,
+      })?.agentSessionId === agentSessionId;
     if (stopReason === 'ask_user') {
       const turn = store.getTurnById(turnScope.id);
       const session = store.getAgentSession(agentSessionId);
@@ -2785,6 +2866,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       terminalizeGovernedWorkerTurn({
         agentSessionId,
+        agentSessionRetained,
         completedAt: this.now(),
         errorCode: 'worker_human_gate_unavailable',
         message: WORKER_HUMAN_GATE_UNAVAILABLE_MESSAGE,
@@ -2806,6 +2888,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (stopReason === 'aborted') {
       terminalizeGovernedWorkerTurn({
         agentSessionId,
+        agentSessionRetained,
         completedAt: this.now(),
         errorCode: 'worker_governance_turn_cancelled',
         message: 'Worker reported an aborted terminal status.',
@@ -2850,6 +2933,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       // Project only the known Gateway category, never the request or bridge feature text.
       terminalizeGovernedWorkerTurn({
         agentSessionId,
+        agentSessionRetained,
         completedAt: this.now(),
         errorCode: 'unsupported_gateway_feature',
         message:
@@ -2861,12 +2945,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       });
       return;
     }
+    const failure = new Error(
+      `Worker reported terminal status: ${accepted.status}.${inferenceDetail}`
+    );
     this.failTurn(
       store,
       turnScope,
       agentSessionId,
       requestId,
-      new Error(`Worker reported terminal status: ${accepted.status}.${inferenceDetail}`)
+      failure,
+      failure,
+      agentSessionRetained
     );
   }
 
@@ -2933,6 +3022,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param requestId Request id.
    * @param error Failure reason, including cleanup errors.
    * @param primaryError Original execution failure whose safe observation survives cleanup.
+   * @param agentSessionRetained Whether the backend still holds the AgentSession's reusable binding.
    * @throws AggregateError when one or more terminal writes report a partial failure.
    */
   private failTurn(
@@ -2941,7 +3031,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     agentSessionId: string | null,
     requestId: string | null,
     error: unknown,
-    primaryError: unknown = error
+    primaryError: unknown = error,
+    agentSessionRetained = false
   ): void {
     const explanation = GitFailureExplanationSchema.safeParse(
       primaryError instanceof Error && 'explanation' in primaryError
@@ -2951,6 +3042,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const message = error instanceof Error ? error.message : 'The governed worker turn failed.';
     terminalizeGovernedWorkerTurn({
       agentSessionId,
+      agentSessionRetained,
       completedAt: this.now(),
       errorCode: 'worker_governance_turn_failed',
       ...(explanation.success ? { explanation: explanation.data } : {}),

@@ -38,6 +38,7 @@ import {
   copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
+  drainNanoHostHarnessAdmission,
   expireNanoHostHarnessQueuedOperation,
   fenceNanoHostSandboxRuntime,
   inspectNanoHostAgentSessionContinuity,
@@ -47,7 +48,6 @@ import {
   type NanoHostHarnessCommand,
   type NanoHostHarnessOperation,
   type NanoHostHarnessResult,
-  nanoHostAdapterMode,
   openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
   readNanoHostThreadAgentSessionBinding,
@@ -81,6 +81,7 @@ import type {
   WorkerGovernanceEvidenceRecord,
   WorkerGovernanceMaterializationContext,
   WorkerGovernanceMaterializationRecord,
+  WorkerGovernanceNativeResume,
   WorkerGovernanceRuntimeEnvCredential,
   WorkerGovernanceRuntimeFileCredential,
   WorkerGovernanceWorkspaceChangeRecord,
@@ -163,7 +164,7 @@ export interface CreateConfiguredTurnExecutorOptions {
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
 export interface ConfiguredWorkerLifecycleRuntime {
-  /** Binds private Turn route tokens and returns the command with ephemeral Vault values. */
+  /** Binds private Turn route tokens and returns `session.open` with its ephemeral Vault values. */
   readonly acceptNanoHostHarnessCommand: (
     command: NanoHostHarnessCommand
   ) => NanoHostHarnessCommand;
@@ -175,8 +176,6 @@ export interface ConfiguredWorkerLifecycleRuntime {
   ) => Promise<void>;
   /** Registers restart cleanup result identities before the transport listener exists. */
   readonly prepareBackendCleanup: (identity: WorkerGovernanceBackendSessionIdentity) => void;
-  /** Durably queues the existing Codex Harness stop for one MCP Approval Gate. */
-  readonly requestHumanGateStop: (packageSnapshotId: string) => void;
   /** Restores and closes one worker whose final status is already durable. */
   readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<{
     readonly status: 'cancelled' | 'completed' | 'failed' | 'interrupted';
@@ -315,7 +314,6 @@ function createNanoHostWorkerLifecycleRuntime(
   return {
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
-    requestHumanGateStop: (packageSnapshotId) => backend.requestHumanGateStop(packageSnapshotId),
     acceptNanoHostHarnessCommand: (command) => backend.acceptHarnessCommand(command),
     acceptNanoHostHarnessResult: (result) => backend.acceptHarnessResult(result),
     runtimeTargetKind: 'nanohost',
@@ -336,6 +334,12 @@ function createNanoHostWorkerLifecycleRuntime(
     restoreBackendSession: async (session) => {
       const environmentPackage = await restoreDurableSession(session);
       backend.restoreSession(environmentPackage, session.leaseId);
+      if (turnExecutor instanceof WorkerGovernanceTurnExecutor) {
+        turnExecutor.bindNativeHandleRecorder(
+          sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
+          environmentPackage
+        );
+      }
     },
     turnExecutor,
   };
@@ -345,8 +349,16 @@ function createNanoHostWorkerLifecycleRuntime(
 interface NanoHostBackendTurnSession {
   /** Verified Turn input bytes awaiting exact session admission; never restored or replayed. */
   pendingImports: NanoHostContextPackageImport[];
-  /** Live Vault material consumed once at private dispatch; never persisted or restored. */
+  /**
+   * Session-static Vault material consumed once at the `session.open` dispatch; never persisted
+   * or restored. A Turn that reuses an open binding drops it, because the resident host's
+   * environment was fixed when it started.
+   */
   runtimeEnvironment: Record<string, string> | null;
+  /** Predecessor resume pair for a new binding; null starts a new native conversation. */
+  readonly nativeResume: WorkerGovernanceNativeResume | null;
+  /** AgentSession owner bound by the executor; receives each accepted ready proof at once. */
+  recordNativeHandleDigest: ((digest: string) => void) | null;
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly evidence: WorkerGovernanceEvidenceRecord[];
   readonly agentSessionCompatibilityKey: string;
@@ -355,6 +367,10 @@ interface NanoHostBackendTurnSession {
   readonly harnessInstanceId: string;
   readonly identity: WorkerGovernanceBackendSessionIdentity;
   readonly leaseId: string;
+  /** Set when an accepted ready proof could not be written; cleanup must keep this binding row. */
+  acceptedProofUnrecorded?: boolean;
+  /** Set when a live refusal carried cleanup_required; this owner must widen cleanup. */
+  cleanupOwnershipRequired?: boolean;
   nativeSessionReusable: boolean;
   readonly sharedHarness: NanoHostSharedHarness;
   pendingHarnessOperation: PendingNanoHostHarnessOperation | null;
@@ -390,7 +406,7 @@ interface NanoHostSharedHarness {
       nextTurnSequence: number;
     }
   >;
-  readonly adapterId: 'codex' | 'opencode' | 'pi';
+  readonly adapterId: string;
   readonly adapterVersion: string;
   readonly harnessBindingRef: string;
   readonly harnessCompatibilityKey: string;
@@ -525,16 +541,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!pending || pending.operation !== command.operation || pending.operationId) {
       throw new Error('NanoHost dispatched operation does not match its live producer.');
     }
-    if (session && command.adapterId !== session.sharedHarness.adapterId) {
-      throw new Error('NanoHost dispatched operation selected the wrong Harness adapter.');
+    if (command.operation === 'session.open' && session?.runtimeEnvironment === null) {
+      throw new Error('NanoHost AgentSession credential material is unavailable.');
     }
     if (command.operation === 'turn.start') {
       if (!session) {
         throw new Error('NanoHost dispatched Turn has no live producer session.');
       }
       try {
-        if (session.runtimeEnvironment === null)
-          throw new Error('NanoHost Turn credential material is unavailable.');
         const leaseId = command.body.leaseId;
         const workerControlToken = command.body.workerControlToken;
         const workerInferenceToken = command.body.inferenceToken;
@@ -591,10 +605,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost dispatched operation has no exact Harness binding.');
     }
     pending.operationId = command.operationId;
-    if (command.operation === 'turn.start' && session) {
+    if (command.operation === 'session.open' && session) {
       const runtimeEnvironment = session.runtimeEnvironment!;
       session.runtimeEnvironment = null;
-      return { ...command, body: { ...command.body, runtimeEnvironment } };
+      return Object.keys(runtimeEnvironment).length === 0
+        ? command
+        : { ...command, body: { ...command.body, runtimeEnvironment } };
     }
     return command;
   }
@@ -642,12 +658,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       reason,
       startup.success ? startup.data : null
     );
+    if (session && result.disposition === 'refused' && reason === 'cleanup_required') {
+      session.cleanupOwnershipRequired = true;
+      drainNanoHostHarnessAdmission(this.coreDb, {
+        harnessBindingRef: session.harnessBindingRef,
+        timestamp: new Date().toISOString(),
+      });
+    }
     pending.reject(
       Object.assign(
         new Error(
           `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.${explanation}`
         ),
-        startup.success && startup.data.explanation ? { explanation: startup.data.explanation } : {}
+        {
+          ...(typeof reason === 'string' ? { reasonCode: reason } : {}),
+          ...(startup.success && startup.data.explanation
+            ? { explanation: startup.data.explanation }
+            : {}),
+        }
       )
     );
   }
@@ -731,7 +759,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     sandboxCompatibilityKey: string,
     harnessCompatibilityKey: string,
     runtimeTargetId: string,
-    adapterId: 'codex' | 'opencode' | 'pi',
+    adapterId: string,
     adapterVersion: string,
     durableOriginPhysicalEpoch?: string
   ): NanoHostSharedHarness | null {
@@ -903,7 +931,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       harnessInstanceId: sharedHarness.harnessInstanceId,
       identity,
       leaseId,
+      nativeResume: null,
       nativeSessionReusable: false,
+      recordNativeHandleDigest: null,
       pendingImports: [],
       runtimeEnvironment: null,
       pendingHarnessOperation: null,
@@ -1122,6 +1152,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         : 'closed';
     }
     if (input.reuseAllowed) {
+      // SessionCompatibilityKey omits supply; an absent desired package cannot prove the resident Harness still matches.
+      if (
+        !input.environmentPackage ||
+        nanoHostHarnessCompatibilityKey(input.environmentPackage) !==
+          inspection.harnessCompatibilityKey
+      ) {
+        return 'replacement-required';
+      }
       return inspection.reusable ? 'reusable' : 'replacement-required';
     }
     if (input.workerStorageChoice?.kind === 'selected') {
@@ -1275,7 +1313,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       durableBackend?.state === 'cleanup-pending'
         ? this.findWorkerStorageForFailedMaterialization(durableBackend)
         : null;
+    let retainUnrecordedProof = false;
     try {
+      if (session?.acceptedProofUnrecorded) {
+        // The binding row is the only retained copy. Do not close, delete, or drop this session.
+        retainUnrecordedProof = true;
+        drainNanoHostHarnessAdmission(this.coreDb, {
+          harnessBindingRef: session.harnessBindingRef,
+          timestamp: new Date().toISOString(),
+        });
+        throw new Error(
+          'NanoHost accepted native ready proof could not be recorded before cleanup.'
+        );
+      }
       if (this.failedPreSandboxPreparations.has(identity.packageSnapshotId)) {
         return;
       }
@@ -1313,25 +1363,43 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         await this.cleanupLivePartialMaterialization(identity, livePartial, pendingStorage);
         return;
       }
-      if (session?.turnStarted && session.terminalInspectionComplete) {
-        if (
-          (!session.nativeSessionReusable || options?.failedCloseout) &&
-          session.sharedHarness.bindings.has(session.environmentPackage.scope.agentSessionId)
-        ) {
+      const agentSessionId = session?.environmentPackage.scope.agentSessionId;
+      const closeUnprovedOwner =
+        !!session &&
+        session.turnStarted &&
+        !session.terminalInspectionComplete &&
+        !!session.cleanupOwnershipRequired &&
+        !!agentSessionId &&
+        session.sharedHarness.bindings.has(agentSessionId);
+      const closeInspectedBinding =
+        !!session &&
+        session.turnStarted &&
+        session.terminalInspectionComplete &&
+        (!session.nativeSessionReusable || !!options?.failedCloseout) &&
+        !!agentSessionId &&
+        session.sharedHarness.bindings.has(agentSessionId);
+      let widenCleanup = false;
+      if ((closeUnprovedOwner || closeInspectedBinding) && session) {
+        try {
           const closed = await this.queueAndWaitForHarnessOperation(session, 'session.close', {
             agentSessionId: session.environmentPackage.scope.agentSessionId,
             agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
           });
-          if (
-            closed.state !== 'closed' ||
-            closed.childState !== 'absent' ||
-            closed.privateState !== 'absent'
-          ) {
+          if (closed.state !== 'closed' || closed.privateState !== 'absent') {
             throw new Error('NanoHost Harness session.close result is incompatible.');
           }
           session.sharedHarness.bindings.delete(session.environmentPackage.scope.agentSessionId);
+        } catch (error) {
+          if (!isCleanupRequiredRefusal(error)) {
+            throw error;
+          }
+          // The still-live owner issues the first wider delete. A conflict stays a refusal.
+          widenCleanup = true;
         }
-      } else {
+      } else if (!(session?.turnStarted && session.terminalInspectionComplete)) {
+        widenCleanup = true;
+      }
+      if (widenCleanup) {
         try {
           const cleanupInput = {
             leaseId,
@@ -1414,11 +1482,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
       }
     } finally {
-      for (const stagingPath of session?.retainedStagingPaths ?? []) {
-        await removeNanoHostStagedExport(stagingPath).catch(() => undefined);
+      if (!retainUnrecordedProof) {
+        for (const stagingPath of session?.retainedStagingPaths ?? []) {
+          await removeNanoHostStagedExport(stagingPath).catch(() => undefined);
+        }
+        this.workerControlGateway?.unregisterSession(identity.packageSnapshotId);
+        this.sessions.delete(identity.packageSnapshotId);
       }
-      this.workerControlGateway?.unregisterSession(identity.packageSnapshotId);
-      this.sessions.delete(identity.packageSnapshotId);
       this.failedPreSandboxPreparations.delete(identity.packageSnapshotId);
     }
   }
@@ -1690,6 +1760,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
                 b.harness_instance_id AS harnessInstanceId,
                 h.harness_binding_ref AS harnessBindingRef,
+                h.harness_compatibility_key AS harnessCompatibilityKey,
                 b.lifecycle_state AS lifecycleState,
                 b.current_turn_id AS currentTurnId,
                 b.current_lease_id AS currentLeaseId,
@@ -1707,6 +1778,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly currentLeaseId: string | null;
       readonly currentTurnId: string | null;
       readonly harnessBindingRef: string;
+      readonly harnessCompatibilityKey: string;
       readonly harnessInstanceId: string;
       readonly lifecycleState: string;
     }>;
@@ -1745,6 +1817,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionId: binding.agentSessionId,
         agentSessionRuntimeBindingId: binding.agentSessionRuntimeBindingId,
         harnessBindingRef: binding.harnessBindingRef,
+        harnessCompatibilityKey: binding.harnessCompatibilityKey,
         harnessInstanceId: binding.harnessInstanceId,
         reusable: false,
       })),
@@ -2239,7 +2312,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       harnessInstanceId: sharedHarness.harnessInstanceId,
       identity,
       leaseId,
+      nativeResume: context.nativeResume ?? null,
       nativeSessionReusable: false,
+      recordNativeHandleDigest: null,
       pendingImports: [],
       runtimeEnvironment,
       pendingHarnessOperation: null,
@@ -2326,6 +2401,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       session.environmentPackage.scope.agentSessionId
     );
     if (!binding) {
+      // A resumed open must accept a ready proof, so the recorder is required before that dispatch; a new conversation may stay pending and is checked only once a ready digest is accepted.
+      if (session.nativeResume !== null && !session.recordNativeHandleDigest) {
+        throw new Error(
+          'NanoHost session.open requires its AgentSession recorder before dispatch.'
+        );
+      }
       openNanoHostAgentSessionBinding(this.coreDb, {
         agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
@@ -2342,34 +2423,41 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         effectiveSetupGeneration: 1,
-        storageRef: session.sharedHarness.sandbox.workerStorageBinding.storageRef,
+        resume: session.nativeResume,
         threadId: session.environmentPackage.scope.threadId,
-        workSlotRef: requireWorkerStorageWorkSlot(
-          session.sharedHarness.sandbox.workerStorageBinding,
-          session.environmentPackage.scope.threadId,
-          responsibleUserIdForActor(session.environmentPackage.scope.triggerActor)
-        ),
         workspaceId: session.environmentPackage.scope.workspaceId,
       });
+      // A resumed conversation proves the predecessor's exact handle at open; a new one may stay
+      // pending until its first Turn creates the conversation.
+      const openedReady =
+        opened.nativeHandleState === 'ready' &&
+        typeof opened.nativeHandleDigest === 'string' &&
+        /^[0-9a-f]{64}$/.test(opened.nativeHandleDigest);
       if (
         opened.state !== 'open' ||
-        opened.nativeHandleState !== 'pending' ||
-        opened.nativeHandleDigest !== null ||
-        opened.maxActiveTurns !== 1
+        opened.maxActiveTurns !== 1 ||
+        !(
+          openedReady ||
+          (opened.nativeHandleState === 'pending' && opened.nativeHandleDigest === null)
+        ) ||
+        (session.nativeResume !== null &&
+          (!openedReady || opened.nativeHandleDigest !== session.nativeResume.digest))
       ) {
         throw new Error('NanoHost Harness session.open result is incompatible.');
       }
       binding = {
         agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-        nativeHandleDigest: null,
+        nativeHandleDigest: openedReady ? (opened.nativeHandleDigest as string) : null,
         nextTurnSequence: 0,
       };
       session.sharedHarness.bindings.set(session.environmentPackage.scope.agentSessionId, binding);
-    } else {
-      if (nanoHostAdapterMode(session.sharedHarness.adapterId) !== 'session-continuity') {
-        throw new Error('NanoHost bounded-turn AgentSession bindings are not reusable.');
+      if (binding.nativeHandleDigest !== null) {
+        this.recordAcceptedNativeHandleDigest(session, binding.nativeHandleDigest);
       }
+    } else {
+      // The resident host fixed its environment at open; this Turn's resolved values are unused.
+      session.runtimeEnvironment = null;
       copyNanoHostMeasuredHarnessIdentity(this.coreDb, {
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         imageDigest: session.sharedHarness.sandbox.imageDigest,
@@ -2381,12 +2469,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       });
       if (
         inspected.state !== 'open' ||
-        inspected.childState !== 'absent' ||
         inspected.cleanupState !== 'clean' ||
         inspected.nativeHandleState !== 'ready' ||
         inspected.nativeHandleDigest !== binding.nativeHandleDigest
       ) {
-        throw new Error('NanoHost retained AgentSession is not ready for exact resume.');
+        throw new Error('NanoHost resident AgentSession is not ready for its next Turn.');
       }
     }
     const pendingImports = session.pendingImports;
@@ -2441,16 +2528,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return evidence;
   }
 
-  /** Delivers one interrupt through the sole owner selected by immutable adapter mode. */
+  /**
+   * Delivers one interrupt through private `turn.interrupt`, the sole interrupt owner. The
+   * cancelled Turn leaves the resident binding open; host liveness is not the cancel proof.
+   */
   public async interruptTurn(packageSnapshotId: string): Promise<void> {
     const session = this.requireSession(packageSnapshotId);
-    if (nanoHostAdapterMode(session.sharedHarness.adapterId) !== 'session-continuity') {
-      if (!this.workerControlGateway) {
-        throw new Error('NanoHost bounded-turn interruption requires the worker-control gateway.');
-      }
-      this.workerControlGateway.enqueueInterrupt(packageSnapshotId, null);
-      return;
-    }
     const settlement = this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -2458,7 +2541,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       purpose: 'interrupt',
       turnId: session.environmentPackage.scope.turnId,
     }).then((result) => {
-      if (result.state !== 'interrupted' || result.childState !== 'absent') {
+      if (result.state !== 'interrupted') {
         throw new Error('NanoHost Harness turn.interrupt result is incompatible.');
       }
     });
@@ -2466,25 +2549,42 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     await settlement;
   }
 
-  /** Queues one Gate-owned stop and leaves result settlement to the existing Harness owner. */
-  public requestHumanGateStop(packageSnapshotId: string): void {
+  /**
+   * Binds the AgentSession recorder for one live or restored Turn and hands it any ready proof
+   * the binding already holds, including one accepted before a NanoCore restart. Restored handoff
+   * uses the shared recorder boundary, so a throw keeps that proof's binding row.
+   */
+  public bindNativeHandleRecorder(
+    packageSnapshotId: string,
+    record: (digest: string) => void
+  ): void {
     const session = this.requireSession(packageSnapshotId);
-    if (session.sharedHarness.adapterId !== 'codex') {
-      throw new Error('Only the Codex session-continuity Harness accepts a human Gate stop.');
+    session.recordNativeHandleDigest = record;
+    const digest = session.sharedHarness.bindings.get(
+      session.environmentPackage.scope.agentSessionId
+    )?.nativeHandleDigest;
+    if (digest) {
+      this.recordAcceptedNativeHandleDigest(session, digest);
     }
-    const settlement = this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', {
-      agentSessionId: session.environmentPackage.scope.agentSessionId,
-      agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      leaseId: session.leaseId,
-      purpose: 'human-gate',
-      turnId: session.environmentPackage.scope.turnId,
-    }).then((result) => {
-      if (result.state !== 'interrupted' || result.childState !== 'absent') {
-        throw new Error('NanoHost Harness human Gate stop result is incompatible.');
-      }
-    });
-    session.turnStopSettlement = settlement;
-    void settlement.catch(() => undefined);
+  }
+
+  /**
+   * Hands one ready proof NanoCore just accepted to the AgentSession owner, which keeps it after
+   * the binding row closes. The proof is marked unrecorded before the recorder runs and cleared
+   * only after that exact digest is handed off, so a throw keeps the binding, the admission fence,
+   * and cleanup ownership. The SQLite binding commit precedes this synchronous write, so a crash
+   * between them leaves the proof on the binding row for the restart recorder bind to record.
+   */
+  private recordAcceptedNativeHandleDigest(
+    session: NanoHostBackendTurnSession,
+    digest: string
+  ): void {
+    session.acceptedProofUnrecorded = true;
+    if (!session.recordNativeHandleDigest) {
+      throw new Error('NanoHost accepted native ready proof without its AgentSession recorder.');
+    }
+    session.recordNativeHandleDigest(digest);
+    session.acceptedProofUnrecorded = false;
   }
 
   /** Validates an immutable update without performing a runtime effect. */
@@ -3073,11 +3173,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         reject(error);
       }
     }).then((closed) => {
-      if (
-        closed.state !== 'closed' ||
-        closed.childState !== 'absent' ||
-        closed.privateState !== 'absent'
-      ) {
+      if (closed.state !== 'closed' || closed.privateState !== 'absent') {
         throw new Error('NanoHost Harness session.close result is incompatible.');
       }
     });
@@ -3166,43 +3262,54 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     pending.timeout.unref();
   }
 
-  /** Proves child absence once before any terminal output export or capacity return. */
+  /**
+   * Proves the Turn barrier once before any terminal output export or capacity return, and decides
+   * whether the resident binding stays reusable. A binding is reusable only when it is open with
+   * clean disposable state and proves one exact ready handle: the digest accepted earlier, or, for
+   * a binding whose first Turn created the conversation, a new digest only when that Turn completed.
+   * A failed binding is never reusable. Any agreeing ready proof, including one on a failed or
+   * nonterminal inspection, is recorded before that decision. The recorder must already be bound;
+   * a recording failure keeps the binding row. A crash between the SQLite binding commit and the
+   * AgentSession write can leave the proof only on that row until this exact binding is restored.
+   */
   private async inspectTerminalHarnessSession(session: NanoHostBackendTurnSession): Promise<void> {
     if (session.terminalInspectionComplete) {
       return;
     }
-    await session.turnStopSettlement;
-    if (nanoHostAdapterMode(session.sharedHarness.adapterId) !== 'session-continuity') {
-      const closed = await this.queueAndWaitForHarnessOperation(session, 'session.close', {
-        agentSessionId: session.environmentPackage.scope.agentSessionId,
-        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      });
-      if (
-        closed.state !== 'closed' ||
-        closed.childState !== 'absent' ||
-        closed.privateState !== 'absent'
-      ) {
-        throw new Error('NanoHost Harness session.close result is incompatible.');
-      }
-      session.sharedHarness.bindings.delete(session.environmentPackage.scope.agentSessionId);
-      session.nativeSessionReusable = false;
-      session.terminalInspectionComplete = true;
-      return;
+    if (!session.recordNativeHandleDigest) {
+      throw new Error(
+        'NanoHost terminal inspection requires its AgentSession recorder before dispatch.'
+      );
     }
+    await session.turnStopSettlement;
     const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
     });
-    if (
-      inspected.state !== 'open' ||
-      inspected.childState !== 'absent' ||
-      inspected.cleanupState !== 'clean' ||
-      !['pending', 'ready'].includes(inspected.nativeHandleState as string) ||
-      (inspected.nativeHandleState === 'ready' &&
-        (typeof inspected.nativeHandleDigest !== 'string' ||
-          !/^[0-9a-f]{64}$/.test(inspected.nativeHandleDigest))) ||
-      (inspected.nativeHandleState === 'pending' && inspected.nativeHandleDigest !== null)
-    ) {
+    const binding = session.sharedHarness.bindings.get(
+      session.environmentPackage.scope.agentSessionId
+    );
+    if (!binding) {
+      throw new Error('NanoHost terminal inspection lost its AgentSession binding.');
+    }
+    const readyDigest =
+      inspected.nativeHandleState === 'ready' && typeof inspected.nativeHandleDigest === 'string'
+        ? inspected.nativeHandleDigest
+        : null;
+    const carriedResumeDigest = session.nativeResume?.digest ?? null;
+    const previousDigest = binding.nativeHandleDigest;
+    const digestAgrees =
+      readyDigest !== null &&
+      (previousDigest === null || readyDigest === previousDigest) &&
+      (carriedResumeDigest === null || readyDigest === carriedResumeDigest);
+    if (digestAgrees && readyDigest !== null) {
+      binding.nativeHandleDigest = readyDigest;
+      this.recordAcceptedNativeHandleDigest(session, readyDigest);
+    }
+    const barrierReached =
+      (inspected.state === 'open' && inspected.cleanupState === 'clean') ||
+      inspected.state === 'failed';
+    if (!barrierReached) {
       throw new Error('NanoHost Harness terminal session inspection is incompatible.');
     }
     const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
@@ -3214,18 +3321,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       workspaceId: session.environmentPackage.scope.workspaceId,
     });
     session.nativeSessionReusable =
-      accepted?.status === 'completed' && inspected.nativeHandleState === 'ready';
-    const binding = session.sharedHarness.bindings.get(
-      session.environmentPackage.scope.agentSessionId
-    );
-    if (!binding) {
-      throw new Error('NanoHost terminal inspection lost its AgentSession binding.');
-    }
-    binding.nativeHandleDigest = session.nativeSessionReusable
-      ? (inspected.nativeHandleDigest as string)
-      : null;
+      inspected.state === 'open' &&
+      inspected.cleanupState === 'clean' &&
+      digestAgrees &&
+      (previousDigest !== null || accepted?.status === 'completed');
     session.terminalInspectionComplete = true;
   }
+}
+
+/** Whether a Harness refusal asked the live owner to widen cleanup. */
+function isCleanupRequiredRefusal(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'reasonCode' in error &&
+    (error as { readonly reasonCode?: unknown }).reasonCode === 'cleanup_required'
+  );
 }
 
 /** Reads an operation result object from the fixed result envelope. */
@@ -3624,15 +3734,12 @@ function nanoHostHarnessCompatibilityKey(
     .digest('hex');
 }
 
-/** Selects one adapter already admitted by the static worker registry. */
-function nanoHostAdapterId(
-  environmentPackage: AgentEnvironmentPackagePreview
-): 'codex' | 'opencode' | 'pi' {
-  const adapterId = environmentPackage.control.adapter.targetRuntime;
-  if (adapterId !== 'codex' && adapterId !== 'opencode' && adapterId !== 'pi') {
-    throw new Error(`NanoHost worker adapter is unsupported: ${adapterId}`);
-  }
-  return adapterId;
+/**
+ * Reads the package's opaque adapter identity. NanoCore carries it without an enum; the Harness's
+ * static adapter registry refuses an identity it does not register.
+ */
+function nanoHostAdapterId(environmentPackage: AgentEnvironmentPackagePreview): string {
+  return environmentPackage.control.adapter.targetRuntime;
 }
 
 /** Derives one process-local map key without creating another durable identity. */

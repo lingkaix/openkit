@@ -4476,7 +4476,6 @@ describe('thread goal summary app API', () => {
     'backend-row',
     'mismatched-lineage',
     'mismatched-turn',
-    'control-command',
     'worker-output',
   ] as const)('keeps recovery_required when a never-launched Goal step is %s', async (poison) => {
     const fixture = await startNeverLaunchedGoalStepFailure(`req_goal_never_launched_${poison}`);
@@ -4515,21 +4514,6 @@ describe('thread goal summary app API', () => {
             `server/runtime/worker-backend-sessions/${lease.packageSnapshotId}`,
             timestamp,
             timestamp
-          );
-      } else if (poison === 'control-command') {
-        coreDb.sqlite
-          .prepare(`INSERT INTO worker_control_commands (
-          workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id,
-          command_id, command_kind, sequence, payload_json, status, queued_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'command_ambiguous', 'interrupt', 1, '{}', 'queued', ?)`)
-          .run(
-            'ws_demo',
-            thread.id,
-            turnId,
-            lease.agentSessionId,
-            lease.packageSnapshotId,
-            requestId,
-            '2026-05-31T00:00:00.000Z'
           );
       } else if (poison === 'worker-output') {
         store.createItem(

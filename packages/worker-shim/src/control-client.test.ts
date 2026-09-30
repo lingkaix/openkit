@@ -49,6 +49,12 @@ function createFetchFixture(
   return { fetch, requests };
 }
 
+/** One artifact notice used where a test needs an ordinary non-heartbeat request. */
+const notice = {
+  artifact: { path: '/openkit/artifacts/report.md', title: 'Worker report' },
+  sequence: 1,
+};
+
 describe('WorkerControlClient', () => {
   it('sends heartbeat and artifact notices with sandbox bearer lineage', async () => {
     const { fetch, requests } = createFetchFixture([
@@ -97,59 +103,6 @@ describe('WorkerControlClient', () => {
         headers: expect.objectContaining({ authorization: 'Bearer token_control_1' }),
         url: '/worker-control/artifacts',
       }),
-    ]);
-  });
-
-  it('returns polled commands as untrusted records', async () => {
-    const { fetch, requests } = createFetchFixture([
-      {
-        body: {
-          commands: [
-            {
-              argv: ['pwd'],
-              commandId: 'term_1',
-              kind: 'terminal-command',
-            },
-          ],
-        },
-      },
-    ]);
-    const client = new WorkerControlClient({
-      fetch,
-      lineage,
-      token: 'token_control_1',
-      baseUrl: '/worker-control/',
-    });
-
-    const poll = await client.pollCommands();
-
-    expect(poll.commands).toEqual([
-      expect.objectContaining({ commandId: 'term_1', kind: 'terminal-command' }),
-    ]);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe('/worker-control/commands/poll');
-  });
-
-  it('posts interrupt acknowledgements with bearer lineage', async () => {
-    const { fetch, requests } = createFetchFixture([{ body: { acknowledged: true } }]);
-    const client = new WorkerControlClient({
-      baseUrl: '/worker-control',
-      fetch,
-      lineage,
-      token: 'token_control_1',
-    });
-
-    await client.acknowledgeCommand('interrupt_1');
-
-    expect(requests).toEqual([
-      {
-        body: { commandId: 'interrupt_1', lineage },
-        headers: {
-          authorization: 'Bearer token_control_1',
-          'content-type': 'application/json',
-        },
-        url: '/worker-control/commands/ack',
-      },
     ]);
   });
 
@@ -405,7 +358,7 @@ describe('WorkerControlClient', () => {
       token: 'token_control_1',
     });
 
-    await expect(client.pollCommands(controller.signal)).rejects.toBe(abortReason);
+    await expect(client.recordArtifactNotice(notice, controller.signal)).rejects.toBe(abortReason);
     expect(fetchCalls).toBe(0);
   });
 
@@ -443,7 +396,7 @@ describe('WorkerControlClient', () => {
           return {
             ok: true,
             status: 200,
-            text: async () => JSON.stringify({ commands: [] }),
+            text: async () => JSON.stringify({ accepted: true }),
           };
         },
         lineage,
@@ -451,13 +404,13 @@ describe('WorkerControlClient', () => {
       });
       client.enablePostLaunchRecovery();
 
-      const poll = client.pollCommands().then(
+      const pending = client.recordArtifactNotice(notice).then(
         (value) => ({ value }),
         (error: unknown) => ({ error })
       );
       await vi.advanceTimersByTimeAsync(10_250);
 
-      await expect(poll).resolves.toEqual({ value: { commands: [] } });
+      await expect(pending).resolves.toEqual({ value: { accepted: true } });
       expect(attempts).toBe(2);
     } finally {
       vi.useRealTimers();
@@ -466,7 +419,7 @@ describe('WorkerControlClient', () => {
 
   it('reconnects with the same process key before replaying one blocked request', async () => {
     const requests: Array<{ body: Record<string, unknown>; path: string }> = [];
-    let pollAttempts = 0;
+    let noticeAttempts = 0;
     let reconnected = false;
     const client = new WorkerControlClient({
       baseUrl: '/worker-control',
@@ -481,8 +434,8 @@ describe('WorkerControlClient', () => {
           }
           return { ok: true, status: 200, text: async () => '{}' };
         }
-        pollAttempts += 1;
-        if (pollAttempts <= 2) {
+        noticeAttempts += 1;
+        if (noticeAttempts <= 2) {
           return {
             ok: false,
             status: 503,
@@ -502,31 +455,36 @@ describe('WorkerControlClient', () => {
             text: async () => JSON.stringify({ code: 'request_replayed_before_reconnect' }),
           };
         }
-        return { ok: true, status: 200, text: async () => JSON.stringify({ commands: [] }) };
+        return { ok: true, status: 200, text: async () => JSON.stringify({ accepted: true }) };
       },
       lineage,
       token: 'token_control_1',
     });
     await client.recordHeartbeat({ status: 'starting' });
     client.enablePostLaunchRecovery();
-    await expect(Promise.all([client.pollCommands(), client.pollCommands()])).resolves.toEqual([
-      { commands: [] },
-      { commands: [] },
-    ]);
+    await expect(
+      Promise.all([client.recordArtifactNotice(notice), client.recordArtifactNotice(notice)])
+    ).resolves.toEqual([{ accepted: true }, { accepted: true }]);
 
-    const [initial, firstPoll, secondPoll, reconnect, replayedFirstPoll, replayedSecondPoll] =
-      requests;
+    const [
+      initial,
+      firstNotice,
+      secondNotice,
+      reconnect,
+      replayedFirstNotice,
+      replayedSecondNotice,
+    ] = requests;
     expect(requests.map(({ path }) => path)).toEqual([
       '/worker-control/heartbeat',
-      '/worker-control/commands/poll',
-      '/worker-control/commands/poll',
+      '/worker-control/artifacts',
+      '/worker-control/artifacts',
       '/worker-control/heartbeat',
-      '/worker-control/commands/poll',
-      '/worker-control/commands/poll',
+      '/worker-control/artifacts',
+      '/worker-control/artifacts',
     ]);
     expect(reconnect?.body).toMatchObject({ lineage, operation: 'heartbeat', sequence: 1 });
-    expect(replayedFirstPoll?.body).toEqual(firstPoll?.body);
-    expect(replayedSecondPoll?.body).toEqual(secondPoll?.body);
+    expect(replayedFirstNotice?.body).toEqual(firstNotice?.body);
+    expect(replayedSecondNotice?.body).toEqual(secondNotice?.body);
     const processKeyHash = (initial!.body.body as { processKeyHash?: unknown }).processKeyHash;
     const reconnectKey = reconnect?.body.reconnectKey;
 
@@ -576,7 +534,7 @@ describe('WorkerControlClient', () => {
         return {
           ok: true,
           status: 200,
-          text: async () => JSON.stringify(path.endsWith('/commands/poll') ? { commands: [] } : {}),
+          text: async () => JSON.stringify(path.endsWith('/artifacts') ? { accepted: true } : {}),
         };
       },
       lineage,
@@ -586,8 +544,11 @@ describe('WorkerControlClient', () => {
     client.enablePostLaunchRecovery();
 
     await expect(
-      Promise.all([client.recordHeartbeat({ status: 'running' }), client.pollCommands()])
-    ).resolves.toEqual([{}, { commands: [] }]);
+      Promise.all([
+        client.recordHeartbeat({ status: 'running' }),
+        client.recordArtifactNotice(notice),
+      ])
+    ).resolves.toEqual([{}, { accepted: true }]);
     expect(reconnectAttempts).toBe(1);
   });
 });

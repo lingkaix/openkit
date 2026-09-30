@@ -1618,6 +1618,8 @@ function readCanonicalImportState(context: ImportRemintContext) {
             )
           : null,
         threadId: session.threadId ? requiredMapValue(threadIds, session.threadId, 'thread') : null,
+        // The retained native reference stays with the source Sandbox storage and its old id.
+        nativeHandleDigest: null,
         policySnapshotId: null,
         sessionCompatibilityKey: null,
         stale: true,

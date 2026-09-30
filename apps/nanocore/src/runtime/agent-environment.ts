@@ -570,13 +570,11 @@ function resolveOpenShellAgentEnvironmentPackage(
           : {}),
       },
       channels: {
-        commands: true,
         events: 'batch',
         artifacts: 'batch',
         heartbeats: true,
         logs: 'summary-only',
       },
-      commands: ['interrupt'],
       events: [
         'worker.ready',
         'worker.heartbeat',

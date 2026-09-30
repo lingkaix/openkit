@@ -6,6 +6,7 @@ import {
   WorkerCanonicalTerminalEventDataSchema,
   WorkerCapabilityCallSummarySchema,
   WorkerControlHeartbeatRequestSchema,
+  WorkerControlHeartbeatStatusSchema,
   WorkerControlOperationSchema,
   WorkerControlRequestEnvelopeSchema,
   WorkerControlResponseEnvelopeSchema,
@@ -724,12 +725,10 @@ describe('worker protocol schemas', () => {
         schemaVersion: 2,
         lineage,
         sequence: 13,
-        operation: 'command_ack',
-        body: {
-          commandId: 'worker-command-1',
-        },
+        operation: 'final_status',
+        body: {},
       }).operation
-    ).toBe('command_ack');
+    ).toBe('final_status');
 
     expect(
       WorkerControlResponseEnvelopeSchema.parse({
@@ -746,7 +745,7 @@ describe('worker protocol schemas', () => {
       schemaVersion: 2,
       lineage,
       sequence: 14,
-      operation: 'command_poll' as const,
+      operation: 'heartbeat' as const,
       body: {},
     };
     const record = {
@@ -766,8 +765,10 @@ describe('worker protocol schemas', () => {
   });
 
   it('rejects retired control operations', () => {
-    expect(WorkerControlOperationSchema.parse('command_ack')).toBe('command_ack');
     expect(WorkerControlOperationSchema.parse('final_status')).toBe('final_status');
+    expect(() => WorkerControlOperationSchema.parse('command_poll')).toThrow();
+    expect(() => WorkerControlOperationSchema.parse('command_ack')).toThrow();
+    expect(() => WorkerControlHeartbeatStatusSchema.parse('awaiting_command')).toThrow();
     expect(() => WorkerControlOperationSchema.parse('knowledge_proposal_summary')).toThrow();
     expect(() => WorkerControlOperationSchema.parse('terminal_result')).toThrow();
   });

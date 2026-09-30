@@ -1,345 +1,425 @@
-import { createHash } from 'node:crypto';
-import { mkdir, rm } from 'node:fs/promises';
-import { relative, resolve } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
+  HarnessCommandBodySchemas,
+  type HarnessCommandEnvelope,
+  HarnessCommandEnvelopeSchema,
+  type HarnessRefusalReason,
+  type HarnessResultEnvelope,
+  type HarnessSessionOpenBody,
+  type HarnessSessionSelectorBody,
+  type HarnessTurnInterruptBody,
+  type HarnessTurnStartBody,
   type WorkerStartupFailure,
   WorkerStartupFailureSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
-import { WORKER_ADAPTERS, type WorkerAdapter } from './adapter-registry.js';
 import {
-  runWorkerShim,
-  WORKER_HUMAN_GATE_STOP,
-  type WorkerProcessRunner,
+  WORKER_ADAPTERS,
+  type WorkerNativeHandle,
+  type WorkerResidentAdapter,
+  type WorkerResidentSession,
+} from './adapter-registry.js';
+import { isRetryableHttpStatus } from './control-client.js';
+import {
+  openSandboxIntegration,
+  SANDBOX_NATIVE_CAPABILITY_BASE_URL,
+  SANDBOX_NATIVE_INFERENCE_BASE_URL,
+  type SandboxIntegrationClient,
+} from './integration-client.js';
+import {
+  isNativeAcceptanceUnknown,
+  isNativeSettlementUnknown,
+  runResidentTurn,
   type WorkerShimEnvironment,
-  type WorkerShimRunResult,
-} from './cli.js';
-import { openSandboxIntegration, type SandboxIntegrationClient } from './integration-client.js';
+} from './turn.js';
 
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
 const HARNESS_POLL_MINIMUM_MS = 250;
 const HARNESS_REQUEST_TIMEOUT_MS = 1_000;
 const HARNESS_OUTAGE_BUDGET_MS = 300_000;
-const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const HEX_64_PATTERN = /^[0-9a-f]{64}$/;
-
-type HarnessOperation =
-  | 'session.open'
-  | 'session.inspect'
-  | 'turn.start'
-  | 'turn.interrupt'
-  | 'session.close'
-  | 'harness.drain';
-
-interface HarnessCommand {
-  readonly schemaVersion: 2;
-  readonly operationId: string;
-  readonly sequence: number;
-  readonly operation: string;
-  readonly body: Readonly<Record<string, unknown>>;
-}
-
-interface RoutedHarnessCommand extends HarnessCommand {
-  readonly adapterId: string;
-  readonly harnessInstanceId: string;
-}
-
-interface HarnessResult {
-  readonly schemaVersion: 2;
-  readonly operationId: string;
-  readonly sequence: number;
-  readonly disposition: 'succeeded' | 'refused' | 'unknown';
-  readonly body: Readonly<Record<string, unknown>>;
-}
+/** Open AgentSessions one Harness serves; active Turns stay at one per Harness. */
+const HARNESS_MAX_OPEN_SESSIONS = 8;
+/** Canonical AgentSession identity, which also names its input and reference slots. */
+const AGENT_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+/** Fixed non-retained scratch root granted by the compiled Worker policy. */
+const NATIVE_SCRATCH_ROOT = '/tmp/openkit-bootstrap';
+/** Image environment a resident host inherits from the Harness. */
+const SAFE_RESIDENT_ENVIRONMENT_KEYS = [
+  'ALL_PROXY',
+  'COLORTERM',
+  'HOME',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LOGNAME',
+  'NODE_USE_ENV_PROXY',
+  'NO_COLOR',
+  'NO_PROXY',
+  'PATH',
+  'SHELL',
+  'SSL_CERT_DIR',
+  'SSL_CERT_FILE',
+  'TERM',
+  'USER',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+] as const;
+/** Names a session-static runtime environment may never set. */
+const RESERVED_RUNTIME_ENVIRONMENT_NAMES = new Set<string>([
+  ...SAFE_RESIDENT_ENVIRONMENT_KEYS,
+  'CODEX_HOME',
+  'LD_LIBRARY_PATH',
+  'LD_PRELOAD',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_OPTIONS',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+]);
 
 interface ActiveTurn {
   readonly abort: AbortController;
   barrierReached: boolean;
   readonly leaseId: string;
-  readonly promise: Promise<WorkerShimRunResult>;
+  readonly promise: Promise<void>;
   readonly turnId: string;
 }
 
 interface HarnessSession {
+  /**
+   * The Turn that occupies this binding. A Turn whose native settlement is unknown keeps it,
+   * so the binding and its Harness hold their capacity until wider cleanup proves safety.
+   */
   activeTurn: ActiveTurn | null;
   readonly agentSessionId: string;
   readonly bindingId: string;
-  readonly compatibilityKey: string;
-  readonly controlRoot: string;
+  cleanupState: 'clean' | 'pending' | 'unknown';
+  closing: boolean;
+  readonly credentialValues: readonly string[];
+  /**
+   * Whether the binding may take another Turn: its handle was ready at open, whether resumed or
+   * created by the runtime, or one of its Turns completed. A binding whose handle was pending at
+   * open and whose first Turn did not complete only closes.
+   */
+  established: boolean;
+  /**
+   * Digest the resumed conversation must prove: the carried resume digest, or null for a new
+   * conversation. A resumed binding never stores or accepts a different ready reference.
+   */
+  readonly expectedHandleDigest: string | null;
+  /**
+   * Set when the resident host ended on its own, or when native settlement or native close could
+   * not be proved; the binding then takes no Turn.
+   */
+  failed: boolean;
+  /** Digest of the reference stored under this AgentSession id, once one is ready. */
+  handleDigest: string | null;
+  readonly resident: WorkerResidentSession;
+  readonly runtimeEnvironmentNames: ReadonlySet<string>;
   readonly sessionDirectory: string;
-  readonly stateRoot: string;
-  readonly storageRef: string;
   readonly threadId: string;
-  turnStarted: boolean;
-  readonly workSlotRef: string;
+  turnsStarted: number;
   readonly workspaceId: string;
-  cleanupState: 'clean' | 'pending' | 'failed';
 }
 
-interface SandboxAdmission {
-  readonly liveBindings: Map<string, string>;
-  readonly liveWorkSlots: Map<string, string>;
-  readonly storageRef: string;
-}
+/**
+ * Current resident binding of every Thread served by this shim process, keyed by Sandbox root and
+ * Thread, so a second current binding for one Thread is rejected across Harness instances.
+ */
+const LIVE_THREAD_BINDINGS = new Map<string, string>();
 
-/** Process-wide admission state for every logical Sandbox root served by this shim process. */
-const SANDBOX_ADMISSIONS = new Map<string, SandboxAdmission>();
-
-/** Options for one adapter-selected Harness instance. */
+/** Options for one Harness instance. */
 export interface WorkerHarnessOptions {
-  /** Static registry adapter owned by this Harness instance. */
-  readonly adapterId?: string | undefined;
+  /** Resident adapter registry; tests inject deterministic runtimes. */
+  readonly adapters?: Readonly<Record<string, WorkerResidentAdapter>> | undefined;
+  /** Image environment the resident hosts inherit through the safe allowlist. */
+  readonly environment?: WorkerShimEnvironment | undefined;
   /** Harness-lifetime Sandbox Integration client. */
   readonly integration: SandboxIntegrationClient;
-  /** Fixed retained native-data root inside the `/sandbox` volume. */
+  /** Retained native-data root inside the `/sandbox` volume. */
   readonly nativeDataRootDirectory?: string | undefined;
-  /** Private writable root for disposable AgentSession control and Turn outputs. */
+  /** Private writable root for disposable AgentSession control and Turn-private outputs. */
   readonly rootDirectory?: string | undefined;
-  /** Fixed Turn output root exported through the existing file-effect slots. */
-  readonly turnOutputDirectory?: string | undefined;
   /** Sandbox root containing owner-materialized AEP and Context references. */
   readonly sandboxRoot?: string | undefined;
-  /** Safe image environment inherited by supervised Turns. */
-  readonly environment?: WorkerShimEnvironment | undefined;
-  /** Optional native process runner used by focused tests. */
-  readonly runner?: WorkerProcessRunner | undefined;
+  /** Fixed Turn output root exported through the existing file-effect slots. */
+  readonly turnOutputDirectory?: string | undefined;
 }
 
-/** One adapter-selected multi-AgentSession Harness over the Sandbox Integration. */
+/**
+ * One Harness instance: executes the six private operations for the resident AgentSession
+ * bindings of one adapter. The adapter is fixed by the first `session.open`, which names it.
+ */
 export class WorkerHarness {
-  private readonly adapter: WorkerAdapter;
-  private readonly adapterId: string;
+  private adapterId: string | null = null;
+  private readonly adapters: Readonly<Record<string, WorkerResidentAdapter>>;
   private draining = false;
   private readonly environment: WorkerShimEnvironment;
+  /**
+   * Resident hosts of refused opens whose native close failed. They may still be live, so they
+   * keep their Thread reservation, count as open, and keep this Harness draining.
+   */
+  private unprovedResidents = 0;
   private readonly integration: SandboxIntegrationClient;
   private readonly nativeDataRootDirectory: string;
   private readonly rootDirectory: string;
-  private readonly runner: WorkerProcessRunner | undefined;
   private readonly sandboxRoot: string;
   private readonly sessions = new Map<string, HarnessSession>();
   private readonly turnOutputDirectory: string;
 
-  /** Creates one adapter-selected Harness with an AgentSession registry. */
+  /** Creates one Harness with an empty AgentSession registry. */
   public constructor(options: WorkerHarnessOptions) {
-    this.adapterId = options.adapterId ?? 'codex';
-    const adapter = WORKER_ADAPTERS[this.adapterId];
-    if (!adapter) {
-      throw new Error(`Unknown worker Harness adapter: ${this.adapterId}`);
-    }
-    this.adapter = adapter;
+    this.adapters = options.adapters ?? WORKER_ADAPTERS;
+    this.environment = options.environment ?? process.env;
     this.integration = options.integration;
     this.nativeDataRootDirectory = resolve(
       options.nativeDataRootDirectory ?? '/sandbox/openkit/native'
     );
-    this.environment = options.environment ?? process.env;
     this.rootDirectory = resolve(options.rootDirectory ?? '/openkit/harness/agent-sessions');
     this.sandboxRoot = resolve(options.sandboxRoot ?? '/openkit');
-    this.runner = options.runner;
     this.turnOutputDirectory = resolve(options.turnOutputDirectory ?? '/openkit/session');
   }
 
-  /** Executes one already sequenced private Harness command. */
-  public async handle(command: HarnessCommand): Promise<HarnessResult> {
-    requireCommandEnvelope(command);
+  /**
+   * Executes one sequenced command and returns its exact result envelope.
+   *
+   * @param command Parsed command envelope.
+   * @returns A succeeded or refused result; a refusal carries only its reason, plus closed
+   *   startup-failure metadata for a dependency-failed `turn.start`.
+   */
+  public async handle(command: HarnessCommandEnvelope): Promise<HarnessResultEnvelope> {
     try {
-      const operation = requireOperation(command.operation);
-      const body = command.body;
+      const body = parseBody(command.operation, command.body);
       let resultBody: Readonly<Record<string, unknown>>;
-      switch (operation) {
+      switch (command.operation) {
         case 'session.open':
-          resultBody = await this.openSession(body);
+          resultBody = await this.openSession(body as HarnessSessionOpenBody);
           break;
         case 'session.inspect':
-          resultBody = await this.inspectSession(body);
+          resultBody = await this.inspectSession(body as HarnessSessionSelectorBody);
           break;
         case 'turn.start':
-          resultBody = await this.startTurn(body);
+          resultBody = await this.startTurn(body as HarnessTurnStartBody);
           break;
         case 'turn.interrupt':
-          resultBody = await this.interruptTurn(body);
+          resultBody = await this.interruptTurn(body as HarnessTurnInterruptBody);
           break;
         case 'session.close':
-          resultBody = await this.closeSession(body);
+          resultBody = await this.closeSession(body as HarnessSessionSelectorBody);
           break;
         case 'harness.drain':
-          requireExactFields(body, []);
           this.draining = true;
           resultBody = {
             activeTurns: this.activeTurnCount(),
-            openSessions: this.sessions.size,
+            openSessions: this.sessions.size + this.unprovedResidents,
             state: 'draining',
           };
           break;
       }
-      return succeeded(command, resultBody);
+      return result(command, 'succeeded', resultBody);
     } catch (error) {
-      return refused(
-        command,
-        reasonCode(error),
-        error && typeof error === 'object' && 'startupFailure' in error
+      const startupFailure =
+        command.operation === 'turn.start' &&
+        error &&
+        typeof error === 'object' &&
+        'startupFailure' in error
           ? WorkerStartupFailureSchema.safeParse(error.startupFailure).data
-          : undefined
-      );
+          : undefined;
+      return result(command, 'refused', {
+        reasonCode: reasonCode(error),
+        ...(startupFailure ? { startupFailure } : {}),
+      });
     }
   }
 
-  /** Waits for the selected bounded Turn before the private Harness may poll again. */
-  public async waitForBoundedTurnSettlement(): Promise<void> {
-    if (this.adapter.mode !== 'bounded-turn') {
-      return;
-    }
-    for (const session of this.sessions.values()) {
-      const active = session.activeTurn;
-      if (active) {
-        await active.promise.catch(() => undefined);
-        return;
-      }
-    }
-  }
-
-  /** Opens one pending AgentSession in an independently derived private root. */
-  private async openSession(body: Readonly<Record<string, unknown>>) {
-    requireExactFields(body, [
-      'agentSessionId',
-      'agentSessionRuntimeBindingId',
-      'workspaceId',
-      'threadId',
-      'adapterId',
-      'agentSessionCompatibilityKey',
-      'effectiveSetupGeneration',
-      'storageRef',
-      'workSlotRef',
-    ]);
-    if (this.draining || this.sessions.size >= 8) {
+  /** Opens one resident binding, new or by resume, and registers its loopback credentials. */
+  private async openSession(body: HarnessSessionOpenBody) {
+    if (this.draining || this.sessions.size >= HARNESS_MAX_OPEN_SESSIONS) {
       throw harnessError('busy');
     }
-    const agentSessionId = requireIdentity(body.agentSessionId);
-    const bindingId = requireIdentity(body.agentSessionRuntimeBindingId);
-    const workspaceId = requireIdentity(body.workspaceId);
-    const threadId = requireIdentity(body.threadId);
-    const compatibilityKey = requireDigest(body.agentSessionCompatibilityKey);
-    const storageRef = requireIdentity(body.storageRef);
-    const workSlotRef = requirePathSegment(body.workSlotRef);
+    const adapter = this.adapters[body.adapterId];
     if (
-      body.adapterId !== this.adapterId ||
-      !isPositiveSafeInteger(body.effectiveSetupGeneration)
+      !adapter ||
+      (this.adapterId !== null && this.adapterId !== body.adapterId) ||
+      !AGENT_SESSION_ID_PATTERN.test(body.agentSessionId)
     ) {
       throw harnessError('unsupported');
     }
+    const threadKey = `${this.sandboxRoot}\0${body.threadId}`;
     if (
-      this.sessions.has(bindingId) ||
+      this.sessions.has(body.agentSessionRuntimeBindingId) ||
       [...this.sessions.values()].some(
-        (session) =>
-          session.agentSessionId === agentSessionId ||
-          session.storageRef !== storageRef ||
-          session.workSlotRef === workSlotRef
-      )
+        (session) => session.agentSessionId === body.agentSessionId
+      ) ||
+      LIVE_THREAD_BINDINGS.has(threadKey)
     ) {
       throw harnessError('conflict');
     }
-    reserveSandboxWorkSlot(this.sandboxRoot, storageRef, workSlotRef, bindingId);
+    const runtimeEnvironment = body.runtimeEnvironment ?? {};
+    if (Object.keys(runtimeEnvironment).some(isReservedRuntimeEnvironmentName)) {
+      throw harnessError('unsupported');
+    }
+    const resumeReference = body.resume ? await this.readResumeReference(body.resume) : null;
+
+    this.adapterId = body.adapterId;
+    LIVE_THREAD_BINDINGS.set(threadKey, body.agentSessionRuntimeBindingId);
+    const sessionDirectory = resolve(
+      this.rootDirectory,
+      createHash('sha256').update(body.agentSessionRuntimeBindingId).digest('hex')
+    );
+    let loopbackRegistered = false;
+    let resident: WorkerResidentSession | null = null;
     try {
-      const privateName = createHash('sha256').update(bindingId).digest('hex');
-      const sessionDirectory = resolve(this.rootDirectory, privateName);
+      try {
+        this.integration.registerSessionLoopback(body.agentSessionId, {
+          capabilityCredential: body.capabilityLoopbackCredential,
+          inferenceCredential: body.inferenceLoopbackCredential,
+        });
+        loopbackRegistered = true;
+      } catch {
+        throw harnessError('conflict');
+      }
       const controlRoot = resolve(sessionDirectory, 'native-control');
-      const stateRoot = resolve(this.nativeDataRootDirectory, this.adapterId, workSlotRef);
-      const inputPaths = workerSessionInputPaths(agentSessionId);
-      await rm(sessionDirectory, { force: true, recursive: true });
-      await mkdir(sessionDirectory, { mode: 0o700, recursive: true });
-      await mkdir(stateRoot, { mode: 0o700, recursive: true });
-      await mkdir(
-        mapSandboxPath(inputPaths.packagePath, this.sandboxRoot).replace(/\/package\.json$/, ''),
-        {
-          mode: 0o700,
-          recursive: true,
-        }
+      const stateRoot = resolve(
+        this.nativeDataRootDirectory,
+        body.adapterId,
+        'threads',
+        createHash('sha256').update(body.threadId).digest('hex')
       );
-      await mkdir(mapSandboxPath(inputPaths.contextRoot, this.sandboxRoot), {
+      const inputPaths = workerSessionInputPaths(body.agentSessionId);
+      await rm(sessionDirectory, { force: true, recursive: true });
+      await mkdir(controlRoot, { mode: 0o700, recursive: true });
+      await mkdir(stateRoot, { mode: 0o700, recursive: true });
+      await mkdir(dirname(this.mapSandboxPath(inputPaths.packagePath)), {
         mode: 0o700,
         recursive: true,
       });
-      const opened =
-        this.adapter.mode === 'session-continuity'
-          ? await this.adapter.openSession({ controlRoot, stateRoot })
-          : { nativeHandle: null, nativeHandleDigest: null, nativeHandleState: 'pending' as const };
-      this.sessions.set(bindingId, {
+      await mkdir(this.mapSandboxPath(inputPaths.contextRoot), { mode: 0o700, recursive: true });
+      // The adapter contract owns the no-live-effect guarantee. A resident that still exists when
+      // close fails keeps the Thread reserved and drains this Harness.
+      resident = await adapter
+        .openSession({
+          agentSessionId: body.agentSessionId,
+          controlRoot,
+          environment: residentEnvironment(this.environment, runtimeEnvironment),
+          loopback: {
+            capabilityBaseUrl: SANDBOX_NATIVE_CAPABILITY_BASE_URL,
+            capabilityCredential: body.capabilityLoopbackCredential,
+            inferenceBaseUrl: SANDBOX_NATIVE_INFERENCE_BASE_URL,
+            inferenceCredential: body.inferenceLoopbackCredential,
+          },
+          resumeReference,
+          stateRoot,
+        })
+        .catch(() => {
+          throw harnessError('dependency_failed');
+        });
+      const session: HarnessSession = {
         activeTurn: null,
-        agentSessionId,
-        bindingId,
-        compatibilityKey,
-        controlRoot,
-        sessionDirectory,
-        stateRoot,
-        storageRef,
-        threadId,
-        workspaceId,
+        agentSessionId: body.agentSessionId,
+        bindingId: body.agentSessionRuntimeBindingId,
         cleanupState: 'clean',
-        turnStarted: false,
-        workSlotRef,
+        closing: false,
+        credentialValues: [
+          body.capabilityLoopbackCredential,
+          body.inferenceLoopbackCredential,
+          ...Object.values(runtimeEnvironment),
+        ],
+        established: false,
+        expectedHandleDigest: body.resume?.digest ?? null,
+        failed: false,
+        handleDigest: null,
+        resident,
+        runtimeEnvironmentNames: new Set(Object.keys(runtimeEnvironment)),
+        sessionDirectory,
+        threadId: body.threadId,
+        turnsStarted: 0,
+        workspaceId: body.workspaceId,
+      };
+      const handle = await this.proveHandle(session).catch(() => {
+        throw harnessError('dependency_failed');
       });
+      if (
+        handle.nativeHandleState === 'unknown' ||
+        (resumeReference && handle.nativeHandleState !== 'ready')
+      ) {
+        // A resumed conversation must prove the exact carried reference before any work.
+        throw harnessError(resumeReference ? 'conflict' : 'dependency_failed');
+      }
+      session.established = handle.nativeHandleState === 'ready';
+      this.sessions.set(session.bindingId, session);
+      // The Turn runner fails an active Turn itself when the host ends; the binding only closes.
+      const onExit = () => {
+        if (!session.closing) session.failed = true;
+      };
+      void resident.exited.then(onExit, onExit);
       return {
         maxActiveTurns: 1,
-        nativeHandleDigest: opened.nativeHandleDigest,
-        nativeHandleState: opened.nativeHandleState,
+        nativeHandleDigest: handle.nativeHandleDigest,
+        nativeHandleState: handle.nativeHandleState,
         state: 'open',
       };
     } catch (error) {
-      releaseSandboxWorkSlot(this.sandboxRoot, storageRef, workSlotRef, bindingId);
-      throw error;
+      if (loopbackRegistered) this.integration.destroySessionLoopback(body.agentSessionId);
+      let refusal = error;
+      if (
+        resident &&
+        !(await resident.close().then(
+          () => true,
+          () => false
+        ))
+      ) {
+        // The refused host may still be live: keep its Thread reserved and fence this Harness.
+        this.unprovedResidents += 1;
+        this.draining = true;
+        refusal = harnessError('cleanup_required');
+      } else {
+        LIVE_THREAD_BINDINGS.delete(threadKey);
+      }
+      await rm(sessionDirectory, { force: true, recursive: true }).catch(() => undefined);
+      throw refusal;
     }
   }
 
-  /** Inspects only the named Session's native proof and supervised child. */
-  private async inspectSession(body: Readonly<Record<string, unknown>>) {
-    requireExactFields(body, ['agentSessionId', 'agentSessionRuntimeBindingId']);
+  /** Inspects one binding's native handle, host liveness, and cleanup without starting work. */
+  private async inspectSession(body: HarnessSessionSelectorBody) {
     const session = this.requireSession(body);
-    if (this.adapter.mode === 'bounded-turn') {
-      throw harnessError('unsupported');
-    }
     if (session.activeTurn?.barrierReached) {
-      await session.activeTurn.promise.catch(() => undefined);
+      await session.activeTurn.promise;
     }
-    const inspected = await this.adapter.inspectSession({
-      controlRoot: session.controlRoot,
-      stateRoot: session.stateRoot,
-    });
+    const handle = await this.proveHandle(session).catch(() => ({
+      nativeHandleDigest: null,
+      nativeHandleState: 'unknown' as const,
+    }));
     return {
-      childState: session.activeTurn && !session.activeTurn.barrierReached ? 'running' : 'absent',
+      childState: session.resident.childState(),
       cleanupState: session.cleanupState,
-      ...inspected,
-      state:
-        (session.activeTurn && !session.activeTurn.barrierReached) ||
-        session.cleanupState === 'pending'
-          ? 'active'
-          : 'open',
+      ...handle,
+      state: session.failed
+        ? 'failed'
+        : session.closing
+          ? 'closing'
+          : session.activeTurn || session.cleanupState === 'pending'
+            ? 'active'
+            : 'open',
     };
   }
 
-  /** Starts one supervised Turn while returning as soon as the child is live. */
-  private async startTurn(body: Readonly<Record<string, unknown>>) {
-    requireExactFields(body, [
-      'agentSessionId',
-      'agentSessionRuntimeBindingId',
-      'workspaceId',
-      'threadId',
-      'turnId',
-      'packageSnapshotId',
-      'aepRef',
-      'contextPackageId',
-      'contextRef',
-      'leaseId',
-      'deadline',
-      'turnSequence',
-      'workerControlToken',
-      'inferenceToken',
-      'capabilityToken',
-      ...(body.runtimeEnvironment === undefined ? [] : ['runtimeEnvironment']),
-    ]);
+  /** Starts one Turn on the resident binding and answers once the runtime accepted it. */
+  private async startTurn(body: HarnessTurnStartBody) {
     const session = this.requireSession(body);
-    if (this.adapter.mode === 'bounded-turn' && session.turnStarted) {
+    if (session.failed || session.closing || (session.turnsStarted > 0 && !session.established)) {
+      // A binding whose first Turn did not complete, whose host ended, whose native settlement is
+      // unknown, or that is closing takes no Turn.
       throw harnessError('conflict');
     }
     if (
@@ -350,112 +430,98 @@ export class WorkerHarness {
     ) {
       throw harnessError('busy');
     }
+    const inputPaths = workerSessionInputPaths(session.agentSessionId);
+    const packagePath = this.mapSandboxPath(inputPaths.packagePath);
     if (
       body.workspaceId !== session.workspaceId ||
       body.threadId !== session.threadId ||
-      !isNonnegativeSafeInteger(body.turnSequence)
+      body.contextPackageId !== `ctxpkg_${body.turnId}` ||
+      body.contextRef !== this.mapSandboxPath(inputPaths.contextRoot) ||
+      body.aepRef !== packagePath
     ) {
       throw harnessError('stale');
     }
-    const turnId = requireIdentity(body.turnId);
-    const leaseId = requireIdentity(body.leaseId);
-    const packageSnapshotId = requireIdentity(body.packageSnapshotId);
-    if (body.contextPackageId !== `ctxpkg_${turnId}`) {
-      throw harnessError('stale');
-    }
-    const inputPaths = workerSessionInputPaths(session.agentSessionId);
-    const expectedContextPath = mapSandboxPath(inputPaths.contextRoot, this.sandboxRoot);
-    const expectedPackagePath = mapSandboxPath(inputPaths.packagePath, this.sandboxRoot);
-    if (body.contextRef !== expectedContextPath || body.aepRef !== expectedPackagePath) {
-      throw harnessError('stale');
-    }
-    const packagePath = expectedPackagePath;
-    const runtimeEnvironment = requireRuntimeEnvironment(body.runtimeEnvironment);
-    const capabilityToken = requireToken(body.capabilityToken);
-    const controlToken = requireToken(body.workerControlToken);
-    const inferenceToken = requireToken(body.inferenceToken);
-    if (
-      new Set([capabilityToken, controlToken, inferenceToken]).size !== 3 ||
-      Number.isNaN(Date.parse(requireIdentity(body.deadline)))
-    ) {
-      throw harnessError('stale');
-    }
-    const prior =
-      this.adapter.mode === 'session-continuity'
-        ? await this.adapter.inspectSession({
-            controlRoot: session.controlRoot,
-            stateRoot: session.stateRoot,
-          })
-        : { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
-    session.turnStarted = true;
+    session.turnsStarted += 1;
     const abort = new AbortController();
-    const nativeTurnDirectory = resolve(
+    const turnDirectory = resolve(
       session.sessionDirectory,
       'turns',
-      createHash('sha256').update(turnId).digest('hex')
+      createHash('sha256').update(body.turnId).digest('hex')
     );
     await rm(this.turnOutputDirectory, { force: true, recursive: true });
     await mkdir(this.turnOutputDirectory, { mode: 0o700, recursive: true });
-    await mkdir(nativeTurnDirectory, { mode: 0o700, recursive: true });
+    await mkdir(turnDirectory, { mode: 0o700, recursive: true });
     let markStarted!: () => void;
     const started = new Promise<void>((resolveStarted) => {
       markStarted = resolveStarted;
     });
     let startupFailure: WorkerStartupFailure | undefined;
-    const runPromise = runWorkerShim({
-      args: { dryRun: false, packagePath, sessionDir: this.turnOutputDirectory },
-      controlToken,
-      runtimeEnvironment,
-      environment: {
-        ...this.environment,
-        OPENKIT_AGENT_SESSION_ID: session.agentSessionId,
-        OPENKIT_PACKAGE_SNAPSHOT_ID: packageSnapshotId,
-        OPENKIT_THREAD_ID: session.threadId,
-        OPENKIT_TURN_ID: turnId,
-        OPENKIT_WORKER_CAPABILITY_TOKEN: capabilityToken,
-        OPENKIT_WORKER_INFERENCE_TOKEN: inferenceToken,
-        OPENKIT_WORKSPACE_ID: session.workspaceId,
-      },
+    const run = runResidentTurn({
+      adapterId: this.adapterId as string,
+      credentialValues: session.credentialValues,
+      environment: this.environment,
       integration: this.integration,
-      expectedAdapterId: this.adapterId,
-      nativeTurnDirectory,
-      onNativeStart: markStarted,
+      lineage: {
+        agentSessionId: session.agentSessionId,
+        packageSnapshotId: body.packageSnapshotId,
+        threadId: session.threadId,
+        turnId: body.turnId,
+        workspaceId: session.workspaceId,
+      },
+      onStarted: markStarted,
       onStartupFailure: (failure) => {
         startupFailure = failure;
       },
       onTurnBarrier: () => {
-        if (session.activeTurn?.turnId === turnId) {
+        if (session.activeTurn?.turnId === body.turnId) {
           session.activeTurn.barrierReached = true;
           session.cleanupState = 'pending';
         }
       },
-      ...(this.runner ? { runner: this.runner } : {}),
-      sessionStateRoot: session.stateRoot,
-      sessionControlRoot: session.controlRoot,
+      packagePath,
+      resident: session.resident,
+      runtimeEnvironmentNames: session.runtimeEnvironmentNames,
+      sessionDir: this.turnOutputDirectory,
       signal: abort.signal,
+      tokens: {
+        capabilityToken: body.capabilityToken,
+        controlToken: body.workerControlToken,
+        inferenceToken: body.inferenceToken,
+      },
+      turnDirectory,
     });
-    const promise = runPromise.finally(async () => {
-      session.cleanupState = 'pending';
-      try {
-        const inputRoot = mapSandboxPath(
-          workerSessionInputPaths(session.agentSessionId).root,
-          this.sandboxRoot
-        );
-        await Promise.all(
-          ['config', 'context', 'supply'].map((slot) =>
-            rm(resolve(inputRoot, slot), { force: true, recursive: true })
-          )
-        );
-        session.cleanupState = 'clean';
-      } catch {
-        session.cleanupState = 'failed';
+    let nativeUnknown = false;
+    const promise = run.then(
+      async (turn) => {
+        if (turn.status === 'completed') session.established = true;
+        await this.cleanTurnInputs(session);
+      },
+      async (error: unknown) => {
+        if (isNativeSettlementUnknown(error) || isNativeAcceptanceUnknown(error)) {
+          // Native work may still be live. Fence before any await so disposable cleanup cannot
+          // overwrite unknown state or drop the Turn.
+          nativeUnknown = true;
+          this.fenceSession(session);
+        } else {
+          await this.cleanTurnInputs(session);
+        }
+        throw error;
       }
-      if (session.activeTurn?.promise === promise) {
-        session.activeTurn = null;
-      }
-    });
-    session.activeTurn = { abort, barrierReached: false, leaseId, promise, turnId };
-    void promise.catch(() => undefined);
+    );
+    const settled = promise
+      .catch(() => undefined)
+      .finally(() => {
+        if (!nativeUnknown && session.activeTurn?.turnId === body.turnId) {
+          session.activeTurn = null;
+        }
+      });
+    session.activeTurn = {
+      abort,
+      barrierReached: false,
+      leaseId: body.leaseId,
+      promise: settled,
+      turnId: body.turnId,
+    };
     await Promise.race([
       started,
       promise.then(
@@ -468,28 +534,15 @@ export class WorkerHarness {
       ),
     ]);
     return {
-      nativeHandleDigest: prior.nativeHandleDigest,
-      nativeHandleState: prior.nativeHandleState,
+      nativeHandleDigest: session.handleDigest,
+      nativeHandleState: session.handleDigest ? ('ready' as const) : ('pending' as const),
       state: 'started',
     };
   }
 
-  /** Interrupts only the exact active Turn through the shared supervisor. */
-  private async interruptTurn(body: Readonly<Record<string, unknown>>) {
-    requireExactFields(body, [
-      'agentSessionId',
-      'agentSessionRuntimeBindingId',
-      'turnId',
-      'leaseId',
-      'purpose',
-    ]);
-    if (body.purpose !== 'interrupt' && body.purpose !== 'human-gate') {
-      throw harnessError('unsupported');
-    }
+  /** Interrupts only the exact active Turn and answers after it settled. */
+  private async interruptTurn(body: HarnessTurnInterruptBody) {
     const session = this.requireSession(body);
-    if (this.adapter.mode === 'bounded-turn') {
-      throw harnessError('unsupported');
-    }
     const active = session.activeTurn;
     if (
       !active ||
@@ -499,64 +552,157 @@ export class WorkerHarness {
     ) {
       throw harnessError('stale');
     }
-    active.abort.abort(
-      body.purpose === 'human-gate' ? WORKER_HUMAN_GATE_STOP : new Error('Harness turn.interrupt')
-    );
-    await active.promise.catch(() => undefined);
-    return { childState: 'absent', state: 'interrupted' };
+    active.abort.abort(new Error('Harness turn.interrupt'));
+    await active.promise;
+    if (session.cleanupState === 'unknown') {
+      // Cancellation was not proved: the Turn keeps its slot until wider cleanup.
+      throw harnessError('cleanup_required');
+    }
+    return { childState: session.resident.childState(), state: 'interrupted' };
   }
 
-  /** Closes one idle Session without disturbing a sibling binding. */
-  private async closeSession(body: Readonly<Record<string, unknown>>) {
-    requireExactFields(body, ['agentSessionId', 'agentSessionRuntimeBindingId']);
+  /** Closes one idle binding: revokes the native binding, loopback, and disposable control. */
+  private async closeSession(body: HarnessSessionSelectorBody) {
     const session = this.requireSession(body);
     if (session.activeTurn) {
-      throw harnessError('busy');
+      throw harnessError(session.cleanupState === 'unknown' ? 'cleanup_required' : 'busy');
     }
-    const inputPaths = workerSessionInputPaths(session.agentSessionId);
-    await rm(mapSandboxPath(inputPaths.root, this.sandboxRoot), { force: true, recursive: true });
-    const closed =
-      this.adapter.mode === 'session-continuity'
-        ? await this.adapter.closeSession({
-            controlRoot: session.controlRoot,
-            sessionDirectory: session.sessionDirectory,
-          })
-        : await rm(session.sessionDirectory, { force: true, recursive: true }).then(() => ({
-            privateState: 'absent' as const,
-          }));
-    releaseSandboxWorkSlot(
-      this.sandboxRoot,
-      session.storageRef,
-      session.workSlotRef,
-      session.bindingId
-    );
+    session.closing = true;
+    try {
+      await session.resident.close();
+    } catch {
+      // The host may still hold the conversation: revoke its routes and fence the Harness.
+      this.integration.destroySessionLoopback(session.agentSessionId);
+      this.fenceSession(session);
+      throw harnessError('cleanup_required');
+    }
+    this.integration.destroySessionLoopback(session.agentSessionId);
+    await rm(this.mapSandboxPath(workerSessionInputPaths(session.agentSessionId).root), {
+      force: true,
+      recursive: true,
+    });
+    await rm(session.sessionDirectory, { force: true, recursive: true });
+    LIVE_THREAD_BINDINGS.delete(`${this.sandboxRoot}\0${session.threadId}`);
     this.sessions.delete(session.bindingId);
-    return { childState: 'absent', ...closed, state: 'closed' };
+    return { childState: session.resident.childState(), privateState: 'absent', state: 'closed' };
   }
 
-  /** Reads one exact Session binding and rejects sibling or stale identity. */
-  private requireSession(body: Readonly<Record<string, unknown>>): HarnessSession {
-    const agentSessionId = requireIdentity(body.agentSessionId);
-    const bindingId = requireIdentity(body.agentSessionRuntimeBindingId);
-    const session = this.sessions.get(bindingId);
+  /**
+   * Proves the adapter's handle and projects it. The first ready reference is stored under the
+   * AgentSession id; the adapter decides when its conversation carries that authority. A resumed
+   * binding stores only the exact carried reference. A different reference is reported as unknown
+   * and never replaces the stored one.
+   */
+  private async proveHandle(session: HarnessSession): Promise<{
+    readonly nativeHandleDigest: string | null;
+    readonly nativeHandleState: 'pending' | 'ready' | 'unknown';
+  }> {
+    const handle: WorkerNativeHandle = await session.resident.nativeHandle();
+    if (handle.state !== 'ready') {
+      return {
+        nativeHandleDigest: null,
+        nativeHandleState:
+          handle.state === 'pending' && !session.handleDigest ? 'pending' : 'unknown',
+      };
+    }
+    const digest = createHash('sha256').update(handle.reference).digest('hex');
+    if (
+      session.handleDigest === null &&
+      (session.expectedHandleDigest === null || digest === session.expectedHandleDigest)
+    ) {
+      await this.storeReference(session.agentSessionId, handle.reference);
+      session.handleDigest = digest;
+    }
+    return session.handleDigest === digest
+      ? { nativeHandleDigest: digest, nativeHandleState: 'ready' }
+      : { nativeHandleDigest: null, nativeHandleState: 'unknown' };
+  }
+
+  /**
+   * Reads the predecessor reference named by a resume locator and requires its digest.
+   *
+   * @throws A `missing` refusal when no reference is stored, `conflict` when its digest differs.
+   */
+  private async readResumeReference(resume: { digest: string; locator: string }) {
+    if (!AGENT_SESSION_ID_PATTERN.test(resume.locator)) {
+      throw harnessError('missing');
+    }
+    let reference: Buffer;
+    try {
+      reference = await readFile(this.referencePath(resume.locator));
+    } catch {
+      throw harnessError('missing');
+    }
+    if (createHash('sha256').update(reference).digest('hex') !== resume.digest) {
+      throw harnessError('conflict');
+    }
+    return new Uint8Array(reference);
+  }
+
+  /** Stores one ready reference under its AgentSession id, atomically and privately. */
+  private async storeReference(agentSessionId: string, reference: Uint8Array): Promise<void> {
+    const path = this.referencePath(agentSessionId);
+    await mkdir(dirname(path), { mode: 0o700, recursive: true });
+    const staging = `${path}.${randomBytes(8).toString('hex')}.tmp`;
+    await writeFile(staging, reference, { mode: 0o600 });
+    await rename(staging, path);
+  }
+
+  /** Retained reference slot of one AgentSession, outside the disposable control root. */
+  private referencePath(agentSessionId: string): string {
+    return join(this.nativeDataRootDirectory, 'agent-session-references', agentSessionId);
+  }
+
+  /**
+   * Fences one binding whose native settlement or native close could not be proved: it takes no
+   * Turn, reports unknown cleanup, and the whole Harness drains so the NanoHost owner widens the
+   * fence. Disposable cleanup never overwrites this state.
+   */
+  private fenceSession(session: HarnessSession): void {
+    session.failed = true;
+    session.cleanupState = 'unknown';
+    this.draining = true;
+  }
+
+  /** Removes the Turn's disposable input slots after collection. */
+  private async cleanTurnInputs(session: HarnessSession): Promise<void> {
+    session.cleanupState = 'pending';
+    try {
+      const inputRoot = this.mapSandboxPath(workerSessionInputPaths(session.agentSessionId).root);
+      await Promise.all(
+        ['config', 'context', 'supply'].map((slot) =>
+          rm(resolve(inputRoot, slot), { force: true, recursive: true })
+        )
+      );
+      session.cleanupState = 'clean';
+    } catch {
+      session.cleanupState = 'unknown';
+    }
+  }
+
+  /** Reads one exact binding and rejects a sibling identity. */
+  private requireSession(body: {
+    agentSessionId: string;
+    agentSessionRuntimeBindingId: string;
+  }): HarnessSession {
+    const session = this.sessions.get(body.agentSessionRuntimeBindingId);
     if (!session) {
       throw harnessError('missing');
     }
-    if (session.agentSessionId !== agentSessionId) {
+    if (session.agentSessionId !== body.agentSessionId) {
       throw harnessError('conflict');
     }
     return session;
   }
 
-  /** Counts active Turns without introducing a second capacity owner. */
+  /** Counts active Turns of this Harness. */
   private activeTurnCount(): number {
-    let count = 0;
-    for (const session of this.sessions.values()) {
-      if (session.activeTurn) {
-        count += 1;
-      }
-    }
-    return count;
+    return [...this.sessions.values()].filter((session) => session.activeTurn).length;
+  }
+
+  /** Maps a canonical `/openkit` path into the test-injectable Sandbox root. */
+  private mapSandboxPath(path: string): string {
+    return resolve(this.sandboxRoot, relative('/openkit', path));
   }
 }
 
@@ -570,10 +716,7 @@ export async function runWorkerHarness(
   const integration = await openSandboxIntegration(
     options.signal ? { signal: options.signal } : undefined
   );
-  const harnesses = new Map<
-    string,
-    { readonly adapterId: string; readonly harness: WorkerHarness; nextExpectedSequence: number }
-  >();
+  const harnesses = new Map<string, { readonly harness: WorkerHarness; nextSequence: number }>();
   try {
     process.stdout.write('OPENKIT_WORKER_SHIM_ENTRY_V1\n');
     await integration.ready;
@@ -586,11 +729,10 @@ export async function runWorkerHarness(
         options.signal
       );
       if (response.status === 204) {
+        // A timer may fire early against the monotonic clock, so wait until the minimum elapsed.
         for (;;) {
           const remaining = HARNESS_POLL_MINIMUM_MS - (performance.now() - pollStartedAt);
-          if (remaining <= 0) {
-            break;
-          }
+          if (remaining <= 0) break;
           await delay(Math.ceil(remaining), undefined, { signal: options.signal });
         }
         continue;
@@ -598,309 +740,156 @@ export async function runWorkerHarness(
       if (response.status !== 200) {
         throw new Error(`Harness poll failed with HTTP ${response.status}.`);
       }
-      const command = parseHarnessCommand(await response.text());
+      const command = HarnessCommandEnvelopeSchema.parse(JSON.parse(await response.text()));
       let owner = harnesses.get(command.harnessInstanceId);
       if (!owner) {
         owner = {
-          adapterId: command.adapterId,
-          harness: new WorkerHarness({
-            adapterId: command.adapterId,
-            environment: options.environment,
-            integration,
-          }),
-          nextExpectedSequence: 0,
+          harness: new WorkerHarness({ environment: options.environment, integration }),
+          nextSequence: 0,
         };
         harnesses.set(command.harnessInstanceId, owner);
       }
-      if (
-        owner.adapterId !== command.adapterId ||
-        owner.nextExpectedSequence !== command.sequence
-      ) {
-        throw new Error('Harness command selected stale or conflicting instance state.');
+      if (owner.nextSequence !== command.sequence) {
+        throw new Error('Harness command selected a stale or future sequence.');
       }
-      const result = await owner.harness.handle(command);
+      const settled = await owner.harness.handle(command);
       const resultResponse = await requestWithOutageBudget(
         integration,
         HARNESS_RESULT_PATH,
-        JSON.stringify({ ...result, harnessInstanceId: command.harnessInstanceId }),
+        JSON.stringify(settled),
         options.signal
       );
       if (resultResponse.status !== 204 || (await resultResponse.text()) !== '') {
         throw new Error('Harness result was not accepted with an empty 204.');
       }
-      owner.nextExpectedSequence += 1;
-      await owner.harness.waitForBoundedTurnSettlement();
+      owner.nextSequence += 1;
     }
   } finally {
     await integration.close();
   }
 }
 
-/** Retries only one immutable private request under the existing outage budget. */
+/**
+ * Sends one immutable private request and retries exactly that request, on a transport failure or
+ * a retryable HTTP status, under the bounded monotonic outage budget. Any other status returns to
+ * the caller, which treats it as terminal; a result is resent byte for byte, never re-executed.
+ */
 async function requestWithOutageBudget(
   integration: SandboxIntegrationClient,
   path: string,
   body: string,
   signal: AbortSignal | undefined
 ) {
-  const outageStartedAt = Date.now();
+  const outageStartedAt = performance.now();
   for (;;) {
     const timeout = AbortSignal.timeout(HARNESS_REQUEST_TIMEOUT_MS);
     const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    let failure: unknown;
     try {
-      return await integration.harnessControlFetch(path, {
+      const response = await integration.harnessControlFetch(path, {
         body,
         headers: { 'content-type': 'application/json' },
         method: 'POST',
         signal: requestSignal,
       });
+      if (!isRetryableHttpStatus(response.status)) {
+        return response;
+      }
+      failure = new Error(`Harness request failed with retryable HTTP ${response.status}.`);
     } catch (error) {
       signal?.throwIfAborted();
-      if (Date.now() - outageStartedAt >= HARNESS_OUTAGE_BUDGET_MS) {
-        throw error;
-      }
-      await delay(HARNESS_POLL_MINIMUM_MS, undefined, { signal });
+      failure = error;
     }
+    if (performance.now() - outageStartedAt >= HARNESS_OUTAGE_BUDGET_MS) {
+      throw failure;
+    }
+    await delay(HARNESS_POLL_MINIMUM_MS, undefined, { signal });
   }
 }
 
-/** Parses one exact current-sequence command from NanoCore. */
-function parseHarnessCommand(text: string): RoutedHarnessCommand {
-  const value = JSON.parse(text) as unknown;
-  if (!isRecord(value)) {
-    throw new Error('Harness command must be an object.');
-  }
-  requireExactFields(value, [
-    'schemaVersion',
-    'operationId',
-    'sequence',
-    'operation',
-    'body',
-    'adapterId',
-    'harnessInstanceId',
-  ]);
-  if (
-    value.schemaVersion !== 2 ||
-    !isNonnegativeSafeInteger(value.sequence) ||
-    !HEX_64_PATTERN.test(String(value.operationId)) ||
-    typeof value.operation !== 'string' ||
-    typeof value.adapterId !== 'string' ||
-    typeof value.harnessInstanceId !== 'string' ||
-    !isRecord(value.body)
-  ) {
-    throw new Error('Harness command envelope is invalid.');
-  }
-  return value as unknown as RoutedHarnessCommand;
-}
-
-/** Requires the already parsed envelope identity used by every result. */
-function requireCommandEnvelope(command: HarnessCommand): void {
-  if (
-    command.schemaVersion !== 2 ||
-    !HEX_64_PATTERN.test(command.operationId) ||
-    !isNonnegativeSafeInteger(command.sequence) ||
-    !isRecord(command.body)
-  ) {
-    throw new Error('Harness command envelope is invalid.');
-  }
-}
-
-/** Requires one of the six accepted private operation names. */
-function requireOperation(value: string): HarnessOperation {
-  if (
-    ![
-      'session.open',
-      'session.inspect',
-      'turn.start',
-      'turn.interrupt',
-      'session.close',
-      'harness.drain',
-    ].includes(value)
-  ) {
+/**
+ * Validates one operation body against its closed schema before any effect.
+ *
+ * @throws An `unsupported` refusal for a missing, extra, unknown, or malformed field.
+ */
+function parseBody(operation: HarnessCommandEnvelope['operation'], body: unknown): unknown {
+  const parsed = HarnessCommandBodySchemas[operation].safeParse(body);
+  if (!parsed.success) {
     throw harnessError('unsupported');
   }
-  return value as HarnessOperation;
+  return parsed.data;
 }
 
-/** Requires a closed object field set before any Harness effect. */
-function requireExactFields(body: Readonly<Record<string, unknown>>, expected: readonly string[]) {
-  const actual = Object.keys(body).sort();
-  const closed = [...expected].sort();
-  if (actual.length !== closed.length || actual.some((name, index) => name !== closed[index])) {
-    throw harnessError('unsupported');
+/**
+ * Builds the environment of one resident host: the image allowlist, the fixed scratch root, the
+ * Node trust and header settings the image provides, loopback excluded from any proxy, and the
+ * session-static runtime environment. No route token or loopback credential is placed in it.
+ */
+function residentEnvironment(
+  environment: WorkerShimEnvironment,
+  runtimeEnvironment: Readonly<Record<string, string>>
+): Record<string, string> {
+  const selected: Record<string, string> = {};
+  for (const key of SAFE_RESIDENT_ENVIRONMENT_KEYS) {
+    const value = environment[key];
+    if (typeof value === 'string' && value.length > 0) selected[key] = value;
   }
-}
-
-/** Requires one bounded non-control protocol identity. */
-function requireIdentity(value: unknown): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > 512 ||
-    value.includes('\0') ||
-    value.includes('\r') ||
-    value.includes('\n')
-  ) {
-    throw harnessError('stale');
+  selected.TEMP = NATIVE_SCRATCH_ROOT;
+  selected.TMP = NATIVE_SCRATCH_ROOT;
+  selected.TMPDIR = NATIVE_SCRATCH_ROOT;
+  if (selected.SSL_CERT_FILE) selected.NODE_EXTRA_CA_CERTS = selected.SSL_CERT_FILE;
+  const bundledNodeRoot = dirname(dirname(process.execPath));
+  if (existsSync(join(bundledNodeRoot, 'include', 'node', 'node.h'))) {
+    selected.NPM_CONFIG_NODEDIR = bundledNodeRoot;
+    selected.npm_config_nodedir = bundledNodeRoot;
   }
-  return value;
-}
-
-/** Reserves one binding and work-slot writer within the mounted Sandbox association. */
-function reserveSandboxWorkSlot(
-  sandboxRoot: string,
-  storageRef: string,
-  workSlotRef: string,
-  bindingId: string
-): void {
-  let admission = SANDBOX_ADMISSIONS.get(sandboxRoot);
-  if (!admission) {
-    admission = {
-      liveBindings: new Map(),
-      liveWorkSlots: new Map(),
-      storageRef,
-    };
-    SANDBOX_ADMISSIONS.set(sandboxRoot, admission);
+  for (const key of ['NO_PROXY', 'no_proxy'] as const) {
+    const entries = (selected[key] ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    if (!entries.includes('127.0.0.1')) entries.push('127.0.0.1');
+    selected[key] = entries.join(',');
   }
-  if (
-    admission.storageRef !== storageRef ||
-    admission.liveBindings.has(bindingId) ||
-    admission.liveWorkSlots.has(workSlotRef)
-  ) {
-    throw harnessError('conflict');
-  }
-  admission.liveBindings.set(bindingId, workSlotRef);
-  admission.liveWorkSlots.set(workSlotRef, bindingId);
+  return { ...selected, ...runtimeEnvironment };
 }
 
-/** Releases only the exact closed binding while retaining the Sandbox storage association. */
-function releaseSandboxWorkSlot(
-  sandboxRoot: string,
-  storageRef: string,
-  workSlotRef: string,
-  bindingId: string
-): void {
-  const admission = SANDBOX_ADMISSIONS.get(sandboxRoot);
-  if (
-    admission?.storageRef !== storageRef ||
-    admission.liveBindings.get(bindingId) !== workSlotRef ||
-    admission.liveWorkSlots.get(workSlotRef) !== bindingId
-  ) {
-    throw harnessError('conflict');
-  }
-  admission.liveBindings.delete(bindingId);
-  admission.liveWorkSlots.delete(workSlotRef);
+/** Whether a runtime environment name would override Harness-owned process settings. */
+function isReservedRuntimeEnvironmentName(name: string): boolean {
+  return (
+    name.startsWith('OPENKIT_') ||
+    name.toLowerCase() === 'npm_config_nodedir' ||
+    RESERVED_RUNTIME_ENVIRONMENT_NAMES.has(name)
+  );
 }
 
-/** Requires one opaque identity that is also safe as one fixed-root path segment. */
-function requirePathSegment(value: unknown): string {
-  const identity = requireIdentity(value);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(identity)) {
-    throw harnessError('unsupported');
-  }
-  return identity;
-}
-
-/** Requires one lowercase SHA-256 digest. */
-function requireDigest(value: unknown): string {
-  const digest = requireIdentity(value);
-  if (!HEX_64_PATTERN.test(digest)) {
-    throw harnessError('stale');
-  }
-  return digest;
-}
-
-/** Requires one exact dispatch-time route token. */
-function requireToken(value: unknown): string {
-  const token = requireIdentity(value);
-  if (!TOKEN_PATTERN.test(token)) {
-    throw harnessError('stale');
-  }
-  return token;
-}
-
-/** Maps the canonical worker input path into a test-injected sandbox root. */
-function mapSandboxPath(path: string, sandboxRoot: string): string {
-  return resolve(sandboxRoot, relative('/openkit', path));
-}
-
-/** Builds one successful exact result envelope. */
-function succeeded(
-  command: HarnessCommand,
+/** Builds one exact result envelope. */
+function result(
+  command: HarnessCommandEnvelope,
+  disposition: 'succeeded' | 'refused',
   body: Readonly<Record<string, unknown>>
-): HarnessResult {
+): HarnessResultEnvelope {
   return {
     body,
-    disposition: 'succeeded',
+    disposition,
+    harnessInstanceId: command.harnessInstanceId,
     operationId: command.operationId,
     schemaVersion: 2,
     sequence: command.sequence,
-  };
-}
-
-/** Builds one typed refusal with optional value-free startup metadata. */
-function refused(
-  command: HarnessCommand,
-  code: string,
-  startupFailure?: WorkerStartupFailure
-): HarnessResult {
-  return {
-    body: { reasonCode: code, ...(startupFailure ? { startupFailure } : {}) },
-    disposition: 'refused',
-    operationId: command.operationId,
-    schemaVersion: 2,
-    sequence: command.sequence,
-  };
+  } as HarnessResultEnvelope;
 }
 
 /** Creates a private typed refusal error. */
-function harnessError(code: string): Error {
+function harnessError(code: HarnessRefusalReason): Error {
   return Object.assign(new Error(`Harness operation refused: ${code}`), {
     harnessReasonCode: code,
   });
 }
 
-/** Projects only the fixed refusal vocabulary. */
-function reasonCode(error: unknown): string {
+/** Projects only the fixed refusal vocabulary; any other failure is a dependency failure. */
+function reasonCode(error: unknown): HarnessRefusalReason {
   if (error && typeof error === 'object' && 'harnessReasonCode' in error) {
-    return String(error.harnessReasonCode);
+    return error.harnessReasonCode as HarnessRefusalReason;
   }
   return 'dependency_failed';
-}
-
-/** Checks one JSON object boundary. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-/** Checks a nonnegative safe integer. */
-function isNonnegativeSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
-/** Checks a positive safe integer. */
-function isPositiveSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0;
-}
-
-/** Validates bounded private Turn credential carriage without retaining or echoing raw values. */
-function requireRuntimeEnvironment(value: unknown): Readonly<Record<string, string>> {
-  if (value === undefined) return {};
-  if (
-    value === null ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    Object.keys(value).length > 128 ||
-    Object.entries(value).some(
-      ([name, entry]) =>
-        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
-        typeof entry !== 'string' ||
-        entry.length === 0 ||
-        entry.includes('\0') ||
-        Buffer.byteLength(entry) > 64 * 1024
-    )
-  ) {
-    throw harnessError('stale');
-  }
-  return value as Readonly<Record<string, string>>;
 }

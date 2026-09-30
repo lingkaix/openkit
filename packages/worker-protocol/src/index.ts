@@ -1,6 +1,5 @@
-import { GitFailureExplanationSchema } from '@openkit/protocol';
-
 export { type GitFailureExplanation, GitFailureExplanationSchema } from '@openkit/protocol';
+export * from './harness-control.js';
 
 import { z } from 'zod';
 
@@ -22,57 +21,6 @@ export const CaptureCoverageBindingSchema = z
 
 /** Validated Turn admission coverage pair; collection success is recorded separately. */
 export type CaptureCoverageBinding = Readonly<z.infer<typeof CaptureCoverageBindingSchema>>;
-
-/** Value-free pre-native startup diagnostics carried by a private Harness refusal. */
-export const WorkerStartupFailureSchema = z
-  .object({
-    explanation: GitFailureExplanationSchema.optional(),
-    stage: z.enum([
-      'package_validation',
-      'runtime_supply',
-      'workspace_materialization',
-      'adapter_prepare',
-      'integration_ready',
-      'worker_control_ready',
-      'native_spawn',
-    ]),
-    reason: z.enum([
-      'failed',
-      'missing_file',
-      'permission_denied',
-      'invalid_json',
-      'retained_baseline_unavailable',
-      'retained_baseline_conflict',
-      'retained_source_unavailable',
-      'retained_source_conflict',
-      'git_init_failed',
-      'git_fetch_failed',
-      'git_fetch_commit_unavailable',
-      'git_fetch_tls_failed',
-      'git_fetch_http_refused',
-      'git_fetch_transport_failed',
-      'git_checkout_failed',
-      'control_timeout',
-    ]),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (
-      value.explanation &&
-      (value.stage !== value.explanation.stage || value.reason !== value.explanation.code)
-    ) {
-      context.addIssue({ code: 'custom', message: 'Startup failure and explanation must agree.' });
-    }
-    if (value.reason === 'git_fetch_http_refused' && !value.explanation) {
-      context.addIssue({
-        code: 'custom',
-        message: 'HTTP refusal requires a normalized observation.',
-      });
-    }
-  });
-
-/** Closed startup failure metadata; arbitrary exception text is never transport data. */
-export type WorkerStartupFailure = z.infer<typeof WorkerStartupFailureSchema>;
 
 /**
  * Opaque worker-facing id.
@@ -805,8 +753,6 @@ export const WorkerCapabilityCallSummarySchema = z
 export const WorkerControlOperationSchema = z.enum([
   'heartbeat',
   'artifact_notice',
-  'command_poll',
-  'command_ack',
   'event_append',
   'final_status',
   'supply_refresh_ack',
@@ -821,7 +767,6 @@ export const WorkerControlHeartbeatStatusSchema = z.enum([
   'starting',
   'running',
   'idle',
-  'awaiting_command',
   'stopping',
   'completed',
   'failed',

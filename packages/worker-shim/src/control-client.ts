@@ -69,14 +69,7 @@ export interface WorkerControlHeartbeatInput {
   /** Worker sequence number. */
   sequence: number;
   /** Worker lifecycle status. */
-  status:
-    | 'starting'
-    | 'running'
-    | 'idle'
-    | 'awaiting_command'
-    | 'stopping'
-    | 'completed'
-    | 'failed';
+  status: 'starting' | 'running' | 'idle' | 'stopping' | 'completed' | 'failed';
   /** Optional worker status message. */
   message?: string | null | undefined;
 }
@@ -96,16 +89,6 @@ export interface WorkerControlArtifactInput {
     /** Optional media type. */
     mediaType?: string | null | undefined;
   };
-}
-
-/**
- * Command poll response returned by NanoCore.
- */
-export interface WorkerControlCommandPoll {
-  /** Commands delivered to the worker. */
-  commands: Array<Record<string, unknown>>;
-  /** Optional server poll timestamp. */
-  polledAt?: string;
 }
 
 /**
@@ -209,28 +192,6 @@ export class WorkerControlClient {
     signal?: AbortSignal
   ): Promise<unknown> {
     return this.request(() => this.postJson('/artifacts', input, signal), signal);
-  }
-
-  /**
-   * Polls NanoCore for pending worker commands.
-   *
-   * @returns Command poll response.
-   */
-  public async pollCommands(signal?: AbortSignal): Promise<WorkerControlCommandPoll> {
-    return this.request(
-      () => this.postJson<WorkerControlCommandPoll>('/commands/poll', {}, signal),
-      signal
-    );
-  }
-
-  /**
-   * Acknowledges one handled non-terminal worker command.
-   *
-   * @param commandId NanoCore-issued command id.
-   * @returns Parsed NanoCore response.
-   */
-  public async acknowledgeCommand(commandId: string, signal?: AbortSignal): Promise<unknown> {
-    return this.request(() => this.postJson('/commands/ack', { commandId }, signal), signal);
   }
 
   /**
@@ -510,9 +471,19 @@ function isRetryableFailure(error: unknown): boolean {
   return (
     isReconnectRequired(error) ||
     error instanceof TypeError ||
-    (error instanceof WorkerControlError &&
-      (error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500))
+    (error instanceof WorkerControlError && isRetryableHttpStatus(error.status))
   );
+}
+
+/**
+ * Whether one HTTP status is a temporary failure the same immutable request may retry under the
+ * bounded outage budget: 408, 425, 429, and 500-599. Every other status is terminal.
+ *
+ * @param status Received HTTP status.
+ * @returns True for the retryable statuses the Worker Control Protocol names.
+ */
+export function isRetryableHttpStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
 }
 
 /**

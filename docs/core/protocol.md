@@ -776,7 +776,7 @@ Protocol changes that alter public records, events, commands, generated schemas,
 
 Provider-native and adapter-native fields must live under explicit extension namespaces.
 
-Unknown optional extension sections should be ignored or preserved by readers only when the schema marks the namespace as optional.
+Unknown additive extension sections outside the closed core MUST be ignored by readers that do not understand them, without requiring a prior optional-namespace declaration. Required-extension rejection, unknown-core-value rejection, and preservation of ignored content follow `docs/core/contract-evolution.md`.
 
 Agent setup extension namespaces are runtime-config evolution concerns. They should be documented in agent setup specs unless a future core protocol revision promotes a stable protocol concept.
 

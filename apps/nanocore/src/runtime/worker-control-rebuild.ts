@@ -14,12 +14,10 @@ import {
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { commandRecord, type WorkerControlCommandRow } from './worker-control-commands.js';
 import type {
   WorkerControlArtifactNotice,
   WorkerControlGateway,
   WorkerControlHeartbeat,
-  WorkerControlInterruptCommand,
   WorkerControlLineage,
   WorkerControlSupplyRefreshAck,
 } from './worker-control-gateway.js';
@@ -80,10 +78,8 @@ export function rebuildWorkerControlGatewaySessions(
     };
     const records = readAcceptedRecords(coreDb, lineage);
 
-    const commandState = readCommands(coreDb, lineage);
     gateway.restoreSession({
       ...records,
-      ...commandState,
       environmentPackage,
       lineage,
       registeredAt: lease.acquiredAt,
@@ -221,56 +217,4 @@ function readAcceptedRecords(
   }
 
   return result;
-}
-
-/**
- * Reads durable worker-control commands for one lineage.
- *
- * @param coreDb Server-scope Core database.
- * @param lineage Worker-control lineage selector.
- * @returns Restored command records.
- */
-function readCommands(
-  coreDb: CoreDb,
-  lineage: WorkerControlLineage
-): {
-  readonly commands: WorkerControlInterruptCommand[];
-  readonly commandSequenceHighWatermark: number | null;
-} {
-  const rows = coreDb.sqlite
-    .prepare(
-      `
-        SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
-          agent_session_id AS agentSessionId, package_snapshot_id AS packageSnapshotId,
-          request_id AS requestId, command_id AS commandId, command_kind AS commandKind,
-          sequence, payload_json AS payloadJson, status, queued_at AS queuedAt,
-          delivered_at AS deliveredAt
-        FROM worker_control_commands
-        WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
-          AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?
-          AND command_kind = 'interrupt'
-        ORDER BY sequence ASC
-        `
-    )
-    .all(
-      lineage.workspaceId,
-      lineage.threadId,
-      lineage.turnId,
-      lineage.agentSessionId,
-      lineage.packageSnapshotId,
-      lineage.requestId ?? null
-    ) as WorkerControlCommandRow[];
-
-  const records = rows.map(commandRecord);
-  if (records.length > 1) {
-    throw new Error(`Multiple worker interrupts exist for Turn: ${lineage.turnId}`);
-  }
-
-  return {
-    commands: records
-      .filter((record) => record.status === 'queued' || record.status === 'delivered')
-      .map((record) => record.command),
-    commandSequenceHighWatermark:
-      records.length === 0 ? null : Math.max(...records.map((record) => record.command.sequence)),
-  };
 }

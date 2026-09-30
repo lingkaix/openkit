@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -5,14 +6,21 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough, Readable } from 'node:stream';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type {
+  WorkerAdapterResult,
+  WorkerNativeHandle,
+  WorkerResidentAdapter,
+  WorkerResidentOpenInput,
+  WorkerResidentTurnInput,
+} from './adapter-registry.js';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 
@@ -32,56 +40,408 @@ vi.mock('./integration-client.js', async (importOriginal) => ({
   },
 }));
 
+/** Delegate behind the static-registry fixture entry, set by the registry test. */
+const registryFixture = vi.hoisted(() => ({
+  adapter: null as import('./adapter-registry.js').WorkerResidentAdapter | null,
+}));
+
+vi.mock('./adapter-registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./adapter-registry.js')>();
+  return {
+    ...actual,
+    WORKER_ADAPTERS: {
+      ...actual.WORKER_ADAPTERS,
+      'fixture-fourth': {
+        openSession: (input: WorkerResidentOpenInput) => {
+          if (!registryFixture.adapter) throw new Error('Registry fixture is unavailable.');
+          return registryFixture.adapter.openSession(input);
+        },
+      },
+    },
+  };
+});
+
+const ADAPTER = 'fake';
 const DIGEST = 'a'.repeat(64);
 
-type RunFileEffect = (input: {
-  argv: string[];
-  stdin: AsyncIterable<string | Uint8Array>;
-  stdout: NodeJS.WritableStream;
-  stderr: NodeJS.WritableStream;
-  slotRoots: Record<string, string>;
-}) => Promise<number>;
-
-/** Imports one immutable private input through the installed image helper seam. */
-async function importWorkerInput(
-  runFileEffect: RunFileEffect,
-  slotRoots: Record<string, string>,
-  slot: 'context' | 'package-config' | 'worker-supply',
-  path: string,
-  bytes: Buffer
-) {
-  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-  stdout.on('data', (chunk) => stdoutChunks.push(Buffer.from(chunk)));
-  stderr.on('data', (chunk) => stderrChunks.push(Buffer.from(chunk)));
-
-  const exitCode = await runFileEffect({
-    argv: [
-      'reference.import',
-      '--slot',
-      slot,
-      '--path',
-      path,
-      '--length',
-      String(bytes.length),
-      '--sha256',
-      digest,
-    ],
-    stderr,
-    stdin: Readable.from([bytes]),
-    stdout,
-    slotRoots,
-  });
-
-  expect(exitCode).toBe(0);
-  expect(Buffer.concat(stderrChunks)).toHaveLength(0);
-  expect(Buffer.concat(stdoutChunks).toString('utf8')).toBe(`${digest} ${bytes.length}\n`);
+/** A distinct 43-character base64url credential derived from a seed. */
+function credential(seed: string): string {
+  return createHash('sha256').update(seed).digest('base64url');
 }
 
-/** Builds one exact private Harness command for focused lifecycle checks. */
+/** SHA-256 hex of one byte string. */
+function sha256(bytes: string | Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** Scripted behavior of one native Turn in the fake resident runtime. */
+type TurnScript =
+  | { readonly kind: 'complete'; readonly text?: string }
+  | { readonly kind: 'fail' }
+  | { readonly kind: 'hold' }
+  | { readonly kind: 'reject' }
+  /** Keeps working: its interrupt rejects and it never settles. */
+  | { readonly kind: 'stuck' };
+
+/** One opened fake resident binding with its observable state. */
+interface FakeResident {
+  closed: boolean;
+  closeFails: boolean;
+  completedTurns: number;
+  /** Ends the resident host on its own. */
+  exit(): void;
+  /** Overrides the reported handle; null reports the default. */
+  handleOverride: WorkerNativeHandle | null;
+  readonly input: WorkerResidentOpenInput;
+  interrupts: number;
+  readonly turns: WorkerResidentTurnInput[];
+}
+
+/**
+ * A deterministic resident adapter. A new conversation reports `pending` until one Turn completed
+ * and then `ready` with `reference-<agentSessionId>`; a resumed one reports the predecessor bytes.
+ */
+function fakeAdapter(
+  options: {
+    closeFails?: boolean;
+    initialHandle?: WorkerNativeHandle;
+    openFails?: boolean;
+    readyAtOpen?: boolean;
+    resumeHandle?: WorkerNativeHandle;
+  } = {}
+) {
+  const residents: FakeResident[] = [];
+  const script: TurnScript[] = [];
+  const adapter: WorkerResidentAdapter = {
+    async openSession(input) {
+      if (options.openFails) throw new Error('resident host failed to start');
+      let exit!: () => void;
+      const exited = new Promise<void>((resolve) => {
+        exit = resolve;
+      });
+      const resident: FakeResident = {
+        closed: false,
+        closeFails: options.closeFails ?? false,
+        completedTurns: 0,
+        exit,
+        handleOverride: options.initialHandle ?? null,
+        input,
+        interrupts: 0,
+        turns: [],
+      };
+      residents.push(resident);
+      return {
+        exited,
+        childState: () => (resident.closed ? 'absent' : 'running'),
+        async close() {
+          if (resident.closeFails) throw new Error('close failed');
+          resident.closed = true;
+        },
+        async nativeHandle() {
+          if (resident.handleOverride) return resident.handleOverride;
+          if (input.resumeReference) {
+            return options.resumeHandle ?? { reference: input.resumeReference, state: 'ready' };
+          }
+          return options.readyAtOpen || resident.completedTurns > 0
+            ? { reference: Buffer.from(`reference-${input.agentSessionId}`), state: 'ready' }
+            : { state: 'pending' };
+        },
+        async startTurn(turnInput) {
+          resident.turns.push(turnInput);
+          const next = script.shift() ?? { kind: 'complete' };
+          if (next.kind === 'reject') throw new Error('native turn refused');
+          let interrupt!: () => void;
+          const interrupted = new Promise<WorkerAdapterResult>((resolve) => {
+            interrupt = () =>
+              resolve({ assistantText: null, status: 'interrupted', stopReason: 'aborted' });
+          });
+          if (next.kind === 'stuck') {
+            return {
+              async interrupt() {
+                resident.interrupts += 1;
+                throw new Error('native interrupt failed');
+              },
+              settled: new Promise<WorkerAdapterResult>(() => undefined),
+            };
+          }
+          const settled: Promise<WorkerAdapterResult> =
+            next.kind === 'hold'
+              ? interrupted
+              : Promise.resolve(
+                  next.kind === 'fail'
+                    ? { assistantText: null, status: 'failed', stopReason: 'error' }
+                    : {
+                        assistantText: next.text ?? `answer-${turnInput.turnId}`,
+                        status: 'completed',
+                        stopReason: 'completed',
+                      }
+                );
+          void settled.then((result) => {
+            if (result.status === 'completed') resident.completedTurns += 1;
+          });
+          return {
+            async interrupt() {
+              resident.interrupts += 1;
+              interrupt();
+              await settled;
+            },
+            settled,
+          };
+        },
+      };
+    },
+  };
+  return { adapter, residents, script };
+}
+
+/** Records every Integration effect the Harness requests. */
+function fakeIntegration(options: { readyAppendStatus?: number; registerFails?: boolean } = {}) {
+  const calls: string[] = [];
+  const loopbacks = new Map<
+    string,
+    { capabilityCredential: string; inferenceCredential: string }
+  >();
+  const finalStatuses: Array<{ body: { status: string }; lineage: { turnId: string } }> = [];
+  const boundTokens: unknown[] = [];
+  const client = {
+    ready: Promise.resolve(),
+    registerSessionLoopback(
+      agentSessionId: string,
+      credentials: { capabilityCredential: string; inferenceCredential: string }
+    ) {
+      if (options.registerFails || loopbacks.has(agentSessionId)) {
+        throw new Error('loopback conflict');
+      }
+      loopbacks.set(agentSessionId, credentials);
+      calls.push(`register:${agentSessionId}`);
+    },
+    destroySessionLoopback(agentSessionId: string) {
+      loopbacks.delete(agentSessionId);
+      calls.push(`destroy:${agentSessionId}`);
+    },
+    bindTurnRouteTokens(agentSessionId: string, tokens: unknown) {
+      boundTokens.push(tokens);
+      calls.push(`bind:${agentSessionId}`);
+    },
+    clearTurnRouteTokens(agentSessionId: string) {
+      calls.push(`clear:${agentSessionId}`);
+    },
+    async drainTurn(agentSessionId: string) {
+      calls.push(`drain:${agentSessionId}`);
+      return 0;
+    },
+    workerControlFetch: async (url: string, init: { body: string }) => {
+      if (url.endsWith('/final-status')) {
+        finalStatuses.push(JSON.parse(init.body) as (typeof finalStatuses)[number]);
+      }
+      if (
+        options.readyAppendStatus &&
+        url.endsWith('/events/append') &&
+        init.body.includes('"worker.ready"')
+      ) {
+        return {
+          ok: false,
+          status: options.readyAppendStatus,
+          text: async () => JSON.stringify({ code: 'conflict' }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+      };
+    },
+  } as unknown as SandboxIntegrationClient;
+  return { boundTokens, calls, client, finalStatuses, loopbacks };
+}
+
+/** One temporary Sandbox layout, a fake adapter and Integration, and command helpers. */
+function harnessFixture(
+  options: {
+    adapter?: ReturnType<typeof fakeAdapter>;
+    /** Uses the production registry instead of injecting the fake under this id. */
+    registryAdapterId?: string;
+    environment?: Record<string, string>;
+    integration?: ReturnType<typeof fakeIntegration>;
+    root?: string;
+  } = {}
+) {
+  const adapterId = options.registryAdapterId ?? ADAPTER;
+  const root = options.root ?? mkdtempSync(join(tmpdir(), 'openkit-worker-harness-'));
+  const sandboxRoot = join(root, 'openkit');
+  const nativeRoot = join(root, 'sandbox', 'native');
+  const privateRoot = join(root, 'private');
+  const fake = options.adapter ?? fakeAdapter();
+  const integration = options.integration ?? fakeIntegration();
+  const harness = new WorkerHarness({
+    ...(options.registryAdapterId ? {} : { adapters: { [ADAPTER]: fake.adapter } }),
+    environment: options.environment ?? {},
+    integration: integration.client,
+    nativeDataRootDirectory: nativeRoot,
+    rootDirectory: privateRoot,
+    sandboxRoot,
+    turnOutputDirectory: join(sandboxRoot, 'session'),
+  });
+  let sequence = 0;
+  const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
+    harness.handle({
+      body,
+      harnessInstanceId: 'harness-one',
+      operation: operation as never,
+      operationId: sha256(`${root}:${sequence}`),
+      schemaVersion: 2,
+      sequence: sequence++,
+    });
+  const selector = (agentSessionId: string) => ({
+    agentSessionId,
+    agentSessionRuntimeBindingId: `binding-${agentSessionId}`,
+  });
+  const open = (
+    agentSessionId: string,
+    extra: {
+      resume?: { digest: string; locator: string } | null;
+      runtimeEnvironment?: Record<string, string>;
+      threadId?: string;
+    } = {}
+  ) =>
+    send('session.open', {
+      ...selector(agentSessionId),
+      adapterId,
+      agentSessionCompatibilityKey: DIGEST,
+      capabilityLoopbackCredential: credential(`capability-${agentSessionId}`),
+      effectiveSetupGeneration: 1,
+      inferenceLoopbackCredential: credential(`inference-${agentSessionId}`),
+      resume: extra.resume ?? null,
+      ...(extra.runtimeEnvironment ? { runtimeEnvironment: extra.runtimeEnvironment } : {}),
+      threadId: extra.threadId ?? 'thread-one',
+      workspaceId: 'workspace-one',
+    });
+  const packagePath = (agentSessionId: string) =>
+    join(sandboxRoot, 'sessions', agentSessionId, 'config', 'package.json');
+  const contextRoot = (agentSessionId: string) =>
+    join(sandboxRoot, 'sessions', agentSessionId, 'context');
+  /** Materializes the Turn's AEP where the owner would. */
+  const writePackage = (
+    agentSessionId: string,
+    turnId: string,
+    extra: { runtimeEnvNames?: readonly string[]; threadId?: string } = {}
+  ) => {
+    mkdirSync(join(sandboxRoot, 'sessions', agentSessionId, 'config'), { recursive: true });
+    writeFileSync(
+      packagePath(agentSessionId),
+      JSON.stringify({
+        capabilities: {
+          mode: 'enabled',
+          protocol: 'openkit-worker-capability-v1',
+          routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+        },
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: adapterId },
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+          mode: 'sandbox-integration',
+        },
+        credentials: {
+          declarations: (extra.runtimeEnvNames ?? []).map((name) => ({
+            targetEnvVarName: name,
+            visibility: 'runtime-env',
+          })),
+        },
+        extensions: { openkit: { turnInput: `input for ${turnId}` } },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: 'model-a',
+          routes: [
+            {
+              credentialVisibility: 'placeholder',
+              endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+              id: 'worker-inference',
+              model: 'model-a',
+              providerInstanceId: 'provider-a',
+            },
+          ],
+        },
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
+        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot } },
+        scope: {
+          agentSessionId,
+          threadId: extra.threadId ?? 'thread-one',
+          turnId,
+          workspaceId: 'workspace-one',
+        },
+        snapshotId: `package-${turnId}`,
+        supply: { mcpServers: [{ id: 'echo' }] },
+      })
+    );
+  };
+  const startBody = (agentSessionId: string, turnId: string, leaseId = `lease-${turnId}`) => ({
+    ...selector(agentSessionId),
+    aepRef: packagePath(agentSessionId),
+    capabilityToken: credential(`capability-token-${turnId}`),
+    contextPackageId: `ctxpkg_${turnId}`,
+    contextRef: contextRoot(agentSessionId),
+    deadline: '2099-01-01T00:00:00.000Z',
+    inferenceToken: credential(`inference-token-${turnId}`),
+    leaseId,
+    packageSnapshotId: `package-${turnId}`,
+    threadId: 'thread-one',
+    turnId,
+    turnSequence: 0,
+    workerControlToken: credential(`control-token-${turnId}`),
+    workspaceId: 'workspace-one',
+  });
+  /** Materializes and starts one Turn. */
+  const start = (
+    agentSessionId: string,
+    turnId: string,
+    extra: { leaseId?: string; runtimeEnvNames?: readonly string[] } = {}
+  ) => {
+    writePackage(agentSessionId, turnId, extra);
+    return send('turn.start', startBody(agentSessionId, turnId, extra.leaseId));
+  };
+  /** Waits until the binding no longer reports an active Turn. */
+  const settle = async (agentSessionId: string) => {
+    await vi.waitFor(
+      async () => {
+        const inspected = await send('session.inspect', selector(agentSessionId));
+        expect(inspected.body.state).not.toBe('active');
+      },
+      { interval: 10, timeout: 5_000 }
+    );
+  };
+  const referencePath = (agentSessionId: string) =>
+    join(nativeRoot, 'agent-session-references', agentSessionId);
+  return {
+    contextRoot,
+    fake,
+    harness,
+    integration,
+    nativeRoot,
+    open,
+    packagePath,
+    privateRoot,
+    referencePath,
+    root,
+    sandboxRoot,
+    selector,
+    send,
+    settle,
+    start,
+    startBody,
+    writePackage,
+  };
+}
+
+/** Builds one exact private Harness command for the loop tests. */
 function command(operation: string, sequence: number, body: Readonly<Record<string, unknown>>) {
   return {
     body,
@@ -92,26 +452,7 @@ function command(operation: string, sequence: number, body: Readonly<Record<stri
   };
 }
 
-/** Builds one accepted Codex session.open body. */
-function openBody(
-  bindingId: string,
-  agentSessionId: string,
-  workSlotRef = `work-${agentSessionId}`
-) {
-  return {
-    adapterId: 'codex',
-    agentSessionCompatibilityKey: DIGEST,
-    agentSessionId,
-    agentSessionRuntimeBindingId: bindingId,
-    effectiveSetupGeneration: 1,
-    storageRef: 'storage-one',
-    threadId: `thread-${agentSessionId}`,
-    workSlotRef,
-    workspaceId: 'workspace-one',
-  };
-}
-
-describe('shared Worker Harness', () => {
+describe('Worker Harness loop', () => {
   afterEach(() => {
     loopFixture.client = null;
     loopFixture.events.length = 0;
@@ -149,9 +490,8 @@ describe('shared Worker Harness', () => {
     let pollCount = 0;
     const harnessControlFetch = vi.fn(async () => {
       pollCount += 1;
-      return pollCount === 4
-        ? { ok: false, status: 500, text: async () => '' }
-        : { ok: true, status: 204, text: async () => '' };
+      if (pollCount === 4) controller.abort(new Error('cadence-complete'));
+      return { ok: true, status: 204, text: async () => '' };
     });
     loopFixture.client = {
       close: async () => undefined,
@@ -160,7 +500,7 @@ describe('shared Worker Harness', () => {
     } as unknown as SandboxIntegrationClient;
     const run = runWorkerHarness({ signal: controller.signal });
     try {
-      await expect(run).rejects.toThrow(/Harness poll failed with HTTP 500/u);
+      await expect(run).rejects.toThrow(/abort/iu);
       // Observe the poll-start sample before synchronous request preparation.
       const pollStarts = harnessControlFetch.mock.invocationCallOrder.map((invocationOrder) => {
         const sampleIndex = performanceNow.mock.invocationCallOrder.findLastIndex(
@@ -180,19 +520,18 @@ describe('shared Worker Harness', () => {
     }
   });
 
-  it('routes one Integration poll loop to two independent Harness instances', async () => {
+  it('routes one Integration poll loop to independent Harness instances by instance id', async () => {
     const controller = new AbortController();
     const results: Array<Record<string, unknown>> = [];
     const commands = [
+      { ...command('harness.drain', 0, {}), harnessInstanceId: 'harness-one' },
+      { ...command('harness.drain', 0, {}), harnessInstanceId: 'harness-two' },
       {
-        ...command('harness.drain', 0, {}),
-        adapterId: 'codex',
-        harnessInstanceId: 'harness-codex',
-      },
-      {
-        ...command('harness.drain', 0, {}),
-        adapterId: 'opencode',
-        harnessInstanceId: 'harness-opencode',
+        ...command('session.inspect', 1, {
+          agentSessionId: 'as-a',
+          agentSessionRuntimeBindingId: 'b',
+        }),
+        harnessInstanceId: 'harness-one',
       },
     ];
     loopFixture.client = {
@@ -213,1013 +552,809 @@ describe('shared Worker Harness', () => {
     } as unknown as SandboxIntegrationClient;
 
     await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(/abort/i);
-    expect(results).toMatchObject([
-      { disposition: 'succeeded', harnessInstanceId: 'harness-codex', sequence: 0 },
-      { disposition: 'succeeded', harnessInstanceId: 'harness-opencode', sequence: 0 },
+    expect(results).toEqual([
+      {
+        body: { activeTurns: 0, openSessions: 0, state: 'draining' },
+        disposition: 'succeeded',
+        harnessInstanceId: 'harness-one',
+        operationId: '0'.repeat(64),
+        schemaVersion: 2,
+        sequence: 0,
+      },
+      {
+        body: { activeTurns: 0, openSessions: 0, state: 'draining' },
+        disposition: 'succeeded',
+        harnessInstanceId: 'harness-two',
+        operationId: '0'.repeat(64),
+        schemaVersion: 2,
+        sequence: 0,
+      },
+      {
+        body: { reasonCode: 'missing' },
+        disposition: 'refused',
+        harnessInstanceId: 'harness-one',
+        operationId: `${'0'.repeat(63)}1`,
+        schemaVersion: 2,
+        sequence: 1,
+      },
     ]);
   });
 
-  it('does not request another private poll while a bounded Turn remains selected', async () => {
+  it('retries a retryable poll and resends the identical result after a retryable refusal', async () => {
     const controller = new AbortController();
-    let pollCount = 0;
-    let resultCount = 0;
-    let releaseTurn: (() => void) | undefined;
-    const turnSettlement = new Promise<void>((resolve) => {
-      releaseTurn = resolve;
-    });
-    vi.spyOn(WorkerHarness.prototype, 'handle').mockImplementation(async (selected) => ({
-      body: { state: 'started' },
-      disposition: 'succeeded',
-      operationId: selected.operationId,
-      schemaVersion: 2,
-      sequence: selected.sequence,
-    }));
-    vi.spyOn(WorkerHarness.prototype, 'waitForBoundedTurnSettlement').mockImplementation(
-      async () => turnSettlement
-    );
+    const polls: number[] = [];
+    const results: string[] = [];
+    let served = false;
     loopFixture.client = {
       close: async () => undefined,
-      harnessControlFetch: async (path: string) => {
+      harnessControlFetch: async (path: string, init: { body: string }) => {
         if (path.endsWith('/result')) {
-          resultCount += 1;
+          results.push(init.body);
+          if (results.length === 1) return { ok: false, status: 503, text: async () => '' };
+          controller.abort(new Error('fixture-complete'));
           return { ok: true, status: 204, text: async () => '' };
         }
-        pollCount += 1;
-        if (pollCount === 1) {
-          return {
-            ok: true,
-            status: 200,
-            text: async () =>
-              JSON.stringify({
-                ...command('turn.start', 0, {}),
-                adapterId: 'opencode',
-                harnessInstanceId: 'harness-opencode',
-              }),
-          };
-        }
-        controller.abort(new Error('fixture-complete'));
-        return { ok: true, status: 204, text: async () => '' };
+        polls.push(polls.length);
+        if (polls.length === 1) return { ok: false, status: 500, text: async () => '' };
+        if (polls.length === 2) return { ok: false, status: 429, text: async () => '' };
+        if (served) return { ok: true, status: 204, text: async () => '' };
+        served = true;
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              ...command('harness.drain', 0, {}),
+              harnessInstanceId: 'harness-one',
+            }),
+        };
       },
       ready: Promise.resolve(),
     } as unknown as SandboxIntegrationClient;
-    const run = runWorkerHarness({ signal: controller.signal });
-    void run.catch(() => undefined);
 
+    // The loop ends at its next iteration once the accepted result sets the stop signal.
+    await expect(runWorkerHarness({ signal: controller.signal })).resolves.toBeUndefined();
+    expect(polls).toHaveLength(3);
+    expect(results).toHaveLength(2);
+    expect(results[1]).toBe(results[0]);
+    expect(JSON.parse(results[0] as string)).toMatchObject({
+      body: { state: 'draining' },
+      sequence: 0,
+    });
+  });
+
+  it('ends on a nonretryable status and when the monotonic outage budget is spent', async () => {
+    loopFixture.client = {
+      close: async () => undefined,
+      harnessControlFetch: async () => ({ ok: false, status: 404, text: async () => '' }),
+      ready: Promise.resolve(),
+    } as unknown as SandboxIntegrationClient;
+    await expect(runWorkerHarness()).rejects.toThrow(/Harness poll failed with HTTP 404/u);
+
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => {
+      clock += 100_000;
+      return clock;
+    });
+    let attempts = 0;
+    loopFixture.client = {
+      close: async () => undefined,
+      harnessControlFetch: async () => {
+        attempts += 1;
+        return { ok: false, status: 502, text: async () => '' };
+      },
+      ready: Promise.resolve(),
+    } as unknown as SandboxIntegrationClient;
+    await expect(runWorkerHarness()).rejects.toThrow(/retryable HTTP 502/u);
+    expect(attempts).toBeGreaterThan(1);
+    expect(attempts).toBeLessThan(5);
+  });
+
+  it('stops on a command whose sequence is not the next one for its instance', async () => {
+    const controller = new AbortController();
+    loopFixture.client = {
+      close: async () => undefined,
+      harnessControlFetch: async () => ({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ ...command('harness.drain', 1, {}), harnessInstanceId: 'harness-one' }),
+      }),
+      ready: Promise.resolve(),
+    } as unknown as SandboxIntegrationClient;
+    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(
+      /stale or future sequence/u
+    );
+  });
+});
+
+describe('Worker Harness resident AgentSessions', () => {
+  it('runs a further runtime through one static registry entry and the unchanged Harness', async () => {
+    const fake = fakeAdapter();
+    registryFixture.adapter = fake.adapter;
     try {
-      await vi.waitFor(() => expect(resultCount).toBe(1));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(pollCount).toBe(1);
-      releaseTurn?.();
-      await vi.waitFor(() => expect(pollCount).toBe(2));
-      await run.catch(() => undefined);
+      const f = harnessFixture({ adapter: fake, registryAdapterId: 'fixture-fourth' });
+      expect(await f.open('as-a')).toMatchObject({ disposition: 'succeeded' });
+      expect(fake.residents[0]?.input.stateRoot).toBe(
+        join(f.nativeRoot, 'fixture-fourth', 'threads', sha256('thread-one'))
+      );
+      await f.start('as-a', 'turn-1');
+      await f.settle('as-a');
+      expect(f.integration.finalStatuses).toMatchObject([{ body: { status: 'completed' } }]);
+      expect(readFileSync(join(f.sandboxRoot, 'session', 'items.jsonl'), 'utf8')).toContain(
+        'answer-turn-1'
+      );
+      expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+        disposition: 'succeeded',
+      });
+      // An id without a registry entry is unsupported.
+      const unregistered = harnessFixture({ registryAdapterId: 'fixture-fifth' });
+      expect(await unregistered.open('as-c')).toEqual(
+        expect.objectContaining({ body: { reasonCode: 'unsupported' } })
+      );
     } finally {
-      releaseTurn?.();
-      controller.abort();
-      await run.catch(() => undefined);
+      registryFixture.adapter = null;
     }
+  });
+
+  it('runs two Turns on one resident binding and stores the first ready reference', async () => {
+    const f = harnessFixture({
+      environment: { GITHUB_TOKEN: 'harness-only', HOME: '/home/worker', NO_PROXY: 'internal' },
+    });
+    expect(
+      await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } })
+    ).toMatchObject({
+      body: {
+        maxActiveTurns: 1,
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'open',
+      },
+      disposition: 'succeeded',
+    });
+    const [resident] = f.fake.residents;
+    expect(resident?.input).toMatchObject({
+      agentSessionId: 'as-a',
+      loopback: {
+        capabilityBaseUrl: 'http://127.0.0.1:17892/capabilities',
+        capabilityCredential: credential('capability-as-a'),
+        inferenceBaseUrl: 'http://127.0.0.1:17892/inference/v1',
+        inferenceCredential: credential('inference-as-a'),
+      },
+      resumeReference: null,
+      stateRoot: join(f.nativeRoot, ADAPTER, 'threads', sha256('thread-one')),
+    });
+    expect(resident?.input.controlRoot.startsWith(f.privateRoot)).toBe(true);
+    expect(resident?.input.environment).toMatchObject({
+      HOME: '/home/worker',
+      NO_PROXY: 'internal,127.0.0.1',
+      TMPDIR: '/tmp/openkit-bootstrap',
+      VENDOR_TOKEN: 'vendor-secret',
+    });
+    expect(resident?.input.environment).not.toHaveProperty('GITHUB_TOKEN');
+    expect(JSON.stringify(resident?.input.environment)).not.toContain(
+      credential('capability-as-a')
+    );
+
+    expect(await f.start('as-a', 'turn-1', { runtimeEnvNames: ['VENDOR_TOKEN'] })).toMatchObject({
+      body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' },
+      disposition: 'succeeded',
+    });
+    await f.settle('as-a');
+    expect(resident?.turns[0]).toMatchObject({
+      mcpServerIds: ['echo'],
+      llmRoute: { id: 'worker-inference', model: 'model-a' },
+      turnId: 'turn-1',
+      turnInput: 'input for turn-1',
+      workingDirectory: f.sandboxRoot,
+    });
+    const digest = sha256('reference-as-a');
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: {
+        childState: 'running',
+        cleanupState: 'clean',
+        nativeHandleDigest: digest,
+        nativeHandleState: 'ready',
+        state: 'open',
+      },
+    });
+    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
+    expect(statSync(f.referencePath('as-a')).mode & 0o777).toBe(0o600);
+    expect(existsSync(f.packagePath('as-a'))).toBe(false);
+
+    expect(await f.start('as-a', 'turn-2', { runtimeEnvNames: ['VENDOR_TOKEN'] })).toMatchObject({
+      body: { nativeHandleDigest: digest, nativeHandleState: 'ready', state: 'started' },
+    });
+    await f.settle('as-a');
+    expect(
+      f.integration.finalStatuses.map((status) => [status.lineage.turnId, status.body.status])
+    ).toEqual([
+      ['turn-1', 'completed'],
+      ['turn-2', 'completed'],
+    ]);
+    expect(f.integration.boundTokens).toEqual([
+      {
+        capabilityToken: credential('capability-token-turn-1'),
+        controlToken: credential('control-token-turn-1'),
+        inferenceToken: credential('inference-token-turn-1'),
+      },
+      {
+        capabilityToken: credential('capability-token-turn-2'),
+        controlToken: credential('control-token-turn-2'),
+        inferenceToken: credential('inference-token-turn-2'),
+      },
+    ]);
+
+    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+      disposition: 'succeeded',
+    });
+    expect(f.integration.calls).toEqual([
+      'register:as-a',
+      'bind:as-a',
+      'drain:as-a',
+      'clear:as-a',
+      'bind:as-a',
+      'drain:as-a',
+      'clear:as-a',
+      'destroy:as-a',
+    ]);
+    expect(resident?.closed).toBe(true);
+    expect(existsSync(join(f.sandboxRoot, 'sessions', 'as-a'))).toBe(false);
+    expect(existsSync(resident?.input.controlRoot as string)).toBe(false);
+    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
+  });
+
+  it('resumes a successor from the stored reference and refuses a missing or changed one', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    await f.start('as-a', 'turn-1');
+    await f.settle('as-a');
+    await f.send('session.close', f.selector('as-a'));
+    const digest = sha256('reference-as-a');
+
+    expect(await f.open('as-b', { resume: { digest, locator: 'as-a' } })).toMatchObject({
+      body: { nativeHandleDigest: digest, nativeHandleState: 'ready', state: 'open' },
+      disposition: 'succeeded',
+    });
+    expect(Buffer.from(f.fake.residents[1]?.input.resumeReference ?? []).toString()).toBe(
+      'reference-as-a'
+    );
+    expect(readFileSync(f.referencePath('as-b'), 'utf8')).toBe('reference-as-a');
+    // A proved predecessor makes the successor established before its first Turn, so a failed
+    // first Turn leaves it able to take the next one.
+    f.fake.script.push({ kind: 'fail' });
+    await f.start('as-b', 'turn-2');
+    await f.settle('as-b');
+    expect(await f.start('as-b', 'turn-3')).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as-b');
+    await f.send('session.close', f.selector('as-b'));
+
+    const opened = f.fake.residents.length;
+    expect(await f.open('as-c', { resume: { digest, locator: 'as-missing' } })).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'missing' }, disposition: 'refused' })
+    );
+    writeFileSync(f.referencePath('as-a'), 'reference-tampered');
+    expect(await f.open('as-c', { resume: { digest, locator: 'as-a' } })).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+    );
+    expect(f.fake.residents).toHaveLength(opened);
+    expect(f.integration.loopbacks.size).toBe(0);
+    // The Thread was released by each refusal.
+    expect(await f.open('as-c')).toMatchObject({ disposition: 'succeeded' });
+  });
+
+  it('refuses a resumed open whose runtime does not prove the predecessor reference', async () => {
+    const first = harnessFixture();
+    await first.open('as-a');
+    await first.start('as-a', 'turn-1');
+    await first.settle('as-a');
+    await first.send('session.close', first.selector('as-a'));
+    const f = harnessFixture({
+      adapter: fakeAdapter({ resumeHandle: { state: 'pending' } }),
+      root: first.root,
+    });
+    expect(
+      await f.open('as-b', { resume: { digest: sha256('reference-as-a'), locator: 'as-a' } })
+    ).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+    );
+    expect(f.fake.residents[0]?.closed).toBe(true);
+    expect(f.integration.calls).toEqual(['register:as-b', 'destroy:as-b']);
+    expect(existsSync(f.referencePath('as-b'))).toBe(false);
+  });
+
+  it('refuses a resumed open whose runtime proves a different ready conversation', async () => {
+    const first = harnessFixture();
+    await first.open('as-a');
+    await first.start('as-a', 'turn-1');
+    await first.settle('as-a');
+    await first.send('session.close', first.selector('as-a'));
+    const f = harnessFixture({
+      adapter: fakeAdapter({
+        resumeHandle: { reference: Buffer.from('wrong-native-conversation'), state: 'ready' },
+      }),
+      root: first.root,
+    });
+    expect(
+      await f.open('as-b', { resume: { digest: sha256('reference-as-a'), locator: 'as-a' } })
+    ).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+    );
+    expect(f.fake.residents[0]?.closed).toBe(true);
+    expect(existsSync(f.referencePath('as-b'))).toBe(false);
+    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
+  });
+
+  it('keeps the Thread and fences the Harness when a refused open cannot close its host', async () => {
+    const f = harnessFixture({
+      adapter: fakeAdapter({ closeFails: true, initialHandle: { state: 'unknown' } }),
+    });
+    expect(await f.open('as-a')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'cleanup_required' }, disposition: 'refused' })
+    );
+    expect(f.fake.residents[0]?.closed).toBe(false);
+    // Routes are revoked, but the possibly live host keeps its Thread reserved.
+    expect(f.integration.loopbacks.size).toBe(0);
+    const sibling = harnessFixture({ root: f.root });
+    expect(await sibling.open('as-b')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+    );
+    expect(sibling.fake.residents).toHaveLength(0);
+    expect(await f.open('as-c', { threadId: 'thread-two' })).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'busy' }, disposition: 'refused' })
+    );
+    expect(await f.send('harness.drain', {})).toMatchObject({
+      body: { activeTurns: 0, openSessions: 1, state: 'draining' },
+    });
+  });
+
+  it('keeps a Turn whose native stop was not proved and fences its binding', async () => {
+    const f = harnessFixture({ integration: fakeIntegration({ readyAppendStatus: 409 }) });
+    await f.open('as-a');
+    f.fake.script.push({ kind: 'stuck' });
+    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+    await vi.waitFor(async () => {
+      expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+        body: { cleanupState: 'unknown', state: 'failed' },
+      });
+    });
+    expect(f.fake.residents[0]?.interrupts).toBe(1);
+    expect(await f.start('as-a', 'turn-2')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+    );
+    expect(await f.send('session.close', f.selector('as-a'))).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'cleanup_required' }, disposition: 'refused' })
+    );
+    expect(await f.send('harness.drain', {})).toMatchObject({
+      body: { activeTurns: 1, openSessions: 1, state: 'draining' },
+    });
+    expect(f.fake.residents[0]?.turns).toHaveLength(1);
+  });
+
+  it('refuses an interrupt whose native stop was not proved', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    f.fake.script.push({ kind: 'stuck' });
+    await f.start('as-a', 'turn-1');
+    expect(
+      await f.send('turn.interrupt', {
+        ...f.selector('as-a'),
+        leaseId: 'lease-turn-1',
+        purpose: 'interrupt',
+        turnId: 'turn-1',
+      })
+    ).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'cleanup_required' }, disposition: 'refused' })
+    );
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: { cleanupState: 'unknown', state: 'failed' },
+    });
+    expect(await f.send('harness.drain', {})).toMatchObject({ body: { activeTurns: 1 } });
+  });
+
+  it('keeps one current binding per Thread across Harness instances and fixes the adapter', async () => {
+    const one = harnessFixture();
+    const two = harnessFixture({ root: one.root });
+    expect(await one.open('as-a')).toMatchObject({ disposition: 'succeeded' });
+    expect(await two.open('as-b')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+    );
+    expect(await one.open('as-a', { threadId: 'thread-two' })).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+    );
+    expect(
+      await one.send('session.open', {
+        agentSessionCompatibilityKey: DIGEST,
+        adapterId: 'other',
+        agentSessionId: 'as-x',
+        agentSessionRuntimeBindingId: 'binding-as-x',
+        capabilityLoopbackCredential: credential('cx'),
+        effectiveSetupGeneration: 1,
+        inferenceLoopbackCredential: credential('ix'),
+        resume: null,
+        threadId: 'thread-x',
+        workspaceId: 'workspace-one',
+      })
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'unsupported' } }));
+    expect(await one.open('as.dotted', { threadId: 'thread-y' })).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'unsupported' } })
+    );
+    await one.send('session.close', one.selector('as-a'));
+    expect(await two.open('as-b')).toMatchObject({ disposition: 'succeeded' });
+    await two.send('session.close', two.selector('as-b'));
+  });
+
+  it('keeps a binding whose runtime created a ready handle at open after a failed first Turn', async () => {
+    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+    const digest = sha256('reference-as-a');
+    expect(await f.open('as-a')).toMatchObject({
+      body: { nativeHandleDigest: digest, nativeHandleState: 'ready', state: 'open' },
+    });
+    f.fake.script.push({ kind: 'fail' });
+    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as-a');
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: { nativeHandleDigest: digest, nativeHandleState: 'ready', state: 'open' },
+    });
+    expect(await f.start('as-a', 'turn-2')).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as-a');
+    await f.send('session.close', f.selector('as-a'));
+  });
+
+  it('fences a binding whose first Turn did not complete', async () => {
+    for (const outcome of ['fail', 'interrupt'] as const) {
+      const f = harnessFixture();
+      await f.open('as-a');
+      if (outcome === 'interrupt') {
+        f.fake.script.push({ kind: 'hold' });
+        expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+        expect(
+          await f.send('turn.interrupt', {
+            ...f.selector('as-a'),
+            leaseId: 'lease-turn-1',
+            purpose: 'interrupt',
+            turnId: 'turn-1',
+          })
+        ).toMatchObject({ body: { state: 'interrupted' }, disposition: 'succeeded' });
+      } else {
+        f.fake.script.push({ kind: outcome });
+        const started = await f.start('as-a', 'turn-1');
+        expect(started.disposition).toBe('succeeded');
+        await f.settle('as-a');
+      }
+      expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+        body: { nativeHandleDigest: null, nativeHandleState: 'pending' },
+      });
+      expect(await f.start('as-a', 'turn-2'), outcome).toEqual(
+        expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+      );
+      expect(existsSync(f.referencePath('as-a'))).toBe(false);
+      expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+        disposition: 'succeeded',
+      });
+    }
+  });
+
+  it('fences a binding when native Turn acceptance is not proved', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    f.fake.script.push({ kind: 'reject' });
+    expect(await f.start('as-a', 'turn-1')).toEqual(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          reasonCode: 'dependency_failed',
+          startupFailure: expect.objectContaining({ reason: 'failed', stage: 'native_spawn' }),
+        }),
+        disposition: 'refused',
+      })
+    );
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: { cleanupState: 'unknown', state: 'failed' },
+    });
+    expect(await f.start('as-a', 'turn-2')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
+    );
+    expect(await f.send('session.close', f.selector('as-a'))).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'cleanup_required' }, disposition: 'refused' })
+    );
+    expect(await f.send('harness.drain', {})).toMatchObject({
+      body: { activeTurns: 1, openSessions: 1, state: 'draining' },
+    });
+  });
+
+  it('interrupts only the exact active Turn, answers after it settled, and keeps the binding', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    await f.start('as-a', 'turn-1');
+    await f.settle('as-a');
+    f.fake.script.push({ kind: 'hold' });
+    expect(await f.start('as-a', 'turn-2')).toMatchObject({ disposition: 'succeeded' });
+    const interrupt = (turnId: string, leaseId: string) =>
+      f.send('turn.interrupt', { ...f.selector('as-a'), leaseId, purpose: 'interrupt', turnId });
+
+    expect(await f.start('as-a', 'turn-3')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'busy' } })
+    );
+    expect(await f.send('session.close', f.selector('as-a'))).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'busy' } })
+    );
+    expect(await interrupt('turn-2', 'lease-other')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'stale' } })
+    );
+    expect(await interrupt('turn-1', 'lease-turn-2')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'stale' } })
+    );
+    expect(await interrupt('turn-2', 'lease-turn-2')).toMatchObject({
+      body: { childState: 'running', state: 'interrupted' },
+      disposition: 'succeeded',
+    });
+    expect(f.fake.residents[0]?.interrupts).toBe(1);
+    expect(f.integration.finalStatuses.at(-1)).toMatchObject({
+      body: { status: 'interrupted' },
+      lineage: { turnId: 'turn-2' },
+    });
+    expect(await interrupt('turn-2', 'lease-turn-2')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'stale' } })
+    );
+    expect(await f.start('as-a', 'turn-3')).toMatchObject({
+      body: { nativeHandleDigest: sha256('reference-as-a'), nativeHandleState: 'ready' },
+      disposition: 'succeeded',
+    });
+    await f.settle('as-a');
+    expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status: 'completed' } });
+  });
+
+  it('drains by refusing new work while existing bindings still close', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    await f.start('as-a', 'turn-1');
+    await f.settle('as-a');
+    f.fake.script.push({ kind: 'hold' });
+    await f.start('as-a', 'turn-2');
+    expect(await f.send('harness.drain', {})).toMatchObject({
+      body: { activeTurns: 1, openSessions: 1, state: 'draining' },
+      disposition: 'succeeded',
+    });
+    expect(await f.open('as-b', { threadId: 'thread-two' })).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'busy' } })
+    );
+    await f.send('turn.interrupt', {
+      ...f.selector('as-a'),
+      leaseId: 'lease-turn-2',
+      purpose: 'interrupt',
+      turnId: 'turn-2',
+    });
+    expect(await f.start('as-a', 'turn-3')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'busy' } })
+    );
+    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+    expect(await f.send('harness.drain', {})).toMatchObject({
+      body: { activeTurns: 0, openSessions: 0, state: 'draining' },
+    });
+  });
+
+  it('refuses malformed bodies, reserved runtime names, and excess sessions before any effect', async () => {
+    const f = harnessFixture();
+    const baseOpen = {
+      ...f.selector('as-a'),
+      adapterId: ADAPTER,
+      agentSessionCompatibilityKey: DIGEST,
+      capabilityLoopbackCredential: credential('c'),
+      effectiveSetupGeneration: 1,
+      inferenceLoopbackCredential: credential('i'),
+      resume: null,
+      threadId: 'thread-one',
+      workspaceId: 'workspace-one',
+    };
+    for (const body of [
+      { ...baseOpen, storageRef: 'retired' },
+      { ...baseOpen, inferenceLoopbackCredential: credential('c') },
+      { ...baseOpen, capabilityLoopbackCredential: 'short' },
+      { ...baseOpen, resume: undefined },
+    ]) {
+      expect(await f.send('session.open', body)).toEqual(
+        expect.objectContaining({ body: { reasonCode: 'unsupported' }, disposition: 'refused' })
+      );
+    }
+    for (const name of [
+      'PATH',
+      'HOME',
+      'NODE_OPTIONS',
+      'OPENKIT_ROUTE',
+      'npm_config_nodedir',
+      'TMPDIR',
+    ]) {
+      expect(await f.open('as-a', { runtimeEnvironment: { [name]: 'value' } }), name).toEqual(
+        expect.objectContaining({ body: { reasonCode: 'unsupported' } })
+      );
+    }
+    expect(f.fake.residents).toHaveLength(0);
+    expect(f.integration.calls).toEqual([]);
+
+    await f.open('as-a');
+    const { turnSequence: _omitted, ...missing } = f.startBody('as-a', 'turn-1');
+    f.writePackage('as-a', 'turn-1');
+    expect(await f.send('turn.start', missing)).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'unsupported' } })
+    );
+    expect(
+      await f.send('turn.start', {
+        ...f.startBody('as-a', 'turn-1'),
+        contextPackageId: 'ctxpkg_other',
+      })
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'stale' } }));
+    expect(
+      await f.send('turn.start', {
+        ...f.startBody('as-a', 'turn-1'),
+        agentSessionRuntimeBindingId: 'binding-other',
+      })
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'missing' } }));
+    expect(
+      await f.send('turn.start', { ...f.startBody('as-a', 'turn-1'), agentSessionId: 'as-other' })
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'conflict' } }));
+    expect(
+      await f.send('turn.interrupt', { ...f.selector('as-a'), leaseId: 'l', turnId: 't' })
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'unsupported' } }));
+    expect(f.fake.residents[0]?.turns).toHaveLength(0);
+
+    for (let index = 1; index < 8; index += 1) {
+      expect(await f.open(`as-${index}`, { threadId: `thread-${index}` })).toMatchObject({
+        disposition: 'succeeded',
+      });
+    }
+    expect(await f.open('as-9', { threadId: 'thread-9' })).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'busy' } })
+    );
   });
 
   it.each([
     'missing_file',
     'invalid_json',
-  ] as const)('reports safe package startup failure: %s', async (reason) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-harness-startup-'));
-    const sandboxRoot = join(root, 'openkit');
-    const aepRef = join(sandboxRoot, 'sessions', 'as-a', 'config', 'package.json');
-    const runner = { run: vi.fn() };
-    const harness = new WorkerHarness({
-      integration: { ready: Promise.resolve() } as SandboxIntegrationClient,
-      nativeDataRootDirectory: join(root, 'native'),
-      rootDirectory: join(root, 'private'),
-      sandboxRoot,
-      turnOutputDirectory: join(root, 'output'),
-      runner,
-    });
-    expect(
-      (await harness.handle(command('session.open', 0, openBody('binding-a', 'as-a')))).disposition
-    ).toBe('succeeded');
-    if (reason === 'invalid_json') writeFileSync(aepRef, '{ secret-canary-that-must-not-escape');
-    const result = await harness.handle(
-      command('turn.start', 1, {
-        aepRef,
-        agentSessionId: 'as-a',
-        agentSessionRuntimeBindingId: 'binding-a',
-        contextPackageId: 'ctxpkg_turn-1',
-        contextRef: join(sandboxRoot, 'sessions', 'as-a', 'context'),
-        deadline: '2099-01-01T00:00:00.000Z',
-        capabilityToken: 'c'.repeat(43),
-        inferenceToken: 'i'.repeat(43),
-        workerControlToken: 'w'.repeat(43),
-        leaseId: 'lease-1',
-        packageSnapshotId: 'package-1',
-        threadId: 'thread-as-a',
-        turnId: 'turn-1',
-        turnSequence: 0,
-        workspaceId: 'workspace-one',
-      })
-    );
+  ] as const)('reports a value-free startup failure for the package: %s', async (reason) => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    f.writePackage('as-a', 'turn-1');
+    if (reason === 'missing_file') {
+      rmSync(f.packagePath('as-a'));
+    } else {
+      writeFileSync(f.packagePath('as-a'), '{ secret-canary-that-must-not-escape');
+    }
+    const result = await f.send('turn.start', f.startBody('as-a', 'turn-1'));
     expect(result).toMatchObject({
-      disposition: 'refused',
       body: {
         reasonCode: 'dependency_failed',
-        startupFailure: { stage: 'package_validation', reason },
+        startupFailure: { reason, stage: 'package_validation' },
       },
+      disposition: 'refused',
     });
     expect(Object.keys(result.body).sort()).toEqual(['reasonCode', 'startupFailure']);
     expect(JSON.stringify(result)).not.toContain('secret-canary');
-    expect(JSON.stringify(result)).not.toContain(root);
-    expect(runner.run).not.toHaveBeenCalled();
-    expect(existsSync(aepRef)).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(f.root);
+    expect(f.fake.residents[0]?.turns).toHaveLength(0);
+    expect(existsSync(f.packagePath('as-a'))).toBe(false);
   });
 
-  it('runs sequential Turns by resuming the exact first Codex UUID', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-turns-'));
-    const sandboxRoot = join(root, 'openkit');
-    const packagePath = join(sandboxRoot, 'sessions', 'as-a', 'config', 'package.json');
-    const contextPath = join(sandboxRoot, 'sessions', 'as-a', 'context');
-    const outputPath = join(sandboxRoot, 'session');
-    const fileEffectPath = fileURLToPath(
-      new URL('../../../containers/workers/openkit-file-effect', import.meta.url)
-    );
-    const { runFileEffect } = (await import(pathToFileURL(fileEffectPath).href)) as {
-      runFileEffect: RunFileEffect;
-    };
-    const slotRoots = {
-      context: join(sandboxRoot, 'sessions'),
-      'package-config': join(sandboxRoot, 'sessions'),
-    };
-    const packageBytes = (turn: number, requestId?: unknown, agentSessionId = 'as-a') =>
-      Buffer.from(
-        JSON.stringify({
-          capabilities: {
-            mode: 'enabled',
-            protocol: 'openkit-worker-capability-v1',
-            routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
-          },
-          scope: {
-            agentSessionId,
-            ...(requestId === undefined ? {} : { requestId }),
-            threadId: `thread-${agentSessionId}`,
-            turnId: `turn-${turn}`,
-            workspaceId: 'workspace-one',
-          },
-          snapshotId: `package-${turn}`,
-          observability: { captureCoverage: { scope: 'server', value: 'off' } },
-          credentials: {
-            declarations:
-              turn <= 2 ? [{ visibility: 'runtime-env', targetEnvVarName: 'GITHUB_TOKEN' }] : [],
-          },
-          control: {
-            adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
-            bindings: {
-              capabilities: {
-                pathPrefix: '/capabilities/',
-                tokenRef: 'runtime://openkit/capability-token',
-              },
-              inference: {
-                pathPrefix: '/inference/',
-                tokenRef: 'runtime://openkit/inference-token',
-              },
-              workerControl: {
-                pathPrefix: '/worker-control/',
-                tokenRef: 'runtime://openkit/worker-control-token',
-              },
-            },
-            mode: 'sandbox-integration',
-          },
-          extensions: { openkit: { turnInput: 'Continue the exact conversation.' } },
-          llm: {
-            mode: 'gateway',
-            preferredLogicalModelId: 'gpt-5',
-            routes: [
-              {
-                credentialVisibility: 'placeholder',
-                endpoint: {
-                  kind: 'openai-compatible',
-                  upstream: { kind: 'nanocore-gateway' },
-                },
-                id: 'worker-inference',
-                model: 'gpt-5',
-                providerInstanceId: 'provider-openai',
-              },
-            ],
-          },
-          runtime: {
-            command: {
-              argv: ['openkit-worker-shim'],
-              workingDirectory: sandboxRoot,
-            },
-          },
-          supply: { mcpServers: [{ id: 'echo' }] },
-        })
-      );
-    const importPackage = async (turn: number, requestId?: unknown, agentSessionId = 'as-a') =>
-      importWorkerInput(
-        runFileEffect,
-        slotRoots,
-        'package-config',
-        `${agentSessionId}/config/package.json`,
-        packageBytes(turn, requestId, agentSessionId)
-      );
-    const importContext = async (agentSessionId: string, path: string, bytes: string) =>
-      importWorkerInput(
-        runFileEffect,
-        slotRoots,
-        'context',
-        `${agentSessionId}/context/${path}`,
-        Buffer.from(bytes)
-      );
-    const threadId = '019f0000-0000-7000-8000-000000000001';
-    const launches: string[][] = [];
-    const observedContextFiles: string[][] = [];
-    const boundTokens: Array<{
-      capabilityToken?: string;
-      controlToken: string;
-      inferenceToken: string;
-    }> = [];
-    const finalStatuses: Array<{
-      body: { status: string; stopReason: string };
-      lineage: Record<string, unknown>;
-    }> = [];
-    let holdNextRun = false;
-    let nativeAbortCount = 0;
-    let runningAgentSessionId = 'as-a';
-    const observedGithubTokens: Array<string | undefined> = [];
-    const harnessEnvironment: { OPENKIT_REQUEST_ID?: string; GITHUB_TOKEN: string } = {
-      GITHUB_TOKEN: 'stale-harness-token',
-      OPENKIT_REQUEST_ID: 'request-harness',
-    };
-    const integration = {
-      bindTurnRouteTokens(tokens: {
-        capabilityToken?: string;
-        controlToken: string;
-        inferenceToken: string;
-      }) {
-        boundTokens.push(tokens);
-      },
-      clearTurnRouteTokens() {},
-      ready: Promise.resolve(),
-      workerControlFetch: async (url: string, init: { body: string }) => {
-        if (url.endsWith('/final-status')) {
-          finalStatuses.push(JSON.parse(init.body) as { lineage: Record<string, unknown> });
-        }
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            JSON.stringify(
-              url.endsWith('/commands/poll')
-                ? { commands: [] }
-                : url.endsWith('/events/append') || url.endsWith('/final-status')
-                  ? { accepted: true, diagnostics: [], schemaVersion: 2 }
-                  : {}
-            ),
-        };
-      },
-    } as unknown as SandboxIntegrationClient;
-    const harness = new WorkerHarness({
-      environment: harnessEnvironment,
-      integration,
-      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
-      rootDirectory: join(root, 'private'),
-      runner: {
-        async run(input) {
-          const holdUntilInterrupted = holdNextRun;
-          holdNextRun = false;
-          launches.push(input.argv);
-          observedGithubTokens.push(input.env.GITHUB_TOKEN);
-          observedContextFiles.push(
-            readdirSync(join(sandboxRoot, 'sessions', runningAgentSessionId, 'context')).sort()
-          );
-          input.onStart?.();
-          const codexHome = input.env.CODEX_HOME as string;
-          const rolloutDirectory = join(codexHome, 'sessions', '2026', '08', '21');
-          mkdirSync(rolloutDirectory, { recursive: true });
-          const rolloutPath = join(rolloutDirectory, `rollout-${threadId}.jsonl`);
-          if (!existsSync(rolloutPath)) {
-            writeFileSync(
-              rolloutPath,
-              `${JSON.stringify({
-                payload: {
-                  cli_version: '0.153.4',
-                  cwd: sandboxRoot,
-                  id: threadId,
-                  originator: 'codex_exec',
-                  session_id: threadId,
-                  source: 'exec',
-                  timestamp: '2026-08-21T00:00:00.000Z',
-                },
-                timestamp: '2026-08-21T00:00:00.000Z',
-                type: 'session_meta',
-              })}\n`,
-              'utf8'
-            );
-          }
-          const finalPath = input.argv[input.argv.indexOf('--output-last-message') + 1];
-          writeFileSync(finalPath as string, `Answer ${launches.length}.`, 'utf8');
-          await input.writeStdout?.(
-            Buffer.from(`${JSON.stringify({ thread_id: threadId, type: 'thread.started' })}\n`)
-          );
-          if (holdUntilInterrupted) {
-            await new Promise<void>((resolve) => {
-              if (input.signal.aborted) {
-                nativeAbortCount += 1;
-                resolve();
-                return;
-              }
-              input.signal.addEventListener(
-                'abort',
-                () => {
-                  nativeAbortCount += 1;
-                  resolve();
-                },
-                { once: true }
-              );
-            });
-            return { exitCode: null, signal: 'SIGTERM', stderr: '', stdout: '' };
-          }
-          return { exitCode: 0, signal: null, stderr: '', stdout: '' };
+  it('refuses a Turn whose runtime environment declaration differs from the session', async () => {
+    const f = harnessFixture();
+    await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } });
+    for (const names of [[], ['VENDOR_TOKEN', 'OTHER_TOKEN'], ['OTHER_TOKEN']]) {
+      const g = names.length === 0 ? f : harnessFixture();
+      if (g !== f) await g.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } });
+      expect(
+        await g.start('as-a', 'turn-1', { runtimeEnvNames: names }),
+        names.join()
+      ).toMatchObject({
+        body: {
+          reasonCode: 'dependency_failed',
+          startupFailure: { reason: 'failed', stage: 'package_validation' },
         },
-      },
-      sandboxRoot,
-      turnOutputDirectory: outputPath,
-    });
-    await harness.handle(command('session.open', 0, openBody('binding-a', 'as-a')));
-    await harness.handle(command('session.open', 0, openBody('binding-b', 'as-b')));
-    await expect(
-      harness.handle(command('session.open', 0, openBody('binding-duplicate', 'as-a')))
-    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
-    await expect(
-      harness.handle(
-        command('session.open', 0, {
-          ...openBody('binding-other-storage', 'as-other-storage'),
-          storageRef: 'storage-two',
-        })
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
-    await importPackage(1);
-    await importContext('as-a', 'current.txt', 'AgentSession A Turn 1\n');
-    await importContext('as-a', 'turn-one-only.txt', 'Removed before Turn 2\n');
-    await importPackage(9, undefined, 'as-b');
-    await importContext('as-b', 'current.txt', 'AgentSession B private bytes\n');
-    expect(readFileSync(join(contextPath, 'current.txt'), 'utf8')).toBe('AgentSession A Turn 1\n');
-    expect(readFileSync(packagePath)).not.toEqual(
-      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'config', 'package.json'))
-    );
-    expect(
-      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'context', 'current.txt'), 'utf8')
-    ).toBe('AgentSession B private bytes\n');
+      });
+      expect(g.fake.residents[0]?.turns).toHaveLength(0);
+    }
+  });
 
-    const token = (value: number) =>
-      (value < 10 ? String(value) : String.fromCharCode(87 + value)).repeat(43);
-    const startBody = (
-      turn: number,
-      agentSessionId = 'as-a',
-      bindingId = 'binding-a',
-      turnSequence = turn - 1
-    ) => ({
-      aepRef: join(sandboxRoot, 'sessions', agentSessionId, 'config', 'package.json'),
-      agentSessionId,
-      agentSessionRuntimeBindingId: bindingId,
-      contextPackageId: `ctxpkg_turn-${turn}`,
-      contextRef: join(sandboxRoot, 'sessions', agentSessionId, 'context'),
-      deadline: '2026-08-21T01:00:00.000Z',
-      runtimeEnvironment: turn <= 2 ? { GITHUB_TOKEN: `turn-${turn}-github-canary` } : {},
-      capabilityToken: token(turn + 4),
-      inferenceToken: token(turn),
-      leaseId: `lease-${turn}`,
-      packageSnapshotId: `package-${turn}`,
-      threadId: `thread-${agentSessionId}`,
-      turnId: `turn-${turn}`,
-      turnSequence,
-      workerControlToken: token(turn + 2),
-      workspaceId: 'workspace-one',
-    });
-    await expect(harness.handle(command('turn.start', 1, startBody(1)))).resolves.toMatchObject({
-      body: { nativeHandleState: 'pending', state: 'started' },
-      disposition: 'succeeded',
-    });
-    await vi.waitFor(async () => {
-      const inspected = await harness.handle(
-        command('session.inspect', 2, {
-          agentSessionId: 'as-a',
-          agentSessionRuntimeBindingId: 'binding-a',
-        })
+  it('fails a Turn whose assistant output carries a session credential or runtime value', async () => {
+    for (const leaked of [
+      credential('capability-as-a'),
+      credential('inference-as-a'),
+      'vendor-secret',
+    ]) {
+      const f = harnessFixture();
+      await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } });
+      f.fake.script.push({ kind: 'complete', text: `here it is: ${leaked}` });
+      await f.start('as-a', 'turn-1', { runtimeEnvNames: ['VENDOR_TOKEN'] });
+      await f.settle('as-a');
+      expect(f.integration.finalStatuses).toMatchObject([{ body: { status: 'failed' } }]);
+      expect(readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')).not.toContain(
+        leaked
       );
-      expect(inspected).toMatchObject({
-        body: { childState: 'absent', nativeHandleState: 'ready', state: 'open' },
+      expect(await f.start('as-a', 'turn-2', { runtimeEnvNames: ['VENDOR_TOKEN'] })).toEqual(
+        expect.objectContaining({ body: { reasonCode: 'conflict' } })
+      );
+    }
+  });
+
+  it('fails the binding when its resident host ends on its own', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    await f.start('as-a', 'turn-1');
+    await f.settle('as-a');
+    f.fake.script.push({ kind: 'hold' });
+    await f.start('as-a', 'turn-2');
+    f.fake.residents[0]?.exit();
+    await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(2));
+    expect(f.integration.finalStatuses[1]).toMatchObject({
+      body: { status: 'failed' },
+      lineage: { turnId: 'turn-2' },
+    });
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: { childState: 'running', state: 'failed' },
+    });
+    // The ended host proves its native work stopped, so no native interrupt is needed.
+    expect(f.fake.residents[0]?.interrupts).toBe(0);
+    expect(await f.start('as-a', 'turn-3')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' } })
+    );
+    // Close answers busy until the failed Turn finished its cleanup.
+    await vi.waitFor(async () => {
+      expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
         disposition: 'succeeded',
       });
     });
-    expect(observedContextFiles[0]).toEqual(['current.txt', 'turn-one-only.txt']);
-    expect(existsSync(packagePath)).toBe(false);
-    expect(existsSync(join(contextPath, 'turn-one-only.txt'))).toBe(false);
-    expect(
-      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'context', 'current.txt'), 'utf8')
-    ).toBe('AgentSession B private bytes\n');
-
-    await importPackage(2, 'request-harness');
-    await importContext('as-a', 'current.txt', 'AgentSession A Turn 2\n');
-    expect(existsSync(join(contextPath, 'turn-one-only.txt'))).toBe(false);
-    await expect(harness.handle(command('turn.start', 3, startBody(2)))).resolves.toMatchObject({
-      body: { nativeHandleState: 'ready', state: 'started' },
-      disposition: 'succeeded',
-    });
-    await vi.waitFor(() => expect(finalStatuses).toHaveLength(2));
-    expect(launches[0]).not.toContain('resume');
-    expect(launches[1]).toContain('resume');
-    expect(observedGithubTokens).toEqual(['turn-1-github-canary', 'turn-2-github-canary']);
-    expect(JSON.stringify(finalStatuses)).not.toContain('github-canary');
-    expect(launches[1]?.at(-2)).toBe(threadId);
-    expect(observedContextFiles[1]).toEqual(['current.txt']);
-    expect(boundTokens).toEqual([
-      {
-        capabilityToken: '5'.repeat(43),
-        controlToken: '3'.repeat(43),
-        inferenceToken: '1'.repeat(43),
-      },
-      {
-        capabilityToken: '6'.repeat(43),
-        controlToken: '4'.repeat(43),
-        inferenceToken: '2'.repeat(43),
-      },
-    ]);
-    expect(finalStatuses.map((status) => status.lineage)).toEqual([
-      {
-        agentSessionId: 'as-a',
-        packageSnapshotId: 'package-1',
-        requestId: 'request-harness',
-        threadId: 'thread-as-a',
-        turnId: 'turn-1',
-        workspaceId: 'workspace-one',
-      },
-      {
-        agentSessionId: 'as-a',
-        packageSnapshotId: 'package-2',
-        requestId: 'request-harness',
-        threadId: 'thread-as-a',
-        turnId: 'turn-2',
-        workspaceId: 'workspace-one',
-      },
-    ]);
-
-    delete harnessEnvironment.OPENKIT_REQUEST_ID;
-    await vi.waitFor(async () => {
-      const inspected = await harness.handle(
-        command('session.inspect', 4, {
-          agentSessionId: 'as-a',
-          agentSessionRuntimeBindingId: 'binding-a',
-        })
-      );
-      expect(inspected.body.cleanupState).toBe('clean');
-    });
-    await importPackage(3, 'request-aep-only');
-    await importContext('as-a', 'current.txt', 'AgentSession A Turn 3\n');
-    await expect(harness.handle(command('turn.start', 4, startBody(3)))).resolves.toMatchObject({
-      body: { nativeHandleState: 'ready', state: 'started' },
-      disposition: 'succeeded',
-    });
-    await vi.waitFor(() => expect(finalStatuses).toHaveLength(3));
-    expect(observedGithubTokens).toEqual([
-      'turn-1-github-canary',
-      'turn-2-github-canary',
-      undefined,
-    ]);
-    expect(finalStatuses[2]?.lineage).toEqual({
-      agentSessionId: 'as-a',
-      packageSnapshotId: 'package-3',
-      requestId: 'request-aep-only',
-      threadId: 'thread-as-a',
-      turnId: 'turn-3',
-      workspaceId: 'workspace-one',
-    });
-    await vi.waitFor(async () => {
-      const inspected = await harness.handle(
-        command('session.inspect', 5, {
-          agentSessionId: 'as-a',
-          agentSessionRuntimeBindingId: 'binding-a',
-        })
-      );
-      expect(inspected.body.cleanupState).toBe('clean');
-    });
-    harnessEnvironment.OPENKIT_REQUEST_ID = 'request-harness';
-
-    for (const [index, invalidRequestId] of ['different-request', null, '', 17].entries()) {
-      const turn = index + 4;
-      const agentSessionId = `as-invalid-${index}`;
-      const bindingId = `binding-invalid-${index}`;
-      await harness.handle(command('session.open', turn + 1, openBody(bindingId, agentSessionId)));
-      await importPackage(turn, invalidRequestId, agentSessionId);
-      const launchesBeforeRejection = launches.length;
-      const result = await harness.handle(
-        command('turn.start', turn + 1, startBody(turn, agentSessionId, bindingId))
-      );
-
-      expect(
-        launches,
-        `requestId ${JSON.stringify(invalidRequestId)} reached native start`
-      ).toHaveLength(launchesBeforeRejection);
-      expect(result).toMatchObject({ disposition: 'refused' });
-      await expect(
-        harness.handle(
-          command('session.close', turn + 1, {
-            agentSessionId,
-            agentSessionRuntimeBindingId: bindingId,
-          })
-        )
-      ).resolves.toMatchObject({ disposition: 'succeeded' });
-    }
-
-    const launchesBeforeCrossSessionRef = launches.length;
-    await expect(
-      harness.handle(
-        command('turn.start', 19, {
-          ...startBody(8, 'as-a', 'binding-a', 3),
-          aepRef: join(sandboxRoot, 'sessions', 'as-b', 'config', 'package.json'),
-          contextRef: join(sandboxRoot, 'sessions', 'as-b', 'context'),
-        })
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'stale' }, disposition: 'refused' });
-    expect(launches).toHaveLength(launchesBeforeCrossSessionRef);
-
-    await importPackage(8);
-    await importContext('as-a', 'current.txt', 'AgentSession A held Turn\n');
-    holdNextRun = true;
-    await expect(
-      harness.handle(command('turn.start', 20, startBody(8, 'as-a', 'binding-a', 3)))
-    ).resolves.toMatchObject({
-      disposition: 'succeeded',
-    });
-    await expect(
-      harness.handle(
-        command('turn.start', 20, {
-          ...startBody(9, 'as-b', 'binding-b', 0),
-          aepRef: packagePath,
-          contextRef: contextPath,
-        })
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'busy' }, disposition: 'refused' });
-    const interruptBody = {
-      agentSessionId: 'as-a',
-      agentSessionRuntimeBindingId: 'binding-a',
-      leaseId: 'lease-8',
-      turnId: 'turn-8',
-    };
-    for (const invalidBody of [
-      interruptBody,
-      { ...interruptBody, purpose: 'unknown' },
-      { ...interruptBody, extra: 'forbidden', purpose: 'interrupt' },
-    ]) {
-      await expect(
-        harness.handle(command('turn.interrupt', 21, invalidBody))
-      ).resolves.toMatchObject({ disposition: 'refused' });
-      expect(nativeAbortCount).toBe(0);
-    }
-    await expect(
-      harness.handle(command('turn.interrupt', 21, { ...interruptBody, purpose: 'interrupt' }))
-    ).resolves.toMatchObject({
-      body: { childState: 'absent', state: 'interrupted' },
-      disposition: 'succeeded',
-    });
-    await vi.waitFor(() => expect(finalStatuses).toHaveLength(4));
-    expect(finalStatuses.at(-1)).toMatchObject({
-      body: { status: 'interrupted', stopReason: 'aborted' },
-    });
-
-    await expect(
-      harness.handle(
-        command('session.close', 22, {
-          agentSessionId: 'as-a',
-          agentSessionRuntimeBindingId: 'binding-a',
-        })
-      )
-    ).resolves.toMatchObject({ disposition: 'succeeded' });
-    expect(existsSync(join(sandboxRoot, 'sessions', 'as-a'))).toBe(false);
-    expect(
-      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'context', 'current.txt'), 'utf8')
-    ).toBe('AgentSession B private bytes\n');
-    runningAgentSessionId = 'as-b';
-    holdNextRun = true;
-    await expect(
-      harness.handle(command('turn.start', 24, startBody(9, 'as-b', 'binding-b', 0)))
-    ).resolves.toMatchObject({ disposition: 'succeeded' });
-    expect(observedContextFiles.at(-1)).toEqual(['current.txt']);
-    expect(
-      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'context', 'current.txt'), 'utf8')
-    ).toBe('AgentSession B private bytes\n');
-    await expect(
-      harness.handle(
-        command('turn.interrupt', 25, {
-          agentSessionId: 'as-b',
-          agentSessionRuntimeBindingId: 'binding-b',
-          leaseId: 'lease-9',
-          purpose: 'human-gate',
-          turnId: 'turn-9',
-        })
-      )
-    ).resolves.toMatchObject({ disposition: 'succeeded' });
-    await vi.waitFor(() => expect(finalStatuses).toHaveLength(5));
-    expect(finalStatuses.at(-1)).toMatchObject({
-      body: { status: 'blocked', stopReason: 'ask_user' },
-    });
   });
 
-  it('keeps two Codex Sessions isolated and closes only the exact named private root', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-'));
-    const harness = new WorkerHarness({
-      integration: {} as SandboxIntegrationClient,
-      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
-      rootDirectory: root,
-      sandboxRoot: root,
+  it('reports a changed native handle as unknown and never replaces the stored reference', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    await f.start('as-a', 'turn-1');
+    await f.settle('as-a');
+    const resident = f.fake.residents[0] as FakeResident;
+    resident.handleOverride = { reference: Buffer.from('reference-changed'), state: 'ready' };
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: { nativeHandleDigest: null, nativeHandleState: 'unknown' },
     });
-
-    const first = await harness.handle(command('session.open', 0, openBody('binding-a', 'as-a')));
-    const second = await harness.handle(command('session.open', 1, openBody('binding-b', 'as-b')));
-    expect(first.disposition).toBe('succeeded');
-    expect(first.body).toEqual({
-      maxActiveTurns: 1,
-      nativeHandleDigest: null,
-      nativeHandleState: 'pending',
-      state: 'open',
+    resident.handleOverride = { state: 'pending' };
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: { nativeHandleDigest: null, nativeHandleState: 'unknown' },
     });
-    expect(second.disposition).toBe('succeeded');
-    const retainedDataRoot = join(root, 'sandbox', 'native', 'codex', 'work-as-a');
-    writeFileSync(join(retainedDataRoot, 'unknown.bin'), Buffer.from([4, 3, 2, 1]));
-    await expect(
-      harness.handle(
-        command('session.open', 2, openBody('binding-conflict', 'as-conflict', 'work-as-a'))
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
-
-    const inspected = await harness.handle(
-      command('session.inspect', 3, {
-        agentSessionId: 'as-b',
-        agentSessionRuntimeBindingId: 'binding-b',
-      })
-    );
-    expect(inspected).toMatchObject({
-      body: { childState: 'absent', nativeHandleState: 'pending', state: 'open' },
-      disposition: 'succeeded',
-    });
-
-    const closed = await harness.handle(
-      command('session.close', 4, {
-        agentSessionId: 'as-a',
-        agentSessionRuntimeBindingId: 'binding-a',
-      })
-    );
-    expect(closed).toMatchObject({
-      body: { childState: 'absent', privateState: 'absent', state: 'closed' },
-      disposition: 'succeeded',
-    });
-    expect(existsSync(root)).toBe(true);
-    expect(readFileSync(join(retainedDataRoot, 'unknown.bin'))).toEqual(Buffer.from([4, 3, 2, 1]));
-    await expect(
-      harness.handle(
-        command('session.open', 5, openBody('binding-successor', 'as-successor', 'work-as-a'))
-      )
-    ).resolves.toMatchObject({
-      body: { nativeHandleState: 'pending', state: 'open' },
-      disposition: 'succeeded',
-    });
-    expect(readFileSync(join(retainedDataRoot, 'unknown.bin'))).toEqual(Buffer.from([4, 3, 2, 1]));
-    await expect(
-      harness.handle(
-        command('session.inspect', 6, {
-          agentSessionId: 'as-b',
-          agentSessionRuntimeBindingId: 'binding-b',
-        })
-      )
-    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
   });
 
-  it('enforces one storage association and one live work-slot writer across Harness instances', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-multi-harness-'));
-    const sandboxRoot = join(root, 'openkit');
-    const nativeDataRootDirectory = join(root, 'sandbox', 'native');
-    let nativeRuns = 0;
-    const runner = {
-      async run() {
-        nativeRuns += 1;
-        throw new Error('No native process may start during session admission.');
-      },
-    };
-    const first = new WorkerHarness({
-      integration: {} as SandboxIntegrationClient,
-      nativeDataRootDirectory,
-      rootDirectory: join(root, 'control-a'),
-      runner,
-      sandboxRoot,
-    });
-    const second = new WorkerHarness({
-      integration: {} as SandboxIntegrationClient,
-      nativeDataRootDirectory,
-      rootDirectory: join(root, 'control-b'),
-      runner,
-      sandboxRoot,
-    });
-
-    await expect(
-      first.handle(command('session.open', 0, openBody('binding-a', 'as-a', 'shared-work')))
-    ).resolves.toMatchObject({ disposition: 'succeeded' });
-    await expect(
-      second.handle(
-        command('session.open', 0, {
-          ...openBody('binding-other-storage', 'as-other-storage', 'other-work'),
-          storageRef: 'storage-two',
-        })
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
-    await expect(
-      second.handle(
-        command('session.open', 1, openBody('binding-competing', 'as-competing', 'shared-work'))
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
-    expect(existsSync(join(root, 'control-b'))).toBe(false);
-
-    await expect(
-      first.handle(
-        command('session.close', 1, {
-          agentSessionId: 'as-a',
-          agentSessionRuntimeBindingId: 'binding-a',
-        })
-      )
-    ).resolves.toMatchObject({ disposition: 'succeeded' });
-    await expect(
-      second.handle(
-        command('session.open', 2, openBody('binding-successor', 'as-successor', 'shared-work'))
-      )
-    ).resolves.toMatchObject({ disposition: 'succeeded' });
-    await expect(
-      second.handle(
-        command('session.open', 3, {
-          ...openBody('binding-late-storage', 'as-late-storage', 'other-work'),
-          storageRef: 'storage-two',
-        })
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
-    expect(existsSync(join(nativeDataRootDirectory, 'codex', 'other-work'))).toBe(false);
-    expect(nativeRuns).toBe(0);
-  });
-
-  it('binds one Harness instance to a non-Codex registry adapter', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-opencode-'));
-    const harness = new WorkerHarness({
-      adapterId: 'opencode',
-      integration: {} as SandboxIntegrationClient,
-      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
-      rootDirectory: root,
-      sandboxRoot: root,
-    });
-
-    const opened = await harness.handle(
-      command('session.open', 0, {
-        ...openBody('binding-opencode', 'as-opencode'),
-        adapterId: 'opencode',
-      })
+  it('cleans up an open that fails and reports close failure as cleanup required', async () => {
+    const failing = harnessFixture({ adapter: fakeAdapter({ openFails: true }) });
+    expect(await failing.open('as-a')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'dependency_failed' } })
     );
-    expect(opened).toMatchObject({
-      body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'open' },
-      disposition: 'succeeded',
-    });
-    const retainedDataRoot = join(root, 'sandbox', 'native', 'opencode', 'work-as-opencode');
-    writeFileSync(join(retainedDataRoot, 'unknown.bin'), Buffer.from([1, 3, 5, 7]));
-    await expect(
-      harness.handle(
-        command('session.close', 1, {
-          agentSessionId: 'as-opencode',
-          agentSessionRuntimeBindingId: 'binding-opencode',
-        })
-      )
-    ).resolves.toMatchObject({
-      body: { childState: 'absent', privateState: 'absent', state: 'closed' },
-      disposition: 'succeeded',
-    });
-    expect(readFileSync(join(retainedDataRoot, 'unknown.bin'))).toEqual(Buffer.from([1, 3, 5, 7]));
-  });
+    expect(failing.integration.calls).toEqual(['register:as-a', 'destroy:as-a']);
+    expect(existsSync(failing.privateRoot) ? readdirSync(failing.privateRoot) : []).toEqual([]);
 
-  it('keeps a bounded-turn OpenCode binding private to one Turn', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-opencode-turn-'));
-    const sandboxRoot = join(root, 'openkit');
-    const inputRoot = join(sandboxRoot, 'sessions', 'as-opencode');
-    const packagePath = join(inputRoot, 'config', 'package.json');
-    const contextPath = join(inputRoot, 'context');
-    mkdirSync(join(inputRoot, 'config'), { recursive: true });
-    mkdirSync(contextPath, { recursive: true });
-    writeFileSync(
-      packagePath,
-      JSON.stringify({
-        observability: { captureCoverage: { scope: 'server', value: 'off' } },
-        control: {
-          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
-          bindings: {
-            capabilities: {
-              pathPrefix: '/capabilities/',
-              tokenRef: 'runtime://openkit/capability-token',
-            },
-            inference: {
-              pathPrefix: '/inference/',
-              tokenRef: 'runtime://openkit/inference-token',
-            },
-            workerControl: {
-              pathPrefix: '/worker-control/',
-              tokenRef: 'runtime://openkit/worker-control-token',
-            },
-          },
-          mode: 'sandbox-integration',
-        },
-        extensions: { openkit: { turnInput: 'Answer once.' } },
-        llm: {
-          mode: 'gateway',
-          preferredLogicalModelId: 'test-model',
-          routes: [
-            {
-              credentialVisibility: 'placeholder',
-              endpoint: {
-                kind: 'openai-compatible',
-                upstream: { kind: 'nanocore-gateway' },
-              },
-              id: 'worker-inference',
-              model: 'test-model',
-              providerInstanceId: 'provider-test',
-            },
-          ],
-        },
-        runtime: {
-          command: {
-            argv: ['openkit-worker-shim'],
-            workingDirectory: sandboxRoot,
-          },
-        },
-      }),
-      'utf8'
+    const conflicting = harnessFixture({
+      integration: fakeIntegration({ registerFails: true }),
+      root: failing.root,
+    });
+    expect(await conflicting.open('as-a')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' } })
     );
-    let finalStatuses = 0;
-    let releaseTurn: (() => void) | undefined;
-    const turnSettlement = new Promise<void>((resolve) => {
-      releaseTurn = resolve;
-    });
-    const integration = {
-      bindTurnRouteTokens() {},
-      clearTurnRouteTokens() {},
-      ready: Promise.resolve(),
-      workerControlFetch: async (url: string) => {
-        if (url.endsWith('/final-status')) {
-          finalStatuses += 1;
-        }
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            JSON.stringify(
-              url.endsWith('/commands/poll')
-                ? { commands: [] }
-                : url.endsWith('/events/append') || url.endsWith('/final-status')
-                  ? { accepted: true, diagnostics: [], schemaVersion: 2 }
-                  : {}
-            ),
-        };
-      },
-    } as unknown as SandboxIntegrationClient;
-    const harness = new WorkerHarness({
-      adapterId: 'opencode',
-      integration,
-      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
-      rootDirectory: join(root, 'private'),
-      runner: {
-        async run(input) {
-          input.onStart?.();
-          await turnSettlement;
-          return {
-            exitCode: 0,
-            signal: null,
-            stderr: '',
-            stdout: [
-              { part: { messageID: 'message-1', type: 'step-start' }, type: 'step_start' },
-              {
-                part: {
-                  messageID: 'message-1',
-                  text: 'Bounded answer.',
-                  time: { end: 2, start: 1 },
-                  type: 'text',
-                },
-                type: 'text',
-              },
-              { part: { messageID: 'message-1', type: 'step-finish' }, type: 'step_finish' },
-            ]
-              .map((record) => JSON.stringify(record))
-              .join('\n'),
-          };
-        },
-      },
-      sandboxRoot,
-      turnOutputDirectory: join(sandboxRoot, 'session'),
-    });
-    const binding = {
-      agentSessionId: 'as-opencode',
-      agentSessionRuntimeBindingId: 'binding-opencode',
-    };
-    await harness.handle(
-      command('session.open', 0, {
-        ...openBody(binding.agentSessionRuntimeBindingId, binding.agentSessionId),
-        adapterId: 'opencode',
-      })
+    // Both refusals released the Thread.
+    const f = harnessFixture({ root: failing.root });
+    expect(await f.open('as-a')).toMatchObject({ disposition: 'succeeded' });
+    (f.fake.residents[0] as FakeResident).closeFails = true;
+    expect(await f.send('session.close', f.selector('as-a'))).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'cleanup_required' } })
     );
-    const turn = {
-      aepRef: packagePath,
-      ...binding,
-      capabilityToken: 'a'.repeat(43),
-      contextPackageId: 'ctxpkg_turn-opencode',
-      contextRef: contextPath,
-      deadline: '2026-08-21T01:00:00.000Z',
-      inferenceToken: 'i'.repeat(43),
-      leaseId: 'lease-opencode',
-      packageSnapshotId: 'package-opencode',
-      threadId: 'thread-as-opencode',
-      turnId: 'turn-opencode',
-      turnSequence: 0,
-      workerControlToken: 'c'.repeat(43),
-      workspaceId: 'workspace-one',
-    };
-
-    await expect(harness.handle(command('turn.start', 1, turn))).resolves.toMatchObject({
-      disposition: 'succeeded',
+    // A failed close leaves an explicit non-reusable binding and a fenced Harness.
+    expect(f.integration.loopbacks.size).toBe(0);
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: { cleanupState: 'unknown', state: 'failed' },
     });
-    let settled = false;
-    const settlement = harness.waitForBoundedTurnSettlement().then(() => {
-      settled = true;
-    });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    releaseTurn?.();
-    await settlement;
-    expect(finalStatuses).toBe(1);
-    await expect(harness.handle(command('session.inspect', 2, binding))).resolves.toMatchObject({
-      body: { reasonCode: 'unsupported' },
-      disposition: 'refused',
-    });
-    await expect(harness.handle(command('turn.start', 3, turn))).resolves.toMatchObject({
-      body: { reasonCode: 'conflict' },
-      disposition: 'refused',
-    });
-    await expect(
-      harness.handle(
-        command('turn.interrupt', 4, {
-          ...binding,
-          leaseId: turn.leaseId,
-          turnId: turn.turnId,
-        })
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'unsupported' }, disposition: 'refused' });
-    await expect(harness.handle(command('session.close', 5, binding))).resolves.toMatchObject({
-      body: { privateState: 'absent', state: 'closed' },
-      disposition: 'succeeded',
-    });
-  });
-
-  it('rejects unknown operations and executable fields before any Turn effect', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-'));
-    let runs = 0;
-    const harness = new WorkerHarness({
-      integration: {} as SandboxIntegrationClient,
-      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
-      rootDirectory: root,
-      runner: {
-        async run() {
-          runs += 1;
-          return { exitCode: 0, signal: null, stderr: '', stdout: '' };
-        },
-      },
-      sandboxRoot: root,
-    });
-    await harness.handle(command('session.open', 0, openBody('binding-a', 'as-a')));
-
-    await expect(harness.handle(command('shell.exec', 1, {}))).resolves.toMatchObject({
-      body: { reasonCode: 'unsupported' },
-      disposition: 'refused',
-    });
-    await expect(
-      harness.handle(
-        command('turn.start', 2, {
-          aepRef: join(root, 'aep.json'),
-          agentSessionId: 'as-a',
-          agentSessionRuntimeBindingId: 'binding-a',
-          argv: ['sh', '-c', 'unsafe'],
-          contextPackageId: 'context-a',
-          contextRef: join(root, 'context'),
-          deadline: '2026-08-21T01:00:00.000Z',
-          capabilityToken: 'p'.repeat(43),
-          inferenceToken: 'i'.repeat(43),
-          leaseId: 'lease-a',
-          packageSnapshotId: 'package-a',
-          threadId: 'thread-as-a',
-          turnId: 'turn-a',
-          turnSequence: 0,
-          workerControlToken: 'c'.repeat(43),
-          workspaceId: 'workspace-one',
-        })
-      )
-    ).resolves.toMatchObject({ body: { reasonCode: 'unsupported' }, disposition: 'refused' });
-    expect(runs).toBe(0);
+    expect(await f.start('as-a', 'turn-1')).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'conflict' } })
+    );
+    expect(await f.open('as-b', { threadId: 'thread-two' })).toEqual(
+      expect.objectContaining({ body: { reasonCode: 'busy' } })
+    );
   });
 });

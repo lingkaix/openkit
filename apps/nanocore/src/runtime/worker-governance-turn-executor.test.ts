@@ -1613,19 +1613,25 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('advertises interrupts only when the shared worker-control capability exists', () => {
+  it('advertises interrupts only with the worker-control gateway and a backend interrupt channel', () => {
     const backend = new FakeWorkerGovernanceBackend();
-    const withoutGateway = new WorkerGovernanceTurnExecutor({ backend });
-    const withGateway = new WorkerGovernanceTurnExecutor({
+    const interruptible = interruptibleBackend();
+    const withoutGateway = new WorkerGovernanceTurnExecutor({ backend: interruptible });
+    const withoutChannel = new WorkerGovernanceTurnExecutor({
       backend,
+      workerControlGateway: new WorkerControlGateway(),
+    });
+    const withBoth = new WorkerGovernanceTurnExecutor({
+      backend: interruptible,
       workerControlGateway: new WorkerControlGateway(),
     });
 
     expect(withoutGateway.capabilities.interrupts).toBe(false);
-    expect(withGateway.capabilities.interrupts).toBe(true);
+    expect(withoutChannel.capabilities.interrupts).toBe(false);
+    expect(withBoth.capabilities.interrupts).toBe(true);
   });
 
-  it('enqueues exactly one same-attempt interrupt without owning terminal lifecycle', async () => {
+  it('delegates exactly one same-attempt interrupt to the backend without owning terminal lifecycle', async () => {
     const store = createDemoStore();
     const turn = createAssignedTurn(
       store,
@@ -1633,7 +1639,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'th_demo',
       'Keep the one-shot worker running'
     );
-    const backend = new FakeWorkerGovernanceBackend();
+    const backend = interruptibleBackend();
     const workerControlGateway = new WorkerControlGateway({
       now: () => '2026-08-12T00:00:00.000Z',
     });
@@ -1646,25 +1652,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       workerControlGateway,
     });
-    const enqueueInterrupt = vi.spyOn(workerControlGateway, 'enqueueInterrupt');
     const turnBeforeInterrupt = store.getTurnById(turn.id);
     const sessionBeforeInterrupt = store.getAgentSession(agentSessionId);
     const eventsBeforeInterrupt = store.getTurnEvents(turn.id);
 
     await executor.interruptTurn(store, turn.id, { requestId: 'req_interrupt_exact' });
 
-    expect(enqueueInterrupt).toHaveBeenCalledTimes(1);
-    expect(enqueueInterrupt).toHaveBeenCalledWith(packageSnapshotId, null);
-    expect(workerControlGateway.getSessionSnapshot(packageSnapshotId)?.commands).toEqual([
-      {
-        commandId: expect.stringMatching(/^[0-9a-f]{64}$/),
-        deliveredAt: null,
-        kind: 'interrupt',
-        queuedAt: '2026-08-12T00:00:00.000Z',
-        reason: null,
-        sequence: 1,
-      },
-    ]);
+    expect(backend.interruptTurn).toHaveBeenCalledTimes(1);
+    expect(backend.interruptTurn).toHaveBeenCalledWith(packageSnapshotId);
+    expect(workerControlGateway.getSessionSnapshot(packageSnapshotId)).not.toHaveProperty(
+      'commands'
+    );
     expect(store.getTurnById(turn.id)).toEqual(turnBeforeInterrupt);
     expect(store.getAgentSession(agentSessionId)).toEqual(sessionBeforeInterrupt);
     expect(store.getTurnEvents(turn.id)).toEqual(eventsBeforeInterrupt);
@@ -1678,12 +1676,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'lineage-mismatch',
     'missing-package-snapshot',
     'package-snapshot-mismatch',
-  ])('fails closed for %s interrupt without enqueuing a worker command', async (failureMode) => {
+  ])('fails closed for %s interrupt without reaching the backend', async (failureMode) => {
     const store = createDemoStore();
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', `Reject ${failureMode} interrupt`);
     const workerControlGateway = new WorkerControlGateway();
+    const backend = interruptibleBackend();
     const executor = new WorkerGovernanceTurnExecutor({
-      backend: new FakeWorkerGovernanceBackend(),
+      backend,
       workerControlGateway,
     });
 
@@ -1712,14 +1711,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         });
       }
     }
-    const enqueueInterrupt = vi.spyOn(workerControlGateway, 'enqueueInterrupt');
     const turnBeforeInterrupt = store.getTurnById(turn.id);
 
     await expect(
       executor.interruptTurn(store, turn.id, { requestId: `req_${failureMode}` })
     ).rejects.toThrow();
 
-    expect(enqueueInterrupt).not.toHaveBeenCalled();
+    expect(backend.interruptTurn).not.toHaveBeenCalled();
     expect(store.getTurnById(turn.id)).toEqual(turnBeforeInterrupt);
   });
 
@@ -2474,6 +2472,276 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
     expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({ state: 'cleaned' });
     coreDb.sqlite.close();
+  });
+
+  it.each([
+    { retained: true, sessionStatus: 'idle' },
+    { retained: false, sessionStatus: 'interrupted' },
+  ] as const)('keeps an interrupted Turn AgentSession $sessionStatus when the binding retained is $retained', async ({
+    retained,
+    sessionStatus,
+  }) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-retained-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Interrupt a resident worker');
+    const agentSessionId = 'as_retained_1';
+    const sandboxBindingRef = 'lease-binding:retained';
+    dispatchExecutorLease(coreDb, {
+      agentSessionId,
+      packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+      sandboxBindingRef,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    // The backend retains a binding it proved reusable after closeout; others it closed.
+    const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
+      readThreadAgentSessionBinding: () => (retained ? { agentSessionId } : null),
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      awaitWorkerCompletion: async () => ({
+        acceptedAt: '2026-07-15T00:00:03.000Z',
+        status: 'interrupted' as const,
+        stopReason: 'aborted',
+      }),
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await executor.startTurn(store, turn.id, 'Interrupt a resident worker', {
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: '00000000-0000-4000-8000-000000000256',
+        sandboxBindingRef,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        error: { code: 'worker_governance_turn_cancelled' },
+        status: 'interrupted',
+      });
+      expect(store.getAgentSession(agentSessionId)).toMatchObject({
+        message: retained ? null : 'Worker reported an aborted terminal status.',
+        status: sessionStatus,
+      });
+      expect(backend.calls.at(-1)).toBe('cleanupSession');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('records the accepted ready handle digest and offers it as the successor resume pair', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-resume-pair-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const digest = 'a'.repeat(64);
+    let record: ((digest: string) => void) | null = null;
+    const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
+      bindNativeHandleRecorder: (
+        _packageSnapshotId: string,
+        recorder: (digest: string) => void
+      ) => {
+        record = recorder;
+      },
+    });
+    const agentSessionIds = ['as_resume_first', 'as_resume_successor'];
+    const executor = new WorkerGovernanceTurnExecutor({
+      awaitWorkerCompletion: async () => {
+        // The backend accepts the ready proof during the Turn, after materialization.
+        record?.(digest);
+        return {
+          acceptedAt: '2026-07-15T00:00:03.000Z',
+          status: 'completed' as const,
+          stopReason: 'completed',
+        };
+      },
+      backend,
+      coreDb,
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    const run = async (agentSessionId: string, index: number) => {
+      const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', `Resume turn ${index}`);
+      const sandboxBindingRef = `lease-binding:resume-${index}`;
+      dispatchExecutorLease(coreDb, {
+        agentSessionId,
+        packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+        sandboxBindingRef,
+        threadId: turn.threadId,
+        turnId: turn.id,
+      });
+      await executor.startTurn(store, turn.id, `Resume turn ${index}`, {
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: `00000000-0000-4000-8000-00000000026${index}`,
+        sandboxBindingRef,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+    };
+
+    try {
+      await run(agentSessionIds[0]!, 1);
+      // The first binding of a Thread starts a new native conversation.
+      expect(backend.lastContext?.nativeResume).toBeNull();
+      expect(store.getAgentSession(agentSessionIds[0]!)).toMatchObject({
+        nativeHandleDigest: digest,
+        status: 'idle',
+      });
+      // The pair outlives the binding: close the predecessor, then admit a successor.
+      store.updateAgentSession(agentSessionIds[0]!, { status: 'closed' });
+      coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_session_leases SET status = 'released' WHERE agent_session_id = ?"
+        )
+        .run(agentSessionIds[0]);
+      record = null;
+
+      await run(agentSessionIds[1]!, 2);
+      expect(backend.lastContext?.nativeResume).toEqual({
+        digest,
+        locator: agentSessionIds[0],
+      });
+      expect(store.getAgentSession(agentSessionIds[0]!).nativeHandleDigest).toBe(digest);
+      // A conflicting later proof for the same AgentSession is refused.
+      expect(() =>
+        store.updateAgentSession(agentSessionIds[1]!, { nativeHandleDigest: digest })
+      ).not.toThrow();
+      expect(() =>
+        store.updateAgentSession(agentSessionIds[1]!, { nativeHandleDigest: 'b'.repeat(64) })
+      ).toThrow('resume digest cannot change');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a ready proof accepted at open when the Turn fails before export', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-open-proof-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const digest = 'c'.repeat(64);
+    let record: ((digest: string) => void) | null = null;
+    const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
+      bindNativeHandleRecorder: (
+        _packageSnapshotId: string,
+        recorder: (digest: string) => void
+      ) => {
+        record = recorder;
+      },
+    });
+    backend.launch = async () => {
+      backend.calls.push('launch');
+      // The backend accepts the open proof, then a later import fails the launch.
+      record?.(digest);
+      throw new Error('reference import failed');
+    };
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Open proof turn');
+    try {
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_open_proof',
+        new Date().toISOString(),
+        'Open proof turn',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000271',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      ).catch(() => undefined);
+      expect(backend.calls).toContain('cleanupSession');
+      expect(store.getAgentSession('as_open_proof').nativeHandleDigest).toBe(digest);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      expected: { digest: 'b'.repeat(64), locator: 'as_a_newer' },
+      name: 'orders by creation, not by id',
+      sessions: [
+        { createdAt: '2026-07-15T00:00:01.000Z', digest: 'a'.repeat(64), id: 'as_z_older' },
+        { createdAt: '2026-07-15T00:00:02.000Z', digest: 'b'.repeat(64), id: 'as_a_newer' },
+      ],
+    },
+    {
+      expected: { digest: 'a'.repeat(64), locator: 'as_z_older' },
+      name: 'walks past a newer predecessor without proof to the pair it would have resumed',
+      sessions: [
+        { createdAt: '2026-07-15T00:00:01.000Z', digest: 'a'.repeat(64), id: 'as_z_older' },
+        { createdAt: '2026-07-15T00:00:02.000Z', digest: null, id: 'as_a_newer' },
+      ],
+    },
+    {
+      expected: null,
+      name: 'starts a new conversation when no AgentSession has proof',
+      sessions: [
+        { createdAt: '2026-07-15T00:00:01.000Z', digest: null, id: 'as_z_older' },
+        { createdAt: '2026-07-15T00:00:02.000Z', digest: null, id: 'as_a_newer' },
+      ],
+    },
+    {
+      expected: 'recovery_required',
+      name: 'fails closed when equal creation times leave the predecessor unproved',
+      sessions: [
+        { createdAt: '2026-07-15T00:00:02.000Z', digest: 'a'.repeat(64), id: 'as_z_older' },
+        { createdAt: '2026-07-15T00:00:02.000Z', digest: 'b'.repeat(64), id: 'as_a_newer' },
+      ],
+    },
+  ])('selects the successor resume pair: $name', async ({ expected, sessions }) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-predecessor-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    for (const session of sessions) {
+      store.createAgentSession({
+        agentId: 'agent_demo',
+        createdAt: session.createdAt,
+        id: session.id,
+        message: null,
+        nativeHandleDigest: session.digest,
+        status: 'closed',
+        threadId: 'th_demo',
+        updatedAt: session.createdAt,
+        workspaceId: 'ws_demo',
+      });
+    }
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Successor turn');
+    try {
+      const started = startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_successor',
+        new Date().toISOString(),
+        'Successor turn',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000272',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
+      if (expected === 'recovery_required') {
+        await expect(started).rejects.toMatchObject({ code: 'recovery_required' });
+        expect(backend.calls).not.toContain('materialize');
+        return;
+      }
+      await started;
+      expect(backend.lastContext?.nativeResume).toEqual(expected);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it.each([
@@ -6283,6 +6551,111 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  it('records Vault injection receipts only when a Turn opens its binding', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-vault-reuse-'));
+    const coreDb = openCoreDb(dataRoot);
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    const timestamp = '2026-07-05T00:00:00.000Z';
+    const agentSessionId = 'as_governance_vault_reuse';
+
+    applyMigrations(coreDb);
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 8) });
+    vaultUnlockState.backend().store({
+      material: 'ghp_governance_token',
+      metadata: { ownerScope: 'server' },
+      referenceId: 'vault_github_read',
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://server/vault/vault_github_read',
+      displayName: 'GitHub read token',
+      ownerScope: 'server',
+      referenceId: 'vault_github_read',
+      secretKind: 'github-token',
+      now: () => timestamp,
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['backend-provider'],
+      expiresAt: '2099-07-05T01:00:00.000Z',
+      grantId: 'grant_github_read',
+      lifetime: 'turn',
+      ownerScope: 'server',
+      policyDecisionId: 'pd_repo_read_1',
+      targetAgentSessionId: agentSessionId,
+      vaultReferenceId: 'vault_github_read',
+      now: () => timestamp,
+    });
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const backend = new FakeWorkerGovernanceBackend();
+    // Each Turn has its own backend session record even when it reuses the AgentSession binding.
+    const planSession = backend.planSession.bind(backend);
+    backend.planSession = (environmentPackage) => ({
+      ...planSession(environmentPackage),
+      backendSessionId: `openkit-${environmentPackage.snapshotId}`,
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      now: () => timestamp,
+      vaultBackend: () => vaultUnlockState.backend(),
+    });
+    const agentSetup = createTestAgentSetup({
+      credentialDeclarations: [
+        {
+          id: 'github_mcp_read',
+          provider: {
+            credentialKey: 'GITHUB_TOKEN',
+            instanceId: 'provider_github_read',
+            profileId: 'github_mcp',
+            type: 'github_mcp',
+          },
+          vaultGrantId: 'grant_github_read',
+          visibility: 'sandbox-provider',
+        },
+      ],
+    });
+    const run = async (index: number) => {
+      const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', `Vault reuse ${index}`);
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        agentSessionId,
+        timestamp,
+        `Vault reuse ${index}`,
+        {
+          agentSessionId,
+          agentSetup,
+          requestId: `00000000-0000-4000-8000-00000000027${index}`,
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
+    };
+
+    try {
+      await run(1);
+      expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
+      coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_session_leases SET status = 'released' WHERE agent_session_id = ?"
+        )
+        .run(agentSessionId);
+
+      // The idle AgentSession's binding is reused: credential material was delivered at open.
+      await run(2);
+      expect(store.getAgentSession(agentSessionId).status).toBe('idle');
+      expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('passes vault backend dependencies into worker package resolution', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-vault-grants-'));
     const coreDb = openCoreDb(dataRoot);
@@ -6966,6 +7339,13 @@ function turnRuntimeLineage(environmentPackage: AgentEnvironmentPackage): Worker
     turnId: environmentPackage.scope.turnId,
     workspaceId: environmentPackage.scope.workspaceId,
   };
+}
+
+/** Returns a fake backend that also owns a private Harness interrupt channel. */
+function interruptibleBackend() {
+  return Object.assign(new FakeWorkerGovernanceBackend(), {
+    interruptTurn: vi.fn(async (_packageSnapshotId: string) => undefined),
+  });
 }
 
 /** Computes one canonical prefixed SHA-256 digest. */

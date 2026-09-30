@@ -132,7 +132,6 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
 import type { TurnExecutor } from './runtime/types.js';
-import { createWorkerControlCommandDeliveryRecorder } from './runtime/worker-control-commands.js';
 import {
   type WorkerControlFinalStatusAcceptedHook,
   WorkerControlGateway,
@@ -454,7 +453,6 @@ export function createDefaultWorkerControlGateway(
         throwSchedulerHeartbeatGatewayError(error);
       }
     },
-    commandDeliveryRecorder: createWorkerControlCommandDeliveryRecorder(coreDb),
     onHeartbeatAccepted: (input) => {
       try {
         acceptSchedulerLeaseHeartbeatByBinding(coreDb, {
@@ -1321,9 +1319,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workerControlGateway,
     workerMcpGateway,
     workspaceMutationAdmission,
-    ...(configuredWorkerRuntime
-      ? { requestHumanGateStop: configuredWorkerRuntime.requestHumanGateStop }
-      : {}),
   });
 
   registerNanoHostSessionSemanticRoutes({

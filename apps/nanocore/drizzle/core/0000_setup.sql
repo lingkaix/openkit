@@ -52,6 +52,9 @@ CREATE TABLE `agent_session_runtime_bindings` (
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
 	`image_digest` text NOT NULL,
+	`inference_loopback_credential_digest` text,
+	`capability_loopback_credential_digest` text,
+	CONSTRAINT `agent_session_runtime_bindings_loopback_digest_check` CHECK ((`inference_loopback_credential_digest` IS NULL) = (`capability_loopback_credential_digest` IS NULL) AND (`inference_loopback_credential_digest` IS NULL OR `inference_loopback_credential_digest` <> `capability_loopback_credential_digest`)),
 	CONSTRAINT `agent_session_runtime_bindings_setup_generation_check` CHECK (`effective_setup_generation` >= 1),
 	CONSTRAINT `agent_session_runtime_bindings_turn_sequence_check` CHECK (`next_turn_sequence` >= 0)
 );
@@ -672,25 +675,6 @@ CREATE TABLE "worker_backend_sessions" (
 
 --> statement-breakpoint
 
-CREATE TABLE `worker_control_commands` (
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`turn_id` text NOT NULL,
-	`agent_session_id` text NOT NULL,
-	`package_snapshot_id` text NOT NULL,
-	`request_id` text,
-	`command_id` text NOT NULL PRIMARY KEY,
-	`command_kind` text NOT NULL,
-	`sequence` integer NOT NULL,
-	`payload_json` text NOT NULL,
-	`status` text NOT NULL,
-	`queued_at` text NOT NULL,
-	`delivered_at` text,
-	`acknowledged_at` text
-);
-
---> statement-breakpoint
-
 CREATE TABLE `worker_control_records` (
 	`workspace_id` text NOT NULL,
 	`thread_id` text NOT NULL,
@@ -1111,10 +1095,6 @@ CREATE INDEX `worker_storage_contributors_slot_idx` ON `worker_storage_contribut
 --> statement-breakpoint
 
 CREATE INDEX `worker_storage_contributors_generation_idx` ON `worker_storage_contributors` (`storage_ref`,`attachment_generation`);
-
---> statement-breakpoint
-
-CREATE INDEX `worker_control_commands_scope_idx` ON `worker_control_commands` (`workspace_id`,`thread_id`,`turn_id`,`agent_session_id`,`package_snapshot_id`,`status`,`sequence`);
 
 --> statement-breakpoint
 

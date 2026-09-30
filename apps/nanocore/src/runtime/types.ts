@@ -279,14 +279,7 @@ export interface AgentSessionBackendControlSummary {
   /** Latest worker heartbeat summary, if any. */
   heartbeat: {
     /** Current worker lifecycle status. */
-    status:
-      | 'starting'
-      | 'running'
-      | 'idle'
-      | 'awaiting_command'
-      | 'stopping'
-      | 'completed'
-      | 'failed';
+    status: 'starting' | 'running' | 'idle' | 'stopping' | 'completed' | 'failed';
     /** Worker sequence number associated with the heartbeat. */
     sequence: number;
     /** Timestamp recorded by NanoCore when the heartbeat arrived. */
@@ -294,10 +287,6 @@ export interface AgentSessionBackendControlSummary {
   } | null;
   /** Count of live artifact notices received from the worker. */
   artifactNoticeCount: number;
-  /** Count of commands queued for the worker. */
-  queuedCommandCount: number;
-  /** Count of commands delivered by a worker poll. */
-  deliveredCommandCount: number;
 }
 
 /**

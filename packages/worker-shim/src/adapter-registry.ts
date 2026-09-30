@@ -1,7 +1,4 @@
 import type { WorkerLineage } from '@openkit/worker-protocol';
-import { codexAdapter } from './adapters/codex.js';
-import { opencodeAdapter } from './adapters/opencode.js';
-import { piAdapter } from './adapters/pi.js';
 import type { RuntimeCaptureInput } from './runtime-capture.js';
 
 /** One Shim-selected worker LLM route passed unchanged to an adapter. */
@@ -57,76 +54,6 @@ export interface WorkerAdapterRuntimeProvenance {
   readonly streamManifestPath: '/openkit/session/runtime/raw-streams.json';
 }
 
-/** Resolved runtime-neutral input passed to one worker adapter. */
-export interface WorkerAdapterPrepareInput {
-  /** Allowlisted environment inherited by the native process. */
-  readonly childEnvironment: Record<string, string>;
-  /** Catalog-selected MCP server ids exposed through the fixed local capability route. */
-  readonly mcpServerIds?: readonly string[] | undefined;
-  /** Worker-local Skill trees already imported for this Turn. */
-  readonly skillTargetPaths?:
-    | readonly { readonly id: string; readonly targetPath: string }[]
-    | undefined;
-  /** Fresh AgentSession-private native handle and control root. */
-  readonly controlRoot: string;
-  /** The package's unique preferred LLM route selected by the Shim. */
-  readonly llmRoute: WorkerAdapterLlmRoute;
-  /** Disposable OpenKit AgentSession control directory. */
-  readonly sessionDirectory: string;
-  /** Optional private directory for one Turn's native-only outputs. */
-  readonly nativeTurnDirectory?: string | undefined;
-  /** Admission-bound live observations, independent of optional verified provenance. */
-  readonly runtimeCapture: RuntimeCaptureInput;
-  /** Optional separately owned bounded native provenance capture input. */
-  readonly runtimeProvenance?: WorkerAdapterRuntimeProvenance | undefined;
-  /** Retained opaque native data root. */
-  readonly stateRoot: string;
-  /** Private worker turn input. */
-  readonly turnInput: string;
-  /** Worker-visible native process working directory. */
-  readonly workingDirectory: string;
-}
-
-/** Native process launch plan returned by an adapter. */
-export interface WorkerAdapterLaunchPlan {
-  /** Native executable and arguments. */
-  readonly argv: string[];
-  /** Whether exact stdout must be retained for collection. */
-  readonly captureStdout: boolean;
-  /** Safe environment visible to the native process. */
-  readonly environment: Record<string, string>;
-  /** Optional adapter-local cleanup after a failed native lifecycle. */
-  readonly invalidate?: (() => Promise<void>) | undefined;
-  /** Whether native diagnostics must remain outside ordinary transcript records. */
-  readonly suppressFailureDiagnostics?: boolean | undefined;
-  /** Optional adapter-local commit after a completed native lifecycle. */
-  readonly finalize?: (() => Promise<void>) | undefined;
-  /** Optional backpressured adapter-local exact stdout sink. */
-  readonly writeStdout?: ((chunk: Uint8Array) => Promise<void>) | undefined;
-}
-
-/** Bounded native process result passed to adapter collection. */
-export interface WorkerNativeProcessResult {
-  /** Native exit code, or null when signaled. */
-  readonly exitCode: number | null;
-  /** Whether shared supervision interrupted the process. */
-  readonly interrupted: boolean;
-  /** Native termination signal, or null after a normal exit. */
-  readonly signal: NodeJS.Signals | null;
-  /** Bounded diagnostic stderr prefix. */
-  readonly stderr: string;
-  /** Exact bounded stdout bytes requested by the launch plan. */
-  readonly stdout: Uint8Array;
-}
-
-/** Input passed to one adapter's result collector. */
-export interface WorkerAdapterCollectInput {
-  /** Launch plan produced by the same adapter. */
-  readonly launchPlan: WorkerAdapterLaunchPlan;
-  /** Bounded supervised native process result. */
-  readonly processResult: WorkerNativeProcessResult;
-}
-
 /** Product-safe normalized result returned by an adapter. */
 export interface WorkerAdapterResult {
   /** Final assistant candidate, or null when none is trustworthy. */
@@ -139,70 +66,114 @@ export interface WorkerAdapterResult {
   readonly stopReason: string;
 }
 
-/** Worker-side bounded-turn adapter with the accepted two-operation contract. */
-export interface WorkerBoundedTurnAdapter {
-  /** Closed adapter lifecycle mode. */
-  readonly mode: 'bounded-turn';
-  /**
-   * Builds one native launch plan from resolved runtime-neutral input.
-   *
-   * @param input Resolved adapter input.
-   * @returns Native launch plan.
-   */
-  prepare(
-    input: WorkerAdapterPrepareInput
-  ): WorkerAdapterLaunchPlan | Promise<WorkerAdapterLaunchPlan>;
-  /**
-   * Normalizes one bounded native process result.
-   *
-   * @param input Launch plan and bounded native result.
-   * @returns Product-safe adapter result.
-   */
-  collect(input: WorkerAdapterCollectInput): WorkerAdapterResult | Promise<WorkerAdapterResult>;
+/**
+ * The adapter's restricted native handle. `ready` carries the exact reference bytes the
+ * Harness stores under the AgentSession id; their SHA-256 is the `nativeHandleDigest`.
+ */
+export type WorkerNativeHandle =
+  | { readonly state: 'pending' }
+  | { readonly state: 'ready'; readonly reference: Uint8Array }
+  | { readonly state: 'unknown' };
+
+/** Fixed loopback endpoints and the two session loopback credentials a resident runtime uses. */
+export interface WorkerResidentLoopback {
+  /** Capability base URL; the MCP endpoint of server `id` is `${capabilityBaseUrl}/mcp/${id}`. */
+  readonly capabilityBaseUrl: string;
+  /** Bearer for every capability request of this AgentSession. */
+  readonly capabilityCredential: string;
+  /** OpenAI-compatible inference base URL. */
+  readonly inferenceBaseUrl: string;
+  /** Bearer for every inference request of this AgentSession. */
+  readonly inferenceCredential: string;
 }
 
-/** Worker-side session-continuity adapter with the accepted five-operation contract. */
-export interface WorkerSessionContinuityAdapter {
-  /** Closed adapter lifecycle mode. */
-  readonly mode: 'session-continuity';
-  /** Creates one fresh private control binding over a retained native data root. */
-  openSession(input: { readonly controlRoot: string; readonly stateRoot: string }): Promise<{
-    readonly nativeHandle: string | null;
-    readonly nativeHandleDigest: string | null;
-    readonly nativeHandleState: 'pending' | 'ready';
-  }>;
-  /** Builds one fresh native process plan against the private Session state. */
-  prepareTurn(
-    input: WorkerAdapterPrepareInput
-  ): WorkerAdapterLaunchPlan | Promise<WorkerAdapterLaunchPlan>;
-  /** Normalizes one Turn and proves its restricted native handle. */
-  collectTurn(
-    input: WorkerAdapterCollectInput & { readonly controlRoot: string; readonly stateRoot: string }
-  ): Promise<
-    WorkerAdapterResult & {
-      readonly nativeHandle: string | null;
-      readonly nativeHandleDigest: string | null;
-      readonly nativeHandleState: 'ready' | 'unknown';
-    }
-  >;
-  /** Proves the current private native handle without launching a process. */
-  inspectSession(input: { readonly controlRoot: string; readonly stateRoot: string }): Promise<{
-    readonly nativeHandleDigest: string | null;
-    readonly nativeHandleState: 'pending' | 'ready';
-  }>;
-  /** Removes the private control binding and Turn-local outputs while retaining native data. */
-  closeSession(input: {
-    readonly controlRoot: string;
-    readonly sessionDirectory: string;
-  }): Promise<{ readonly privateState: 'absent' }>;
+/** Input to open one resident native binding for one AgentSession. */
+export interface WorkerResidentOpenInput {
+  /** Exact Core AgentSession identity. */
+  readonly agentSessionId: string;
+  /** Disposable AgentSession-private control root below `/openkit`. */
+  readonly controlRoot: string;
+  /**
+   * Safe environment of the resident host: the image allowlist, the fixed scratch root, and the
+   * session-static runtime environment. It never contains an upstream route token.
+   */
+  readonly environment: Readonly<Record<string, string>>;
+  /** Loopback endpoints and session credentials. */
+  readonly loopback: WorkerResidentLoopback;
+  /**
+   * Predecessor reference bytes whose SHA-256 the Harness already matched against the carried
+   * digest, or null for a new conversation. The adapter validates the native result before work.
+   */
+  readonly resumeReference: Uint8Array | null;
+  /** Retained native data root of the Thread inside the Sandbox volume. */
+  readonly stateRoot: string;
 }
 
-/** Closed production adapter lifecycle modes. */
-export type WorkerAdapter = WorkerBoundedTurnAdapter | WorkerSessionContinuityAdapter;
+/** Per-Turn input for one resident binding, resolved from the Turn's own AEP. */
+export interface WorkerResidentTurnInput {
+  /** The package's unique preferred LLM route selected by the Harness. */
+  readonly llmRoute: WorkerAdapterLlmRoute;
+  /** Catalog-selected MCP server ids exposed through the fixed capability route. */
+  readonly mcpServerIds: readonly string[];
+  /** Admission-bound live observation capture. */
+  readonly runtimeCapture: RuntimeCaptureInput;
+  /** Optional separately owned native provenance declaration. */
+  readonly runtimeProvenance?: WorkerAdapterRuntimeProvenance | undefined;
+  /** Worker-local Skill trees imported for this Turn. */
+  readonly skillTargetPaths: readonly { readonly id: string; readonly targetPath: string }[];
+  /** Turn-private directory for native-only outputs, removed after collection. */
+  readonly turnDirectory: string;
+  /** Exact Core Turn identity. */
+  readonly turnId: string;
+  /** Private worker Turn input. */
+  readonly turnInput: string;
+  /** Worker-visible native working directory. */
+  readonly workingDirectory: string;
+}
 
-/** Static production adapter registry bundled into every governed worker image. */
-export const WORKER_ADAPTERS: Readonly<Record<string, WorkerAdapter>> = {
-  codex: codexAdapter,
-  opencode: opencodeAdapter,
-  pi: piAdapter,
-};
+/** One Turn accepted by a resident binding. */
+export interface WorkerResidentTurn {
+  /** Resolves with the normalized result once the native Turn settles; never rejects. */
+  readonly settled: Promise<WorkerAdapterResult>;
+  /** Requests native interruption and resolves once the Turn has settled. */
+  interrupt(): Promise<void>;
+}
+
+/** One resident native binding that outlives its Turns. */
+export interface WorkerResidentSession {
+  /** Settles when the resident host ends on its own; a close does not settle it as a failure. */
+  readonly exited: Promise<void>;
+  /** Liveness of the resident host process. */
+  childState(): 'absent' | 'running' | 'stopping' | 'unknown';
+  /** Revokes the native binding and ends a dedicated host; retained native data stays. */
+  close(): Promise<void>;
+  /** Proves the current restricted native handle without starting work. */
+  nativeHandle(): Promise<WorkerNativeHandle>;
+  /**
+   * Accepts one Turn on the retained conversation and resolves once the runtime accepted it.
+   * Rejection guarantees that no native Turn remains live; otherwise cleanup ownership stays with
+   * the Harness, which fences admission and keeps the Turn occupied.
+   */
+  startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn>;
+}
+
+/** Worker-side adapter for one resident native runtime. */
+export interface WorkerResidentAdapter {
+  /**
+   * Opens one resident binding, new or by resume. Rejection guarantees that no native binding or
+   * effect remains live; otherwise cleanup ownership must remain with the Harness and admission
+   * stays fenced.
+   *
+   * @param input AgentSession identity, roots, loopback, environment, and resume reference.
+   * @returns The live binding.
+   */
+  openSession(input: WorkerResidentOpenInput): Promise<WorkerResidentSession>;
+}
+
+/**
+ * Static production adapter registry bundled into every governed worker image. The per-Turn
+ * Codex, OpenCode, and Pi adapters were removed with bounded-turn and per-Turn launch; the
+ * resident adapters are registered by their own slices of
+ * `docs/changes/202609300021100000-agent_communication_redesign/plan.md` (W2 to W5).
+ */
+export const WORKER_ADAPTERS: Readonly<Record<string, WorkerResidentAdapter>> = {};
