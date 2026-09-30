@@ -1,5 +1,6 @@
 import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { useWorkspaceStore } from '../workspace-store';
 
@@ -35,23 +36,45 @@ export function isUnauthenticated(error: unknown): boolean {
 /**
  * Reads the protected authorized-Workspace collection that owns account admission.
  *
+ * TanStack Query clears an error that has no data when the next fetch starts. The retained error keeps that settled failure mounted through a background refetch. Resetting the query clears its fetched state, so that error is not shown and sign-in, sign-up, sign-out, and explicit retry settle from the new protected read.
+ *
  * @param options.enabled When false, observes the existing admission cache without fetching.
  */
 export function useAccountAdmission(options?: { readonly enabled?: boolean }) {
   const client = useCoreClient();
-  return useQuery({
+  const admission = useQuery({
     queryKey: accountAdmissionKey,
     queryFn: () => client.app.listAuthorizedWorkspaces(),
     retry: false,
     structuralSharing: false,
     enabled: options?.enabled ?? true,
   });
+  const retainedError = useRef<unknown>(null);
+  if (admission.isSuccess) {
+    retainedError.current = null;
+  } else if (admission.error) {
+    retainedError.current = admission.error;
+  }
+  if (admission.isPending && admission.isFetched && retainedError.current != null) {
+    const error = retainedError.current;
+    return {
+      ...admission,
+      error,
+      isError: true as const,
+      isInitialLoading: false as const,
+      isLoading: false as const,
+      isPending: false as const,
+      isSuccess: false as const,
+      status: 'error' as const,
+    };
+  }
+  return admission;
 }
 
 /**
- * Runs one email-auth operation and starts a protected refetch after success.
+ * Runs one email-auth operation and replaces account admission after success.
  *
- * The request object is the TanStack mutation variable while the operation is in flight. Its credential fields are erased before settlement, and auth responses and credential-bearing server errors are deliberately not retained.
+ * The request object is the TanStack mutation variable while the operation is in flight. Its credential fields are erased before settlement, and auth responses and credential-bearing server errors are deliberately not retained. The following protected read starts from a reset admission query, so the previous product, gate, or failure does not stay mounted while that read is in flight.
  */
 export function useAccountMutation() {
   const client = useCoreClient();
@@ -91,7 +114,7 @@ export function useAccountMutation() {
       queryClient.removeQueries({ queryKey: ['workspaces'], exact: true });
       queryClient.removeQueries({ queryKey: ['thread-dashboard'] });
       useWorkspaceStore.getState().setCurrentWorkspaceId(null);
-      void queryClient.refetchQueries({ queryKey: accountAdmissionKey, exact: true });
+      void queryClient.resetQueries({ queryKey: accountAdmissionKey, exact: true });
     },
   });
 }

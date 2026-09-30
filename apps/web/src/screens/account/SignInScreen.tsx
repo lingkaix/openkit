@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, type ReactNode, useState } from 'react';
 import { type ThemeName, useThemeStore } from '../../app/theme-store';
 import { Button, Card, ErrorBanner, Page, PageHeader, Select, TextField } from '../../primitives';
@@ -5,6 +6,7 @@ import { InvitationsPanel } from './InvitationsPanel';
 import { MembersScreen } from './MembersScreen';
 import {
   type AccountMutationRequest,
+  accountAdmissionKey,
   isUnauthenticated,
   useAccountAdmission,
   useAccountMutation,
@@ -22,7 +24,7 @@ function AccountFrame({ children }: { children: ReactNode }) {
   );
 }
 
-/** Stable account-admission progress shown while the protected read is pending. */
+/** Stable account-admission progress shown only before any admission result exists. */
 function AccountChecking() {
   return (
     <AccountFrame>
@@ -48,12 +50,19 @@ function AccountReadFailure({ retry }: { retry: () => void }) {
  * @param children Product routes rendered only after the protected read succeeds.
  */
 export function AccountBoundary({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const admission = useAccountAdmission();
 
-  if (admission.isPending || admission.isFetching) return <AccountChecking />;
+  if (admission.isPending) return <AccountChecking />;
   if (admission.isError && isUnauthenticated(admission.error)) return <SignInScreen />;
   if (admission.isError) {
-    return <AccountReadFailure retry={() => void admission.refetch()} />;
+    return (
+      <AccountReadFailure
+        retry={() => {
+          void queryClient.resetQueries({ queryKey: accountAdmissionKey, exact: true });
+        }}
+      />
+    );
   }
   return children;
 }

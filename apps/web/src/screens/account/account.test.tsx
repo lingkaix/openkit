@@ -4,9 +4,10 @@ import {
   ProtocolValidationError,
   parseWorkspaceSharingError,
 } from '@openkit/core-client';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { focusManager, QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { type ReactNode, useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { axe } from 'vitest-axe';
@@ -15,6 +16,7 @@ import { AppRoutes } from '../../app/routes';
 import { useThemeStore } from '../../app/theme-store';
 import { useWorkspaceStore } from '../workspace-store';
 import { useMyWorkspaceInvitations } from './data';
+import { AccountBoundary } from './SignInScreen';
 import { useAccountAdmission, useAccountMutation } from './session';
 
 const EMAIL = 'account-input@example.test';
@@ -3210,5 +3212,162 @@ describe('selected-membership self-leave', () => {
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
     expectAuthorizedWorkspaceIds(queryClient, ['ws1', 'ws2']);
     expectNoRetainedInviteEmail(queryClient, guards);
+  });
+});
+
+/** Observes the shared admission query without starting a second protected read. */
+function AdmissionRefetchProbe() {
+  const admission = useAccountAdmission({ enabled: false });
+  return <p>{admission.isFetching ? 'admission refetching' : 'admission idle'}</p>;
+}
+
+/** Product child whose own state must survive an admission refetch. */
+function StatefulAdmissionChild() {
+  const [mark, setMark] = useState('before-refetch');
+  return (
+    <main aria-label="Stateful product">
+      <p>{mark}</p>
+      <button type="button" onClick={() => setMark('kept-across-refetch')}>
+        Keep state
+      </button>
+    </main>
+  );
+}
+
+/** Renders the account boundary around one child and an outside refetch probe. */
+function renderAdmissionBoundary(client: CoreClient, child: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <CoreClientProvider client={client}>
+        <AdmissionRefetchProbe />
+        <AccountBoundary>{child}</AccountBoundary>
+      </CoreClientProvider>
+    </QueryClientProvider>
+  );
+  return { ...view, queryClient };
+}
+
+/** The account-focus refetch: leave the page, then return while the query is stale. */
+function returnToAccountPage() {
+  focusManager.setFocused(false);
+  focusManager.setFocused(true);
+}
+
+describe('account admission background refetch', () => {
+  afterEach(() => {
+    focusManager.setFocused(true);
+  });
+
+  it('keeps a shown product and its state mounted while a focus refetch is in flight', async () => {
+    const refetch = deferred<typeof PRODUCT_WORKSPACES>();
+    const listAuthorizedWorkspaces = vi
+      .fn()
+      .mockResolvedValueOnce(PRODUCT_WORKSPACES)
+      .mockReturnValueOnce(refetch.promise);
+    const { client } = makeClient({ listAuthorizedWorkspaces });
+    renderAdmissionBoundary(client, <StatefulAdmissionChild />);
+    const user = userEvent.setup();
+
+    await screen.findByRole('main', { name: 'Stateful product' });
+    await waitFor(() => expect(screen.getByText('admission idle')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Keep state' }));
+    expect(screen.getByText('kept-across-refetch')).toBeInTheDocument();
+    returnToAccountPage();
+
+    await waitFor(() => expect(screen.getByText('admission refetching')).toBeInTheDocument());
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/checking account access/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('main', { name: 'Stateful product' })).toBeInTheDocument();
+    expect(screen.getByText('kept-across-refetch')).toBeInTheDocument();
+
+    refetch.resolve(PRODUCT_WORKSPACES);
+    await waitFor(() => expect(screen.getByText('admission idle')).toBeInTheDocument());
+    expect(screen.queryByText(/checking account access/i)).not.toBeInTheDocument();
+    expect(screen.getByText('kept-across-refetch')).toBeInTheDocument();
+  });
+
+  it('opens the account gate when a focus refetch returns typed unauthenticated, without the checking frame during that read', async () => {
+    const refetch = deferred<typeof PRODUCT_WORKSPACES>();
+    const listAuthorizedWorkspaces = vi
+      .fn()
+      .mockResolvedValueOnce(PRODUCT_WORKSPACES)
+      .mockReturnValueOnce(refetch.promise);
+    const { client } = makeClient({ listAuthorizedWorkspaces });
+    renderAdmissionBoundary(client, <StatefulAdmissionChild />);
+    const user = userEvent.setup();
+
+    await screen.findByRole('main', { name: 'Stateful product' });
+    await waitFor(() => expect(screen.getByText('admission idle')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Keep state' }));
+    returnToAccountPage();
+
+    await waitFor(() => expect(screen.getByText('admission refetching')).toBeInTheDocument());
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/checking account access/i)).not.toBeInTheDocument();
+    expect(screen.getByText('kept-across-refetch')).toBeInTheDocument();
+
+    refetch.reject(AUTH_REQUIRED());
+    await screen.findByRole('form', { name: /account access/i });
+    expect(screen.queryByRole('main', { name: 'Stateful product' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/checking account access/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows the retryable failure when a focus refetch fails for another reason, without the checking frame during that read', async () => {
+    const refetch = deferred<typeof PRODUCT_WORKSPACES>();
+    const failure = new TypeError('Failed to fetch');
+    const listAuthorizedWorkspaces = vi
+      .fn()
+      .mockResolvedValueOnce(PRODUCT_WORKSPACES)
+      .mockReturnValueOnce(refetch.promise);
+    const { client } = makeClient({ listAuthorizedWorkspaces });
+    renderAdmissionBoundary(client, <StatefulAdmissionChild />);
+
+    await screen.findByRole('main', { name: 'Stateful product' });
+    await waitFor(() => expect(screen.getByText('admission idle')).toBeInTheDocument());
+    returnToAccountPage();
+
+    await waitFor(() => expect(screen.getByText('admission refetching')).toBeInTheDocument());
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/checking account access/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('main', { name: 'Stateful product' })).toBeInTheDocument();
+
+    refetch.reject(failure);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/couldn.t check account access/i);
+    expect(screen.getByRole('button', { name: /try again|retry/i })).toBeEnabled();
+    expect(screen.queryByRole('main', { name: 'Stateful product' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: /account access/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/checking account access/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps typed sign-in input mounted while a focus refetch of the account gate is in flight', async () => {
+    const refetch = deferred<typeof PRODUCT_WORKSPACES>();
+    const listAuthorizedWorkspaces = vi
+      .fn()
+      .mockRejectedValueOnce(AUTH_REQUIRED())
+      .mockReturnValueOnce(refetch.promise);
+    const { client } = makeClient({ listAuthorizedWorkspaces });
+    renderAdmissionBoundary(client, <StatefulAdmissionChild />);
+    const user = userEvent.setup();
+
+    await screen.findByRole('form', { name: /account access/i });
+    await waitFor(() => expect(screen.getByText('admission idle')).toBeInTheDocument());
+    const email = screen.getByRole('textbox', { name: /^email$/i });
+    await user.type(email, 'kept@example.test');
+    returnToAccountPage();
+
+    await waitFor(() => expect(screen.getByText('admission refetching')).toBeInTheDocument());
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/checking account access/i)).not.toBeInTheDocument();
+    expect(email).toHaveValue('kept@example.test');
+
+    refetch.reject(AUTH_REQUIRED());
+    await waitFor(() => expect(screen.getByText('admission idle')).toBeInTheDocument());
+    expect(screen.getByRole('textbox', { name: /^email$/i })).toHaveValue('kept@example.test');
+    expect(screen.queryByRole('main', { name: 'Stateful product' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/checking account access/i)).not.toBeInTheDocument();
   });
 });
