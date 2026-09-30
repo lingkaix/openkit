@@ -1543,6 +1543,23 @@ describe('Worker Harness resident AgentSessions', () => {
       expect.objectContaining({ body: { reasonCode: 'busy' } })
     );
   });
+
+  it('fences a rejected resident close even when the child is already absent', async () => {
+    const f = harnessFixture();
+    expect(await f.open('as-a')).toMatchObject({ disposition: 'succeeded' });
+    const resident = f.fake.residents[0] as FakeResident;
+    resident.closed = true;
+    resident.closeFails = true;
+    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      body: { reasonCode: 'cleanup_required' },
+    });
+    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      body: { cleanupState: 'unknown', state: 'failed' },
+    });
+    expect(await f.open('as-b', { threadId: 'thread-two' })).toMatchObject({
+      body: { reasonCode: 'busy' },
+    });
+  });
 });
 
 describe('N4b immediate exceptional settlement', () => {

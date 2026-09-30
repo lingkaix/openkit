@@ -21,10 +21,12 @@
     "format": "biome check --write ."
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
     "@openkit/codex-app-server-schema": "workspace:*",
     "@openkit/worker-protocol": "workspace:*"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
     "@openai/codex": "0.159.2",
     "@opencode/cli": "2.0.20",
     "@opencode/client": "2.0.20",

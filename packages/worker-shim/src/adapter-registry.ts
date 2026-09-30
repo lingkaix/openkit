@@ -1,5 +1,6 @@
 import type { WorkerLineage } from '@openkit/worker-protocol';
 import { codexResidentAdapter } from './adapters/codex.js';
+import { deepseekResidentAdapter } from './adapters/deepseek.js';
 import { opencodeAdapter } from './adapters/opencode.js';
 import { piResidentAdapter } from './adapters/pi.js';
 import type { RuntimeCaptureInput } from './runtime-capture.js';
@@ -174,11 +175,11 @@ export interface WorkerResidentAdapter {
 /**
  * Static production adapter registry bundled into every governed worker image. The per-Turn
  * Codex, OpenCode, and Pi adapters were removed with bounded-turn and per-Turn launch. The
- * resident Codex App Server v2, OpenCode, and Pi adapters are registered here. DeepSeek registers
- * in its own slice of `docs/changes/202609300021100000-agent_communication_redesign/plan.md`.
+ * resident Codex App Server v2, DeepSeek, OpenCode, and Pi adapters are registered here.
  */
 export const WORKER_ADAPTERS: Readonly<Record<string, WorkerResidentAdapter>> = {
   codex: codexResidentAdapter,
+  deepseek: deepseekResidentAdapter,
   opencode: opencodeAdapter,
   pi: piResidentAdapter,
 };
