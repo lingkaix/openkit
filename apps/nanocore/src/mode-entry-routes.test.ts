@@ -1101,3 +1101,234 @@ describe('mode command failure diagnostics', () => {
     }
   });
 });
+
+describe('reasoning effort admission and replay', () => {
+  it.each([
+    { entry: 'turn.start', supplied: 'none', defaultEffort: 'high', expected: 'none' },
+    { entry: 'turn.start', supplied: undefined, defaultEffort: 'high', expected: 'high' },
+    { entry: 'turn.start', supplied: undefined, defaultEffort: undefined, expected: undefined },
+    { entry: 'conversation.submit', supplied: 'none', defaultEffort: 'high', expected: 'none' },
+    { entry: 'conversation.submit', supplied: undefined, defaultEffort: 'high', expected: 'high' },
+    {
+      entry: 'conversation.submit',
+      supplied: undefined,
+      defaultEffort: undefined,
+      expected: undefined,
+    },
+  ] as const)('records submission then Agent default for $entry: %j', async ({
+    entry,
+    supplied,
+    defaultEffort,
+    expected,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-effort-admission-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const executor = new CompletingTurnExecutor();
+    const setup = createTestAgentSetup();
+    const manifest = {
+      ...setup.manifest,
+      models: {
+        ...setup.manifest.models,
+        ...(defaultEffort !== undefined ? { reasoningEffort: defaultEffort } : {}),
+      },
+    };
+    const makeApp = (activeStore: FsStore) =>
+      createApp({
+        coreDb,
+        dataRoot,
+        store: activeStore,
+        agentManifests: [manifest],
+        openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+        turnExecutor: executor,
+      });
+    const app = makeApp(store);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const url =
+      entry === 'turn.start'
+        ? '/api/turns'
+        : '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns';
+    const payload =
+      entry === 'turn.start'
+        ? {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            requestId: '00000000-0000-4000-8000-000000000777',
+            input: 'Implement the focused correction.',
+            agentId: manifest.id,
+          }
+        : {
+            requestId: '00000000-0000-4000-8000-000000000777',
+            input: 'Implement the focused correction.',
+            targetRef: 'new-task-worker',
+            artifactRefs: [],
+          };
+    const body = { ...payload, ...(supplied !== undefined ? { reasoningEffort: supplied } : {}) };
+    const post = (targetApp: typeof app, input: unknown) =>
+      targetApp.request(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+    try {
+      const response = await post(app, body);
+      expect(response.status, await response.clone().text()).toBe(202);
+      const accepted = await response.json();
+      const turn = entry === 'turn.start' ? accepted : accepted.turn;
+      if (expected === undefined) expect(turn).not.toHaveProperty('reasoningEffort');
+      else expect(turn).toHaveProperty('reasoningEffort', expected);
+      await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
+      if (entry === 'conversation.submit')
+        await waitForSelectedWorkerLoopCloseout({
+          coreDb,
+          dataRoot,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          workspaceId: 'ws_demo',
+        });
+      const launches = executor.startContexts.length;
+      manifest.models = { ...manifest.models, reasoningEffort: 'max' };
+      const reloaded = createDemoStore({ dataRoot });
+      if (expected === undefined)
+        expect(reloaded.getTurnById(turn.id)).not.toHaveProperty('reasoningEffort');
+      else expect(reloaded.getTurnById(turn.id)).toHaveProperty('reasoningEffort', expected);
+      const replay = await post(makeApp(reloaded), body);
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      const replayed = await replay.json();
+      expect((entry === 'turn.start' ? replayed : replayed.turn).id).toBe(turn.id);
+      if (expected === undefined)
+        expect(entry === 'turn.start' ? replayed : replayed.turn).not.toHaveProperty(
+          'reasoningEffort'
+        );
+      else
+        expect(entry === 'turn.start' ? replayed : replayed.turn).toHaveProperty(
+          'reasoningEffort',
+          expected
+        );
+      expect(executor.startContexts).toHaveLength(launches);
+      const conflict = await post(makeApp(reloaded), { ...body, reasoningEffort: 'low' });
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+      expect(executor.startContexts).toHaveLength(launches);
+      expect(() => reloaded.updateTurn(turn.id, { reasoningEffort: 'low' } as never)).toThrow(
+        'Turn update cannot change field: reasoningEffort'
+      );
+      const later = await post(makeApp(reloaded), {
+        ...payload,
+        requestId: '00000000-0000-4000-8000-000000000779',
+      });
+      expect(later.status, await later.clone().text()).toBe(202);
+      const laterResponse = await later.json();
+      const laterTurn = entry === 'turn.start' ? laterResponse : laterResponse.turn;
+      expect(laterTurn).toHaveProperty('reasoningEffort', 'max');
+      expect(executor.startContexts).toHaveLength(launches + 1);
+      if (entry === 'conversation.submit')
+        await waitForSelectedWorkerLoopCloseout({
+          coreDb,
+          dataRoot,
+          threadId: laterTurn.threadId,
+          turnId: laterTurn.id,
+          workspaceId: 'ws_demo',
+        });
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'turn.start',
+    'conversation.submit',
+  ])('rejects unknown effort before %s effects', async (entry) => {
+    const store = createDemoStore();
+    const app = createApp({ store });
+    const before = store.listThreads('ws_demo').length;
+    const url =
+      entry === 'turn.start'
+        ? '/api/turns'
+        : '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns';
+    const input =
+      entry === 'turn.start'
+        ? {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            requestId: '00000000-0000-4000-8000-000000000778',
+            input: 'Run',
+            reasoningEffort: 'default',
+          }
+        : {
+            requestId: 'request',
+            targetRef: 'new-task-worker',
+            input: 'Run',
+            reasoningEffort: 'default',
+          };
+    const response = await app.request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    expect(response.status).toBe(400);
+    expect(store.listThreads('ws_demo')).toHaveLength(before);
+    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(store.listCommandRequests()).toEqual([]);
+  });
+});
+
+it('publishes resolver effort levels, empty controls, and absent controls in the conversation catalog', async () => {
+  const models = ['controlled', 'empty', 'plain'];
+  const setup = createTestAgentSetup({ logicalModelId: 'controlled' });
+  setup.manifest.models.allowedLogicalModelIds = models;
+  const providerRegistry = new ProviderRegistry([
+    {
+      id: 'agent-openrouter',
+      kind: 'local',
+      displayName: 'Catalog fixture',
+      models,
+      modelMetadata: {
+        controlled: {
+          reasoning: true,
+          limit: { context: 1000000 },
+          reasoning_options: [{ type: 'effort', values: ['high', 'none'] }],
+        },
+        empty: { reasoning: true, reasoning_options: [], limit: { context: 1000000 } },
+        plain: { reasoning: false, limit: { context: 1000000 } },
+      },
+    },
+  ]);
+  const base = createTestGatewayConfig();
+  const app = createApp({
+    store: createDemoStore(),
+    providerRegistry,
+    gatewayConfig: {
+      ...base,
+      defaultLogicalModelId: 'controlled',
+      logicalModels: models.map((id) => ({
+        ...base.logicalModels[0]!,
+        id,
+        displayName: id,
+        routes: [{ id, providerProfileId: 'agent-openrouter', providerModel: id }],
+      })),
+    },
+    agentManifests: [setup.manifest],
+    openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+  });
+  const response = await app.request('/api/app/workspaces/ws_demo/conversation-targets');
+  expect(response.status, await response.clone().text()).toBe(200);
+  const catalog = await response.json();
+  const choices = catalog.targets.find(
+    (target: { targetRef: string }) => target.targetRef === 'new-task-worker'
+  ).logicalModels;
+  expect(choices.find((model: { id: string }) => model.id === 'controlled')).toHaveProperty(
+    'reasoningEffortLevels',
+    ['none', 'high']
+  );
+  expect(choices.find((model: { id: string }) => model.id === 'empty')).toHaveProperty(
+    'reasoningEffortLevels',
+    []
+  );
+  expect(choices.find((model: { id: string }) => model.id === 'plain')).not.toHaveProperty(
+    'reasoningEffortLevels'
+  );
+});

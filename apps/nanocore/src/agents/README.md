@@ -14,3 +14,5 @@ This directory owns authored agent definitions and the resolution path from conf
 ## Verification
 
 Run the focused catalog, readiness, selector, setup resolver, setup ledger, and configuration loader tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).
+
+Setup composition resolves selected-profile `reasoningEffort` before the base Agent `models.reasoningEffort`. Unknown values fail through setup diagnostics before launch. This default applies at a new Turn admission; editing it cannot rewrite an admitted Turn or its immutable package.

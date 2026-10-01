@@ -5,6 +5,7 @@ import type {
   UserConfig,
   WorkspaceConfig,
 } from '@openkit/config-schema';
+import { ReasoningEffortSchema } from '@openkit/protocol';
 import { type ResolvedLogicalModel, resolveLogicalModelCatalog } from '../llm/logical-models.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { AgentManifest } from './manifest.js';
@@ -13,6 +14,7 @@ import type { AgentManifest } from './manifest.js';
 export interface AgentSetupDiagnostic {
   code:
     | 'agent_setup.invalid_default_profile'
+    | 'agent_setup.invalid_reasoning_effort'
     | 'agent_setup.duplicate_credential_requirement'
     | 'agent_setup.missing_credential_binding'
     | 'agent_setup.logical_model_not_allowed'
@@ -98,6 +100,21 @@ export function resolveAgentSetup(
       agentId: config.id,
       code: 'agent_setup.invalid_default_profile',
       message: `Agent ${config.id} profile ${profileId} is not declared in profiles.`,
+      severity: 'error',
+    });
+  }
+
+  // Typed callers normally arrive through authored-schema validation; raw setup inputs fail closed too.
+  if (
+    [
+      config.models.reasoningEffort,
+      ...(config.profiles ?? []).map((candidate) => candidate.reasoningEffort),
+    ].some((effort) => effort !== undefined && !ReasoningEffortSchema.safeParse(effort).success)
+  ) {
+    diagnostics.push({
+      agentId: config.id,
+      code: 'agent_setup.invalid_reasoning_effort',
+      message: `Agent ${config.id} declares an unknown reasoning effort.`,
       severity: 'error',
     });
   }
@@ -193,12 +210,14 @@ function composeManifest(
   const workspaceSandbox = workspaceBinding?.sandbox;
   const backend = workspaceSandbox?.backend ?? baseSandbox?.backend;
   const { sandbox: _sandbox, ...base } = config;
+  const reasoningEffort = profile?.reasoningEffort ?? config.models.reasoningEffort;
   const composed = {
     ...base,
     ...(profileId ? { defaultProfileId: profileId } : {}),
     mcp: mergeById(config.mcp ?? [], profile?.mcp ?? [], workspaceBinding?.mcp ?? []),
     models: {
       preferredLogicalModelId,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       allowedLogicalModelIds: allowed.map((model) => model.id),
     },
     skills: mergeById(config.skills ?? [], profile?.skills ?? [], workspaceBinding?.skills ?? []),

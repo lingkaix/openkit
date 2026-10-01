@@ -1,3 +1,4 @@
+import { ReasoningEffortSchema } from '@openkit/protocol';
 import {
   AuthoredNativeEnvironmentSchema,
   isProtectedNativeEnvironmentName,
@@ -107,6 +108,8 @@ export const AuthoredAgentRuntimeSchema = z
 export const AuthoredAgentLogicalModelsSchema = z
   .object({
     preferredLogicalModelId: z.string().min(1),
+    /** Default for later Turn admissions that omit an explicit effort. */
+    reasoningEffort: ReasoningEffortSchema.optional(),
     allowedLogicalModelIds: z.union([
       z.literal('all'),
       z
@@ -180,6 +183,8 @@ export const AuthoredAgentProfileSchema = z
     id: z.string().min(1),
     instructionsRef: z.string().min(1).optional(),
     preferredLogicalModelId: z.string().min(1).optional(),
+    /** Selected-profile scalar override of the Agent default. */
+    reasoningEffort: ReasoningEffortSchema.optional(),
     allowedLogicalModelIds: z
       .union([z.literal('all'), z.array(z.string().min(1)).min(1)])
       .optional(),

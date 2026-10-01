@@ -38,6 +38,8 @@ export interface StartTurnInput {
   input: string;
   /** Optional per-turn model override. */
   modelId?: string | null;
+  /** Explicit submission preference; omission uses the composed Agent default at admission. */
+  reasoningEffort?: z.infer<typeof TurnSchema>['reasoningEffort'];
   /** Optional per-turn Agent profile override. */
   profileId?: string | null;
   /** Provider registry used for readiness evaluation. */
@@ -329,6 +331,8 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
       'The reserved outcome Turn contradicts worker admission.',
       409
     );
+  const reasoningEffort =
+    input.reasoningEffort ?? agentSetupResult.setup?.manifest.models.reasoningEffort;
   const turn =
     existing ??
     input.store.createTurn(
@@ -341,6 +345,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
         ...(input.turnId ? { turnId: input.turnId } : {}),
         agentId: selectedAgent.id,
         executorKind: 'worker',
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       }
     );
   if (existing) input.store.updateTurn(turn.id, { status: 'running' });

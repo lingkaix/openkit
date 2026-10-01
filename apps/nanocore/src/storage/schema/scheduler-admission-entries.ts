@@ -1,3 +1,4 @@
+import type { ReasoningEffort } from '@openkit/protocol';
 import { index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /** Durable scheduler admission priority classes. */
@@ -42,6 +43,8 @@ export const schedulerAdmissionEntries = sqliteTable(
     profileRef: text('profile_ref'),
     /** Requested logical model id. */
     modelId: text('model_id'),
+    /** Explicit Turn preference carried across delayed dispatch. */
+    reasoningEffort: text('reasoning_effort').$type<ReasoningEffort>(),
     /** Scheduler priority class. */
     priorityClass: text('priority_class').$type<SchedulerAdmissionPriorityClass>().notNull(),
     /** Entry enqueue timestamp. */

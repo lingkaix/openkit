@@ -1,6 +1,12 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
-import { type ActorRef, ActorRefSchema, type TurnStatus } from '@openkit/protocol';
+import {
+  type ActorRef,
+  ActorRefSchema,
+  type ReasoningEffort,
+  ReasoningEffortSchema,
+  type TurnStatus,
+} from '@openkit/protocol';
 import { WorkerProcessKeySchema } from '@openkit/worker-protocol';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { getWorkerBackendSession } from './runtime/worker-backend-sessions.js';
@@ -70,6 +76,8 @@ export interface SchedulerAdmissionEntryRecord {
   readonly profileRef: string | null;
   /** Requested logical model id. */
   readonly modelId: string | null;
+  /** Explicit Turn preference carried across delayed dispatch. */
+  readonly reasoningEffort?: ReasoningEffort;
   /** Scheduler priority class. */
   readonly priorityClass: SchedulerAdmissionPriorityClass;
   /** Entry enqueue timestamp. */
@@ -357,6 +365,7 @@ interface SchedulerAdmissionEntryRow {
   readonly requested_agent_id: string;
   readonly profile_ref: string | null;
   readonly model_id: string | null;
+  readonly reasoning_effort: string | null;
   readonly priority_class: SchedulerAdmissionPriorityClass;
   readonly enqueued_at: string;
   readonly effective_priority_at: string;
@@ -536,6 +545,8 @@ export interface CreateSchedulerAdmissionEntryInput {
   readonly profileRef?: string | null;
   /** Requested logical model id. */
   readonly modelId?: string | null;
+  /** Explicit Turn preference captured before package planning. */
+  readonly reasoningEffort?: ReasoningEffort;
   /** Scheduler priority class. */
   readonly priorityClass: SchedulerAdmissionPriorityClass;
   /** Required pool constraints. */
@@ -1025,6 +1036,7 @@ export function createSchedulerAdmissionEntry(
         requested_agent_id,
         profile_ref,
         model_id,
+        reasoning_effort,
         priority_class,
         enqueued_at,
         effective_priority_at,
@@ -1036,7 +1048,7 @@ export function createSchedulerAdmissionEntry(
         server_admin_token_id,
         workspace_cwd,
         workspace_roots_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.queueEntryId,
@@ -1051,6 +1063,9 @@ export function createSchedulerAdmissionEntry(
       input.requestedAgentId,
       input.profileRef ?? null,
       input.modelId ?? null,
+      input.reasoningEffort !== undefined
+        ? ReasoningEffortSchema.parse(input.reasoningEffort)
+        : null,
       input.priorityClass,
       timestamp,
       timestamp,
@@ -3556,6 +3571,7 @@ function schedulerAdmissionSelectSql(): string {
     requested_agent_id,
     profile_ref,
     model_id,
+    reasoning_effort,
     priority_class,
     enqueued_at,
     effective_priority_at,
@@ -3740,6 +3756,9 @@ function mapSchedulerAdmissionEntryRow(
     requestedAgentId: row.requested_agent_id,
     profileRef: row.profile_ref,
     modelId: row.model_id,
+    ...(row.reasoning_effort !== null
+      ? { reasoningEffort: ReasoningEffortSchema.parse(row.reasoning_effort) }
+      : {}),
     priorityClass: row.priority_class,
     enqueuedAt: row.enqueued_at,
     effectivePriorityAt: row.effective_priority_at,

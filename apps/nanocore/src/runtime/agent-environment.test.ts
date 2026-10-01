@@ -2559,3 +2559,52 @@ describe('public network AEP admission', () => {
     expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/Public network/i);
   });
 });
+
+it.each([
+  { effort: 'none' as const, levels: ['none', 'high'], expected: ['none', 'high'] },
+  { effort: undefined, levels: [], expected: [] },
+  { effort: undefined, levels: undefined, expected: undefined },
+] as const)('projects only recorded Turn effort and advertised model levels into immutable package bytes: %j', ({
+  effort,
+  levels,
+  expected,
+}) => {
+  const setup = createTestSetup();
+  const model = {
+    ...setup.logicalModels.allowed[0]!,
+    ...(levels !== undefined ? { reasoningEffortLevels: levels } : {}),
+  };
+  const input = {
+    agentSetup: {
+      ...setup,
+      manifest: {
+        ...setup.manifest,
+        models: { ...setup.manifest.models, reasoningEffort: 'max' as const },
+      },
+      logicalModels: { ...setup.logicalModels, allowed: [model] },
+    },
+    agentSessionId: 'session_effort',
+    backend: { kind: 'openshell' as const },
+    turn: {
+      ...createTurnFixture('Effort projection'),
+      ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+    },
+    triggerActor: USER_TRIGGER_ACTOR,
+    workspaceRoots: [],
+    captureCoverage: { scope: 'server' as const, value: 'off' as const },
+  };
+  const resolved = resolveAgentEnvironmentPackage(input);
+  const bytes = JSON.stringify(resolved);
+  expect(JSON.parse(bytes).llm).toEqual(resolved.llm);
+  if (effort === undefined) expect(resolved.llm).not.toHaveProperty('reasoningEffort');
+  else expect(resolved.llm).toHaveProperty('reasoningEffort', effort);
+  if (expected === undefined)
+    expect(resolved.llm.routes[0]).not.toHaveProperty('reasoningEffortLevels');
+  else expect(resolved.llm.routes[0]).toHaveProperty('reasoningEffortLevels', expected);
+  expect(resolveAgentSessionCompatibilityKey(input)).toBe(
+    resolveAgentSessionCompatibilityKey({
+      ...input,
+      turn: { ...input.turn, reasoningEffort: 'high' },
+    })
+  );
+});

@@ -50562,6 +50562,18 @@
             "type": "string",
             "minLength": 1
           },
+          "reasoningEffort": {
+            "type": "string",
+            "enum": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
           "artifactRefs": {
             "default": [],
             "type": "array",
@@ -52780,6 +52792,18 @@
                   {
                     "type": "null"
                   }
+                ]
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
                 ]
               },
               "triggerSource": {
@@ -57000,6 +57024,18 @@
                   }
                 ]
               },
+              "reasoningEffort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ]
+              },
               "triggerSource": {
                 "anyOf": [
                   {
@@ -59583,6 +59619,21 @@
                           "type": "string",
                           "minLength": 1
                         }
+                      },
+                      "reasoningEffortLevels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "minimal",
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -61858,6 +61909,18 @@
                   {
                     "type": "null"
                   }
+                ]
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
                 ]
               },
               "triggerSource": {
@@ -65908,6 +65971,18 @@
                     }
                   ]
                 },
+                "reasoningEffort": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
+                },
                 "triggerSource": {
                   "anyOf": [
                     {
@@ -69362,5 +69437,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:654aedcb84162cf3df0e69942d7022a26b5f459ad12f9abb7ec1edd9428d1471"
+  "x-openkit-source-digest": "sha256:c0cd515e5d5808bba22cca5f1658aae7deb64c988794bc488699d89ca2014a33"
 }

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '../common/ids.js';
+import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
 import { ProductTurnSchema, TurnRecordSchema } from '../models/turn.js';
 
 /** Strict release-coupled Turn read with accepted package delivery evidence. */
@@ -30,6 +31,8 @@ const OrdinaryTurnInputRequestSchema = z
     agentId: z.string().min(1).optional(),
     profileId: z.string().min(1).optional(),
     modelId: z.string().min(1).optional(),
+    /** Explicit effort included in canonical command identity. */
+    reasoningEffort: ReasoningEffortSchema.optional(),
   })
   .strict();
 

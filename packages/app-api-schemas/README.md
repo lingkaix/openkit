@@ -80,3 +80,5 @@ Native environment administration request and response readers, including nested
 Workspace review patch payloads retain UTF-8 text by default and use explicit canonical base64 encoding when Git patch bytes are not UTF-8. The payload reader discards inert additive members while encoding values stay closed and canonical base64 and decoded secret checks remain required. The shared byte decoder preserves the digest and byte count for persistence and Git; Web decodes those bytes only for presentation.
 
 `RuntimeConfigFileDeleteRequestSchema` is the closed, revision-bound Provider deletion command. It permits only the `provider` kind and requires the exact existing source revision; successful deletion has an empty `204` response.
+
+Structured conversation submission accepts optional canonical `reasoningEffort`. Conversation model choices expose optional `reasoningEffortLevels`, preserving the distinction between declared empty controls and absent controls. Existing product Turn projections expose the immutable admitted preference.

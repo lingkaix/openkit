@@ -489,13 +489,9 @@
                 "minLength": 1
               },
               "summary": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
+                "type": [
+                  "string",
+                  "null"
                 ]
               }
             },
@@ -1141,7 +1137,10 @@
                       "type": "string",
                       "minLength": 1
                     }
-                  ]
+                  ],
+                  "items": false,
+                  "minItems": 1,
+                  "maxItems": 1
                 }
               },
               "answeredAt": {
@@ -1361,23 +1360,15 @@
                 ]
               },
               "result": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
+                "type": [
+                  "string",
+                  "null"
                 ]
               },
               "error": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
+                "type": [
+                  "string",
+                  "null"
                 ]
               },
               "durationMs": {
@@ -1489,13 +1480,9 @@
                 "minLength": 1
               },
               "reason": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
+                "type": [
+                  "string",
+                  "null"
                 ]
               }
             },
@@ -2125,6 +2112,18 @@
         {
           "type": "null"
         }
+      ]
+    },
+    "reasoningEffort": {
+      "type": "string",
+      "enum": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
       ]
     },
     "triggerSource": {

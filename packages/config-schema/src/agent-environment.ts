@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { ActorRefSchema } from '@openkit/protocol';
+import { ActorRefSchema, ReasoningEffortSchema } from '@openkit/protocol';
 import {
   type CaptureCoverageBinding as AgentEnvironmentCaptureCoverage,
   CaptureCoverageBindingSchema as AgentEnvironmentCaptureCoverageSchema,
@@ -992,6 +992,8 @@ export const AgentEnvironmentLlmRouteSchema = z
     endpoint: AgentEnvironmentLlmEndpointSchema,
     credentialVisibility: z.enum(['none', 'placeholder', 'environment']).default('none'),
     modelParameters: AgentEnvironmentLlmModelParametersSchema.optional(),
+    /** Resolver-advertised controls; empty and absent have distinct meaning. */
+    reasoningEffortLevels: z.array(ReasoningEffortSchema).optional(),
   })
   .strict();
 
@@ -1001,6 +1003,8 @@ export const AgentEnvironmentLlmRouteSchema = z
 export const AgentEnvironmentLlmSchema = z
   .object({
     mode: z.enum(['gateway', 'backend-local', 'direct-external']),
+    /** Exact admitted Turn preference, never a live Agent default. */
+    reasoningEffort: ReasoningEffortSchema.optional(),
     preferredLogicalModelId: z.string().min(1),
     routes: z.array(AgentEnvironmentLlmRouteSchema).min(1),
   })

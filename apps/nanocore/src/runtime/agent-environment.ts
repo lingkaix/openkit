@@ -747,6 +747,9 @@ function resolveOpenShellAgentEnvironmentPackage(
     },
     llm: {
       mode: llmMode,
+      ...(input.turn.reasoningEffort !== undefined
+        ? { reasoningEffort: input.turn.reasoningEffort }
+        : {}),
       preferredLogicalModelId: logicalModels.preferredLogicalModelId,
       routes: logicalModels.allowed.map((logicalModel) => ({
         credentialVisibility: 'placeholder' as const,
@@ -761,6 +764,9 @@ function resolveOpenShellAgentEnvironmentPackage(
         model: logicalModel.id,
         // The resolver owns the complete coherent contract; unequal members retain these inputs.
         ...(logicalModel.modelParameters ? { modelParameters: logicalModel.modelParameters } : {}),
+        ...(logicalModel.reasoningEffortLevels !== undefined
+          ? { reasoningEffortLevels: logicalModel.reasoningEffortLevels }
+          : {}),
         providerInstanceId: workerProviderId,
       })),
     },

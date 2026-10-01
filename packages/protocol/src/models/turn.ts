@@ -8,6 +8,7 @@ import {
   TurnIdSchema,
   WorkspaceIdSchema,
 } from '../common/ids.js';
+import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
 import { TimestampSchema } from '../common/timestamps.js';
 import { GitFailureExplanationSchema } from '../errors/failure-explanation.js';
 import { ActorRefSchema, responsibleUserIdForActor } from './actor.js';
@@ -84,6 +85,8 @@ const TurnBaseSchema = z.object({
   agentSessionId: AgentSessionIdSchema.nullable().optional(),
   agentId: AgentIdSchema.nullable().optional(),
   agentProfileId: AgentProfileIdSchema.nullable().optional(),
+  /** Immutable admission preference; absence records no choice. */
+  reasoningEffort: ReasoningEffortSchema.optional(),
   triggerSource: TurnTriggerSourceSchema.nullable().optional(),
   configVersion: z.number().int().positive().nullable(),
   startedAt: TimestampSchema.nullable(),

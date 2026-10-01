@@ -464,3 +464,25 @@ describe('authored native environment', () => {
       ).toBe(false);
   });
 });
+
+it('admits canonical Agent and selected-profile effort defaults', () => {
+  const fixture = validAgentConfig();
+  const authored = {
+    ...fixture,
+    models: { ...fixture.models, reasoningEffort: 'none' },
+    profiles: [{ id: 'deep', reasoningEffort: 'max' }],
+  };
+  expect(AuthoredAgentConfigSchema.parse(authored)).toMatchObject(authored);
+  expect(
+    AuthoredAgentConfigSchema.safeParse({
+      ...fixture,
+      models: { ...fixture.models, reasoningEffort: 'default' },
+    }).success
+  ).toBe(false);
+  expect(
+    AuthoredAgentConfigSchema.safeParse({
+      ...fixture,
+      profiles: [{ id: 'deep', reasoningEffort: 'default' }],
+    }).success
+  ).toBe(false);
+});

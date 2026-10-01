@@ -1407,6 +1407,7 @@ function conversationCommandInput(chatInput: {
   readonly input: string;
   readonly targetRef: string;
   readonly logicalModelId?: string | undefined;
+  readonly reasoningEffort?: z.infer<typeof TurnSchema>['reasoningEffort'];
   readonly artifactRefs: unknown;
   readonly workerStorageChoice?: WorkerEnvironmentStorageChoice | undefined;
 }) {
@@ -1414,6 +1415,9 @@ function conversationCommandInput(chatInput: {
     artifactRefs: chatInput.artifactRefs,
     input: chatInput.input,
     logicalModelId: chatInput.logicalModelId ?? null,
+    ...(chatInput.reasoningEffort !== undefined
+      ? { reasoningEffort: chatInput.reasoningEffort }
+      : {}),
     targetRef: chatInput.targetRef,
     workerStorageChoice: chatInput.workerStorageChoice,
   };
@@ -2259,6 +2263,8 @@ export function registerQuickAndChatModeRoutes({
     readonly prompt: string;
     readonly modelId?: string | undefined;
     readonly profileId?: string | undefined;
+    /** Explicit submission preference forwarded to canonical Turn admission. */
+    readonly reasoningEffort?: z.infer<typeof TurnSchema>['reasoningEffort'];
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
@@ -2313,7 +2319,14 @@ export function registerQuickAndChatModeRoutes({
 
   /** Projects one resolved logical model without private Gateway routes. */
   function conversationModelChoice(model: ResolvedLogicalModel) {
-    return { id: model.id, label: model.displayName, capabilities: [...model.capabilities] };
+    return {
+      id: model.id,
+      label: model.displayName,
+      capabilities: [...model.capabilities],
+      ...(model.reasoningEffortLevels !== undefined
+        ? { reasoningEffortLevels: [...model.reasoningEffortLevels] }
+        : {}),
+    };
   }
 
   /** Builds the single target projection shared by catalog reads and command acceptance. */
@@ -2863,14 +2876,12 @@ export function registerQuickAndChatModeRoutes({
        * @returns Created turn.
        */
       const createChatTurn = (completedAt: string, turnId?: string) => {
-        const turn = store.createTurn(
-          workspaceId,
-          threadId,
-          chatInput.input,
-          triggerActor,
-          null,
-          turnId ? { turnId } : {}
-        );
+        const turn = store.createTurn(workspaceId, threadId, chatInput.input, triggerActor, null, {
+          ...(turnId ? { turnId } : {}),
+          ...(chatInput.reasoningEffort !== undefined
+            ? { reasoningEffort: chatInput.reasoningEffort }
+            : {}),
+        });
         store.updateTurn(turn.id, {
           agentId:
             acceptedTarget.kind === 'knowledge-manager' ? 'knowledge-manager' : QUICK_CHAT_AGENT_ID,
@@ -3308,6 +3319,9 @@ export function registerQuickAndChatModeRoutes({
                   threadId: receivingThreadId,
                   prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
                   ...(logicalModelId ? { modelId: logicalModelId } : {}),
+                  ...(chatInput.reasoningEffort !== undefined
+                    ? { reasoningEffort: chatInput.reasoningEffort }
+                    : {}),
                   ...(acceptedTarget.profileId ? { profileId: acceptedTarget.profileId } : {}),
                   requestId: chatInput.requestId,
                   requestedAgentId: agentId!,

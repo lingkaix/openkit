@@ -1172,6 +1172,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly prompt: string;
     readonly modelId?: string | undefined;
     readonly profileId?: string | undefined;
+    /** Explicit conversation preference admitted with this Turn. */
+    readonly reasoningEffort?: z.infer<typeof TurnSchema>['reasoningEffort'];
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
@@ -1184,6 +1186,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         input: input.prompt,
         ...(input.profileId ? { profileId: input.profileId } : {}),
         modelId: input.modelId,
+        ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}),
         requestId: input.requestId,
         threadId: input.threadId,
         workspaceId: input.workspaceId,

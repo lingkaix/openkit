@@ -324,3 +324,57 @@ describe('resolveAgentSetup', () => {
     });
   });
 });
+
+it.each([
+  { base: 'high', selected: 'none', expected: 'none' },
+  { base: 'high', selected: undefined, expected: 'high' },
+  { base: undefined, selected: 'max', expected: 'max' },
+  { base: undefined, selected: undefined, expected: undefined },
+] as const)('composes profile effort over the Agent default: %j', ({
+  base,
+  selected,
+  expected,
+}) => {
+  const config = agentConfig();
+  const authored = {
+    ...config,
+    models: { ...config.models, reasoningEffort: base },
+    profiles: [{ id: 'selected', reasoningEffort: selected, skills: [], mcp: [] }],
+  };
+  const result = resolveAgentSetup(authored, {
+    gatewayConfig: gatewayConfig(),
+    providerRegistry: providerRegistry(),
+    selectedProfileId: 'selected',
+  });
+  expect(result.diagnostics).toEqual([]);
+  if (expected === undefined)
+    expect(result.setup?.manifest.models).not.toHaveProperty('reasoningEffort');
+  else expect(result.setup?.manifest.models).toHaveProperty('reasoningEffort', expected);
+});
+
+it('refuses unknown Agent and selected-profile effort through setup diagnostics', () => {
+  for (const source of ['base', 'profile']) {
+    const config = agentConfig();
+    const invalid = {
+      ...config,
+      models: { ...config.models, ...(source === 'base' ? { reasoningEffort: 'default' } : {}) },
+      profiles: [
+        {
+          id: 'selected',
+          skills: [],
+          mcp: [],
+          ...(source === 'profile' ? { reasoningEffort: 'default' } : {}),
+        },
+      ],
+    };
+    const result = resolveAgentSetup(invalid as never, {
+      gatewayConfig: gatewayConfig(),
+      providerRegistry: providerRegistry(),
+      selectedProfileId: 'selected',
+    });
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'agent_setup.invalid_reasoning_effort' })
+    );
+  }
+});

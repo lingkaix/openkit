@@ -149,6 +149,9 @@ export async function startProductTurn(input: StartProductTurnInput) {
   createSchedulerAdmissionEntry(input.coreDb, {
     priorityClass: 'interactive',
     modelId: input.input.modelId ?? null,
+    ...(input.input.reasoningEffort !== undefined
+      ? { reasoningEffort: input.input.reasoningEffort }
+      : {}),
     profileRef: input.input.profileId ?? null,
     queueEntryId,
     requestId: input.input.requestId,

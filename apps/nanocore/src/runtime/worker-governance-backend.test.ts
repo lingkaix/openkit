@@ -301,3 +301,41 @@ describe('public exact grant materialization', () => {
     expect(marked.credentials.declarations).toEqual([]);
   });
 });
+
+it.each([
+  true,
+  false,
+])('includes recorded effort controls in canonical immutable package bytes: %s', async (recorded) => {
+  const retained = createNanoHostPackage();
+  const candidate = AgentEnvironmentPackageSchema.parse({
+    ...retained,
+    llm: {
+      ...retained.llm,
+      ...(recorded ? { reasoningEffort: 'none' } : {}),
+      routes: retained.llm.routes.map((route) => ({
+        ...route,
+        ...(recorded ? { reasoningEffortLevels: [] } : {}),
+      })),
+    },
+  });
+  const [imported] = await prepareNanoHostContextPackageImports(candidate, { workspaceRoots: [] });
+  const expectedBytes = Buffer.from(JSON.stringify(sortJsonObjectKeys(candidate)));
+  expect(imported?.body).toEqual(expectedBytes);
+  expect(imported?.contentDigest).toBe(
+    `sha256:${createHash('sha256').update(expectedBytes).digest('hex')}`
+  );
+  const parsed = AgentEnvironmentPackageSchema.parse(JSON.parse(imported!.body.toString('utf8')));
+  if (recorded) {
+    expect(parsed.llm).toHaveProperty('reasoningEffort', 'none');
+    expect(parsed.llm.routes[0]).toHaveProperty('reasoningEffortLevels', []);
+    const [oldImport] = await prepareNanoHostContextPackageImports(retained, {
+      workspaceRoots: [],
+    });
+    expect(imported?.contentDigest).not.toBe(oldImport?.contentDigest);
+  } else {
+    expect(parsed.llm).not.toHaveProperty('reasoningEffort');
+    expect(parsed.llm.routes[0]).not.toHaveProperty('reasoningEffortLevels');
+  }
+  candidate.llm.reasoningEffort = 'max';
+  expect(imported?.body).toEqual(expectedBytes);
+});

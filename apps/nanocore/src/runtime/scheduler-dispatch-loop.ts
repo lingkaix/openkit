@@ -190,7 +190,7 @@ export async function runSchedulerDispatchLoop(
     const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
       (candidate) => candidate.workspaceId === entry.workspaceId
     )?.catalog;
-    const futureTurn = TurnSchema.parse({
+    let futureTurn = TurnSchema.parse({
       completedAt: null,
       configVersion: input.configVersion ?? null,
       durationMs: null,
@@ -216,6 +216,11 @@ export async function runSchedulerDispatchLoop(
         workspaceConfig,
         userConfig
       );
+      const reasoningEffort = entry.reasoningEffort ?? setup.manifest.models.reasoningEffort;
+      futureTurn = TurnSchema.parse({
+        ...futureTurn,
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      });
       workspaceSourceRefs = workspaceSourceRefsFromAgentManifest(setup.manifest, workspaceRoots);
       prepareInput = {
         agentSetup: setup,
@@ -340,6 +345,9 @@ export async function runSchedulerDispatchLoop(
           gatewayConfig: input.gatewayConfig,
           input: dispatch.entry.turnInput,
           modelId: dispatch.entry.modelId,
+          ...(futureTurn.reasoningEffort !== undefined
+            ? { reasoningEffort: futureTurn.reasoningEffort }
+            : {}),
           profileId: dispatch.entry.profileRef,
           providerRegistry: input.providerRegistry,
           requestId: dispatch.entry.requestId,

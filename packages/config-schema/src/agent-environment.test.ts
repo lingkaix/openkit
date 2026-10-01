@@ -1983,3 +1983,25 @@ it('preserves admitted native settings in package validation and snapshot redact
   expect(parsed.runtime.environment).toEqual(environment);
   expect(redactAgentEnvironmentPackageSnapshot(parsed).runtime.environment).toEqual(environment);
 });
+
+it('preserves canonical AEP effort and levels while retaining packages without either field', () => {
+  const retained = AgentEnvironmentPackageSchema.parse(trustedWorkerInferenceRelayPackageFixture());
+  expect(retained.llm).not.toHaveProperty('reasoningEffort');
+  expect(retained.llm.routes[0]).not.toHaveProperty('reasoningEffortLevels');
+  const authored = {
+    ...retained,
+    llm: {
+      ...retained.llm,
+      reasoningEffort: 'none',
+      routes: retained.llm.routes.map((route) => ({ ...route, reasoningEffortLevels: [] })),
+    },
+  };
+  const resolved = AgentEnvironmentPackageSchema.parse(authored);
+  expect(JSON.parse(JSON.stringify(resolved)).llm).toEqual(authored.llm);
+  expect(
+    AgentEnvironmentPackageSchema.safeParse({
+      ...authored,
+      llm: { ...authored.llm, reasoningEffort: 'default' },
+    }).success
+  ).toBe(false);
+});

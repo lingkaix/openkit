@@ -1,4 +1,4 @@
-import { ItemSchema, ProductTurnSchema } from '@openkit/protocol';
+import { ItemSchema, ProductTurnSchema, ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
 
@@ -16,6 +16,8 @@ export const ConversationModelChoiceSchema = z
     id: z.string().min(1),
     label: z.string().min(1),
     capabilities: z.array(z.string().min(1)),
+    /** Public resolver controls, including a declared empty options list. */
+    reasoningEffortLevels: z.array(ReasoningEffortSchema).optional(),
   })
   .strict();
 
@@ -58,6 +60,8 @@ export const SubmitConversationRequestSchema = z
     input: z.string(),
     targetRef: z.string().min(1),
     logicalModelId: z.string().min(1).optional(),
+    /** Explicit immutable Turn preference and command identity input. */
+    reasoningEffort: ReasoningEffortSchema.optional(),
     artifactRefs: z.array(ConversationArtifactReferenceSchema).default([]),
     requestId: z.string().min(1),
     /** Explicit retained-storage choice forwarded only to new Task Worker starts. */

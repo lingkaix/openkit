@@ -464,6 +464,7 @@ describe('database setup', () => {
         'requested_agent_id',
         'profile_ref',
         'model_id',
+        'reasoning_effort',
         'priority_class',
         'enqueued_at',
         'effective_priority_at',

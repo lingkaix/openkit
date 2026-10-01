@@ -287,6 +287,7 @@ CREATE TABLE `scheduler_admission_entries` (
 	`requested_agent_id` text NOT NULL,
 	`profile_ref` text,
 	`model_id` text,
+	`reasoning_effort` text,
 	`priority_class` text NOT NULL,
 	`enqueued_at` text NOT NULL,
 	`effective_priority_at` text NOT NULL,

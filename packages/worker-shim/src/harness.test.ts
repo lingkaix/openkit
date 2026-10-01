@@ -2341,3 +2341,21 @@ describe('session-static public native environment', () => {
     expect(process.env.HELLO_NATIVE).toBeUndefined();
   });
 });
+
+it('ignores unconsumed Core effort fields while parsing a per-Turn package', async () => {
+  const f = harnessFixture();
+  await f.open('as-a');
+  f.writePackage('as-a', 'turn-1');
+  const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+  pkg.llm.reasoningEffort = 'none';
+  pkg.llm.routes[0].reasoningEffortLevels = [];
+  writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
+  expect(await f.send('turn.start', f.startBody('as-a', 'turn-1'))).toMatchObject({
+    disposition: 'succeeded',
+  });
+  await f.settle('as-a');
+  expect(f.fake.residents[0]?.turns).toHaveLength(1);
+  expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes[0]).not.toHaveProperty(
+    'reasoningEffortLevels'
+  );
+});

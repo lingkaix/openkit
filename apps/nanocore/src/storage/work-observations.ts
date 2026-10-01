@@ -6,7 +6,7 @@ import {
   THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES,
   THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS,
 } from '@openkit/app-api-schemas';
-import { SystemPromptDigestSchema, TurnSchema } from '@openkit/protocol';
+import { ReasoningEffortSchema, SystemPromptDigestSchema, TurnSchema } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import {
@@ -166,10 +166,7 @@ const modelSamplingSchema = z
     temperature: z.number().finite().nullable().optional(),
     topP: z.number().finite().nullable().optional(),
     maxOutputTokens: z.number().int().nonnegative().nullable().optional(),
-    reasoningEffort: z
-      .enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
-      .nullable()
-      .optional(),
+    reasoningEffort: ReasoningEffortSchema.nullable().optional(),
     reasoningSummary: z.enum(['auto', 'concise', 'detailed', 'off', 'on']).nullable().optional(),
     reasoningContext: z.literal('all_turns').nullable().optional(),
   })

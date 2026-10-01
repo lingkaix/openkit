@@ -75,3 +75,5 @@ Missing root evidence is `failed`; missing, contradictory, or changing reachable
 Codex admission and launch share the worker-protocol protected-name predicate. The launch check uses its Codex-specific projection because the Harness supplies trusted shared bootstrap bindings such as `HOME` and `TMPDIR`. Unused selectors (`CODEX_ARGS`, `CODEX_BIN`, `CODEX_EXECUTABLE`) and harmless `OPENAI_` names such as `OPENAI_LOG` pass through to the fixed binary. DeepSeek keeps its four existing managed names; its pinned ACP profile and explicit loopback overlay establish the protected routing and home boundary.
 
 DeepSeek admits Gateway routes whose coherent `modelParameters.reasoning` is true. Its native model projection retains `reasoningEfforts: false`; this admission adds no effort control and preserves modality and token-bound validation.
+
+The package reader ignores unconsumed additive `llm.reasoningEffort` and route `reasoningEffortLevels`. Harness coverage proves such packages still start successfully; adapter control delivery is implemented separately.
