@@ -17,7 +17,10 @@ import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
+import {
+  readAdmittedWorkerImageEnvironment,
+  writeWorkerImageSettlement,
+} from '../runtime/worker-image-settlements.js';
 import {
   activateWorkerStorageAttachment,
   createWorkerStorageBinding,
@@ -243,8 +246,10 @@ function activationRequest(
 }
 
 /** Creates a deterministic in-memory configuration service with exact CAS observation. */
-function configurationService() {
-  let content = agentConfigurationSource();
+function configurationService(alreadyPinned = false) {
+  const manifest = parse(agentConfigurationSource());
+  if (alreadyPinned) manifest.runtime.image = PINNED_IMAGE;
+  let content = JSON.stringify(manifest, null, 2);
   let revision = CONFIG_REVISION;
   const readFile = vi.fn((_id: string) => ({
     content,
@@ -466,6 +471,57 @@ describe('Worker environment activation', () => {
     ).toEqual({ environment: null });
   });
 
+  it('returns null configuration after a write fails following confirmed admission', async () => {
+    const fixture = createBaseFixture();
+    const pair = candidatePair(fixture, [], null);
+    const request = activationRequest(pair);
+    const config = configurationService();
+    const initialContent = config.readContent();
+    config.updateFile.mockImplementation(() => {
+      throw new Error('configuration write unavailable');
+    });
+    const reloadRuntimeConfig = vi.fn(() => reloadResult('applied'));
+    const replaceResidentWork = vi.fn();
+    const inspectImage = vi.fn(async () => ({
+      imageDigest: IMAGE_DIGEST,
+      layout: LAYOUT,
+      layoutDigest: `sha256:${'f'.repeat(64)}`,
+      environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+    }));
+    const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: { inspectImage },
+      configFilesForActor: () => config.files,
+      coreDb: fixture.coreDb,
+      now: () => NOW,
+      preparation: { readResolved: () => pair },
+      reloadRuntimeConfig,
+      replaceResidentWork,
+      requireCurrentAdministrator: vi.fn(),
+      store: fixture.store,
+    });
+
+    const response = await activation.activate({ actor: ACTOR }, request);
+    expect(response).toMatchObject({ configuration: null, affected: [], replaceNow: null });
+    expect(config.updateFile).toHaveBeenCalledTimes(1);
+    expect(config.readContent()).toBe(initialContent);
+    expect(config.readFile(CONFIGURATION.fileId).file.revision).toBe(CONFIG_REVISION);
+    expect(readAdmittedWorkerImageEnvironment(fixture.coreDb, IMAGE_DIGEST)).toEqual({
+      imageDigest: IMAGE_DIGEST,
+      defaultsDigest: DEFAULTS_DIGEST,
+      values: {},
+    });
+    expect(reloadRuntimeConfig).not.toHaveBeenCalled();
+    expect(replaceResidentWork).not.toHaveBeenCalled();
+    expect(await activation.activate({ actor: ACTOR }, request)).toEqual(response);
+    expect(config.updateFile).toHaveBeenCalledTimes(1);
+    expect(inspectImage).toHaveBeenCalledTimes(1);
+    const artifacts = fixture.store
+      .listArtifacts(fixture.administrationWorkspaceId)
+      .filter((artifact) => artifact.title === 'Worker environment activation result');
+    expect(artifacts).toHaveLength(1);
+    expect(JSON.parse(artifacts[0]!.content.body)).toEqual(response);
+  });
+
   it('never repeats configuration effects after a result-Artifact write failure', async () => {
     const fixture = createBaseFixture();
     const pair = candidatePair(fixture, [], null);
@@ -502,13 +558,16 @@ describe('Worker environment activation', () => {
     expect(config.updateFile).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a stale configuration SHA before creating an activation Turn', async () => {
+  it.each([
+    false,
+    true,
+  ])('rejects a stale configuration SHA before creating an activation Turn with already-pinned=%s', async (alreadyPinned) => {
     const fixture = createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const request = activationRequest(pair);
-    const config = configurationService();
+    const config = configurationService(alreadyPinned);
     config.readFile.mockImplementation(() => ({
-      content: agentConfigurationSource(),
+      content: config.readContent(),
       file: {
         exists: true,
         id: CONFIGURATION.fileId,
@@ -577,7 +636,11 @@ describe('Worker environment activation', () => {
     );
   });
 
-  it('preserves the written configuration and reports unknown when replacement is uncertain', async () => {
+  it.each([
+    [false, 'applied'],
+    [true, 'applied'],
+    [true, 'failed'],
+  ] as const)('reports replacement uncertainty with already-pinned=%s and reload=%s', async (alreadyPinned, reloadStatus) => {
     const resident = createResidentFixture();
     const pair = candidatePair(
       resident,
@@ -585,7 +648,7 @@ describe('Worker environment activation', () => {
       resident.replaceNow
     );
     const request = activationRequest(pair);
-    const config = configurationService();
+    const config = configurationService(alreadyPinned);
     const replaceResidentWork = vi.fn(async () => {
       throw new Error('ordinary successor outcome unavailable');
     });
@@ -602,7 +665,7 @@ describe('Worker environment activation', () => {
       coreDb: resident.coreDb,
       now: () => NOW,
       preparation: { readResolved: () => pair },
-      reloadRuntimeConfig: () => reloadResult('applied'),
+      reloadRuntimeConfig: () => reloadResult(reloadStatus),
       replaceResidentWork,
       requireCurrentAdministrator: vi.fn(),
       store: resident.store,
@@ -612,17 +675,25 @@ describe('Worker environment activation', () => {
 
     expect(response.configuration).toEqual({
       fileId: CONFIGURATION.fileId,
-      revision: WRITTEN_REVISION,
+      revision: alreadyPinned ? CONFIG_REVISION : WRITTEN_REVISION,
     });
+    expect(config.updateFile).toHaveBeenCalledTimes(alreadyPinned ? 0 : 1);
+    if (alreadyPinned)
+      expect(config.readFile(CONFIGURATION.fileId).file.revision).toBe(CONFIG_REVISION);
     expect(response.affected).toEqual([
       {
-        disposition: 'unknown',
+        disposition: reloadStatus === 'applied' ? 'unknown' : 'unchanged',
         expectedRevision: resident.bindingRevision,
         storageRef: resident.storageRef,
       },
     ]);
+    if (reloadStatus === 'failed') {
+      expect(replaceResidentWork).not.toHaveBeenCalled();
+      return;
+    }
     expect(replaceResidentWork).toHaveBeenCalledWith(
       expect.objectContaining({
+        configuration: response.configuration,
         residentMembers: [{ threadId: resident.replaceNow.threadId, turnId: null }],
         replaceNow: resident.replaceNow,
       })

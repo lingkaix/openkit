@@ -43,7 +43,7 @@ import type {
 import { materializeRuntimeImage } from './worker-environment-preparation.js';
 
 type ConfigFiles = Pick<RuntimeConfigFileService, 'readFile' | 'updateFile'>;
-type WrittenConfiguration = NonNullable<ActivateWorkerEnvironmentResponse['configuration']>;
+type EstablishedConfiguration = NonNullable<ActivateWorkerEnvironmentResponse['configuration']>;
 type AffectedResult = ActivateWorkerEnvironmentResponse['affected'][number];
 
 /** Current caller context for one Worker environment activation. */
@@ -66,8 +66,8 @@ export interface ReplaceWorkerEnvironmentResidentWorkInput {
   readonly actor: Actor;
   /** Exact confirmed association revisions for the complete sharing group. */
   readonly affectedStorage: readonly WorkerEnvironmentAffectedStorage[];
-  /** Configuration file revision actually written before runtime replacement. */
-  readonly configuration: WrittenConfiguration;
+  /** Observed configuration revision proved to pin the candidate before runtime replacement. */
+  readonly configuration: EstablishedConfiguration;
   /** Current resident members derived from runtime binding authority. */
   readonly residentMembers: readonly WorkerEnvironmentResidentMember[];
   /** Confirmed target Thread and actual successor Turn prompt. */
@@ -190,7 +190,7 @@ export function createWorkerEnvironmentActivation(
             : null;
           requireExactAffectedStorage(request.affectedStorage, group?.affectedStorage ?? []);
           const configFiles = dependencies.configFilesForActor(context.actor);
-          const updatedContent = prepareAgentConfigurationUpdate(
+          const configurationUpdate = prepareAgentConfigurationUpdate(
             configFiles,
             request.configuration,
             request.target,
@@ -262,7 +262,7 @@ export function createWorkerEnvironmentActivation(
             now()
           );
 
-          let configuration: WrittenConfiguration | null = null;
+          let configuration: EstablishedConfiguration | null = null;
           let affected = unchangedAffected(request.affectedStorage);
           let reloadApplied = false;
           try {
@@ -277,23 +277,27 @@ export function createWorkerEnvironmentActivation(
               );
               requireExactAffectedStorage(request.affectedStorage, currentGroup.affectedStorage);
             }
-            const written = configFiles.updateFile({
-              content: updatedContent,
-              expectedRevision: request.configuration.expectedRevision,
-              id: request.configuration.fileId,
-              kind: 'agent',
-            });
-            if (
-              written.file.id !== request.configuration.fileId ||
-              written.file.kind !== 'agent' ||
-              !written.file.revision
-            ) {
-              throw new Error('Agent configuration write result is inconsistent.');
+            if (configurationUpdate.content !== null) {
+              const written = configFiles.updateFile({
+                content: configurationUpdate.content,
+                expectedRevision: request.configuration.expectedRevision,
+                id: request.configuration.fileId,
+                kind: 'agent',
+              });
+              if (
+                written.file.id !== request.configuration.fileId ||
+                written.file.kind !== 'agent' ||
+                !written.file.revision
+              ) {
+                throw new Error('Agent configuration write result is inconsistent.');
+              }
+              configuration = {
+                fileId: written.file.id,
+                revision: written.file.revision,
+              };
+            } else {
+              configuration = configurationUpdate.configuration;
             }
-            configuration = {
-              fileId: written.file.id,
-              revision: written.file.revision,
-            };
             reloadApplied = dependencies.reloadRuntimeConfig().status === 'applied';
           } catch {
             reloadApplied = false;
@@ -597,13 +601,15 @@ function canonicalCandidateFacts(input: {
   };
 }
 
-/** Reads, validates, and edits only the targeted Agent manifest runtime.image field. */
+/** Validates the exact manifest revision and returns an image edit or an established candidate pin. */
 function prepareAgentConfigurationUpdate(
   configFiles: ConfigFiles,
   configuration: WorkerEnvironmentConfiguration,
   target: WorkerEnvironmentTarget,
   image: ReadWorkerEnvironmentResolvedCandidate['resolved']['image']
-): string {
+):
+  | { readonly content: string; readonly configuration: null }
+  | { readonly content: null; readonly configuration: EstablishedConfiguration } {
   let read: ReturnType<ConfigFiles['readFile']>;
   try {
     read = configFiles.readFile(configuration.fileId);
@@ -630,10 +636,10 @@ function prepareAgentConfigurationUpdate(
     ref: image.digest,
   };
   if (JSON.stringify(current.runtime.image) === JSON.stringify(pinnedImage)) {
-    throw new WorkerEnvironmentOperationError(
-      'candidate_conflict',
-      'Agent configuration already contains the resolved image digest.'
-    );
+    return {
+      content: null,
+      configuration: { fileId: read.file.id, revision: read.file.revision },
+    };
   }
   let content: string;
   try {
@@ -656,7 +662,7 @@ function prepareAgentConfigurationUpdate(
       'Agent configuration cannot accept the resolved image digest.'
     );
   }
-  return content;
+  return { content, configuration: null };
 }
 
 /** Parses one exact Agent source file and proves it owns the requested target. */

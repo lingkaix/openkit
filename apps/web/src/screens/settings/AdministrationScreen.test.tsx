@@ -621,19 +621,42 @@ describe('Administration', () => {
     expect(purgeWorkerEnvironment).toHaveBeenCalledTimes(1);
   });
 
-  it('discovers the structured candidate Artifact and submits one exact human-reviewed activation', async () => {
+  it.each([
+    ['unknown', false],
+    ['unchanged', false],
+    ['empty', false],
+    ['empty', true],
+  ] as const)('shows the activation outcome with %s storage and configuration-established=%s', async (disposition, established) => {
+    const candidatePayload =
+      disposition === 'empty'
+        ? {
+            ...CANDIDATE_PAYLOAD,
+            affectedStorage: [],
+            replaceNow: null,
+          }
+        : CANDIDATE_PAYLOAD;
+    const authoredPayload = {
+      ...AUTHORED_PAYLOAD,
+      affectedStorage: candidatePayload.affectedStorage,
+      replaceNow: candidatePayload.replaceNow,
+    };
     const user = userEvent.setup();
     const getWorkerEnvironmentStatus = vi.fn();
     const activateWorkerEnvironment = vi.fn().mockImplementation((input: { requestId: string }) =>
       Promise.resolve({
-        affected: [
-          {
-            ...CANDIDATE_PAYLOAD.affectedStorage[0],
-            disposition: 'unknown',
-          },
-        ],
-        configuration: null,
-        replaceNow: CANDIDATE_PAYLOAD.replaceNow,
+        affected:
+          disposition === 'empty'
+            ? []
+            : [
+                {
+                  ...candidatePayload.affectedStorage[0],
+                  disposition,
+                },
+              ],
+        configuration: established
+          ? { fileId: candidatePayload.configuration.fileId, revision: CONFIG_REVISION }
+          : null,
+        replaceNow: candidatePayload.replaceNow,
         requestId: input.requestId,
         resolvedCandidate: RESOLVED_CANDIDATE,
         target: CANDIDATE_PAYLOAD.target,
@@ -648,13 +671,19 @@ describe('Administration', () => {
           .mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
       },
       {
-        getArtifact: vi
-          .fn()
-          .mockImplementation((_workspaceId, artifactId) =>
-            Promise.resolve(
-              artifactId === AUTHORED_CANDIDATE.artifactId ? AUTHORED_ARTIFACT : CANDIDATE_ARTIFACT
-            )
-          ),
+        getArtifact: vi.fn().mockImplementation((_workspaceId, artifactId) =>
+          Promise.resolve(
+            artifactId === AUTHORED_CANDIDATE.artifactId
+              ? {
+                  ...AUTHORED_ARTIFACT,
+                  content: { format: 'json', body: JSON.stringify(authoredPayload) },
+                }
+              : {
+                  ...CANDIDATE_ARTIFACT,
+                  content: { format: 'json', body: JSON.stringify(candidatePayload) },
+                }
+          )
+        ),
         listThreadItems: vi.fn().mockResolvedValue({ items: [AUTHORED_ITEM, CANDIDATE_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -687,9 +716,9 @@ describe('Administration', () => {
     await user.click(screen.getByRole('button', { name: 'Activate candidate' }));
     await waitFor(() => expect(activateWorkerEnvironment).toHaveBeenCalledTimes(1));
     const binding = {
-      affectedStorage: CANDIDATE_PAYLOAD.affectedStorage,
-      configuration: CANDIDATE_PAYLOAD.configuration,
-      replaceNow: CANDIDATE_PAYLOAD.replaceNow,
+      affectedStorage: candidatePayload.affectedStorage,
+      configuration: candidatePayload.configuration,
+      replaceNow: candidatePayload.replaceNow,
       resolvedCandidate: RESOLVED_CANDIDATE,
       image: CANDIDATE_PAYLOAD.image,
       target: CANDIDATE_PAYLOAD.target,
@@ -703,14 +732,19 @@ describe('Administration', () => {
       confirmation: workerEnvironmentActivationConfirmation(binding),
       requestId: expect.any(String),
     });
-    expect(
-      await screen.findByText(
-        'Activation is incomplete or includes an unknown host result. Inspect the exact configuration and environment status, then prepare a fresh candidate.'
-      )
-    ).toBeInTheDocument();
+    await screen.findByText('Activation command result');
+    const incompleteMessage =
+      'Activation is incomplete or includes an unknown host result. Inspect the exact configuration and environment status, then prepare a fresh candidate.';
+    if (established) {
+      expect(screen.queryByText(incompleteMessage)).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByText(incompleteMessage)).toBeInTheDocument();
+    }
     expect(screen.getByRole('button', { name: 'Review activation' })).toBeDisabled();
     expect(getWorkerEnvironmentStatus).not.toHaveBeenCalled();
     expect(activateWorkerEnvironment).toHaveBeenCalledTimes(1);
+
+    if (disposition === 'empty') return;
 
     act(() => useWorkspaceStore.getState().setCurrentWorkspaceId(SECOND_PROJECT.id));
     expect(await screen.findByText('Target Workspace: Project Borealis')).toBeInTheDocument();

@@ -7,11 +7,13 @@ import type {
   ActivateWorkerEnvironmentResponse,
   PrepareWorkerEnvironmentResponse,
 } from '@openkit/app-api-schemas';
+import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import { parse } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -19,6 +21,7 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from '../runtime/nanohost-session-dispatch.js';
+import { resolvePublicNativeEnvironment } from '../runtime/native-environment.js';
 import type { TurnCommandRuntimeContext, TurnStartRuntimeContext } from '../runtime/types.js';
 import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import {
@@ -507,7 +510,10 @@ function attachResidentStorage(input: {
 }
 
 describe('Worker environment App composition', () => {
-  it('prepares immutable candidates, activates the Agent CAS, and denies non-admin private entry', async () => {
+  it.each([
+    false,
+    true,
+  ])('prepares and activates confirmed defaults with already-pinned=%s, replays, and denies non-admin entry', async (alreadyPinned) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-app-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -537,17 +543,23 @@ describe('Worker environment App composition', () => {
         workspaceIds: [privateWorkspace.id],
       });
       const agentPath = join(dataRoot, 'config', CONFIGURATION_FILE_ID);
+      if (alreadyPinned) {
+        const manifest = parse(readFileSync(agentPath, 'utf8'));
+        manifest.runtime.image = { kind: 'reference', pullPolicy: 'never', ref: IMAGE_DIGEST };
+        writeFileSync(agentPath, JSON.stringify(manifest, null, 2));
+      }
       const initialAgentContent = readFileSync(agentPath, 'utf8');
       const initialRevision = contentRevision(initialAgentContent);
+      const values = { PUBLIC_SETTING: 'confirmed-native-default' };
+      const defaultsDigest = `sha256:${createHash('sha256').update(JSON.stringify(values)).digest('hex')}`;
       const nanoHostEffect = vi.fn(async (request: NanoHostSessionEffectRequest) => {
         if (request.kind === 'image.acquire') return { digest: IMAGE_DIGEST };
         if (request.kind === 'image.inspect')
           return {
             ...IMAGE_INSPECTION,
             environmentDefaults: {
-              defaultsDigest:
-                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
-              values: {},
+              defaultsDigest,
+              values,
             },
           };
         throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
@@ -555,7 +567,20 @@ describe('Worker environment App composition', () => {
       const createResponses = vi.fn(async () => {
         throw new Error('Private administration provider dispatch must remain denied.');
       });
+      const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+      const actualReload = runtimeConfigManager.reload.bind(runtimeConfigManager);
+      const nativeAtReload: ReturnType<typeof resolvePublicNativeEnvironment>[] = [];
+      const reload = vi.spyOn(runtimeConfigManager, 'reload').mockImplementation((input) => {
+        nativeAtReload.push(
+          resolvePublicNativeEnvironment(
+            coreDb,
+            AuthoredAgentConfigSchema.parse(parse(readFileSync(agentPath, 'utf8')))
+          )
+        );
+        return actualReload(input);
+      });
       const app = createApp({
+        runtimeConfigManager,
         auth: noSessionAuth(),
         coreDb,
         dataRoot,
@@ -597,10 +622,9 @@ describe('Worker environment App composition', () => {
         image: {
           ...IMAGE_INSPECTION,
           environmentDefaults: {
-            defaultsDigest:
-              'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+            defaultsDigest,
             classification: 'unadmitted',
-            names: [],
+            names: ['PUBLIC_SETTING'],
           },
         },
         replaceNow: null,
@@ -620,18 +644,29 @@ describe('Worker environment App composition', () => {
         'image.inspect',
       ]);
 
+      if (alreadyPinned) {
+        expect(() =>
+          resolvePublicNativeEnvironment(
+            coreDb,
+            AuthoredAgentConfigSchema.parse(parse(initialAgentContent))
+          )
+        ).toThrow(
+          expect.objectContaining({ code: 'worker_environment_preparation_required', status: 409 })
+        );
+      }
+      const activationInput = {
+        affectedStorage: prepared.affectedStorage,
+        configuration: prepared.configuration,
+        confirmation: prepared.activationConfirmation,
+        replaceNow: prepared.replaceNow,
+        requestId: '22222222-2222-4222-8222-222222222222',
+        resolvedCandidate: prepared.resolvedCandidate,
+        target: prepared.target,
+      };
       const activatedResponse = await app.request('/api/app/worker-environments/activate', {
         method: 'POST',
         headers: adminHeaders,
-        body: JSON.stringify({
-          affectedStorage: prepared.affectedStorage,
-          configuration: prepared.configuration,
-          confirmation: prepared.activationConfirmation,
-          replaceNow: prepared.replaceNow,
-          requestId: '22222222-2222-4222-8222-222222222222',
-          resolvedCandidate: prepared.resolvedCandidate,
-          target: prepared.target,
-        }),
+        body: JSON.stringify(activationInput),
       });
       const activated = (await activatedResponse.json()) as ActivateWorkerEnvironmentResponse;
       const activatedAgentContent = readFileSync(agentPath, 'utf8');
@@ -654,7 +689,41 @@ describe('Worker environment App composition', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: IMAGE_DIGEST },
         },
       });
-      expect(activatedAgentContent).not.toBe(initialAgentContent);
+      if (alreadyPinned) {
+        expect(activatedAgentContent).toBe(initialAgentContent);
+        expect(contentRevision(activatedAgentContent)).toBe(initialRevision);
+      } else {
+        expect(activatedAgentContent).not.toBe(initialAgentContent);
+      }
+      expect(
+        resolvePublicNativeEnvironment(
+          coreDb,
+          AuthoredAgentConfigSchema.parse(parse(activatedAgentContent))
+        )
+      ).toEqual({
+        imageDigest: IMAGE_DIGEST,
+        defaultsDigest,
+        values,
+      });
+      expect(nativeAtReload).toEqual([{ imageDigest: IMAGE_DIGEST, defaultsDigest, values }]);
+      expect(reload).toHaveReturnedWith(expect.objectContaining({ status: 'applied' }));
+      expect(reload).toHaveBeenCalledTimes(1);
+      const effectsBeforeReplay = nanoHostEffect.mock.calls.length;
+      const replay = await app.request('/api/app/worker-environments/activate', {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify(activationInput),
+      });
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual(activated);
+      expect(reload).toHaveBeenCalledTimes(1);
+      expect(nanoHostEffect).toHaveBeenCalledTimes(effectsBeforeReplay);
+      expect(readFileSync(agentPath, 'utf8')).toBe(activatedAgentContent);
+      const resultArtifacts = store
+        .listArtifacts(privateWorkspace.id)
+        .filter((artifact) => artifact.title === 'Worker environment activation result');
+      expect(resultArtifacts).toHaveLength(1);
+      expect(JSON.parse(resultArtifacts[0]!.content.body)).toEqual(activated);
 
       const denied = await app.request('/api/app/administration/conversation-turns', {
         method: 'POST',
