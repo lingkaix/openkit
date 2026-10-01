@@ -49,6 +49,20 @@ const XaiSubscriptionDescriptorSchema = z
   })
   .strict();
 
+const InferenceObservationPartSchema = z.object({ observedAt: TimestampSchema }).strict();
+const InferenceObservationSchema = z
+  .object({
+    accessRejected: InferenceObservationPartSchema.optional(),
+    quotaExhausted: InferenceObservationPartSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (observation) =>
+      observation.accessRejected !== undefined || observation.quotaExhausted !== undefined,
+    'At least one inference outcome must be observed.'
+  )
+  .meta({ minProperties: 1 });
+
 const AccountBaseShape = {
   subscriptionProviderId: SubscriptionProviderIdSchema,
   accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
@@ -58,6 +72,7 @@ const AccountBaseShape = {
   displayName: DisplayNameSchema.optional(),
   accountLabel: z.string().min(1).optional(),
   planLabel: z.string().min(1).optional(),
+  inferenceObservation: InferenceObservationSchema.optional(),
 };
 const LoginInteractionSchema = z
   .object({

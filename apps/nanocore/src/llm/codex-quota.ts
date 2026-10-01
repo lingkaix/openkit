@@ -30,14 +30,67 @@ export interface CodexQuotaObservation {
   readonly windows: CodexQuotaWindow[];
 }
 
+/** Presented Codex fields whose equality proves selection without inspecting other OAuth properties. */
+export interface CodexPresentedCredential {
+  /** Exact OAuth discriminator. */
+  readonly type: 'oauth';
+  /** Bearer actually presented to the provider. */
+  readonly access: string;
+  /** Account selected by the authenticated request. */
+  readonly accountId: string;
+}
+
+/**
+ * Reuses the quota reader's exact second-read proof for quota and inference.
+ * @param credentials Existing pair-scoped credential store.
+ * @param presented Credential fields used by the rejected authenticated request.
+ * @param absoluteDeadline Original request deadline in epoch milliseconds.
+ * @param verifyVersion Optional pair-owned proof that the original material version remains selected.
+ * @returns False for changed, unreadable, missing or late credentials.
+ */
+export async function proveCodexCredentialCurrent(
+  credentials: CredentialStore,
+  presented: CodexPresentedCredential,
+  absoluteDeadline: number,
+  verifyVersion?: () => Promise<boolean>
+): Promise<boolean> {
+  if (!Number.isFinite(absoluteDeadline) || Date.now() >= absoluteDeadline) return false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const current = await Promise.race([
+      (async () => {
+        const current = await credentials.read('openai-codex');
+        if (
+          !isRecord(current) ||
+          current.type !== presented.type ||
+          current.access !== presented.access ||
+          current.accountId !== presented.accountId
+        )
+          return false;
+        return verifyVersion ? await verifyVersion() : true;
+      })(),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), Math.max(0, absoluteDeadline - Date.now()));
+      }),
+    ]);
+    return Date.now() < absoluteDeadline && current === true;
+  } catch {
+    return false;
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 /**
  * Reads one current Codex quota observation through the pair-scoped credential store.
  *
  * @param credentials Credential store constrained to one provider-subscription account pair.
+ * @param verifyVersion Optional pair-owned material-version proof within the original deadline.
  * @returns Validated quota, exact current-credential rejection, or null for an unclassified failure.
  */
 export async function readCodexQuota(
-  credentials: CredentialStore
+  credentials: CredentialStore,
+  verifyVersion?: () => Promise<boolean>
 ): Promise<CodexQuotaObservation | { readonly availability: 'authentication_required' } | null> {
   try {
     const credential = await credentials.read('openai-codex');
@@ -55,6 +108,7 @@ export async function readCodexQuota(
       return null;
     }
 
+    const absoluteDeadline = Date.now() + CODEX_USAGE_TIMEOUT_MS;
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
@@ -81,12 +135,16 @@ export async function readCodexQuota(
         void response.body?.cancel().catch(() => undefined);
         if (response.status === 401) {
           // A concurrent pi-ai refresh or login may already have replaced the rejected credential.
-          const current = await Promise.race([credentials.read('openai-codex'), deadline]);
           if (
-            isRecord(current) &&
-            current.type === type &&
-            current.access === access &&
-            current.accountId === accountId
+            await Promise.race([
+              proveCodexCredentialCurrent(
+                credentials,
+                { type: 'oauth', access, accountId },
+                absoluteDeadline,
+                verifyVersion
+              ),
+              deadline,
+            ])
           ) {
             return { availability: 'authentication_required' };
           }

@@ -420,6 +420,8 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
   const credentialList = vi.fn().mockName('credentialList');
   const modelsGetAuth = vi.fn(async () => XAI_AUTH).mockName('modelsGetAuth');
   const modelsGetProvider = vi.fn().mockName('modelsGetProvider');
+  const getCredentialVersion = vi.fn(async () => 'fixture_r1:1');
+  const observeQuota = vi.fn(async () => undefined);
   const spies = {
     cancelLogin: vi
       .fn(async (pair: ProviderSubscriptionAccountPair, _interactionId: string) => snapshot(pair))
@@ -441,7 +443,9 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
         read: credentialRead,
       } as never,
       models: { getAuth: modelsGetAuth, getProvider: modelsGetProvider } as never,
-    }),
+      getCredentialVersion,
+      observeQuota,
+    } as never),
     getStatus: vi
       .fn(async (pair: ProviderSubscriptionAccountPair) => snapshot(pair))
       .mockName('getStatus'),
@@ -476,6 +480,8 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
     credentialRead,
     modelsGetAuth,
     modelsGetProvider,
+    getCredentialVersion,
+    observeQuota,
   };
   Object.assign(manager, {
     cancelLogin: spies.cancelLogin,
@@ -2628,6 +2634,107 @@ describe('provider-subscription app API', () => {
       expect(JSON.stringify(body)).not.toMatch(/Bearer|error-canary/i);
     } finally {
       fetchSpy.mockRestore();
+      fixture.close();
+    }
+  });
+});
+
+describe('quota observation clearing wiring', () => {
+  it.each([
+    'openai-codex',
+    'xai',
+  ] as const)('reports live %s quota and forwards its material version and success', async (subscriptionProviderId) => {
+    const fixture = createFixture();
+    const upstream =
+      subscriptionProviderId === 'xai'
+        ? mockXaiQuotaUpstream()
+        : vi
+            .spyOn(globalThis, 'fetch')
+            .mockResolvedValue(new Response(JSON.stringify(CODEX_USAGE)));
+    try {
+      const response = await fixture.app.request(
+        `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/default/quota`
+      );
+      expect(response.status).toBe(200);
+      const quota = await response.json();
+      expect(quota.availability).toBe('available');
+      expect(quota).not.toHaveProperty('inferenceObservation');
+      expect(fixture.spies.observeQuota).toHaveBeenCalledWith(
+        'fixture_r1:1',
+        'available',
+        true,
+        expect.any(AbortSignal)
+      );
+    } finally {
+      upstream.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it('forwards accepted xAI discovery when billing is unavailable', async () => {
+    const fixture = createFixture();
+    const upstream = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(XAI_USER)))
+      .mockResolvedValueOnce(new Response('', { status: 503 }));
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      expect(await response.json()).toEqual({ ...unavailableXaiQuota(), ...XAI_DISCOVERY });
+      expect(fixture.spies.observeQuota).toHaveBeenCalledWith(
+        'fixture_r1:1',
+        'temporarily_unavailable',
+        true,
+        expect.any(AbortSignal)
+      );
+    } finally {
+      upstream.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it.each([
+    'openai-codex',
+    'xai',
+  ] as const)('suppresses same-bearer %s rejection when the material version changed', async (subscriptionProviderId) => {
+    const fixture = createFixture();
+    fixture.spies.getCredentialVersion
+      .mockResolvedValueOnce('fixture_r1:1')
+      .mockResolvedValue('fixture_r1:2');
+    const upstream = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 401 }));
+    try {
+      const response = await fixture.app.request(
+        `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/default/quota`
+      );
+      expect((await response.json()).availability).toBe('temporarily_unavailable');
+      expect(fixture.spies.observeQuota).not.toHaveBeenCalled();
+    } finally {
+      upstream.mockRestore();
+      fixture.close();
+    }
+  });
+
+  it('admits only a proven current xAI quota rejection', async () => {
+    const fixture = createFixture();
+    const upstream = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 401 }));
+    try {
+      const response = await fixture.app.request(
+        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+      );
+      expect(await response.json()).toEqual({
+        ...unavailableXaiQuota(),
+        availability: 'authentication_required',
+      });
+      expect(fixture.spies.modelsGetAuth).toHaveBeenCalledTimes(2);
+      expect(fixture.spies.getCredentialVersion).toHaveBeenCalledTimes(2);
+      expect(fixture.spies.observeQuota).not.toHaveBeenCalled();
+    } finally {
+      upstream.mockRestore();
       fixture.close();
     }
   });

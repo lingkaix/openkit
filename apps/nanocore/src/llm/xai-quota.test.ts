@@ -1,7 +1,7 @@
 import type { Models } from '@earendil-works/pi-ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readXaiAutoTopup, readXaiQuota } from './xai-quota.js';
+import { proveXaiBearerCurrent, readXaiAutoTopup, readXaiQuota } from './xai-quota.js';
 
 const NOW = '2026-09-18T00:00:00.000Z';
 const API_KEY = 'xai-access-canary';
@@ -284,4 +284,79 @@ describe('readXaiAutoTopup', () => {
       currency: 'USD',
     });
   });
+});
+
+describe('xAI same-bearer quota rejection', () => {
+  it.each([
+    'user',
+    'billing',
+  ] as const)('proves the presented bearer for a %s 401 without another provider request', async (endpoint) => {
+    const runtime = models();
+    const fetchSpy = mockUpstream();
+    fetchSpy.mockImplementation(async (input) => {
+      if (String(input).includes(endpoint === 'user' ? '/user?' : '/billing?'))
+        return new Response('', { status: 401 });
+      return new Response(JSON.stringify({ userId: USER_ID, subscriptionTier: 'SuperGrok' }));
+    });
+    expect(
+      await readXaiQuota(
+        runtime,
+        () => NOW,
+        async () => true
+      )
+    ).toEqual({
+      availability: 'authentication_required',
+    });
+    expect(runtime.getAuth).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(endpoint === 'user' ? 1 : 2);
+  });
+  it('suppresses a predecessor bearer, auth failure and generic 403', async () => {
+    for (const replacement of ['new-bearer', undefined, new Error('refresh timeout')]) {
+      const runtime = models();
+      vi.mocked(runtime.getAuth).mockImplementationOnce(async () => ({
+        auth: { apiKey: API_KEY },
+      }));
+      vi.mocked(runtime.getAuth).mockImplementationOnce(async () => {
+        if (replacement instanceof Error) throw replacement;
+        return replacement ? { auth: { apiKey: replacement } } : undefined;
+      });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 401 }));
+      expect(
+        await readXaiQuota(
+          runtime,
+          () => NOW,
+          async () => true
+        )
+      ).toBeNull();
+      vi.restoreAllMocks();
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 403 }));
+    expect(await readXaiQuota(models(), () => NOW)).toBeNull();
+  });
+  it('bounds the bearer proof by the explicit deadline including late auth resolution', async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = models();
+      vi.mocked(runtime.getAuth).mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { auth: { apiKey: API_KEY } };
+      });
+      const check = proveXaiBearerCurrent(runtime, API_KEY, Date.now() + 20);
+      await vi.advanceTimersByTimeAsync(21);
+      expect(await check).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+it('keeps xAI quota rejection unavailable without pair-owned material-version proof', async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValue(new Response('', { status: 401 }));
+  const runtime = models();
+  expect(await readXaiQuota(runtime, () => NOW)).toBeNull();
+  expect(runtime.getAuth).toHaveBeenCalledTimes(1);
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
 });

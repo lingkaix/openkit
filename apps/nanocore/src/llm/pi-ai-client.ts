@@ -8,11 +8,15 @@ import {
   createModels,
   createProvider,
   type JsonObject,
+  lazyStream,
   type Model,
   type Models,
+  ModelsError,
   type MutableModels,
   modelsAreEqual,
+  normalizeContext,
   type Provider,
+  type ProviderHeaders,
   type ProviderStreams,
   type StreamOptions,
   type ToolCall,
@@ -46,8 +50,12 @@ import type {
   OpenAICompatibleResponsesRequest,
   OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
-import { attachPiAiFailure } from './pi-ai-failure.js';
+import { attachPiAiFailure, type PiAiFailure } from './pi-ai-failure.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
+import {
+  type SubscriptionInferenceAuth,
+  subscriptionInferenceHandle,
+} from './provider-subscription-accounts.js';
 import {
   gatewayReasoningAttribution,
   type ReasoningAttribution,
@@ -146,6 +154,100 @@ function terminalPiAiFailure(message: AssistantMessage): Error | undefined {
 }
 
 /**
+ * Resolves subscription auth once inside the stock setup-error boundary and consumes its classified outcome.
+ * Optional material attribution never changes the already-resolved request inputs.
+ * @param models Selected runtime, which may be an ordinary non-subscription runtime.
+ * @param model Selected request-local model.
+ * @param options Existing provider options.
+ * @param signal Owning request cancellation.
+ * @param absoluteDeadline Original absolute Gateway deadline, shared across attempts and proofs.
+ * @returns Stock model stream creation and an advisory terminal observer.
+ */
+function prepareSubscriptionInference(
+  models: Models,
+  model: Model<string>,
+  options: StreamOptions & Record<string, unknown>,
+  signal?: AbortSignal,
+  absoluteDeadline?: number
+) {
+  const handle = subscriptionInferenceHandle(models);
+  let presented: SubscriptionInferenceAuth | undefined;
+  return {
+    /** Uses stock lazy setup and transcript normalization, passing resolved auth directly to the selected Provider. */
+    stream(context: Context, streamOptions = options) {
+      if (!handle) return models.stream(model, context, streamOptions);
+      const transcript = normalizeContext(context);
+      return lazyStream(model, async () => {
+        const resolved = await handle.resolveInferenceAuth(streamOptions.signal);
+        if (!resolved)
+          throw new ModelsError('auth', `Provider is not configured: ${model.provider}`);
+        presented = resolved.presented;
+        const auth = resolved.auth;
+        // Preserve stock per-field precedence and case-insensitive header replacement.
+        let headers: ProviderHeaders | undefined;
+        for (const source of [auth.headers, model.headers, streamOptions.headers]) {
+          if (!source) continue;
+          headers ??= {};
+          for (const [name, value] of Object.entries(source)) {
+            for (const existing of Object.keys(headers))
+              if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
+            headers[name] = value;
+          }
+        }
+        const { transformHeaders, ...providerOptions } = streamOptions;
+        if (typeof transformHeaders === 'function') headers = await transformHeaders(headers ?? {});
+        const provider = models.getProvider(model.provider);
+        if (!provider) throw new ModelsError('provider', `Unknown provider: ${model.provider}`);
+        const apiKey = streamOptions.apiKey ?? auth.apiKey;
+        return provider.stream(
+          auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
+          transcript,
+          {
+            ...providerOptions,
+            ...(apiKey === undefined ? {} : { apiKey }),
+            ...(headers === undefined ? {} : { headers }),
+            ...(resolved.env || streamOptions.env
+              ? { env: { ...resolved.env, ...streamOptions.env } }
+              : {}),
+          }
+        );
+      });
+    },
+    /** Consumes the existing adapter classification at the account owner without changing routing policy. */
+    async observe(failure?: Error): Promise<void> {
+      if (handle && presented)
+        await handle.observeInference(
+          presented,
+          (failure as (Error & { failure?: PiAiFailure }) | undefined)?.failure,
+          absoluteDeadline,
+          signal
+        );
+    },
+    /** Retains original thrown evidence and observes it without changing error identity. */
+    iterator(iterator: AsyncIterator<AssistantMessageEvent>): AsyncIterator<AssistantMessageEvent> {
+      return {
+        async next() {
+          try {
+            return await iterator.next();
+          } catch (error) {
+            const failure = attachPiAiFailure(error) as Error;
+            if (handle && presented)
+              await handle.observeInference(
+                presented,
+                (failure as Error & { failure?: PiAiFailure }).failure,
+                absoluteDeadline,
+                signal
+              );
+            throw failure;
+          }
+        },
+        ...(iterator.return ? { return: iterator.return.bind(iterator) } : {}),
+      };
+    },
+  };
+}
+
+/**
  * Consumes one model stream incrementally even when the caller requested a final response.
  * Classifies terminal failure before forwarding usage or invoking terminal observers.
  */
@@ -157,17 +259,35 @@ async function completeObservedModel(
   transport: LLMGatewayTransportContext,
   onTerminal: (message: AssistantMessage, failure: Error | undefined) => void
 ): Promise<AssistantMessage> {
+  const inference = prepareSubscriptionInference(
+    models,
+    model,
+    options,
+    transport.signal,
+    transport.deadline
+  );
   if (!transport.onModelEvent) {
-    const response = await models.complete(model, context, options);
-    onTerminal(response, terminalPiAiFailure(response));
+    let response: AssistantMessage;
+    try {
+      response = subscriptionInferenceHandle(models)
+        ? await inference.stream(context).result()
+        : await models.complete(model, context, options);
+    } catch (error) {
+      const failure = attachPiAiFailure(error) as Error;
+      await inference.observe(failure);
+      throw failure;
+    }
+    const failure = terminalPiAiFailure(response);
+    onTerminal(response, failure);
+    await inference.observe(failure);
     return response;
   }
   const localAbort = new AbortController();
   const signal = transport.signal
     ? AbortSignal.any([transport.signal, localAbort.signal])
     : localAbort.signal;
-  const events = models.stream(model, context, { ...options, signal });
-  const iterator = events[Symbol.asyncIterator]();
+  const events = inference.stream(context, { ...options, signal });
+  const iterator = inference.iterator(events[Symbol.asyncIterator]());
   try {
     while (true) {
       const result = await raceProviderWithSignal(() => iterator.next(), signal);
@@ -175,13 +295,23 @@ async function completeObservedModel(
         transport.onModelEvent({ type: 'truncated' });
         throw piAiStreamFailure('Provider stream failed.', 'provider_stream_truncated');
       }
-      if (result.value.type === 'done')
-        onTerminal(result.value.message, terminalPiAiFailure(result.value.message));
-      if (result.value.type === 'error')
-        onTerminal(result.value.error, terminalPiAiFailure(result.value.error));
+      const terminalMessage =
+        result.value.type === 'done'
+          ? result.value.message
+          : result.value.type === 'error'
+            ? result.value.error
+            : undefined;
+      const terminalFailure = terminalMessage ? terminalPiAiFailure(terminalMessage) : undefined;
+      if (terminalMessage) onTerminal(terminalMessage, terminalFailure);
       observeModelEvent(result.value, transport.onModelEvent);
-      if (result.value.type === 'done') return result.value.message;
-      if (result.value.type === 'error') return result.value.error;
+      if (result.value.type === 'done') {
+        await inference.observe(terminalFailure);
+        return result.value.message;
+      }
+      if (result.value.type === 'error') {
+        await inference.observe(terminalFailure);
+        return result.value.error;
+      }
     }
   } catch (error) {
     localAbort.abort(error);
@@ -332,12 +462,15 @@ export class PiAiGatewayClient {
     const signal = transport.signal
       ? AbortSignal.any([transport.signal, localAbortController.signal])
       : localAbortController.signal;
-    const events = models.stream(
+    const inference = prepareSubscriptionInference(
+      models,
       model,
-      this.toContext(request, model),
-      this.toStreamOptions(provider, request, { ...transport, signal })
+      this.toStreamOptions(provider, request, { ...transport, signal }),
+      signal,
+      transport.deadline
     );
-    const iterator = events[Symbol.asyncIterator]();
+    const events = inference.stream(this.toContext(request, model));
+    const iterator = inference.iterator(events[Symbol.asyncIterator]());
 
     return this.toChatCompletionSseStream(
       iterator,
@@ -347,7 +480,8 @@ export class PiAiGatewayClient {
       (reason) => {
         localAbortController.abort(reason);
       },
-      transport.onModelEvent
+      transport.onModelEvent,
+      (_message, failure) => inference.observe(failure)
     );
   }
 
@@ -474,8 +608,16 @@ export class PiAiGatewayClient {
       const signal = transport.signal
         ? AbortSignal.any([transport.signal, localAbortController.signal])
         : localAbortController.signal;
-      const events = models.stream(
+      const inference = prepareSubscriptionInference(
+        models,
         model,
+        codexProvider
+          ? this.toCodexResponsesOptions(request, model, { ...transport, signal }, additionalTools)
+          : this.toBridgedResponsesOptions(provider, request, { ...transport, signal }),
+        signal,
+        transport.deadline
+      );
+      const events = inference.stream(
         toPiResponsesContext(
           request,
           model,
@@ -484,12 +626,9 @@ export class PiAiGatewayClient {
           this.reasoningAttribution,
           bridgedFunctionTools,
           bridgeNames
-        ),
-        codexProvider
-          ? this.toCodexResponsesOptions(request, model, { ...transport, signal }, additionalTools)
-          : this.toBridgedResponsesOptions(provider, request, { ...transport, signal })
+        )
       );
-      const iterator = events[Symbol.asyncIterator]();
+      const iterator = inference.iterator(events[Symbol.asyncIterator]());
       let first: IteratorResult<AssistantMessageEvent>;
       try {
         first = await raceProviderWithSignal(() => iterator.next(), signal);
@@ -518,7 +657,8 @@ export class PiAiGatewayClient {
         (reason) => localAbortController.abort(reason),
         bridgeNames,
         transport.onModelEvent,
-        (item) => recordReturnedReasoning(item, member, this.reasoningAttribution)
+        (item) => recordReturnedReasoning(item, member, this.reasoningAttribution),
+        (_message, failure) => inference.observe(failure)
       );
     }
 
@@ -1135,6 +1275,7 @@ export class PiAiGatewayClient {
    * @param signal Combined caller and downstream cancellation signal.
    * @param abortUpstream Cancels provider work when the downstream stream stops early.
    * @param onModelEvent Private admitted-content observer, independent of public SSE delivery.
+   * @param onInferenceTerminal Advisory account observation after cancellation-capable terminal observers.
    * @returns Public Chat Completions SSE stream.
    */
   private toChatCompletionSseStream(
@@ -1143,7 +1284,8 @@ export class PiAiGatewayClient {
     onUsage: ((usage: unknown) => void) | undefined,
     signal: AbortSignal,
     abortUpstream: (reason?: unknown) => void,
-    onModelEvent?: (event: ModelSemanticEvent) => void
+    onModelEvent?: (event: ModelSemanticEvent) => void,
+    onInferenceTerminal?: (message: AssistantMessage, failure?: Error) => Promise<void>
   ): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     let id = `chatcmpl_pi_${Date.now()}`;
@@ -1196,6 +1338,11 @@ export class PiAiGatewayClient {
               onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
             }
             observeModelEvent(event, onModelEvent);
+            if (event.type === 'done' || event.type === 'error')
+              await onInferenceTerminal?.(
+                event.type === 'done' ? event.message : event.error,
+                terminalFailure as Error | undefined
+              );
 
             if (event.type === 'start') {
               id = `chatcmpl_${event.partial.responseId ?? `pi_${event.partial.timestamp}`}`;
@@ -2660,6 +2807,7 @@ function piAiStreamFailure(
  * @param bridgeNames Request-local function identities to restore on public output.
  * @param onModelEvent Private admitted semantic-event observer.
  * @param onReasoningItem Records reasoning identity only when returned in an outward event.
+ * @param onInferenceTerminal Advisory account observation after cancellation-capable terminal observers.
  * @returns Native Responses SSE stream.
  */
 function toResponsesSseStream(
@@ -2674,7 +2822,8 @@ function toResponsesSseStream(
   abortUpstream: (reason?: unknown) => void,
   bridgeNames?: ResponsesBridgeNames,
   onModelEvent?: (event: ModelSemanticEvent) => void,
-  onReasoningItem?: (item: Record<string, unknown>) => void
+  onReasoningItem?: (item: Record<string, unknown>) => void,
+  onInferenceTerminal?: (message: AssistantMessage, failure?: Error) => Promise<void>
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const itemNamespace = randomUUID();
@@ -2756,6 +2905,11 @@ function toResponsesSseStream(
             onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
           }
           observeModelEvent(event, onModelEvent);
+          if (event.type === 'done' || event.type === 'error')
+            await onInferenceTerminal?.(
+              event.type === 'done' ? event.message : event.error,
+              observedFailure
+            );
           if (event.type === 'start') {
             controller.enqueue(
               encodeEvent({

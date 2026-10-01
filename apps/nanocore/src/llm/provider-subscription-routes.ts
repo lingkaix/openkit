@@ -283,8 +283,14 @@ export function registerProviderSubscriptionRoutes(
     return runAccountOperation(c, async () => {
       await manager().reconcileAccount(pair);
       const handle = await manager().getPairHandle(pair);
+      const version = await handle.getCredentialVersion();
+      const verifyVersion = async () =>
+        version !== undefined && (await handle.getCredentialVersion()) === version;
       if (pair.subscriptionProviderId === 'xai') {
-        const quota = await readXaiQuota(handle.models, now);
+        const quota = await readXaiQuota(handle.models, now, verifyVersion);
+        if (version !== undefined && quota && quota.availability !== 'authentication_required') {
+          await handle.observeQuota(version, quota.availability, true, c.req.raw.signal);
+        }
         return ProviderSubscriptionQuotaSchema.parse({
           accountSlotId: pair.accountSlotId,
           observedAt: now(),
@@ -292,7 +298,10 @@ export function registerProviderSubscriptionRoutes(
           ...(quota ?? { availability: 'temporarily_unavailable' }),
         });
       }
-      const quota = await readCodexQuota(handle.credentials);
+      const quota = await readCodexQuota(handle.credentials, verifyVersion);
+      if (version !== undefined && quota?.availability === 'available') {
+        await handle.observeQuota(version, quota.availability, true, c.req.raw.signal);
+      }
       return ProviderSubscriptionQuotaSchema.parse({
         accountSlotId: pair.accountSlotId,
         observedAt: now(),

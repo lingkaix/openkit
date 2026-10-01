@@ -60,7 +60,8 @@ export type XaiQuotaObservation =
       readonly billing?: XaiQuotaBilling;
       readonly windows: XaiQuotaWindow[];
     })
-  | (XaiAccountDiscovery & { readonly availability: 'temporarily_unavailable' });
+  | (XaiAccountDiscovery & { readonly availability: 'temporarily_unavailable' })
+  | { readonly availability: 'authentication_required' };
 
 /** Validated lazy auto-top-up fields consumed by the App API route. */
 export interface XaiAutoTopupObservation {
@@ -79,15 +80,59 @@ export interface XaiAutoTopupObservation {
 }
 
 /**
+ * Proves the actually presented xAI bearer through stock pair-scoped auth within its request deadline.
+ * @param models Existing pair-scoped Models auth boundary.
+ * @param presented Bearer sent on the rejected request.
+ * @param absoluteDeadline Original request deadline in epoch milliseconds.
+ * @param verifyVersion Optional pair-owned material-version check inside that deadline.
+ * @returns False when auth changes, fails, refresh times out or completes too late.
+ */
+export async function proveXaiBearerCurrent(
+  models: Models,
+  presented: string,
+  absoluteDeadline: number,
+  verifyVersion?: () => Promise<boolean>
+): Promise<boolean> {
+  if (!Number.isFinite(absoluteDeadline) || Date.now() >= absoluteDeadline) return false;
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const current = await Promise.race([
+      (async () => {
+        const current = await models.getAuth('xai', { signal: controller.signal });
+        if (current?.auth.apiKey !== presented) return false;
+        return verifyVersion ? await verifyVersion() : true;
+      })(),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(
+          () => {
+            controller.abort();
+            resolve(undefined);
+          },
+          Math.max(0, absoluteDeadline - Date.now())
+        );
+      }),
+    ]);
+    return Date.now() < absoluteDeadline && current === true;
+  } catch {
+    return false;
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+/**
  * Reads one current xAI credits observation through the pair-scoped pi-ai runtime.
  *
  * @param models Pair-scoped stock Models runtime.
  * @param now Optional deterministic clock for accountObservedAt.
+ * @param verifyVersion Pair-owned material-version proof required to admit the rejection branch; absent proof preserves unavailable results.
  * @returns Validated quota fields, or null when auth or discovery fails.
  */
 export async function readXaiQuota(
   models: Models,
-  now: () => string = () => new Date().toISOString()
+  now: () => string = () => new Date().toISOString(),
+  verifyVersion?: () => Promise<boolean>
 ): Promise<XaiQuotaObservation | null> {
   try {
     const apiKey = await resolveXaiApiKey(models);
@@ -95,8 +140,12 @@ export async function readXaiQuota(
       return null;
     }
 
+    const proveRejection = (absoluteDeadline: number) =>
+      verifyVersion
+        ? proveXaiBearerCurrent(models, apiKey, absoluteDeadline, verifyVersion)
+        : Promise.resolve(false);
     const { userId, ...discovery } = discoverXaiAccount(
-      await readXaiJson(XAI_USER_URL, apiKey, XAI_USER_TIMEOUT_MS),
+      await readXaiJson(XAI_USER_URL, apiKey, XAI_USER_TIMEOUT_MS, undefined, proveRejection),
       now
     );
     try {
@@ -104,14 +153,18 @@ export async function readXaiQuota(
         ...discovery,
         availability: 'available',
         ...parseXaiBilling(
-          await readXaiJson(XAI_BILLING_URL, apiKey, XAI_BILLING_TIMEOUT_MS, userId)
+          await readXaiJson(XAI_BILLING_URL, apiKey, XAI_BILLING_TIMEOUT_MS, userId, proveRejection)
         ),
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof XaiQuotaAuthenticationRequired)
+        return { availability: 'authentication_required' };
       return { ...discovery, availability: 'temporarily_unavailable' };
     }
-  } catch {
-    return null;
+  } catch (error) {
+    return error instanceof XaiQuotaAuthenticationRequired
+      ? { availability: 'authentication_required' }
+      : null;
   }
 }
 
@@ -189,6 +242,9 @@ function discoverXaiAccount(
   };
 }
 
+/** Private marker distinguishes proven authenticated rejection without retaining upstream bytes. */
+class XaiQuotaAuthenticationRequired extends Error {}
+
 /**
  * Issues one bounded xAI GET and returns its parsed JSON value.
  *
@@ -196,14 +252,17 @@ function discoverXaiAccount(
  * @param apiKey Resolved bearer snapshot.
  * @param timeoutMs Request-and-body deadline.
  * @param userId Canonical discovery user id, only for billing and auto-top-up.
+ * @param proveRejection Optional quota-only proof that shares this transport deadline.
  * @returns Parsed JSON value.
  */
 async function readXaiJson(
   url: string,
   apiKey: string,
   timeoutMs: number,
-  userId?: string
+  userId?: string,
+  proveRejection?: (absoluteDeadline: number) => Promise<boolean>
 ): Promise<unknown> {
+  const absoluteDeadline = Date.now() + timeoutMs;
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
@@ -230,6 +289,13 @@ async function readXaiJson(
       deadline,
     ]);
     if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      if (
+        response.status === 401 &&
+        proveRejection &&
+        (await Promise.race([proveRejection(absoluteDeadline), deadline]))
+      )
+        throw new XaiQuotaAuthenticationRequired();
       throw new Error('xAI quota response is unavailable.');
     }
     const bytes = await readResponseBytes(response, deadline);

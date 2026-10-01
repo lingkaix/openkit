@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { isDeepStrictEqual, TextDecoder, toUSVString } from 'node:util';
 
 import {
+  type AuthResult,
   type CredentialStore,
   createModels,
   type Models,
@@ -43,6 +44,62 @@ import {
   type VaultReferenceRecord,
 } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
+
+import { type CodexPresentedCredential, proveCodexCredentialCurrent } from './codex-quota.js';
+import type { PiAiFailure } from './pi-ai-failure.js';
+import { proveXaiBearerCurrent } from './xai-quota.js';
+
+/** Private request-local identity on stock-returned credential objects; never serialized. */
+const credentialVersion = Symbol('subscription-credential-version');
+/** Private attribution on stock-derived auth; no additional process-local cache or durable state. */
+const presentedInferenceAuth = Symbol('subscription-presented-auth');
+
+/**
+ * Carries the version returned by this exact fenced read or write into stock OAuth derivation.
+ * @param credential Stock credential returned by the existing credential-store operation.
+ * @param entry Exact Vault inventory entry observed while the pair fence is held.
+ * @returns A request-local credential with non-enumerable material identity.
+ */
+function versionedCredential(
+  credential: OAuthCredential,
+  entry: VaultReferenceInventoryEntry
+): OAuthCredential {
+  return Object.defineProperty({ ...credential }, credentialVersion, {
+    value: `${entry.referenceId}:${entry.currentVersion}`,
+  });
+}
+
+/** Pair runtimes carry their existing account owner without global credential selection. */
+const inferenceHandles = new WeakMap<Models, ProviderSubscriptionPairHandle>();
+
+/**
+ * Returns the account observation owner only for an actual manager-owned pair runtime.
+ * @param models Exact runtime admitted for this inference request.
+ * @returns Existing pair handle, or undefined for ordinary provider runtimes.
+ */
+export function subscriptionInferenceHandle(
+  models: Models
+): ProviderSubscriptionPairHandle | undefined {
+  return inferenceHandles.get(models);
+}
+
+/** Request-local presented auth and exact material attribution; never persisted or publicly projected. */
+export interface SubscriptionInferenceAuth {
+  /** Exact backend reference and material version, including identity across slot recreation. */
+  readonly version: string;
+  /** Stock resolved auth used by this request. */
+  readonly auth: AuthResult['auth'] & { readonly apiKey: string };
+  /** Codex quota proof fields, present only for that provider. */
+  readonly codex?: CodexPresentedCredential;
+}
+
+/** One sanitized process-local observation for the current account and material version. */
+export interface SubscriptionInferenceObservation {
+  /** Proven current access rejection and its own observation time. */
+  readonly accessRejected?: { readonly observedAt: string };
+  /** Proven current inference quota exhaustion and its own observation time. */
+  readonly quotaExhausted?: { readonly observedAt: string };
+}
 
 /** Maximum accepted durable account record size in bytes. */
 const MAX_ACCOUNT_RECORD_BYTES = 16_384;
@@ -105,6 +162,8 @@ export interface ProviderSubscriptionAccountSnapshot extends ProviderSubscriptio
   readonly accountLabel?: string;
   /** Optional safe provider-derived plan label. */
   readonly planLabel?: string;
+  /** Optional process-local posture of this exact current credential version. */
+  readonly inferenceObservation?: SubscriptionInferenceObservation;
   /** Sanitized current account state. */
   readonly status: ProviderSubscriptionAccountStatus;
   /** Stable redacted message for unavailable or error states. */
@@ -137,6 +196,28 @@ export interface ProviderSubscriptionPairHandle {
   readonly credentials: CredentialStore;
   /** Provider-only stock pi-ai runtime using the constrained credential store. */
   readonly models: Models;
+  /** Resolves stock auth once; only optional material attribution failures are advisory. */
+  resolveInferenceAuth(
+    signal?: AbortSignal
+  ): Promise<(AuthResult & { readonly presented?: SubscriptionInferenceAuth }) | undefined>;
+  /** Consumes classified outcomes; rejection requires an explicit original absolute deadline. */
+  observeInference(
+    presented: SubscriptionInferenceAuth,
+    failure?: PiAiFailure,
+    absoluteDeadline?: number,
+    signal?: AbortSignal
+  ): Promise<void>;
+  /** Reads the current exact material identity without resolving credential bytes. */
+  getCredentialVersion(): Promise<string | undefined>;
+  /** Returns only current sanitized observations, discarding replaced material. */
+  getObservation(): Promise<SubscriptionInferenceObservation | undefined>;
+  /** Clears access on accepted quota reads and quota on available reads of this exact version. */
+  observeQuota(
+    version: string,
+    availability: string,
+    accepted?: boolean,
+    signal?: AbortSignal
+  ): Promise<void>;
 }
 
 /** Constructor input for the provider-subscription account manager. */
@@ -230,6 +311,8 @@ interface PairHandleState {
   login: PairLoginState | null;
   /** Fixed process-local terminal login failure. */
   loginError: string | null;
+  /** Single ephemeral observation; carries no credential bytes. */
+  observation?: (SubscriptionInferenceObservation & { readonly version: string }) | undefined;
 }
 
 /** One process-local login owned by an existing cached pair handle. */
@@ -411,7 +494,7 @@ export class ProviderSubscriptionAccountManager {
         };
 
         this.writeAccount(updated);
-        return snapshot(updated, inspection.kind === 'live' ? 'logged_in' : 'logged_out');
+        return this.accountSnapshot(inspection, updated);
       })
     );
   }
@@ -488,9 +571,9 @@ export class ProviderSubscriptionAccountManager {
           inventory
         );
         if (inspection.kind === 'unbound') {
-          accounts.push(snapshot(inspection.record, 'logged_out'));
+          accounts.push(this.accountSnapshot(inspection));
         } else if (inspection.kind === 'live') {
-          accounts.push(snapshot(inspection.record, 'logged_in'));
+          accounts.push(this.accountSnapshot(inspection));
         } else if (inspection.kind === 'current-tombstone') {
           throw persistenceError();
         }
@@ -961,7 +1044,10 @@ export class ProviderSubscriptionAccountManager {
           const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(pair));
           const current =
             inspection.kind === 'live'
-              ? this.resolveCredential(inspection.entry.referenceId)
+              ? versionedCredential(
+                  this.resolveCredential(inspection.entry.referenceId),
+                  inspection.entry
+                )
               : undefined;
           let replacement: Awaited<ReturnType<typeof update>>;
           try {
@@ -991,6 +1077,7 @@ export class ProviderSubscriptionAccountManager {
                 ) {
                   throw persistenceError();
                 }
+                state.observation = undefined;
                 try {
                   this.advanceCoreVersion(inspection.coreReference, entry.currentVersion);
                   this.writeLoggedInProjection(inspection.record);
@@ -1000,7 +1087,7 @@ export class ProviderSubscriptionAccountManager {
                     'Provider subscription projection failed.'
                   );
                 }
-                return credential;
+                return versionedCredential(credential, entry);
               }
             );
           }
@@ -1060,7 +1147,7 @@ export class ProviderSubscriptionAccountManager {
                   'Provider subscription projection failed.'
                 );
               }
-              return credential;
+              return versionedCredential(credential, entry);
             }
           );
         }).catch((error) => {
@@ -1073,7 +1160,10 @@ export class ProviderSubscriptionAccountManager {
           this.requireActiveHandle(state);
           const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(pair));
           return inspection.kind === 'live'
-            ? this.resolveCredential(inspection.entry.referenceId)
+            ? versionedCredential(
+                this.resolveCredential(inspection.entry.referenceId),
+                inspection.entry
+              )
             : undefined;
         }).catch((error) => {
           throw normalizeCredentialOperationError(error);
@@ -1088,11 +1178,218 @@ export class ProviderSubscriptionAccountManager {
       credentials,
     });
 
-    models.setProvider(
-      pair.subscriptionProviderId === 'openai-codex' ? openaiCodexProvider() : xaiProvider()
-    );
-    state.handle = { credentials, models };
+    const provider =
+      pair.subscriptionProviderId === 'openai-codex' ? openaiCodexProvider() : xaiProvider();
+    const oauth = provider.auth.oauth!;
+    models.setProvider({
+      ...provider,
+      auth: {
+        ...provider.auth,
+        oauth: {
+          ...oauth,
+          // Capture the credential consumed by stock derivation, including a refresh's post-write version.
+          // Sampling current inventory after derivation would misattribute identical-byte replacements.
+          toAuth: async (credential) => {
+            const derived = await oauth.toAuth(credential);
+            const version = (credential as OAuthCredential & { [credentialVersion]?: string })[
+              credentialVersion
+            ];
+            if (!version || typeof derived.apiKey !== 'string' || !derived.apiKey) return derived;
+            const auth = { ...derived, apiKey: derived.apiKey };
+            const presented: SubscriptionInferenceAuth = {
+              version,
+              auth,
+              ...(pair.subscriptionProviderId === 'openai-codex' &&
+              typeof credential.accountId === 'string' &&
+              credential.accountId
+                ? {
+                    codex: {
+                      type: 'oauth',
+                      access: credential.access,
+                      accountId: credential.accountId,
+                    },
+                  }
+                : {}),
+            };
+            return Object.defineProperty(auth, presentedInferenceAuth, { value: presented });
+          },
+        },
+      },
+    });
+    /** Reads material identity under the existing fence and drops superseded observations. */
+    const currentVersion = (): string | undefined => {
+      this.requireActiveHandle(state);
+      const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(pair));
+      const version =
+        inspection.kind === 'live'
+          ? `${inspection.entry.referenceId}:${inspection.entry.currentVersion}`
+          : undefined;
+      if (state.observation && state.observation.version !== version) state.observation = undefined;
+      return version;
+    };
+    state.handle = {
+      credentials,
+      models,
+      getCredentialVersion: async () => {
+        try {
+          return await this.withPairFence(pair, async () => currentVersion());
+        } catch {
+          return undefined;
+        }
+      },
+      resolveInferenceAuth: async (signal) => {
+        // Stock resolution failures belong to the attempt; never turn them into a second resolution.
+        const resolved = await models.getAuth(
+          pair.subscriptionProviderId,
+          signal ? { signal } : undefined
+        );
+        if (!resolved) return undefined;
+        try {
+          const presented = await this.withPairFence(pair, async () => {
+            const proof = (
+              resolved.auth as AuthResult['auth'] & {
+                [presentedInferenceAuth]?: SubscriptionInferenceAuth;
+              }
+            )[presentedInferenceAuth];
+            if (!proof || currentVersion() !== proof.version) return undefined;
+            const inspection = this.inspectPair(pair);
+            if (inspection.kind !== 'live') return undefined;
+            const credential = this.resolveCredential(inspection.entry.referenceId);
+            if (credential.access !== resolved.auth.apiKey) return undefined;
+            if (
+              pair.subscriptionProviderId === 'openai-codex' &&
+              (!proof.codex ||
+                credential.accountId !== proof.codex.accountId ||
+                credential.access !== proof.codex.access)
+            )
+              return undefined;
+            return proof;
+          });
+          return { ...resolved, ...(presented ? { presented } : {}) };
+        } catch {
+          // Failed optional attribution cannot discard auth already resolved for the request.
+          return resolved;
+        }
+      },
+      observeInference: async (presented, failure, absoluteDeadline, signal) => {
+        // Observation dependencies are advisory; they cannot change the admitted inference result.
+        try {
+          if (signal?.aborted || failure?.kind === 'cancelled') return;
+          const rejected = failure?.kind === 'auth_rejected';
+          if (rejected) {
+            if (!failure.settled || failure.status === 403 || absoluteDeadline === undefined)
+              return;
+            const proven =
+              pair.subscriptionProviderId === 'openai-codex'
+                ? presented.codex &&
+                  (await proveCodexCredentialCurrent(
+                    credentials,
+                    presented.codex,
+                    absoluteDeadline,
+                    async () => (await state.handle.getCredentialVersion()) === presented.version
+                  ))
+                : typeof presented.auth.apiKey === 'string' &&
+                  (await proveXaiBearerCurrent(
+                    models,
+                    presented.auth.apiKey,
+                    absoluteDeadline,
+                    async () => (await state.handle.getCredentialVersion()) === presented.version
+                  ));
+            if (!proven) return;
+          } else if (failure && (failure.kind !== 'quota_exhausted' || !failure.settled)) return;
+          await this.withPairFence(pair, async () => {
+            if (
+              signal?.aborted ||
+              currentVersion() !== presented.version ||
+              (rejected && Date.now() >= absoluteDeadline!)
+            )
+              return;
+            const prior = state.observation;
+            const accessRejected = rejected
+              ? { observedAt: this.canonicalNow() }
+              : failure
+                ? prior?.accessRejected
+                : undefined;
+            const quotaExhausted =
+              failure?.kind === 'quota_exhausted'
+                ? { observedAt: this.canonicalNow() }
+                : prior?.quotaExhausted;
+            state.observation =
+              accessRejected || quotaExhausted
+                ? {
+                    version: presented.version,
+                    ...(accessRejected ? { accessRejected } : {}),
+                    ...(quotaExhausted ? { quotaExhausted } : {}),
+                  }
+                : undefined;
+          });
+        } catch {
+          /* Failed proof cannot mutate credentials, status or another account. */
+        }
+      },
+      getObservation: async () => {
+        try {
+          return await this.withPairFence(pair, async () => {
+            currentVersion();
+            if (!state.observation) return undefined;
+            const { version: _version, ...observation } = state.observation;
+            return structuredClone(observation);
+          });
+        } catch {
+          return undefined;
+        }
+      },
+      observeQuota: async (
+        version,
+        availability,
+        accepted = availability === 'available',
+        signal
+      ) => {
+        if (signal?.aborted || (!accepted && availability !== 'available')) return;
+        try {
+          await this.withPairFence(pair, async () => {
+            if (signal?.aborted || currentVersion() !== version || !state.observation) return;
+            const accessRejected = accepted ? undefined : state.observation.accessRejected;
+            const quotaExhausted =
+              availability === 'available' ? undefined : state.observation.quotaExhausted;
+            state.observation =
+              accessRejected || quotaExhausted
+                ? {
+                    version,
+                    ...(accessRejected ? { accessRejected } : {}),
+                    ...(quotaExhausted ? { quotaExhausted } : {}),
+                  }
+                : undefined;
+          });
+        } catch {
+          /* Quota dependency failure supplies no success predicate. */
+        }
+      },
+    };
+    inferenceHandles.set(models, state.handle);
     return state;
+  }
+
+  /**
+   * Projects already-validated metadata and current process-local outcomes without resolving secrets.
+   * @param inspection Ordinary account inspection from the existing validity boundary.
+   * @param record Reconciled or updated metadata to project.
+   * @returns Sanitized account with observations only for its exact live material version.
+   */
+  private accountSnapshot(
+    inspection: Extract<PairInspection, { kind: 'live' | 'unbound' }>,
+    record = inspection.record
+  ): ProviderSubscriptionAccountSnapshot {
+    const state = this.handles.get(pairKey(record));
+    const version =
+      inspection.kind === 'live'
+        ? `${inspection.entry.referenceId}:${inspection.entry.currentVersion}`
+        : undefined;
+    if (state?.observation && state.observation.version !== version) state.observation = undefined;
+    const account = snapshot(record, inspection.kind === 'live' ? 'logged_in' : 'logged_out');
+    if (!state?.observation) return account;
+    const { version: _version, ...observation } = state.observation;
+    return { ...account, inferenceObservation: structuredClone(observation) };
   }
 
   /**
@@ -1111,14 +1408,14 @@ export class ProviderSubscriptionAccountManager {
       if (!isDeepStrictEqual(record, inspection.record)) {
         this.writeAccount(record);
       }
-      return snapshot(record, 'logged_in');
+      return this.accountSnapshot(inspection, record);
     }
 
     const record = this.loggedOutRecord(inspection.record);
     if (!isDeepStrictEqual(record, inspection.record)) {
       this.writeAccount(record);
     }
-    return snapshot(record, 'logged_out');
+    return this.accountSnapshot(inspection, record);
   }
 
   /**
@@ -1175,6 +1472,8 @@ export class ProviderSubscriptionAccountManager {
         throw persistenceError();
       }
 
+      const state = this.handles.get(pairKey(pair));
+      if (state) state.observation = undefined;
       this.writeAccount(this.loggedOutRecord(inspection.record));
     };
 
@@ -1751,6 +2050,7 @@ export class ProviderSubscriptionAccountManager {
     const key = pairKey(pair);
     const state = this.handles.get(key);
     if (state) {
+      state.observation = undefined;
       state.active = false;
       this.handles.delete(key);
     }
