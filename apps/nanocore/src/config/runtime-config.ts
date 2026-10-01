@@ -35,6 +35,7 @@ import {
   assertConfiguredModelsHaveKnownContext,
   resolveLogicalModelCatalog,
 } from '../llm/logical-models.js';
+import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
@@ -200,6 +201,10 @@ interface LoadRuntimeConfigOptions {
   version?: number;
   /** Timestamp to assign for deterministic tests. */
   loadedAt?: string;
+  /** Live subscription owner for network-free Gateway supply admission. */
+  subscriptionAccounts?:
+    | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+    | undefined;
 }
 
 /**
@@ -210,6 +215,10 @@ interface RuntimeConfigManagerOptions {
   dataRoot: string | null;
   /** Optional initial snapshot for tests or already-loaded startup state. */
   initialSnapshot?: RuntimeConfigSnapshot;
+  /** Live subscription owner reused at initial load and candidate reload. */
+  subscriptionAccounts?:
+    | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+    | undefined;
   /** Live capture-coverage sink updated on load and applied reload. */
   captureCoverage?: {
     setLiveCaptureCoverage(binding: CaptureCoverageBinding): void;
@@ -296,10 +305,12 @@ export function loadRuntimeConfig(
   const configLoadResult = loadOpenKitConfigWithDiagnostics(dataRoot);
   const providerLoadResult = loadProviderRegistryFromDataRoot(dataRoot);
   const agentLoadResult = loadAgentManifests(dataRoot);
+  const gatewayDiagnostics: RuntimeConfigDiagnostic[] = [];
   const gatewayConfig = loadServerScopedConfig(
     join(dataRoot, 'config', 'gateway.jsonc'),
     GatewayConfigSchema,
-    { schemaVersion: 1, enabled: true, logicalModels: [] }
+    { schemaVersion: 1, enabled: true, logicalModels: [] },
+    { diagnostics: gatewayDiagnostics, dataRoot, kind: 'gateway' }
   );
   const internalRoleProfiles = loadServerScopedConfig(
     join(dataRoot, 'config', 'internal-role-profiles.jsonc'),
@@ -314,7 +325,6 @@ export function loadRuntimeConfig(
     authoredDiagnostics
   );
   const workspaceMcpServerCatalogs = loadWorkspaceMcpServerCatalogs(dataRoot);
-  const gatewayDiagnostics: RuntimeConfigDiagnostic[] = [];
   try {
     assertConfiguredModelsHaveKnownContext(providerLoadResult.providerRegistry);
   } catch (error) {
@@ -326,7 +336,21 @@ export function loadRuntimeConfig(
     });
   }
   try {
-    resolveLogicalModelCatalog(gatewayConfig, providerLoadResult.providerRegistry);
+    for (const model of resolveLogicalModelCatalog(
+      gatewayConfig,
+      providerLoadResult.providerRegistry,
+      options.subscriptionAccounts
+    )) {
+      for (const route of model.routes) {
+        if (!route.available)
+          gatewayDiagnostics.push({
+            code: 'gateway.unavailable_member',
+            message: `Logical model route ${route.id} is unavailable: ${route.unavailableReason}.`,
+            severity: 'warning',
+            source: 'DATA_ROOT/config/gateway.jsonc',
+          });
+      }
+    }
   } catch (error) {
     gatewayDiagnostics.push({
       code: 'gateway.invalid_logical_model',
@@ -427,7 +451,11 @@ export function unknownModelContextFailure(
 export function createRuntimeConfigManager(
   options: RuntimeConfigManagerOptions
 ): RuntimeConfigManager {
-  let current = options.initialSnapshot ?? loadRuntimeConfig(requireDataRoot(options.dataRoot));
+  let current =
+    options.initialSnapshot ??
+    loadRuntimeConfig(requireDataRoot(options.dataRoot), {
+      subscriptionAccounts: options.subscriptionAccounts,
+    });
   assertUnknownModelContext(current);
   let lastReload: RuntimeConfigReloadSummary | null = null;
   let lastFailedReload: RuntimeConfigReloadSummary | null = null;
@@ -451,7 +479,10 @@ export function createRuntimeConfigManager(
       const nextVersion = current.version + 1;
 
       try {
-        const next = loadRuntimeConfig(requireDataRoot(options.dataRoot), { version: nextVersion });
+        const next = loadRuntimeConfig(requireDataRoot(options.dataRoot), {
+          version: nextVersion,
+          subscriptionAccounts: options.subscriptionAccounts,
+        });
         assertNoBlockingDiagnostics(next);
         const plan = diffRuntimeConfig(current, next);
 
@@ -1197,15 +1228,34 @@ function snapshotSemanticSummary(snapshot: Omit<RuntimeConfigSnapshot, 'contentH
   };
 }
 
-/** Loads one optional strict Server-scoped JSONC file or returns its schema-parsed empty value. */
-function loadServerScopedConfig<T>(path: string, schema: z.ZodType<T>, empty: unknown): T {
+/** Loads a Server-scoped JSONC file, preserving known-field validation and reporting supported additive-key warnings. */
+function loadServerScopedConfig<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  empty: unknown,
+  warningContext?: {
+    diagnostics: RuntimeConfigDiagnostic[];
+    dataRoot: string;
+    kind: TolerantConfigKind;
+  }
+): T {
   if (!existsSync(path)) {
     return schema.parse(empty);
   }
-  const result = schema.safeParse(parseJsoncObject(readFileSync(path, 'utf8'), path));
+  const raw = parseJsoncObject(readFileSync(path, 'utf8'), path);
+  const result = schema.safeParse(raw);
   if (!result.success) {
     throw new Error(`Invalid runtime config ${path}: ${z.prettifyError(result.error)}`);
   }
+  if (warningContext)
+    addUnknownConfigDiagnostics(
+      warningContext.diagnostics,
+      warningContext.kind,
+      raw,
+      result.data,
+      warningContext.dataRoot,
+      path
+    );
   return result.data;
 }
 

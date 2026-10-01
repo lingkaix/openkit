@@ -6,7 +6,7 @@ Provider profiles retain string model IDs and may add a per-ID `modelMetadata` m
 
 Provider model declarations require an effective positive maximum context length, inherited from the pinned model catalog or explicitly authored as `modelMetadata[modelId].limit.context`. Other metadata remains optional. Structural validation admits omission for catalog inheritance; composed validation must reject a model with no known context before replacing active configuration.
 
-Every Gateway logical model declares one OpenKit-owned `contextManagement` compaction policy. NanoCore validates its threshold and output reserve against every authored route, including routes whose Provider is currently disabled; runtime consumers fail closed when compaction is required but no durable OpenKit compaction adapter is available.
+Every Gateway logical model may declare `routing: { autoFailover: boolean }`; omitting it keeps automatic failover enabled. The boolean is required when the object is present. Readers strip unknown additive routing keys, and NanoCore reports located warnings; invalid core values remain errors. Every Gateway logical model declares one OpenKit-owned `contextManagement` compaction policy. NanoCore validates its threshold and output reserve against every authored route, including routes whose Provider is currently disabled; runtime consumers fail closed when compaction is required but no durable OpenKit compaction adapter is available.
 
 NanoCore consumes this package so runtime loading, draft validation, reload planning, and UI schema hints follow one contract instead of copying rules into routes or UI components.
 

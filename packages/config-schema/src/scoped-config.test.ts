@@ -37,6 +37,28 @@ describe('scoped runtime config schemas', () => {
     ).toThrow();
   });
 
+  it('admits routing booleans, strips additive keys, and rejects invalid core values', () => {
+    const model = {
+      id: 'tier',
+      displayName: 'Tier',
+      contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+      routes: [{ id: 'primary', providerProfileId: 'provider', providerModel: 'model' }],
+    };
+    const parse = (routing: unknown) =>
+      GatewayConfigSchema.parse({
+        schemaVersion: 1,
+        logicalModels: [{ ...model, routing }],
+      }).logicalModels[0];
+    expect(parse(undefined)?.routing).toBeUndefined();
+    expect(parse({ autoFailover: false, futureStrategy: 'ignored' })?.routing).toEqual({
+      autoFailover: false,
+    });
+    expect(parse({ autoFailover: true })?.routing).toEqual({ autoFailover: true });
+    for (const routing of [{}, { autoFailover: 'false' }, null]) {
+      expect(() => parse(routing)).toThrow();
+    }
+  });
+
   it('validates personal per-Workspace preferences without accepting duplicate owners', () => {
     expect(
       UserConfigSchema.parse({

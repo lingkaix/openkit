@@ -1583,12 +1583,14 @@ export function registerWorkerInferenceRoutes({
         logicalModel = resolveLogicalModel(
           snapshot.gatewayConfig,
           snapshot.providerRegistry,
-          route.model
+          route.model,
+          providerSubscriptionAccountManager
         );
       } catch {
         logicalModel = null;
       }
-      if (!logicalModel) {
+      // Retained configured IDs without current supply use the existing worker failure ledger.
+      if (!logicalModel || !logicalModel.routes.some((member) => member.available)) {
         const unavailableCall = startWorkerInferenceCall({
           ...(coreDb ? { coreDb } : {}),
           cacheDegraded: false,
@@ -1927,7 +1929,7 @@ function assertGatewayModelAuthorized(provider: ResolvedLLMProviderConfig, model
   }
 }
 
-/** Dispatches one logical model through its ordered private routes before output starts. */
+/** Dispatches available ordered members before output starts, selecting only the primary when failover is disabled. */
 export async function dispatchLogicalModel<T>(input: {
   logicalModel: ResolvedLogicalModel;
   signal: AbortSignal;
@@ -1942,7 +1944,11 @@ export async function dispatchLogicalModel<T>(input: {
   }) => Promise<T>;
 }): Promise<T> {
   const corr = randomUUID();
-  for (const [index, route] of input.logicalModel.routes.entries()) {
+  const routes = input.logicalModel.autoFailover
+    ? input.logicalModel.routes
+    : input.logicalModel.routes.slice(0, 1);
+  for (const [index, route] of routes.entries()) {
+    if (!route.available) continue;
     try {
       const provider = input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
       assertGatewayModelAuthorized(provider, route.providerModel);
@@ -1958,8 +1964,13 @@ export async function dispatchLogicalModel<T>(input: {
         attempt: index,
       });
     } catch (error) {
-      if (input.signal.aborted || !isLogicalModelFallbackEligible(error)) throw error;
-      if (index === input.logicalModel.routes.length - 1) {
+      if (
+        input.signal.aborted ||
+        !input.logicalModel.autoFailover ||
+        !isLogicalModelFallbackEligible(error)
+      )
+        throw error;
+      if (index === routes.length - 1) {
         throw new LogicalModelRoutesExhaustedError();
       }
     }
@@ -2029,7 +2040,8 @@ export function registerLlmGatewayRoutes({
       const logicalModel = resolveLogicalModel(
         snapshot.gatewayConfig,
         snapshot.providerRegistry,
-        logicalModelId
+        logicalModelId,
+        providerSubscriptionAccountManager
       );
       if (logicalModel) return logicalModel;
     } catch {
@@ -2066,14 +2078,17 @@ export function registerLlmGatewayRoutes({
       const snapshot = runtimeConfig();
       const data = resolveLogicalModelCatalog(
         snapshot.gatewayConfig,
-        snapshot.providerRegistry
-      ).map((model) => ({
-        id: model.id,
-        object: 'model',
-        owned_by: 'openkit',
-        display_name: model.displayName,
-        capabilities: model.capabilities,
-      }));
+        snapshot.providerRegistry,
+        providerSubscriptionAccountManager
+      )
+        .filter((model) => model.routes.some((route) => route.available))
+        .map((model) => ({
+          id: model.id,
+          object: 'model',
+          owned_by: 'openkit',
+          display_name: model.displayName,
+          capabilities: model.capabilities,
+        }));
       return c.json({ object: 'list', data });
     } catch {
       return asOpenAIGatewayError(

@@ -48,6 +48,7 @@ import {
 } from './config/runtime-config.js';
 import { classifyGoalStepCheckpointAfterSchedulerRecovery } from './goal-routes.js';
 import { FsStore } from './lib/store.js';
+import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import { resolveEnvSecretRef } from './providers/registry.js';
@@ -461,10 +462,15 @@ const schedulerProviderCredentialResolver = createVaultProviderCredentialResolve
   vaultBackend: () => activeVaultUnlockState.backend(),
 });
 
+const providerSubscriptionAccountManager = new ProviderSubscriptionAccountManager({
+  coreDb,
+  vaultBackend: () => activeVaultUnlockState.backend(),
+});
 const runtimeConfigManager = createRuntimeConfigManager({
   captureCoverage: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
   dataRoot,
   initialSnapshot: runtimeConfigSnapshot,
+  subscriptionAccounts: providerSubscriptionAccountManager,
 });
 
 if (mode === 'local') {
@@ -525,6 +531,7 @@ const app = createApp({
   nanoHostSessionDispatch,
   nanohostTransportSessionAuthority,
   runtimeConfigManager,
+  providerSubscriptionAccountManager,
   schedulerEpoch,
   store,
   turnExecutor,

@@ -19,9 +19,11 @@ import { join } from 'node:path';
 
 import type { AuthInteraction, OAuthCredential } from '@earendil-works/pi-ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime-config.js';
 import type { CoreDb } from '../storage/db.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createApp } from '../test-support/app.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import {
@@ -34,6 +36,8 @@ import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import { createVaultInjectionReceipt } from '../vault-injection-receipts.js';
+import { resolveLogicalModel, resolveLogicalModelCatalog } from './logical-models.js';
+import type { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 import {
   ProviderSubscriptionAccountError,
   ProviderSubscriptionAccountManager,
@@ -889,7 +893,255 @@ function findLiteralCanaryBytes(dataRoot: string, canaries: readonly string[]): 
   return matches;
 }
 
+/** Writes real bound and independent Provider tiers for availability observations. */
+function writeAvailabilitySupply(fixture: ProviderSubscriptionFixture): void {
+  const configRoot = join(fixture.dataRoot, 'config');
+  mkdirSync(join(configRoot, 'providers'), { recursive: true });
+  writeFileSync(
+    join(configRoot, 'providers', 'bound.provider.jsonc'),
+    JSON.stringify({
+      id: 'bound',
+      displayName: 'Bound',
+      kind: 'oauth',
+      vendor: 'openai-codex',
+      models: ['gpt-5.1'],
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'availability' } } },
+    })
+  );
+  writeFileSync(
+    join(configRoot, 'providers', 'independent.provider.jsonc'),
+    JSON.stringify({
+      id: 'independent',
+      displayName: 'Independent',
+      kind: 'local',
+      vendor: 'openai',
+      models: ['gpt-5.1'],
+    })
+  );
+  writeFileSync(
+    join(configRoot, 'gateway.jsonc'),
+    JSON.stringify({
+      schemaVersion: 1,
+      logicalModels: [
+        {
+          id: 'bound-tier',
+          displayName: 'Bound',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [{ id: 'bound-route', providerProfileId: 'bound', providerModel: 'gpt-5.1' }],
+        },
+        {
+          id: 'independent-tier',
+          displayName: 'Independent',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [
+            { id: 'independent-route', providerProfileId: 'independent', providerModel: 'gpt-5.1' },
+          ],
+        },
+      ],
+    })
+  );
+}
+
 describe('ProviderSubscriptionAccountManager', () => {
+  it('reads live Gateway availability without resolving secrets or writing Vault-use records', async () => {
+    const fixture = createFixture();
+    try {
+      await createStoredPair(fixture, accountPair('availability'), 'availability_live');
+      writeAvailabilitySupply(fixture);
+      const before = listVaultUseRecords(fixture.coreDb);
+      const resolves = vi.spyOn(fixture.backend(), 'resolve');
+      const manager = createRuntimeConfigManager({
+        dataRoot: fixture.dataRoot,
+        subscriptionAccounts: fixture.manager,
+      });
+      const app = createApp({
+        dataRoot: fixture.dataRoot,
+        coreDb: fixture.coreDb,
+        runtimeConfigManager: manager,
+        providerSubscriptionAccountManager: fixture.manager,
+      });
+      const discovery = await app.request('/v1/models');
+      expect(discovery.status).toBe(200);
+      expect(await discovery.json()).toMatchObject({
+        data: expect.arrayContaining([expect.objectContaining({ id: 'bound-tier' })]),
+      });
+      const snapshot = manager.current();
+      expect(
+        resolveLogicalModel(
+          snapshot.gatewayConfig,
+          snapshot.providerRegistry,
+          'bound-tier',
+          fixture.manager
+        )
+      ).toMatchObject({ routes: [{ available: true }] });
+      expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+      expect(listVaultUseRecords(fixture.coreDb)).toEqual(before);
+      expect(resolves).not.toHaveBeenCalled();
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('keeps independent tiers discoverable and dispatchable when one account is corrupt', async () => {
+    const fixture = createFixture();
+    try {
+      const pair = accountPair('availability');
+      await createStoredPair(fixture, pair, 'corrupt_availability');
+      writeAvailabilitySupply(fixture);
+      writeFileSync(accountPath(fixture.dataRoot, pair), '{ corrupt account');
+      const dispatched = vi.fn(async () => ({
+        id: 'independent-result',
+        object: 'chat.completion',
+        created: 1,
+        model: 'gpt-5.1',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'independent' },
+            finish_reason: 'stop',
+          },
+        ],
+      }));
+      const manager = createRuntimeConfigManager({
+        dataRoot: fixture.dataRoot,
+        subscriptionAccounts: fixture.manager,
+      });
+      const app = createApp({
+        dataRoot: fixture.dataRoot,
+        coreDb: fixture.coreDb,
+        providerSubscriptionAccountManager: fixture.manager,
+        runtimeConfigManager: manager,
+        llmGatewayDispatcher: {
+          createChatCompletion: dispatched,
+        } as unknown as LLMGatewayProviderDispatcher,
+      });
+      const discovery = await app.request('/v1/models');
+      expect(discovery.status).toBe(200);
+      expect(await discovery.json()).toMatchObject({
+        data: [expect.objectContaining({ id: 'independent-tier' })],
+      });
+      const response = await app.request('/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'independent-tier',
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(dispatched).toHaveBeenCalledTimes(1);
+      expect(fixture.manager.gatewayUnavailableReason(pair)).toBe(
+        'subscription_account_integrity_unavailable'
+      );
+      await expect(fixture.manager.getStatus(pair)).rejects.toMatchObject({
+        code: 'provider_subscription_persistence_failed',
+      });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('omits pre-owner subscription warnings but marks logged-out production supply unavailable', async () => {
+    const fixture = createFixture();
+    try {
+      const pair = accountPair('availability');
+      await fixture.manager.createAccount(pair);
+      writeAvailabilitySupply(fixture);
+      const boot = loadRuntimeConfig(fixture.dataRoot);
+      expect(
+        boot.diagnostics.filter((diagnostic) => diagnostic.code === 'gateway.unavailable_member')
+      ).toEqual([]);
+      expect(
+        resolveLogicalModel(
+          boot.gatewayConfig,
+          boot.providerRegistry,
+          'bound-tier',
+          fixture.manager
+        )
+      ).toMatchObject({
+        routes: [{ available: false, unavailableReason: 'subscription_account_logged_out' }],
+      });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('projects absent and logged-out Gateway accounts without creating a pair handle', async () => {
+    const fixture = createFixture();
+    try {
+      const pair = accountPair('gateway');
+      const configRoot = join(fixture.dataRoot, 'config');
+      mkdirSync(join(configRoot, 'providers'), { recursive: true });
+      writeFileSync(
+        join(configRoot, 'providers', 'bound.provider.jsonc'),
+        JSON.stringify({
+          id: 'bound',
+          displayName: 'Bound',
+          kind: 'oauth',
+          vendor: 'openai-codex',
+          models: ['gpt-5.1'],
+          extensions: { openkit: { subscriptionAccount: { accountSlotId: pair.accountSlotId } } },
+        })
+      );
+      writeFileSync(
+        join(configRoot, 'gateway.jsonc'),
+        JSON.stringify({
+          schemaVersion: 1,
+          logicalModels: [
+            {
+              id: 'retained',
+              displayName: 'Retained',
+              contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+              routes: [
+                { id: 'account-route', providerProfileId: 'bound', providerModel: 'gpt-5.1' },
+              ],
+            },
+          ],
+        })
+      );
+      const checkSnapshot = (reason: string) => {
+        const snapshot = loadRuntimeConfig(fixture.dataRoot, {
+          subscriptionAccounts: fixture.manager,
+        });
+        expect(snapshot.diagnostics).toContainEqual(
+          expect.objectContaining({
+            code: 'gateway.unavailable_member',
+            severity: 'warning',
+            message: `Logical model route account-route is unavailable: ${reason}.`,
+          })
+        );
+        const [model] = resolveLogicalModelCatalog(
+          snapshot.gatewayConfig,
+          snapshot.providerRegistry,
+          fixture.manager
+        );
+        expect(model).toMatchObject({
+          id: 'retained',
+          routes: [{ available: false, unavailableReason: reason }],
+        });
+      };
+      expect(fixture.manager.gatewayUnavailableReason(pair)).toBe('subscription_account_absent');
+      checkSnapshot('subscription_account_absent');
+      await fixture.manager.createAccount(pair);
+      expect(fixture.manager.gatewayUnavailableReason(pair)).toBe(
+        'subscription_account_logged_out'
+      );
+      checkSnapshot('subscription_account_logged_out');
+      fixture.queueReferenceIds('gateway_live');
+      const handle = await fixture.manager.getPairHandle(pair);
+      await handle.credentials.modify(pair.subscriptionProviderId, async () =>
+        oauthCredential('gateway-live')
+      );
+      const before = readFileSync(accountPath(fixture.dataRoot, pair), 'utf8');
+      expect(fixture.manager.gatewayUnavailableReason(pair)).toBeNull();
+      expect(readFileSync(accountPath(fixture.dataRoot, pair), 'utf8')).toBe(before);
+      fixture.vaultState.lock();
+      expect(fixture.manager.gatewayUnavailableReason(pair)).toBe('subscription_vault_unavailable');
+    } finally {
+      fixture.close();
+    }
+  });
+
   it('strictly creates and updates safe account metadata through monotonic atomic replacement', async () => {
     const fixture = createFixture();
     const pair = accountPair('team_a');

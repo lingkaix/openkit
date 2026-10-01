@@ -512,6 +512,35 @@ export class ProviderSubscriptionAccountManager {
   }
 
   /**
+   * Checks current Gateway supply using only non-secret pair metadata and backend health.
+   *
+   * @param pair Exact subscription account selected by the Provider profile.
+   * @returns Fixed member-local reason, or null for a live pair on an available backend.
+   * @throws When the supplied pair identity is invalid; account reads retain their strict integrity errors.
+   */
+  public gatewayUnavailableReason(pair: ProviderSubscriptionAccountPair): string | null {
+    const exactPair = this.requirePair(pair);
+    try {
+      if (this.currentBackend().health().state !== 'available')
+        return 'subscription_vault_unavailable';
+      const inspection = this.inspectPair(exactPair);
+      if (inspection.kind === 'absent') return 'subscription_account_absent';
+      if (inspection.kind === 'unbound') return 'subscription_account_logged_out';
+      if (inspection.kind !== 'live') throw persistenceError();
+      return null;
+    } catch (error) {
+      const normalized = normalizeAccountError(error);
+      if (
+        normalized.code === 'provider_subscription_vault_locked' ||
+        normalized.code === 'provider_subscription_vault_unavailable'
+      ) {
+        return 'subscription_vault_unavailable';
+      }
+      return 'subscription_account_integrity_unavailable';
+    }
+  }
+
+  /**
    * Returns the cached provider-only pi-ai runtime for one valid account pair.
    *
    * @param pair Provider-slot identity.

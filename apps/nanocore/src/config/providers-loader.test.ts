@@ -151,7 +151,16 @@ describe('loadProviderProfiles', () => {
       ],
     };
     expect(resolveLogicalModelCatalog(config, registry)).toEqual([
-      expect.objectContaining({ id: 'gpt-6-astra', routes: [route] }),
+      expect.objectContaining({
+        id: 'gpt-6-astra',
+        routes: [
+          {
+            ...route,
+            available: true,
+            unavailableReason: null,
+          },
+        ],
+      }),
     ]);
     config.logicalModels[0]!.contextManagement[0]!.compactThreshold = context - 128_000 + 1;
     expect(() => resolveLogicalModelCatalog(config, registry)).toThrow(

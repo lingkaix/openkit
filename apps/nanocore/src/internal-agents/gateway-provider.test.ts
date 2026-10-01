@@ -50,7 +50,16 @@ const logicalModel: ResolvedLogicalModel = {
   capabilities: ['responses', 'tool-calling'],
   contextManagement: { type: 'compaction', compactThreshold: 8_000 },
   modelFamilyId: 'gpt-5',
-  routes: [{ id: 'primary', providerProfileId: 'provider', providerModel: 'model' }],
+  autoFailover: true,
+  routes: [
+    {
+      id: 'primary',
+      providerProfileId: 'provider',
+      providerModel: 'model',
+      available: true,
+      unavailableReason: null,
+    },
+  ],
 };
 
 function request(input = 'Read status.') {
@@ -288,6 +297,8 @@ describe('internal Agent Gateway provider', () => {
             id: 'primary',
             providerProfileId: 'codex-work',
             providerModel: 'openai-codex/gpt-5.6-sol',
+            available: true,
+            unavailableReason: null,
           },
         ],
       },

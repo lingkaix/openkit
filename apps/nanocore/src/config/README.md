@@ -32,3 +32,5 @@ Run the focused loader, precedence, runtime snapshot, reload, file, and route te
 ## Public Native Environment
 
 `agent-native-environment.ts` derives the administrator view from confirmed image settlements, the existing Agent file revision, the live configuration snapshot and audience-checked AgentSession bindings. Updates use `RuntimeConfigFileService.updateFile` CAS and safe reload; failed reload keeps the previous snapshot. Native application is pending until exact native-start acknowledgement, and uncertain or cleanup-unproved bindings expose unknown state without applied values.
+
+Gateway reload warns for unavailable authored members without rejecting their logical IDs. Invalid thresholds remain blocking. Account integrity failures make only the bound members unavailable, while the account owner retains strict integrity errors. Pre-owner boot snapshots do not evaluate subscription availability. Unknown additive keys inside `logicalModels[*].routing` are stripped and receive located warnings through snapshot and file validation; `autoFailover` must be a boolean when routing is present.

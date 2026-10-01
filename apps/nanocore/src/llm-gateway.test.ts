@@ -217,7 +217,10 @@ function createDirectGatewayApp(input: {
   (registerLlmGatewayRoutes as unknown as (dependencies: Record<string, unknown>) => void)({
     app,
     llmGatewayDispatcher: input.dispatcher,
-    providerSubscriptionAccountManager: { getPairHandle: input.getPairHandle },
+    providerSubscriptionAccountManager: {
+      getPairHandle: input.getPairHandle,
+      gatewayUnavailableReason: () => null,
+    },
     resolveGatewayProvider: (providerId: string) => {
       const profile = providerRegistry.get(providerId);
       if (!profile) {
@@ -398,7 +401,68 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(seen).toEqual([{ providerId: 'orca-custom', model: 'handwritten/local-flash' }]);
   });
 
-  it('retains a logical model when at least one configured route is dispatchable', async () => {
+  it.each([
+    'absent',
+    'delisted',
+  ])('hides a fully unavailable %s tier and returns its typed error', async (kind) => {
+    const attempts = vi.fn();
+    const app = createApp({
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        logicalModels: [
+          {
+            id: 'retained-tier',
+            displayName: 'Retained',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+            routes: [
+              { id: 'missing-route', providerProfileId: 'supply', providerModel: 'gpt-5.1' },
+            ],
+          },
+        ],
+      },
+      openKitConfig: {},
+      providerRegistry: new ProviderRegistry(
+        kind === 'absent'
+          ? []
+          : [
+              {
+                id: 'supply',
+                displayName: 'Supply',
+                kind: 'local',
+                vendor: 'openai',
+                models: ['gpt-5.2'],
+              },
+            ]
+      ),
+      llmGatewayDispatcher: {
+        createChatCompletion: attempts,
+      } as unknown as LLMGatewayProviderDispatcher,
+    });
+    await expect((await app.request('/v1/models')).json()).resolves.toEqual({
+      object: 'list',
+      data: [],
+    });
+    const response = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'retained-tier',
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'gateway_logical_model_unavailable' },
+    });
+    expect(attempts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'blocked',
+    'absent',
+    'delisted',
+  ])('retains discovery with an available sibling and a %s primary', async (kind) => {
     const app = createApp({
       gatewayConfig: {
         schemaVersion: 1,
@@ -417,14 +481,20 @@ describe('OpenAI-compatible agent gateway', () => {
       },
       openKitConfig: {},
       providerRegistry: new ProviderRegistry([
-        {
-          displayName: 'Blocked',
-          id: 'blocked',
-          kind: 'local',
-          models: ['gpt-5.1'],
-          readiness: { status: 'blocked', summary: 'Unavailable' },
-          vendor: 'openai',
-        },
+        ...(kind === 'absent'
+          ? []
+          : [
+              {
+                displayName: 'Blocked',
+                id: 'blocked',
+                kind: 'local' as const,
+                models: kind === 'delisted' ? ['gpt-5.2'] : ['gpt-5.1'],
+                ...(kind === 'blocked'
+                  ? { readiness: { status: 'blocked' as const, summary: 'Unavailable' } }
+                  : {}),
+                vendor: 'openai',
+              },
+            ]),
         {
           displayName: 'Ready',
           id: 'ready',
@@ -557,7 +627,10 @@ describe('OpenAI-compatible agent gateway', () => {
     ]);
   });
 
-  it('keeps private routes hidden while falling back before output', async () => {
+  it.each([
+    undefined,
+    false,
+  ])('uses authored failover and keeps private routes hidden: %s', async (autoFailover) => {
     const attempts: Array<{ model: string; providerId: string }> = [];
     const app = createApp({
       gatewayConfig: {
@@ -567,6 +640,7 @@ describe('OpenAI-compatible agent gateway', () => {
           {
             id: 'reasoning',
             displayName: 'Reasoning',
+            ...(autoFailover === undefined ? {} : { routing: { autoFailover } }),
             contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               { id: 'primary', providerProfileId: 'openai-primary', providerModel: 'gpt-5.1' },
@@ -628,6 +702,14 @@ describe('OpenAI-compatible agent gateway', () => {
       headers: { 'content-type': 'application/json' },
     });
 
+    if (autoFailover === false) {
+      expect(res.status).toBe(429);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { code: 'gateway_provider_rate_limited' },
+      });
+      expect(attempts).toEqual([{ model: 'gpt-5.1', providerId: 'openai-primary' }]);
+      return;
+    }
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ model: 'reasoning' });
     expect(attempts).toEqual([

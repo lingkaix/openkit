@@ -1654,7 +1654,7 @@ function routePatch(
   };
 }
 
-/** Validates each admitted route's native representation, including nonpreferred members. */
+/** Validates all admitted native models; reasoning support does not enable effort controls. */
 function nativeModelFromRoute(route: WorkerAdapterLlmRoute): NativeModel {
   if (route.endpoint.upstream?.kind === 'direct-provider') {
     throw new Error('DeepSeek route is not representable.');
@@ -1669,7 +1669,6 @@ function nativeModelFromRoute(route: WorkerAdapterLlmRoute): NativeModel {
   if (!isSessionId(route.model))
     throw new Error('DeepSeek model is not the advertised loopback model.');
   const parameters = route.modelParameters;
-  if (parameters?.reasoning === true) throw new Error('DeepSeek route is not representable.');
   const contextWindow = parameters?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const maxTokens = parameters?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   if (

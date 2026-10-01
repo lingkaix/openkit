@@ -57,6 +57,117 @@ function gateway(input: {
 }
 
 describe('resolveLogicalModelCatalog', () => {
+  it.each([
+    'absent',
+    'delisted',
+  ])('derives the complete contract without constraining a %s backup', (kind) => {
+    const primary = profile({
+      id: 'primary',
+      models: ['primary-model'],
+      modelMetadata: {
+        'primary-model': {
+          family: 'primary-family',
+          limit: { context: 128_000, output: 16_000 },
+          modalities: { input: ['text', 'image'], output: ['text'] },
+          reasoning: true,
+          tool_call: true,
+        },
+      },
+    });
+    const [model] = resolveLogicalModelCatalog(
+      gateway({
+        routes: [
+          { id: 'primary', providerProfileId: 'primary', providerModel: 'primary-model' },
+          { id: 'backup', providerProfileId: 'backup', providerModel: 'missing-model' },
+        ],
+      }),
+      new ProviderRegistry([
+        primary,
+        ...(kind === 'absent' ? [] : [profile({ id: 'backup', models: ['different-model'] })]),
+      ])
+    );
+    expect(model).toMatchObject({
+      modelFamilyId: 'primary-family',
+      modelParameters: {
+        contextWindow: 128_000,
+        maxOutputTokens: 16_000,
+        inputModalities: ['text', 'image'],
+        reasoning: true,
+      },
+      routes: [
+        { available: true },
+        {
+          available: false,
+          unavailableReason:
+            kind === 'absent' ? 'provider_profile_absent' : 'provider_model_delisted',
+        },
+      ],
+    });
+    expect(model?.capabilities).toEqual([
+      'chat-completions',
+      'input:image',
+      'input:text',
+      'output:text',
+      'reasoning',
+      'responses',
+      'tool-calling',
+    ]);
+  });
+
+  it('derives a coherent mixed-family contract over all authored members', () => {
+    const [model] = resolveLogicalModelCatalog(
+      gateway({
+        routes: [
+          { id: 'primary', providerProfileId: 'a', providerModel: 'a' },
+          { id: 'backup', providerProfileId: 'b', providerModel: 'b' },
+        ],
+      }),
+      new ProviderRegistry([
+        profile({
+          id: 'a',
+          models: ['a'],
+          modelMetadata: {
+            a: {
+              family: 'family-a',
+              limit: { context: 128_000, output: 16_000 },
+              modalities: { input: ['text', 'image'], output: ['text'] },
+              reasoning: true,
+              tool_call: true,
+            },
+          },
+        }),
+        profile({
+          id: 'b',
+          models: ['b'],
+          modelMetadata: {
+            b: {
+              family: 'family-b',
+              limit: { context: 64_000, output: 8_000 },
+              modalities: { input: ['text', 'audio'], output: ['text'] },
+              tool_call: false,
+            },
+          },
+        }),
+      ])
+    );
+    expect(model).toMatchObject({
+      autoFailover: true,
+      modelFamilyId: null,
+      modelParameters: {
+        contextWindow: 64_000,
+        maxOutputTokens: 8_000,
+        inputModalities: ['text'],
+        reasoning: false,
+      },
+    });
+    expect(model?.capabilities).toEqual([
+      'chat-completions',
+      'input:text',
+      'output:text',
+      'responses',
+    ]);
+  });
+
   it('projects complete effective model parameters without filtering modalities or replacing false', () => {
     const metadata = {
       limit: { context: 128_000, output: 16_000 },
@@ -96,23 +207,24 @@ describe('resolveLogicalModelCatalog', () => {
     {
       label: 'conflicting context',
       overlay: { limit: { context: 256_000, output: 16_000 } },
-      projected: false,
+      projected: true,
     },
     {
       label: 'conflicting output',
       overlay: { limit: { context: 128_000, output: 8_000 } },
-      projected: false,
+      projected: true,
     },
     {
       label: 'conflicting modalities',
       overlay: { modalities: { input: ['text', 'image'] } },
-      projected: false,
+      projected: true,
     },
-    { label: 'conflicting reasoning', overlay: { reasoning: true }, projected: false },
-    { label: 'missing output', overlay: { limit: { context: 128_000 } }, projected: false },
+    { label: 'conflicting reasoning', overlay: { reasoning: true }, projected: true },
+    { label: 'missing output', overlay: { limit: { context: 128_000 } }, projected: true },
     { label: 'missing modalities', overlay: { modalities: undefined }, projected: false },
-    { label: 'missing reasoning', overlay: { reasoning: undefined }, projected: false },
+    { label: 'missing reasoning', overlay: { reasoning: undefined }, projected: true },
   ])('projects only coherent model parameters across authored routes: $label', ({
+    label,
     overlay,
     projected,
   }) => {
@@ -146,11 +258,11 @@ describe('resolveLogicalModelCatalog', () => {
       ])
     );
 
-    expect(model?.routes).toHaveLength(1);
+    expect(model?.routes).toHaveLength(2);
     if (projected) {
       expect(model).toHaveProperty('modelParameters', {
         contextWindow: 128_000,
-        maxOutputTokens: 16_000,
+        maxOutputTokens: label === 'conflicting output' ? 8_000 : 16_000,
         inputModalities: ['text'],
         reasoning: false,
       });
@@ -181,6 +293,7 @@ describe('resolveLogicalModelCatalog', () => {
 
     expect(catalog).toEqual([
       {
+        autoFailover: true,
         id: 'local-free',
         displayName: 'local-free',
         modelFamilyId: null,
@@ -188,6 +301,8 @@ describe('resolveLogicalModelCatalog', () => {
         capabilities: ['chat-completions', 'responses'],
         routes: [
           {
+            available: true,
+            unavailableReason: null,
             id: 'primary',
             providerProfileId: 'orca-custom',
             providerModel: 'handwritten/local-flash',
@@ -221,6 +336,7 @@ describe('resolveLogicalModelCatalog', () => {
 
     expect(catalog).toEqual([
       {
+        autoFailover: true,
         id: 'openrouter-free',
         displayName: 'openrouter-free',
         modelFamilyId: null,
@@ -244,6 +360,8 @@ describe('resolveLogicalModelCatalog', () => {
         ],
         routes: [
           {
+            available: true,
+            unavailableReason: null,
             id: 'primary',
             providerProfileId: 'openrouter-test',
             providerModel: 'openrouter/free',
@@ -253,8 +371,8 @@ describe('resolveLogicalModelCatalog', () => {
     ]);
   });
 
-  it('rejects a known-family dispatchable route when an authored blocked sibling has unknown family', () => {
-    expect(() =>
+  it('retains mixed families when an authored sibling is blocked', () => {
+    expect(
       resolveLogicalModelCatalog(
         gateway({
           id: 'mixed-admission',
@@ -281,11 +399,15 @@ describe('resolveLogicalModelCatalog', () => {
           }),
         ])
       )
-    ).toThrow('Logical model routes cross model families: mixed-admission.');
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'mixed-admission', modelFamilyId: null }),
+      ])
+    );
   });
 
-  it('rejects a known-family dispatchable route when an authored sibling profile is undeployed', () => {
-    expect(() =>
+  it('retains the logical id when an authored sibling profile is undeployed', () => {
+    expect(
       resolveLogicalModelCatalog(
         gateway({
           id: 'mixed-undeployed',
@@ -307,7 +429,21 @@ describe('resolveLogicalModelCatalog', () => {
           }),
         ])
       )
-    ).toThrow('Logical model routes cross model families: mixed-undeployed.');
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'mixed-undeployed',
+          modelFamilyId: 'gpt',
+          routes: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'missing',
+              available: false,
+              unavailableReason: 'provider_profile_absent',
+            }),
+          ]),
+        }),
+      ])
+    );
   });
 
   it('retains a known-family logical model when a same-family authored sibling is blocked', () => {
@@ -340,13 +476,28 @@ describe('resolveLogicalModelCatalog', () => {
       expect.objectContaining({
         id: 'reasoning',
         modelFamilyId: 'gpt',
-        routes: [{ id: 'ready', providerProfileId: 'ready', providerModel: 'gpt-5.1' }],
+        routes: [
+          {
+            id: 'blocked',
+            providerProfileId: 'blocked',
+            providerModel: 'gpt-5.1',
+            available: false,
+            unavailableReason: 'provider_not_dispatchable',
+          },
+          {
+            id: 'ready',
+            providerProfileId: 'ready',
+            providerModel: 'gpt-5.1',
+            available: true,
+            unavailableReason: null,
+          },
+        ],
       }),
     ]);
   });
 
-  it('rejects an unknown-family logical model that authors more than one route', () => {
-    expect(() =>
+  it('admits multiple unknown-family authored routes', () => {
+    expect(
       resolveLogicalModelCatalog(
         gateway({
           routes: [
@@ -375,11 +526,11 @@ describe('resolveLogicalModelCatalog', () => {
           }),
         ])
       )
-    ).toThrow('Logical model routes cross model families: local-free.');
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ modelFamilyId: null })]));
   });
 
-  it('still rejects distinct known catalog families', () => {
-    expect(() =>
+  it('admits distinct known catalog families with null logical family', () => {
+    expect(
       resolveLogicalModelCatalog(
         gateway({
           id: 'mixed',
@@ -407,7 +558,9 @@ describe('resolveLogicalModelCatalog', () => {
           }),
         ])
       )
-    ).toThrow('Logical model routes cross model families: mixed.');
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'mixed', modelFamilyId: null })])
+    );
   });
 
   it('resolves the Gateway default logical model when no id is supplied', () => {
@@ -429,6 +582,7 @@ describe('resolveLogicalModelCatalog', () => {
     ]);
 
     expect(resolveLogicalModel(config, providers)).toEqual({
+      autoFailover: true,
       id: 'local-free',
       displayName: 'local-free',
       modelFamilyId: null,
@@ -436,6 +590,8 @@ describe('resolveLogicalModelCatalog', () => {
       capabilities: ['chat-completions', 'responses'],
       routes: [
         {
+          available: true,
+          unavailableReason: null,
           id: 'primary',
           providerProfileId: 'orca-custom',
           providerModel: 'handwritten/local-flash',
@@ -444,8 +600,8 @@ describe('resolveLogicalModelCatalog', () => {
     });
   });
 
-  it('still requires the provider profile to list the configured model id', () => {
-    expect(() =>
+  it('retains a delisted member as unavailable without using catalog metadata', () => {
+    expect(
       resolveLogicalModelCatalog(
         gateway({
           routes: [
@@ -463,7 +619,21 @@ describe('resolveLogicalModelCatalog', () => {
           }),
         ])
       )
-    ).toThrow('Logical model route model is not provided: primary.');
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'local-free',
+          modelFamilyId: null,
+          routes: [
+            expect.objectContaining({
+              id: 'primary',
+              available: false,
+              unavailableReason: 'provider_model_delisted',
+            }),
+          ],
+        }),
+      ])
+    );
   });
 
   it('rejects an internal context policy that cannot fit every eligible route', () => {

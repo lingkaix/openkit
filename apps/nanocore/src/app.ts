@@ -749,6 +749,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     createRuntimeConfigManager({
       dataRoot,
       captureCoverage: sharedStore,
+      ...(providerSubscriptionAccountManager
+        ? { subscriptionAccounts: providerSubscriptionAccountManager }
+        : {}),
       ...(!dataRoot || hasInlineRuntimeConfigInput
         ? {
             initialSnapshot: createInMemoryRuntimeConfigSnapshot({
@@ -1440,7 +1443,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           defaultModelId: runtimeConfig().gatewayConfig.defaultLogicalModelId ?? null,
           models: resolveLogicalModelCatalog(
             runtimeConfig().gatewayConfig,
-            runtimeConfig().providerRegistry
+            runtimeConfig().providerRegistry,
+            providerSubscriptionAccountManager ?? undefined
           ).map(({ id, displayName, capabilities }) => ({ id, displayName, capabilities })),
           usage: gatewayUsageTracker.snapshot(),
         },

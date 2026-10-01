@@ -72,6 +72,26 @@ function gatewayConfig(): GatewayConfig {
 }
 
 describe('resolveAgentSetup', () => {
+  it.each([
+    'explicit',
+    'all',
+  ])('refuses an unavailable preferred model with an %s allowlist', (kind) => {
+    const result = resolveAgentSetup(
+      agentConfig({
+        models: {
+          preferredLogicalModelId: 'reasoning',
+          allowedLogicalModelIds: kind === 'all' ? 'all' : ['reasoning'],
+        },
+      }),
+      { gatewayConfig: gatewayConfig(), providerRegistry: new ProviderRegistry([]) }
+    );
+
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'agent_setup.logical_model_not_allowed', severity: 'error' })
+    );
+  });
+
   it('fails with a typed diagnostic when a logical model is missing', () => {
     const result = resolveAgentSetup(
       agentConfig({

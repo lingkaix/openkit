@@ -832,29 +832,36 @@ describe('deepseek resident adapter', () => {
   );
 
   it(
-    'rejects a reasoning parameter the profile cannot represent before native work',
+    'accepts an admitted reasoning route through the native adapter without effort controls',
     async () => {
-      const inference = await startSyntheticInference(() => ({ text: 'should-not-run' }));
+      const inference = await startSyntheticInference(() => ({ text: 'reasoning-admitted' }));
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const input = turn(roots, inference, 'reason', [], 'turn-1');
-      await expect(
-        session.startTurn({
-          ...input,
-          llmRoute: {
-            ...input.llmRoute,
-            modelParameters: {
-              contextWindow: 128_000,
-              inputModalities: ['text'],
-              maxOutputTokens: 8_192,
-              reasoning: true,
-            },
-          },
-        })
-      ).rejects.toThrow(/not representable/);
-      expect(session.childState()).toBe('absent');
-      expect(inference.requests).toHaveLength(0);
+      const route = {
+        ...catalogRoute('reasoning-model', 128_000, 8_192),
+        modelParameters: {
+          contextWindow: 128_000,
+          inputModalities: ['text' as const],
+          maxOutputTokens: 8_192,
+          reasoning: true,
+        },
+      };
+      expect(
+        await (await session.startTurn(catalogTurn(roots, inference, [route], route, 'reason')))
+          .settled
+      ).toMatchObject({ status: 'completed' });
+      expect(inference.requests.map((request) => request.body.model)).toEqual(['reasoning-model']);
+      const patch = JSON.parse(
+        readFileSync(join(roots.control, 'deepseek-loopback.patch.yml'), 'utf8')
+      );
+      const models = patch.at(-1).insert.find((row: { id: string }) => row.id === 'llm-pi-ai')
+        .config.providers['openkit-loopback'].models;
+      expect(models[0]).toMatchObject({
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+        reasoningEfforts: false,
+      });
     },
     LIVE
   );
@@ -1682,7 +1689,7 @@ describe('deepseek resident adapter', () => {
     LIVE
   );
 
-  it.each(['reasoning', 'modality', 'bounds', 'endpoint', 'model-id', 'duplicate'])(
+  it.each(['modality', 'bounds', 'endpoint', 'model-id', 'duplicate'])(
     'rejects an unsupported nonpreferred admitted member: %s',
     async (kind) => {
       const inference = await startSyntheticInference(() => ({ text: 'must-not-run' }));
@@ -1691,8 +1698,6 @@ describe('deepseek resident adapter', () => {
       const session = await open(roots, inference, null);
       const a = catalogRoute('catalog-a', 32_768, 1_024);
       let b = catalogRoute('catalog-b', 65_536, 2_048);
-      if (kind === 'reasoning')
-        b = { ...b, modelParameters: { ...b.modelParameters!, reasoning: true } };
       if (kind === 'modality')
         b = { ...b, modelParameters: { ...b.modelParameters!, inputModalities: ['audio'] } };
       if (kind === 'bounds')

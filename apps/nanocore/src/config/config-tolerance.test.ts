@@ -25,6 +25,41 @@ function authoredFile(relativePath: string, content: string): { dataRoot: string
 }
 
 describe('authored configuration tolerance', () => {
+  it('reports ignored Gateway routing keys through file validation without exposing values', () => {
+    const content = JSON.stringify({
+      schemaVersion: 1,
+      logicalModels: [
+        {
+          id: 'retained',
+          displayName: 'Retained',
+          routing: { autoFailover: true, futureStrategy: 'private-canary' },
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [{ id: 'missing-route', providerProfileId: 'missing', providerModel: 'model' }],
+        },
+      ],
+    });
+    const { dataRoot, path } = authoredFile('config/gateway.jsonc', content);
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const files = new RuntimeConfigFileService({
+      dataRoot,
+      userId: 'user_demo',
+      workspaceIds: [],
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    const validation = files.validate({ files: [{ id: 'gateway.jsonc', content }], mode: 'safe' });
+    expect(validation.valid).toBe(true);
+    expect(validation.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'authored_config.unknown_key',
+        severity: 'warning',
+        jsonPath: '$.logicalModels[0].routing.futureStrategy',
+      })
+    );
+    expect(JSON.stringify(validation.diagnostics)).not.toContain('private-canary');
+    expect(readFileSync(path, 'utf8')).toBe(content);
+  });
+
   it.each([
     'environmnt',
     'credentials',

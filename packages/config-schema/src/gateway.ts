@@ -17,11 +17,15 @@ export const GatewayContextManagementSchema = z
   })
   .strict();
 
+/** Optional routing controls; unknown additive keys are ignored by the reader. */
+export const GatewayRoutingSchema = z.object({ autoFailover: z.boolean() });
+
 /** One logical model and its ordered private route members. */
 export const GatewayLogicalModelSchema = z
   .object({
     id: z.string().min(1),
     displayName: z.string().trim().min(1),
+    routing: GatewayRoutingSchema.optional(),
     contextManagement: z.array(GatewayContextManagementSchema).length(1),
     routes: z.array(GatewayRouteMemberSchema).min(1),
   })

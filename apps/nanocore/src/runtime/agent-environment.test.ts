@@ -584,6 +584,86 @@ describe('agent environment package resolver', () => {
     }
   });
 
+  it('projects unequal mixed-family member parameters into the AEP', () => {
+    const setupResult = resolveAgentSetup(createTestSetup().manifest, {
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'reasoning',
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'private-provider',
+                providerModel: 'private-model',
+              },
+              { id: 'backup', providerProfileId: 'backup-provider', providerModel: 'backup-model' },
+            ],
+          },
+        ],
+      },
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'private-provider',
+          displayName: 'Private Provider',
+          kind: 'custom',
+          baseUrl: 'https://private.example/v1',
+          models: ['private-model'],
+          modelMetadata: {
+            'private-model': {
+              family: 'private-family',
+              limit: { context: 128_000, output: 16_000 },
+              modalities: { input: ['text', 'audio', 'pdf'] },
+              reasoning: false,
+            },
+          },
+        },
+        {
+          id: 'backup-provider',
+          displayName: 'Backup',
+          kind: 'custom',
+          models: ['backup-model'],
+          modelMetadata: {
+            'backup-model': {
+              family: 'other',
+              limit: { context: 64_000, output: 8_000 },
+              modalities: { input: ['text', 'image'] },
+              reasoning: true,
+            },
+          },
+        },
+      ]),
+    });
+    expect(setupResult.diagnostics).toEqual([]);
+    if (!setupResult.setup) throw new Error('Expected admitted model setup.');
+    const resolved = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSetup: setupResult.setup,
+      agentSessionId: 'session_parameters',
+      backend: { kind: 'openshell' },
+      turn: createTurnFixture('Use admitted model parameters'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    });
+    const serialized = JSON.parse(JSON.stringify(resolved));
+    const route = serialized.llm.routes[0];
+    expect(route.model).toBe('reasoning');
+    expect(JSON.stringify(route)).not.toContain('private-provider');
+    expect(JSON.stringify(route)).not.toContain('private-model');
+    expect(JSON.stringify(route)).not.toContain('private.example');
+    expect(route.modelParameters).toEqual({
+      contextWindow: 64_000,
+      maxOutputTokens: 8_000,
+      inputModalities: ['text'],
+      reasoning: false,
+    });
+    expect(setupResult.setup.logicalModels.allowed[0]?.modelFamilyId).toBeNull();
+  });
+
   it('projects one resolved opaque manifest into the generic relay launch contract', () => {
     const turn = createTurnFixture('Run the opaque worker');
     const setupResult = resolveAgentSetup(createTestSetup({ adapter: 'future-adapter' }).manifest, {

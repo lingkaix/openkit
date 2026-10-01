@@ -64,7 +64,7 @@ export interface AgentSetupResolverDependencies {
   supportedRequiredFeatures?: readonly string[];
 }
 
-/** Resolves one immutable Agent setup from Server supply plus Workspace and User composition. */
+/** Resolves one immutable Agent setup from currently available Server supply plus Workspace and User composition. */
 export function resolveAgentSetup(
   config: AgentManifest,
   dependencies: AgentSetupResolverDependencies
@@ -104,7 +104,10 @@ export function resolveAgentSetup(
 
   let catalog: ResolvedLogicalModel[] = [];
   try {
-    catalog = resolveLogicalModelCatalog(dependencies.gatewayConfig, dependencies.providerRegistry);
+    catalog = resolveLogicalModelCatalog(
+      dependencies.gatewayConfig,
+      dependencies.providerRegistry
+    ).filter((model) => model.routes.some((member) => member.available));
   } catch {
     diagnostics.push({
       agentId: config.id,

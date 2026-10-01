@@ -10,7 +10,13 @@ export interface UnknownConfigKey {
 }
 
 /** Authored files with readers that discard optional unknown fields. */
-export type TolerantConfigKind = 'server' | 'user' | 'workspace' | 'data-source' | 'agent';
+export type TolerantConfigKind =
+  | 'server'
+  | 'user'
+  | 'workspace'
+  | 'data-source'
+  | 'agent'
+  | 'gateway';
 
 /** Narrows a JSON object while excluding arrays and null. */
 function record(value: unknown): Record<string, unknown> | null {
@@ -72,6 +78,23 @@ export function unknownConfigKeys(
   const source = record(raw);
   const accepted = record(parsed);
   if (kind === 'server' || !source || !accepted) return keys;
+
+  if (kind === 'gateway') {
+    const rawModels = source.logicalModels;
+    const parsedModels = accepted.logicalModels;
+    if (Array.isArray(rawModels) && Array.isArray(parsedModels)) {
+      for (const [index, model] of rawModels.entries()) {
+        keys.push(
+          ...strippedKeys(
+            record(model)?.routing,
+            record(parsedModels[index])?.routing,
+            `$.logicalModels[${index}].routing`
+          )
+        );
+      }
+    }
+    return keys;
+  }
 
   if (kind === 'agent') {
     return [...keys, ...strippedKeys(source.runtime, accepted.runtime, '$.runtime')];

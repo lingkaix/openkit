@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -194,6 +194,57 @@ function writeWorkspaceMcpServers(dataRoot: string, workspaceId: string, body: s
 }
 
 describe('runtime config loading and reload planning', () => {
+  it.each([
+    'absent',
+    'delisted',
+  ])('reloads a retained tier with a warning for its %s route', (kind) => {
+    const dataRoot = createDataRoot();
+    writeServerConfig(dataRoot, '{ "schemaVersion": 1 }');
+    writeProviderConfig(dataRoot, 'openai/gpt-5.1');
+    writeGatewayConfig(dataRoot);
+    const manager = createRuntimeConfigManager({ dataRoot });
+    writeGatewayConfig(dataRoot, kind === 'delisted' ? 'removed-model' : 'openai/gpt-5.1');
+    if (kind === 'absent') {
+      const path = join(dataRoot, 'config', 'gateway.jsonc');
+      writeFileSync(
+        path,
+        readFileSync(path, 'utf8').replace('agent-openrouter', 'absent-provider')
+      );
+    }
+    const reload = manager.reload({ mode: 'safe' });
+    expect(reload.status).toBe('applied');
+    expect(manager.current().gatewayConfig.logicalModels[0]?.id).toBe('reasoning');
+    expect(manager.current().diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'gateway.unavailable_member',
+        severity: 'warning',
+        message: expect.stringContaining('primary'),
+      })
+    );
+  });
+
+  it('warns and ignores an additive routing key on reload', () => {
+    const dataRoot = createDataRoot();
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    writeGatewayConfig(dataRoot);
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const path = join(dataRoot, 'config', 'gateway.jsonc');
+    const raw = JSON.parse(readFileSync(path, 'utf8'));
+    raw.logicalModels[0].routing = { autoFailover: false, futureStrategy: 'ignored' };
+    writeFileSync(path, JSON.stringify(raw));
+    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect(manager.current().diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'authored_config.unknown_key',
+        severity: 'warning',
+        message: expect.stringContaining('$.logicalModels[0].routing.futureStrategy'),
+      })
+    );
+    expect(loadRuntimeConfig(dataRoot).gatewayConfig.logicalModels[0]?.routing).toEqual({
+      autoFailover: false,
+    });
+  });
+
   it('loads one immutable runtime config snapshot from canonical config inputs', () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');

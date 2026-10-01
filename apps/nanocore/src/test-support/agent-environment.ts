@@ -104,8 +104,11 @@ export function createTestAgentSetup(
           ],
           contextManagement: { type: 'compaction', compactThreshold: 8_000 },
           modelFamilyId: 'gpt',
+          autoFailover: true,
           routes: [
             {
+              available: true,
+              unavailableReason: null,
               id: 'test-route',
               providerProfileId: privateRoute.providerProfileId,
               providerModel: privateRoute.providerModel,
@@ -117,7 +120,7 @@ export function createTestAgentSetup(
   };
 }
 
-/** Creates the logical Gateway catalog paired with one test Agent setup. */
+/** Creates authored Gateway configuration, omitting the resolved members' availability projection. */
 export function createTestGatewayConfig(
   options: Parameters<typeof createTestAgentSetup>[0] = {}
 ): GatewayConfig {
@@ -132,7 +135,11 @@ export function createTestGatewayConfig(
         id: logicalModel.id,
         displayName: logicalModel.displayName,
         contextManagement: [logicalModel.contextManagement],
-        routes: logicalModel.routes.map((route) => ({ ...route })),
+        routes: logicalModel.routes.map(({ id, providerProfileId, providerModel }) => ({
+          id,
+          providerProfileId,
+          providerModel,
+        })),
       },
     ],
     requiredFeatures: [],

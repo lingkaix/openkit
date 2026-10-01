@@ -759,6 +759,7 @@ function resolveOpenShellAgentEnvironmentPackage(
         },
         id: logicalModel.id,
         model: logicalModel.id,
+        // The resolver owns the complete coherent contract; unequal members retain these inputs.
         ...(logicalModel.modelParameters ? { modelParameters: logicalModel.modelParameters } : {}),
         providerInstanceId: workerProviderId,
       })),

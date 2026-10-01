@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from 'node:util';
 import {
   type AgentEnvironmentLlmModelParameters,
   AgentEnvironmentLlmModelParametersSchema,
@@ -12,6 +11,7 @@ import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-10-01/a
 import type { ProviderProfile } from '../config/providers-loader.js';
 import { isProviderProfileDispatchable } from '../providers/llm-config.js';
 import { gatewayCapabilitiesForProfile, type ProviderRegistry } from '../providers/registry.js';
+import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
 
 interface ModelsDevModel {
   readonly family?: string;
@@ -65,6 +65,10 @@ export interface ResolvedLogicalModelRoute {
   readonly id: string;
   readonly providerProfileId: string;
   readonly providerModel: string;
+  /** Current supply eligibility, recomputed rather than retained as health state. */
+  readonly available: boolean;
+  /** Fixed supply reason when this member cannot be selected. */
+  readonly unavailableReason: string | null;
 }
 
 /** Product-visible logical model with optional catalog-derived contract fields. */
@@ -77,38 +81,32 @@ export interface ResolvedLogicalModel {
     readonly type: 'compaction';
     readonly compactThreshold: number;
   };
-  /** Catalog family when inventory names one; null when family metadata is absent. */
+  /** Shared non-null family across members with known metadata; otherwise null. */
   readonly modelFamilyId: string | null;
-  /** Complete descriptor inputs only when every authored route has identical effective values. */
+  /** Complete minimum-limit and intersected-modality inputs when required values are known. */
   readonly modelParameters?: AgentEnvironmentLlmModelParameters;
+  /** Omission of authored routing preserves automatic failover. */
+  readonly autoFailover: boolean;
   readonly routes: readonly ResolvedLogicalModelRoute[];
 }
 
-/** Resolves configured logical models using optional catalog metadata and current Provider supply. */
+/** Resolves retained logical IDs, coherent contracts, and every ordered member against current Provider and account supply. */
 export function resolveLogicalModelCatalog(
   config: GatewayConfig,
-  providers: ProviderRegistry
+  providers: ProviderRegistry,
+  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
 ): ResolvedLogicalModel[] {
   if (!config.enabled) {
     return [];
   }
 
-  return config.logicalModels.flatMap((logicalModel) => {
+  return config.logicalModels.map((logicalModel) => {
     const authoredContracts = logicalModel.routes.map((route) => {
       const profile = providers.get(route.providerProfileId);
-      if (profile === null) return null;
-      if (!profile.models.includes(route.providerModel)) {
-        throw new Error(`Logical model route model is not provided: ${route.id}.`);
-      }
-      return modelContract(profile, route.providerModel);
+      return profile?.models.includes(route.providerModel)
+        ? modelContract(profile, route.providerModel)
+        : null;
     });
-    const authoredFamilies = authoredContracts.map((contract) => contract?.modelFamilyId ?? null);
-    const families = new Set(authoredFamilies);
-    const unknownFamily = authoredFamilies.some((family) => family === null);
-    if (unknownFamily ? logicalModel.routes.length !== 1 : families.size !== 1) {
-      throw new Error(`Logical model routes cross model families: ${logicalModel.id}.`);
-    }
-
     const contextManagement = logicalModel.contextManagement?.[0];
     if (!contextManagement) {
       throw new Error(`Logical model context management is missing: ${logicalModel.id}.`);
@@ -127,33 +125,42 @@ export function resolveLogicalModelCatalog(
       }
     }
 
-    const eligibleRouteIndexes = logicalModel.routes
-      .map((route, index) => ({ route, index }))
-      .filter(({ route }) => {
+    const contracts = authoredContracts.filter((contract) => contract !== null);
+    const families = contracts.map((contract) => contract.modelFamilyId);
+    const inputModalities =
+      contracts.length > 0 && contracts.every((contract) => contract.inputModalities !== undefined)
+        ? intersectCapabilities(contracts.map((contract) => contract.inputModalities!))
+        : undefined;
+    const modelParameters = AgentEnvironmentLlmModelParametersSchema.safeParse({
+      contextWindow: minimumKnownLimit(contracts.map((contract) => contract.contextLimit)),
+      maxOutputTokens: minimumKnownLimit(contracts.map((contract) => contract.outputLimit)),
+      inputModalities,
+      reasoning: contracts.length > 0 && contracts.every((contract) => contract.reasoning === true),
+    });
+    return {
+      id: logicalModel.id,
+      displayName: logicalModel.displayName,
+      capabilities: intersectCapabilities(contracts.map((contract) => contract.capabilities)),
+      contextManagement,
+      modelFamilyId:
+        families[0] != null && families.every((family) => family === families[0])
+          ? families[0]!
+          : null,
+      ...(modelParameters.success ? { modelParameters: modelParameters.data } : {}),
+      autoFailover: logicalModel.routing?.autoFailover ?? true,
+      routes: logicalModel.routes.map((route) => {
         const profile = providers.get(route.providerProfileId);
-        return profile !== null && isProviderProfileDispatchable(profile);
-      });
-    if (eligibleRouteIndexes.length === 0) return [];
-    const contracts = eligibleRouteIndexes.map(({ index }) => authoredContracts[index]!);
-    const eligibleRoutes = eligibleRouteIndexes.map(({ route }) => route);
-    const modelParameters = authoredContracts[0]?.modelParameters;
-    const coherentParameters =
-      modelParameters !== undefined &&
-      authoredContracts.every((contract) =>
-        isDeepStrictEqual(contract?.modelParameters, modelParameters)
-      );
-
-    return [
-      {
-        id: logicalModel.id,
-        displayName: logicalModel.displayName,
-        capabilities: intersectCapabilities(contracts.map((contract) => contract.capabilities)),
-        contextManagement,
-        modelFamilyId: contracts[0]!.modelFamilyId,
-        ...(coherentParameters ? { modelParameters } : {}),
-        routes: eligibleRoutes.map((route) => ({ ...route })),
-      },
-    ];
+        const unavailableReason =
+          profile === null
+            ? 'provider_profile_absent'
+            : !profile.models.includes(route.providerModel)
+              ? 'provider_model_delisted'
+              : !isProviderProfileDispatchable(profile)
+                ? 'provider_not_dispatchable'
+                : subscriptionUnavailableReason(profile, subscriptionAccounts);
+        return { ...route, available: unavailableReason === null, unavailableReason };
+      }),
+    };
   });
 }
 
@@ -161,14 +168,17 @@ export function resolveLogicalModelCatalog(
 export function resolveLogicalModel(
   config: GatewayConfig,
   providers: ProviderRegistry,
-  logicalModelId?: string
+  logicalModelId?: string,
+  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
 ): ResolvedLogicalModel | null {
   const selectedId = logicalModelId ?? config.defaultLogicalModelId;
   if (!selectedId) {
     return null;
   }
   return (
-    resolveLogicalModelCatalog(config, providers).find((model) => model.id === selectedId) ?? null
+    resolveLogicalModelCatalog(config, providers, subscriptionAccounts).find(
+      (model) => model.id === selectedId
+    ) ?? null
   );
 }
 
@@ -187,15 +197,10 @@ function modelContract(
   contextLimit: number | null;
   modelFamilyId: string | null;
   outputLimit: number | null;
-  modelParameters?: AgentEnvironmentLlmModelParameters;
+  inputModalities?: readonly string[];
+  reasoning: boolean;
 } {
   const model = resolveEffectiveModelMetadata(profile, modelId);
-  const modelParameters = AgentEnvironmentLlmModelParametersSchema.safeParse({
-    contextWindow: model.limit?.context,
-    maxOutputTokens: model.limit?.output,
-    inputModalities: model.modalities?.input,
-    reasoning: model.reasoning,
-  });
   const capabilities = new Set<string>();
   for (const modality of model.modalities?.input ?? []) capabilities.add(`input:${modality}`);
   for (const modality of model.modalities?.output ?? []) capabilities.add(`output:${modality}`);
@@ -214,7 +219,8 @@ function modelContract(
     contextLimit: model.limit?.context ?? null,
     modelFamilyId: family,
     outputLimit: model.limit?.output ?? null,
-    ...(modelParameters.success ? { modelParameters: modelParameters.data } : {}),
+    ...(model.modalities?.input !== undefined ? { inputModalities: model.modalities.input } : {}),
+    reasoning: model.reasoning === true,
   };
 }
 
@@ -414,7 +420,10 @@ function providerCatalog(
     .find((candidate) => candidate !== undefined);
 }
 
-function resolveSubscriptionFamily(profile: ProviderProfile): string | null {
+/** Reads the closed subscription family without inventing one for ordinary catalog lookup. */
+function resolveSubscriptionFamily(
+  profile: ProviderProfile
+): ReturnType<typeof resolveProviderSubscriptionFamily> {
   try {
     return resolveProviderSubscriptionFamily(profile);
   } catch {
@@ -434,6 +443,25 @@ function assignLeaf<T, K extends keyof T>(target: T, key: K, value: T[K] | undef
   if (value !== undefined) {
     target[key] = value;
   }
+}
+
+/** Reuses the subscription owner's strict network-free availability check for bound profiles. */
+function subscriptionUnavailableReason(
+  profile: ProviderProfile,
+  accounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+): string | null {
+  const family = resolveSubscriptionFamily(profile);
+  const slot = profile.extensions?.openkit?.subscriptionAccount?.accountSlotId;
+  if (profile.kind !== 'oauth' || !family || !slot) return null;
+  return accounts
+    ? accounts.gatewayUnavailableReason({ subscriptionProviderId: family, accountSlotId: slot })
+    : null;
+}
+
+/** Returns the minimum sourced limit without inventing values for missing supply. */
+function minimumKnownLimit(limits: readonly (number | null | undefined)[]): number | undefined {
+  const known = limits.filter((limit): limit is number => limit !== null && limit !== undefined);
+  return known.length > 0 ? Math.min(...known) : undefined;
 }
 
 function intersectCapabilities(capabilitySets: readonly (readonly string[])[]): string[] {
