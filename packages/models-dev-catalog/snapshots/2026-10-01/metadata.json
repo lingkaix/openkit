@@ -22,9 +22,7 @@
       {
         "modelsDevProviderId": "google",
         "piAiProviderId": "google",
-        "modelIds": [
-          "gemini-2.5-pro"
-        ]
+        "modelIds": ["gemini-2.5-pro"]
       },
       {
         "modelsDevProviderId": "openai",
@@ -33,9 +31,7 @@
       {
         "modelsDevProviderId": "openrouter",
         "piAiProviderId": "openrouter",
-        "modelIds": [
-          "openai/gpt-5.1"
-        ]
+        "modelIds": ["openai/gpt-5.1"]
       },
       {
         "modelsDevProviderId": "xai",

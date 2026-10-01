@@ -55,6 +55,7 @@
     "includes": [
       "**",
       "!**/node_modules",
+      "!**/.pnpm-store",
       "!**/dist",
       "!**/build",
       "!**/target",
