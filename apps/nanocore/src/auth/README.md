@@ -24,6 +24,7 @@ This directory owns NanoCore authentication middleware, Better Auth browser sess
 
 - `middleware.ts` owns actor authentication and request variables, including fail-closed rejection of `nanohost-transport` on product App API paths.
 - `thread-visibility.ts` owns the unique Thread audience predicate (`isThreadVisible`) applied after current Workspace eligibility, and `isThreadIdVisible` for id-only callers that must fail closed on a missing or corrupt owner. Private Threads require exact private ownership; workspace-shared Threads use current Workspace eligibility.
+- `operation-access.ts` classifies Goal intent revision as a mutating Workspace-child `turn.run` operation, including while its route returns the accepted `goal_mode_unavailable` response.
 - `operation-authorizer.ts` owns catalog-driven Workspace guards and applies `isThreadIdVisible` after Workspace eligibility for every addressed existing Thread: path `threadId`, `getConversationTargets` query, `POST /api/turns` body, `requestGitPushApproval` body, and opaque `submitTurnFeedback` / approval.respond / `executeGitPush` owner resolution through the existing opaque-child lookup. The check is independent of catalog policy operation. Presented workspace bearers recheck current Token usability on each Workspace authorization; the server-admin owner branch is unchanged.
 - `better-auth.ts` and `server-flow.ts` own browser authentication and server-mode flows.
 - `access-token.ts` / `access-token-store.ts` / `access-token-routes.ts` own human bearer credential lifecycle and validation.

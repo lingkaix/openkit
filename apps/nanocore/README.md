@@ -93,6 +93,8 @@ Every Worker package supplies the built-in `openkit-work` MCP server. It raises 
 
 ## Commands
 
+Tests of unrelated AEP consumers use `src/test-support/prepared-agent-environment.ts` for confirmed image evidence and explicit default-off capture fixtures. Capture-admission tests use the production resolver directly so missing historical coverage remains a dispatch refusal.
+
 ```bash
 pnpm --filter @openkit/nanocore dev
 pnpm --filter @openkit/nanocore test

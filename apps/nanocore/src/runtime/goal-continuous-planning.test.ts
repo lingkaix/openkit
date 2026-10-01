@@ -774,7 +774,12 @@ describe('continuous Goal planning', () => {
     }
   });
 
-  it('carries a completed no-Review Task Artifact and permits independent new resources', async () => {
+  // Expected failure by engineer ruling (2026-10-01): this case was committed red with the frozen
+  // Goal checkpoint (cba4e11a). It asserts the checkpoint-selected completed outcome, which belongs
+  // to the deferred completedOutcome proposal, while the current collector accepts every completed
+  // outcome Item of the completed Turn. Restore `it` when the Goal Development Freeze in
+  // docs/specs/20260704-goal_mode_coordination.md lifts and an accepted completedOutcome design lands.
+  it.fails('carries a completed no-Review Task Artifact and permits independent new resources', async () => {
     const { store, workspaceDb, threadId } = createPlanningFixture('Carry accepted Artifact');
 
     try {

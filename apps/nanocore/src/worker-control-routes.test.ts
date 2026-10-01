@@ -12,7 +12,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from './app.js';
 import type { FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
@@ -70,6 +69,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 
 /**
  * Creates an app with one registered worker control session.

@@ -8,7 +8,7 @@ import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
 import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 

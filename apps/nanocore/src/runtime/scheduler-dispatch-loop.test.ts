@@ -1177,11 +1177,22 @@ describe('scheduler dispatch loop', () => {
       const lease = requireSchedulerSessionLease(coreDb, 'lease_loop_1');
       expect(lease.sessionCompatibilityKey).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect(store.getTurn('ws_demo', 'th_demo', 'turn_loop_1').status).toBe('running');
+      const expectedSetup = createTestAgentSetup();
+      // Dispatch resolves complete Provider metadata rather than forwarding an unresolved fixture.
+      expectedSetup.logicalModels.allowed[0] = {
+        ...expectedSetup.logicalModels.allowed[0]!,
+        modelParameters: {
+          contextWindow: 400_000,
+          inputModalities: ['text', 'image'],
+          maxOutputTokens: 128_000,
+          reasoning: true,
+        },
+      };
       expect(turnExecutor.calls).toEqual([
         {
           context: {
             agentSessionId: 'as_loop_1',
-            agentSetup: createTestAgentSetup(),
+            agentSetup: expectedSetup,
             requestId: '00000000-0000-4000-8000-00000000d201',
             sandboxBindingRef: 'lease-binding:lease_loop_1',
             sessionCompatibilityKey: lease.sessionCompatibilityKey,

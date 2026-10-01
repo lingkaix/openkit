@@ -619,6 +619,7 @@ registerOperations(
     'convertGoalSteeringToFollowUp',
     'cancelGoalSteering',
     'createThreadGoalPlan',
+    'reviseThreadGoalIntent',
     'reviseThreadGoalPlan',
     'pauseThreadGoal',
     'resumeThreadGoal',

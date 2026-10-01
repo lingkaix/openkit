@@ -3208,6 +3208,12 @@ describe('app api openapi projection', () => {
       missingMetadata: [],
       staleMetadata: [],
     });
+    expect(PUBLIC_OPERATION_ACCESS.reviseThreadGoalIntent).toEqual({
+      mutating: true,
+      policyOperation: 'turn.run',
+      resolver: 'workspace-child-lineage',
+      scope: 'workspace',
+    });
   });
 
   it('pins one representative for every Workspace resolver and each non-Workspace exception', () => {
@@ -3666,6 +3672,7 @@ describe('app api openapi projection', () => {
       'cancelGoalSteering',
       'createThreadGoalPlan',
       'approveThreadGoalPlan',
+      'reviseThreadGoalIntent',
       'reviseThreadGoalPlan',
       'pauseThreadGoal',
       'resumeThreadGoal',

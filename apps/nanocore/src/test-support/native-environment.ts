@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { afterAll } from 'vitest';
 import type { AgentManifest } from '../agents/manifest.js';
+import type { ResolveAgentEnvironmentPackageInput } from '../runtime/agent-environment.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
   admitWorkerImageEnvironment,
@@ -55,7 +56,7 @@ export function createTestNativeEnvironmentDb(): CoreDb {
   return db;
 }
 
-/** Supplies fixture-owned confirmed defaults to simulated/metadata-only tests of other contracts. */
+/** Supplies confirmed image defaults and explicit default-off capture to fixtures of other contracts. */
 export function withTestPreparedNativeEnvironment<
   T extends Pick<
     typeof import('../runtime/agent-environment.js'),
@@ -63,9 +64,9 @@ export function withTestPreparedNativeEnvironment<
     | 'resolveAgentEnvironmentPackageMetadata'
     | 'resolveAgentEnvironmentPackage'
   >,
->(actual: T): T {
+>(actual: T) {
   const fixtureDb = createTestNativeEnvironmentDb();
-  const prepared = <I extends Parameters<T['resolveAgentEnvironmentPackageMetadata']>[0]>(
+  const prepared = <I extends Pick<ResolveAgentEnvironmentPackageInput, 'agentSetup' | 'coreDb'>>(
     input: I
   ) => {
     const coreDb = input.coreDb ?? fixtureDb;
@@ -80,7 +81,14 @@ export function withTestPreparedNativeEnvironment<
     resolveAgentEnvironmentPackageMetadata: (
       input: Parameters<T['resolveAgentEnvironmentPackageMetadata']>[0]
     ) => actual.resolveAgentEnvironmentPackageMetadata(prepared(input)),
-    resolveAgentEnvironmentPackage: (input: Parameters<T['resolveAgentEnvironmentPackage']>[0]) =>
-      actual.resolveAgentEnvironmentPackage(prepared(input)),
+    resolveAgentEnvironmentPackage: (
+      input: Omit<ResolveAgentEnvironmentPackageInput, 'captureCoverage'> &
+        Partial<Pick<ResolveAgentEnvironmentPackageInput, 'captureCoverage'>>
+    ) =>
+      actual.resolveAgentEnvironmentPackage({
+        ...prepared(input),
+        captureCoverage:
+          'captureCoverage' in input ? input.captureCoverage! : { scope: 'server', value: 'off' },
+      }),
   };
 }

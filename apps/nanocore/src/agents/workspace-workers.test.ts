@@ -15,7 +15,6 @@ import * as usageLedger from '../capability/usage-ledger.js';
 import { recordUsage, startCapabilityCall } from '../capability/usage-ledger.js';
 import type { FsStore } from '../lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import * as goalStore from '../runtime/goal-store.js';
 import * as workerCheckpoints from '../runtime/worker-checkpoints.js';
 import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
@@ -24,6 +23,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
 const timestamp = '2026-09-17T02:00:00.000Z';

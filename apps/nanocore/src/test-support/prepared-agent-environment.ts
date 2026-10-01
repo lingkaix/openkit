@@ -3,7 +3,7 @@ import { withTestPreparedNativeEnvironment } from './native-environment.js';
 
 export type * from '../runtime/agent-environment.js';
 
-/** Explicit confirmed image evidence for tests of unrelated AEP consumers. */
+/** Confirmed image evidence and default-off capture for tests of unrelated AEP consumers. */
 export const {
   resolveAgentEnvironmentPackage,
   resolveAgentEnvironmentPackageMetadata,

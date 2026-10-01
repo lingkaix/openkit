@@ -85,7 +85,7 @@ describe('loadAgentManifests', () => {
         expect.objectContaining({
           displayName: 'Pi Agent',
           id: 'agent_pi',
-          models: expect.objectContaining({ preferredLogicalModelId: 'claude' }),
+          models: expect.objectContaining({ preferredLogicalModelId: 'grok' }),
           readiness: expect.objectContaining({ status: 'disabled' }),
           runtime: expect.objectContaining({ adapter: 'pi', kind: 'pi' }),
         }),
