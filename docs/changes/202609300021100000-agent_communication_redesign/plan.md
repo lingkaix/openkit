@@ -328,6 +328,16 @@ Source: the engineer's messages of 2026-10-01, translated from Chinese.
 
 **Dispatch routing.** The Consultant role runs on Grok 4.7 at high effort, on Pi with gpt-6-astra at high effort, or both. Builders, testers, reviewers and other job workers run as Codex CLI on gpt-6.1-sol at high effort in herdr. This supersedes the routing in Intent Revision 5. The engineer warned that GPT-6 family models tend to over-engineer and over-defend, so the primary checks each finding and output against an owner predicate, whether the actor is user code inside the Sandbox, and whether the fix adds machinery.
 
+## Intent Revision 9 — 2026-10-01
+
+Source: the engineer's messages of 2026-10-01 after returning, translated from Chinese.
+
+**Priority.** The worker runtimes are external and evolve fast. The runtime integration, and even NanoHost as a whole, may later be redone, refactored or retired, for example by moving worker dispatch and scheduling to another platform. The first goal now is to run the whole flow end to end, express the product concept completely, and let users start working on the platform. What must hold is that the platform loses no data and records none wrongly, that users can keep using it, and that its function, product logic and stability as a user workbench and control plane are assured. For this change, in-Sandbox runtime behavior therefore gets support boundaries rather than prevention machinery, and strictness goes to data continuity: retained records, schema alignment, collection of worker output, and audit.
+
+**OpenCode native plugins.** The engineer approved narrowing the OpenCode adapter's protected-binding guarantee to a support boundary: native plugins load, a statically detectable replacement still fails before work, and later plugin hook code that rewrites a provider request is user code inside the Sandbox and outside supported supply. The decision record lands with the OpenCode native-configuration slice.
+
+**Publishing.** The engineer pushed main to GitHub at `beba2095` and authorized the primary to push main to origin from now on.
+
 ## Working Checkpoint
 
 The design is closed (Intent Revision 2), and execution has started.
@@ -356,22 +366,23 @@ The fresh-context direction check ran on 2026-09-30 and returned Ask Human; the 
 
 M1, M2, and M3 are committed; M3 took six Pi review rounds. S1, the Gateway's move to the MCP SDK v2, is committed after three Grok review rounds. M4 is committed after independent Pi review of each batch to acceptance: sweep in two rounds, pending-request consumers in three, adapters and images in three, lifecycle in three, and collection in four. Next action: start the M5 streams: N-pending in the main checkout, the lifecycle slices W1 and N4 in a separate worktree, H1 in apps/nanohost, and P, the new packages/pi-runtime-host.
 
-State on 2026-10-02. Main is `a9bc2d0b`. It carries every stage 1 and stage 2 slice except N5 and N6:
+State on 2026-10-01 at `a09bb651`, which is pushed to GitHub. Main carries every stage 1 and stage 2 slice:
 - W2, W3, W4, W5, N-pending, N-egress and the owner amendments;
 - the `worker-runtimes` image (`b47af2b1`);
 - the repository gate repair (`6ff7909d`);
-- N-env (`6863556a`);
-- the exact Zod pin, which fixes the App startup crash that stopped the first A2 deployment (`a9bc2d0b`).
+- N-env (`6863556a`), and the narrower Codex protected native environment names (`227d9bc0`);
+- the exact Zod pin, which fixes the App startup crash that stopped the first A2 deployment (`a9bc2d0b`);
+- N5 peer reads (`beba2095`);
+- N6 and W6, the NanoCore snapshot chain and the removal of the in-Sandbox publisher (`a09bb651`).
 
-On `a9bc2d0b` all eight repository gates, the shared package, worker-shim and Web suites, typecheck and OpenAPI validation pass. The NanoCore suite fails only the 82 failures named in `temp/comm-redesign/reports/baseline-nanocore.md`, and the App image smoke now reaches public health.
+Main could not run its own NanoHost from H1 (`b8be63d1`) until N6. H1's NanoHost polls the `workspace.collect` effect routes, which Core served only from N6, and NanoHost treats any non-204 idle answer as terminal. The A2 round 3 deployment of `a9bc2d0b` reproduced this with a 404 on the first poll. N6 adds a NanoCore regression that reads NanoHost's `EFFECT_PATHS` and polls each route idle.
 
-A2 was cleaned of usage data and backups, and its schema was aligned for `b47af2b1`. The round 3 deployment of `a9bc2d0b` is in phase 1, with schema alignment prepared in parallel; `temp/a2-ops/` holds its briefs and reports.
+On `a09bb651` typecheck, lint, OpenAPI generation and validation, the shared package suites, Web, the eight repository gates, the Task mode real-worker runner, the serial worker-shim suite (653 tests) and the App image smoke pass. The NanoCore suite fails only the 82 failures named in `temp/comm-redesign/reports/baseline-nanocore.md`. N6 passed independent review in three rounds, and N5 in two.
 
-N6 and W6 are integrated onto `6365fde4`. The independent review rejected them with four findings: the collection timer phases, the stored identity core comparison, binary review presentation, and W6 remnants. Round 2 is building, and it will be re-integrated onto current main before re-review.
+A2 runs the `a9bc2d0b` App with the four Agent files pointed at the `worker-runtimes` image, and NanoHost is stopped. Round 4 deploys `a09bb651` after aligning the Core column and the two new Workspace tables; `temp/a2-ops/` holds its briefs and reports.
 
-Open work after N6:
-- N5 peer reads;
-- Codex and DeepSeek consumption of the native environment;
-- the adapter follow-ups;
+Open work:
+- Pi and OpenCode Native Local Configuration, building in separate worktrees;
 - the four-runtime live smoke on A2;
-- dogfooding GitHub issues in Task mode, whose push to GitHub waits for the engineer.
+- dogfooding GitHub issue #108 in Task mode on A2;
+- small follow-ups: the upstream Gateway `mcp-result-too-large` message lacks the artifacts and data-plane hint, and the adapter README adoption guide.
