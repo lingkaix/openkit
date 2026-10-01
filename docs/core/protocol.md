@@ -796,9 +796,31 @@ Agent setup extension namespaces are runtime-config evolution concerns. They sho
 | Change event ordering | Breaking change. |
 | Add extension namespace | Allowed when optional and ignorable, or when an accepted spec makes it required. |
 
+## Turn Reasoning Effort
+
+`turn.start` and `conversation.submit` MAY carry optional `reasoningEffort` from the ordered Canonical Enums set below. It is an inference preference, not a permission, capability grant, model selector, or Provider identity. Admission MUST validate a supplied core value before effects and record the admitted effort on the existing canonical Turn; an omitted request falls through to the composed Agent default, then the Provider default. When that resolution supplies no explicit value, the Turn field remains absent rather than inventing a Provider level. The decision and its reason are recorded in [Reasoning Effort Rulings](../decisions/20261001-reasoning_effort_rulings.md).
+
+The canonical Turn is the unique durable authority for its admitted effort. The value is fixed at admission; later model metadata, Agent defaults, runtime per-request choices, or Provider fitting MUST NOT rewrite it. Termination preserves it with the Turn, and deletion follows the Turn's existing history lifecycle. Projection into an execution package is immutable evidence, not a second authority or effort record. Retained Turns without effort remain valid with no recorded value, without migration or a compatibility reader. Retained authored Agent files without effort remain valid, and omission during a new Turn admission follows the admission precedence above; replay and recovery do not recompute defaults for an existing Turn.
+
+Effort participates in canonical command input identity: identical replay preserves the admitted Turn and its effort without another Provider effect, while changed effort under the same command identity MUST fail as `idempotency_key_conflict`. Missing, stale, conflicting, or unavailable model/authority dependencies follow existing admission and recovery semantics; no effort value repairs them. Restart uses the recorded Turn for replay and recovery rather than recomputing its choice from changed defaults. A newly admitted retry may resolve current defaults but never mutates the earlier Turn. Dependency failure adds no effort-specific retry, repair, or recovery lifecycle.
+
+Acceptance requires submission precedence and composed Agent-default fallthrough at new Turn admission, an absent recorded value when resolution uses the Provider default, refusal of unknown core values before effects, immutable admitted effort across metadata/default changes and restart, changed-effort replay conflict, and continued usability of retained Turns without the field.
+
 ## Canonical Enums
 
 This section is the human-readable source for core closed enum families. Generated machine-readable schemas remain the validation source for concrete implementations.
+
+Reasoning effort, ordered from lowest to highest:
+
+```text
+none
+minimal
+low
+medium
+high
+xhigh
+max
+```
 
 Turn status:
 
