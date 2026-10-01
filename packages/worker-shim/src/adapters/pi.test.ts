@@ -1169,8 +1169,8 @@ it.each([
   'setting',
   'project-setting',
   'late-registration',
-] as const)('M4 adapter preserves the explicit unsupported script outcome from %s before provider work', async (source) => {
-  const f = await fixture(() => ({ text: 'must not prompt' }));
+] as const)('M4 adapter permits user-configured codemode from %s', async (source) => {
+  const f = await fixture(() => ({ text: 'codemode setup permitted' }));
   const agentDir = piAgentDirectory(f.dirs.stateRoot);
   await mkdir(agentDir, { recursive: true });
   if (source !== 'late-registration') {
@@ -1209,11 +1209,10 @@ export default function(pi) { pi.on('session_start', () => {
   f.capability.bound = true;
   const session = await f.open();
   const result = await (await session.startTurn(turnInput(f.dirs))).settled;
-  expect(result).toMatchObject({ status: 'failed', stopReason: 'pi-codemode-unsupported' });
+  expect(result).toMatchObject({ status: 'completed' });
   expect(await readFile(join(agentDir, 'mcp.json'), 'utf8')).toBe(nativeMcp);
   expect(local.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
-  expect(f.inference.requests).toHaveLength(0);
-  if (source !== 'late-registration') expect(f.capability.log).toHaveLength(0);
+  expect(f.inference.requests).toHaveLength(1);
   expect(f.capability.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
   await session.close();
 });
@@ -1669,7 +1668,7 @@ export default function (pi) {
         .filter(Boolean)
         .map((line) => JSON.parse(line) as Record<string, unknown>);
       const start = records.find((record) => record.type === 'session_start');
-      expect(start).toMatchObject({ confirm: false });
+      expect(start).toMatchObject({ confirm: true });
       if (!start) throw new Error('session start was not recorded');
       const startEnv = start.env as Record<string, string>;
       const startModel = start.model as { id?: string };
@@ -2072,21 +2071,31 @@ describe('M native configuration', () => {
   );
 
   it.each(['static', 'session_start', 'registry'])(
-    'refuses a native Extension replacing the protected provider during %s before inference',
+    'overlays a native provider replacement during %s',
     async (phase) => {
-      const f = await fixture(() => ({ text: 'unexpected protected replacement' }));
+      const f = await fixture(() => ({ text: 'managed provider restored' }));
+      const rogue = await startSyntheticInference(() => ({ text: 'wrong native route' }));
+      stops.push(() => rogue.close());
       const session = await f.open();
       const extensionDir = join(piAgentDirectory(f.dirs.stateRoot), 'extensions');
       await mkdir(extensionDir, { recursive: true });
-      const registration = `pi.registerProvider('openkit-worker-inference', { api: 'openai-completions', baseUrl: ${JSON.stringify(f.inference.url)}, models: [{ id: 'logical-a', name: 'replaced', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4000 }] });`;
+      const registration = `pi.registerProvider('openkit-worker-inference', { api: 'openai-completions', baseUrl: ${JSON.stringify(rogue.url)}, models: [{ id: 'logical-a', name: 'replaced', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4000 }] });`;
       const extension = `export default function(pi) { ${phase === 'static' ? registration : phase === 'registry' ? `pi.on('session_start', (_event, ctx) => { ${registration.replace('pi.registerProvider', 'ctx.modelRegistry.registerProvider')} });` : `pi.on('${phase}', () => { ${registration} });`} }`;
       const path = join(extensionDir, 'replace.js');
       await writeFile(path, extension);
       f.capability.bound = true;
       expect(
         await (await session.startTurn({ ...turnInput(f.dirs), skillTargetPaths: [] })).settled
-      ).toMatchObject({ status: 'failed', stopReason: 'pi-setup-failed' });
-      expect(f.inference.requests).toHaveLength(0);
+      ).toMatchObject({
+        status: 'completed',
+        diagnostics: { stderr: expect.stringContaining('OpenKit overlay') },
+      });
+      expect(f.inference.requests).toHaveLength(1);
+      expect(rogue.requests).toHaveLength(0);
+      expect(f.inference.requests[0]!.body.model).toBe('logical-a');
+      expect(f.inference.requests[0]!.headers.authorization).toBe(
+        `Bearer ${f.inferenceCredential}`
+      );
       expect(await readFile(path, 'utf8')).toBe(extension);
       await session.close();
     },
@@ -2094,14 +2103,16 @@ describe('M native configuration', () => {
   );
 
   it(
-    'refuses a native setup Extension selecting another model before inference',
+    'overlays a native setup Extension selecting another model',
     async () => {
-      const f = await fixture(() => ({ text: 'unexpected local model' }));
+      const f = await fixture(() => ({ text: 'managed model restored' }));
+      const rogue = await startSyntheticInference(() => ({ text: 'wrong native route' }));
+      stops.push(() => rogue.close());
       const session = await f.open();
       const extensionDir = join(piAgentDirectory(f.dirs.stateRoot), 'extensions');
       await mkdir(extensionDir, { recursive: true });
       const extension = `export default function(pi) {
-      pi.registerProvider('local-models', { api: 'openai-completions', apiKey: 'native-only-key', baseUrl: ${JSON.stringify(f.inference.url)}, models: [{ id: 'native-b', name: 'native model', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4000 }] });
+      pi.registerProvider('local-models', { api: 'openai-completions', apiKey: 'native-only-key', baseUrl: ${JSON.stringify(rogue.url)}, models: [{ id: 'native-b', name: 'native model', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4000 }] });
       pi.on('session_start', async (_event, ctx) => { await pi.setModel(ctx.modelRegistry.find('local-models', 'native-b')); });
     }`;
       const path = join(extensionDir, 'select.js');
@@ -2109,8 +2120,16 @@ describe('M native configuration', () => {
       f.capability.bound = true;
       expect(
         await (await session.startTurn({ ...turnInput(f.dirs), skillTargetPaths: [] })).settled
-      ).toMatchObject({ status: 'failed', stopReason: 'pi-setup-failed' });
-      expect(f.inference.requests).toHaveLength(0);
+      ).toMatchObject({
+        status: 'completed',
+        diagnostics: { stderr: expect.stringContaining('OpenKit overlay') },
+      });
+      expect(f.inference.requests).toHaveLength(1);
+      expect(rogue.requests).toHaveLength(0);
+      expect(f.inference.requests[0]!.body.model).toBe('logical-a');
+      expect(f.inference.requests[0]!.headers.authorization).toBe(
+        `Bearer ${f.inferenceCredential}`
+      );
       expect(await readFile(path, 'utf8')).toBe(extension);
       await session.close();
     },
@@ -2118,9 +2137,9 @@ describe('M native configuration', () => {
   );
 
   it(
-    'refuses a native Skill name replacing selected supply',
+    'overlays a native Skill name with selected supply',
     async () => {
-      const f = await fixture(() => ({ text: 'unexpected shadowed Skill' }));
+      const f = await fixture(() => ({ text: 'selected Skill supplied' }));
       const session = await f.open();
       const local = join(piAgentDirectory(f.dirs.stateRoot), 'skills', 'shadow');
       const selected = join(f.dirs.root, 'selected');
@@ -2140,9 +2159,18 @@ describe('M native configuration', () => {
             skillTargetPaths: [{ id: 'selected', targetPath: selected }],
           })
         ).settled
-      ).toMatchObject({ status: 'failed', stopReason: 'pi-setup-failed' });
-      expect(f.inference.requests).toHaveLength(0);
+      ).toMatchObject({
+        status: 'completed',
+        diagnostics: { stderr: expect.stringContaining('OpenKit overlay') },
+      });
+      expect(f.inference.requests).toHaveLength(1);
+      expect(f.inference.requests[0]!.body.model).toBe('logical-a');
+      expect(f.inference.requests[0]!.headers.authorization).toBe(
+        `Bearer ${f.inferenceCredential}`
+      );
       expect(await readFile(join(local, 'SKILL.md'), 'utf8')).toBe(native);
+      expect(requestTexts(f.inference.requests[0]!).join(' ')).toContain('MANAGED_SKILL');
+      expect(requestTexts(f.inference.requests[0]!).join(' ')).not.toContain('NATIVE_SHADOW');
       await session.close();
     },
     TIMEOUT

@@ -580,7 +580,7 @@ describe('Pi runtime host', () => {
   );
 
   it(
-    'loads user packages, Extensions, Skills, and prompt templates while keeping native UI fail-closed',
+    'loads user packages, Extensions, Skills, and prompt templates with headless confirmation and free-input answers',
     async () => {
       const replies: InferenceReply[] = [
         { toolCall: { arguments: { command: 'touch pwned' }, name: 'bash' } },
@@ -605,7 +605,7 @@ describe('Pi runtime host', () => {
 
       const records = await readProbe(probe);
       const start = records.find((record) => record.type === 'session_start');
-      expect(start).toMatchObject({ confirm: false, hasUI: true });
+      expect(start).toMatchObject({ confirm: true, hasUI: true });
       expect((start?.env as Record<string, string> | undefined)?.BROWSER_TEST_PATH).toBe(
         '/opt/browser/chrome'
       );
@@ -681,9 +681,13 @@ describe('Pi runtime host', () => {
   );
 
   it(
-    'fails setup when the agent directory mcp.json overrides an OpenKit server, without prompting',
+    'overlays a disabled native MCP entry with the managed Gateway transport',
     async () => {
-      const f = await fixture((n) => ({ text: `answer-${n}` }));
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          : { text: 'managed route' }
+      );
       const local = await startSyntheticCapability(null, ['openkit-work']);
       local.bound = true;
       cleanups.push(() => local.close());
@@ -699,12 +703,18 @@ describe('Pi runtime host', () => {
       const host = f.start();
       await f.open(host);
       const settled = await turn(host, 'turn-1', 'first');
-      expect(settled.outcome).toEqual({ reason: 'pi-setup-failed', status: 'failed' });
-      expect(settled.nativeHandle).toEqual({ state: 'pending' });
-      expect(f.inference.requests).toEqual([]);
-      expect(f.capability.log).toEqual([]);
+      expect(settled.outcome).toEqual({ assistantText: 'managed route', status: 'completed' });
+      expect(
+        f.capability.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual([{ text: 'overlay' }]);
+      expect(host.stderr).toContain('OpenKit overlay');
+      expect(settled.nativeHandle.state).toBe('ready');
+      expect(f.inference.requests).toHaveLength(2);
+      expect(f.capability.log.some((entry) => entry.method === 'initialize')).toBe(true);
       expect(local.log).toEqual([]);
-      expect(await sessionFileExists(f.directories.stateRoot)).toBe(false);
+      expect(await sessionFileExists(f.directories.stateRoot)).toBe(true);
     },
     TIMEOUT
   );
@@ -769,9 +779,13 @@ describe('Pi runtime host', () => {
   );
 
   it(
-    'refuses a same-named project mcp.json before native work',
+    'overlays a project MCP collision with the managed Gateway transport',
     async () => {
-      const f = await fixture((n) => ({ text: `answer-${n}` }));
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          : { text: 'managed route' }
+      );
       const local = await startSyntheticCapability(null, ['openkit-work']);
       local.bound = true;
       cleanups.push(() => local.close());
@@ -788,9 +802,15 @@ describe('Pi runtime host', () => {
       const host = f.start();
       await f.open(host);
       const settled = await turn(host, 'turn-1', 'first');
-      expect(settled.outcome).toEqual({ reason: 'pi-setup-failed', status: 'failed' });
-      expect(f.capability.log).toEqual([]);
-      expect(f.inference.requests).toEqual([]);
+      expect(settled.outcome).toEqual({ assistantText: 'managed route', status: 'completed' });
+      expect(
+        f.capability.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual([{ text: 'overlay' }]);
+      expect(host.stderr).toContain('OpenKit overlay');
+      expect(f.capability.log.some((entry) => entry.method === 'initialize')).toBe(true);
+      expect(f.inference.requests).toHaveLength(2);
       expect(
         f.capability.log.every(
           (entry) => entry.headers.authorization === `Bearer ${f.capabilityCredential}`
@@ -802,9 +822,13 @@ describe('Pi runtime host', () => {
   );
 
   it(
-    'fails setup when another Extension replaces built-in MCP support',
+    'overlays a native MCP command replacement with the host MCP owner',
     async () => {
-      const f = await fixture((n) => ({ text: `answer-${n}` }));
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          : { text: 'managed route' }
+      );
       await installExtension(
         f.directories,
         `export default function (pi) {
@@ -819,18 +843,28 @@ describe('Pi runtime host', () => {
       const host = f.start();
       await f.open(host);
       const settled = await turn(host, 'turn-1', 'first');
-      expect(settled.outcome).toEqual({ reason: 'pi-setup-failed', status: 'failed' });
-      expect(settled.nativeHandle).toEqual({ state: 'pending' });
-      expect(f.inference.requests).toEqual([]);
-      expect(f.capability.log).toEqual([]);
+      expect(settled.outcome).toEqual({ assistantText: 'managed route', status: 'completed' });
+      expect(
+        f.capability.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual([{ text: 'overlay' }]);
+      expect(host.stderr).toContain('OpenKit overlay');
+      expect(settled.nativeHandle.state).toBe('ready');
+      expect(f.inference.requests).toHaveLength(2);
+      expect(f.capability.log.some((entry) => entry.method === 'initialize')).toBe(true);
     },
     TIMEOUT
   );
 
   it(
-    'fails setup when an enabled agent-directory entry overrides an OpenKit server',
+    'overlays an enabled native MCP entry with the managed Gateway transport',
     async () => {
-      const f = await fixture(() => ({ text: 'unexpected prompt' }));
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          : { text: 'managed route' }
+      );
       const local = await startSyntheticCapability(null, ['openkit-work']);
       local.bound = true;
       cleanups.push(() => local.close());
@@ -850,18 +884,28 @@ describe('Pi runtime host', () => {
       const host = f.start();
       await f.open(host);
       const settled = await turn(host, 'turn-1', 'first');
-      expect(settled.outcome).toEqual({ reason: 'pi-setup-failed', status: 'failed' });
-      expect(f.inference.requests).toEqual([]);
-      expect(f.capability.log).toEqual([]);
+      expect(settled.outcome).toEqual({ assistantText: 'managed route', status: 'completed' });
+      expect(
+        f.capability.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual([{ text: 'overlay' }]);
+      expect(host.stderr).toContain('OpenKit overlay');
+      expect(f.inference.requests).toHaveLength(2);
+      expect(f.capability.log.some((entry) => entry.method === 'initialize')).toBe(true);
       expect(local.log).toEqual([]);
     },
     TIMEOUT
   );
 
   it(
-    'fails setup when an Extension writes an overriding mcp.json during load',
+    'overlays an Extension-authored MCP collision with the managed Gateway transport',
     async () => {
-      const f = await fixture(() => ({ text: 'unexpected prompt' }));
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          : { text: 'managed route' }
+      );
       const local = await startSyntheticCapability(null, ['openkit-work']);
       local.bound = true;
       cleanups.push(() => local.close());
@@ -883,18 +927,28 @@ export default function () {}
       const host = f.start();
       await f.open(host);
       const settled = await turn(host, 'turn-1', 'first');
-      expect(settled.outcome).toEqual({ reason: 'pi-setup-failed', status: 'failed' });
-      expect(f.inference.requests).toEqual([]);
-      expect(f.capability.log).toEqual([]);
+      expect(settled.outcome).toEqual({ assistantText: 'managed route', status: 'completed' });
+      expect(
+        f.capability.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual([{ text: 'overlay' }]);
+      expect(host.stderr).toContain('OpenKit overlay');
+      expect(f.inference.requests).toHaveLength(2);
+      expect(f.capability.log.some((entry) => entry.method === 'initialize')).toBe(true);
       expect(local.log).toEqual([]);
     },
     TIMEOUT
   );
 
   it(
-    'fails setup when a user Extension replaces built-in MCP with createMcpExtension',
+    'overlays a native createMcpExtension replacement without duplicate Gateway connections',
     async () => {
-      const f = await fixture(() => ({ text: 'unexpected prompt' }));
+      const f = await fixture((n) =>
+        n === 1
+          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          : { text: 'managed route' }
+      );
       const codingAgent = import.meta.resolve('@earendil-works/pi-coding-agent');
       await installExtension(
         f.directories,
@@ -906,10 +960,16 @@ export default createMcpExtension();
       const host = f.start();
       await f.open(host);
       const settled = await turn(host, 'turn-1', 'first');
-      expect(settled.outcome).toEqual({ reason: 'pi-setup-failed', status: 'failed' });
-      expect(settled.nativeHandle).toEqual({ state: 'pending' });
-      expect(f.inference.requests).toEqual([]);
-      expect(f.capability.log).toEqual([]);
+      expect(settled.outcome).toEqual({ assistantText: 'managed route', status: 'completed' });
+      expect(
+        f.capability.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual([{ text: 'overlay' }]);
+      expect(host.stderr).toContain('OpenKit overlay');
+      expect(settled.nativeHandle.state).toBe('ready');
+      expect(f.inference.requests).toHaveLength(2);
+      expect(f.capability.log.some((entry) => entry.method === 'initialize')).toBe(true);
     },
     TIMEOUT
   );
@@ -2182,14 +2242,22 @@ export default function(pi) {
     TIMEOUT
   );
 
-  it.each(['exclude-search', 'exclude-all', 'replace-search', 'script-setting', 'script-factory'])(
-    'refuses required resource conflict %s before session_start or provider work',
+  it.each([
+    'exclude-search',
+    'exclude-all',
+    'replace-search',
+    'late-replace-search',
+    'script-setting',
+    'script-factory',
+  ])(
+    'allows configured resources %s with the managed overlay',
     async (kind) => {
-      const f = await fixture(() => ({ text: 'must not prompt' }));
+      const f = await fixture(() => ({ text: 'provider reached' }));
       const marker = join(f.directories.root, 'session-start');
       const hook = `import { writeFileSync } from 'node:fs';
 export default function(pi) {
   pi.on('session_start', () => writeFileSync(${JSON.stringify(marker)}, 'effect'));
+  ${kind === 'late-replace-search' ? "pi.on('session_start', () => pi.registerTool({ name: 'tool_search', label: 'fake', description: 'fake', parameters: { type: 'object' }, execute: async () => ({ content: [] }) }));" : ''}
   ${kind === 'replace-search' ? "pi.registerTool({ name: 'tool_search', label: 'fake', description: 'fake', parameters: { type: 'object' }, execute: async () => ({ content: [] }) });" : ''}
 }`;
       const source =
@@ -2216,13 +2284,16 @@ export default function(pi) {
       f.capability.bound = true;
       const host = f.start();
       await f.open(host);
-      expect((await turn(host, 'turn-refused', 'no setup work')).outcome).toMatchObject({
-        status: 'failed',
-        reason: kind.startsWith('script-') ? 'pi-codemode-unsupported' : 'pi-setup-failed',
+      expect((await turn(host, 'turn-overlay', 'work')).outcome).toEqual({
+        status: 'completed',
+        assistantText: 'provider reached',
       });
-      expect(f.inference.requests).toHaveLength(0);
-      expect(f.capability.log).toHaveLength(0);
-      expect(existsSync(marker)).toBe(false);
+      expect(f.inference.requests).toHaveLength(1);
+      expect(f.capability.log.some((entry) => entry.method === 'initialize')).toBe(true);
+      expect(
+        f.inference.requests[0]!.body.tools?.some((tool) => tool.function.name === 'tool_search')
+      ).toBe(true);
+      expect(existsSync(marker)).toBe(true);
       expect(await readFile(join(f.directories.agentDir, 'settings.json'), 'utf8')).toBe(original);
     },
     TIMEOUT
@@ -2231,7 +2302,7 @@ export default function(pi) {
 
 describe('M4 late native setup registration', () => {
   it.each([true, false])(
-    'refuses genuine session_start codemode registration activated=%s before provider work',
+    'allows genuine session_start codemode registration activated=%s',
     async (activate) => {
       const f = await fixture((n) =>
         n === 1
@@ -2256,13 +2327,13 @@ export default function(pi) {
       f.capability.bound = true;
       const host = f.start();
       expect(await f.open(host)).toMatchObject({ ok: true });
-      const settled = await turn(host, 'turn-late-codemode', 'unsupported native setup');
-      expect(settled.outcome).toEqual({ status: 'failed', reason: 'pi-codemode-unsupported' });
+      const settled = await turn(host, 'turn-late-codemode', 'user-configured native setup');
+      expect(settled.outcome.status).toBe('completed');
       expect(JSON.parse(await readFile(registration, 'utf8'))).toEqual({
         registered: true,
         active: activate,
       });
-      expect(f.inference.requests).toHaveLength(0);
+      expect(f.inference.requests.length).toBeGreaterThan(0);
       expect(f.capability.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
       expect(await readFile(configPath, 'utf8')).toBe(authored);
       await host.request({ op: 'close' });
@@ -2875,3 +2946,92 @@ describe('M4 discovered call cleanup', () => {
     TIMEOUT
   );
 });
+
+/** Native workspace tools execute under the same resident host and managed model route. */
+describe('Sandbox full capability', () => {
+  it(
+    'executes model-directed shell and file writes with observable workspace effects',
+    async () => {
+      const f = await fixture(
+        (n) =>
+          [
+            {
+              toolCall: {
+                name: 'bash',
+                arguments: { command: 'printf shell-effect > shell.txt; cat shell.txt' },
+              },
+            },
+            {
+              toolCall: {
+                name: 'write',
+                arguments: { path: 'written.txt', content: 'write-effect' },
+              },
+            },
+            { text: 'workspace work complete' },
+          ][n - 1] ?? { text: 'unexpected' }
+      );
+      const host = f.start();
+      await f.open(host, { mcpServers: [] });
+      expect((await turn(host, 'capability', 'run shell and write a file')).outcome).toEqual({
+        status: 'completed',
+        assistantText: 'workspace work complete',
+      });
+      expect(await readFile(join(f.directories.workingDirectory, 'shell.txt'), 'utf8')).toBe(
+        'shell-effect'
+      );
+      expect(await readFile(join(f.directories.workingDirectory, 'written.txt'), 'utf8')).toBe(
+        'write-effect'
+      );
+      expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('shell-effect');
+      expect(f.inference.requests).toHaveLength(3);
+    },
+    TIMEOUT
+  );
+});
+
+/** Complete transport replacement prevents a native stdio entry becoming a mixed Gateway entry. */
+it(
+  'overlays an authored stdio MCP entry without spawning it or editing its bytes',
+  async () => {
+    const f = await fixture((n) =>
+      n === 1
+        ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'stdio-overlay' } } }
+        : { text: 'Gateway served' }
+    );
+    const marker = join(f.directories.workingDirectory, 'native-stdio-effect');
+    const path = join(f.directories.agentDir, 'mcp.json');
+    const authored = JSON.stringify({
+      mcpServers: {
+        'openkit-work': {
+          command: process.execPath,
+          args: [
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'wrong target')`,
+          ],
+        },
+      },
+    });
+    await writeFile(path, authored);
+    f.capability.bound = true;
+    const host = f.start();
+    await f.open(host);
+    expect((await turn(host, 'stdio-overlay', 'call managed tool')).outcome).toEqual({
+      status: 'completed',
+      assistantText: 'Gateway served',
+    });
+    expect(
+      f.capability.log
+        .filter((entry) => entry.method === 'tools/call')
+        .map((entry) => entry.params?.arguments)
+    ).toEqual([{ text: 'stdio-overlay' }]);
+    expect(
+      f.capability.log.every(
+        (entry) => entry.headers.authorization === `Bearer ${f.capabilityCredential}`
+      )
+    ).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+    expect(await readFile(path, 'utf8')).toBe(authored);
+    expect(host.stderr).toContain('OpenKit overlay');
+  },
+  TIMEOUT
+);

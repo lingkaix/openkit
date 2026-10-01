@@ -15,7 +15,11 @@ import { startSyntheticInference } from './test-support/inference.ts';
 
 // Keep actual SDK resource resolution and binding while injecting faults at required native boundaries.
 const fault = vi.hoisted(() => ({
-  kind: 'factory' as 'factory' | 'activation' | 'registration' | 'global-disable',
+  kind: 'factory' as 'factory' | 'activation' | 'registration' | 'global-disable' | 'identity',
+  identities: [] as {
+    before: { path: string; sourceInfo: unknown };
+    after: { path: string; sourceInfo: unknown };
+  }[],
 }));
 vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@earendil-works/pi-coding-agent')>();
@@ -23,7 +27,32 @@ vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
     ...actual,
     DefaultResourceLoader: class extends actual.DefaultResourceLoader {
       constructor(options: ConstructorParameters<typeof actual.DefaultResourceLoader>[0]) {
-        super(fault.kind === 'global-disable' ? { ...options, noExtensions: true } : options);
+        super(
+          fault.kind === 'global-disable'
+            ? { ...options, noExtensions: true }
+            : fault.kind === 'identity'
+              ? {
+                  ...options,
+                  extensionsOverride: (loaded) => {
+                    const supplied = loaded.extensions.filter(
+                      (extension) =>
+                        extension.path === '<inline:mcp>' ||
+                        extension.path === '<inline:tool-search>'
+                    );
+                    const before = supplied.map((extension) => ({
+                      path: extension.path,
+                      sourceInfo: structuredClone(extension.sourceInfo),
+                    }));
+                    const result = options.extensionsOverride?.(loaded) ?? loaded;
+                    fault.identities = supplied.map((extension, index) => ({
+                      before: before[index]!,
+                      after: { path: extension.path, sourceInfo: extension.sourceInfo },
+                    }));
+                    return result;
+                  },
+                }
+              : options
+        );
       }
     },
     createToolSearchExtension: () =>
@@ -54,7 +83,8 @@ it.each([
   'activation',
   'registration',
   'global-disable',
-] as const)('M4 failed required native %s refuses provider work', async (kind) => {
+  'identity',
+] as const)('M4 required native %s honors managed ownership', async (kind) => {
   fault.kind = kind;
   const directories = await createHostDirectories();
   const capabilityCredential = mintLoopbackCredential();
@@ -101,12 +131,26 @@ export default function(pi) { pi.on('session_start', () => writeFileSync(${JSON.
       expect(
         frames.find((frame) => 'event' in frame && frame.event === 'turn_settled')
       ).toMatchObject({
-        outcome: { status: 'failed', reason: 'pi-setup-failed' },
+        outcome:
+          kind === 'global-disable' || kind === 'identity'
+            ? { status: 'completed' }
+            : { status: 'failed', reason: 'pi-setup-failed' },
       })
     );
-    expect(existsSync(marker)).toBe(kind === 'activation' || kind === 'registration');
-    expect(inference.requests).toHaveLength(0);
-    if (kind === 'factory' || kind === 'global-disable') expect(capability.log).toHaveLength(0);
+    expect(existsSync(marker)).toBe(
+      kind === 'activation' || kind === 'registration' || kind === 'identity'
+    );
+    if (kind === 'identity') {
+      expect(fault.identities.map((identity) => identity.before.path).sort()).toEqual([
+        '<inline:mcp>',
+        '<inline:tool-search>',
+      ]);
+      for (const identity of fault.identities) expect(identity.after).toEqual(identity.before);
+    }
+    expect(inference.requests).toHaveLength(
+      kind === 'global-disable' || kind === 'identity' ? 1 : 0
+    );
+    if (kind === 'factory') expect(capability.log).toHaveLength(0);
     expect(await readFile(join(directories.agentDir, 'settings.json'), 'utf8')).toBe(settings);
   } finally {
     await host.abandon();

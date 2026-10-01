@@ -20,7 +20,14 @@ describe('OpenKit MCP binary resource redaction', () => {
       send: async () => {},
     };
     const gate = new OpenKitMcpGate({
-      admitted: new Set(['openkit-work']),
+      managed: [
+        {
+          name: 'openkit-work',
+          config: { url: 'http://127.0.0.1/mcp/openkit-work' },
+          scope: 'extension',
+          source: 'OpenKit',
+        },
+      ],
       agentDir: '/tmp/agent',
       createDefaultTransport: (() => transport) as never,
       cwd: '/tmp/work',

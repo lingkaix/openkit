@@ -16,7 +16,7 @@ import {
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
-import { hostSuppliedBuiltinMcp, loadPiMcpInternals, OpenKitMcpGate } from './capability-mcp.ts';
+import { loadPiMcpInternals, OpenKitMcpGate } from './capability-mcp.ts';
 import {
   CHANNEL_NATIVE_EVENT_MAX_BYTES,
   type HostErrorCode,
@@ -43,7 +43,7 @@ import { type PiTurnOutcome, PiTurnOutcomeTracker } from './outcome.ts';
 /** The one adapter-owned provider alias every generated model descriptor uses. */
 export const PI_PROVIDER_ALIAS = 'openkit-worker-inference';
 
-/** Interactive Extension UI methods; every call is reported and resolves as a cancelled prompt. */
+/** Interactive Extension UI methods; confirmation allows and free-input prompts return undefined. */
 const UI_PROMPT_METHODS = ['select', 'confirm', 'input', 'editor', 'custom'] as const;
 /**
  * Extension UI methods whose effect is only visible on a terminal. Each is reported once and then
@@ -106,14 +106,6 @@ interface ActiveTurn {
   /** True while the SDK session, resources, and MCP connection are being prepared. */
   settingUp: boolean;
   readonly turnId: string;
-}
-
-/** Distinguishes a deliberately unsupported native feature from an unavailable setup dependency. */
-class NativeCodemodeUnsupportedError extends Error {
-  public constructor() {
-    super('Native codemode script composition is unsupported at Pi 0.99.1.');
-    this.name = 'NativeCodemodeUnsupportedError';
-  }
 }
 
 /** Raised at a preparation or preflight boundary once the Turn was interrupted or fenced. */
@@ -374,11 +366,7 @@ export class PiRuntimeHost {
     } catch (error) {
       if (!(error instanceof TurnCancelledError)) {
         setupFailure =
-          error instanceof PiSessionIdentityError
-            ? 'pi-identity-failed'
-            : error instanceof NativeCodemodeUnsupportedError
-              ? 'pi-codemode-unsupported'
-              : 'pi-setup-failed';
+          error instanceof PiSessionIdentityError ? 'pi-identity-failed' : 'pi-setup-failed';
       }
     } finally {
       turn.settingUp = false;
@@ -547,8 +535,24 @@ export class PiRuntimeHost {
     }
     const piMcp = await loadPiMcpInternals();
     checkpoint();
+    const base = request.capabilityBaseUrl.replace(/\/+$/, '');
+    const authorization = `Bearer ${request.capabilityCredential}`;
+    const managedServers = request.mcpServers.map((id) => ({
+      authorization,
+      id,
+      url: `${base}/mcp/${encodeURIComponent(id)}`,
+    }));
     const gate = new OpenKitMcpGate({
-      admitted: openkitServers,
+      managed: managedServers.map((server) => ({
+        name: server.id,
+        config: {
+          exposure: 'direct' as const,
+          headers: { Authorization: server.authorization },
+          url: server.url,
+        },
+        scope: 'extension' as const,
+        source: 'OpenKit',
+      })),
       agentDir: request.agentDir,
       createDefaultTransport: piMcp.createDefaultTransport,
       cwd: request.workingDirectory,
@@ -556,32 +560,22 @@ export class PiRuntimeHost {
       secrets: [request.inferenceCredential, request.capabilityCredential],
     });
     this.#mcpGate = gate;
-    const base = request.capabilityBaseUrl.replace(/\/+$/, '');
-    const authorization = `Bearer ${request.capabilityCredential}`;
     // The resident session keeps these Extensions for every later Turn. The gate reads the
     // current Turn on each hook invocation and never retains this first Turn's state. The MCP
-    // factory is the host-supplied built-in one. Pi omits it when another Extension replaces or
-    // disables it, and the host refuses that before `session_start` can connect anything.
+    // factories are applied after native resources; authored exclusions cannot remove them.
     const extensionFactories = [
-      hostControl(
-        request.mcpServers.map((id) => ({
-          authorization,
-          id,
-          url: `${base}/mcp/${encodeURIComponent(id)}`,
-        })),
-        () => {
-          const current = this.#turn;
-          return current === null || cancelled(current) || this.#state !== 'active';
-        }
-      ),
+      hostControl(managedServers, () => {
+        const current = this.#turn;
+        return current === null || cancelled(current) || this.#state !== 'active';
+      }),
       {
-        builtin: true,
+        hidden: true,
         factory: createToolSearchExtension(),
         name: 'tool-search',
-        replaceable: true,
+        replaceable: false,
       },
       {
-        builtin: true,
+        hidden: true,
         factory: createMcpExtension({
           createTransport: (entry, cwd, authProvider) =>
             gate.createTransport(entry, cwd, authProvider),
@@ -589,7 +583,7 @@ export class PiRuntimeHost {
           onConnectionState: (connection) => gate.connectionState(connection),
         }),
         name: 'mcp',
-        replaceable: true,
+        replaceable: false,
       },
     ];
     try {
@@ -609,7 +603,7 @@ export class PiRuntimeHost {
   }
 
   /**
-   * Loads resources, requires the separately owned native MCP/search builtins, activates search
+   * Loads resources, requires the host-supplied inline MCP/search Extensions, activates search
    * additively, and waits for admitted servers before provider work.
    */
   async #openResidentSession(
@@ -633,18 +627,41 @@ export class PiRuntimeHost {
     const settingsManager = SettingsManager.create(request.workingDirectory, request.agentDir, {
       projectTrusted: true,
     });
-    const nativeSettings = settingsManager.getSettings();
-    if (
-      nativeSettings.codemode?.mode !== undefined ||
-      nativeSettings.defaultTools?.some((name) => name === 'codemode' || name === '+codemode')
-    ) {
-      throw new NativeCodemodeUnsupportedError();
-    }
     const resourceLoader = new DefaultResourceLoader({
       agentDir: request.agentDir,
       cwd: request.workingDirectory,
       extensionFactories,
       noThemes: true,
+      // Pi applies first-registration tool precedence. Remove collided native bindings before
+      // binding the final host layer, while preserving unrelated registrations and user files.
+      // Host factories keep the named inline identity and provenance assigned by Pi.
+      extensionsOverride: (loaded) => {
+        const protectedExtensions = loaded.extensions.filter(
+          (extension) =>
+            extension.path === '<inline:mcp>' || extension.path === '<inline:tool-search>'
+        );
+        for (const extension of protectedExtensions) {
+          const name = extension.path === '<inline:mcp>' ? 'mcp' : 'tool-search';
+          if (settingsManager.getSettings().extensions?.includes(`-builtin:${name}`)) {
+            console.warn(`OpenKit overlay: retained ${extension.path} despite -builtin:${name}.`);
+          }
+          for (const native of loaded.extensions) {
+            if (protectedExtensions.includes(native)) continue;
+            // A native MCP owner carries connection handlers as well as /mcp. Replace that
+            // owner as a whole so two native extensions cannot connect the managed servers.
+            if (name === 'mcp' && native.commands.has('mcp')) {
+              console.warn('OpenKit overlay: replaced native MCP Extension.');
+              loaded.extensions = loaded.extensions.filter((candidate) => candidate !== native);
+              continue;
+            }
+            for (const tool of extension.tools.keys()) {
+              if (native.tools.delete(tool))
+                console.warn(`OpenKit overlay: replaced native ${tool}.`);
+            }
+          }
+        }
+        return loaded;
+      },
       settingsManager,
       // Selected supply is a separate native load, so local precedence cannot shadow it.
       skillsOverride: (native) => {
@@ -656,10 +673,13 @@ export class PiRuntimeHost {
         });
         const managedNames = new Set(managed.skills.map((skill) => skill.name));
         if (native.skills.some((skill) => managedNames.has(skill.name))) {
-          throw new Error('Native Pi Skill replaces selected supply.');
+          console.warn('OpenKit overlay: selected Skills replace colliding native Skills.');
         }
         return {
-          skills: [...native.skills, ...managed.skills],
+          skills: [
+            ...native.skills.filter((skill) => !managedNames.has(skill.name)),
+            ...managed.skills,
+          ],
           diagnostics: [...native.diagnostics, ...managed.diagnostics],
         };
       },
@@ -686,19 +706,17 @@ export class PiRuntimeHost {
       throw new PiSessionIdentityError('Pi session opened another conversation.');
     }
     checkpoint();
-    if (openkitServers.size > 0 && !hostSuppliedBuiltinMcp(extensionsResult.extensions)) {
-      throw new Error('Host-supplied built-in Pi MCP extension is not loaded.');
-    }
+    const mcp = extensionsResult.extensions.find((extension) => extension.path === '<inline:mcp>');
     const search = extensionsResult.extensions.find(
-      (extension) =>
-        extension.path === 'builtin:tool-search' && extension.sourceInfo.source === 'builtin'
+      (extension) => extension.path === '<inline:tool-search>'
     );
     const searchDefinition = search?.tools.get('tool_search')?.definition;
-    if (!searchDefinition || session.getToolDefinition('tool_search') !== searchDefinition) {
-      throw new Error('Host-supplied built-in Pi tool-search extension is not loaded.');
-    }
-    if (extensionsResult.extensions.some((extension) => extension.tools.has('codemode'))) {
-      throw new NativeCodemodeUnsupportedError();
+    if (
+      !mcp ||
+      !searchDefinition ||
+      session.getToolDefinition('tool_search') !== searchDefinition
+    ) {
+      throw new Error('Host-supplied native MCP or search factory is unavailable.');
     }
     const recordExtensionError = (message: string): void => {
       this.#io.send({ event: 'extension_error', message });
@@ -711,35 +729,31 @@ export class PiRuntimeHost {
         recordExtensionError(`${error.extensionPath} ${error.event}: ${error.error}`),
       uiContext: this.#headlessUi(session.extensionRunner.getUIContext()),
     });
-    // Current settings and native registration establish the loadout at this pin. Add discovery
-    // to that effective set; successor construction does not restore transcript declarations.
+    // session_start may change a protected binding; the managed layer is seated last.
+    // Later Extension execution remains outside supported setup supply.
+    for (const extension of extensionsResult.extensions) {
+      if (extension !== search && extension.tools.delete('tool_search')) {
+        console.warn('OpenKit overlay: replaced session_start tool_search.');
+      }
+    }
+    extensionsResult.runtime.refreshTools();
     if (session.getToolDefinition('tool_search') !== searchDefinition) {
-      throw new Error('Host-supplied Pi tool_search registration was replaced.');
+      throw new Error('Host-supplied Pi tool_search registration is unavailable.');
     }
     session.setActiveToolsByName([...session.getActiveToolNames(), 'tool_search']);
     if (!session.getActiveToolNames().includes('tool_search')) {
       throw new Error('Host-supplied Pi tool_search could not be activated.');
     }
-    // session_start may register a native resource after the loaded-extension check.
-    // An inactive codemode registration still supplies the unsupported native integration.
-    // This setup checkpoint makes no prevention promise over later user Extension execution.
-    if (
-      session.getToolDefinition('codemode') ||
-      session.getActiveToolNames().includes('codemode')
-    ) {
-      throw new NativeCodemodeUnsupportedError();
-    }
-    // The supported setup may not displace the host registration or selected model.
-    // Later user Extension code is outside supported supply, as with native codemode.
     if (
       binding.runtime.getRegisteredProviderConfig(PI_PROVIDER_ALIAS) !== protectedProvider ||
       session.model !== model
     ) {
-      throw new Error('Native Pi Extension replaces the protected model or provider.');
+      console.warn('OpenKit overlay: restored managed provider and model.');
     }
+    registerModel(binding.runtime, request.inferenceBaseUrl, binding.model);
+    binding.runtime.setRuntimeApiKey(PI_PROVIDER_ALIAS, request.inferenceCredential);
+    await session.setModel(binding.runtime.getModel(PI_PROVIDER_ALIAS, binding.model.modelId)!);
     if (session.extensionRunner.getShortcuts({}).size > 0) this.#reportUi('registerShortcut');
-    const override = gate.overrideError();
-    if (override) throw override;
     checkpoint();
     if (openkitServers.size > 0) {
       this.#awaitingOpenKitMcp = true;
@@ -832,7 +846,7 @@ export class PiRuntimeHost {
   }
 
   /**
-   * Returns the Extension UI the headless host offers: every prompt resolves as cancelled and is
+   * Returns the Extension UI the headless host offers: confirmation allows, free input cancels and is
    * reported, and every terminal-only method is reported once and then has no visible effect.
    */
   #headlessUi(base: ExtensionUIContext): ExtensionUIContext {
@@ -841,7 +855,8 @@ export class PiRuntimeHost {
       Object.assign(ui, {
         [method]: async () => {
           this.#io.send({ event: 'ui_unsupported', method, turnId: this.#turn?.turnId ?? null });
-          return method === 'confirm' ? false : undefined;
+          // Keep the boolean response point deny-capable for future user-configurable policy.
+          return method === 'confirm' ? true : undefined;
         },
       });
     }

@@ -74,17 +74,18 @@ export class OpenKitMcpGate {
   readonly #phase = new Map<string, ServerPhase>();
   readonly #retained: NativeTransport[] = [];
   readonly #secrets: readonly string[];
-  #override: Error | null = null;
+  readonly #managed: LoadedMcpConfig['servers'];
 
   constructor(options: {
-    admitted: ReadonlySet<string>;
+    managed: LoadedMcpConfig['servers'];
     agentDir: string;
     createDefaultTransport: McpTransportFactory;
     cwd: string;
     loadMcpConfig: PiMcpInternals['loadMcpConfig'];
     secrets: readonly string[];
   }) {
-    this.#admitted = options.admitted;
+    this.#managed = options.managed;
+    this.#admitted = new Set(options.managed.map((server) => server.name));
     this.#agentDir = options.agentDir;
     this.#createDefaultTransport = options.createDefaultTransport;
     this.#cwd = options.cwd;
@@ -92,16 +93,7 @@ export class OpenKitMcpGate {
     this.#secrets = options.secrets;
   }
 
-  /** Error latched when the loader returned an admitted name, including a disabled entry. */
-  overrideError(): Error | null {
-    return this.#override;
-  }
-
-  /**
-   * Invokes Pi's loader for the admitted directory and refuses an admitted name before returning.
-   *
-   * @returns The same object Pi's loader returned when no admitted name is present.
-   */
+  /** Loads native configuration, then replaces whole admitted entries with the Gateway layer. */
   loadConfig(): LoadedMcpConfig {
     const loaded = this.#loadMcpConfig({
       agentDir: this.#agentDir,
@@ -112,12 +104,15 @@ export class OpenKitMcpGate {
       .filter((server) => this.#admitted.has(server.name))
       .map((server) => server.name);
     if (overridden.length > 0) {
-      this.#override = new Error(
-        `OpenKit MCP server is overridden by the agent directory mcp.json: ${overridden.join(', ')}.`
-      );
-      throw this.#override;
+      console.warn(`OpenKit overlay: replaced native MCP servers: ${overridden.join(', ')}.`);
     }
-    return loaded;
+    return {
+      ...loaded,
+      servers: [
+        ...loaded.servers.filter((server) => !this.#admitted.has(server.name)),
+        ...this.#managed,
+      ],
+    };
   }
 
   /**
@@ -205,15 +200,6 @@ export class OpenKitMcpGate {
         listener(error);
       });
   }
-}
-
-/** Whether the loaded Extensions still include the host-supplied built-in MCP Extension. */
-export function hostSuppliedBuiltinMcp(
-  extensions: readonly { path: string; sourceInfo: { source: string } }[]
-): boolean {
-  return extensions.some(
-    (extension) => extension.path === 'builtin:mcp' && extension.sourceInfo.source === 'builtin'
-  );
 }
 
 function redactSecrets(value: unknown, secrets: readonly string[]): unknown {

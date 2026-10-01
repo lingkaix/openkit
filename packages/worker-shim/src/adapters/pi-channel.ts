@@ -21,7 +21,6 @@ export const PI_DIAGNOSTIC_PREFIX_BYTES = 16 * 1024;
 export const PI_SESSION_HANDLE_MAX_BYTES = 16 * 1024;
 /** Failure reasons the host is allowed to report. Any other reason fails closed. */
 export const PI_FAILED_REASONS = [
-  'pi-codemode-unsupported',
   'pi-final-message-empty',
   'pi-identity-failed',
   'pi-output-malformed',

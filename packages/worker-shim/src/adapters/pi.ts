@@ -968,7 +968,7 @@ export class PiResidentBinding implements WorkerResidentSession {
     if (projected.establishes && readyText !== null) this.#established = true;
     else if (!this.#established) this.#fenced = true;
     const status = projected.status;
-    const diagnostics = status === 'completed' ? undefined : this.#diagnostics();
+    const diagnostics = this.#diagnostics();
     active.resolve({
       assistantText: projected.assistantText,
       ...(diagnostics ? { diagnostics } : {}),
