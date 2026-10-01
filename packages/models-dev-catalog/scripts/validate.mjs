@@ -6,7 +6,7 @@ import { parse } from 'jsonc-parser';
 
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
-const snapshotVersion = '2026-09-17';
+const snapshotVersion = '2026-10-01';
 const snapshotRoot = join(packageRoot, 'snapshots', snapshotVersion);
 
 /**

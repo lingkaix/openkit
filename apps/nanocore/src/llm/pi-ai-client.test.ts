@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
 import {
   type AuthInteraction,
-  type Context,
   type CredentialInfo,
   type CredentialStore,
   calculateCost,
@@ -13,9 +12,12 @@ import {
   fauxText,
   fauxThinking,
   fauxToolCall,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   type Model,
   type OAuthCredential,
   type StreamOptions,
+  type TranscriptContext,
   type Usage,
 } from '@earendil-works/pi-ai';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
@@ -192,7 +194,7 @@ describe('PiAiGatewayClient', () => {
     ) as { dependencies: Record<string, string> };
     const version = packageJson.dependencies['@earendil-works/pi-ai'];
 
-    expect(version).toBe('0.84.2');
+    expect(version).toBe('0.99.2');
     expect(version).not.toMatch(/^[~^]/);
     await expect(import('@earendil-works/pi-ai')).resolves.toHaveProperty('createModels');
   });
@@ -567,9 +569,9 @@ describe('PiAiGatewayClient', () => {
     expect(pricedUsage).toMatchObject({
       cacheRead: 0,
       cacheWrite: 0,
-      input: 36,
+      input: 37,
       output: 13,
-      totalTokens: 49,
+      totalTokens: 50,
     });
     expect(pricedUsage.cost.total).toBe(
       expectedAdapterCostTotal(pricedModel as Model<string>, pricedUsage)
@@ -577,11 +579,11 @@ describe('PiAiGatewayClient', () => {
     expect(Number.isFinite(pricedUsage.cost.total)).toBe(true);
     expect(JSON.stringify(completed.response.output)).toContain('stream state ready');
     expect(completed.response.usage).toEqual({
-      input_tokens: 36,
+      input_tokens: 37,
       input_tokens_details: { cached_tokens: 0 },
       output_tokens: 13,
       output_tokens_details: { reasoning_tokens: 0 },
-      total_tokens: 49,
+      total_tokens: 50,
     });
     expect(turnStates).toEqual(['pi-stream-response-state']);
 
@@ -1071,11 +1073,13 @@ describe('PiAiGatewayClient', () => {
   });
 
   it.each([
-    'grok-4.7',
-    'xai/grok-4.7',
+    'grok-openkit-uncatalogued-test',
+    'xai/grok-openkit-uncatalogued-test',
   ])('dispatches configured uncatalogued xAI model %s through its authenticated pair', async (modelId) => {
     const stock = xaiProvider();
-    expect(stock.getModels().some((model) => model.id === 'grok-4.7')).toBe(false);
+    expect(stock.getModels().some((model) => model.id === 'grok-openkit-uncatalogued-test')).toBe(
+      false
+    );
     const credential: OAuthCredential = {
       type: 'oauth',
       access: 'work-pair-access',
@@ -1145,7 +1149,7 @@ describe('PiAiGatewayClient', () => {
 
     expect(response.choices[0]?.message.content).toBe('Grok response');
     expect(seenModel).toMatchObject({
-      id: 'grok-4.7',
+      id: 'grok-openkit-uncatalogued-test',
       provider: 'xai',
       api: 'openai-completions',
       baseUrl: stock.baseUrl,
@@ -1156,7 +1160,7 @@ describe('PiAiGatewayClient', () => {
     expect(seenOptions?.apiKey).toBe('work-pair-access');
     expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
     expect(pairModels.getModels('xai')).toEqual(originalModels);
-    expect(pairModels.getModel('xai', 'grok-4.7')).toBeUndefined();
+    expect(pairModels.getModel('xai', 'grok-openkit-uncatalogued-test')).toBeUndefined();
     expect(observed).toHaveLength(1);
     expect(observed[0]).not.toHaveProperty('cost');
 
@@ -1371,7 +1375,7 @@ describe('PiAiGatewayClient', () => {
   });
 
   it('uses native Codex Responses and preserves tools, history, reasoning, and usage', async () => {
-    let seenContext: Context | undefined;
+    let seenContext: TranscriptContext | undefined;
     let seenModel: Model<string> | undefined;
     let seenOptions: (StreamOptions & Record<string, unknown>) | undefined;
     let seenPayload: unknown;
@@ -1500,8 +1504,10 @@ describe('PiAiGatewayClient', () => {
       id: 'gpt-5.6-sol',
       provider: 'openai-codex',
     });
-    expect(seenContext).toMatchObject({
-      systemPrompt: 'Use the documentation tool.',
+    expect({
+      ...seenContext,
+      messages: seenContext?.messages.filter((message) => message.role !== 'system'),
+    }).toMatchObject({
       messages: [
         { role: 'user', content: [{ type: 'text', text: 'Find OpenKit.' }] },
         {
@@ -1522,15 +1528,11 @@ describe('PiAiGatewayClient', () => {
           content: [{ type: 'text', text: 'Previous result' }],
         },
       ],
-      tools: [
-        {
-          name: 'search_docs',
-          parameters: {
-            required: ['query'],
-          },
-        },
-      ],
     });
+    expect(getCurrentSystemPrompt(seenContext!.messages)).toBe('Use the documentation tool.');
+    expect(getCurrentTools(seenContext!.messages)).toMatchObject([
+      { name: 'search_docs', parameters: { required: ['query'] } },
+    ]);
     expect(seenOptions).toMatchObject({
       cacheRetention: 'long',
       headers: { 'x-codex-turn-state': 'previous-state' },
@@ -1573,7 +1575,7 @@ describe('PiAiGatewayClient', () => {
   });
 
   it('preserves the exact Codex Responses Lite tool prefix as callable tools', async () => {
-    let seenContext: Context | undefined;
+    let seenContext: TranscriptContext | undefined;
     let seenPayload: unknown;
     const faux = fauxProvider({
       api: 'openai-codex-responses',
@@ -1638,10 +1640,13 @@ describe('PiAiGatewayClient', () => {
       models
     );
 
-    expect(seenContext).toMatchObject({
+    expect({
+      ...seenContext,
+      messages: seenContext?.messages.filter((message) => message.role !== 'system'),
+    }).toMatchObject({
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Delegate this task.' }] }],
     });
-    expect(seenContext?.tools).toBeUndefined();
+    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([]);
     expect(seenPayload).toEqual({
       input: [additionalTools, userInput],
       model: 'gpt-5.6-sol',
@@ -1650,7 +1655,7 @@ describe('PiAiGatewayClient', () => {
   });
 
   it('preserves the Codex 0.153.4 canonical prefix and namespaced custom-tool semantics', async () => {
-    let seenContext: Context | undefined;
+    let seenContext: TranscriptContext | undefined;
     let seenPayload: unknown;
     const faux = fauxProvider({
       api: 'openai-codex-responses',
@@ -1718,7 +1723,7 @@ describe('PiAiGatewayClient', () => {
       models
     );
 
-    expect(seenContext?.tools).toBeUndefined();
+    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([]);
     expect(seenPayload).toEqual({
       input: [additionalTools, userInput],
       model: 'gpt-5.6-sol',
@@ -2196,7 +2201,7 @@ describe('PiAiGatewayClient', () => {
     [false, 'mcp__openkit', true],
     [true, 'mcp__openkit', true],
   ] as const)('preserves a Responses function loop (stream=%s, namespace=%s, anchored=%s)', async (stream, namespace, anchored) => {
-    const contexts: Context[] = [];
+    const contexts: TranscriptContext[] = [];
     const faux = fauxProvider({
       api: 'openai-completions',
       provider: 'openrouter',
@@ -2208,7 +2213,13 @@ describe('PiAiGatewayClient', () => {
       async (context) => {
         contexts.push(context);
         return fauxAssistantMessage(
-          [fauxToolCall(context.tools![0]!.name, { path: 'README.md' }, { id: 'call_read' })],
+          [
+            fauxToolCall(
+              getCurrentTools(context.messages)[0]!.name,
+              { path: 'README.md' },
+              { id: 'call_read' }
+            ),
+          ],
           { stopReason: 'toolUse' }
         );
       },
@@ -2320,14 +2331,20 @@ describe('PiAiGatewayClient', () => {
       ])
     );
     expect(contexts).toHaveLength(2);
-    expect(contexts[0]?.systemPrompt).toBe('Be precise.\n\nKeep this instruction.');
-    const providerName = contexts[0]!.tools![0]!.name;
+    expect(getCurrentSystemPrompt(contexts[0]!.messages)).toBe(
+      'Be precise.\n\nKeep this instruction.'
+    );
+    const providerName = getCurrentTools(contexts[0]!.messages)[0]!.name;
     expect(providerName).toMatch(/^[a-zA-Z0-9_]{1,64}$/);
     if (namespace !== 'functions') {
-      expect(contexts[0]!.tools![0]!.description).toContain(`${namespace}.read_file`);
+      expect(getCurrentTools(contexts[0]!.messages)[0]!.description).toContain(
+        `${namespace}.read_file`
+      );
     }
-    expect(new Set(contexts[0]!.tools!.map((tool) => tool.name)).size).toBe(request.tools.length);
-    expect(contexts[0]?.tools).toEqual(
+    expect(new Set(getCurrentTools(contexts[0]!.messages).map((tool) => tool.name)).size).toBe(
+      request.tools.length
+    );
+    expect(getCurrentTools(contexts[0]!.messages)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           name: providerName,
@@ -2389,7 +2406,7 @@ describe('PiAiGatewayClient', () => {
   });
 
   it('advertises function-only additional_tools when bridging Responses through Chat Completions', async () => {
-    let seenContext: Context | undefined;
+    let seenContext: TranscriptContext | undefined;
     let seenOptions: (StreamOptions & Record<string, unknown>) | undefined;
     let seenPayload: unknown;
     const faux = fauxProvider({
@@ -2463,10 +2480,13 @@ describe('PiAiGatewayClient', () => {
     );
 
     const body = await new Response(stream).text();
-    expect(seenContext).toMatchObject({
+    expect({
+      ...seenContext,
+      messages: seenContext?.messages.filter((message) => message.role !== 'system'),
+    }).toMatchObject({
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Run the check.' }] }],
     });
-    expect(seenContext?.tools).toEqual([
+    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([
       expect.objectContaining({
         description: 'Run code.',
         name: 'exec',
@@ -2689,7 +2709,7 @@ describe('PiAiGatewayClient', () => {
   });
 
   it('advertises function-only additional_tools on a non-stream chat-native Responses bridge', async () => {
-    let seenContext: Context | undefined;
+    let seenContext: TranscriptContext | undefined;
     let providerCalls = 0;
     const faux = fauxProvider({
       api: 'openai-completions',
@@ -2746,7 +2766,7 @@ describe('PiAiGatewayClient', () => {
     );
 
     expect(providerCalls).toBe(1);
-    expect(seenContext?.tools).toEqual([
+    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([
       expect.objectContaining({
         description: 'Read one file.',
         name: 'read_file',
@@ -3244,7 +3264,7 @@ describe('PiAiGatewayClient', () => {
   });
 
   it('maps chat function tools and tool choice into the pi-ai request', async () => {
-    let seenContext: Context | undefined;
+    let seenContext: TranscriptContext | undefined;
     let seenOptions: (StreamOptions & Record<string, unknown>) | undefined;
     const faux = fauxProvider({ provider: 'anthropic_primary', models: [{ id: 'faux-chat' }] });
     const models = createModels();
@@ -3291,7 +3311,7 @@ describe('PiAiGatewayClient', () => {
       ],
     });
 
-    expect(seenContext?.tools).toEqual([
+    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([
       {
         name: 'search_docs',
         description: 'Search project documentation.',
@@ -3302,7 +3322,7 @@ describe('PiAiGatewayClient', () => {
         },
       },
     ]);
-    expect(seenContext?.messages[1]).toMatchObject({
+    expect(seenContext?.messages.filter((message) => message.role !== 'system')[1]).toMatchObject({
       role: 'assistant',
       content: [
         {

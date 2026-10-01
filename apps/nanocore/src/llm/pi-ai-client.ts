@@ -7,6 +7,7 @@ import {
   calculateCost,
   createModels,
   createProvider,
+  type JsonObject,
   type Model,
   type Models,
   type MutableModels,
@@ -3175,9 +3176,9 @@ function readStreamToolCall(message: AssistantMessage, contentIndex: number) {
  * Parses OpenAI-compatible JSON function arguments.
  *
  * @param value Tool arguments payload.
- * @returns Plain argument object.
+ * @returns JSON argument object from the admitted request or parsed JSON string.
  */
-function parseToolArguments(value: unknown): Record<string, unknown> {
+function parseToolArguments(value: unknown): JsonObject {
   if (value === undefined || value === '') {
     return {};
   }
@@ -3186,7 +3187,7 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
       const parsed = JSON.parse(value) as unknown;
       const record = readRecord(parsed);
       if (record) {
-        return record;
+        return record as JsonObject;
       }
     } catch {
       throw new GatewayUnsupportedFeatureError('pi-ai chat tool arguments');
@@ -3195,7 +3196,7 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
 
   const record = readRecord(value);
   if (record) {
-    return record;
+    return record as JsonObject;
   }
 
   throw new GatewayUnsupportedFeatureError('pi-ai chat tool arguments');

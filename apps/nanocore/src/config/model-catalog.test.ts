@@ -88,7 +88,7 @@ describe('deployment model extension catalog', () => {
   it('resolves snapshot → extension → profile without changing authored or vendored bytes', () => {
     const { root, profilePath } = fixture();
     const snapshotPath = new URL(
-      '../../../../packages/models-dev-catalog/snapshots/2026-09-17/api.json',
+      '../../../../packages/models-dev-catalog/snapshots/2026-10-01/api.json',
       import.meta.url
     );
     const before = readFileSync(snapshotPath, 'utf8');

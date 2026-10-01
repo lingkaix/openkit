@@ -1,10 +1,11 @@
 import {
-  type Context,
   createModels,
   fauxAssistantMessage,
   fauxProvider,
   fauxText,
   fauxToolCall,
+  getCurrentTools,
+  type TranscriptContext,
 } from '@earendil-works/pi-ai';
 import { describe, expect, it } from 'vitest';
 
@@ -74,7 +75,7 @@ const EXEC_CUSTOM = {
 describe('bridged worker Responses function tools', () => {
   it('advertises function-only additional_tools on a chat-native bridge', async () => {
     let providerCalls = 0;
-    let seenContext: Context | undefined;
+    let seenContext: TranscriptContext | undefined;
     const faux = fauxProvider({
       api: 'openai-completions',
       models: [{ id: 'faux-bridged-chat' }],
@@ -107,7 +108,7 @@ describe('bridged worker Responses function tools', () => {
       .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
 
     expect(providerCalls).toBe(1);
-    expect(seenContext?.tools).toEqual([
+    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([
       expect.objectContaining({
         description: READ_FILE_FUNCTION.description,
         name: 'read_file',

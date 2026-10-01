@@ -4,6 +4,8 @@ This package stores explicit `models.dev` API snapshots used by OpenKit releases
 
 The snapshots are vendored so NanoCore boot never depends on a live `models.dev` network request.
 
+The current snapshot is `2026-10-01`; its metadata reconciles NanoCore's exact pi-ai `0.99.2` dependency at the existing 5% price tolerance.
+
 ## Contents
 
 - `snapshots/YYYY-MM-DD/api.json` stores the vendored API snapshot.

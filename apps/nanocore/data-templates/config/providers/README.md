@@ -15,7 +15,7 @@ These templates are copied into `OPENKIT_DATA_ROOT/config/providers/` when missi
 
 Operators should keep credentials out of provider files and create the matching vault reference before enabling a provider.
 
-The active starter provider ids and model ids are traceable to the vendored `models.dev` snapshot under `packages/models-dev-catalog/snapshots/2026-09-17/`.
+The active starter provider ids and model ids are traceable to the vendored `models.dev` snapshot under `packages/models-dev-catalog/snapshots/2026-10-01/`.
 
 The custom OpenAI-compatible template is operator-defined and intentionally has no upstream `models.dev` provider id. Its placeholder model has no real context limit; adding a fabricated limit to satisfy startup validation is not a supported activation procedure.
 

@@ -2,6 +2,8 @@
 
 This directory owns LLM Gateway behavior, provider dispatch, upstream clients and adapters, provider-subscription accounts, public OpenAI-compatible projection, and usage observation.
 
+NanoCore pins pi-ai `0.99.2` and consumes the vendored models.dev `2026-10-01` snapshot. The adapter supplies `Context` to the stock `Models` entry points; provider callbacks receive normalized `TranscriptContext`, with prompts and tools carried by system messages. Conformance fixtures inspect those declarations through the stock transcript accessors.
+
 ## Boundaries
 
 - Keep Gateway routes, dispatch, native and bridged request handling, upstream error normalization, provider-subscription account state, and prompt-cache behavior here.

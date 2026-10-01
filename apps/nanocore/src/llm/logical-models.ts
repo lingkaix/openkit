@@ -5,7 +5,7 @@ import {
   type GatewayConfig,
   resolveProviderSubscriptionFamily,
 } from '@openkit/config-schema';
-import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-09-17/api.json' with {
+import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-10-01/api.json' with {
   type: 'json',
 };
 
