@@ -177,7 +177,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
             hasCredentials(input)
           );
         }
-        const normalized = normalizeMcpError(error, 'list');
+        const normalized = normalizeMcpListError(error);
         throw hasCredentials(input)
           ? new WorkerMcpGatewayCallError(
               normalized.code,
@@ -234,7 +234,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           throw cleanupRecoveryError(error, connected ? 'unknown' : 'not-contacted', input);
         }
       }
-      throw normalizeMcpError(error, 'list');
+      throw normalizeMcpListError(error);
     } finally {
       try {
         await this.release(key, pending);
@@ -563,7 +563,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         hasCredentials(input) &&
         (processGroupId !== null || error instanceof SdkError || mcpUpstreamWasContacted(error))
       ) {
-        const normalized = normalizeMcpError(error, 'list');
+        const normalized = normalizeMcpListError(error);
         const cancelled = input.signal?.aborted && input.signal.reason === error;
         throw new WorkerMcpGatewayCallError(
           normalized.code,
@@ -1021,14 +1021,18 @@ function requestOptions(
   return { maxTotalTimeout: timeout, ...(signal ? { signal } : {}), timeout };
 }
 
-/** Maps native SDK and transport failures to the worker capability vocabulary. */
-function normalizeMcpError(error: unknown, operation: 'call' | 'list'): WorkerControlGatewayError {
+/**
+ * Maps native SDK and transport failures of a connect or tool-list request to the worker
+ * capability vocabulary. Tool calls use `normalizeMcpCallError`, which also retains upstream
+ * effect certainty.
+ */
+function normalizeMcpListError(error: unknown): WorkerControlGatewayError {
   if (error instanceof WorkerControlGatewayError) return error;
   if (error instanceof McpHttpResponseTooLargeError) {
     return new WorkerMcpGatewayCallError(
-      operation === 'call' ? 'mcp-result-too-large' : 'mcp-server-unavailable',
-      operation === 'call' ? MCP_RESULT_TOO_LARGE_MESSAGE : 'MCP server is unavailable.',
-      operation === 'call' ? 413 : 503,
+      'mcp-server-unavailable',
+      'MCP server is unavailable.',
+      503,
       'contacted',
       false,
       error.credentialsMaterialized
@@ -1037,11 +1041,7 @@ function normalizeMcpError(error: unknown, operation: 'call' | 'list'): WorkerCo
   if (isMcpTimeout(error)) {
     return new WorkerControlGatewayError('mcp-timeout', 'MCP request timed out.', 504);
   }
-  return new WorkerControlGatewayError(
-    operation === 'call' ? 'mcp-call-failed' : 'mcp-server-unavailable',
-    operation === 'call' ? 'MCP tool call failed.' : 'MCP server is unavailable.',
-    503
-  );
+  return new WorkerControlGatewayError('mcp-server-unavailable', 'MCP server is unavailable.', 503);
 }
 
 /** Maps one failed tool request while retaining its upstream effect certainty. */
