@@ -1480,6 +1480,7 @@ describe('worker MCP routes', () => {
 
   it.each([
     {
+      transientPreparation: false,
       entry: 'direct Task',
       refuseFirst: false,
       repository: false,
@@ -1488,6 +1489,7 @@ describe('worker MCP routes', () => {
       path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
     },
     {
+      transientPreparation: false,
       entry: 'refused warm Worker conversation',
       refuseFirst: true,
       repository: false,
@@ -1496,6 +1498,7 @@ describe('worker MCP routes', () => {
       path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
     },
     {
+      transientPreparation: false,
       entry: 'selected warm Worker conversation',
       refuseFirst: false,
       repository: false,
@@ -1503,7 +1506,17 @@ describe('worker MCP routes', () => {
       ownerCommand: 'conversation.submit',
       path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
     },
+    {
+      transientPreparation: true,
+      entry: 'transient preparation refused Worker conversation',
+      refuseFirst: true,
+      repository: false,
+      decision: 'granted' as const,
+      ownerCommand: 'conversation.submit',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+    },
     ...(['granted', 'denied'] as const).map((decision) => ({
+      transientPreparation: false,
       entry: `repository ${decision}`,
       refuseFirst: false,
       repository: true,
@@ -1512,6 +1525,7 @@ describe('worker MCP routes', () => {
       path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
     })),
   ])('delivers a public $entry pending outcome through native worker admission', async ({
+    transientPreparation,
     ownerCommand,
     path,
     refuseFirst,
@@ -2016,11 +2030,18 @@ describe('worker MCP routes', () => {
         })
       );
       const originalSnapshot = runtimeConfigManager.current();
-      const providerFault = refuseFirst
+      const preparationFailure = new Error('Transient pending outcome preparation failure');
+      const preparationFault = transientPreparation
         ? vi
-            .spyOn(runtimeConfigManager, 'current')
-            .mockReturnValue({ ...originalSnapshot, providerRegistry: new ProviderRegistry([]) })
+            .spyOn(workerLifecycleRuntime.turnExecutor, 'prepareAgentSessionForTurn')
+            .mockRejectedValue(preparationFailure)
         : undefined;
+      const providerFault =
+        refuseFirst && !transientPreparation
+          ? vi
+              .spyOn(runtimeConfigManager, 'current')
+              .mockReturnValue({ ...originalSnapshot, providerRegistry: new ProviderRegistry([]) })
+          : undefined;
       const detailResponse = await app.request(
         '/api/app/workspaces/ws_demo/threads/th_demo/dashboard'
       );
@@ -2050,10 +2071,34 @@ describe('worker MCP routes', () => {
         const reviewDb = openWorkspaceDb(dataRoot, 'ws_demo');
         for (let n = 0; n < 2000; n++) {
           const record = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!);
-          if (record?.delivery === 'undelivered' && record.publicationTurnId) break;
+          if (
+            record?.delivery === (transientPreparation ? 'delivery-unknown' : 'undelivered') &&
+            record.publicationTurnId
+          )
+            break;
           await new Promise((resolve) => setTimeout(resolve, 1));
         }
         const refused = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
+        if (transientPreparation) {
+          expect(responded.status, await responded.clone().text()).toBe(200);
+          expect(refused.delivery).toBe('delivery-unknown');
+          expect(store.getTurnById(refused.publicationTurnId!)).toMatchObject({
+            status: 'failed',
+            error: { code: 'delivery_unknown' },
+          });
+          expect(preparationFault).toHaveBeenCalledTimes(1);
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT status FROM scheduler_admission_entries WHERE turn_id = ?')
+              .get(refused.publicationTurnId)
+          ).toEqual({ status: 'cancelled' });
+          const count = store.listThreadTurns('ws_demo', 'th_demo').length;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(count);
+          preparationFault!.mockRestore();
+          reviewDb.sqlite.close();
+          return;
+        }
         expect(refused.delivery).toBe('undelivered');
         expect(refused.disposition).toBe('denied-not-executed');
         expect(store.getTurnById(refused.publicationTurnId!).status).toBe('failed');

@@ -597,10 +597,10 @@ describe('generic turn routes', () => {
     'configuration',
     'capacity',
     'transient',
-  ] as const)('settles only deterministic preparation failures before replying to turn.start: %s', async (failure) => {
+  ] as const)('cancels preparation failures but leaves capacity deferred before replying to turn.start: %s', async (failure) => {
     const executor = new RecordingTurnExecutor();
     const manifest = createTestAgentSetup().manifest;
-    const deterministic = failure !== 'capacity' && failure !== 'transient';
+    const cancelled = failure !== 'capacity';
     if (failure === 'manifest' || failure === 'shim') {
       const missingPath =
         failure === 'manifest' ? '/usr/local/bin/node' : '/usr/local/bin/openkit-worker-shim';
@@ -664,7 +664,7 @@ describe('generic turn routes', () => {
             'th_demo',
             requestId
           ).replace(/^turn_/, 'queue_'),
-          status: deterministic ? 'cancelled' : 'queued',
+          status: cancelled ? 'cancelled' : 'queued',
         },
       ]);
       expect(prepare).toHaveBeenCalledTimes(failure === 'configuration' ? 0 : 1);
@@ -697,11 +697,11 @@ describe('generic turn routes', () => {
         clearInterval: () => {},
       });
       try {
-        if (!deterministic) {
+        if (!cancelled) {
           await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
         }
         const result = await service.runOnce();
-        if (deterministic) {
+        if (cancelled) {
           expect(result?.terminalResult).toEqual({ status: 'queued', reason: 'no-queued-entry' });
           expect(prepare).toHaveBeenCalledTimes(failure === 'configuration' ? 0 : 1);
         } else {

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { asCommandError } from '../api-errors.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -24,6 +24,7 @@ import {
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records';
+import * as schedulerRecords from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
@@ -793,7 +794,10 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it('preserves an exact own commit failure after acquisition re-attribution', async () => {
+  it.each([
+    true,
+    false,
+  ])('preserves an exact own commit failure after acquisition re-attribution, cancellation %s', async (cancelDeferredAdmission) => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
@@ -807,7 +811,7 @@ describe('scheduler dispatch loop', () => {
       seedLocalSchedulerTarget(coreDb);
       await expect(
         startProductTurn({
-          cancelDeferredAdmission: true,
+          cancelDeferredAdmission,
           coreDb,
           input: {
             agentId: manifest.id,
@@ -847,14 +851,22 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it.each([
-    'deterministic-preparation',
-    'turn-start',
-  ] as const)('preserves the exact own-admission error and handling: %s', async (failureStage) => {
+  it.each(
+    [true, false].flatMap((cancelDeferredAdmission) =>
+      (['deterministic-preparation', 'turn-start'] as const).map((failureStage) => ({
+        cancelDeferredAdmission,
+        failureStage,
+      }))
+    )
+  )('preserves the exact own-admission error and handling: $failureStage, cancellation $cancelDeferredAdmission', async ({
+    cancelDeferredAdmission,
+    failureStage,
+  }) => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const manifest = agentManifest();
+    const cancel = vi.spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry');
     const failure =
       failureStage === 'deterministic-preparation'
         ? new DeterministicAgentPreparationError('Own preparation failed', 'agent_not_ready', 409)
@@ -872,7 +884,7 @@ describe('scheduler dispatch loop', () => {
       seedLocalSchedulerTarget(coreDb);
       await expect(
         startProductTurn({
-          cancelDeferredAdmission: true,
+          cancelDeferredAdmission,
           coreDb,
           input: {
             agentId: manifest.id,
@@ -902,6 +914,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_demo',
         })
       ).toMatchObject([{ status: failureStage === 'turn-start' ? 'admitted' : 'cancelled' }]);
+      expect(cancel).toHaveBeenCalledTimes(failureStage === 'deterministic-preparation' ? 1 : 0);
       const leases = coreDb.sqlite
         .prepare('SELECT status, release_reason AS releaseReason FROM scheduler_session_leases')
         .all();
@@ -911,6 +924,7 @@ describe('scheduler dispatch loop', () => {
           : []
       );
     } finally {
+      cancel.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -1028,12 +1042,9 @@ describe('scheduler dispatch loop', () => {
   });
 
   it.each([
-    { cancelDeferredAdmission: true, expectedStatus: 'cancelled' as const },
-    { cancelDeferredAdmission: false, expectedStatus: 'queued' as const },
-  ])('settles only the synchronous caller admission after pre-dispatch recovery failure: $expectedStatus', async ({
-    cancelDeferredAdmission,
-    expectedStatus,
-  }) => {
+    true,
+    false,
+  ])('cancels its own transient preparation failure and prevents later dispatch, cancellation %s', async (cancelDeferredAdmission) => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
@@ -1041,12 +1052,13 @@ describe('scheduler dispatch loop', () => {
     const requestId = cancelDeferredAdmission
       ? '00000000-0000-4000-8000-00000000f101'
       : '00000000-0000-4000-8000-00000000f102';
+    const failure = new TurnStartValidationError(
+      'recovery_required',
+      'The active predecessor requires recovery before replacement.',
+      409
+    );
     turnExecutor.prepareAgentSessionForTurn = async () => {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        'The active predecessor requires recovery before replacement.',
-        409
-      );
+      throw failure;
     };
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       agentManifests: [manifest],
@@ -1079,44 +1091,161 @@ describe('scheduler dispatch loop', () => {
           turnExecutor,
           workerPlacement: 'local',
         })
-      ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
+      ).rejects.toBe(failure);
 
       const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         statuses: ['queued', 'cancelled'],
         workspaceId: 'ws_demo',
       }).find((entry) => entry.requestId === requestId);
-      expect(admission).toMatchObject({ requestId, status: expectedStatus });
+      expect(admission).toMatchObject({ requestId, status: 'cancelled' });
 
-      if (cancelDeferredAdmission) {
-        const laterExecutor = new RecordingTurnExecutor();
-        await expect(
-          runSchedulerDispatchLoop({
-            agentManifests: [manifest],
-            coreDb,
-            createAgentSessionId: () => 'as_cancelled_followup',
-            createLeaseId: () => 'lease_cancelled_followup',
-            createPlanId: () => 'plan_cancelled_followup',
-            expectedControlMode: 'poll',
-            expectedDataPlaneMode: 'openshell-files',
-            gatewayConfig: createTestGatewayConfig(),
-            heartbeatIntervalMs: 10_000,
-            heartbeatTimeoutMs: 30_000,
-            leaseDurationMs: 900_000,
-            maxDispatches: 1,
-            providerRegistry: localProviderRegistry(),
-            schedulerEpoch: 1,
-            startupTimeoutMs: 120_000,
-            store,
-            turnExecutor: laterExecutor,
-          })
-        ).resolves.toEqual({
-          startedTurns: [],
-          terminalResult: { status: 'queued', reason: 'no-queued-entry' },
-        });
-        expect(laterExecutor.prepareCalls).toEqual([]);
-        expect(laterExecutor.calls).toEqual([]);
-      }
+      const laterExecutor = new RecordingTurnExecutor();
+      await expect(
+        runSchedulerDispatchLoop({
+          agentManifests: [manifest],
+          coreDb,
+          createAgentSessionId: () => 'as_cancelled_followup',
+          createLeaseId: () => 'lease_cancelled_followup',
+          createPlanId: () => 'plan_cancelled_followup',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          gatewayConfig: createTestGatewayConfig(),
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+          schedulerEpoch: 1,
+          startupTimeoutMs: 120_000,
+          store,
+          turnExecutor: laterExecutor,
+        })
+      ).resolves.toEqual({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'no-queued-entry' },
+      });
+      expect(laterExecutor.prepareCalls).toEqual([]);
+      expect(laterExecutor.calls).toEqual([]);
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each(
+    [true, false].flatMap((cancelDeferredAdmission) =>
+      (['deferred', 'denied'] as const).map((outcome) => ({ cancelDeferredAdmission, outcome }))
+    )
+  )('keeps cancellation optional for its own $outcome outcome, cancellation $cancelDeferredAdmission', async ({
+    cancelDeferredAdmission,
+    outcome,
+  }) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const manifest = agentManifest();
+    const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+    turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
+      if (outcome === 'deferred') throw new WorkerGovernanceCapacityUnavailableError();
+      const prepared = await prepare(ownerStore, preparation);
+      coreDb.sqlite
+        .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'user_local'")
+        .run(Date.now());
+      return prepared;
+    };
+    try {
+      seedLocalSchedulerTarget(coreDb);
+      await expect(
+        startProductTurn({
+          cancelDeferredAdmission,
+          coreDb,
+          input: {
+            agentId: manifest.id,
+            input: 'Own optional cancellation',
+            requestId: '00000000-0000-4000-8000-00000000f128',
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+          },
+          providerCredentialResolver: () => null,
+          schedulerEpoch: 1,
+          snapshot: createInMemoryRuntimeConfigSnapshot({
+            agentManifests: [manifest],
+            dataRoot: null,
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: localProviderRegistry(),
+          }),
+          store,
+          triggerActor: { kind: 'user', id: 'user_local' },
+          turnExecutor,
+          workerPlacement: 'local',
+        })
+      ).rejects.toMatchObject({ code: `scheduler_admission_${outcome}`, status: 409 });
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          statuses: ['queued', 'denied', 'cancelled'],
+          workspaceId: 'ws_demo',
+        })
+      ).toMatchObject([
+        {
+          status: cancelDeferredAdmission
+            ? 'cancelled'
+            : outcome === 'denied'
+              ? 'denied'
+              : 'queued',
+        },
+      ]);
+      expect(coreDb.sqlite.prepare('SELECT lease_id FROM scheduler_session_leases').all()).toEqual(
+        []
+      );
+      expect(turnExecutor.calls).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves its own transient failure when admission cancellation races', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const manifest = agentManifest();
+    const failure = new Error('Own transient preparation failure');
+    turnExecutor.prepareAgentSessionForTurn = async () => {
+      throw failure;
+    };
+    const cancel = vi
+      .spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry')
+      .mockImplementation(() => {
+        throw new Error('Concurrent cancellation conflict');
+      });
+    try {
+      seedLocalSchedulerTarget(coreDb);
+      await expect(
+        startProductTurn({
+          cancelDeferredAdmission: false,
+          coreDb,
+          input: {
+            agentId: manifest.id,
+            input: 'Own cleanup race',
+            requestId: '00000000-0000-4000-8000-00000000f129',
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+          },
+          providerCredentialResolver: () => null,
+          schedulerEpoch: 1,
+          snapshot: createInMemoryRuntimeConfigSnapshot({
+            agentManifests: [manifest],
+            dataRoot: null,
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: localProviderRegistry(),
+          }),
+          store,
+          triggerActor: { kind: 'user', id: 'user_local' },
+          turnExecutor,
+          workerPlacement: 'local',
+        })
+      ).rejects.toBe(failure);
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      cancel.mockRestore();
       coreDb.sqlite.close();
     }
   });

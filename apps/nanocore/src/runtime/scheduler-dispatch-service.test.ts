@@ -8,6 +8,7 @@ import { FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
 import {
   createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
@@ -115,6 +116,94 @@ function seedLocalSchedulerTarget(coreDb: ReturnType<typeof createMigratedCoreDb
 }
 
 describe('scheduler dispatch service', () => {
+  it('keeps a transient preparation failure queued and reports the original error', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = new FsStore();
+    const workspace = store.createWorkspace('Transient background workspace');
+    const thread = store.createThread(workspace.id, 'Transient background thread');
+    const recordingExecutor = new RecordingTurnExecutor();
+    const failure = new Error('Transient AgentSession preparation failure');
+    const turnExecutor: TurnExecutor = recordingExecutor;
+    turnExecutor.prepareAgentSessionForTurn = async () => {
+      throw failure;
+    };
+    const manifest = createTestAgentSetup().manifest;
+    let service: ReturnType<typeof startSchedulerDispatchRetryService> | undefined;
+    const errors: unknown[] = [];
+
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users
+            (id, display_name, email, email_verified, created_at, updated_at, kind)
+           VALUES ('user_background', 'Background User', 'background@example.invalid', false, ?, ?, 'human')`
+        )
+        .run(Date.now(), Date.now());
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_background',
+        workspaceId: workspace.id,
+      });
+      seedLocalSchedulerTarget(coreDb);
+      createSchedulerAdmissionEntry(coreDb, {
+        priorityClass: 'interactive',
+        queueEntryId: 'queue_transient_background',
+        requestedAgentId: manifest.id,
+        requiredPoolConstraints: ['openshell.local'],
+        threadId: thread.id,
+        turnId: 'turn_transient_background',
+        turnInput: 'Prepare background work',
+        triggerActor: { kind: 'user', id: 'user_background' },
+        workspaceId: workspace.id,
+      });
+      service = startSchedulerDispatchRetryService({
+        clearInterval: () => {},
+        coreDb,
+        expectedControlMode: 'poll',
+        expectedDataPlaneMode: 'openshell-files',
+        heartbeatIntervalMs: 10_000,
+        heartbeatTimeoutMs: 30_000,
+        intervalMs: 60_000,
+        leaseDurationMs: 900_000,
+        onError: (error) => errors.push(error),
+        runtimeConfigSnapshot: () =>
+          createInMemoryRuntimeConfigSnapshot({
+            agentManifests: [manifest],
+            dataRoot: null,
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: new ProviderRegistry([
+              {
+                id: 'agent-openrouter',
+                displayName: 'Background provider',
+                kind: 'local',
+                models: ['openai/gpt-5.2'],
+              },
+            ]),
+          }),
+        schedulerEpoch: 1,
+        setInterval: () => ({ timer: 'test' }),
+        startupTimeoutMs: 120_000,
+        store,
+        turnExecutor,
+      });
+      await vi.waitFor(() => expect(errors).toHaveLength(1));
+      expect(errors[0]).toBe(failure);
+      expect(await service.runOnce()).toBeNull();
+      expect(errors).toHaveLength(2);
+      expect(errors[1]).toBe(failure);
+      expect(requireSchedulerAdmissionEntry(coreDb, 'queue_transient_background').status).toBe(
+        'queued'
+      );
+      expect(coreDb.sqlite.prepare('SELECT lease_id FROM scheduler_session_leases').all()).toEqual(
+        []
+      );
+      expect(recordingExecutor.calls).toEqual([]);
+    } finally {
+      service?.stop();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('reads the current runtime snapshot before retrying a queued turn', async () => {
     const coreDb = createMigratedCoreDb();
     const store = new FsStore();

@@ -51,7 +51,7 @@ interface StartProductTurnInput {
   readonly reservedTurnId?: string;
   /** Explicit retained-storage choice captured with scheduler admission. */
   readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
-  /** Whether a synchronous caller should cancel its admission when dispatch is deferred. */
+  /** Whether to cancel deferred, denied, or unattributed shared-acquisition outcomes; own dispatch failures always cancel a still-queued admission. */
   readonly cancelDeferredAdmission?: boolean;
   /**
    * Optional callback after this admission's Turn and resolved setup are durable and before executor start.
@@ -62,7 +62,7 @@ interface StartProductTurnInput {
 }
 
 /**
- * Starts a new product turn through the durable scheduler.
+ * Starts a new product turn through the durable scheduler, cancelling its still-queued admission on its own dispatch failure while preserving the original error.
  *
  * @param input Product turn startup input.
  * @returns Accepted turn handle.
@@ -168,6 +168,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     workspaceRoots,
   });
 
+  let cancelAdmission = input.cancelDeferredAdmission;
   try {
     let attributedQueueEntryId: string | null = null;
     const dispatch = await runSchedulerDispatchLoop({
@@ -214,6 +215,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     }).catch((error: unknown) => {
       // Shared acquisition has no attribution; only this caller's attributed errors escape.
       if (attributedQueueEntryId === queueEntryId) {
+        cancelAdmission = true;
         throw error;
       }
       return null;
@@ -242,7 +244,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
 
     return started.handle;
   } catch (error) {
-    if (input.cancelDeferredAdmission) {
+    if (cancelAdmission) {
       cancelOwnedDeferredAdmission(input.coreDb, {
         queueEntryId,
         workspaceId: input.input.workspaceId,
@@ -253,12 +255,12 @@ export async function startProductTurn(input: StartProductTurnInput) {
 }
 
 /**
- * Cancels one exact synchronous caller admission only while it remains deferred.
+ * Cancels one exact synchronous caller admission only while it remains queued or denied.
  *
  * Dispatch may fail after external work has already been admitted. Re-reading the durable entry before cancellation prevents this cleanup from cancelling dispatched or active work. Cleanup races preserve the original dispatch failure instead of replacing it with a cancellation error.
  *
  * @param coreDb Open Core database handle.
- * @param input Exact queued admission owner.
+ * @param input Exact admission owner.
  */
 export function cancelOwnedDeferredAdmission(
   coreDb: CoreDb,
