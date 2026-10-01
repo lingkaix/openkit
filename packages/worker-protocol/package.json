@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./native-environment": {
+      "types": "./dist/native-environment.d.ts",
+      "default": "./dist/native-environment.js"
     }
   },
   "scripts": {

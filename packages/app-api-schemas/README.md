@@ -6,6 +6,8 @@ Thread dashboard schemas include the nullable authenticated viewer id and a narr
 
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
 
+The [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md) permits browser-safe config-schema subpaths, including `@openkit/config-schema/native-environment` for shared native-environment literals. App API schemas never import the server-only config root; the built browser import graph regression lives in Web's `test/browser-package-boundary.test.ts`.
+
 These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the App API remains an implementation projection over the stable Core protocol.
 
 `src/pending-request.ts` validates the derived approval-effect preview for App read models. User-input answer and pending-request withdrawal commands and their outcome belong to `@openkit/protocol`. NanoCore owns the durable request, grant, execution, and delivery lifecycle; a completed raising Turn does not close its request.

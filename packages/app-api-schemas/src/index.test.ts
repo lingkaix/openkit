@@ -286,7 +286,7 @@ const rawSecretShapes = [
 ] as const;
 const schemaSourceRoot = new URL('.', import.meta.url);
 const allowedRuntimeNeutralImports = new Set([
-  '@openkit/config-schema',
+  '@openkit/config-schema/native-environment',
   '@openkit/config-schema/provider-subscription',
   '@openkit/config-schema/workspace-export',
   '@openkit/protocol',

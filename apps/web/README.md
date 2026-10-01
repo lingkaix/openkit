@@ -6,7 +6,7 @@ This guide owns the package's local purpose, boundaries, commands, and workflow.
 
 ## Boundaries
 
-The Web UI is a product surface over NanoCore and App API contracts, and it consumes the server only through the composed `@openkit/core-client` sub-clients.
+The Web UI is a product surface over NanoCore and App API contracts, and it consumes the server only through the composed `@openkit/core-client` sub-clients. Its shared schema and client imports must remain browser-safe through every transitive package export; the complete `@openkit/config-schema` root includes Node-only modules and cannot enter this graph.
 
 [`docs/specs/20260628-web_product_surface_projection.md`](../../docs/specs/20260628-web_product_surface_projection.md) owns that posture, ordinary-user inclusion and dispositions, and the current implementation projection. [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md) owns the implementation stack, the token bridge, the separation of server state and UI state, and the shared Composer component boundary.
 
@@ -70,6 +70,8 @@ pnpm --filter @openkit/web exec vitest run src/screens/settings/settings.test.ts
 
 This command provides focused package evidence for the Vault assertions; it does not replace the required independent strict-risk review and verification.
 
+The built-package regression in `test/browser-package-boundary.test.ts` follows the browser-resolved import graph of the shipped App API schema, Core Client, and protocol entries. Build `packages/*` before running it; it rejects Node built-ins and Node globals, including delayed schema refinements. This check does not require a live NanoCore or a browser process.
+
 The package `test` command remains the full-suite command. Adding `-- <file>` to it has been observed to run the full suite, so do not use that form as focused evidence.
 
 `e2e` expects a built NanoCore (`pnpm --filter @openkit/nanocore build`). Specs start an isolated stack on dynamic ports via `e2e/_lib/servers.ts` and set `VITE_CORE_BASE_URL` so the SPA talks to that Core. Run the self-contained root gate with `pnpm -w test:e2e:web`; it builds NanoCore before invoking the Web `e2e` command.
@@ -94,6 +96,7 @@ src/
   primitives/   React Aria and Spectrum-tokened primitives
   styles/       design tokens and Tailwind theme mapping
   test/         Vitest setup and token parity test
+test/           Node-environment checks of browser-reachable built packages
 e2e/            L4 Playwright smoke and isolated stack helpers
 ```
 

@@ -83,7 +83,7 @@ There is no `getMeta`, `createMemoryEntry`, `updateMemoryEntry`, `respondToAppro
 
 `@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, repository resources, workspace synchronization, Goal Mode read models and decisions, Agent Catalog, Action Center, and the unified conversation target catalog and submission.
 
-The package depends only on `@openkit/protocol` and `zod`.
+`@openkit/app-api-schemas` is runtime-neutral and browser-safe: no module reachable from its entry may import Node built-ins or use Node globals. The built-graph regression enforces this invariant. The reason is recorded in [App API Schemas Browser-Safe Subpaths](../decisions/20261001-app_api_schemas_browser_safe_subpaths.md).
 
 It must remain runtime-neutral and must not import NanoCore services, filesystem code, Web UI code, or client transport helpers.
 
@@ -205,6 +205,8 @@ After `ProtocolValidationError`, the failed subscription exposes no private curs
 Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives persisted feedback validation from `TurnFeedbackResponseSchema` and applies strict validation at the disk boundary without defining a second public schema.
 
 ## Current Implementation Projection
+
+Web's [built browser package graph regression](../../apps/web/test/browser-package-boundary.test.ts) follows the shipped schema and client entries with browser package resolution and rejects reachable Node imports and globals, including delayed schema refinements.
 
 The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.app.getConversationTargets` and `client.app.submitConversation` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
 

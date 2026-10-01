@@ -1,4 +1,4 @@
-import { NativeEnvironmentRecordSchema } from '@openkit/config-schema';
+import { NativeEnvironmentRecordSchema } from '@openkit/config-schema/native-environment';
 import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';

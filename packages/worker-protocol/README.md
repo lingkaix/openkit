@@ -25,6 +25,8 @@ Unavailable content may identify one earlier expected observation for exact fail
 
 ## Public Native Environment
 
+`@openkit/worker-protocol/native-environment` is the browser-safe entry for the existing literal validators and canonicalization helpers. The config-schema native-environment entry uses this subpath so its App API consumers do not traverse Worker control schemas with Node-dependent refinements. Node consumers may still use the complete Worker protocol root.
+
 `native-environment.ts` owns the shared literal namespace, canonical ASCII-key JSON, authored string/null map and measured AEP record. `session.open.nativeEnvironment` is public, session-static and distinct from private `runtimeEnvironment`; its bytes participate in durable queued identity. Command bodies discard inert additions and reject unsupported execution, credential and required semantics before forwarding. Public maps use the authored/AEP 128-entry, 128-character-name and 16 KiB aggregate limits; private credentials retain their separate bounds.
 
 Protected public names follow the actual adapter bindings: DeepSeek owns `DSH_HOME`, `DSH_PERMISSION_MODE`, `DSH_TELEMETRY_MODE` and `DSH_TELEMETRY_OTLP_URL`; Codex's exact retained-state selectors are protected only for Codex. The shared predicate is also the Codex launch check's source; it does not protect an unused name or an entire vendor prefix. Unknown adapter IDs receive the shared bootstrap protections without inheriting another adapter's names.

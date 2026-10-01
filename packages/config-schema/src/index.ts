@@ -1,9 +1,3 @@
-/** Shared bounded literal schemas used by configuration and its browser-safe App API projection. */
-export {
-  AuthoredNativeEnvironmentSchema,
-  NativeEnvironmentRecordSchema,
-  NativeEnvironmentValuesSchema,
-} from '@openkit/worker-protocol';
 export * from './agent.js';
 export * from './agent-environment.js';
 export * from './catalog.js';
