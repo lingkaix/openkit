@@ -358,7 +358,10 @@ describe('app-update routes', () => {
           requestId: '11111111-1111-4111-8111-111111111111',
         }),
       });
-      const events = listServerAuditEvents(coreDb);
+      // Readback order is (createdAt, id); both rows may share one millisecond, so order by action.
+      const events = listServerAuditEvents(coreDb).sort((left, right) =>
+        left.action.localeCompare(right.action)
+      );
 
       expect(response.status).toBe(503);
       expect(events.map((event) => ({ action: event.action, outcome: event.outcome }))).toEqual([
