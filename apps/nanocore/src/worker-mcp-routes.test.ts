@@ -3001,7 +3001,8 @@ describe('worker MCP routes', () => {
           id: 'http-echo',
           pinnedSchemaSnapshotId: null,
           schemaPolicy: 'tracking' as const,
-          timeoutMs: 2_000,
+          // This fixture proves Vault admission and secrecy; no assertion needs a timeout.
+          timeoutMs: 10_000,
           transport: { endpoint: upstream.url, kind: 'http' as const },
         },
       ],
@@ -3235,7 +3236,7 @@ describe('worker MCP routes', () => {
       revokeVaultGrant(coreDb, { grantId: 'grant_mcp_http' });
       activeCatalog = {
         ...catalog,
-        servers: [{ ...catalog.servers[0], timeoutMs: 2_001 }],
+        servers: [{ ...catalog.servers[0], timeoutMs: catalog.servers[0]!.timeoutMs + 1 }],
       };
       environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },

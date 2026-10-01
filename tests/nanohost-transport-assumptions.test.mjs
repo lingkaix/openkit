@@ -8,6 +8,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../apps/nanohost/openshell/', import.meta.url));
+const transportSourceGitDeadlineMs = 10_000;
 
 /** Validates retained object identity before Git interprets a commit/tree/blob. */
 function objectType(id, bytes) {
@@ -78,13 +79,27 @@ test('OpenShell transport source evidence detects stale or corrupt release assum
   const gitDir = mkdtempSync(join(tmpdir(), 'openkit-transport-source-'));
   // A fresh object database prevents local Git caches or replacement refs masking missing evidence.
   const env = { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_NO_REPLACE_OBJECTS: '1' };
-  const git = (args, input) =>
-    execFileSync('git', ['--git-dir', gitDir, ...args], {
-      env,
-      input,
-      maxBuffer: 2 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+  const git = (args, input) => {
+    try {
+      return execFileSync('git', ['--git-dir', gitDir, ...args], {
+        env,
+        input,
+        // SIGKILL also bounds a subprocess that ignores Node's default SIGTERM.
+        killSignal: 'SIGKILL',
+        maxBuffer: 2 * 1024 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: transportSourceGitDeadlineMs,
+      });
+    } catch (error) {
+      if (error.code === 'ETIMEDOUT') {
+        throw new Error(
+          `transport-assumptions: Git ${args[0]} exceeded the ${transportSourceGitDeadlineMs} ms source-evidence deadline`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+  };
   try {
     git(['init', '--bare', '--template=']);
     for (const id of readdirSync(join(root, 'git-objects'))) {

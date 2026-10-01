@@ -510,13 +510,44 @@ describe('worker MCP gateway', () => {
       server: httpTestServer(upstream.url, 50),
       workspaceId: 'ws_demo',
     };
-    const startedAt = Date.now();
+    const teardownSettlementDeadlineMs = 10_000;
+    const cleanup = new AbortController();
+    const nativeFetch = globalThis.fetch;
+    // Only failure cleanup may release a DELETE if the production timeout stops working.
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation((request, init) =>
+      nativeFetch(
+        request,
+        init?.method === 'DELETE'
+          ? {
+              ...init,
+              signal: AbortSignal.any([cleanup.signal, ...(init.signal ? [init.signal] : [])]),
+            }
+          : init
+      )
+    );
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const callOutcome = gateway
+      .callTool({ ...input, arguments: { message: 'safe' }, toolName: 'echo' })
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
 
     try {
-      await expect(
-        gateway.callTool({ ...input, arguments: { message: 'safe' }, toolName: 'echo' })
-      ).rejects.toMatchObject({ code: 'recovery_required' });
-      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      // Settlement while DELETE cannot complete proves the bound without a load-sensitive margin.
+      const outcome = await Promise.race([
+        callOutcome,
+        new Promise<never>((_, reject) => {
+          deadlineTimer = setTimeout(
+            () => reject(new Error('Credential HTTP teardown did not settle while DELETE hung.')),
+            teardownSettlementDeadlineMs
+          );
+        }),
+      ]);
+      clearTimeout(deadlineTimer);
+      expect(outcome).toMatchObject({ code: 'recovery_required' });
+      expect(upstreamOptions.hangDelete).toBe(true);
+      expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
       const initializations = upstream.observed.filter((request) =>
         request.endsWith('|initialize')
       );
@@ -530,7 +561,11 @@ describe('worker MCP gateway', () => {
       await gateway.closeServer(input);
       expect(gateway.getServerHealth(input)).toBe('inactive');
     } finally {
+      clearTimeout(deadlineTimer);
       upstreamOptions.hangDelete = false;
+      cleanup.abort();
+      await callOutcome;
+      fetch.mockRestore();
       await gateway.close();
       await upstream.close();
       coreDb.sqlite.close();
