@@ -15,6 +15,7 @@ import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-a
 import type { FsStore } from '../lib/store.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
+  cancelSchedulerAdmissionEntry,
   completeSchedulerTurnLease,
   denySchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
@@ -26,6 +27,7 @@ import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import { resolveAgentSessionCompatibilityKey } from './agent-environment.js';
+import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
   type StartTurnDependencies,
   startTurn,
@@ -133,6 +135,7 @@ interface LoopLimitResult {
  *
  * @param input Dispatch loop input.
  * @returns Started turns plus the result that stopped this loop run.
+ * @throws DeterministicAgentPreparationError after cancelling the exact pre-lease admission; capacity and transient dependency failures leave it queued.
  */
 export async function runSchedulerDispatchLoop(
   input: RunSchedulerDispatchLoopInput
@@ -180,15 +183,6 @@ export async function runSchedulerDispatchLoop(
     const userConfig = input.userConfigs?.find(
       (candidate) => candidate.userId === responsibleUserId
     )?.config;
-    const setup = resolveDispatchAgentSetup(
-      input,
-      entry.requestedAgentId,
-      entry.profileRef,
-      entry.modelId,
-      entry.workspaceId,
-      workspaceConfig,
-      userConfig
-    );
     const workspaceRoots = entry.workspaceRoots;
     const workspaceDataSourceCatalog = input.workspaceDataSourceCatalogs?.find(
       (candidate) => candidate.workspaceId === entry.workspaceId
@@ -196,10 +190,6 @@ export async function runSchedulerDispatchLoop(
     const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
       (candidate) => candidate.workspaceId === entry.workspaceId
     )?.catalog;
-    const workspaceSourceRefs = workspaceSourceRefsFromAgentManifest(
-      setup.manifest,
-      workspaceRoots
-    );
     const futureTurn = TurnSchema.parse({
       completedAt: null,
       configVersion: input.configVersion ?? null,
@@ -213,21 +203,33 @@ export async function runSchedulerDispatchLoop(
       triggerActor: entry.triggerActor,
       workspaceId: entry.workspaceId,
     });
-    const prepareInput = {
-      agentSetup: setup,
-      freshAgentSessionId,
-      requestId: entry.requestId,
-      turn: futureTurn,
-      turnInput: entry.turnInput,
-      ...(entry.workerStorageChoice ? { workerStorageChoice: entry.workerStorageChoice } : {}),
-      workspaceCwd: entry.workspaceCwd,
-      workspaceRoots,
-      ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
-      ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
-      ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
-    };
+    let workspaceSourceRefs: ReturnType<typeof workspaceSourceRefsFromAgentManifest>;
+    let prepareInput: PrepareAgentSessionForTurnInput;
     let preparedAgentSession: PreparedAgentSessionForTurn;
     try {
+      const setup = resolveDispatchAgentSetup(
+        input,
+        entry.requestedAgentId,
+        entry.profileRef,
+        entry.modelId,
+        entry.workspaceId,
+        workspaceConfig,
+        userConfig
+      );
+      workspaceSourceRefs = workspaceSourceRefsFromAgentManifest(setup.manifest, workspaceRoots);
+      prepareInput = {
+        agentSetup: setup,
+        freshAgentSessionId,
+        requestId: entry.requestId,
+        turn: futureTurn,
+        turnInput: entry.turnInput,
+        ...(entry.workerStorageChoice ? { workerStorageChoice: entry.workerStorageChoice } : {}),
+        workspaceCwd: entry.workspaceCwd,
+        workspaceRoots,
+        ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
+        ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
+        ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
+      };
       preparedAgentSession = input.turnExecutor.prepareAgentSessionForTurn
         ? await input.turnExecutor.prepareAgentSessionForTurn(input.store, prepareInput)
         : prepareFreshAgentSessionWithoutRuntimeOwner(input, prepareInput);
@@ -237,6 +239,12 @@ export async function runSchedulerDispatchLoop(
           startedTurns,
           terminalResult: { status: 'queued', reason: 'capacity-saturated' },
         };
+      }
+      if (error instanceof DeterministicAgentPreparationError) {
+        cancelSchedulerAdmissionEntry(input.coreDb, {
+          queueEntryId: entry.queueEntryId,
+          workspaceId: entry.workspaceId,
+        });
       }
       throw error;
     }
@@ -375,7 +383,11 @@ export async function runSchedulerDispatchLoop(
   return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
 }
 
-/** Resolves the exact authored setup needed by pre-lease static AEP planning. */
+/**
+ * Resolves the exact authored setup needed by pre-lease static AEP planning.
+ *
+ * @throws DeterministicAgentPreparationError for input-bound composition diagnostics; missing model-catalog dependencies retain the existing retry behavior.
+ */
 function resolveDispatchAgentSetup(
   input: RunSchedulerDispatchLoopInput,
   requestedAgentId: string,
@@ -411,12 +423,23 @@ function resolveDispatchAgentSetup(
     ...(userConfig ? { userConfig } : {}),
   });
   if (!resolved.setup || resolved.diagnostics.length > 0) {
-    throw new TurnStartValidationError(
-      'agent_not_ready',
+    const message =
       resolved.diagnostics.map((diagnostic) => diagnostic.message).join('\n') ||
-        `Agent ${requestedAgentId} setup is unavailable.`,
-      409
-    );
+      `Agent ${requestedAgentId} setup is unavailable.`;
+    // Classify only known input-bound diagnostics; new or missing dependency failures stay queued.
+    if (
+      resolved.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === 'agent_setup.invalid_default_profile' ||
+          diagnostic.code === 'agent_setup.duplicate_credential_requirement' ||
+          diagnostic.code === 'agent_setup.missing_credential_binding' ||
+          diagnostic.code === 'agent_setup.logical_model_not_allowed' ||
+          diagnostic.code === 'agent_setup.unsupported_required_feature'
+      )
+    ) {
+      throw new DeterministicAgentPreparationError(message, 'agent_not_ready', 409);
+    }
+    throw new TurnStartValidationError('agent_not_ready', message, 409);
   }
   return resolved.setup;
 }

@@ -5,14 +5,16 @@ import { join } from 'node:path';
 
 import { ApiErrorSchema, TurnReadProjectionSchema, TurnSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
+import type { AgentManifest } from './agents/manifest.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
+import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import type { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { resolveAgentSessionCompatibilityKey } from './runtime/agent-environment.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import { startSchedulerDispatchRetryService } from './runtime/scheduler-dispatch-service.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -21,10 +23,11 @@ import type {
   TurnExecutor,
   TurnStartRuntimeContext,
 } from './runtime/types.js';
+import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
@@ -171,12 +174,14 @@ class RecordingTurnExecutor implements TurnExecutor {
  * @param executor Turn executor installed in the app.
  * @param slug Stable temporary-directory label.
  * @param workerPlacement Configured scheduler placement.
+ * @param manifest Exact authored Agent configuration admitted by the app.
  * @returns App, stores, databases, and repository fixture.
  */
 async function createSchedulerFixture(
   executor: RecordingTurnExecutor,
   slug: string,
-  workerPlacement: 'local' | 'remote' = 'local'
+  workerPlacement: 'local' | 'remote' = 'local',
+  manifest: AgentManifest = createTestAgentSetup().manifest
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-turn-routes-${slug}-`));
   const coreDb = openCoreDb(dataRoot);
@@ -189,7 +194,7 @@ async function createSchedulerFixture(
     workspaceId: 'ws_demo',
   });
   const app = createApp({
-    agentManifests: [createTestAgentSetup().manifest],
+    agentManifests: [manifest],
     coreDb,
     providerRegistry: testProviderRegistry(),
     store,
@@ -579,6 +584,134 @@ describe('generic turn routes', () => {
           .listThreadItems('ws_demo', 'th_demo')
           .filter((item) => item.type === 'user-input-response')
       ).toEqual([]);
+    } finally {
+      fixture.coreDb.sqlite.close();
+      rmSync(fixture.repositoryPath, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    'manifest',
+    'shim',
+    'environment',
+    'configuration',
+    'capacity',
+    'transient',
+  ] as const)('settles only deterministic preparation failures before replying to turn.start: %s', async (failure) => {
+    const executor = new RecordingTurnExecutor();
+    const manifest = createTestAgentSetup().manifest;
+    const deterministic = failure !== 'capacity' && failure !== 'transient';
+    if (failure === 'manifest' || failure === 'shim') {
+      const missingPath =
+        failure === 'manifest' ? '/usr/local/bin/node' : '/usr/local/bin/openkit-worker-shim';
+      manifest.runtime.binaries = manifest.runtime.binaries.filter(
+        (binary) => binary.path !== missingPath
+      );
+    } else if (failure === 'environment') {
+      manifest.runtime.environment = { OPENKIT_AGENT_PACKAGE: 'authored-conflict' };
+    } else if (failure === 'configuration') {
+      manifest.requiredFeatures = ['unsupported.preparation.feature'];
+      // A recoverable catalog gap cannot make an independent input-bound refusal retryable.
+      manifest.models.preferredLogicalModelId = 'unavailable-model';
+    }
+    const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+    if (failure === 'capacity') {
+      prepare.mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
+    } else if (failure === 'transient') {
+      // Identical text is not evidence of deterministic manifest resolution failure.
+      prepare.mockRejectedValue(
+        new Error('Agent manifest does not declare required control binary: /usr/local/bin/node')
+      );
+    }
+    const fixture = await createSchedulerFixture(
+      executor,
+      `preparation-${failure}`,
+      'local',
+      manifest
+    );
+    const requestId = '00000000-0000-4000-8000-000000000399';
+    try {
+      const response = await fixture.app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          agentId: manifest.id,
+          input: 'Prepare this admitted Agent',
+          requestId,
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(ApiErrorSchema.parse(await response.json()).code).toBe(
+        failure === 'capacity'
+          ? 'scheduler_admission_deferred'
+          : failure === 'configuration'
+            ? 'agent_not_ready'
+            : 'turn_start_failed'
+      );
+      const readAdmission = () =>
+        fixture.coreDb.sqlite
+          .prepare(
+            'SELECT queue_entry_id AS queueEntryId, status FROM scheduler_admission_entries WHERE request_id = ?'
+          )
+          .all(requestId);
+      const admissions = readAdmission();
+      expect(admissions).toEqual([
+        {
+          queueEntryId: schedulerTurnId(
+            JSON.stringify(LOCAL_ACTOR),
+            'ws_demo',
+            'th_demo',
+            requestId
+          ).replace(/^turn_/, 'queue_'),
+          status: deterministic ? 'cancelled' : 'queued',
+        },
+      ]);
+      expect(prepare).toHaveBeenCalledTimes(failure === 'configuration' ? 0 : 1);
+      expect(executor.startCalls).toBe(0);
+      expect(
+        fixture.coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM scheduler_session_leases')
+          .get()
+      ).toEqual({ count: 0 });
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [manifest],
+        dataRoot: fixture.coreDb.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: testProviderRegistry(),
+      });
+      const service = startSchedulerDispatchRetryService({
+        coreDb: fixture.coreDb,
+        store: fixture.store,
+        turnExecutor: executor,
+        runtimeConfigSnapshot: () => snapshot,
+        schedulerEpoch: 1,
+        expectedControlMode: 'poll',
+        expectedDataPlaneMode: 'openshell-files',
+        heartbeatIntervalMs: 10_000,
+        heartbeatTimeoutMs: 30_000,
+        leaseDurationMs: 900_000,
+        startupTimeoutMs: 120_000,
+        intervalMs: 30_000,
+        setInterval: () => null,
+        clearInterval: () => {},
+      });
+      try {
+        if (!deterministic) {
+          await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+        }
+        const result = await service.runOnce();
+        if (deterministic) {
+          expect(result?.terminalResult).toEqual({ status: 'queued', reason: 'no-queued-entry' });
+          expect(prepare).toHaveBeenCalledTimes(failure === 'configuration' ? 0 : 1);
+        } else {
+          expect(prepare).toHaveBeenCalledTimes(3);
+        }
+        expect(readAdmission()).toEqual(admissions);
+        expect(executor.startCalls).toBe(0);
+      } finally {
+        service.stop();
+      }
     } finally {
       fixture.coreDb.sqlite.close();
       rmSync(fixture.repositoryPath, { force: true, recursive: true });

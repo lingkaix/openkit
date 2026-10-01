@@ -21,7 +21,7 @@ import {
 } from '@openkit/config-schema';
 import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
-import type { z } from 'zod';
+import { ZodError, type z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import {
   currentScheduledTurnWorkspaceAuthority,
@@ -42,6 +42,7 @@ import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-ref
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receipts.js';
+import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
 import {
@@ -253,31 +254,42 @@ export function resolveAgentEnvironmentPackageMetadata(
   );
 }
 
-/** Parses planning components with their existing owners, without claiming a dispatch-valid AEP. */
+/**
+ * Parses static planning components with their existing owners, without claiming a dispatch-valid AEP.
+ *
+ * @throws DeterministicAgentPreparationError when resolved static package fields violate their schemas.
+ */
 function parseAgentEnvironmentPlanningFields(
   input: Record<string, unknown>
 ): AgentEnvironmentPackagePreview {
   const fields = AgentEnvironmentPackageSchema.shape;
-  return {
-    schemaVersion: fields.schemaVersion.parse(input.schemaVersion),
-    packageId: fields.packageId.parse(input.packageId),
-    snapshotId: fields.snapshotId.parse(input.snapshotId),
-    createdAt: fields.createdAt.parse(input.createdAt),
-    scope: fields.scope.parse(input.scope),
-    agent: fields.agent.parse(input.agent),
-    runtime: fields.runtime.parse(input.runtime),
-    workspace: fields.workspace.parse(input.workspace),
-    supply: fields.supply.parse(input.supply),
-    control: fields.control.parse(input.control),
-    capabilities: fields.capabilities.parse(input.capabilities),
-    credentials: fields.credentials.parse(input.credentials),
-    vault: fields.vault.parse(input.vault),
-    policy: fields.policy.parse(input.policy),
-    llm: fields.llm.parse(input.llm),
-    resources: fields.resources.parse(input.resources),
-    backend: fields.backend.parse(input.backend),
-    extensions: fields.extensions.parse(input.extensions),
-  };
+  try {
+    return {
+      schemaVersion: fields.schemaVersion.parse(input.schemaVersion),
+      packageId: fields.packageId.parse(input.packageId),
+      snapshotId: fields.snapshotId.parse(input.snapshotId),
+      createdAt: fields.createdAt.parse(input.createdAt),
+      scope: fields.scope.parse(input.scope),
+      agent: fields.agent.parse(input.agent),
+      runtime: fields.runtime.parse(input.runtime),
+      workspace: fields.workspace.parse(input.workspace),
+      supply: fields.supply.parse(input.supply),
+      control: fields.control.parse(input.control),
+      capabilities: fields.capabilities.parse(input.capabilities),
+      credentials: fields.credentials.parse(input.credentials),
+      vault: fields.vault.parse(input.vault),
+      policy: fields.policy.parse(input.policy),
+      llm: fields.llm.parse(input.llm),
+      resources: fields.resources.parse(input.resources),
+      backend: fields.backend.parse(input.backend),
+      extensions: fields.extensions.parse(input.extensions),
+    };
+  } catch (error) {
+    if (error instanceof ZodError) {
+      throw new DeterministicAgentPreparationError(error.message);
+    }
+    throw error;
+  }
 }
 
 /** Reads whether the existing durable launch path will prepare a Context Package for this Turn. */
@@ -320,6 +332,7 @@ function hasWorkerContextPackageCheckpoint(coreDb: CoreDb | undefined, turn: Tur
  * @param input Turn, agent, session, and workspace context.
  * @param backend OpenShell backend target.
  * @returns Parsed OpenShell package.
+ * @throws DeterministicAgentPreparationError when authored manifest requirements cannot resolve.
  */
 function resolveOpenShellAgentEnvironmentPackage(
   input: Omit<ResolveAgentEnvironmentPackageInput, 'captureCoverage'>,
@@ -407,23 +420,19 @@ function resolveOpenShellAgentEnvironmentPackage(
   const backendAllowedKinds = backendRequirements?.allowedKinds ?? ['openshell'];
 
   if (!backendAllowedKinds.includes('openshell')) {
-    throw new Error('The selected OpenShell backend is not allowed by the agent manifest.');
+    throw new DeterministicAgentPreparationError(
+      'The selected OpenShell backend is not allowed by the agent manifest.'
+    );
   }
 
   const runtimeBinaryPaths = manifest.runtime.binaries.map((binary) => binary.path);
   const controlBinaryPaths = ['/usr/local/bin/node', '/usr/local/bin/openkit-worker-shim'] as const;
   for (const binaryPath of controlBinaryPaths) {
     if (!runtimeBinaryPaths.includes(binaryPath)) {
-      throw new Error(`Agent manifest does not declare required control binary: ${binaryPath}`);
+      throw new DeterministicAgentPreparationError(
+        `Agent manifest does not declare required control binary: ${binaryPath}`
+      );
     }
-  }
-  if (
-    !manifest.runtime.binaries.some(
-      (binary) =>
-        binary.id === manifest.runtime.adapter || binary.id === `${manifest.runtime.adapter}-native`
-    )
-  ) {
-    throw new Error('Agent manifest does not declare a native inference binary.');
   }
 
   const workerSkills = resolveWorkerSkillSupply(
@@ -777,10 +786,16 @@ function resolveOpenShellAgentEnvironmentPackage(
       },
     },
   });
-  const sessionWorkspace = planSessionWorkspaceMaterialization({
-    environmentPackage,
-    workSlotRef,
-  });
+  let sessionWorkspace: SessionWorkspaceMaterializationPlan;
+  try {
+    sessionWorkspace = planSessionWorkspaceMaterialization({ environmentPackage, workSlotRef });
+  } catch (error) {
+    // This planner is a pure projection of the already resolved static package and slot.
+    if (error instanceof Error) {
+      throw new DeterministicAgentPreparationError(error.message);
+    }
+    throw error;
+  }
   // The workspace planner owns session-static layout; logical-model admission adds an exact
   // continuity dimension without making the current preferred model a binding identity.
   const allowedLogicalModelIds = logicalModels.allowed.map((model) => model.id).sort();
@@ -855,6 +870,7 @@ function resolveOpenShellAgentEnvironmentPackage(
  *
  * @param image Authored agent runtime image declaration.
  * @returns Exact reference selection or content-addressed build declaration.
+ * @throws DeterministicAgentPreparationError when the authored build context is unsupported.
  */
 function resolveRuntimeImage(
   image: ResolvedAgentSetup['manifest']['runtime']['image']
@@ -863,7 +879,9 @@ function resolveRuntimeImage(
     return image;
   }
   if (image.contextRef !== EMPTY_BUILD_CONTEXT_REF) {
-    throw new Error('Agent image build requires the exact V1 empty build context.');
+    throw new DeterministicAgentPreparationError(
+      'Agent image build requires the exact V1 empty build context.'
+    );
   }
 
   const argumentsJson = JSON.stringify(
@@ -1126,6 +1144,7 @@ function resolveWorkerSkillSupply(
  * @param adapter Runtime adapter that will consume the supply.
  * @param catalog Workspace-owned MCP catalog captured for this Turn.
  * @returns Catalog-resolved MCP server supply entries.
+ * @throws DeterministicAgentPreparationError when the selected adapter cannot consume MCP supply.
  */
 function resolveWorkerMcpServerSupply(
   mcpServerIds: string[],
@@ -1134,7 +1153,9 @@ function resolveWorkerMcpServerSupply(
 ) {
   if (mcpServerIds.length === 0) return [];
   if (adapter !== 'codex') {
-    throw new Error(`Worker MCP supply does not support runtime adapter: ${adapter}`);
+    throw new DeterministicAgentPreparationError(
+      `Worker MCP supply does not support runtime adapter: ${adapter}`
+    );
   }
   return mcpServerIds.map((mcpServerId) => {
     if (mcpServerId === OPENKIT_REPOSITORY_MCP_ID) return createOpenkitRepositoryMcpSupply();

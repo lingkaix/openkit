@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   type AgentEnvironmentCredentialDeclaration,
   AgentEnvironmentPackageSchema,
@@ -26,6 +27,7 @@ import {
 } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-catalog.js';
+import { loadAgentManifests } from '../config/agents-loader.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -238,6 +240,48 @@ function leaseCredentialFixture(
 }
 
 describe('agent environment package resolver', () => {
+  it('resolves the shipped DeepSeek template with its authored dsh binary', () => {
+    const loaded = loadAgentManifests(
+      fileURLToPath(new URL('../../data-templates/', import.meta.url))
+    );
+    expect(
+      loaded.diagnostics.filter((diagnostic) => diagnostic.agentId === 'agent_deepseek')
+    ).toEqual([]);
+    const manifest = loaded.manifests.find((candidate) => candidate.id === 'agent_deepseek');
+    if (!manifest) throw new Error('Expected the shipped DeepSeek template to load.');
+    const result = resolveAgentSetup(manifest, {
+      gatewayConfig: createTestGatewayConfig({ logicalModelId: 'reasoning' }),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Test Provider',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    expect(result.diagnostics).toEqual([]);
+    if (!result.setup) throw new Error('Expected the shipped DeepSeek setup to resolve.');
+    const input = {
+      agentSetup: result.setup,
+      agentSessionId: 'session_deepseek_template',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('Resolve the shipped DeepSeek Agent'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    const preview = resolveAgentEnvironmentPackageMetadata(input);
+    expect(preview.runtime.binaries).toEqual(manifest.runtime.binaries);
+    expect(preview.runtime.binaries).toContainEqual({ id: 'dsh', path: '/usr/local/bin/dsh' });
+    expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(
+      resolveAgentEnvironmentPackage({
+        ...input,
+        captureCoverage: { scope: 'server', value: 'off' },
+      }).runtime.binaries
+    ).toEqual(manifest.runtime.binaries);
+  });
+
   it('previews a future Turn without fabricating admitted capture coverage', () => {
     const input = {
       agentSetup: createTestSetup(),

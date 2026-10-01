@@ -5,6 +5,7 @@ import {
 import type { AgentManifest } from '../agents/manifest.js';
 import type { CoreDb } from '../storage/db.js';
 import { materializeRuntimeImage } from '../worker-environments/worker-environment-preparation.js';
+import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { commandInputHash } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { readAdmittedWorkerImageEnvironment } from './worker-image-settlements.js';
@@ -13,6 +14,7 @@ import { readAdmittedWorkerImageEnvironment } from './worker-image-settlements.j
  * Resolves only exact confirmed image evidence before compatibility or lease admission.
  *
  * @throws TurnStartValidationError when the Agent's image requires preparation and activation.
+ * @throws DeterministicAgentPreparationError when authored settings conflict with protected or credential names, or the resolved map exceeds its bounds.
  * @throws Error when Core storage is unavailable or admitted defaults violate their owner.
  */
 export function resolvePublicNativeEnvironment(
@@ -52,15 +54,19 @@ export function resolvePublicNativeEnvironment(
   );
   for (const [name, value] of Object.entries(manifest.runtime.environment ?? {})) {
     if (protectedName(name) || credentialNames.has(name))
-      throw new Error('Native environment authority conflict.');
+      throw new DeterministicAgentPreparationError('Native environment authority conflict.');
     if (value === null) values.delete(name);
     else values.set(name, value);
   }
   if ([...values.keys()].some((name) => credentialNames.has(name)))
-    throw new Error('Native environment credential collision.');
+    throw new DeterministicAgentPreparationError('Native environment credential collision.');
+  const resolvedValues = NativeEnvironmentValuesSchema.safeParse(Object.fromEntries(values));
+  if (!resolvedValues.success) {
+    throw new DeterministicAgentPreparationError(resolvedValues.error.message);
+  }
   return {
     imageDigest: defaults.imageDigest,
     defaultsDigest: defaults.defaultsDigest,
-    values: NativeEnvironmentValuesSchema.parse(Object.fromEntries(values)),
+    values: resolvedValues.data,
   };
 }
