@@ -123,11 +123,11 @@ This is native tool presentation, not model selection, context policy, or new fi
 
 ## Reasoning Effort Delivery
 
-For every Turn with recorded effort in its immutable AEP, the adapter supplies that value through App Server v2 `turn/start.effort` on the exact retained native thread before the prompt is admitted. It uses the [canonical OpenKit enum](../core/protocol.md#canonical-enums); native names for these values are unchanged. Explicit `none` is the string value, never omission or null. The runtime's broader native vocabulary does not expand OpenKit's closed enum.
+For every Turn with recorded effort in its immutable AEP on a route carrying `reasoningEffortLevels`, the adapter supplies that value through App Server v2 `turn/start.effort` on the exact retained native thread before the prompt is admitted. It uses the [canonical OpenKit enum](../core/protocol.md#canonical-enums); native names for these values are unchanged. On reasoning routes, explicit `none` is the string value, never omission or null. The runtime's broader native vocabulary does not expand OpenKit's closed enum.
 
-Shared delivery, omission and retention, Turn authority, effective-level diagnostics, failure and lifecycle semantics, and acceptance are owned by [AEP delivery and retention](20260616-agent_environment_package.md#reasoning-effort-projection-and-delivery).
+Shared delivery, omission and retention, Turn authority, effective-level diagnostics, failure and lifecycle semantics, and acceptance are owned by [AEP delivery and retention](20260616-agent_environment_package.md#reasoning-effort-projection-and-delivery); on routes without `reasoningEffortLevels`, its exception requires no native effort and a bounded diagnostic without failing the Turn or changing the conversation's current selection.
 
-Codex-specific acceptance proves that App Server v2 `turn/start.effort` supplies the recorded value on the exact retained native thread before the prompt is admitted, and that supported canonical values, including explicit `none`, reach Gateway unchanged.
+On reasoning routes, Codex-specific acceptance proves that App Server v2 `turn/start.effort` supplies the recorded value on the exact retained native thread before the prompt is admitted, and that supported canonical values, including explicit `none`, reach Gateway unchanged.
 
 ## Native Output Mapping
 
