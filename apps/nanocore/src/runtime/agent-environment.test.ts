@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import {
   type AgentEnvironmentCredentialDeclaration,
   AgentEnvironmentPackageSchema,
@@ -993,6 +993,75 @@ describe('agent environment package resolver', () => {
       },
     ]);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'resolves a different-owner writable host root without trusting a sibling',
+    () => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-aep-owner-'));
+      const repositoryPath = join(root, 'repository');
+      const siblingPath = join(root, 'sibling');
+      const linkedPath = join(root, 'linked');
+      const wrapperPath = join(root, 'bin');
+      const probePath = join(root, 'blocked-sibling');
+      const gitBinary = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      const git = (cwd: string, ...args: string[]) =>
+        execFileSync(gitBinary, ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+      const savedPath = process.env.PATH;
+      try {
+        for (const path of [repositoryPath, siblingPath]) {
+          mkdirSync(path);
+          git(path, 'init', '--object-format=sha1');
+          git(
+            path,
+            '-c',
+            'user.name=Fixture',
+            '-c',
+            'user.email=fixture@example.invalid',
+            'commit',
+            '--allow-empty',
+            '-m',
+            'initial'
+          );
+        }
+        symlinkSync(repositoryPath, linkedPath, 'dir');
+        const commit = git(repositoryPath, 'rev-parse', 'HEAD');
+        mkdirSync(wrapperPath);
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        writeFileSync(
+          join(wrapperPath, 'git'),
+          `#!/bin/sh\nif GIT_TEST_ASSUME_DIFFERENT_OWNER=1 ${quote(gitBinary)} -C ${quote(siblingPath)} rev-parse HEAD >/dev/null 2>&1; then echo 'Unexpected trust of sibling repository' >&2; exit 70; fi\necho blocked >> ${quote(probePath)}\nGIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec ${quote(gitBinary)} "$@"\n`,
+          { mode: 0o755 }
+        );
+        process.env.PATH = `${wrapperPath}${delimiter}${savedPath ?? ''}`;
+        const resolved = resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSetup: createTestSetup(),
+          agentSessionId: 'session_owner',
+          backend: { kind: 'openshell' },
+          createdAt: '2026-07-18T00:00:00.000Z',
+          requestId: 'req_owner',
+          turn: createTurnFixture('Read linked root'),
+          triggerActor: USER_TRIGGER_ACTOR,
+          workspaceCwd: null,
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'repo',
+              sourceKind: 'host-dir',
+              sourcePath: linkedPath,
+              workerPath: '/workspace/openkit',
+            },
+          ],
+        });
+        expect(resolved.workspace.inputs[0]?.source.commit).toBe(commit);
+        expect(readFileSync(probePath, 'utf8')).toBe('blocked\n');
+      } finally {
+        if (savedPath === undefined) delete process.env.PATH;
+        else process.env.PATH = savedPath;
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('records catalog-resolved workspace lineage without inventing provider attachments', () => {
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-aep-source-'));

@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import {
@@ -3052,7 +3053,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return input;
   }
 
-  /** Accepts the first verified snapshot before any Turn; retained slots never fall back to baseline. */
+  /**
+   * Accepts the first verified snapshot before any Turn; retained slots never fall back to baseline.
+   * Git expected-tree reads trust only the admitted linked root's canonical path for each command, without changing host configuration.
+   *
+   * @param session Admitted native session and immutable source package.
+   * @param opensNewBinding Whether launch opened a new native binding.
+   * @throws WorkspaceCollectionError when the source tree or collected baseline cannot be accepted.
+   */
   private async ensureWorkspaceBaseline(
     session: NanoHostBackendTurnSession,
     opensNewBinding: boolean
@@ -3114,6 +3122,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           });
         try {
           const gitEnvironment = {
+            GIT_CONFIG_COUNT: '1',
+            GIT_CONFIG_KEY_0: 'safe.directory',
+            GIT_CONFIG_VALUE_0: realpathSync(repository.localPath),
             PATH: process.env.PATH,
             LC_ALL: 'C',
             GIT_CONFIG_NOSYSTEM: '1',

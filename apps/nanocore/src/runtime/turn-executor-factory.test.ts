@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
@@ -2313,11 +2313,14 @@ describe('createConfiguredTurnExecutor', () => {
       integrationRef: integrationRef(),
       effects,
     });
-    await settleNext('turn.start', {
-      nativeHandleDigest: null,
-      nativeHandleState: 'pending',
-      state: 'started',
-    });
+    await Promise.race([
+      settleNext('turn.start', {
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'started',
+      }),
+      launch,
+    ]);
     await launch;
     recordWorkerControlAcceptedRecord(coreDb, {
       acceptedAt: '2026-09-06T00:00:01.000Z',
@@ -2431,6 +2434,109 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
+  it.skipIf(process.platform === 'win32')(
+    'accepts a different-owner linked baseline before dispatching the first Turn without trusting a sibling',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-baseline-owner-'));
+      const repositoryPath = join(root, 'repository');
+      const linkedPath = join(root, 'linked');
+      const siblingPath = join(root, 'sibling');
+      const wrapperPath = join(root, 'bin');
+      const probePath = join(root, 'blocked-sibling');
+      const gitBinary = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      const git = (cwd: string, ...args: string[]) =>
+        execFileSync(gitBinary, ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+      const savedPath = process.env.PATH;
+      try {
+        for (const path of [repositoryPath, siblingPath]) {
+          mkdirSync(path);
+          git(path, 'init', '--object-format=sha1');
+          git(
+            path,
+            '-c',
+            'user.name=Fixture',
+            '-c',
+            'user.email=fixture@example.invalid',
+            'commit',
+            '--allow-empty',
+            '-m',
+            'initial'
+          );
+        }
+        symlinkSync(repositoryPath, linkedPath, 'dir');
+        const commit = git(repositoryPath, 'rev-parse', 'HEAD');
+        const tree = git(repositoryPath, 'rev-parse', `${commit}^{tree}`);
+        mkdirSync(wrapperPath);
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        writeFileSync(
+          join(wrapperPath, 'git'),
+          `#!/bin/sh\nif GIT_TEST_ASSUME_DIFFERENT_OWNER=1 ${quote(gitBinary)} -C ${quote(siblingPath)} rev-parse HEAD >/dev/null 2>&1; then echo 'Unexpected trust of sibling repository' >&2; exit 70; fi\necho blocked >> ${quote(probePath)}\nGIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec ${quote(gitBinary)} "$@"\n`,
+          { mode: 0o755 }
+        );
+        process.env.PATH = `${wrapperPath}${delimiter}${savedPath ?? ''}`;
+        const f = await admitIdleSupplyResident('baseline_owner', {
+          configurePackage: (env, coreDb) => {
+            env.workspace.inputs = [
+              {
+                id: 'repo',
+                kind: 'repository',
+                access: 'read-write',
+                target: `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(env.scope.workspaceId, env.scope.threadId)}`,
+                source: {
+                  kind: 'git',
+                  sourceId: 'source-repo',
+                  url: 'https://example.invalid/repository.git',
+                  commit,
+                },
+              },
+            ];
+            (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+              planSessionWorkspaceMaterialization({ environmentPackage: env });
+            const db = openWorkspaceDb(coreDb.dataRoot, env.scope.workspaceId);
+            try {
+              applyScopedMigrations(db);
+              upsertWorkspaceRepositoryResource(db, {
+                workspaceId: env.scope.workspaceId,
+                resourceId: 'repo',
+                displayName: 'Linked source',
+                localPath: linkedPath,
+                workspaceExists: () => true,
+              });
+            } finally {
+              db.sqlite.close();
+            }
+          },
+          onCollection: async () => ({
+            outcome: 'baseline',
+            head: { tree, manifest: '2'.repeat(40) },
+          }),
+        });
+        try {
+          const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+          try {
+            const row = db.sqlite
+              .prepare('SELECT accepted_base_json, head_json FROM workspace_snapshot_cursors')
+              .get() as { accepted_base_json: string; head_json: string };
+            expect(JSON.parse(row.accepted_base_json)).toEqual({ tree, manifest: '2'.repeat(40) });
+            expect(row.head_json).toBe(row.accepted_base_json);
+          } finally {
+            db.sqlite.close();
+          }
+          // The fixture settles turn.start only after observing its queued native command.
+          expect(readFileSync(probePath, 'utf8').trim().split('\n')).toEqual([
+            'blocked',
+            'blocked',
+          ]);
+        } finally {
+          f.coreDb.sqlite.close();
+        }
+      } finally {
+        if (savedPath === undefined) delete process.env.PATH;
+        else process.env.PATH = savedPath;
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
   it('derives the baseline from the exact Core commit rather than HEAD or dirty bytes and refuses unavailable sources', async () => {
     let measuredTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
     const f = await admitIdleSupplyResident('expected_tree', {

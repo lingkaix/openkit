@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentCaptureCoverage,
@@ -1018,6 +1018,7 @@ function workspaceInputSource(
 
 /**
  * Resolves the immutable Git base for one writable workspace root.
+ * Command-scoped trust admits only that root's canonical path, without changing host Git configuration.
  *
  * @param sourcePath Host-local repository root.
  * @returns Full Git object id for the current HEAD commit.
@@ -1031,6 +1032,10 @@ function readWorkspaceGitCommit(sourcePath: string): string {
       cwd: sourcePath,
       encoding: 'utf8',
       env: {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'safe.directory',
+        GIT_CONFIG_VALUE_0: realpathSync(sourcePath),
+        GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
         GIT_CONFIG_NOSYSTEM: '1',
         GIT_NO_REPLACE_OBJECTS: '1',
         GIT_TERMINAL_PROMPT: '0',
