@@ -281,11 +281,24 @@ describe('governed worker image contracts', () => {
       aep.control.adapter.targetRuntime = runtime;
       aep.runtime.binaries[1] = { id: runtime, path: nativeBinary };
       expect(AgentEnvironmentPackageSchema.safeParse(aep).success).toBe(true);
+      expect(aep.extensions.openkit.sessionWorkspace.layout.slots).toContainEqual({
+        kind: 'worktree',
+        access: 'read-write',
+        path: '/workspace/worktrees/image-smoke',
+      });
     }
     expect(
       dockerTargetSection(readFileSync(sharedDockerfilePath, 'utf8'), 'worker-runtimes')
     ).toContain(
       'COPY containers/worker-runtimes/smoke-package.json /usr/local/lib/openkit/image-smoke-package.json'
+    );
+  });
+
+  it('imports the smoke AEP before opening each native resident', () => {
+    const smoke = readFileSync(join(repoRoot, 'containers/worker-runtimes/smoke.sh'), 'utf8');
+    expect(smoke.indexOf('await writeFile(packagePath,')).toBeGreaterThan(-1);
+    expect(smoke.indexOf('await writeFile(packagePath,')).toBeLessThan(
+      smoke.indexOf("send('session.open'")
     );
   });
 

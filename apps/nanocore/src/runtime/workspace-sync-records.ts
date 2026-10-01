@@ -19,6 +19,7 @@ import {
   WorkspaceSyncReviewItemSchema,
   type WorkspaceSyncReviewPatchPayload,
   WorkspaceSyncReviewPatchPayloadSchema,
+  workspaceSyncReviewPatchBytes,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -29,6 +30,7 @@ import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
 } from './workspace-materializer.js';
+import { workspaceSnapshotAcceptedCommitIsKnown } from './workspace-snapshot-chain.js';
 
 /** Durable workspace synchronization review persistence input. */
 export interface RecordWorkspaceSyncReviewInput {
@@ -128,8 +130,9 @@ export function parseWorkspaceSyncReviewItem(
     throw new Error(`Workspace synchronization review patch conflict: ${review.id}`);
   }
   if (changeSet.patch && patchPayload) {
-    const digest = `sha256:${createHash('sha256').update(patchPayload.text).digest('hex')}`;
-    const bytes = Buffer.byteLength(patchPayload.text, 'utf8');
+    const raw = workspaceSyncReviewPatchBytes(patchPayload);
+    const digest = `sha256:${createHash('sha256').update(raw).digest('hex')}`;
+    const bytes = raw.length;
     if (
       changeSet.patch.digest !== patchPayload.digest ||
       changeSet.patch.bytes !== patchPayload.bytes ||
@@ -818,7 +821,7 @@ export function listBackendWorkspaceHandles(
  * Requires an exact backend-handle handoff for every workspace input in one immutable package.
  *
  * @param workspaceDb Workspace database that owns the package.
- * @param environmentPackage Immutable package whose inputs define the expected handoff set.
+ * @param environmentPackage Immutable package whose original inputs and logical slot define the expected handoff set.
  * @param expectedBackend Optional exact physical backend owner required by cleanup projection.
  * @returns Exact package-owned backend handles in storage order.
  * @throws Error when a declared input is missing, duplicated, or joined by an unexpected handle.
@@ -877,7 +880,7 @@ export function requireCompleteBackendWorkspaceHandleHandoff(
         packageInput && typeof packageInput.source.sourceId === 'string'
           ? packageInput.source.sourceId
           : undefined;
-      const canonicalSnapshot =
+      let canonicalSnapshot =
         packageInput && snapshot && expectedBackend
           ? buildWorkspaceInputSnapshots({
               backendCapabilities: snapshot.backend.capabilitySummary,
@@ -891,6 +894,31 @@ export function requireCompleteBackendWorkspaceHandleHandoff(
               },
             })[0]
           : undefined;
+      // The immutable AEP retains the original source identity; the slot cursor or a capture receipt proves a later accepted Core commit used as the materialized base.
+      const workSlot = (
+        environmentPackage.extensions.openkit as {
+          workerStorage?: { workSlotRef?: string };
+        }
+      )?.workerStorage?.workSlotRef;
+      if (
+        canonicalSnapshot &&
+        packageInput?.access === 'read-write' &&
+        packageInput.source.kind === 'git' &&
+        snapshot?.base.commit &&
+        workSlot &&
+        workspaceSnapshotAcceptedCommitIsKnown(
+          workspaceDb,
+          environmentPackage.scope.workspaceId,
+          workSlot,
+          environmentPackage.scope.threadId,
+          snapshot.base.commit
+        )
+      ) {
+        canonicalSnapshot = {
+          ...canonicalSnapshot,
+          base: { ...canonicalSnapshot.base, commit: snapshot.base.commit },
+        };
+      }
       const canonicalRecord =
         canonicalSnapshot && expectedBackend && packageInput && record
           ? buildWorkspaceMaterializationRecords({
@@ -1084,7 +1112,7 @@ function recordBackendWorkspaceHandle(
  * @param workspaceDb Open workspace-scope database handle.
  * @param manifest Worker output manifest to persist.
  */
-function recordWorkerOutputManifest(
+export function recordWorkerOutputManifest(
   workspaceDb: WorkspaceDb,
   manifest: WorkerOutputManifest
 ): void {

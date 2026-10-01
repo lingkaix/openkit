@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -10,7 +11,6 @@ import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
-  parseWorkspaceChangeSetManifest,
   stageWorkspaceChangeSet,
 } from './workspace-materializer.js';
 
@@ -326,85 +326,6 @@ describe('workspace materializer records', () => {
     expect(JSON.stringify(records)).not.toContain('/Users/m5pro');
   });
 
-  it('parses a git workspace change manifest with relative changed paths', () => {
-    const parsed = parseWorkspaceChangeSetManifest(
-      JSON.stringify({
-        id: 'wcs_1',
-        materializationRecordId: 'wmr_1',
-        inputSnapshotId: 'wis_1',
-        workspaceId: 'ws_demo',
-        resourceId: 'repo',
-        strategy: 'git',
-        base: { commit: 'abc123', contentDigest: null },
-        head: { commit: 'def456', contentDigest: null },
-        changedPaths: [
-          { path: 'docs/spec.md', status: 'modified', binary: false },
-          { path: 'apps/nanocore/src/runtime/workspace-materializer.ts', status: 'added' },
-        ],
-        patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
-        bundle: null,
-        artifactIds: ['ar_patch'],
-        evidenceRefs: [{ kind: 'test', ref: 'ev_test' }],
-        redaction: { status: 'redacted', notes: [] },
-        createdAt: '2026-06-27T01:00:00.000Z',
-      })
-    );
-
-    expect(parsed.changedPaths.map((entry) => entry.path)).toEqual([
-      'docs/spec.md',
-      'apps/nanocore/src/runtime/workspace-materializer.ts',
-    ]);
-  });
-
-  it('rejects a present workspace change manifest with no changed paths', () => {
-    expect(() =>
-      parseWorkspaceChangeSetManifest(
-        JSON.stringify({
-          artifactIds: [],
-          base: { commit: 'abc123', contentDigest: null },
-          bundle: null,
-          changedPaths: [],
-          createdAt: '2026-06-27T01:00:00.000Z',
-          evidenceRefs: [],
-          head: { commit: 'abc123', contentDigest: null },
-          id: 'wcs_empty',
-          inputSnapshotId: 'wis_1',
-          materializationRecordId: 'wmr_1',
-          patch: null,
-          redaction: { notes: [], status: 'no-sensitive-content-found' },
-          resourceId: 'repo',
-          strategy: 'git',
-          workspaceId: 'ws_demo',
-        })
-      )
-    ).toThrow('semantically empty');
-  });
-
-  it('rejects manifests that escape the declared workspace path scope', () => {
-    expect(() =>
-      parseWorkspaceChangeSetManifest(
-        JSON.stringify({
-          id: 'wcs_1',
-          materializationRecordId: 'wmr_1',
-          inputSnapshotId: 'wis_1',
-          workspaceId: 'ws_demo',
-          resourceId: 'repo',
-          strategy: 'git',
-          base: { commit: 'abc123', contentDigest: null },
-          head: { commit: 'def456', contentDigest: null },
-          changedPaths: [{ path: 'apps/secret.txt', status: 'modified' }],
-          patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
-          bundle: null,
-          artifactIds: [],
-          evidenceRefs: [],
-          redaction: { status: 'redacted', notes: [] },
-          createdAt: '2026-06-27T01:00:00.000Z',
-        }),
-        { allowedPathPrefixes: ['docs'] }
-      )
-    ).toThrow('unsafe workspace change path');
-  });
-
   it('stages parsed change sets as pending workspace reviews', () => {
     const patchText = [
       'diff --git a/docs/spec.md b/docs/spec.md',
@@ -417,25 +338,23 @@ describe('workspace materializer records', () => {
       '+- Second child finding',
       '',
     ].join('\n');
-    const changeSet = parseWorkspaceChangeSetManifest(
-      JSON.stringify({
-        id: 'wcs_1',
-        materializationRecordId: 'wmr_1',
-        inputSnapshotId: 'wis_1',
-        workspaceId: 'ws_demo',
-        resourceId: 'repo',
-        strategy: 'git',
-        base: { commit: 'abc123', contentDigest: null },
-        head: { commit: 'def456', contentDigest: null },
-        changedPaths: [{ path: 'docs/spec.md', status: 'modified', binary: false }],
-        patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
-        bundle: null,
-        artifactIds: ['ar_patch'],
-        evidenceRefs: [{ kind: 'test', ref: 'ev_test' }],
-        redaction: { status: 'redacted', notes: [] },
-        createdAt: '2026-06-27T01:00:00.000Z',
-      })
-    );
+    const changeSet = WorkspaceChangeSetSchema.parse({
+      id: 'wcs_1',
+      materializationRecordId: 'wmr_1',
+      inputSnapshotId: 'wis_1',
+      workspaceId: 'ws_demo',
+      resourceId: 'repo',
+      strategy: 'git',
+      base: { commit: 'abc123', contentDigest: null },
+      head: { commit: 'def456', contentDigest: null },
+      changedPaths: [{ path: 'docs/spec.md', status: 'modified', binary: false }],
+      patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
+      bundle: null,
+      artifactIds: ['ar_patch'],
+      evidenceRefs: [{ kind: 'test', ref: 'ev_test' }],
+      redaction: { status: 'redacted', notes: [] },
+      createdAt: '2026-06-27T01:00:00.000Z',
+    });
 
     expect(
       stageWorkspaceChangeSet(changeSet, {
@@ -454,79 +373,6 @@ describe('workspace materializer records', () => {
       changeSetId: 'wcs_1',
       diffSummary: { additions: 3, deletions: 1, filesChanged: 1 },
       status: 'pending',
-    });
-  });
-
-  it('projects binary paths as artifact-only review diagnostics', () => {
-    const changeSet = parseWorkspaceChangeSetManifest(
-      JSON.stringify({
-        id: 'wcs_binary',
-        materializationRecordId: 'wmr_1',
-        inputSnapshotId: 'wis_1',
-        workspaceId: 'ws_demo',
-        resourceId: 'repo',
-        strategy: 'git',
-        base: { commit: 'abc123', contentDigest: null },
-        head: { commit: 'def456', contentDigest: null },
-        changedPaths: [
-          {
-            binary: true,
-            digest: 'sha256:image',
-            mediaType: 'image/png',
-            path: 'assets/screenshot.png',
-            size: 2048,
-            status: 'modified',
-          },
-          {
-            binary: true,
-            digest: 'sha256:video',
-            mediaType: 'video/mp4',
-            path: 'assets/demo.mp4',
-            size: 1_048_577,
-            status: 'added',
-          },
-        ],
-        patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
-        bundle: null,
-        artifactIds: ['ar_binary'],
-        evidenceRefs: [],
-        redaction: { status: 'redacted', notes: [] },
-        createdAt: '2026-06-27T01:00:00.000Z',
-      })
-    );
-    const review = stageWorkspaceChangeSet(changeSet, {
-      createdAt: '2026-06-27T01:05:00.000Z',
-      patchPayload: null,
-      reviewId: 'swr_binary',
-      stagingRef: 'staging://workspace/swr_binary',
-    });
-
-    expect(changeSet.changedPaths[0]?.binaryReview).toEqual({
-      bytes: 2048,
-      digest: 'sha256:image',
-      mediaType: 'image/png',
-      mode: 'artifact-only',
-      reason: 'binary-path',
-      summary: 'Binary change assets/screenshot.png is available as an artifact-only review item.',
-    });
-    expect(changeSet.changedPaths[1]?.binaryReview).toMatchObject({
-      bytes: 1_048_577,
-      reason: 'binary-payload-too-large',
-    });
-    expect(review).toMatchObject({
-      riskSummary: '2 changed paths staged for review, including 2 artifact-only binary paths.',
-      validation: [
-        {
-          command: 'workspace.binary_artifact_only',
-          ref: 'workspace-path:assets/screenshot.png',
-          status: 'skipped',
-        },
-        {
-          command: 'workspace.binary_artifact_only',
-          ref: 'workspace-path:assets/demo.mp4',
-          status: 'skipped',
-        },
-      ],
     });
   });
 });

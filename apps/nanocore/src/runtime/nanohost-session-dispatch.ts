@@ -8,6 +8,7 @@ import {
   DOCKERFILE_INPUT_MAX_BYTES,
 } from '@openkit/config-schema';
 import type { Hono } from 'hono';
+import { createScanner } from 'jsonc-parser';
 
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -39,6 +40,13 @@ import {
   WorkerImageSettlementSchema,
   writeWorkerImageSettlement,
 } from './worker-image-settlements.js';
+
+import {
+  admitWorkspaceCollectJsonResult,
+  sameWorkspaceSnapshot,
+  WorkspaceCollectCommandSchema,
+  WorkspaceSnapshotPairSchema,
+} from './workspace-collect-wire.js';
 
 const CONTROL_BODY_MAX_BYTES = 1024 * 1024;
 /** Exact outer-session inference request ceiling preserved from its semantic owner. */
@@ -76,6 +84,7 @@ export const NANO_HOST_EFFECT_OPERATIONS = [
   'storage.purge',
   'file.export',
   'reference.import',
+  'workspace.collect',
 ] as const;
 
 /** One fixed NanoHost-owned runtime effect operation. */
@@ -83,6 +92,10 @@ export type NanoHostEffectOperation = (typeof NANO_HOST_EFFECT_OPERATIONS)[numbe
 
 /** Exact private command/result paths for the closed NanoHost effect vocabulary. */
 const NANO_HOST_EFFECT_PATHS = {
+  'workspace.collect': {
+    command: '/api/nanohost/transport/effects/workspace.collect',
+    result: '/api/nanohost/transport/effects/workspace.collect/result',
+  },
   'bridge.close': {
     command: '/api/nanohost/transport/effects/bridge.close',
     result: '/api/nanohost/transport/effects/bridge.close/result',
@@ -224,6 +237,13 @@ export interface NanoHostSessionDispatch {
   ): Promise<void>;
   /** Accepts one raw correlated file export on its fixed result path. */
   fileExportResult(physicalConnection: object, request: Request): Promise<void>;
+  /** Admits one candidate bound to the exact pending snapshot-chain command. */
+  workspaceCollectResult(physicalConnection: object, request: Request): Promise<void>;
+  /** Clears an unknown collection delivery and its private check values on the exact connection. */
+  beginWorkspaceCollectionDelivery?(physicalConnection: object): {
+    abandon: () => void;
+    signal: AbortSignal | undefined;
+  };
   /** Returns one accepted image build's exact retained Dockerfile bytes once. */
   imageBuildInput(
     physicalConnection: object,
@@ -254,6 +274,9 @@ export interface NanoHostSessionDispatch {
 
 /** One process-local pending effect owned by the dispatcher. */
 interface PendingNanoHostEffect {
+  collectionTimeout?: ReturnType<typeof setTimeout>;
+  collectionDeliveryStarted?: boolean;
+  collectionAbort?: AbortController | undefined;
   imageSettlement?: WorkerImageSettlementIdentity;
   imageSettlementDeferred?: boolean;
   acceptedConnection?: object;
@@ -396,6 +419,10 @@ export function createNanoHostSessionDispatch(
           command = requireImageBuildCommand(request.input, requestId);
         } else if (operation === 'bridge.open') {
           command = requireBridgeOpenCommand(request.input, requestId);
+        } else if (operation === 'workspace.collect') {
+          command = WorkspaceCollectCommandSchema.parse({ ...request.input, requestId });
+          if (Buffer.byteLength(JSON.stringify(command)) > 512 * 1024)
+            throw effectTransportError(413, 'Workspace collection command is too large.');
         } else if (operation === 'file.export') {
           command = requireFileExportCommand(request.input, requestId);
         } else if (operation === 'image.inspect') {
@@ -415,7 +442,10 @@ export function createNanoHostSessionDispatch(
         const originPhysicalEpoch = requireCurrentReadiness(readiness);
         completedEffects.delete(operation);
         return new Promise<unknown>((resolve, reject) => {
+          const collectionAbort =
+            operation === 'workspace.collect' ? new AbortController() : undefined;
           pendingEffects.set(operation, {
+            ...(collectionAbort ? { collectionAbort } : {}),
             accepted: false,
             ...(request.imageSettlement ? { imageSettlement: request.imageSettlement } : {}),
             command,
@@ -424,6 +454,10 @@ export function createNanoHostSessionDispatch(
             requestId,
             resolve,
           });
+          if (operation === 'workspace.collect') {
+            // NanoHost owns the scan clock; Core bounds the pre-delivery wait by both fixed phase allowances.
+            armWorkspaceCollectionDeadline(pendingEffects, pendingEffects.get(operation)!, 240_000);
+          }
         });
       })();
       void effectPromise.catch(() => undefined);
@@ -679,6 +713,15 @@ export function createNanoHostSessionDispatch(
 
     async result(physicalConnection, operation, result) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      if (operation === 'workspace.collect') {
+        const pending = pendingEffects.get(operation);
+        if (!pending?.accepted || !pending.command)
+          throw effectTransportError(409, 'Workspace collection has no accepted pending command.');
+        result = admitWorkspaceCollectJsonResult(
+          result,
+          WorkspaceCollectCommandSchema.parse(pending.command)
+        );
+      }
       const requestId = readRequestId(result);
       const resultNames = Object.keys(result);
       const carriesFailureCode = resultNames.includes('failureCode');
@@ -828,6 +871,100 @@ export function createNanoHostSessionDispatch(
       );
     },
 
+    beginWorkspaceCollectionDelivery(physicalConnection) {
+      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      const pending = pendingEffects.get('workspace.collect');
+      if (pending?.accepted && !pending.collectionDeliveryStarted) {
+        pending.collectionDeliveryStarted = true;
+        armWorkspaceCollectionDeadline(pendingEffects, pending, 120_000);
+      }
+      return {
+        signal: pending?.collectionAbort?.signal,
+        abandon: () => {
+          if (
+            !pending ||
+            pendingEffects.get('workspace.collect') !== pending ||
+            (pending.acceptedConnection && pending.acceptedConnection !== physicalConnection)
+          )
+            return;
+          pending.command = null;
+          removePendingEffectGroup(pendingEffects, 'workspace.collect', pending);
+          pending.reject(
+            new Error('Workspace collection delivery is unknown; authorize a new request.')
+          );
+        },
+      };
+    },
+
+    async workspaceCollectResult(physicalConnection, request) {
+      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      const pending = pendingEffects.get('workspace.collect');
+      if (!pending?.accepted || !pending.command)
+        throw effectTransportError(409, 'Workspace collection has no accepted pending command.');
+      const command = WorkspaceCollectCommandSchema.parse(pending.command);
+      if (command.mode !== 'capture')
+        throw effectTransportError(409, 'Baseline collection cannot return a candidate.');
+      const requestId = request.headers.get('x-openkit-request-id');
+      const readPair = (name: string) => {
+        const wire = request.headers.get(name);
+        if (!wire || !/^[0-9a-f]{40} [0-9a-f]{40}$/.test(wire))
+          throw effectTransportError(400, 'Workspace collection snapshot header is invalid.');
+        const [tree, manifest] = wire.split(' ');
+        return WorkspaceSnapshotPairSchema.parse({ tree, manifest });
+      };
+      const head = readPair('x-openkit-head');
+      const previousHead = readPair('x-openkit-previous-head');
+      const acceptedBase = readPair('x-openkit-accepted-base');
+      const unstable = request.headers.get('x-openkit-unstable');
+      const byteLength = readCanonicalByteLengthText(
+        request.headers.get('x-openkit-byte-length') ?? ''
+      );
+      const sha256 = readSha256(request.headers.get('x-openkit-sha256'));
+      if (
+        request.headers.get('content-type') !== FILE_DATA_CONTENT_TYPE ||
+        requestId !== pending.requestId ||
+        request.headers.get('content-length') !== String(byteLength) ||
+        byteLength === 0 ||
+        (unstable !== 'true' && unstable !== 'false') ||
+        !sameWorkspaceSnapshot(previousHead, command.previousHead) ||
+        !sameWorkspaceSnapshot(acceptedBase, command.acceptedBase) ||
+        sameWorkspaceSnapshot(head, previousHead) ||
+        sameWorkspaceSnapshot(head, acceptedBase) ||
+        pending.acceptedConnection !== physicalConnection
+      ) {
+        throw effectTransportError(
+          409,
+          'Workspace collection candidate disagrees with its command.'
+        );
+      }
+      const staged = await stageFileExport(
+        request,
+        { byteLength, sha256 },
+        pending.collectionAbort?.signal
+      );
+      try {
+        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+        if (pendingEffects.get('workspace.collect') !== pending)
+          throw effectTransportError(409, 'Workspace collection delivery became unknown.');
+      } catch (error) {
+        await rm(staged.directory, { force: true, recursive: true });
+        throw error;
+      }
+      clearTimeout(pending.collectionTimeout);
+      pending.command = null;
+      pendingEffects.delete('workspace.collect');
+      pending.resolve({
+        outcome: 'candidate',
+        head,
+        previousHead,
+        acceptedBase,
+        unstable: unstable === 'true',
+        byteLength,
+        sha256,
+        stagingPath: staged.path,
+      });
+    },
+
     async fileExportResult(physicalConnection, request) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
       const metadata = readFileDataHeaders(request.headers);
@@ -914,10 +1051,26 @@ export function createNanoHostSessionDispatch(
 /** Identifies effects without successor replay; purge remains fenced by its Core purge-pending owner. */
 function isConnectionEphemeralEffect(operation: NanoHostEffectOperation): boolean {
   return (
+    operation === 'workspace.collect' ||
     operation === 'image.inspect' ||
     operation === 'storage.inspect' ||
     operation === 'storage.purge'
   );
+}
+
+/** Arms the existing collection cancellation timer; delivery gets one absolute allowance without renewal. */
+function armWorkspaceCollectionDeadline(
+  pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
+  pending: PendingNanoHostEffect,
+  milliseconds: number
+): void {
+  clearTimeout(pending.collectionTimeout);
+  pending.collectionTimeout = setTimeout(() => {
+    if (pendingEffects.get('workspace.collect') !== pending) return;
+    removePendingEffectGroup(pendingEffects, 'workspace.collect', pending);
+    pending.reject(new Error('Workspace collection delivery is unknown.'));
+  }, milliseconds);
+  pending.collectionTimeout.unref();
 }
 
 /** Removes one ordinary pending effect or every member of its result-only correlation set. */
@@ -926,6 +1079,11 @@ function removePendingEffectGroup(
   operation: NanoHostEffectOperation,
   pending: PendingNanoHostEffect
 ): void {
+  clearTimeout(pending.collectionTimeout);
+  if (operation === 'workspace.collect') {
+    pending.command = null;
+    pending.collectionAbort?.abort();
+  }
   if (!pending.resultOnlyGroup) {
     pendingEffects.delete(operation);
     return;
@@ -1177,8 +1335,26 @@ export function registerNanoHostSessionEffectRoutes(
     });
 
     input.app.post(resultPath, async (context) => {
+      let collectionDelivery: { abandon: () => void; signal: AbortSignal | undefined } | undefined;
       try {
         const physicalConnection = requirePhysicalConnection(context.env);
+        if (operation === 'workspace.collect')
+          collectionDelivery =
+            input.dispatch.beginWorkspaceCollectionDelivery?.(physicalConnection);
+        if (
+          operation === 'workspace.collect' &&
+          context.req.header('content-type') === FILE_DATA_CONTENT_TYPE
+        ) {
+          if (fileDataTransferActive)
+            throw effectTransportError(409, 'NanoHost file-data transfer is already active.');
+          fileDataTransferActive = true;
+          try {
+            await input.dispatch.workspaceCollectResult(physicalConnection, context.req.raw);
+          } finally {
+            fileDataTransferActive = false;
+          }
+          return context.body(null, 204);
+        }
         if (
           operation === 'file.export' &&
           context.req.header('content-type') === 'application/json'
@@ -1209,10 +1385,16 @@ export function registerNanoHostSessionEffectRoutes(
           }
           return context.body(null, 204);
         }
-        const result = await readBoundedJsonObject(context.req.raw);
+        const result =
+          operation === 'workspace.collect'
+            ? await readWorkspaceCollectionJson(context.req.raw, collectionDelivery?.signal)
+            : await readBoundedJsonObject(context.req.raw);
         await input.dispatch.result(physicalConnection, operation, result);
         return context.body(null, 204);
       } catch (error) {
+        if (operation === 'workspace.collect') {
+          collectionDelivery?.abandon();
+        }
         if (
           operation === 'file.export' &&
           context.req.header('content-type') === FILE_DATA_CONTENT_TYPE &&
@@ -1620,22 +1802,29 @@ function requirePendingFileExport(
 /** Streams one raw export into fsynced request-private staging and verifies its identity. */
 async function stageFileExport(
   request: Request,
-  metadata: NanoHostFileResultIdentity
+  metadata: Pick<NanoHostFileResultIdentity, 'byteLength' | 'sha256'>,
+  signal?: AbortSignal
 ): Promise<{ readonly directory: string; readonly path: string }> {
   let directory = '';
   let file: Awaited<ReturnType<typeof open>> | null = null;
   const digest = createHash('sha256');
   let observed = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const cancel = () => {
+    void reader?.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
   try {
     directory = await mkdtemp(join(tmpdir(), 'openkit-nanocore-file-export-'));
     const partialPath = join(directory, '.partial');
     const finalPath = join(directory, 'complete');
     file = await open(partialPath, 'wx', 0o600);
-    const reader = request.body?.getReader();
+    reader = request.body?.getReader();
     if (!reader && metadata.byteLength !== 0) {
       throw effectTransportError(409, 'NanoHost file export body is incomplete.');
     }
     while (reader) {
+      signal?.throwIfAborted();
       const chunk = await reader.read();
       if (chunk.done) {
         break;
@@ -1650,6 +1839,7 @@ async function stageFileExport(
         await file.write(slice);
       }
     }
+    signal?.throwIfAborted();
     if (observed !== metadata.byteLength || `sha256:${digest.digest('hex')}` !== metadata.sha256) {
       throw effectTransportError(409, 'NanoHost file export digest or length disagrees.');
     }
@@ -1662,8 +1852,13 @@ async function stageFileExport(
     } finally {
       await directoryHandle.close();
     }
+    signal?.removeEventListener('abort', cancel);
+    reader?.releaseLock();
     return { directory, path: finalPath };
   } catch (error) {
+    signal?.removeEventListener('abort', cancel);
+    await reader?.cancel().catch(() => undefined);
+    reader?.releaseLock();
     await file?.close().catch(() => undefined);
     if (directory) {
       await rm(directory, { force: true, recursive: true }).catch(() => undefined);
@@ -1894,6 +2089,102 @@ async function readBoundedJsonObject(request: Request): Promise<Record<string, u
   const value = JSON.parse(text) as unknown;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('NanoHost effect body must be a JSON object.');
+  }
+  return value as Record<string, unknown>;
+}
+
+/** Reads collection control bytes within the owner ceiling and rejects duplicate decoded core keys. */
+async function readWorkspaceCollectionJson(
+  request: Request,
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error('Workspace collection result body is absent.');
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 512 * 1024) throw new Error('Workspace collection result exceeds its bound.');
+      chunks.push(value);
+    }
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  signal?.throwIfAborted();
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+  const value = JSON.parse(text) as unknown;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Workspace collection result must be an object.');
+  const rootCore = new Set([
+    'requestId',
+    'outcome',
+    'cause',
+    'head',
+    'previousHead',
+    'acceptedBase',
+    'unstable',
+  ]);
+  const pairCore = new Set(['tree', 'manifest']);
+  const frames: Array<{
+    object: boolean;
+    expectKey: boolean;
+    field: string | null;
+    core: Set<string> | null;
+    seen: Set<string> | null;
+  }> = [];
+  // jsonc-parser declares SyntaxKind as an ambient const enum, unavailable with verbatimModuleSyntax. These are its fixed scanner codes, not a new wire vocabulary.
+  const SyntaxKind = {
+    OpenBraceToken: 1,
+    CloseBraceToken: 2,
+    OpenBracketToken: 3,
+    CloseBracketToken: 4,
+    CommaToken: 5,
+    StringLiteral: 10,
+    EOF: 17,
+  } as const;
+  const scanner = createScanner(text, true);
+  for (let token = scanner.scan(); token !== SyntaxKind.EOF; token = scanner.scan()) {
+    const parent = frames.at(-1);
+    if (token === SyntaxKind.OpenBraceToken || token === SyntaxKind.OpenBracketToken) {
+      const core =
+        frames.length === 0
+          ? rootCore
+          : frames.length === 1 &&
+              parent?.field &&
+              ['head', 'previousHead', 'acceptedBase'].includes(parent.field)
+            ? pairCore
+            : null;
+      if (parent) parent.field = null;
+      frames.push({
+        object: token === SyntaxKind.OpenBraceToken,
+        expectKey: true,
+        field: null,
+        core,
+        seen: core ? new Set() : null,
+      });
+    } else if (token === SyntaxKind.CloseBraceToken || token === SyntaxKind.CloseBracketToken)
+      frames.pop();
+    else if (token === SyntaxKind.CommaToken && parent?.object) parent.expectKey = true;
+    else if (token === SyntaxKind.StringLiteral && parent?.object && parent.expectKey) {
+      const name = scanner.getTokenValue();
+      parent.expectKey = false;
+      parent.field = name;
+      if (parent.core?.has(name)) {
+        if (parent.seen?.has(name))
+          throw new Error('Workspace collection result duplicates a core member.');
+        parent.seen?.add(name);
+      }
+    }
   }
   return value as Record<string, unknown>;
 }

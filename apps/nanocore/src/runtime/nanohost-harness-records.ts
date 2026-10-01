@@ -1500,7 +1500,10 @@ function requireHarnessResult(
     );
     if (
       result.body.startupFailure !== undefined &&
-      (operation !== 'turn.start' ||
+      ((operation !== 'turn.start' && operation !== 'session.open') ||
+        (operation === 'session.open' &&
+          (result.body.startupFailure as { stage?: unknown }).stage !==
+            'workspace_materialization') ||
         result.body.reasonCode !== 'dependency_failed' ||
         !WorkerStartupFailureSchema.safeParse(result.body.startupFailure).success)
     ) {

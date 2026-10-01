@@ -1189,6 +1189,8 @@ describe('agent environment package resolver', () => {
       expect(runtimeEnvCredentials).toEqual([
         {
           credentialValue: 'direct_secret_value',
+          materialVersion: 1,
+          vaultReferenceId: 'vault_anthropic_api_key',
           targetEnvVarName: 'ANTHROPIC_API_KEY',
         },
       ]);

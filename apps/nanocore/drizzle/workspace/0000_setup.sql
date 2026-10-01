@@ -1068,3 +1068,22 @@ CREATE TABLE `pending_requests` (
 --> statement-breakpoint
 
 CREATE INDEX `pending_requests_thread_state_idx` ON `pending_requests` (`workspace_id`, `thread_id`, `state`);
+
+--> statement-breakpoint
+
+CREATE TABLE workspace_snapshot_cursors (
+ workspace_id TEXT NOT NULL, storage_ref TEXT NOT NULL, work_slot TEXT NOT NULL,
+ accepted_base_json TEXT, head_json TEXT,
+ baseline_identity_json TEXT NOT NULL, accepted_commit TEXT,
+ PRIMARY KEY (workspace_id, storage_ref, work_slot)
+);
+--> statement-breakpoint
+CREATE TABLE workspace_snapshot_collections (
+ workspace_id TEXT NOT NULL, storage_ref TEXT NOT NULL, work_slot TEXT NOT NULL,
+ collection_id TEXT NOT NULL, identity_json TEXT NOT NULL, result_json TEXT NOT NULL,
+ candidate BLOB, is_link INTEGER NOT NULL, change_set_id TEXT,
+ PRIMARY KEY (workspace_id, storage_ref, work_slot, collection_id)
+);
+
+--> statement-breakpoint
+CREATE UNIQUE INDEX workspace_snapshot_collection_review_idx ON workspace_snapshot_collections(workspace_id, change_set_id) WHERE change_set_id IS NOT NULL;

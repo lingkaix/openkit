@@ -584,6 +584,10 @@ export interface WorkerGovernanceRuntimeFileCredential {
 
 /** Backend-private runtime environment credential material used only during materialization. */
 export interface WorkerGovernanceRuntimeEnvCredential {
+  /** Exact non-secret Vault reference and material version retained for restart collection. */
+  vaultReferenceId?: string;
+  /** Material version that produced this binding's environment value. */
+  materialVersion?: number;
   /** Secret environment variable value delivered privately to the current Turn child. */
   credentialValue: string;
   /** Worker-local environment variable name that receives the secret value. */
@@ -604,6 +608,8 @@ interface OpenShellWorkspaceBundleFileInventoryEntry {
  * Product-safe materialization summary returned by a worker governance backend.
  */
 export interface WorkerGovernanceMaterializationRecord {
+  /** Comparable accepted-base commit contexts for retained Git work slots, never capture cursors. */
+  workspaceBaseCommits?: Record<string, string>;
   /** Backend kind selected for materialization. */
   backendKind: WorkerGovernanceBackendCapabilities['kind'];
   /** Canonical package id that was materialized. */

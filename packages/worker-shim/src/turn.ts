@@ -19,8 +19,8 @@ import { WorkerControlClient, type WorkerControlFetch } from './control-client.j
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { type WorkerTerminalOutcomeInput, WorkerTranscriptWriter } from './transcript.js';
 import {
+  initializeEmptyWorkspaceSlot,
   materializeWorkspaceGitInputs,
-  publishWorkspaceGitSnapshots,
   type WorkspaceGitInput,
 } from './workspace-git.js';
 
@@ -180,7 +180,6 @@ async function runResidentTurnImplementation(
   const skillSupply = resolveSkillSupply(packageManifest.supply?.skills);
   const turnInput = resolveWorkerTurnInput(packageManifest);
   const cwd = resolveWorkerWorkingDirectory(packageManifest);
-  const workspaceInputs = resolveWorkspaceInputs(packageManifest);
   const captureCoverageResult = CaptureCoverageBindingSchema.safeParse(
     packageManifest.observability?.captureCoverage
   );
@@ -216,19 +215,6 @@ async function runResidentTurnImplementation(
   await writeFile(join(options.sessionDir, 'artifacts.jsonl'), '', 'utf8');
   progress.stage = 'runtime_supply';
   await materializeRuntimeSupply(packageManifest);
-  const workspaceRoot = packageManifest.workspace?.root;
-  if (
-    workspaceInputs.length > 0 &&
-    (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0)
-  ) {
-    throw new Error('Git workspace materialization requires workspace.root.');
-  }
-  progress.stage = 'workspace_materialization';
-  const workspaceBases = await materializeWorkspaceGitInputs(
-    workspaceInputs,
-    typeof workspaceRoot === 'string' ? workspaceRoot : cwd,
-    options.sessionDir
-  );
 
   let controlSession: WorkerControlClient | null = null;
   const controlAbortController = new AbortController();
@@ -387,13 +373,6 @@ async function runResidentTurnImplementation(
     });
     // Turn barrier: loopback requests still in flight are drained, then cut, before collection.
     await options.integration.drainTurn(options.lineage.agentSessionId);
-    await publishWorkspaceGitSnapshots({
-      bases: workspaceBases,
-      credentialValues,
-      inputs: workspaceInputs,
-      lineage,
-      sessionDir: options.sessionDir,
-    });
     controlAbortController.abort();
     await heartbeat.catch(() => undefined);
     options.signal.removeEventListener('abort', onInterrupt);
@@ -492,6 +471,9 @@ interface WorkerShimPackageManifest {
   scope?: {
     /** Request that owns this worker Turn, when present. */
     requestId?: unknown;
+    agentSessionId?: unknown;
+    threadId?: unknown;
+    workspaceId?: unknown;
   };
   /** Sandbox Integration bindings and selected adapter declaration. */
   control?: {
@@ -527,6 +509,7 @@ interface WorkerShimPackageManifest {
       resultMessagePath?: unknown;
       /** Private per-turn worker input. */
       turnInput?: unknown;
+      sessionWorkspace?: { layout?: { slots?: unknown } };
     };
   };
   /** Resolved worker inference declaration. */
@@ -622,7 +605,7 @@ interface RuntimeSkillSupply {
 }
 
 /** Classifies startup failure without publishing paths, credentials, or child output. */
-function describeWorkerStartupFailure(
+export function describeWorkerStartupFailure(
   stage: WorkerStartupFailure['stage'],
   cause: unknown
 ): WorkerStartupFailure {
@@ -711,6 +694,37 @@ async function waitForWorkerControlReadiness<T>(
   } finally {
     if (timeout) {
       clearTimeout(timeout);
+    }
+  }
+}
+
+/** Initializes the admitted session workspace before the resident native runtime opens. */
+export async function initializeSessionWorkspace(
+  packagePath: string,
+  sessionDir: string,
+  identity: { agentSessionId: string; threadId: string; workspaceId: string }
+): Promise<void> {
+  const manifest = await readWorkerShimPackage(packagePath);
+  for (const key of ['agentSessionId', 'threadId', 'workspaceId'] as const) {
+    if (manifest.scope?.[key] !== identity[key])
+      throw new Error('Initial workspace package lineage disagrees.');
+  }
+  await materializeRuntimeSupply(manifest);
+  const inputs = resolveWorkspaceInputs(manifest);
+  const root = manifest.workspace?.root;
+  if (typeof root !== 'string' || !root) throw new Error('Initial workspace root is unavailable.');
+  const slots = manifest.extensions?.openkit?.sessionWorkspace?.layout?.slots;
+  if (!Array.isArray(slots)) throw new Error('Initial workspace slots are unavailable.');
+  await materializeWorkspaceGitInputs(inputs, root, sessionDir);
+  for (const slot of slots) {
+    if (
+      isRecord(slot) &&
+      slot.kind === 'worktree' &&
+      slot.access === 'read-write' &&
+      !inputs.some((input) => input.target === slot.path)
+    ) {
+      if (typeof slot.path !== 'string') throw new Error('Initial workspace slot is invalid.');
+      await initializeEmptyWorkspaceSlot(root, slot.path);
     }
   }
 }
@@ -1201,10 +1215,6 @@ function readWorkspaceInput(value: unknown): WorkspaceGitInput | null {
   return {
     access: record.access,
     id: record.id,
-    materialization: {
-      changeSetManifestPath: materialization.changeSetManifestPath,
-      strategy: materialization.strategy,
-    },
     source,
     target: record.target,
   };

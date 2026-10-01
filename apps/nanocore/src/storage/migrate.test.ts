@@ -107,6 +107,8 @@ const WORKSPACE_TABLES = [
   'workspace_quarantine_records',
   'workspace_reconciliation_records',
   'workspace_repository_resources',
+  'workspace_snapshot_collections',
+  'workspace_snapshot_cursors',
 ];
 
 /**
@@ -427,6 +429,7 @@ describe('database setup', () => {
         'native_environment_applied',
         'inference_loopback_credential_digest',
         'capability_loopback_credential_digest',
+        'runtime_env_check_versions_json',
       ]);
       expect(listColumnNames(coreDb, 'agent_session_runtime_binding_image_digests')).toEqual([
         'agent_session_runtime_binding_id',

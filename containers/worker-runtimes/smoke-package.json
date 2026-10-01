@@ -197,5 +197,19 @@
       "allowMissingAudit": false
     }
   },
-  "extensions": {}
+  "extensions": {
+    "openkit": {
+      "sessionWorkspace": {
+        "layout": {
+          "slots": [
+            {
+              "kind": "worktree",
+              "access": "read-write",
+              "path": "/workspace/worktrees/image-smoke"
+            }
+          ]
+        }
+      }
+    }
+  }
 }

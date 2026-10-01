@@ -75,6 +75,7 @@ for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
   const agentSessionId = `image-smoke-${runtime}`;
   const root = `/openkit/sessions/${agentSessionId}`;
   const nativeRoot = `/sandbox/image-smoke-${runtime}`;
+  const workSlot = `/workspace/worktrees/${agentSessionId}-${randomBytes(16).toString('hex')}`;
   const selector = { agentSessionId, agentSessionRuntimeBindingId: `binding-${runtime}` };
   const loopbacks = new Map();
   const integration = {
@@ -99,14 +100,6 @@ for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
     sequence: sequence++, operation, body,
   });
   try {
-    const opened = await send('session.open', {
-      ...selector, adapterId: runtime, agentSessionCompatibilityKey: 'a'.repeat(64),
-      capabilityLoopbackCredential: randomBytes(32).toString('base64url'),
-      inferenceLoopbackCredential: randomBytes(32).toString('base64url'),
-      effectiveSetupGeneration: 1, resume: null,
-      threadId: `thread-${runtime}`, workspaceId: 'image-smoke',
-    });
-    assert.equal(opened.disposition, 'succeeded', `${runtime} shim dry run open: ${JSON.stringify(opened)}`);
     const packagePath = join(root, 'config/package.json');
     await mkdir(dirname(packagePath), { recursive: true });
     const aep = structuredClone(packageFixture);
@@ -116,8 +109,17 @@ for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
     aep.agent.runtimeVersion = manifest[runtime].version;
     aep.control.adapter.targetRuntime = runtime;
     aep.runtime.binaries[1] = { id: runtime, path: `/usr/local/bin/${runtime === 'deepseek' ? 'dsh' : runtime === 'pi' ? 'openkit-pi-runtime-host' : runtime}` };
+    aep.extensions.openkit.sessionWorkspace.layout.slots[0].path = workSlot;
     await writeFile(packagePath, JSON.stringify(aep), { mode: 0o600 });
     assert.deepEqual(JSON.parse(await readFile(packagePath, 'utf8')), aep);
+    const opened = await send('session.open', {
+      ...selector, adapterId: runtime, agentSessionCompatibilityKey: 'a'.repeat(64),
+      capabilityLoopbackCredential: randomBytes(32).toString('base64url'),
+      inferenceLoopbackCredential: randomBytes(32).toString('base64url'),
+      effectiveSetupGeneration: 1, resume: null,
+      threadId: `thread-${runtime}`, workspaceId: 'image-smoke',
+    });
+    assert.equal(opened.disposition, 'succeeded', `${runtime} shim dry run open: ${JSON.stringify(opened)}`);
     const inspected = await send('session.inspect', selector);
     assert.equal(inspected.disposition, 'succeeded', `${runtime} shim dry run inspect`);
     console.log(`${runtime} shim dry run open/inspect OK`);
@@ -128,6 +130,7 @@ for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
     console.log(`${runtime} shim dry run close OK`);
     await rm(root, { recursive: true, force: true });
     await rm(nativeRoot, { recursive: true, force: true });
+    await rm(workSlot, { recursive: true, force: true });
   }
 }
 const output = '/openkit/session/image-smoke.jsonl';

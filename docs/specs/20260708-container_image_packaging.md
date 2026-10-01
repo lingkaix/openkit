@@ -248,7 +248,7 @@ Every release deployment worker image must:
 - write `/openkit/session/events.jsonl`,
 - write `/openkit/session/items.jsonl`,
 - write `/openkit/session/artifacts.jsonl`,
-- write `/openkit/session/workspace-changes.json` when workspace changes exist,
+- initialize the admitted work slot during `session.open` before starting its native runtime and expose its retained bytes to NanoHost outside-scan collection under [Workspace Synchronization](20260703-workspace_synchronization.md),
 - expose a stable worker-visible workspace root,
 - use the AEP snapshot as the source of worker-visible setup,
 - keep runtime-native config generation inside worker packages,

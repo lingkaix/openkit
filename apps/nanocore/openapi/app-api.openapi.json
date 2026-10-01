@@ -28749,6 +28749,10 @@
                   "text": {
                     "type": "string"
                   },
+                  "encoding": {
+                    "type": "string",
+                    "const": "base64"
+                  },
                   "digest": {
                     "type": "string",
                     "minLength": 1
@@ -40222,6 +40226,10 @@
                         },
                         "text": {
                           "type": "string"
+                        },
+                        "encoding": {
+                          "type": "string",
+                          "const": "base64"
                         },
                         "digest": {
                           "type": "string",
@@ -69290,5 +69298,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:a05945b0c82225d93c200bada9451562bf8ecc39587af519b8cf2ef0d4c6ea26"
+  "x-openkit-source-digest": "sha256:ea3eb85388e83bc0918aa8878915b8a56bae97565c53b94c53c212529396618a"
 }

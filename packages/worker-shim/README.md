@@ -36,13 +36,13 @@ DeepSeek retains its native home at `stateRoot/dsh-home`. Before redirecting pro
 
 ## Vault Runtime Environment
 
-`session.open.runtimeEnvironment` supplies the Core-resolved values of the AgentSession's runtime-env declarations; they are session-static inside the resident binding, as [Worker Runtime Communication](../../docs/specs/20260629-worker_runtime_communication_model.md) states. The Harness rejects names it owns, including trusted home/control bindings, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `TEMP`, `TMP`, `TMPDIR`, every `OPENKIT_` name, and every casing of `npm_config_nodedir`. Each Turn's AEP must declare exactly the delivered names, or the Turn fails at package validation. The Harness never falls back to its parent environment for these values. The values and both loopback credentials join the exact-value diagnostic, assistant-output and Git-publication redaction checks; an assistant message containing one fails the Turn.
+`session.open.runtimeEnvironment` supplies the Core-resolved values of the AgentSession's runtime-env declarations; they are session-static inside the resident binding, as [Worker Runtime Communication](../../docs/specs/20260629-worker_runtime_communication_model.md) states. The Harness rejects names it owns, including trusted home/control bindings, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `TEMP`, `TMP`, `TMPDIR`, every `OPENKIT_` name, and every casing of `npm_config_nodedir`. Each Turn's AEP must declare exactly the delivered names, or the Turn fails at package validation. The Harness never falls back to its parent environment for these values. The values and both loopback credentials join the exact-value diagnostic, assistant-output and outside workspace-collection credential checks; an assistant message containing one fails the Turn.
 
-## Workspace Publication
+## Workspace Initialization And Collection
 
-For one read-write Git workspace input, the shared supervisor validates the closed AEP source projection, rejects credential-bearing or non-HTTPS URLs before contact, and initializes only an absent or empty plain-directory target below the declared Workspace root. A retained target must keep the exact requested origin and `HEAD` baseline; tracked, untracked, ignored, and incomplete bytes are never reset, cleaned, or overwritten. Source conflicts and incomplete first initialization fail while preserving the target for explicit reconciliation. After the Turn settles and the loopback drains, the supervisor captures worker changes through an isolated index and publishes `workspace.patch` followed by `workspace-changes.json`. Before publication, it inspects every non-deleted changed path's exact stage-zero blob bytes from that index and rejects any blob containing an exact non-empty credential value of the binding. This is literal-value protection, not generic DLP or encoded-secret detection. It also rejects ambiguous inputs, hidden index state, Git filters, unsupported file modes, and incomplete publication.
+The Harness reads the imported initial AEP and verifies session scope, root, layout, and static runtime supply inside `session.open`, before native adapter startup. It initializes each new source-less writable worktree as an empty directory. A Git source uses its exact admitted commit; a retained target keeps its original origin and a valid worker HEAD, preserving tracked, untracked, ignored, and worker-committed changes. Core verifies retained source identity against the initial accepted package rather than resetting worker commits. Unsafe paths, incomplete materialization, source conflicts, and unavailable supply return a closed `workspace_materialization` startup refusal without native startup.
 
-The accepted design removes this in-Sandbox publisher; collection is the outside read-only snapshot chain, and the literal credential-value check runs in the NanoHost scan over staged blob bytes ([NanoHost Workspace Data Boundary](../../docs/specs/20260801-nanohost_workspace_data_boundary.md), [Workspace Synchronization](../../docs/specs/20260703-workspace_synchronization.md)).
+NanoCore accepts the outside NanoHost baseline before the first Turn. NanoHost owns read-only snapshot capture and the literal credential check over staged blob bytes; NanoCore owns durable capture pairs, cumulative candidates, and review handoff ([NanoHost Workspace Data Boundary](../../docs/specs/20260801-nanohost_workspace_data_boundary.md), [Workspace Synchronization](../../docs/specs/20260703-workspace_synchronization.md)). The shim has no workspace publisher, patch generator, manifest writer, or compatibility reader.
 
 ## Codex Runtime Provenance And Work Capture
 
@@ -60,12 +60,12 @@ Missing root evidence is `failed`; missing, contradictory, or changing reachable
 ## File Map
 
 - `src/harness.ts`: the poll loop, one Harness per instance id, the six operations over resident bindings, resume references, and the resident environment.
-- `src/turn.ts`: one Turn on a resident binding: AEP validation, supply and workspace materialization, route binding, worker-control readiness, native start, the Turn barrier, publication, and final status.
+- `src/turn.ts`: one Turn on a resident binding: AEP validation, session-open workspace initialization, per-Turn supply validation, route binding, worker-control readiness, native start, the Turn barrier, and final status.
 - `src/integration-client.ts`: fixed loopback listeners, standard HTTP/2 client, credential-free private Harness carriage, session loopback credentials, and Turn-bound upstream routes.
 - `src/adapter-registry.ts`: the resident adapter contract and the production registry.
 - `src/adapters/pi.ts`: the resident Pi SDK host binding, deferred open, resume proof, Turn settlement, a ready handle only after the session header a new process can resume is on disk, and stop-before-reject when an open or Turn cannot be proved idle.
 - `src/control-client.ts`, `src/transcript.ts`: worker-control envelopes and the Turn transcript.
-- `src/workspace-git.ts`: Git workspace materialization and publication.
+- `src/workspace-git.ts`: Git workspace materialization and empty writable-slot initialization.
 - `snapshots/codex-0.153.4/`: minimized primary-exec and rollout JSONL fixtures pinned to Codex `rust-v0.153.4`.
 
 ## Public Native Environment

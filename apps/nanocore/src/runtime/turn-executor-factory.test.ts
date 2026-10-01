@@ -29,9 +29,9 @@ import {
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
-import { openCoreDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -41,7 +41,10 @@ import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
+import type { VaultBackend } from '../vault/vault-backend.js';
+import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   resolveAgentEnvironmentPackageMetadata as resolveMetadata,
   resolveAgentEnvironmentPackage as resolvePackage,
@@ -91,6 +94,22 @@ import {
   reserveWorkerStorageAttachment,
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
+import { WorkspaceCollectionRecoveryCauseSchema } from './workspace-collect-wire.js';
+import {
+  buildWorkspaceInputSnapshots,
+  buildWorkspaceMaterializationRecords,
+} from './workspace-materializer.js';
+import {
+  acceptWorkspaceBaseline,
+  authorizeWorkspaceBaselineInitialization,
+  readWorkspaceSnapshotCursor,
+} from './workspace-snapshot-chain.js';
+import {
+  getWorkspaceSyncReview,
+  recordWorkspaceInputSnapshots,
+  recordWorkspaceMaterializationRecords,
+  recordWorkspaceSyncReview,
+} from './workspace-sync-records.js';
 
 const packageFixtureDb = createTestNativeEnvironmentDb();
 function preparedInput<T extends Parameters<typeof resolveMetadata>[0]>(
@@ -320,6 +339,42 @@ function anchorNanoHostMaterialization(
   backend: WorkerGovernanceBackend,
   environmentPackage: AgentEnvironmentPackage
 ): void {
+  const fixtureStore = new FsStore({ dataRoot: coreDb.dataRoot });
+  try {
+    fixtureStore.getAgentSession(environmentPackage.scope.agentSessionId);
+  } catch {
+    for (const prior of fixtureStore.listThreadAgentSessions(
+      environmentPackage.scope.workspaceId,
+      environmentPackage.scope.threadId
+    ))
+      if (prior.status !== 'closed')
+        fixtureStore.updateAgentSession(prior.id, {
+          status: 'closed',
+          updatedAt: environmentPackage.createdAt,
+        });
+    fixtureStore.createAgentSession({
+      id: environmentPackage.scope.agentSessionId,
+      agentId: environmentPackage.agent.agentId,
+      workspaceId: environmentPackage.scope.workspaceId,
+      threadId: environmentPackage.scope.threadId,
+      environmentPackageSnapshotId: environmentPackage.snapshotId,
+      status: 'busy',
+      message: null,
+      createdAt: environmentPackage.createdAt,
+      updatedAt: environmentPackage.createdAt,
+    });
+  }
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
+  try {
+    applyScopedMigrations(workspaceDb);
+    if (AgentEnvironmentPackageSchema.safeParse(environmentPackage).success)
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        environmentPackage,
+        createdAt: environmentPackage.createdAt,
+      });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
   const internal = backend as WorkerGovernanceBackend & {
     requireLeaseId(packageSnapshotId: string): string;
   };
@@ -501,6 +556,15 @@ function completeNanoHostPackage(input: {
       openkit: { ...baseOpenkit, ...inputOpenkit },
     },
   } as AgentEnvironmentPackage;
+  if (!inputOpenkit || !('workerStorage' in inputOpenkit)) {
+    (environmentPackage.extensions.openkit as Record<string, unknown>).workerStorage = {
+      ...(baseOpenkit.workerStorage as Record<string, unknown>),
+      workSlotRef: workerStorageDefaultWorkSlotRef(
+        environmentPackage.scope.workspaceId,
+        environmentPackage.scope.threadId
+      ),
+    };
+  }
   // Explicitly authored fixture changes need their own canonical key; resolver-produced AEPs bypass this fixture.
   if (!inputOpenkit || !('sessionWorkspace' in inputOpenkit)) {
     (environmentPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace =
@@ -509,10 +573,47 @@ function completeNanoHostPackage(input: {
   return environmentPackage;
 }
 
+/** Seeds an already accepted retained slot as an explicit starting fact of continuity fixtures. */
+function seedAcceptedRetainedSlot(
+  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  environmentPackage: AgentEnvironmentPackage,
+  storage: ReturnType<typeof createWorkerStorageBinding>,
+  workSlot: string
+): void {
+  const db = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
+  try {
+    applyScopedMigrations(db);
+    const identity = {
+      workspaceId: environmentPackage.scope.workspaceId,
+      storageRef: storage.storageRef,
+      scopeDigest: storage.scopeDigest,
+      attachmentGeneration: storage.attachmentGeneration,
+      sandboxId: 'historical-sandbox',
+      workSlot,
+      collectionId: 'baseline',
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      packageSnapshotId: environmentPackage.snapshotId,
+    };
+    authorizeWorkspaceBaselineInitialization(db, identity);
+    const head = {
+      tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+      manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+    };
+    acceptWorkspaceBaseline(db, identity, head, head.tree);
+  } finally {
+    db.sqlite.close();
+  }
+}
+
 /** Records NanoHost effects while optionally mutating authority during image.inspect. */
 function createFactoryNanoHostDispatch(
   effects: NanoHostSessionEffectRequest[],
-  hooks: { onInspect?: () => void } = {}
+  hooks: {
+    onInspect?: () => void;
+    onCollection?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
+  } = {}
 ): NanoHostSessionDispatch {
   return {
     async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
@@ -527,6 +628,19 @@ function createFactoryNanoHostDispatch(
       if (request.kind === 'bridge.open') {
         return { accepted: true, integrationReady: true, state: 'open' };
       }
+      if (request.kind === 'workspace.collect')
+        return hooks.onCollection
+          ? await hooks.onCollection(request)
+          : request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
       if (request.kind === 'reference.import') return { state: 'imported' };
       if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
         return { state: 'deleted' };
@@ -1250,8 +1364,8 @@ describe('createConfiguredTurnExecutor', () => {
     expect(contextRefCarriage).toBeLessThan(sandboxCreate);
     expect(sandboxCreate).toBeGreaterThanOrEqual(0);
     expect(prepareImports).toBeGreaterThan(sandboxCreate);
-    expect(referenceImport).toBeGreaterThan(launchSource?.indexOf("'session.open'") ?? -1);
-    expect(referenceImport).toBeGreaterThan(launchSource?.indexOf("'session.inspect'") ?? -1);
+    expect(referenceImport).toBeLessThan(launchSource?.indexOf("'session.open'") ?? -1);
+    expect(referenceImport).toBeLessThan(launchSource?.indexOf("'session.inspect'") ?? -1);
     expect(referenceImport).toBeLessThan(launchSource?.indexOf("'turn.start'") ?? -1);
     expect(materializeSource).not.toContain("'reference.import'");
     expect(launchSource).toContain('for (const file of pendingImports)');
@@ -1275,7 +1389,6 @@ describe('createConfiguredTurnExecutor', () => {
       'harnessBindingRef',
       'integrationReady',
       'session.open',
-      'final_status',
       'processGroupAbsent',
     ]) {
       expect(backendSource).toContain(bootstrapField);
@@ -1288,7 +1401,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(backendSource?.indexOf('final_status')).toBeLessThan(
       backendSource?.indexOf("'file.export'") ?? -1
     );
-    for (const collectionSource of [transcriptSource, workspaceSource]) {
+    for (const collectionSource of [transcriptSource]) {
       expect(collectionSource).toContain('await this.effect(');
       expect(collectionSource).toContain("'file.export'");
       for (const field of ['slot', 'relativePath', 'maxByteLength']) {
@@ -1306,102 +1419,6 @@ describe('createConfiguredTurnExecutor', () => {
       cleanupSource?.indexOf("'sandbox.delete'") ?? -1
     );
     expect(backendSource).not.toMatch(/\b(?:readFile|writeFile|copyFile|fetch)\s*\(/);
-  });
-
-  it('treats an absent optional workspace-change manifest as no changes', async () => {
-    const coreDb = createFactoryCoreDb();
-    const effects: NanoHostSessionEffectRequest[] = [];
-    const sessionDispatch: NanoHostSessionDispatch = {
-      async effect(
-        requestOrConnection: object,
-        carriedRequest?: NanoHostSessionEffectRequest
-      ): Promise<unknown> {
-        effects.push(carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest));
-        return { state: 'absent' };
-      },
-      async poll() {
-        return null;
-      },
-      async result() {},
-      async route() {
-        throw new Error('Unexpected semantic route.');
-      },
-    };
-    const runtime = createConfiguredWorkerLifecycleRuntime({
-      coreDb,
-      env: {},
-      nanoHostSessionDispatch: sessionDispatch,
-      workerControlGateway: new WorkerControlGateway(),
-    });
-    const backend = (
-      runtime.turnExecutor as unknown as {
-        readonly backend: WorkerGovernanceBackend & {
-          readonly sessions: Map<string, unknown>;
-        };
-      }
-    ).backend;
-    try {
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO nanohost_runtime_targets (
-             target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-           ) VALUES ('target_optional_workspace_changes', 'identity_optional_workspace_changes',
-                     'deployment_optional_workspace_changes', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
-        )
-        .run('2026-08-22T00:00:00.000Z');
-      const packageSnapshotId = 'aepsnap_optional_workspace_changes';
-      const environmentPackage = completeNanoHostPackage({
-        extensions: {
-          openkit: {
-            sessionWorkspace: {
-              layout: {
-                slots: [{ access: 'read-write', id: 'turn-output', path: '/openkit/session' }],
-              },
-            },
-          },
-        },
-        scope: {
-          agentSessionId: 'as_optional_workspace_changes',
-          threadId: 'thread_optional_workspace_changes',
-          turnId: 'turn_optional_workspace_changes',
-          workspaceId: 'workspace_optional_workspace_changes',
-        },
-        snapshotId: packageSnapshotId,
-        workspace: {
-          outputs: [
-            {
-              id: 'workspace-changes',
-              path: '/openkit/session',
-              registerAsArtifacts: false,
-              retention: 'sync-on-turn-end',
-            },
-          ],
-        },
-      });
-      const identity = backend.planSession(environmentPackage);
-      anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
-      backend.sessions.set(packageSnapshotId, {
-        environmentPackage,
-        identity,
-        leaseId: 'lease_optional_workspace_changes',
-        sharedHarness: { sandbox: { sandboxId: identity.backendSessionId.slice(0, 19) } },
-        terminalInspectionComplete: true,
-      });
-
-      await expect(backend.collectWorkspaceChanges(packageSnapshotId, true)).resolves.toEqual([]);
-      expect(effects).toHaveLength(1);
-      expect(effects[0]).toMatchObject({
-        input: {
-          presence: 'optional',
-          relativePath: 'workspace-changes.json',
-          slot: 'turn-output',
-        },
-        kind: 'file.export',
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
   });
 
   it('denies a fresh AgentSession before lease acquisition when RuntimeTarget is missing', async () => {
@@ -2095,20 +2112,39 @@ describe('createConfiguredTurnExecutor', () => {
    */
   async function admitIdleSupplyResident(
     label: string,
-    nativeValues?: Record<string, string>,
-    probe?: { inspection?: 'unavailable' | 'stale'; effects: NanoHostSessionEffectRequest[] }
+    options: {
+      nativeValues?: Record<string, string>;
+      inspection?: 'unavailable' | 'stale';
+      effects?: NanoHostSessionEffectRequest[];
+      vaultBackend?: () => VaultBackend;
+      configurePackage?: (
+        environmentPackage: AgentEnvironmentPackage,
+        coreDb: ReturnType<typeof createFactoryCoreDb>
+      ) => void;
+      onCollection?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
+      beforeFirstTurn?: (input: {
+        coreDb: ReturnType<typeof createFactoryCoreDb>;
+        environmentPackage: AgentEnvironmentPackage;
+        integrationRef: string;
+        effects: NanoHostSessionEffectRequest[];
+      }) => Promise<void>;
+    } = {}
   ) {
     const coreDb = createFactoryCoreDb();
-    const effects: NanoHostSessionEffectRequest[] = probe?.effects ?? [];
-    const sessionDispatch = createFactoryNanoHostDispatch(effects);
+    const effects: NanoHostSessionEffectRequest[] = options.effects ?? [];
+    const sessionDispatch = createFactoryNanoHostDispatch(
+      effects,
+      options.onCollection ? { onCollection: options.onCollection } : {}
+    );
+    const nativeValues = options.nativeValues;
     const effect = sessionDispatch.effect.bind(sessionDispatch);
-    if (probe?.inspection)
+    if (options.inspection)
       sessionDispatch.effect = async (...args) => {
         const result = await effect(...args);
         const request = (args[1] ?? args[0]) as NanoHostSessionEffectRequest;
         if (request.kind !== 'image.inspect') return result;
         const inspection = result as Record<string, unknown>;
-        if (probe.inspection === 'unavailable') {
+        if (options.inspection === 'unavailable') {
           const { environmentDefaults: _defaults, ...rest } = inspection;
           return rest;
         }
@@ -2141,6 +2177,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
     const runtime = createConfiguredWorkerLifecycleRuntime({
       coreDb,
+      ...(options.vaultBackend ? { vaultBackend: options.vaultBackend } : {}),
       env: {},
       nanoHostSessionDispatch: sessionDispatch,
       workerControlGateway: new WorkerControlGateway(),
@@ -2199,6 +2236,7 @@ describe('createConfiguredTurnExecutor', () => {
       snapshotId: `snapshot_${label}`,
     });
     authorizeNanoHostPackage(coreDb, environmentPackage);
+    options.configurePackage?.(environmentPackage, coreDb);
     bindNanoHostWorkerLineage(coreDb, environmentPackage, {
       leaseId: `lease_${label}`,
       now: '2026-09-06T00:00:00.000Z',
@@ -2232,11 +2270,11 @@ describe('createConfiguredTurnExecutor', () => {
       body: Readonly<Record<string, unknown>>
     ) => {
       let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
-      for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+      for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
         command = dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: integrationRef(),
         });
-        if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+        if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
       }
       if (!command || command.operation !== operation) {
         throw new Error(
@@ -2261,11 +2299,19 @@ describe('createConfiguredTurnExecutor', () => {
       return command;
     };
     const launch = backend.launch(materialization);
-    await settleNext('session.open', {
+    const initialOpen = await settleNext('session.open', {
       maxActiveTurns: 1,
       nativeHandleDigest: null,
       nativeHandleState: 'pending',
       state: 'open',
+    });
+    if (options.nativeValues)
+      expect(initialOpen.body.nativeEnvironment).toEqual(options.nativeValues);
+    await options.beforeFirstTurn?.({
+      coreDb,
+      environmentPackage,
+      integrationRef: integrationRef(),
+      effects,
     });
     await settleNext('turn.start', {
       nativeHandleDigest: null,
@@ -2296,6 +2342,7 @@ describe('createConfiguredTurnExecutor', () => {
     });
     await inspection;
     expect(recordedDigests).toEqual([readyDigest]);
+    const capturedSession = backend.sessions.get(environmentPackage.snapshotId);
     await backend.cleanupSession(backend.planSession(environmentPackage));
     coreDb.sqlite
       .prepare(`UPDATE scheduler_session_leases SET status = 'released' WHERE lease_id = ?`)
@@ -2308,8 +2355,919 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .all()
     ).toEqual([{ agentSessionId, digest: readyDigest }]);
-    return { backend, coreDb, environmentPackage, readyDigest, settleNext };
+    return {
+      backend,
+      coreDb,
+      environmentPackage,
+      readyDigest,
+      settleNext,
+      session: capturedSession,
+      effects,
+    };
   }
+
+  it('waits for source-less baseline completion and its durable pair before dispatching the first Turn', async () => {
+    let finish!: (result: Record<string, unknown>) => void;
+    let arrived!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    const baseline = new Promise<Record<string, unknown>>((resolve) => {
+      finish = resolve;
+    });
+    const f = await admitIdleSupplyResident('baseline_gate', {
+      nativeValues: { HELLO_NATIVE: 'hello', EMPTY_NATIVE: '' },
+      onCollection: async (request) => {
+        expect(request.input).toMatchObject({
+          mode: 'baseline',
+          acceptedBase: null,
+          previousHead: null,
+        });
+        arrived();
+        return await baseline;
+      },
+      beforeFirstTurn: async ({ coreDb, environmentPackage, integrationRef, effects }) => {
+        await entered;
+        expect(
+          dispatchNanoHostHarnessOperation(coreDb, { sandboxIntegrationBindingRef: integrationRef })
+        ).toBeNull();
+        expect(
+          effects.filter((effect) => effect.kind === 'reference.import').length
+        ).toBeGreaterThan(0);
+        const db = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
+        try {
+          expect(
+            db.sqlite
+              .prepare('SELECT accepted_base_json, head_json FROM workspace_snapshot_cursors')
+              .get()
+          ).toEqual({ accepted_base_json: null, head_json: null });
+        } finally {
+          db.sqlite.close();
+        }
+        finish({
+          outcome: 'baseline',
+          head: {
+            tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+            manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          },
+        });
+      },
+    });
+    try {
+      const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+      try {
+        const row = db.sqlite
+          .prepare('SELECT accepted_base_json, head_json FROM workspace_snapshot_cursors')
+          .get() as { accepted_base_json: string; head_json: string };
+        expect(JSON.parse(row.accepted_base_json)).toEqual({
+          tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+          manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+        });
+        expect(row.head_json).toBe(row.accepted_base_json);
+      } finally {
+        db.sqlite.close();
+      }
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+  it('derives the baseline from the exact Core commit rather than HEAD or dirty bytes and refuses unavailable sources', async () => {
+    let measuredTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+    const f = await admitIdleSupplyResident('expected_tree', {
+      onCollection: async () => ({
+        outcome: 'baseline',
+        head: { tree: measuredTree, manifest: '2'.repeat(40) },
+      }),
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'n6-expected-source-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repositoryPath, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    git('init', '--object-format=sha1');
+    git('config', 'user.email', 'fixture@example.invalid');
+    git('config', 'user.name', 'Fixture');
+    writeFileSync(join(repositoryPath, 'file.txt'), 'accepted source');
+    git('add', '.');
+    git('commit', '-m', 'accepted');
+    const commit = git('rev-parse', 'HEAD');
+    measuredTree = git('rev-parse', `${commit}^{tree}`);
+    writeFileSync(join(repositoryPath, 'file.txt'), 'later commit');
+    git('add', '.');
+    git('commit', '-m', 'later');
+    writeFileSync(join(repositoryPath, 'file.txt'), 'dirty current bytes');
+    const collector = f.backend as unknown as {
+      ensureWorkspaceBaseline(session: unknown, opensNewBinding: boolean): Promise<void>;
+      workspaceCollectionIdentity(
+        session: unknown,
+        id: string
+      ): import('./workspace-snapshot-chain.js').WorkspaceCollectionIdentity;
+    };
+    const real = f.session as { environmentPackage: AgentEnvironmentPackage };
+    const session = {
+      ...real,
+      environmentPackage: {
+        ...real.environmentPackage,
+        workspace: {
+          ...real.environmentPackage.workspace,
+          inputs: [
+            {
+              id: 'repo',
+              access: 'read-write',
+              source: { kind: 'git', commit, url: 'https://example.invalid/repository.git' },
+            },
+          ],
+        },
+      },
+    };
+    const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+    const initialize = () => {
+      db.sqlite.exec(
+        'DELETE FROM workspace_snapshot_collections; DELETE FROM workspace_snapshot_cursors;'
+      );
+      authorizeWorkspaceBaselineInitialization(
+        db,
+        collector.workspaceCollectionIdentity(session, 'baseline')
+      );
+    };
+    try {
+      upsertWorkspaceRepositoryResource(db, {
+        workspaceId: f.environmentPackage.scope.workspaceId,
+        resourceId: 'repo',
+        displayName: 'Initial source',
+        localPath: repositoryPath,
+        workspaceExists: () => true,
+      });
+      initialize();
+      await collector.ensureWorkspaceBaseline(session, true);
+      expect(
+        readWorkspaceSnapshotCursor(db, collector.workspaceCollectionIdentity(session, 'baseline'))
+          ?.acceptedBase.tree
+      ).toBe(measuredTree);
+      expect(git('rev-parse', 'HEAD')).not.toBe(commit);
+      expect(readFileSync(join(repositoryPath, 'file.txt'), 'utf8')).toBe('dirty current bytes');
+      for (const source of [
+        { kind: 'git', commit: 'f'.repeat(40) },
+        { kind: 'git', commit: 'f'.repeat(64) },
+        { kind: 'filesystem', commit },
+      ]) {
+        initialize();
+        const invalid = {
+          ...session,
+          environmentPackage: {
+            ...session.environmentPackage,
+            workspace: {
+              ...session.environmentPackage.workspace,
+              inputs: [{ ...session.environmentPackage.workspace.inputs[0], source }],
+            },
+          },
+        };
+        const scans = f.effects.filter((effect) => effect.kind === 'workspace.collect').length;
+        await expect(collector.ensureWorkspaceBaseline(invalid, true)).rejects.toThrow(
+          'baseline_source_unavailable'
+        );
+        expect(f.effects.filter((effect) => effect.kind === 'workspace.collect').length).toBe(
+          scans
+        );
+      }
+      initialize();
+      measuredTree = 'e'.repeat(40);
+      await expect(collector.ensureWorkspaceBaseline(session, true)).rejects.toThrow(
+        'baseline_mismatch'
+      );
+      expect(
+        readWorkspaceSnapshotCursor(db, collector.workspaceCollectionIdentity(session, 'baseline'))
+      ).toBeNull();
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+  it.each([
+    'turn-end',
+    'release',
+    'successor',
+  ] as const)('waits for %s collection before allowing its lifecycle transition', async (boundary) => {
+    let finish!: (result: Record<string, unknown>) => void;
+    let arrived!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    const capture = new Promise<Record<string, unknown>>((resolve) => {
+      finish = resolve;
+    });
+    const f = await admitIdleSupplyResident(`capture_${boundary}`, {
+      onCollection: async (request) => {
+        if (request.input.mode === 'baseline')
+          return {
+            outcome: 'baseline',
+            head: { tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', manifest: '2'.repeat(40) },
+          };
+        expect(request.input.mode).toBe('capture');
+        arrived();
+        return await capture;
+      },
+    });
+    const backend = f.backend as typeof f.backend & { readonly sessions: Map<string, unknown> };
+    const session = f.session as { nativeSessionReusable: boolean };
+    backend.sessions.set(f.environmentPackage.snapshotId, session);
+    let settled = false;
+    try {
+      const operation =
+        boundary === 'turn-end'
+          ? backend.collectWorkspaceChanges!(f.environmentPackage.snapshotId, true)
+          : boundary === 'release'
+            ? backend.cleanupSession(backend.planSession(f.environmentPackage), {
+                failedCloseout: true,
+              })
+            : backend.prepareAgentSessionContinuity!({
+                agentSessionCompatibilityKey: sessionCompatibilityDigest(f.environmentPackage),
+                agentSessionId: f.environmentPackage.scope.agentSessionId,
+                environmentPackage: f.environmentPackage,
+                reuseAllowed: false,
+                threadId: f.environmentPackage.scope.threadId,
+                workspaceId: f.environmentPackage.scope.workspaceId,
+              });
+      void operation.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+      await entered;
+      expect(settled).toBe(false);
+      const integration = f.coreDb.sqlite
+        .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
+        .get() as { ref: string };
+      expect(
+        dispatchNanoHostHarnessOperation(f.coreDb, {
+          sandboxIntegrationBindingRef: integration.ref,
+        })
+      ).toBeNull();
+      finish({ outcome: 'no_new_head', unstable: false });
+      if (boundary !== 'turn-end')
+        await f.settleNext('session.close', { state: 'closed', privateState: 'absent' });
+      await operation;
+      expect(settled).toBe(true);
+      expect(
+        f.effects.filter(
+          (effect) => effect.kind === 'workspace.collect' && effect.input.mode === 'baseline'
+        )
+      ).toHaveLength(1);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+  it.each([
+    { destination: false, format: 'text' },
+    { destination: true, format: 'text' },
+    { destination: true, format: 'binary' },
+    { destination: true, format: 'invalid-utf8' },
+  ])('retains exact cumulative candidate bytes with destination=$destination format=$format and independent review head', async ({
+    destination,
+    format,
+  }) => {
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'n6-review-destination-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repositoryPath, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    git('init');
+    git('config', 'user.email', 'fixture@example.invalid');
+    git('config', 'user.name', 'Fixture');
+    writeFileSync(
+      join(repositoryPath, 'file.txt'),
+      format === 'binary'
+        ? Buffer.from([97, 0, 10])
+        : format === 'invalid-utf8'
+          ? Buffer.from([97, 255, 10])
+          : 'base\n'
+    );
+    git('add', '.');
+    git('commit', '-m', 'base');
+    const commit = git('rev-parse', 'HEAD');
+    const expectedTree = destination
+      ? git('rev-parse', 'HEAD^{tree}')
+      : '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+    writeFileSync(
+      join(repositoryPath, 'file.txt'),
+      format === 'binary'
+        ? Buffer.from([98, 0, 10])
+        : format === 'invalid-utf8'
+          ? Buffer.from([98, 255, 10])
+          : 'base\nfirst\n'
+    );
+    let bytes = execFileSync('git', [
+      '-C',
+      repositoryPath,
+      'diff',
+      '--binary',
+      '--full-index',
+      '--no-renames',
+    ]);
+    git('restore', '.');
+    let serial = 1;
+    let captureEmpty = false;
+    const f = await admitIdleSupplyResident(`candidate_${destination}_${format}`, {
+      ...(destination
+        ? {
+            configurePackage: (
+              env: AgentEnvironmentPackage,
+              coreDb: ReturnType<typeof createFactoryCoreDb>
+            ) => {
+              env.workspace.inputs = [
+                {
+                  id: 'repo',
+                  kind: 'repository',
+                  access: 'read-write',
+                  target: `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(env.scope.workspaceId, env.scope.threadId)}`,
+                  source: {
+                    kind: 'git',
+                    sourceId: 'source-repo',
+                    url: 'https://example.invalid/repository.git',
+                    commit,
+                  },
+                },
+              ];
+              (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+                planSessionWorkspaceMaterialization({ environmentPackage: env });
+              const db = openWorkspaceDb(coreDb.dataRoot, env.scope.workspaceId);
+              applyScopedMigrations(db);
+              try {
+                upsertWorkspaceRepositoryResource(db, {
+                  workspaceId: env.scope.workspaceId,
+                  resourceId: 'repo',
+                  displayName: 'Existing destination',
+                  localPath: repositoryPath,
+                  workspaceExists: () => true,
+                });
+              } finally {
+                db.sqlite.close();
+              }
+            },
+          }
+        : {}),
+      onCollection: async (request) => {
+        if (request.input.mode === 'baseline')
+          return { outcome: 'baseline', head: { tree: expectedTree, manifest: '2'.repeat(40) } };
+        if (captureEmpty)
+          return {
+            outcome: 'empty',
+            head: request.input.acceptedBase,
+            previousHead: request.input.previousHead,
+            acceptedBase: request.input.acceptedBase,
+            unstable: false,
+          };
+        const stagingPath = join(
+          mkdtempSync(join(tmpdir(), 'openkit-nanocore-file-export-')),
+          'complete'
+        );
+        writeFileSync(stagingPath, bytes);
+        serial += 1;
+        return {
+          outcome: 'candidate',
+          head: { tree: String(serial + 1).repeat(40), manifest: String(serial + 2).repeat(40) },
+          previousHead: request.input.previousHead,
+          acceptedBase: request.input.acceptedBase,
+          unstable: false,
+          byteLength: bytes.length,
+          sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          stagingPath,
+        };
+      },
+    });
+    const collector = f.backend as unknown as {
+      collectWorkspaceSnapshot(
+        session: unknown,
+        boundary: 'turn-end' | 'release' | 'successor'
+      ): Promise<import('./worker-governance-backend.js').WorkerGovernanceWorkspaceChangeRecord[]>;
+      setWorkspaceCollectionPublisher(publisher: (...args: unknown[]) => Promise<void>): void;
+    };
+    const published = vi.fn(async () => {});
+    collector.setWorkspaceCollectionPublisher(published);
+    const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+    try {
+      const firstCollection = collector.collectWorkspaceSnapshot(f.session, 'turn-end');
+      await expect(firstCollection).resolves.toHaveLength(destination ? 1 : 0);
+      const first = await firstCollection;
+      const row = db.sqlite
+        .prepare('SELECT candidate, result_json FROM workspace_snapshot_collections')
+        .get() as { candidate: Buffer; result_json: string };
+      expect(row.candidate).toEqual(bytes);
+      expect(JSON.parse(row.result_json)).toMatchObject({
+        credentialCheck: 'passed',
+        head: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
+      });
+      const scans = f.effects.length;
+      expect(await collector.collectWorkspaceSnapshot(f.session, 'turn-end')).toEqual(first);
+      expect(f.effects).toHaveLength(scans);
+      if (destination) {
+        expect(first[0]!.changeSet.base.commit).toBe(commit);
+        expect(first[0]!.changeSet.createdAt).toBe(JSON.parse(row.result_json).collectedAt);
+        expect(first[0]!.changeSet.createdAt).not.toBe(f.environmentPackage.createdAt);
+        expect(first[0]!.changeSet.head.commit).toBeNull();
+        const inputs = recordWorkspaceInputSnapshots(
+          db,
+          buildWorkspaceInputSnapshots({
+            backendKind: 'openshell',
+            backendCapabilities: [],
+            createdAt: f.environmentPackage.createdAt,
+            environmentPackage: f.environmentPackage,
+          })
+        );
+        recordWorkspaceMaterializationRecords(
+          db,
+          buildWorkspaceMaterializationRecords({
+            createdAt: f.environmentPackage.createdAt,
+            inputSnapshots: inputs,
+            materialization: {
+              backendKind: 'openshell',
+              packageSnapshotId: f.environmentPackage.snapshotId,
+              requiredCapabilities: [],
+              workspaceInputs: f.environmentPackage.workspace.inputs.map((input) => ({
+                id: input.id,
+                target: input.target!,
+              })),
+            },
+          })
+        );
+        recordWorkspaceSyncReview(db, {
+          item: {
+            changeSet: first[0]!.changeSet,
+            patchPayload: first[0]!.patchPayload,
+            review: first[0]!.review,
+            artifactId: `ar_${format}`,
+          },
+        });
+        const stored = getWorkspaceSyncReview(
+          db,
+          f.environmentPackage.scope.workspaceId,
+          first[0]!.review.id
+        )!;
+        if (format === 'binary') {
+          expect(stored.changeSet.changedPaths[0]!.binaryReview).toMatchObject({
+            mode: 'artifact-only',
+            digest: stored.changeSet.patch!.digest,
+            bytes: bytes.length,
+            mediaType: 'application/octet-stream',
+          });
+          expect(stored.changeSet.changedPaths[0]!.binaryReview!.summary).toContain(
+            'candidate artifact'
+          );
+          expect(stored.review.validation).toContainEqual({
+            command: 'workspace.binary_artifact_only',
+            ref: 'workspace-path:file.txt',
+            status: 'skipped',
+          });
+          expect(stored.review.validation).toContainEqual({
+            command: 'workspace-snapshot-apply',
+            ref: null,
+            status: 'failed',
+          });
+          expect(stored.review.staging.branch).toBeNull();
+        } else expect(stored.review.staging.branch).not.toBeNull();
+
+        first[0]!.changeSet.head.commit = 'd'.repeat(40);
+        const retained = db.sqlite
+          .prepare('SELECT head_json AS head FROM workspace_snapshot_cursors')
+          .get() as { head: string };
+        expect(JSON.parse(retained.head)).toEqual({
+          tree: '3'.repeat(40),
+          manifest: '4'.repeat(40),
+        });
+      }
+      bytes = Buffer.from('openkit-full-mode-delta\n0644 0600 8 file.txt\n');
+      const unsupported = await collector.collectWorkspaceSnapshot(f.session, 'release');
+      if (destination) {
+        expect(unsupported[0]!.changeSet.base.commit).toBe(commit);
+        expect(unsupported[0]!.review.staging.branch).toBeNull();
+        expect(unsupported[0]!.review.validation).toContainEqual({
+          command: 'workspace-snapshot-apply',
+          status: 'failed',
+          ref: null,
+        });
+        expect(published).toHaveBeenCalledOnce();
+      } else expect(unsupported).toEqual([]);
+      const cursor = db.sqlite
+        .prepare('SELECT head_json AS head FROM workspace_snapshot_cursors')
+        .get() as { head: string };
+      expect(JSON.parse(cursor.head)).toEqual({ tree: '4'.repeat(40), manifest: '5'.repeat(40) });
+      captureEmpty = true;
+      await expect(collector.collectWorkspaceSnapshot(f.session, 'successor')).resolves.toEqual([]);
+      const manifests = db.sqlite
+        .prepare('SELECT payload_json FROM worker_output_manifests')
+        .all() as { payload_json: string }[];
+      expect(manifests).toHaveLength(destination ? 2 : 0);
+      if (destination)
+        expect(
+          manifests
+            .map((row) => JSON.parse(row.payload_json))
+            .find((manifest) => manifest.changedPaths.length === 0)
+        ).toMatchObject({
+          changedPaths: [],
+          inputSnapshotId: `wis_${f.environmentPackage.snapshotId}_repo`,
+          materializationRecordId: `wmr_${f.environmentPackage.snapshotId}_repo`,
+          strategy: 'git',
+        });
+      const emptyScans = f.effects.length;
+      await expect(collector.collectWorkspaceSnapshot(f.session, 'successor')).resolves.toEqual([]);
+      expect(f.effects).toHaveLength(emptyScans);
+      expect(
+        db.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_output_manifests').get()
+      ).toEqual({ count: destination ? 2 : 0 });
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+  it('preserves every closed collection failure without a cursor advance, receipt, or review', async () => {
+    let failure: Record<string, unknown> = { outcome: 'effect_failed' };
+    let baselineFails = false;
+    const f = await admitIdleSupplyResident('closed_failures', {
+      onCollection: async (request) =>
+        request.input.mode === 'baseline' && !baselineFails
+          ? {
+              outcome: 'baseline',
+              head: { tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', manifest: '2'.repeat(40) },
+            }
+          : failure,
+    });
+    const collector = f.backend as unknown as {
+      collectWorkspaceSnapshot(session: unknown, boundary: 'turn-end'): Promise<unknown>;
+      ensureWorkspaceBaseline(session: unknown, opensNewBinding: boolean): Promise<void>;
+    };
+    const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+    try {
+      const before = db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all();
+      for (const result of [
+        { outcome: 'credential_hit' },
+        { outcome: 'effect_failed' },
+        ...WorkspaceCollectionRecoveryCauseSchema.options.map((cause) => ({
+          outcome: 'recovery_required',
+          cause,
+        })),
+      ]) {
+        failure = result;
+        await expect(
+          collector.collectWorkspaceSnapshot(f.session, 'turn-end')
+        ).rejects.toMatchObject({ ...result, name: 'WorkspaceCollectionError' });
+        expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(before);
+        expect(
+          db.sqlite.prepare('SELECT COUNT(*) AS count FROM workspace_snapshot_collections').get()
+        ).toEqual({ count: 0 });
+        expect(
+          db.sqlite.prepare('SELECT COUNT(*) AS count FROM staged_workspace_reviews').get()
+        ).toEqual({ count: 0 });
+      }
+      baselineFails = true;
+      db.sqlite.exec(
+        'UPDATE workspace_snapshot_cursors SET accepted_base_json = NULL, head_json = NULL, accepted_commit = NULL'
+      );
+      for (const result of [
+        { outcome: 'credential_hit' },
+        { outcome: 'effect_failed' },
+        ...WorkspaceCollectionRecoveryCauseSchema.options.map((cause) => ({
+          outcome: 'recovery_required',
+          cause,
+        })),
+      ]) {
+        failure = result;
+        await expect(collector.ensureWorkspaceBaseline(f.session, true)).rejects.toMatchObject({
+          ...result,
+          name: 'WorkspaceCollectionError',
+        });
+        expect(
+          db.sqlite
+            .prepare('SELECT accepted_base_json, head_json FROM workspace_snapshot_cursors')
+            .get()
+        ).toEqual({ accepted_base_json: null, head_json: null });
+      }
+      await expect(collector.collectWorkspaceSnapshot(f.session, 'turn-end')).rejects.toMatchObject(
+        { outcome: 'recovery_required', cause: 'accepted_base_unknown' }
+      );
+      const ids = f.effects
+        .filter((effect) => effect.kind === 'workspace.collect')
+        .map((effect) => effect.requestId);
+      expect(new Set(ids).size).toBe(ids.length);
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+  it('waits for an unfinished prior Turn collection before reusing the binding and replays its committed receipt', async () => {
+    let finish!: (result: Record<string, unknown>) => void;
+    let arrived!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    const capture = new Promise<Record<string, unknown>>((resolve) => {
+      finish = resolve;
+    });
+    const f = await admitIdleSupplyResident('prior_capture', {
+      onCollection: async (request) => {
+        if (request.input.mode === 'baseline')
+          return {
+            outcome: 'baseline',
+            head: { tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', manifest: '2'.repeat(40) },
+          };
+        expect(request.input.collectionId).toMatch(/^turn-end-/);
+        arrived();
+        return await capture;
+      },
+    });
+    const collector = f.backend as unknown as {
+      ensureWorkspaceBaseline(session: unknown, opensNewBinding: boolean): Promise<void>;
+    };
+    const real = f.session as { environmentPackage: AgentEnvironmentPackage };
+    const next = {
+      ...real,
+      environmentPackage: {
+        ...real.environmentPackage,
+        snapshotId: 'next-package',
+        scope: { ...real.environmentPackage.scope, turnId: 'next-turn' },
+      },
+    };
+    let settled = false;
+    try {
+      const gate = collector.ensureWorkspaceBaseline(next, false);
+      void gate.then(() => {
+        settled = true;
+      });
+      await entered;
+      expect(settled).toBe(false);
+      finish({ outcome: 'no_new_head', unstable: false });
+      await gate;
+      expect(settled).toBe(true);
+      const count = f.effects.length;
+      await collector.ensureWorkspaceBaseline(next, false);
+      expect(f.effects).toHaveLength(count);
+      expect(
+        f.effects.filter(
+          (effect) => effect.kind === 'workspace.collect' && effect.input.mode === 'baseline'
+        )
+      ).toHaveLength(1);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+  it('restores the exact injected Vault version and refuses unavailable or incomplete evidence', async () => {
+    const resolve = vi.fn((input: { referenceId: string; version?: number }) =>
+      input.version === 7 ? 'original-injected-value' : 'rotated-current-value'
+    );
+    const vault = {
+      health: vi.fn(() => ({
+        kind: 'encrypted-file',
+        state: 'available',
+        diagnostic: 'available',
+      })),
+      resolve,
+    } as unknown as VaultBackend;
+    const f = await admitIdleSupplyResident('versions', { vaultBackend: () => vault });
+    try {
+      const collector = f.backend as unknown as {
+        restoreCollectionRuntimeEnvironment(session: unknown): Record<string, string>;
+      };
+      const real = f.session as {
+        agentSessionRuntimeBindingId: string;
+        environmentPackage: AgentEnvironmentPackage;
+      };
+      const session = {
+        ...real,
+        environmentPackage: {
+          ...real.environmentPackage,
+          credentials: {
+            ...real.environmentPackage.credentials,
+            declarations: [{ visibility: 'runtime-env', targetEnvVarName: 'TOKEN' }],
+          },
+        },
+      };
+      const write = (versions: string | null) =>
+        f.coreDb.sqlite
+          .prepare(
+            'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
+          )
+          .run(versions, real.agentSessionRuntimeBindingId);
+      write(
+        JSON.stringify([
+          { targetEnvVarName: 'TOKEN', vaultReferenceId: 'version-ref', materialVersion: 7 },
+        ])
+      );
+      expect(collector.restoreCollectionRuntimeEnvironment(session)).toEqual({
+        TOKEN: 'original-injected-value',
+      });
+      expect(resolve).toHaveBeenCalledExactlyOnceWith({ referenceId: 'version-ref', version: 7 });
+      for (const versions of [
+        null,
+        'invalid',
+        '{}',
+        '[null]',
+        '[]',
+        JSON.stringify([
+          { targetEnvVarName: 'TOKEN', vaultReferenceId: 'version-ref', materialVersion: 0 },
+        ]),
+        JSON.stringify([
+          {
+            targetEnvVarName: 'TOKEN',
+            vaultReferenceId: 'version-ref',
+            materialVersion: Number.MAX_SAFE_INTEGER + 1,
+          },
+        ]),
+        JSON.stringify([{ targetEnvVarName: 'TOKEN', vaultReferenceId: '', materialVersion: 7 }]),
+      ]) {
+        write(versions);
+        expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
+          'check_values_unavailable'
+        );
+      }
+      write(
+        JSON.stringify([
+          { targetEnvVarName: 'TOKEN', vaultReferenceId: 'version-ref', materialVersion: 7 },
+        ])
+      );
+      vi.mocked(vault.health).mockReturnValueOnce({
+        kind: 'encrypted-file',
+        state: 'unavailable',
+        diagnostic: 'unavailable',
+      } as ReturnType<VaultBackend['health']>);
+      expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
+        'check_values_unavailable'
+      );
+      resolve.mockImplementation(() => {
+        throw new Error('version expired');
+      });
+      expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
+        'check_values_unavailable'
+      );
+      expect(
+        JSON.stringify(
+          f.coreDb.sqlite
+            .prepare('SELECT runtime_env_check_versions_json FROM agent_session_runtime_bindings')
+            .all()
+        )
+      ).not.toContain('original-injected-value');
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+  it('constructs collection from exact attachment proof and refuses oversized or incomplete check commands', async () => {
+    const f = await admitIdleSupplyResident('association');
+    try {
+      const collector = f.backend as unknown as {
+        workspaceCollectionIdentity(
+          session: unknown,
+          id: string
+        ): import('./workspace-snapshot-chain.js').WorkspaceCollectionIdentity;
+        workspaceCollectionCommand(
+          session: unknown,
+          identity: unknown,
+          mode: 'capture',
+          cursor: unknown
+        ): Record<string, unknown>;
+      };
+      const real = f.session as {
+        environmentPackage: AgentEnvironmentPackage;
+        runtimeEnvironment: Record<string, string> | null;
+        sharedHarness: {
+          sandbox: {
+            sandboxBindingRef: string;
+            workerStorageBinding: { attachmentGeneration: number; scopeDigest: string };
+          };
+        };
+      };
+      const identity = collector.workspaceCollectionIdentity(real, 'capture');
+      const cursor = {
+        acceptedBase: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
+        head: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
+      };
+      expect(collector.workspaceCollectionCommand(real, identity, 'capture', cursor)).toMatchObject(
+        {
+          storageRef: identity.storageRef,
+          scopeDigest: identity.scopeDigest,
+          attachmentGeneration: identity.attachmentGeneration,
+          sandboxId: identity.sandboxId,
+          workSlot: identity.workSlot,
+          collectionId: identity.collectionId,
+          mode: 'capture',
+          acceptedBase: cursor.acceptedBase,
+          previousHead: cursor.head,
+          checkValues: {
+            runtimeEnv: [],
+            loopbackDigests: [
+              expect.stringMatching(/^[0-9a-f]{64}$/),
+              expect.stringMatching(/^[0-9a-f]{64}$/),
+            ],
+          },
+        }
+      );
+      for (const changed of [
+        {
+          attachmentGeneration:
+            real.sharedHarness.sandbox.workerStorageBinding.attachmentGeneration + 1,
+        },
+        { scopeDigest: `sha256:${'f'.repeat(64)}` },
+      ]) {
+        const forged = {
+          ...real,
+          sharedHarness: {
+            ...real.sharedHarness,
+            sandbox: {
+              ...real.sharedHarness.sandbox,
+              workerStorageBinding: {
+                ...real.sharedHarness.sandbox.workerStorageBinding,
+                ...changed,
+              },
+            },
+          },
+        };
+        expect(() => collector.workspaceCollectionIdentity(forged, 'capture')).toThrow(
+          'association'
+        );
+      }
+      for (const scope of [{ workspaceId: 'foreign' }, { threadId: 'foreign' }])
+        expect(() =>
+          collector.workspaceCollectionIdentity(
+            {
+              ...real,
+              environmentPackage: {
+                ...real.environmentPackage,
+                scope: { ...real.environmentPackage.scope, ...scope },
+              },
+            },
+            'capture'
+          )
+        ).toThrow('association');
+      expect(() =>
+        collector.workspaceCollectionIdentity(
+          {
+            ...real,
+            sharedHarness: {
+              ...real.sharedHarness,
+              sandbox: { ...real.sharedHarness.sandbox, sandboxBindingRef: 'foreign' },
+            },
+          },
+          'capture'
+        )
+      ).toThrow('association');
+      expect(() =>
+        collector.workspaceCollectionCommand(
+          {
+            ...real,
+            runtimeEnvironment: Object.fromEntries(
+              Array.from({ length: 128 }, (_, i) => [`VALUE_${i}`, 'x'.repeat(65536)])
+            ),
+          },
+          identity,
+          'capture',
+          cursor
+        )
+      ).toThrow('command_too_large');
+      expect(() =>
+        collector.workspaceCollectionCommand(
+          {
+            ...real,
+            runtimeEnvironment: Object.fromEntries(
+              Array.from({ length: 129 }, (_, i) => [`VALUE_${i}`, 'x'])
+            ),
+          },
+          identity,
+          'capture',
+          cursor
+        )
+      ).toThrow('check_values_unavailable');
+      expect(() =>
+        collector.workspaceCollectionCommand(
+          { ...real, runtimeEnvironment: { VALUE: 'nul\0' } },
+          identity,
+          'capture',
+          cursor
+        )
+      ).toThrow('check_values_unavailable');
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+  it('replays committed capture without another native scan or resolving unavailable check values', async () => {
+    const f = await admitIdleSupplyResident('capture_replay');
+    try {
+      const collector = f.backend as unknown as {
+        collectWorkspaceSnapshot(session: unknown, boundary: 'turn-end'): Promise<unknown[]>;
+      };
+      expect(await collector.collectWorkspaceSnapshot(f.session, 'turn-end')).toEqual([]);
+      const before = f.effects.length;
+      const session = { ...(f.session as object), runtimeEnvironment: null };
+      f.coreDb.sqlite
+        .prepare('UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = NULL')
+        .run();
+      expect(await collector.collectWorkspaceSnapshot(session, 'turn-end')).toEqual([]);
+      expect(f.effects).toHaveLength(before);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
 
   function sessionCompatibilityDigest(environmentPackage: AgentEnvironmentPackage): string {
     return (
@@ -2383,7 +3341,7 @@ describe('createConfiguredTurnExecutor', () => {
   ] as const)('refuses %s confirmed default inspection before Sandbox creation without repeating the authored build', async (inspection) => {
     const effects: NanoHostSessionEffectRequest[] = [];
     await expect(
-      admitIdleSupplyResident(`native_${inspection}`, {}, { inspection, effects })
+      admitIdleSupplyResident(`native_${inspection}`, { nativeValues: {}, inspection, effects })
     ).rejects.toThrow('different digest');
     expect(effects.filter((effect) => effect.kind === 'image.acquire')).toHaveLength(1);
     expect(effects.map((effect) => effect.kind)).not.toContain('image.build');
@@ -2391,7 +3349,10 @@ describe('createConfiguredTurnExecutor', () => {
   });
   it('materializes the confirmed measured image instead of repeating its authored build', async () => {
     const effects: NanoHostSessionEffectRequest[] = [];
-    const admitted = await admitIdleSupplyResident('native_confirmed_build', {}, { effects });
+    const admitted = await admitIdleSupplyResident('native_confirmed_build', {
+      nativeValues: {},
+      effects,
+    });
     try {
       expect(effects.filter((effect) => effect.kind === 'image.acquire')).toEqual([
         expect.objectContaining({
@@ -2471,7 +3432,7 @@ describe('createConfiguredTurnExecutor', () => {
   ] as const)('replaces the resident binding when only %s changes and resumes its exact recorded pair', async (change) => {
     const admitted = await admitIdleSupplyResident(
       'supply_mcp',
-      change === 'native' ? {} : undefined
+      change === 'native' ? { nativeValues: {} } : {}
     );
     const withChange = change === 'native' ? packageWithChangedNative : packageWithAddedMcp;
     const { backend, coreDb, environmentPackage, readyDigest, settleNext } = admitted;
@@ -2614,6 +3575,18 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'bridge.open') {
           return { accepted: true, integrationReady: true, state: 'open' };
         }
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+        if (request.kind === 'reference.import') return { state: 'imported' };
         return { state: 'deleted' };
       },
       async poll() {
@@ -2762,7 +3735,7 @@ describe('createConfiguredTurnExecutor', () => {
         body: Readonly<Record<string, unknown>>
       ) => {
         let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
-        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+        for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
           const integration = coreDb.sqlite
             .prepare(
               `SELECT sandbox_integration_binding_ref AS integrationRef
@@ -2774,7 +3747,7 @@ describe('createConfiguredTurnExecutor', () => {
               sandboxIntegrationBindingRef: integration.integrationRef,
             });
           }
-          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+          if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
         }
         if (!command || command.operation !== operation) {
           throw new Error(`Expected queued ${operation} Harness command.`);
@@ -2803,6 +3776,7 @@ describe('createConfiguredTurnExecutor', () => {
         firstRuntime.acceptNanoHostHarnessResult(result);
       };
       anchorNanoHostMaterialization(coreDb, firstBackend, environmentPackage);
+      seedAcceptedRetainedSlot(coreDb, environmentPackage, idleStorage, retainedWorkSlotRef);
       const materialization = await firstBackend.materialize(environmentPackage, {
         workerStorageChoice: {
           expectedRevision: idleStorage.revision,
@@ -3051,6 +4025,9 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'bridge.open') {
           return { accepted: true, integrationReady: true, state: 'open' };
         }
+        if (request.kind === 'reference.import') return { state: 'imported' };
+        if (request.kind === 'workspace.collect')
+          return { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
       },
       async poll() {
@@ -3189,6 +4166,7 @@ describe('createConfiguredTurnExecutor', () => {
         runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
       ).backend;
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+      seedAcceptedRetainedSlot(coreDb, environmentPackage, idle, selectedWorkSlotRef);
       await backend.materialize(environmentPackage, {
         workerStorageChoice: {
           expectedRevision: idle.revision,
@@ -3328,11 +4306,11 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .get() as { readonly integrationRef: string };
       let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
-      for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+      for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
         command = dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: integration.integrationRef,
         });
-        if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+        if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
       }
       expect(command?.operation).toBe('session.open');
       // The selected slot reaches the worker through the AEP; `session.open` carries no storage.
@@ -4559,7 +5537,16 @@ describe('createConfiguredTurnExecutor', () => {
           capabilities: {},
           control: { adapter: { targetRuntime: 'codex' } },
           credentials: {},
-          extensions: { openkit: { workerStorage: { workSlotRef: `wsl_${turnId}` } } },
+          extensions: {
+            openkit: {
+              workerStorage: {
+                workSlotRef: workerStorageDefaultWorkSlotRef(
+                  'workspace-compatible',
+                  `thread-${turnId}`
+                ),
+              },
+            },
+          },
           llm: {},
           policy: {
             filesystem: {
@@ -4786,6 +5773,17 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'sandbox.create') {
           return nanoHostSandboxCreated(request);
         }
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         if (request.kind === 'reference.import') return { state: 'imported' };
         if (request.kind === 'bridge.open') {
           return { accepted: true, integrationReady: true, state: 'open' };
@@ -4838,7 +5836,31 @@ describe('createConfiguredTurnExecutor', () => {
       });
       environmentPackage.control.adapter.targetRuntime = adapterId;
       environmentPackage.agent.runtimeVersion = adapterId === 'pi' ? '0.85.1' : '0.153.4';
+      let fixtureRepositoryPath: string | null = null;
       if (adapterId === 'pi' && purpose === 'completed') {
+        fixtureRepositoryPath = mkdtempSync(join(tmpdir(), 'n6-comparable-repository-'));
+        execFileSync('git', ['init', '--object-format=sha1', fixtureRepositoryPath], {
+          stdio: 'ignore',
+        });
+        execFileSync(
+          'git',
+          [
+            '-C',
+            fixtureRepositoryPath,
+            '-c',
+            'user.name=Fixture',
+            '-c',
+            'user.email=fixture@example.invalid',
+            'commit',
+            '--allow-empty',
+            '-m',
+            'baseline',
+          ],
+          { stdio: 'ignore' }
+        );
+        const gitCommit = execFileSync('git', ['-C', fixtureRepositoryPath, 'rev-parse', 'HEAD'], {
+          encoding: 'utf8',
+        }).trim();
         const setup = createTestAgentSetup({ adapter: 'pi' });
         environmentPackage = resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
@@ -4873,7 +5895,7 @@ describe('createConfiguredTurnExecutor', () => {
             {
               access: 'read-write',
               id: 'repo',
-              sourceCommit: '0123456789abcdef0123456789abcdef01234567',
+              sourceCommit: gitCommit,
               sourceKind: 'remote-git',
               workerPath: '/workspace/openkit',
             },
@@ -4893,7 +5915,7 @@ describe('createConfiguredTurnExecutor', () => {
                 kind: 'git',
                 locator: {
                   url: 'https://git.example.test/openkit/repository.git',
-                  commit: '0123456789abcdef0123456789abcdef01234567',
+                  commit: gitCommit,
                 },
                 requiredFeatures: [],
                 sensitivity: 'internal',
@@ -4921,6 +5943,22 @@ describe('createConfiguredTurnExecutor', () => {
         ).not.toBe(canonicalKey);
       }
       authorizeNanoHostPackage(coreDb, environmentPackage);
+      if (fixtureRepositoryPath) {
+        const db = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
+        try {
+          applyScopedMigrations(db);
+          upsertWorkspaceRepositoryResource(db, {
+            workspaceId: environmentPackage.scope.workspaceId,
+            resourceId: 'repo',
+            displayName: 'Comparable initial source',
+            localPath: fixtureRepositoryPath,
+            workspaceExists: () => true,
+          });
+        } finally {
+          db.sqlite.close();
+        }
+      }
+
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
         leaseId: 'lease_human_gate',
         now: '2026-09-03T00:00:00.000Z',
@@ -5033,17 +6071,17 @@ describe('createConfiguredTurnExecutor', () => {
         disposition: 'succeeded' | 'refused' = 'succeeded'
       ) => {
         let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
-        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+        for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
           command = dispatchNanoHostHarnessOperation(coreDb, {
             sandboxIntegrationBindingRef: integration.integrationRef,
           });
-          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+          if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
         }
         if (!command || command.operation !== operation) {
           throw new Error(`Expected queued ${operation} Harness command.`);
         }
         if (operation === 'session.open') {
-          expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
+          expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(true);
           expect(command.body).toMatchObject({
             capabilityLoopbackCredential: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
             inferenceLoopbackCredential: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
@@ -5233,6 +6271,8 @@ describe('createConfiguredTurnExecutor', () => {
           'sandbox.create',
           'bridge.open',
           'reference.import',
+          'workspace.collect',
+          'workspace.collect',
           'bridge.close',
           'sandbox.delete',
         ]);
@@ -5355,6 +6395,13 @@ describe('createConfiguredTurnExecutor', () => {
         'sandbox.create',
         'bridge.open',
         'reference.import',
+        'workspace.collect',
+        ...(purpose !== 'completed' && purpose !== 'failed-ready-unrecorded'
+          ? ['workspace.collect']
+          : []),
+        ...(purpose === 'unproved-cleanup' || purpose === 'unproved-cleanup-failed'
+          ? ['bridge.close', 'sandbox.delete']
+          : []),
       ]);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
@@ -6523,6 +7570,17 @@ describe('createConfiguredTurnExecutor', () => {
       if (request.kind === 'bridge.open') {
         return { accepted: true, integrationReady: true, state: 'open' };
       }
+      if (request.kind === 'workspace.collect')
+        return request.input.mode === 'baseline'
+          ? {
+              requestId: request.requestId,
+              outcome: 'baseline',
+              head: {
+                tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+              },
+            }
+          : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
       if (request.kind === 'reference.import') return { state: 'imported' };
       throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
     };
@@ -6679,6 +7737,17 @@ describe('createConfiguredTurnExecutor', () => {
       if (request.kind === 'bridge.open') {
         return { accepted: true, integrationReady: true, state: 'open' };
       }
+      if (request.kind === 'workspace.collect')
+        return request.input.mode === 'baseline'
+          ? {
+              requestId: request.requestId,
+              outcome: 'baseline',
+              head: {
+                tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+              },
+            }
+          : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
       if (request.kind === 'reference.import') return { state: 'imported' };
       throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
     };
@@ -6837,6 +7906,29 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'bridge.open') {
           return { accepted: true, integrationReady: true, state: 'open' };
         }
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+        if (request.kind === 'reference.import') return { state: 'imported' };
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         if (request.kind === 'reference.import') return { state: 'imported' };
         return { state: 'deleted' };
       },
@@ -6906,7 +7998,7 @@ describe('createConfiguredTurnExecutor', () => {
       ) => {
         let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
         let integrationRef = '';
-        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+        for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
           const integration = coreDb.sqlite
             .prepare(
               `SELECT sandbox_integration_binding_ref AS integrationRef
@@ -6919,7 +8011,7 @@ describe('createConfiguredTurnExecutor', () => {
               sandboxIntegrationBindingRef: integrationRef,
             });
           }
-          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+          if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
         }
         if (!command || command.operation !== operation) {
           throw new Error(`Expected queued ${operation} Harness command.`);
@@ -7010,6 +8102,17 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
           return { state: 'deleted' };
         }
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         if (request.kind === 'reference.import') return { state: 'imported' };
         throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
       },
@@ -7084,7 +8187,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const launch = backend.launch(materialization);
       let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
-      for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+      for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
         const integration = coreDb.sqlite
           .prepare(
             `SELECT sandbox_integration_binding_ref AS integrationRef
@@ -7096,7 +8199,7 @@ describe('createConfiguredTurnExecutor', () => {
             sandboxIntegrationBindingRef: integration.integrationRef,
           });
         }
-        if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+        if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
       }
       if (!command || command.operation !== 'session.open') {
         throw new Error('Expected queued session.open Harness command.');
@@ -7186,6 +8289,29 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'bridge.open') {
           return { accepted: true, integrationReady: true, state: 'open' };
         }
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+        if (request.kind === 'reference.import') return { state: 'imported' };
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         if (request.kind === 'reference.import') return { state: 'imported' };
         return { state: 'deleted' };
       },
@@ -7255,7 +8381,7 @@ describe('createConfiguredTurnExecutor', () => {
       ) => {
         let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
         let integrationRef = '';
-        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+        for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
           const integration = coreDb.sqlite
             .prepare(
               `SELECT sandbox_integration_binding_ref AS integrationRef
@@ -7268,7 +8394,7 @@ describe('createConfiguredTurnExecutor', () => {
               sandboxIntegrationBindingRef: integrationRef,
             });
           }
-          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+          if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
         }
         if (!command || command.operation !== operation) {
           throw new Error(`Expected queued ${operation} Harness command.`);
@@ -7376,6 +8502,18 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'bridge.open') {
           return { accepted: true, integrationReady: true, state: 'open' };
         }
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+        if (request.kind === 'reference.import') return { state: 'imported' };
         return { state: 'deleted' };
       },
       async poll() {
@@ -7472,7 +8610,7 @@ describe('createConfiguredTurnExecutor', () => {
         disposition: 'succeeded' | 'refused' = 'succeeded'
       ) => {
         let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
-        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+        for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
           const integration = coreDb.sqlite
             .prepare(
               `SELECT sandbox_integration_binding_ref AS integrationRef
@@ -7482,7 +8620,7 @@ describe('createConfiguredTurnExecutor', () => {
           command = dispatchNanoHostHarnessOperation(coreDb, {
             sandboxIntegrationBindingRef: integration.integrationRef,
           });
-          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+          if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
         }
         if (!command || command.operation !== operation) {
           throw new Error(`Expected queued ${operation} Harness command.`);
@@ -7510,6 +8648,8 @@ describe('createConfiguredTurnExecutor', () => {
             'sandbox.create',
             'bridge.open',
             'reference.import',
+            'workspace.collect',
+            'workspace.collect',
           ]);
         }
         runtime.acceptNanoHostHarnessCommand(command);
@@ -7544,12 +8684,7 @@ describe('createConfiguredTurnExecutor', () => {
         recordedDigests.push(digest);
       });
       const launch = backend.launch(firstMaterialization);
-      await settleNext('session.open', {
-        maxActiveTurns: 1,
-        nativeHandleDigest: null,
-        nativeHandleState: 'pending',
-        state: 'open',
-      });
+
       if (startupRefused) {
         const observedFailure =
           startupRefused === 'git_fetch_http_refused'
@@ -7581,11 +8716,11 @@ describe('createConfiguredTurnExecutor', () => {
                     : '';
         const observedRejection = launch.catch((error: unknown) => error);
         const rejected = expect(launch).rejects.toMatchObject({
-          message: `NanoHost Harness turn.start refused: dependency_failed (workspace_materialization: ${startupRefused}).${explanation}`,
+          message: `NanoHost Harness session.open refused: dependency_failed (workspace_materialization: ${startupRefused}).${explanation}`,
           ...(observedFailure ? { explanation: observedFailure } : {}),
         });
         await settleNext(
-          'turn.start',
+          'session.open',
           {
             reasonCode: 'dependency_failed',
             startupFailure: {
@@ -7601,6 +8736,12 @@ describe('createConfiguredTurnExecutor', () => {
           expect(await observedRejection).toHaveProperty('explanation', observedFailure);
         return;
       }
+      await settleNext('session.open', {
+        maxActiveTurns: 1,
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'open',
+      });
       await settleNext('turn.start', {
         nativeHandleDigest: null,
         nativeHandleState: 'pending',
@@ -7778,6 +8919,8 @@ describe('createConfiguredTurnExecutor', () => {
         'sandbox.create',
         'bridge.open',
         'reference.import',
+        'workspace.collect',
+        'workspace.collect',
         'bridge.close',
         'sandbox.delete',
         'image.acquire',
@@ -9234,6 +10377,17 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'sandbox.create') {
           return nanoHostSandboxCreated(request);
         }
+        if (request.kind === 'workspace.collect')
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         if (request.kind === 'reference.import') return { state: 'imported' };
         throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
       },

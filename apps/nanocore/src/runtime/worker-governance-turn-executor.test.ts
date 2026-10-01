@@ -37,6 +37,7 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
@@ -132,6 +133,11 @@ import {
 import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
 import { getFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
+import {
+  acceptWorkspaceBaseline,
+  acceptWorkspaceCapture,
+  authorizeWorkspaceBaselineInitialization,
+} from './workspace-snapshot-chain.js';
 import {
   listBackendWorkspaceHandles,
   listWorkspaceChangeSets,
@@ -1973,6 +1979,70 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  it.each([
+    'workspace.write',
+    'artifact.write',
+    'deletion',
+    'allowed',
+  ] as const)('fences release collection publication with current %s authority', async (mode) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-collection-publication-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const fixture = createWorkspaceChangeIngressFixture(
+      `publication_${mode}`,
+      'git',
+      'review-branch'
+    );
+    const publicationDb = openWorkspaceDb(dataRoot, fixture.workspaceId);
+    applyScopedMigrations(publicationDb);
+    publicationDb.sqlite.close();
+    const mutationAdmission = new WorkspaceMutationAdmission();
+    const authority = vi
+      .spyOn(operationAuthorizer, 'currentWorkerLineageWorkspaceAuthority')
+      .mockImplementation((_db, _lineage, operation) => (operation === mode ? null : 'owner'));
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend: new FakeWorkerGovernanceBackend(),
+      coreDb,
+      environmentBackend: { kind: 'openshell' },
+      workspaceMutationAdmission: mutationAdmission,
+    });
+    // This test isolates publication authorization; the real Git handoff tests exercise ingress bytes and review staging.
+    const publish = vi
+      .spyOn(
+        executor as unknown as {
+          createWorkspaceChangeArtifacts: (...args: unknown[]) => Promise<void>;
+        },
+        'createWorkspaceChangeArtifacts'
+      )
+      .mockResolvedValue();
+    try {
+      if (mode === 'deletion') await mutationAdmission.close(fixture.workspaceId);
+      const run = executor.publishWorkspaceCollections(fixture.store, fixture.environmentPackage, [
+        fixture.record,
+      ]);
+      if (mode === 'allowed') {
+        await expect(run).resolves.toBeUndefined();
+        expect(publish).toHaveBeenCalledOnce();
+        expect(publish.mock.calls[0]?.[2]).toEqual([fixture.record]);
+        expect(authority.mock.calls.map((call) => [call[2], call[3]])).toEqual([
+          ['workspace.write', true],
+          ['artifact.write', true],
+        ]);
+        // The publisher must release its admission after staging.
+        await expect(mutationAdmission.close(fixture.workspaceId)).resolves.toBeUndefined();
+      } else {
+        await expect(run).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
+        expect(publish).not.toHaveBeenCalled();
+      }
+    } finally {
+      authority.mockRestore();
+      publish.mockRestore();
+      fixture.workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('rejects worker output after the Workspace deletion fence closes', async () => {
     expect(WORKSPACE_MUTATION_LATE_PUBLISHERS).toEqual(['worker-turn-closeout']);
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-deletion-fence-'));
@@ -3524,12 +3594,37 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
-  it('stages linked review branches while ingesting production worker changes', async () => {
+  it.each([
+    'utf8',
+    'non-utf8',
+  ] as const)('stages linked review branches while ingesting production worker changes: $0', async (format) => {
     const fixture = createWorkspaceChangeIngressFixture(
       'staged_review_branch',
       'git',
       'review-branch'
     );
+    const stagedBytes =
+      format === 'utf8' ? Buffer.from('# Demo\n\nReviewed.\n') : Buffer.from([98, 255, 10]);
+    writeFileSync(join(fixture.repositoryPath, 'README.md'), stagedBytes);
+    const patchBytes = execFileSync('git', ['diff', '--binary', '--full-index', '--no-ext-diff'], {
+      cwd: fixture.repositoryPath,
+    });
+    writeFileSync(join(fixture.repositoryPath, 'README.md'), '# Demo\n');
+    const digest = `sha256:${createHash('sha256').update(patchBytes).digest('hex')}`;
+    const record: WorkerGovernanceWorkspaceChangeRecord = {
+      ...fixture.record,
+      changeSet: {
+        ...fixture.record.changeSet,
+        patch: { ...fixture.record.changeSet.patch!, digest, bytes: patchBytes.length },
+      },
+      patchPayload: {
+        mediaType: 'text/x-diff',
+        digest,
+        bytes: patchBytes.length,
+        text: patchBytes.toString(format === 'utf8' ? 'utf8' : 'base64'),
+        ...(format === 'non-utf8' ? { encoding: 'base64' as const } : {}),
+      },
+    };
     const baseCommit = runTestGit(fixture.repositoryPath, ['rev-parse', 'HEAD']).trim();
     const initialStatus = runTestGit(fixture.repositoryPath, ['status', '--short']);
     const initialWorktrees = runTestGit(fixture.repositoryPath, [
@@ -3540,10 +3635,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     recordTestWorkspaceReviewMaterialization(fixture.workspaceDb, {
       artifactId: fixture.artifactId,
-      ...fixture.record,
+      ...record,
     });
 
-    await ingestWorkspaceChangeFixture(fixture, fixture.record);
+    await ingestWorkspaceChangeFixture(fixture, record);
 
     const branchCommit = runTestGit(fixture.repositoryPath, [
       'rev-parse',
@@ -3551,9 +3646,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fixture.reviewBranchRef,
     ]).trim();
     expect(branchCommit).not.toBe(baseCommit);
-    expect(runTestGit(fixture.repositoryPath, ['show', `${branchCommit}:README.md`])).toBe(
-      '# Demo\n\nReviewed.\n'
-    );
+    expect(
+      execFileSync('git', ['show', `${branchCommit}:README.md`], {
+        cwd: fixture.repositoryPath,
+      })
+    ).toEqual(stagedBytes);
+    expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([
+      expect.objectContaining({
+        artifactId: fixture.artifactId,
+        patchPayload: record.patchPayload,
+      }),
+    ]);
     expect(runTestGit(fixture.repositoryPath, ['rev-parse', 'HEAD']).trim()).toBe(baseCommit);
     expect(runTestGit(fixture.repositoryPath, ['status', '--short'])).toBe(initialStatus);
     expect(runTestGit(fixture.repositoryPath, ['worktree', 'list', '--porcelain'])).toBe(
@@ -3562,18 +3665,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(listWorkspaceChangeSets(fixture.workspaceDb, fixture.workspaceId)).toEqual([
       expect.objectContaining({
         head: expect.objectContaining({ commit: branchCommit }),
-        id: fixture.record.changeSet.id,
+        id: record.changeSet.id,
       }),
     ]);
     const artifact = fixture.store.getArtifact(fixture.workspaceId, fixture.artifactId);
     const body = JSON.stringify(
       {
         changeSet: {
-          ...fixture.record.changeSet,
-          head: { ...fixture.record.changeSet.head, commit: branchCommit },
+          ...record.changeSet,
+          head: { ...record.changeSet.head, commit: branchCommit },
         },
-        patchPayload: fixture.record.patchPayload,
-        review: fixture.record.review,
+        patchPayload: record.patchPayload,
+        review: record.review,
       },
       null,
       2
@@ -3864,6 +3967,36 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect.objectContaining({ artifactId: fixture.artifactId }),
     ]);
     fixture.workspaceDb.sqlite.close();
+  });
+
+  it('retains a refinement-only candidate without staging a Git review branch', async () => {
+    const fixture = createWorkspaceChangeIngressFixture('refinement_only', 'git', 'review-branch');
+    const record = {
+      ...fixture.record,
+      review: {
+        ...fixture.record.review,
+        staging: { ...fixture.record.review.staging, branch: null },
+        validation: [
+          {
+            command: 'workspace-snapshot-apply',
+            status: 'failed' as const,
+            ref: null,
+          },
+        ],
+      },
+    };
+    try {
+      await expect(ingestWorkspaceChangeFixture(fixture, record)).resolves.toBeUndefined();
+      expect(testGitRefExists(fixture.repositoryPath, fixture.reviewBranchRef)).toBe(false);
+      expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([
+        expect.objectContaining({
+          review: expect.objectContaining({ staging: expect.objectContaining({ branch: null }) }),
+        }),
+      ]);
+      expect(listWorkspaceChangeSets(fixture.workspaceDb, fixture.workspaceId)).toHaveLength(1);
+    } finally {
+      fixture.workspaceDb.sqlite.close();
+    }
   });
 
   const rejectedIngressCases: readonly {
@@ -5158,7 +5291,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
-  it('passes workspace source catalog context into the resolved AEP snapshot', async () => {
+  it.each([
+    'source',
+    'cursor',
+    'historical',
+    'unproved',
+    'foreign-thread',
+    'foreign-slot',
+    'corrupt-cursor',
+    'corrupt-receipt',
+  ] as const)('passes workspace source catalog context and accepted base into the resolved handoff (override: %s)', async (mode) => {
+    const overrideBase = mode !== 'source';
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-source-ref-')));
 
     applyMigrations(coreDb);
@@ -5168,6 +5311,65 @@ describe('WorkerGovernanceTurnExecutor', () => {
     seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run with source catalog');
     const backend = new FakeWorkerGovernanceBackend();
+    const acceptedCommit = 'e'.repeat(40);
+    const originalCommit = runTestGit(repositoryPath, ['rev-parse', 'HEAD']).trim();
+    const materialize = backend.materialize.bind(backend);
+    vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      const result = await materialize(...args);
+      if (overrideBase && mode !== 'unproved') {
+        const db = openTestWorkspaceDb(coreDb);
+        const aep = args[0];
+        const identity = {
+          workspaceId: aep.scope.workspaceId,
+          storageRef: 'storage_context',
+          scopeDigest: `sha256:${'a'.repeat(64)}`,
+          attachmentGeneration: 1,
+          sandboxId: 'sandbox_context',
+          workSlot: (aep.extensions.openkit as { workerStorage: { workSlotRef: string } })
+            .workerStorage.workSlotRef,
+          collectionId: 'baseline',
+          agentSessionId: aep.scope.agentSessionId,
+          threadId: mode === 'foreign-thread' ? 'foreign-thread' : aep.scope.threadId,
+          turnId: aep.scope.turnId,
+          packageSnapshotId: aep.snapshotId,
+        };
+        if (mode === 'foreign-slot') identity.workSlot = 'foreign-slot';
+        authorizeWorkspaceBaselineInitialization(db, identity);
+        acceptWorkspaceBaseline(
+          db,
+          identity,
+          { tree: 'a'.repeat(40), manifest: 'b'.repeat(40) },
+          'a'.repeat(40),
+          acceptedCommit
+        );
+        if (mode === 'historical' || mode === 'corrupt-receipt') {
+          acceptWorkspaceCapture(
+            db,
+            { ...identity, collectionId: 'capture_context' },
+            { outcome: 'no_new_head', unstable: false },
+            null
+          );
+          db.sqlite
+            .prepare('UPDATE workspace_snapshot_cursors SET accepted_commit = ?')
+            .run('f'.repeat(40));
+        }
+        if (mode === 'corrupt-cursor')
+          db.sqlite
+            .prepare('UPDATE workspace_snapshot_cursors SET head_json = ?')
+            .run(JSON.stringify({ tree: 'unknown', manifest: 'b'.repeat(40) }));
+        if (mode === 'corrupt-receipt')
+          db.sqlite
+            .prepare(
+              "UPDATE workspace_snapshot_collections SET result_json = json_set(result_json, '$.outcome', 'future')"
+            )
+            .run();
+        db.sqlite.close();
+      }
+      return {
+        ...result,
+        ...(overrideBase ? { workspaceBaseCommits: { repo_default: acceptedCommit } } : {}),
+      };
+    });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -5177,7 +5379,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       },
     });
 
-    await startWithExecutorLease(
+    const execution = startWithExecutorLease(
       coreDb,
       executor,
       store,
@@ -5217,6 +5419,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
     );
 
+    if (mode === 'corrupt-cursor' || mode === 'corrupt-receipt') {
+      await expect(execution).rejects.toThrow(
+        mode === 'corrupt-cursor'
+          ? 'Invalid string: must match pattern'
+          : "Invalid discriminator value. Expected 'candidate' | 'empty' | 'no_new_head'"
+      );
+      coreDb.sqlite.close();
+      return;
+    }
+    if (['unproved', 'foreign-thread', 'foreign-slot'].includes(mode)) {
+      await expect(execution).rejects.toThrow('handoff is incomplete');
+      coreDb.sqlite.close();
+      return;
+    }
+    await expect(execution).resolves.toBeUndefined();
     expect(backend.lastPackage?.workspace.inputs[0]?.source).toMatchObject({
       catalogEntryDigest: expect.stringMatching(/^sha256:/),
       kind: 'git',
@@ -5229,6 +5446,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(listWorkspaceInputSnapshots(workspaceDb, 'ws_demo')).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          base: expect.objectContaining({ commit: overrideBase ? acceptedCommit : originalCommit }),
           resourceId: 'repo_default',
           sourceId: 'repo_default',
         }),
@@ -5237,6 +5455,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          base: expect.objectContaining({ commit: overrideBase ? acceptedCommit : originalCommit }),
           sourceId: 'repo_default',
         }),
       ])
@@ -6902,6 +7121,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(backend.lastContext?.runtimeEnvCredentials).toEqual([
         {
           credentialValue: 'runtime-env-receipt-canary',
+          materialVersion: 1,
+          vaultReferenceId: 'vault_runtime_env',
           targetEnvVarName: 'GITHUB_TOKEN',
         },
       ]);

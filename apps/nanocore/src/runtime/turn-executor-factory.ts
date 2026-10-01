@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
-import { basename } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
   type AgentEnvironmentValidationDiagnostic,
@@ -31,6 +32,8 @@ import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
+import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
+import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
@@ -126,9 +129,23 @@ import type {
   WorkerTranscriptPayload,
 } from './worker-transcript.js';
 import {
-  parseWorkspaceChangeSetManifest,
-  stageWorkspaceChangeSet,
-} from './workspace-materializer.js';
+  WorkspaceCollectCommandSchema,
+  WorkspaceCollectionError,
+} from './workspace-collect-wire.js';
+import { stageWorkspaceChangeSet } from './workspace-materializer.js';
+import { readWorkspaceSnapshotCandidate } from './workspace-snapshot-candidate.js';
+import {
+  acceptWorkspaceBaseline,
+  acceptWorkspaceCapture,
+  authorizeWorkspaceBaselineInitialization,
+  linkWorkspaceSnapshotReview,
+  readWorkspaceBaselineIdentity,
+  readWorkspaceCollection,
+  readWorkspaceSnapshotCursor,
+  requireWorkspaceBaselineInitialization,
+  type WorkspaceCollectionIdentity,
+} from './workspace-snapshot-chain.js';
+import { recordWorkerOutputManifest } from './workspace-sync-records.js';
 
 /** Exact V1 maximum for one raw NanoHost file export. */
 const NANO_HOST_FILE_EXPORT_MAX_BYTES = 256 * 1024 * 1024;
@@ -261,7 +278,8 @@ function createNanoHostWorkerLifecycleRuntime(
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
     nanoHostSessionDispatch,
-    workerControlGateway
+    workerControlGateway,
+    vaultBackend
   );
   const turnExecutor =
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
@@ -288,6 +306,16 @@ function createNanoHostWorkerLifecycleRuntime(
           ...(workerControlGateway ? { workerControlGateway } : {}),
           ...(workspaceMutationAdmission ? { workspaceMutationAdmission } : {}),
         });
+
+  if (turnExecutor instanceof WorkerGovernanceTurnExecutor) {
+    backend.setWorkspaceCollectionPublisher((environmentPackage, records) =>
+      turnExecutor.publishWorkspaceCollections(
+        sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
+        environmentPackage,
+        records
+      )
+    );
+  }
 
   /** Restores the existing immutable package and read-only backend handle. */
   async function restoreDurableSession(
@@ -361,6 +389,11 @@ interface NanoHostBackendTurnSession {
    * environment was fixed when it started.
    */
   runtimeEnvironment: Record<string, string> | null;
+  runtimeCheckVersions: Array<{
+    targetEnvVarName: string;
+    vaultReferenceId: string;
+    materialVersion: number;
+  }> | null;
   /** Predecessor resume pair for a new binding; null starts a new native conversation. */
   readonly nativeResume: WorkerGovernanceNativeResume | null;
   /** AgentSession owner bound by the executor; receives each accepted ready proof at once. */
@@ -410,6 +443,7 @@ interface NanoHostSharedHarness {
       readonly agentSessionRuntimeBindingId: string;
       nativeHandleDigest: string | null;
       nextTurnSequence: number;
+      runtimeEnvironment: Record<string, string> | null;
     }
   >;
   readonly adapterId: string;
@@ -474,7 +508,7 @@ function workspaceMaterializationRefusalExplanation(
   startup: WorkerStartupFailure | null
 ): string {
   if (
-    operation !== 'turn.start' ||
+    (operation !== 'turn.start' && operation !== 'session.open') ||
     disposition !== 'refused' ||
     reason !== 'dependency_failed' ||
     startup?.stage !== 'workspace_materialization'
@@ -501,6 +535,21 @@ function workspaceMaterializationRefusalExplanation(
 
 /** NanoHost-backed effect boundary used by the sole production turn executor. */
 class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
+  private workspaceCollectionPublisher:
+    | ((
+        environmentPackage: AgentEnvironmentPackage,
+        records: readonly WorkerGovernanceWorkspaceChangeRecord[]
+      ) => Promise<void>)
+    | null = null;
+  /** Binds the existing executor's durable Workspace Sync Review publisher for release captures. */
+  public setWorkspaceCollectionPublisher(
+    publisher: (
+      environmentPackage: AgentEnvironmentPackage,
+      records: readonly WorkerGovernanceWorkspaceChangeRecord[]
+    ) => Promise<void>
+  ): void {
+    this.workspaceCollectionPublisher = publisher;
+  }
   private readonly agentSessionCloseOwners = new Map<string, NanoHostAgentSessionCloseOwner>();
   private readonly cleanupRecoveryResults = new Map<
     string,
@@ -527,7 +576,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public constructor(
     private readonly coreDb: CoreDb,
     private readonly sessionDispatch?: NanoHostSessionDispatch,
-    private readonly workerControlGateway?: WorkerControlGateway
+    private readonly workerControlGateway?: WorkerControlGateway,
+    private readonly collectionVaultBackend?: () => VaultBackend
   ) {}
 
   /** Binds dispatched Turn route tokens and adds Vault values only to private wire bytes. */
@@ -613,7 +663,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     pending.operationId = command.operationId;
     if (command.operation === 'session.open' && session) {
       const runtimeEnvironment = session.runtimeEnvironment!;
-      session.runtimeEnvironment = null;
       return Object.keys(runtimeEnvironment).length === 0
         ? command
         : { ...command, body: { ...command.body, runtimeEnvironment } };
@@ -896,6 +945,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionRuntimeBindingId: binding.agentSessionRuntimeBindingId,
         nativeHandleDigest: binding.nativeHandleDigest,
         nextTurnSequence: binding.nextTurnSequence,
+        runtimeEnvironment: null,
       });
     }
     this.sharedHarnesses.set(mapKey, sharedHarness);
@@ -942,6 +992,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       recordNativeHandleDigest: null,
       pendingImports: [],
       runtimeEnvironment: null,
+      runtimeCheckVersions: null,
       pendingHarnessOperation: null,
       turnStopSettlement: null,
       retainedStagingPaths: [],
@@ -1387,6 +1438,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       let widenCleanup = false;
       if ((closeUnprovedOwner || closeInspectedBinding) && session) {
         try {
+          await this.collectWorkspaceSnapshot(session, 'release');
           const closed = await this.queueAndWaitForHarnessOperation(session, 'session.close', {
             agentSessionId: session.environmentPackage.scope.agentSessionId,
             agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -2060,6 +2112,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     let sharedSandbox =
       sharedHarness?.sandbox ??
       this.restoreSharedSandbox(sandboxCompatibilityKey, requireNanoHostRuntimeTargetId(identity));
+    const priorSlotBinding =
+      choice?.kind === 'fresh'
+        ? undefined
+        : choice?.kind === 'selected'
+          ? getWorkerStorageBinding(this.coreDb, { storageRef: choice.storageRef })
+          : sharedSandbox?.workerStorageBinding;
+    const initializesNewSlot = !priorSlotBinding?.contributors.some(
+      (contributor) =>
+        contributor.workSlotRef === packageWorkerStorageWorkSlotRef(environmentPackage)
+    );
     const existingContributor = sharedSandbox?.workerStorageBinding.contributors.some(
       (contributor) =>
         contributor.threadId === environmentPackage.scope.threadId &&
@@ -2332,6 +2394,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       recordNativeHandleDigest: null,
       pendingImports: [],
       runtimeEnvironment,
+      runtimeCheckVersions: (context.runtimeEnvCredentials ?? []).every(
+        (item) =>
+          item.vaultReferenceId &&
+          Number.isSafeInteger(item.materialVersion) &&
+          item.materialVersion! > 0
+      )
+        ? (context.runtimeEnvCredentials ?? []).map((item) => ({
+            targetEnvVarName: item.targetEnvVarName,
+            vaultReferenceId: item.vaultReferenceId!,
+            materialVersion: item.materialVersion!,
+          }))
+        : null,
       pendingHarnessOperation: null,
       turnStopSettlement: null,
       retainedStagingPaths: [],
@@ -2339,6 +2413,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       terminalInspectionComplete: false,
       turnStarted: false,
     });
+    if (initializesNewSlot) {
+      const initializationDb = openWorkspaceDb(
+        this.coreDb.dataRoot,
+        environmentPackage.scope.workspaceId
+      );
+      try {
+        applyScopedMigrations(initializationDb);
+        authorizeWorkspaceBaselineInitialization(
+          initializationDb,
+          this.workspaceCollectionIdentity(
+            this.requireSession(environmentPackage.snapshotId),
+            'baseline'
+          )
+        );
+      } finally {
+        initializationDb.sqlite.close();
+      }
+    }
     this.livePartialMaterializations.delete(identity.packageSnapshotId);
     this.requireSession(environmentPackage.snapshotId).pendingImports = [
       ...(await prepareNanoHostContextPackageImports(environmentPackage, context)),
@@ -2374,7 +2466,63 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: environmentPackage.createdAt,
       });
     }
+    const cursorDb = openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
+    let workspaceBaseCommits: Record<string, string> | undefined;
+    try {
+      applyScopedMigrations(cursorDb);
+      const cursor = readWorkspaceSnapshotCursor(
+        cursorDb,
+        this.workspaceCollectionIdentity(
+          this.requireSession(environmentPackage.snapshotId),
+          'materialize'
+        )
+      );
+      if (cursor) {
+        const initial = readWorkspaceBaselineIdentity(
+          cursorDb,
+          this.workspaceCollectionIdentity(
+            this.requireSession(environmentPackage.snapshotId),
+            'materialize'
+          )
+        );
+        if (!initial)
+          throw new WorkspaceCollectionError({
+            outcome: 'recovery_required',
+            cause: 'accepted_base_unknown',
+          });
+        const initialPackage = requireAgentEnvironmentPackageSnapshot(
+          cursorDb,
+          initial.workspaceId,
+          initial.packageSnapshotId
+        ).snapshot;
+        const sourceIdentity = (aep: AgentEnvironmentPackage) =>
+          aep.workspace.inputs
+            .filter((input) => input.access === 'read-write')
+            .map((input) => ({
+              id: input.id,
+              sourceId: input.source.sourceId,
+              kind: input.source.kind,
+              ...(input.source.kind === 'git'
+                ? { url: input.source.url, commit: input.source.commit }
+                : {}),
+            }));
+        if (!isDeepStrictEqual(sourceIdentity(initialPackage), sourceIdentity(environmentPackage)))
+          throw new Error(
+            'Workspace retained source/baseline conflicts; explicit reconciliation is required.'
+          );
+      }
+
+      if (cursor?.acceptedCommit)
+        workspaceBaseCommits = Object.fromEntries(
+          environmentPackage.workspace.inputs
+            .filter((input) => input.access === 'read-write' && input.source.kind === 'git')
+            .map((input) => [input.id, cursor.acceptedCommit!])
+        );
+    } finally {
+      cursorDb.sqlite.close();
+    }
     return {
+      ...(workspaceBaseCommits ? { workspaceBaseCommits } : {}),
       backendKind: 'openshell',
       command: {
         argv: [...environmentPackage.runtime.command.argv],
@@ -2412,9 +2560,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost bridge did not prove its Sandbox Integration readiness latch.');
     }
     session.sharedHarness.sandbox.bridgeOpen = true;
+    const pendingImports = session.pendingImports;
+    session.pendingImports = [];
+    for (const file of pendingImports) {
+      const imported = await this.effect(session.identity, session.leaseId, 'reference.import', {
+        body: file.body,
+        byteLength: file.byteLength,
+        relativePath: file.relativePath,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
+        sha256: file.contentDigest,
+        slot: file.slot,
+      });
+      session.evidence.push(
+        nanoHostEffectEvidence(session.environmentPackage.createdAt, imported, 'reference-import')
+      );
+    }
     let binding = session.sharedHarness.bindings.get(
       session.environmentPackage.scope.agentSessionId
     );
+    const opensNewBinding = !binding;
     if (!binding) {
       // A resumed open must accept a ready proof, so the recorder is required before that dispatch; a new conversation may stay pending and is checked only once a ready digest is accepted.
       if (session.nativeResume !== null && !session.recordNativeHandleDigest) {
@@ -2438,6 +2602,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: new Date().toISOString(),
         workspaceId: session.environmentPackage.scope.workspaceId,
       });
+      this.coreDb.sqlite
+        .prepare(
+          'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
+        )
+        .run(
+          session.runtimeCheckVersions === null
+            ? null
+            : JSON.stringify(session.runtimeCheckVersions),
+          session.agentSessionRuntimeBindingId
+        );
       const opened = await this.queueAndWaitForHarnessOperation(session, 'session.open', {
         adapterId: session.sharedHarness.adapterId,
         nativeEnvironment: session.environmentPackage.runtime.environment?.values,
@@ -2472,19 +2646,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         nativeHandleDigest: openedReady ? (opened.nativeHandleDigest as string) : null,
         nextTurnSequence: 0,
+        runtimeEnvironment: session.runtimeEnvironment,
       };
       session.sharedHarness.bindings.set(session.environmentPackage.scope.agentSessionId, binding);
       if (binding.nativeHandleDigest !== null) {
         this.recordAcceptedNativeHandleDigest(session, binding.nativeHandleDigest);
       }
     } else {
-      // The resident host fixed its environment at open; this Turn's resolved values are unused.
-      session.runtimeEnvironment = null;
       copyNanoHostMeasuredHarnessIdentity(this.coreDb, {
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         imageDigest: session.sharedHarness.sandbox.imageDigest,
         timestamp: new Date().toISOString(),
       });
+      // The resident host fixed its environment at open; resolve its recorded versions for collection.
+      session.runtimeEnvironment =
+        binding.runtimeEnvironment ?? this.restoreCollectionRuntimeEnvironment(session);
+      binding.runtimeEnvironment = session.runtimeEnvironment;
       const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -2498,21 +2675,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost resident AgentSession is not ready for its next Turn.');
       }
     }
-    const pendingImports = session.pendingImports;
-    session.pendingImports = [];
-    for (const file of pendingImports) {
-      const imported = await this.effect(session.identity, session.leaseId, 'reference.import', {
-        body: file.body,
-        byteLength: file.byteLength,
-        relativePath: file.relativePath,
-        sandboxId: session.sharedHarness.sandbox.sandboxId,
-        sha256: file.contentDigest,
-        slot: file.slot,
-      });
-      session.evidence.push(
-        nanoHostEffectEvidence(session.environmentPackage.createdAt, imported, 'reference-import')
-      );
-    }
+    await this.ensureWorkspaceBaseline(session, opensNewBinding);
     const inputPaths = workerSessionInputPaths(session.environmentPackage.scope.agentSessionId);
     const lease = this.coreDb.sqlite
       .prepare(
@@ -2745,79 +2908,415 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  /** Exports the declared workspace manifest and patch after the accepted terminal barrier. */
+  /** Collects the outside snapshot chain after accepted final status and waits before another Turn. */
   public async collectWorkspaceChanges(
     packageSnapshotId: string,
-    terminalBarrierProved: true
+    _terminalBarrierProved: true
   ): Promise<WorkerGovernanceWorkspaceChangeRecord[]> {
     const session = this.requireSession(packageSnapshotId);
     await this.inspectTerminalHarnessSession(session);
-    // The executor supplies this only after accepted `final_status`; NanoHost
-    // still requires its retained monitor to prove `processGroupAbsent` locally.
-    const finalStatusAccepted = terminalBarrierProved;
-    const processGroupAbsent = terminalBarrierProved;
-    if (session.environmentPackage.workspace.outputs.length === 0) {
-      return [];
-    }
-    const manifestPath = '/openkit/session/workspace-changes.json';
-    const { relativePath, slot } = resolveNanoHostExportPath(
-      session.environmentPackage,
-      manifestPath
-    );
-    const manifestResult = await this.effect(session.identity, session.leaseId, 'file.export', {
-      finalStatusAccepted,
-      maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
-      processGroupAbsent,
-      presence: 'optional',
-      relativePath,
-      sandboxId: session.sharedHarness.sandbox.sandboxId,
-      slot,
-      terminalBarrierProved,
-    });
-    if (Object.keys(manifestResult).length === 1 && manifestResult.state === 'absent') {
-      return [];
-    }
-    requireNanoHostResultString(manifestResult, 'sha256');
-    requireNanoHostResultByteLength(manifestResult, 'byteLength');
-    const manifestText = (await consumeNanoHostStagedExport(manifestResult)).toString('utf8');
-    const changeSet = parseWorkspaceChangeSetManifest(manifestText);
-    let patchPayload = null;
-    if (changeSet.patch?.ref.startsWith('worker-session://')) {
-      const patchName = basename(changeSet.patch.ref.slice('worker-session://'.length));
-      if (!patchName || patchName === '.' || patchName === '..') {
-        throw new Error('NanoHost workspace patch reference is invalid.');
-      }
-      const patchPath = `/openkit/session/${patchName}`;
-      const patchLocation = resolveNanoHostExportPath(session.environmentPackage, patchPath);
-      const patchResult = await this.effect(session.identity, session.leaseId, 'file.export', {
-        finalStatusAccepted,
-        maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
-        processGroupAbsent,
-        presence: 'required',
-        relativePath: patchLocation.relativePath,
-        sandboxId: session.sharedHarness.sandbox.sandboxId,
-        slot: patchLocation.slot,
-        terminalBarrierProved,
+    return await this.collectWorkspaceSnapshot(session, 'turn-end');
+  }
+
+  /** Re-resolves the exact binding versions after restart; current Vault material is never substituted. */
+  private restoreCollectionRuntimeEnvironment(
+    session: NanoHostBackendTurnSession
+  ): Record<string, string> {
+    const row = this.coreDb.sqlite
+      .prepare(
+        'SELECT runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+      )
+      .get(session.agentSessionRuntimeBindingId) as { versions: string | null } | undefined;
+    try {
+      const versions = JSON.parse(row?.versions ?? 'null') as Array<{
+        targetEnvVarName: string;
+        vaultReferenceId: string;
+        materialVersion: number;
+      }>;
+      const declared = session.environmentPackage.credentials.declarations
+        .filter((item) => item.visibility === 'runtime-env')
+        .map((item) => item.targetEnvVarName)
+        .sort();
+      if (
+        !Array.isArray(versions) ||
+        !isDeepStrictEqual(versions.map((item) => item.targetEnvVarName).sort(), declared)
+      )
+        throw new WorkspaceCollectionError({
+          outcome: 'recovery_required',
+          cause: 'check_values_unavailable',
+        });
+      return nanoHostRuntimeEnvironment(
+        versions.map((item) => {
+          if (
+            !item.vaultReferenceId ||
+            !Number.isSafeInteger(item.materialVersion) ||
+            item.materialVersion <= 0 ||
+            !this.collectionVaultBackend
+          )
+            throw new Error('Unavailable Vault version.');
+          const backend = this.collectionVaultBackend();
+          if (backend.health().state !== 'available') throw new Error('Unavailable Vault backend.');
+          return {
+            targetEnvVarName: item.targetEnvVarName,
+            credentialValue: vaultSecretMaterialToString(
+              backend.resolve({ referenceId: item.vaultReferenceId, version: item.materialVersion })
+            ),
+          };
+        })
+      );
+    } catch {
+      throw new WorkspaceCollectionError({
+        outcome: 'recovery_required',
+        cause: 'check_values_unavailable',
       });
-      const sha256 = requireNanoHostResultString(patchResult, 'sha256');
-      const byteLength = requireNanoHostResultByteLength(patchResult, 'byteLength');
-      if (sha256 !== changeSet.patch.digest || byteLength !== changeSet.patch.bytes) {
-        throw new Error('NanoHost workspace patch identity disagrees with its manifest.');
-      }
-      patchPayload = {
-        bytes: byteLength,
-        digest: sha256,
-        mediaType: 'text/x-diff' as const,
-        text: (await consumeNanoHostStagedExport(patchResult)).toString('utf8'),
-      };
     }
-    const review = stageWorkspaceChangeSet(changeSet, {
-      createdAt: new Date().toISOString(),
-      patchPayload,
-      reviewId: `swr_${changeSet.id}`,
-      stagingRef: `staging://workspace/${changeSet.id}`,
-    });
-    return [{ changeSet, filesystemApply: null, patchPayload, review }];
+  }
+
+  /** Names one collection against the exact current admitted attachment and stable slot. */
+  private workspaceCollectionIdentity(
+    session: NanoHostBackendTurnSession,
+    collectionId: string
+  ): WorkspaceCollectionIdentity {
+    const storage = session.sharedHarness.sandbox.workerStorageBinding;
+    const current = getWorkerStorageBinding(this.coreDb, { storageRef: storage.storageRef });
+    if (
+      !current ||
+      current.state !== 'attached' ||
+      current.workspaceId !== session.environmentPackage.scope.workspaceId ||
+      !current.contributors.some(
+        (item) =>
+          item.workSlotRef === packageWorkerStorageWorkSlotRef(session.environmentPackage) &&
+          item.threadId === session.environmentPackage.scope.threadId &&
+          item.attachmentGeneration === storage.attachmentGeneration
+      ) ||
+      current.scopeDigest !== storage.scopeDigest ||
+      current.attachmentGeneration !== storage.attachmentGeneration ||
+      current.currentSandboxBindingRef !== session.sharedHarness.sandbox.sandboxBindingRef
+    )
+      throw new Error('Workspace collection attachment association is unavailable.');
+    return {
+      workspaceId: session.environmentPackage.scope.workspaceId,
+      storageRef: storage.storageRef,
+      scopeDigest: storage.scopeDigest,
+      attachmentGeneration: storage.attachmentGeneration,
+      sandboxId: session.sharedHarness.sandbox.sandboxId,
+      workSlot: packageWorkerStorageWorkSlotRef(session.environmentPackage),
+      collectionId,
+      agentSessionId: session.environmentPackage.scope.agentSessionId,
+      threadId: session.environmentPackage.scope.threadId,
+      turnId: session.environmentPackage.scope.turnId,
+      packageSnapshotId: session.environmentPackage.snapshotId,
+    };
+  }
+
+  /** Constructs the complete bounded credential-check command; it never truncates the check set. */
+  private workspaceCollectionCommand(
+    session: NanoHostBackendTurnSession,
+    identity: WorkspaceCollectionIdentity,
+    mode: 'baseline' | 'capture',
+    cursor: ReturnType<typeof readWorkspaceSnapshotCursor>
+  ) {
+    const digests = this.coreDb.sqlite
+      .prepare(
+        'SELECT inference_loopback_credential_digest AS inference, capability_loopback_credential_digest AS capability FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+      )
+      .get(session.agentSessionRuntimeBindingId) as
+      | { inference: string | null; capability: string | null }
+      | undefined;
+    const values = session.runtimeEnvironment ?? this.restoreCollectionRuntimeEnvironment(session);
+    let command: ReturnType<typeof WorkspaceCollectCommandSchema.parse>;
+    try {
+      command = WorkspaceCollectCommandSchema.parse({
+        ...identity,
+        requestId: '0'.repeat(64),
+        mode,
+        acceptedBase: mode === 'baseline' ? null : cursor?.acceptedBase,
+        previousHead: mode === 'baseline' ? null : cursor?.head,
+        checkValues: {
+          runtimeEnv: Object.values(values).filter((value) => value.length > 0),
+          loopbackDigests: [digests?.inference, digests?.capability],
+        },
+      });
+    } catch {
+      throw new WorkspaceCollectionError({
+        outcome: 'recovery_required',
+        cause: 'check_values_unavailable',
+      });
+    }
+    if (Buffer.byteLength(JSON.stringify(command)) > 512 * 1024)
+      throw new WorkspaceCollectionError({
+        outcome: 'recovery_required',
+        cause: 'command_too_large',
+      });
+    const { requestId: _requestId, ...input } = command;
+    return input;
+  }
+
+  /** Accepts the first verified snapshot before any Turn; retained slots never fall back to baseline. */
+  private async ensureWorkspaceBaseline(
+    session: NanoHostBackendTurnSession,
+    opensNewBinding: boolean
+  ): Promise<void> {
+    const identity = this.workspaceCollectionIdentity(session, 'baseline');
+    const db = openWorkspaceDb(this.coreDb.dataRoot, identity.workspaceId);
+    try {
+      applyScopedMigrations(db);
+      if (readWorkspaceSnapshotCursor(db, identity)) {
+        if (opensNewBinding) await this.collectWorkspaceSnapshot(session, 'successor');
+        else {
+          const previous = this.coreDb.sqlite
+            .prepare(
+              'SELECT lease_id AS leaseId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? AND package_snapshot_id <> ? ORDER BY created_at DESC, lease_id DESC LIMIT 1'
+            )
+            .get(identity.agentSessionId, identity.packageSnapshotId) as
+            | { leaseId: string; packageSnapshotId: string }
+            | undefined;
+          if (previous) {
+            const prior = requireAgentEnvironmentPackageSnapshot(
+              db,
+              identity.workspaceId,
+              previous.packageSnapshotId
+            ).snapshot;
+            const priorSession = {
+              ...session,
+              environmentPackage: prior,
+              identity: this.planSession(prior),
+              leaseId: previous.leaseId,
+            };
+            const records = await this.collectWorkspaceSnapshot(priorSession, 'turn-end');
+            if (records.length) {
+              if (!this.workspaceCollectionPublisher)
+                throw new Error('Workspace collection review publisher is unavailable.');
+              await this.workspaceCollectionPublisher(prior, records);
+            }
+          }
+        }
+        return;
+      }
+      requireWorkspaceBaselineInitialization(db, identity);
+      const sources = session.environmentPackage.workspace.inputs.filter(
+        (input) => input.access === 'read-write'
+      );
+      let expected = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+      if (sources.length) {
+        const source = sources[0]!;
+        const repository = getWorkspaceRepositoryResource(db, identity.workspaceId, source.id);
+        if (
+          sources.length !== 1 ||
+          source.source.kind !== 'git' ||
+          !repository ||
+          typeof source.source.commit !== 'string' ||
+          !/^[0-9a-f]{40}$/.test(source.source.commit)
+        )
+          throw new WorkspaceCollectionError({
+            outcome: 'recovery_required',
+            cause: 'baseline_source_unavailable',
+          });
+        try {
+          const gitEnvironment = {
+            PATH: process.env.PATH,
+            LC_ALL: 'C',
+            GIT_CONFIG_NOSYSTEM: '1',
+            GIT_CONFIG_GLOBAL: '/dev/null',
+          };
+          const objectFormat = execFileSync(
+            'git',
+            ['-C', repository.localPath, 'rev-parse', '--show-object-format'],
+            { encoding: 'utf8', env: gitEnvironment }
+          ).trim();
+          if (objectFormat !== 'sha1') throw new Error('Incomparable object format.');
+          expected = execFileSync(
+            'git',
+            ['-C', repository.localPath, 'rev-parse', '--verify', `${source.source.commit}^{tree}`],
+            { encoding: 'utf8', env: gitEnvironment }
+          ).trim();
+          if (!/^[0-9a-f]{40}$/.test(expected)) throw new Error('Unavailable expected tree.');
+        } catch {
+          throw new WorkspaceCollectionError({
+            outcome: 'recovery_required',
+            cause: 'baseline_source_unavailable',
+          });
+        }
+      }
+      const result = await this.effect(session.identity, session.leaseId, 'workspace.collect', {
+        ...this.workspaceCollectionCommand(session, identity, 'baseline', null),
+        attemptNonce: randomBytes(16).toString('hex'),
+      });
+      if (result.outcome !== 'baseline')
+        throw new WorkspaceCollectionError({
+          outcome:
+            result.outcome === 'recovery_required' || result.outcome === 'credential_hit'
+              ? result.outcome
+              : 'effect_failed',
+          cause: result.cause,
+        });
+      acceptWorkspaceBaseline(
+        db,
+        identity,
+        result.head as { tree: string; manifest: string },
+        expected,
+        sources[0]?.source.kind === 'git' ? (sources[0].source.commit ?? null) : null
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  }
+
+  /** Captures once per lifecycle boundary; committed receipts replay without another native scan. */
+  private async collectWorkspaceSnapshot(
+    session: NanoHostBackendTurnSession,
+    boundary: 'turn-end' | 'release' | 'successor'
+  ): Promise<WorkerGovernanceWorkspaceChangeRecord[]> {
+    const identity = this.workspaceCollectionIdentity(
+      session,
+      `${boundary}-${createHash('sha256').update(session.environmentPackage.snapshotId).digest('hex')}`
+    );
+    const db = openWorkspaceDb(this.coreDb.dataRoot, identity.workspaceId);
+    try {
+      applyScopedMigrations(db);
+      let receipt = readWorkspaceCollection(db, identity);
+      if (!receipt) {
+        const cursor = readWorkspaceSnapshotCursor(db, identity);
+        if (!cursor)
+          throw new WorkspaceCollectionError({
+            outcome: 'recovery_required',
+            cause: 'accepted_base_unknown',
+          });
+        const result = await this.effect(session.identity, session.leaseId, 'workspace.collect', {
+          ...this.workspaceCollectionCommand(session, identity, 'capture', cursor),
+          attemptNonce: randomBytes(16).toString('hex'),
+        });
+        if (!['candidate', 'empty', 'no_new_head'].includes(String(result.outcome)))
+          throw new WorkspaceCollectionError({
+            outcome:
+              result.outcome === 'recovery_required' || result.outcome === 'credential_hit'
+                ? result.outcome
+                : 'effect_failed',
+            cause: result.cause,
+          });
+        let candidate: Buffer | null = null;
+        if (result.outcome === 'candidate') candidate = await consumeNanoHostStagedExport(result);
+        const { stagingPath: _stagingPath, ...durable } = result;
+        receipt = acceptWorkspaceCapture(db, identity, durable, candidate);
+      }
+      const sources = session.environmentPackage.workspace.inputs.filter(
+        (input) => input.access === 'read-write'
+      );
+      if (
+        sources.length !== 1 ||
+        !getWorkspaceRepositoryResource(db, identity.workspaceId, sources[0]!.id)
+      )
+        return [];
+      const source = sources[0]!;
+      if (!receipt.candidate) {
+        if (receipt.result.outcome === 'empty')
+          recordWorkerOutputManifest(db, {
+            id: `wom_${identity.collectionId}`,
+            workspaceId: identity.workspaceId,
+            inputSnapshotId: `wis_${identity.packageSnapshotId}_${source.id}`,
+            materializationRecordId: `wmr_${identity.packageSnapshotId}_${source.id}`,
+            workerSessionId: session.identity.backendSessionId,
+            backendKind: 'openshell',
+            strategy: 'git',
+            changedPaths: [],
+            artifactIds: [],
+            ignoredOutputs: [],
+            logRefs: [],
+            testOutputRefs: [],
+            evidenceRefs: [{ kind: 'worker', ref: identity.turnId }],
+            collectedAt: receipt.result.collectedAt as string,
+          });
+        return [];
+      }
+      const parsed = readWorkspaceSnapshotCandidate(receipt.candidate);
+      const digest = `sha256:${createHash('sha256').update(receipt.candidate).digest('hex')}`;
+      const timestamp = receipt.result.collectedAt as string;
+      const changeSet = WorkspaceChangeSetSchema.parse({
+        id: `wcs_${identity.collectionId}`,
+        workspaceId: identity.workspaceId,
+        resourceId: source.id,
+        sourceId: source.source.sourceId,
+        inputSnapshotId: `wis_${identity.packageSnapshotId}_${source.id}`,
+        materializationRecordId: `wmr_${identity.packageSnapshotId}_${source.id}`,
+        strategy: 'git',
+        base: {
+          commit:
+            typeof receipt.result.acceptedCommit === 'string'
+              ? receipt.result.acceptedCommit
+              : (source.source.commit ?? null),
+          contentDigest: null,
+        },
+        head: { commit: null, contentDigest: digest },
+        changedPaths: parsed.changedPaths,
+        patch: {
+          ref: `workspace-collection://${identity.collectionId}`,
+          digest,
+          bytes: receipt.candidate.length,
+        },
+        bundle: null,
+        artifactIds: [],
+        evidenceRefs: [{ kind: 'worker', ref: identity.turnId }],
+        redaction: {
+          status: 'no-sensitive-content-found',
+          notes: ['NanoHost literal credential check passed.'],
+        },
+        createdAt: timestamp,
+      });
+      const patchPayload = {
+        text: receipt.candidate.toString('utf8'),
+        ...(Buffer.from(receipt.candidate.toString('utf8')).equals(receipt.candidate)
+          ? {}
+          : {
+              text: receipt.candidate.toString('base64'),
+              encoding: 'base64' as const,
+            }),
+        bytes: receipt.candidate.length,
+        digest,
+        mediaType: 'text/x-diff' as const,
+      };
+      const review = stageWorkspaceChangeSet(changeSet, {
+        createdAt: timestamp,
+        patchPayload,
+        reviewId: `swr_${identity.collectionId}`,
+        stagingRef: `staging://workspace/${identity.collectionId}`,
+      });
+      const earlierLinks = receipt.result.pendingEarlierLinks as string[];
+      if (earlierLinks.length)
+        review.riskSummary += ` Pending earlier capture links on this volume: ${earlierLinks.join(', ')}.`;
+      const unsafeApplication =
+        parsed.requiresRefinement ||
+        parsed.changedPaths.some(
+          (path) =>
+            path.binary ||
+            [path.oldPermissions, path.newPermissions].some(
+              (mode) => mode !== undefined && !['0644', '0755'].includes(mode)
+            )
+        ) ||
+        /^(?:new file mode|deleted file mode|old mode|new mode) (?:120000|160000)$/m.test(
+          parsed.gitPatch.toString('utf8')
+        ) ||
+        parsed.gitPatch.length === 0;
+      if (unsafeApplication) {
+        review.staging.branch = null;
+        review.validation.push({
+          command: 'workspace-snapshot-apply',
+          status: 'failed',
+          ref: null,
+        });
+        review.riskSummary +=
+          ' These captured bytes require refinement before the current Git application path can apply them.';
+      }
+      linkWorkspaceSnapshotReview(db, identity, changeSet.id);
+      const records = [{ changeSet, filesystemApply: null, patchPayload, review }];
+      if (boundary !== 'turn-end') {
+        if (!this.workspaceCollectionPublisher)
+          throw new Error('Workspace collection review publisher is unavailable.');
+        await this.workspaceCollectionPublisher(session.environmentPackage, records);
+      }
+      return records;
+    } finally {
+      db.sqlite.close();
+    }
   }
 
   /** Dispatches one fixed effect with an identity derived from durable lineage. */
@@ -3151,12 +3650,34 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Queues one exact pre-lease close from durable binding lineage and awaits its settled result. */
-  private closeDurableAgentSession(
+  private async closeDurableAgentSession(
     inspection: NanoHostAgentSessionContinuityInspection
   ): Promise<void> {
     if (this.agentSessionCloseOwners.has(inspection.agentSessionRuntimeBindingId)) {
       throw new Error('NanoHost AgentSession close already has a live producer.');
     }
+    const latest = this.coreDb.sqlite
+      .prepare(
+        'SELECT lease_id AS leaseId, workspace_id AS workspaceId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? ORDER BY created_at DESC, lease_id DESC LIMIT 1'
+      )
+      .get(inspection.agentSessionId) as
+      | { leaseId: string; workspaceId: string; packageSnapshotId: string }
+      | undefined;
+    if (!latest) throw new Error('Workspace release collection lineage is unavailable.');
+    const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, latest.workspaceId);
+    let environmentPackage: AgentEnvironmentPackage;
+    try {
+      applyScopedMigrations(workspaceDb);
+      environmentPackage = requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        latest.workspaceId,
+        latest.packageSnapshotId
+      ).snapshot;
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    this.restoreSession(environmentPackage, latest.leaseId);
+    await this.collectWorkspaceSnapshot(this.requireSession(latest.packageSnapshotId), 'successor');
     return new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
       const pending: PendingNanoHostHarnessOperation = {
         operation: 'session.close',

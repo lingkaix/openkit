@@ -1,3 +1,4 @@
+import { workspaceSyncReviewPatchBytes } from '@openkit/app-api-schemas';
 import { type ReactNode, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import {
@@ -251,7 +252,9 @@ function WorkspaceSyncSections({
                           <details>
                             <summary className="cursor-pointer text-sm text-fg">View diff</summary>
                             <pre className="mt-2 whitespace-pre-wrap font-mono text-xs text-fg-muted">
-                              {item.patchPayload.text}
+                              {new TextDecoder().decode(
+                                workspaceSyncReviewPatchBytes(item.patchPayload)
+                              )}
                             </pre>
                           </details>
                         ) : (

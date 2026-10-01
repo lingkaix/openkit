@@ -113,6 +113,8 @@ describe('scoped storage databases', () => {
         'workspace_quarantine_records',
         'workspace_reconciliation_records',
         'workspace_repository_resources',
+        'workspace_snapshot_collections',
+        'workspace_snapshot_cursors',
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
     } finally {

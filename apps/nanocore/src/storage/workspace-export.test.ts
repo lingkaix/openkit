@@ -1941,6 +1941,16 @@ describe('workspace export verifier', () => {
           table: 'workspace_filesystem_staging_roots',
           reason: 'host-local apply staging paths are not portable export history',
         },
+        {
+          table: 'workspace_snapshot_collections',
+          reason:
+            'exact collection replay and private candidate bytes belong to the source storage attachment',
+        },
+        {
+          table: 'workspace_snapshot_cursors',
+          reason:
+            'accepted snapshot and capture cursor require the source storage attachment and private scan store',
+        },
       ]);
     } finally {
       workspaceDb.sqlite.close();

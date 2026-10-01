@@ -1,9 +1,10 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import type { OpenCodeClient } from '@opencode/client';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenCodeAdapter } from './adapters/opencode.js';
 import { createPiResidentAdapter } from './adapters/pi.js';
@@ -127,8 +128,50 @@ describe('real native child environment through Harness', () => {
       agentSessionId: id,
       agentSessionRuntimeBindingId: `binding-${id}`,
     });
-    const open = (id: string, values: Record<string, string>) =>
-      send('session.open', {
+    const open = async (id: string, values: Record<string, string>) => {
+      // Core imports the session's initial workspace package before opening its native runtime.
+      const sandboxRoot = join(root, 'sandbox');
+      const packagePath = join(
+        sandboxRoot,
+        relative('/openkit', workerSessionInputPaths(id).packagePath)
+      );
+      await mkdir(dirname(packagePath), { recursive: true });
+      await writeFile(
+        packagePath,
+        JSON.stringify({
+          scope: {
+            agentSessionId: id,
+            threadId: `thread-${id}`,
+            workspaceId: 'workspace',
+            turnId: 'initial',
+          },
+          workspace: { root: sandboxRoot, inputs: [] },
+          runtime: {
+            environment: {
+              imageDigest: `sha256:${'a'.repeat(64)}`,
+              defaultsDigest: `sha256:${'b'.repeat(64)}`,
+              values,
+            },
+          },
+          extensions: {
+            openkit: {
+              sessionWorkspace: {
+                layout: {
+                  slots: [
+                    {
+                      id: 'work',
+                      kind: 'worktree',
+                      path: join(sandboxRoot, 'worktrees', id),
+                      access: 'read-write',
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        })
+      );
+      return await send('session.open', {
         ...selector(id),
         adapterId,
         agentSessionCompatibilityKey: 'a'.repeat(64),
@@ -140,6 +183,7 @@ describe('real native child environment through Harness', () => {
         threadId: `thread-${id}`,
         workspaceId: 'workspace',
       });
+    };
     try {
       expect(
         (

@@ -35,6 +35,89 @@ const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
 describe('private NanoHost Harness records', () => {
+  it('admits only workspace materialization startup failures at session open', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-open-refusal-')));
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-1',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-1',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          adapterId: 'codex',
+          agentSessionCompatibilityKey: 'b'.repeat(64),
+          agentSessionId: 'agent-session-1',
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          effectiveSetupGeneration: 1,
+          resume: null,
+          threadId: 'thread-1',
+          workspaceId: 'workspace-1',
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.open',
+        timestamp: now,
+      });
+      const command = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      })!;
+      const result = {
+        body: {
+          reasonCode: 'dependency_failed',
+          startupFailure: {
+            stage: 'workspace_materialization',
+            reason: 'failed',
+          },
+        },
+        disposition: 'refused' as const,
+        harnessInstanceId: 'harness-1',
+        operationId: command.operationId,
+        schemaVersion: 2 as const,
+        sequence: command.sequence,
+      };
+      const settle = (body: Record<string, unknown>) =>
+        settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result: { ...result, body },
+          timestamp: now,
+        });
+      expect(() =>
+        settle({ ...result.body, startupFailure: { stage: 'runtime_supply', reason: 'failed' } })
+      ).toThrow('startup failure is invalid');
+      expect(() => settle({ ...result.body, reasonCode: 'busy' })).toThrow(
+        'startup failure is invalid'
+      );
+      expect(() => settle(result.body)).not.toThrow();
+      expect(() => settle(result.body)).not.toThrow();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('retains three compatibility-keyed Harnesses with opaque adapter ids in one Sandbox', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-multi-harness-records-')));
     try {

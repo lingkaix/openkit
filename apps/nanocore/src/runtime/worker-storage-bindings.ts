@@ -304,6 +304,12 @@ export function reserveWorkerStorageAttachment(
         'Worker storage belongs to a different RuntimeTarget.'
       );
     }
+    if (binding.attachmentGeneration >= Number.MAX_SAFE_INTEGER) {
+      throw new WorkerStorageBindingError(
+        'revision_conflict',
+        'Worker storage attachment generation is exhausted.'
+      );
+    }
     const generation = binding.attachmentGeneration + 1;
     const workSlotRef = resolveWorkerStorageWorkSlotRef(binding, input);
     const nextLayout = normalizeWorkerStorageLayout(input.layout);

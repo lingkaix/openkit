@@ -7,9 +7,11 @@ import {
   type WorkspaceApplyResult,
   WorkspaceApplyResultSchema,
   type WorkspaceSyncReviewItem,
+  workspaceSyncReviewPatchBytes,
 } from '@openkit/app-api-schemas';
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceRepositoryResourceRecord } from '../workspace/repository-store.js';
+import { readWorkspaceSnapshotCandidate } from './workspace-snapshot-candidate.js';
 
 const SAFE_PROCESS_ENV_KEYS = [
   'COMSPEC',
@@ -178,6 +180,27 @@ export async function applyGitWorkspaceReview(input: {
 }): Promise<WorkspaceApplyResult> {
   requireGitReview(input.repository, input.review);
   const patchText = workspaceReviewPatchText(input.review);
+  if (
+    input.review.review.validation.some(
+      (check) => check.command === 'workspace-snapshot-apply' && check.status === 'failed'
+    )
+  ) {
+    const blocked = WorkspaceApplyResultSchema.parse({
+      id: `war_${input.review.review.id}`,
+      workspaceId: input.review.review.workspaceId,
+      reviewId: input.review.review.id,
+      changeSetId: input.review.changeSet.id,
+      status: 'blocked',
+      appliedPaths: [],
+      skippedPaths: input.review.changeSet.changedPaths.map((path) => path.path),
+      conflictRecords: [],
+      verification: [{ command: 'workspace-snapshot-apply', status: 'failed', ref: null }],
+      commitIds: [],
+      appliedAt: input.appliedAt,
+    });
+    input.persistResult(blocked);
+    return blocked;
+  }
   const baseCommit = requireCommitId(
     input.review.changeSet.base.commit,
     `Workspace review has no safe base commit: ${input.review.review.id}`
@@ -774,7 +797,7 @@ async function prepareWorkspaceReviewPatch(
   repositoryPath: string,
   review: WorkspaceSyncReviewItem,
   baseCommit: string,
-  patchText: string
+  patchText: string | Buffer
 ): Promise<PreparedWorkspaceReviewPatch> {
   const touchedPaths = declaredTouchedPaths(review);
   const worktreePath = join(context.rootPath, 'worktree');
@@ -1343,7 +1366,7 @@ async function rollbackAppliedReview(input: {
   readonly headUpdated: boolean;
   readonly newHead: string | null;
   readonly patchApplied: boolean;
-  readonly patchText: string;
+  readonly patchText: string | Buffer;
   readonly prepared: PreparedWorkspaceReviewPatch;
   readonly repositoryPath: string;
   readonly reviewId: string;
@@ -1585,16 +1608,17 @@ function declaredTouchedPaths(review: WorkspaceSyncReviewItem): string[] {
  * Verifies patch payload integrity and normalizes its trailing newline for Git.
  *
  * @param review Workspace review with patch payload and reference.
- * @returns Git-apply-ready patch text.
+ * @returns Exact Git-apply-ready patch bytes.
  */
-function workspaceReviewPatchText(review: WorkspaceSyncReviewItem): string {
+function workspaceReviewPatchText(review: WorkspaceSyncReviewItem): Buffer {
   const payload = review.patchPayload;
   const reference = review.changeSet.patch;
   if (!payload || !reference) {
     throw new Error(`Workspace review has no patch payload: ${review.review.id}`);
   }
-  const digest = `sha256:${createHash('sha256').update(payload.text).digest('hex')}`;
-  const bytes = Buffer.byteLength(payload.text, 'utf8');
+  const raw = Buffer.from(workspaceSyncReviewPatchBytes(payload));
+  const digest = `sha256:${createHash('sha256').update(raw).digest('hex')}`;
+  const bytes = raw.length;
   if (
     reference.digest !== payload.digest ||
     reference.bytes !== payload.bytes ||
@@ -1605,9 +1629,12 @@ function workspaceReviewPatchText(review: WorkspaceSyncReviewItem): string {
       `Workspace review patch payload failed integrity validation: ${review.review.id}`
     );
   }
-  return payload.text.length > 0 && !payload.text.endsWith('\n')
-    ? `${payload.text}\n`
-    : payload.text;
+  const patch = raw.includes(Buffer.from('openkit-full-mode-delta\n'))
+    ? readWorkspaceSnapshotCandidate(raw).gitPatch
+    : raw;
+  return patch.length > 0 && patch[patch.length - 1] !== 10
+    ? Buffer.concat([patch, Buffer.from('\n')])
+    : patch;
 }
 
 /**
@@ -1745,7 +1772,7 @@ async function runGit(
   context: GitOperationContext,
   cwd: string,
   args: readonly string[],
-  stdin = '',
+  stdin: string | Buffer = '',
   extraEnv: Readonly<Record<string, string>> = {},
   allowExitOne = false
 ): Promise<string> {

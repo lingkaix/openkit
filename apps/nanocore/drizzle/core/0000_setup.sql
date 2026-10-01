@@ -57,6 +57,7 @@ CREATE TABLE `agent_session_runtime_bindings` (
 	`native_environment_applied` integer DEFAULT 0 NOT NULL,
 	`inference_loopback_credential_digest` text,
 	`capability_loopback_credential_digest` text,
+	`runtime_env_check_versions_json` text,
 	CONSTRAINT `agent_session_runtime_bindings_loopback_digest_check` CHECK ((`inference_loopback_credential_digest` IS NULL) = (`capability_loopback_credential_digest` IS NULL) AND (`inference_loopback_credential_digest` IS NULL OR `inference_loopback_credential_digest` <> `capability_loopback_credential_digest`)),
 	CONSTRAINT `agent_session_runtime_bindings_setup_generation_check` CHECK (`effective_setup_generation` >= 1),
 	CONSTRAINT `agent_session_runtime_bindings_turn_sequence_check` CHECK (`next_turn_sequence` >= 0)

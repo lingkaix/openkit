@@ -48,7 +48,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     },
   };
 });
-const observations = vi.hoisted(() => ({ getResponses: [] as number[], publications: 0 }));
+const observations = vi.hoisted(() => ({ getResponses: [] as number[] }));
 vi.mock('node:http', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:http')>();
   return {
@@ -60,18 +60,6 @@ vi.mock('node:http', async (importOriginal) => {
           response.once('finish', () => observations.getResponses.push(response.statusCode));
       });
       return server;
-    },
-  };
-});
-vi.mock('../workspace-git.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../workspace-git.js')>();
-  return {
-    ...actual,
-    publishWorkspaceGitSnapshots: (
-      ...args: Parameters<typeof actual.publishWorkspaceGitSnapshots>
-    ) => {
-      observations.publications++;
-      return actual.publishWorkspaceGitSnapshots(...args);
     },
   };
 });
@@ -138,8 +126,18 @@ function harnessFor(
     agentSessionId: string,
     resume: { digest: string; locator: string } | null = null,
     threadId = 'thread-one'
-  ) =>
-    send('session.open', {
+  ) => {
+    const config = join(sandboxRoot, 'sessions', agentSessionId, 'config');
+    mkdirSync(config, { recursive: true });
+    writeFileSync(
+      join(config, 'package.json'),
+      JSON.stringify({
+        scope: { agentSessionId, threadId, workspaceId: workspaceId },
+        workspace: { root: sandboxRoot, inputs: [] },
+        extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
+      })
+    );
+    return send('session.open', {
       ...selector(agentSessionId),
       adapterId: 'pi',
       agentSessionCompatibilityKey: DIGEST,
@@ -150,6 +148,7 @@ function harnessFor(
       threadId,
       workspaceId,
     });
+  };
   const run = async (
     turnId: string,
     sequence: number,
@@ -248,7 +247,6 @@ async function fixture(
   options: PiResidentAdapterOptions = {}
 ) {
   observations.getResponses = [];
-  observations.publications = 0;
   await mkdir(SCRATCH, { recursive: true });
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-harness-lifecycle-')));
   const events: string[] = [];
@@ -504,7 +502,6 @@ describe('Pi real Integration lifecycle', () => {
         expect(
           f.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')!.body.status
         ).toBe('failed');
-        expect(observations.publications).toBe(0);
         const afterFinal = f.upstream.length;
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(f.upstream).toHaveLength(afterFinal);

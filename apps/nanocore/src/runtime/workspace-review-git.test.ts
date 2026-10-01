@@ -221,6 +221,96 @@ async function withAssumedDifferentOwnerGit(
 }
 
 describe('workspace review Git operations', () => {
+  it('stages non-UTF8 text patch bytes without loss', async () => {
+    const fixture = createFixture();
+    const bytes = Buffer.from([97, 255, 10]);
+    writeFileSync(join(fixture.repositoryPath, 'README.md'), bytes);
+    const patch = execFileSync('git', ['diff', '--binary', '--full-index', '--no-ext-diff'], {
+      cwd: fixture.repositoryPath,
+    });
+    git(fixture.repositoryPath, ['restore', 'README.md']);
+    const digest = `sha256:${createHash('sha256').update(patch).digest('hex')}`;
+    fixture.review.patchPayload = {
+      text: patch.toString('base64'),
+      encoding: 'base64',
+      digest,
+      bytes: patch.length,
+      mediaType: 'text/x-diff',
+    };
+    fixture.review.changeSet.patch = {
+      ...fixture.review.changeSet.patch!,
+      digest,
+      bytes: patch.length,
+    };
+    const commit = await stageGitWorkspaceReview({
+      repository: fixture.repository,
+      review: fixture.review,
+      store: fixture.store,
+      persistHead: () => {},
+    });
+    expect(
+      execFileSync('git', ['show', `${commit}:README.md`], { cwd: fixture.repositoryPath })
+    ).toEqual(bytes);
+    expect(readFileSync(join(fixture.repositoryPath, 'README.md'))).toEqual(
+      Buffer.from('# Demo\n')
+    );
+  });
+
+  it('binds the full immutable candidate digest while staging only the Git portion', async () => {
+    const fixture = createFixture();
+    const full = `${fixture.review.patchPayload!.text}\nopenkit-full-mode-delta\n0644 0755 9 README.md\n`;
+    const digest = `sha256:${createHash('sha256').update(full).digest('hex')}`;
+    fixture.review.patchPayload = {
+      text: full,
+      digest,
+      bytes: Buffer.byteLength(full),
+      mediaType: 'text/x-diff',
+    };
+    fixture.review.changeSet.patch = {
+      ...fixture.review.changeSet.patch!,
+      digest,
+      bytes: Buffer.byteLength(full),
+    };
+    const commit = await stageGitWorkspaceReview({
+      repository: fixture.repository,
+      review: fixture.review,
+      store: fixture.store,
+      persistHead: () => {},
+    });
+    expect(git(fixture.repositoryPath, ['show', `${commit}:README.md`])).toContain('Reviewed.');
+    expect(fixture.review.patchPayload.text).toBe(full);
+  });
+  it('blocks a captured candidate requiring refinement without changing the linked repository', async () => {
+    const fixture = createFixture();
+    fixture.review.changeSet.head.commit = await stageGitWorkspaceReview({
+      repository: fixture.repository,
+      review: fixture.review,
+      store: fixture.store,
+      persistHead: () => {},
+    });
+    fixture.review.review.validation.push({
+      command: 'workspace-snapshot-apply',
+      status: 'failed',
+      ref: null,
+    });
+    let persisted: unknown;
+    const result = await applyGitWorkspaceReview({
+      repository: fixture.repository,
+      review: fixture.review,
+      store: fixture.store,
+      appliedAt: '2026-07-11T00:00:01.000Z',
+      persistResult: (value) => {
+        persisted = value;
+      },
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.appliedPaths).toEqual([]);
+    expect(result.commitIds).toEqual([]);
+    expect(persisted).toEqual(result);
+    expect(git(fixture.repositoryPath, ['rev-parse', 'HEAD'])).toBe(fixture.baseCommit);
+    expect(git(fixture.repositoryPath, ['status', '--short'])).toBe('');
+    expect(readFileSync(join(fixture.repositoryPath, 'README.md'), 'utf8')).toBe('# Demo\n');
+  });
   it('stages a review branch without switching or dirtying the linked worktree', async () => {
     const fixture = createFixture();
     let persistedHead: string | null = null;

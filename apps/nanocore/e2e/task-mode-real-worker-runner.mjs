@@ -412,9 +412,7 @@ export function assertTaskModeAgentEnvironment(input) {
       workspaceInput?.id === 'repo_remote' &&
       workspaceInput?.kind === 'directory' &&
       workspaceInput?.target === '/workspace/openkit/worktrees/main' &&
-      workspaceInput?.materialization?.strategy === 'git' &&
-      workspaceInput?.materialization?.changeSetManifestPath ===
-        '/openkit/session/workspace-changes.json',
+      workspaceInput?.materialization?.strategy === 'git',
     'Task Mode AEP workspace root or declared Git worktree is incorrect.'
   );
   assert(

@@ -1092,6 +1092,20 @@ describe('OpenCode resident adapter', () => {
       agentSessionRuntimeBindingId: 'binding-as-opencode',
     };
     try {
+      const config = join(layout.root, 'sandbox', 'sessions', 'as-opencode', 'config');
+      mkdirSync(config, { recursive: true });
+      writeFileSync(
+        join(config, 'package.json'),
+        JSON.stringify({
+          scope: {
+            agentSessionId: 'as-opencode',
+            threadId: 'thread-opencode',
+            workspaceId: 'workspace-opencode',
+          },
+          workspace: { root: join(layout.root, 'sandbox'), inputs: [] },
+          extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
+        })
+      );
       const opened = await send('session.open', {
         ...selector,
         adapterId: 'opencode',
@@ -2912,8 +2926,18 @@ describe('W4 round-eight refused setup cleanup', () => {
         agentSessionId: id,
         agentSessionRuntimeBindingId: `binding-${id}`,
       });
-      const open = (id: string, resume: { digest: string; locator: string } | null = null) =>
-        send('session.open', {
+      const open = (id: string, resume: { digest: string; locator: string } | null = null) => {
+        const config = join(sandboxRoot, 'sessions', id, 'config');
+        mkdirSync(config, { recursive: true });
+        writeFileSync(
+          join(config, 'package.json'),
+          JSON.stringify({
+            scope: { agentSessionId: id, threadId: 'thread-r8', workspaceId: 'workspace-r8' },
+            workspace: { root: sandboxRoot, inputs: [] },
+            extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
+          })
+        );
+        return send('session.open', {
           ...selector(id),
           adapterId: 'opencode',
           agentSessionCompatibilityKey: 'a'.repeat(64),
@@ -2924,6 +2948,7 @@ describe('W4 round-eight refused setup cleanup', () => {
           threadId: 'thread-r8',
           workspaceId: 'workspace-r8',
         });
+      };
       try {
         expect(await open('as-r8')).toMatchObject({
           disposition: 'succeeded',

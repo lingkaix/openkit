@@ -144,6 +144,10 @@ export type {
 } from './workspace-repositories.js';
 export { workspaceRepositoryResources } from './workspace-repositories.js';
 export {
+  workspaceSnapshotCollections,
+  workspaceSnapshotCursors,
+} from './workspace-snapshot-chain.js';
+export {
   backendWorkspaceHandles,
   stagedWorkspaceReviews,
   workerOutputManifests,

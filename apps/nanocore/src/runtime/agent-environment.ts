@@ -99,6 +99,10 @@ export interface ResolvedAgentEnvironmentRuntimeFileCredential {
 
 /** Backend-private runtime environment credential material resolved for one sandbox launch. */
 export interface ResolvedAgentEnvironmentRuntimeEnvCredential {
+  /** Exact non-secret Vault reference and material version retained for restart collection. */
+  vaultReferenceId?: string;
+  /** Material version that produced this binding's environment value. */
+  materialVersion?: number;
   /** Secret environment variable value resolved from the vault backend. */
   readonly credentialValue: string;
   /** Worker-local environment variable name that receives the secret value. */
@@ -1327,7 +1331,7 @@ function resolveWorkerCredentialDeclarations(
       resolvingPath: 'grant',
       now: input.now,
       ...(ownerScope === 'workspace' ? { workspaceId: input.workspaceId } : {}),
-    }).resolve({ referenceId: reference.referenceId });
+    }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
 
     appendCredentialDeclarationArtifacts({
       artifacts,
@@ -1624,6 +1628,8 @@ function appendCredentialDeclarationArtifacts(
   }
 
   input.input.runtimeEnvCredentialSink?.({
+    vaultReferenceId: reference.referenceId,
+    materialVersion: reference.currentVersion,
     credentialValue: input.material,
     targetEnvVarName: declaration.targetEnvVarName,
   });
@@ -1791,7 +1797,6 @@ function workspaceInputMaterialization(
   access: 'read-only' | 'read-write'
 ): Record<string, unknown> {
   return {
-    changeSetManifestPath: '/openkit/session/workspace-changes.json',
     strategy: access === 'read-write' ? 'git' : 'filesystem',
   };
 }

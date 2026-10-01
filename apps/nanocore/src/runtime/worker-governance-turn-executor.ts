@@ -6,6 +6,7 @@ import type {
   WorkspaceMaterializationRecord,
   WorkspaceSynchronizationBackendKind,
 } from '@openkit/app-api-schemas';
+import { workspaceSyncReviewPatchBytes } from '@openkit/app-api-schemas';
 import type {
   AgentEnvironmentPackage,
   SessionWorkspaceMaterializationPlan,
@@ -1585,7 +1586,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
 
       backendCapabilities = await this.backend.describeCapabilities();
       const backendKind = toWorkspaceSynchronizationBackendKind(backendCapabilities.kind);
-      const inputSnapshots = workspaceDb
+      let inputSnapshots = workspaceDb
         ? buildWorkspaceInputSnapshots({
             backendCapabilities: backendCapabilities.capabilities,
             backendKind,
@@ -1648,6 +1649,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         });
       }
 
+      if (materialization.workspaceBaseCommits) {
+        inputSnapshots = inputSnapshots.map((snapshot) => {
+          const commit = materialization.workspaceBaseCommits?.[snapshot.resourceId];
+          return commit ? { ...snapshot, base: { ...snapshot.base, commit } } : snapshot;
+        });
+      }
       const builtMaterializationRecords = workspaceDb
         ? buildWorkspaceMaterializationRecords({
             createdAt: preparedWorkerContext ? timestamp : this.now(),
@@ -2249,6 +2256,53 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
   }
 
+  /** Stages release and successor captures through the same durable review and Artifact owner as Turn end. */
+  public async publishWorkspaceCollections(
+    store: FsStore,
+    environmentPackage: AgentEnvironmentPackage,
+    records: readonly WorkerGovernanceWorkspaceChangeRecord[]
+  ): Promise<void> {
+    if (!this.coreDb || records.length === 0) return;
+    const lineage = {
+      ...environmentPackage.scope,
+      packageSnapshotId: environmentPackage.snapshotId,
+    };
+    if (
+      !currentWorkerLineageWorkspaceAuthority(this.coreDb, lineage, 'workspace.write', true) ||
+      !currentWorkerLineageWorkspaceAuthority(this.coreDb, lineage, 'artifact.write', true)
+    )
+      throw new TurnStartValidationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
+      );
+    const releaseMutation = this.workspaceMutationAdmission?.enterLatePublisher(
+      environmentPackage.scope.workspaceId,
+      'worker-turn-closeout'
+    );
+    if (this.workspaceMutationAdmission && !releaseMutation)
+      throw new TurnStartValidationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
+      );
+    const db = openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
+    try {
+      await this.createWorkspaceChangeArtifacts(
+        store,
+        environmentPackage,
+        records,
+        db,
+        listWorkspaceInputSnapshots(db, environmentPackage.scope.workspaceId),
+        listWorkspaceMaterializationRecords(db, environmentPackage.scope.workspaceId),
+        records[0]!.review.createdAt
+      );
+    } finally {
+      db.sqlite.close();
+      releaseMutation?.();
+    }
+  }
+
   /**
    * Binds the Turn's AgentSession as the durable owner of native ready proof the backend accepts,
    * so the resume pair survives a failed Turn, a NanoCore restart, and the binding's close. With
@@ -2465,8 +2519,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             record.changeSet.resourceId
           )
         : null;
-      const patchDigest = record.patchPayload
-        ? `sha256:${createHash('sha256').update(record.patchPayload.text).digest('hex')}`
+      const patchBytes = record.patchPayload
+        ? workspaceSyncReviewPatchBytes(record.patchPayload)
+        : null;
+      const patchDigest = patchBytes
+        ? `sha256:${createHash('sha256').update(patchBytes).digest('hex')}`
         : null;
       const gitPatchIsValid =
         record.changeSet.strategy !== 'git' ||
@@ -2476,7 +2533,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             record.changeSet.patch.digest === record.patchPayload.digest &&
             record.changeSet.patch.bytes === record.patchPayload.bytes &&
             patchDigest === record.patchPayload.digest &&
-            Buffer.byteLength(record.patchPayload.text, 'utf8') === record.patchPayload.bytes
+            patchBytes?.byteLength === record.patchPayload.bytes
         );
       const filesystemApplyIsValid =
         record.changeSet.strategy !== 'filesystem' ||
@@ -2617,7 +2674,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       };
       if (
         repository?.git.stagingStrategy === 'review-branch' &&
-        record.changeSet.strategy === 'git'
+        record.changeSet.strategy === 'git' &&
+        record.review.staging.branch !== null
       ) {
         await stageGitWorkspaceReview({
           persistHead: (commitId) => {

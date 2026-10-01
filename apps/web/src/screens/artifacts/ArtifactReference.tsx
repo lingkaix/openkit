@@ -1,4 +1,7 @@
-import { WorkspaceSyncReviewItemSchema } from '@openkit/app-api-schemas';
+import {
+  WorkspaceSyncReviewItemSchema,
+  workspaceSyncReviewPatchBytes,
+} from '@openkit/app-api-schemas';
 import type { Item } from '@openkit/protocol';
 import { Button, Dialog, ErrorBanner, ItemCard, Modal, Skeleton } from '../../primitives';
 import { useArtifact } from './data';
@@ -96,7 +99,9 @@ function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
             ))}
           </ul>
           {review.patchPayload ? (
-            <pre className="overflow-x-auto whitespace-pre text-xs">{review.patchPayload.text}</pre>
+            <pre className="overflow-x-auto whitespace-pre text-xs">
+              {new TextDecoder().decode(workspaceSyncReviewPatchBytes(review.patchPayload))}
+            </pre>
           ) : (
             <p>No text diff was recorded.</p>
           )}

@@ -83,6 +83,29 @@ function selection(binding: ReturnType<typeof createBinding>) {
 }
 
 describe('Worker storage bindings', () => {
+  it('refuses attachment generation exhaustion before changing storage or contributors', () => {
+    const coreDb = createCoreDb();
+    try {
+      const initial = createBinding(coreDb);
+      coreDb.sqlite
+        .prepare(
+          'UPDATE worker_storage_bindings SET attachment_generation = ? WHERE storage_ref = ?'
+        )
+        .run(Number.MAX_SAFE_INTEGER, initial.storageRef);
+      const binding = getWorkerStorageBinding(coreDb, { storageRef: initial.storageRef })!;
+      expect(() =>
+        reserveWorkerStorageAttachment(coreDb, {
+          ...selection(binding),
+          agentSessionId: 'session_1',
+          runtimeTargetId: 'target_1',
+        })
+      ).toThrow('attachment generation is exhausted');
+      expect(getWorkerStorageBinding(coreDb, { storageRef: initial.storageRef })).toEqual(binding);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('authorizes only the exact selected revision attached to a replaced Sandbox', () => {
     const coreDb = createCoreDb();
     try {

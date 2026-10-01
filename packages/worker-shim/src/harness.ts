@@ -32,7 +32,13 @@ import {
   SANDBOX_NATIVE_INFERENCE_BASE_URL,
   type SandboxIntegrationClient,
 } from './integration-client.js';
-import { isNativeSettlementUnknown, runResidentTurn, type WorkerShimEnvironment } from './turn.js';
+import {
+  describeWorkerStartupFailure,
+  initializeSessionWorkspace,
+  isNativeSettlementUnknown,
+  runResidentTurn,
+  type WorkerShimEnvironment,
+} from './turn.js';
 
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
@@ -212,7 +218,7 @@ export class WorkerHarness {
       return result(command, 'succeeded', resultBody);
     } catch (error) {
       const startupFailure =
-        command.operation === 'turn.start' &&
+        (command.operation === 'turn.start' || command.operation === 'session.open') &&
         error &&
         typeof error === 'object' &&
         'startupFailure' in error
@@ -298,6 +304,17 @@ export class WorkerHarness {
         recursive: true,
       });
       await mkdir(this.mapSandboxPath(inputPaths.contextRoot), { mode: 0o700, recursive: true });
+      try {
+        await initializeSessionWorkspace(
+          this.mapSandboxPath(inputPaths.packagePath),
+          sessionDirectory,
+          body
+        );
+      } catch (error) {
+        throw Object.assign(harnessError('dependency_failed'), {
+          startupFailure: describeWorkerStartupFailure('workspace_materialization', error),
+        });
+      }
       // The adapter contract owns the no-live-effect guarantee. A resident that still exists when
       // close fails keeps the Thread reserved and drains this Harness.
       resident = await adapter

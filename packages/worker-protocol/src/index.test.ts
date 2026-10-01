@@ -19,7 +19,6 @@ import {
   WorkerRuntimeProvenanceFeatureSchema,
   WorkerRuntimeRawStreamManifestSchema,
   WorkerTranscriptRecordSchema,
-  WorkerWorkspaceChangeManifestSchema,
 } from './index.js';
 
 const lineage = {
@@ -622,44 +621,6 @@ describe('worker protocol schemas', () => {
           lineage,
           schemaVersion: 1,
           sequence: 18,
-        })
-      ).toThrow();
-    }
-  });
-
-  it('accepts workspace change manifests and rejects unsafe paths', () => {
-    expect(
-      WorkerWorkspaceChangeManifestSchema.parse({
-        schemaVersion: 1,
-        lineage,
-        sequence: 7,
-        base: {
-          commit: 'abc123',
-          contentDigest: 'sha256:base',
-        },
-        changes: [
-          {
-            path: 'src/index.ts',
-            status: 'modified',
-            digest: 'sha256:file',
-          },
-        ],
-        bundleDigest: 'sha256:bundle',
-      }).changes[0]?.path
-    ).toBe('src/index.ts');
-
-    for (const path of ['/etc/passwd', '../escape.txt', 'src/../../escape.txt']) {
-      expect(() =>
-        WorkerWorkspaceChangeManifestSchema.parse({
-          schemaVersion: 1,
-          lineage,
-          sequence: 8,
-          changes: [
-            {
-              path,
-              status: 'modified',
-            },
-          ],
         })
       ).toThrow();
     }

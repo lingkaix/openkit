@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -54,6 +54,7 @@ it.each([
   // Route the actual native host to the synthetic provider without replacing ACP or native work.
   const adapter: WorkerResidentAdapter = {
     async openSession(input) {
+      expect(readdirSync(join(sandboxRoot, 'worktrees', input.agentSessionId))).toEqual([]);
       const resident = await deepseekResidentAdapter.openSession({
         ...input,
         loopback: { ...input.loopback, inferenceBaseUrl: inference.url },
@@ -107,8 +108,33 @@ it.each([
     agentSessionId: id,
     agentSessionRuntimeBindingId: `binding-${id}`,
   });
-  const open = (id: string, resume: { locator: string; digest: string } | null) =>
-    send('session.open', {
+  const open = (id: string, resume: { locator: string; digest: string } | null) => {
+    // Core imports the admitted initial AEP before open; Harness initializes its work slot before native admission.
+    const config = join(sandboxRoot, 'sessions', id, 'config');
+    mkdirSync(config, { recursive: true });
+    writeFileSync(
+      join(config, 'package.json'),
+      JSON.stringify({
+        scope: { agentSessionId: id, threadId: 'thread-one', workspaceId: 'workspace-one' },
+        workspace: { root: sandboxRoot, inputs: [] },
+        extensions: {
+          openkit: {
+            sessionWorkspace: {
+              layout: {
+                slots: [
+                  {
+                    kind: 'worktree',
+                    access: 'read-write',
+                    path: join(sandboxRoot, 'worktrees', id),
+                  },
+                ],
+              },
+            },
+          },
+        },
+      })
+    );
+    return send('session.open', {
       ...selector(id),
       adapterId: 'deepseek',
       agentSessionCompatibilityKey: hash('setup'),
@@ -119,6 +145,7 @@ it.each([
       threadId: 'thread-one',
       workspaceId: 'workspace-one',
     });
+  };
   const start = (id: string, turnId: string, models: string[], preferred: string, text: string) => {
     const inputRoot = join(sandboxRoot, 'sessions', id);
     const config = join(inputRoot, 'config');

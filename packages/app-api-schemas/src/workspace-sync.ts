@@ -342,15 +342,41 @@ export const WorkspaceSyncReviewPatchPayloadSchema = z
   .object({
     mediaType: z.literal('text/x-diff'),
     text: z.string(),
+    encoding: z.literal('base64').optional(),
     digest: z.string().min(1),
     bytes: z.number().int().nonnegative(),
   })
-  .strict()
   .superRefine((value, ctx) => {
     const { text, ...metadata } = value;
     addRawSecretIssues(metadata, ctx, []);
-    addRawSecretIssuesForPatchText(text, ctx, ['text']);
+    if (value.encoding === 'base64') {
+      try {
+        if (btoa(atob(text)) !== text) throw new Error('Noncanonical base64.');
+      } catch {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Patch bytes require canonical base64.',
+          path: ['text'],
+        });
+        return;
+      }
+    }
+    addRawSecretIssuesForPatchText(
+      new TextDecoder().decode(workspaceSyncReviewPatchBytes(value)),
+      ctx,
+      ['text']
+    );
   });
+
+/** Returns exact patch bytes; absent encoding denotes the existing UTF-8 text representation. */
+export function workspaceSyncReviewPatchBytes(payload: {
+  text: string;
+  encoding?: 'base64' | undefined;
+}): Uint8Array {
+  return payload.encoding === 'base64'
+    ? Uint8Array.from(atob(payload.text), (character) => character.charCodeAt(0))
+    : new TextEncoder().encode(payload.text);
+}
 
 /** Planned workspace writes and checks captured before applying an accepted review. */
 export const WorkspaceApplyPlanSchema = z

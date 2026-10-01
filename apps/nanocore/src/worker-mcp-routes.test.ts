@@ -1653,6 +1653,19 @@ describe('worker MCP routes', () => {
             },
           };
         }
+        if (request.kind === 'workspace.collect') {
+          // This source-less fixture accepts the real empty baseline before native Turn admission.
+          return request.input.mode === 'baseline'
+            ? {
+                requestId: request.requestId,
+                outcome: 'baseline',
+                head: {
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                },
+              }
+            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+        }
         if (request.kind === 'reference.import') return { state: 'imported' };
         if (request.kind === 'bridge.open') {
           return { accepted: true, integrationReady: true, state: 'open' };

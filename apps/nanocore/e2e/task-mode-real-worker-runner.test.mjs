@@ -146,7 +146,6 @@ function createPassingTaskModeFixture(options) {
                         id: 'repo_remote',
                         kind: 'directory',
                         materialization: {
-                          changeSetManifestPath: '/openkit/session/workspace-changes.json',
                           strategy: 'git',
                         },
                         source: {

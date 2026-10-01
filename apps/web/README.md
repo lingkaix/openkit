@@ -345,3 +345,5 @@ The current React baseline includes the app shell, three-theme token bridge, sid
 Thread and Overview approval cards show the bounded summary and the responsible user’s loaded complete exact effect before enabling grant. Unavailable detail states `Exact effect unavailable; approval disabled`; authorized denial and withdrawal stay available under the current request state. Detail is supplied by the existing Thread dashboard, without a preview acknowledgement command.
 
 Prepared Worker environment review displays the measured image identity, the defaults digest and default names before admission. Activation binds both digests in the existing canonical confirmation; values are admitted only by NanoCore after fresh exact-image inspection.
+
+Workspace review diff presentation uses the shared patch byte decoder for both UTF-8 text and exact encoded patches; presentation decoding does not change the retained bytes or digest.

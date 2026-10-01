@@ -657,55 +657,6 @@ export const WorkerTranscriptRecordSchema = z.discriminatedUnion('kind', [
 ]);
 
 /**
- * Relative workspace path that cannot be absolute or traverse outside the declared root.
- */
-export const WorkerRelativePathSchema = z
-  .string()
-  .min(1)
-  .refine((value) => !value.startsWith('/'), 'Path must be relative.')
-  .refine((value) => !value.split('/').includes('..'), 'Path must not traverse parent roots.');
-
-/**
- * Base workspace snapshot referenced by a worker change manifest.
- */
-export const WorkerWorkspaceBaseSchema = z
-  .object({
-    commit: z.string().min(1).nullable().optional(),
-    contentDigest: z.string().min(1).nullable().optional(),
-  })
-  .strict();
-
-/**
- * One changed file summary emitted by the worker sidecar.
- */
-export const WorkerWorkspaceChangedFileSchema = z
-  .object({
-    path: WorkerRelativePathSchema,
-    status: z.enum(['added', 'modified', 'deleted', 'renamed']),
-    previousPath: WorkerRelativePathSchema.optional(),
-    digest: z.string().min(1).nullable().optional(),
-    binary: z.boolean().optional(),
-    executable: z.boolean().optional(),
-    sizeBytes: z.number().int().nonnegative().optional(),
-  })
-  .strict();
-
-/**
- * Workspace change manifest emitted through `/openkit/session/workspace-changes.json`.
- */
-export const WorkerWorkspaceChangeManifestSchema = z
-  .object({
-    schemaVersion: WorkerProtocolSchemaVersionSchema,
-    lineage: WorkerLineageSchema,
-    sequence: WorkerSequenceSchema,
-    base: WorkerWorkspaceBaseSchema.optional(),
-    changes: z.array(WorkerWorkspaceChangedFileSchema).default([]),
-    bundleDigest: z.string().min(1).nullable().optional(),
-    generatedArtifactPaths: z.array(WorkerRelativePathSchema).default([]),
-  })
-  .strict();
-
-/**
  * Worker capability families allowed through the governed capability plane.
  */
 export const WorkerCapabilityFamilySchema = z.enum([
@@ -886,7 +837,6 @@ export type WorkerCanonicalTerminalEventDataInput = z.input<
 /** Worker transcript record inferred TypeScript type. */
 export type WorkerTranscriptRecord = z.infer<typeof WorkerTranscriptRecordSchema>;
 /** Worker workspace change manifest inferred TypeScript type. */
-export type WorkerWorkspaceChangeManifest = z.infer<typeof WorkerWorkspaceChangeManifestSchema>;
 /** Worker capability call summary inferred TypeScript type. */
 export type WorkerCapabilityCallSummary = z.infer<typeof WorkerCapabilityCallSummarySchema>;
 /** Worker heartbeat lifecycle status inferred TypeScript type. */

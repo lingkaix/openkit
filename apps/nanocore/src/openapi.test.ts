@@ -41,7 +41,7 @@ const NON_APP_API_ROUTE_PATTERNS = [
   /^\/api\/worker-inference(?:\/|$)/,
   /^\/api\/worker-capabilities(?:\/|$)/,
   /^\/api\/nanohost\/transport\/session\/admit$/,
-  /^\/api\/nanohost\/transport\/effects\/(?:sandbox\.(?:create|delete)|storage\.(?:inspect|purge)|bridge\.(?:open|close)|image\.(?:acquire|build|inspect)|file\.export|reference\.import)(?:\/result)?$/,
+  /^\/api\/nanohost\/transport\/effects\/(?:sandbox\.(?:create|delete)|storage\.(?:inspect|purge)|bridge\.(?:open|close)|image\.(?:acquire|build|inspect)|file\.export|reference\.import|workspace\.collect)(?:\/result)?$/,
   /^\/api\/workspaces(?:\/|$)/,
   /^\/api\/approvals(?:\/|$)/,
   /^\/api\/user-input-requests(?:\/|$)/,
@@ -70,6 +70,7 @@ const PRIVATE_NANOHOST_EFFECT_ROUTES = [
   'storage.purge',
   'file.export',
   'reference.import',
+  'workspace.collect',
 ].flatMap((operation) => [
   `POST /api/nanohost/transport/effects/${operation}`,
   `POST /api/nanohost/transport/effects/${operation}/result`,

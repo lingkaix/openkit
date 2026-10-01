@@ -25,6 +25,7 @@ import type {
 import { runWorkerHarness, WorkerHarness } from './harness.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { WorkerTranscriptWriter } from './transcript.js';
+import { initializeSessionWorkspace } from './turn.js';
 
 const loopFixture = vi.hoisted(() => ({
   client: null as SandboxIntegrationClient | null,
@@ -337,12 +338,18 @@ function harnessFixture(
     agentSessionId: string,
     extra: {
       resume?: { digest: string; locator: string } | null;
+      initialPackage?: boolean;
       runtimeEnvironment?: Record<string, string>;
       nativeEnvironment?: Record<string, string>;
       threadId?: string;
     } = {}
-  ) =>
-    send('session.open', {
+  ) => {
+    if (extra.initialPackage !== false && !existsSync(packagePath(agentSessionId)))
+      writePackage(agentSessionId, 'initial', {
+        threadId: extra.threadId,
+        runtimeEnvNames: Object.keys(extra.runtimeEnvironment ?? {}),
+      });
+    return send('session.open', {
       ...selector(agentSessionId),
       adapterId,
       agentSessionCompatibilityKey: DIGEST,
@@ -355,6 +362,7 @@ function harnessFixture(
       threadId: extra.threadId ?? 'thread-one',
       workspaceId: 'workspace-one',
     });
+  };
   const packagePath = (agentSessionId: string) =>
     join(sandboxRoot, 'sessions', agentSessionId, 'config', 'package.json');
   const contextRoot = (agentSessionId: string) =>
@@ -399,7 +407,22 @@ function harnessFixture(
             visibility: 'runtime-env',
           })),
         },
-        extensions: { openkit: { turnInput: `input for ${turnId}` } },
+        extensions: {
+          openkit: {
+            turnInput: `input for ${turnId}`,
+            sessionWorkspace: {
+              layout: {
+                slots: [
+                  {
+                    kind: 'worktree',
+                    access: 'read-write',
+                    path: join(sandboxRoot, 'worktrees', agentSessionId),
+                  },
+                ],
+              },
+            },
+          },
+        },
         llm: {
           mode: 'gateway',
           preferredLogicalModelId: 'model-a',
@@ -419,6 +442,7 @@ function harnessFixture(
           turnId,
           workspaceId: 'workspace-one',
         },
+        workspace: { root: sandboxRoot, inputs: [] },
         snapshotId: `package-${turnId}`,
         supply: { mcpServers: [{ id: 'echo' }] },
       })
@@ -496,6 +520,149 @@ function command(operation: string, sequence: number, body: Readonly<Record<stri
     sequence,
   };
 }
+
+describe('session.open workspace initialization', () => {
+  it('initializes the source-less empty work slot before the native runtime opens', async () => {
+    const fixture = harnessFixture();
+    fixture.writePackage('session-empty', 'initial');
+    const path = join(fixture.sandboxRoot, 'worktrees', 'session-empty');
+    expect(existsSync(path)).toBe(false);
+    const nativeEnvironment = { HELLO_NATIVE: 'hello', EMPTY_NATIVE: '' };
+    const packagePath = fixture.packagePath('session-empty');
+    const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
+    manifest.runtime.environment = {
+      imageDigest: `sha256:${'a'.repeat(64)}`,
+      defaultsDigest: `sha256:${'b'.repeat(64)}`,
+      values: nativeEnvironment,
+    };
+    writeFileSync(packagePath, JSON.stringify(manifest));
+    const openSession = fixture.fake.adapter.openSession.bind(fixture.fake.adapter);
+    const boundary = vi
+      .spyOn(fixture.fake.adapter, 'openSession')
+      .mockImplementation(async (input) => {
+        expect(existsSync(path)).toBe(true);
+        expect(readdirSync(path)).toEqual([]);
+        expect(input.environment).toMatchObject(nativeEnvironment);
+        return await openSession(input);
+      });
+    const result = await fixture.open('session-empty', { nativeEnvironment });
+    expect(result.disposition).toBe('succeeded');
+    expect(boundary).toHaveBeenCalledOnce();
+    expect(existsSync(path)).toBe(true);
+    expect(readdirSync(path)).toEqual([]);
+    expect(fixture.fake.residents).toHaveLength(1);
+  });
+  it.each([
+    'scope',
+    'root',
+    'slots',
+    'slot-path',
+    'supply',
+  ])('refuses incompatible initial %s before native open', async (part) => {
+    const fixture = harnessFixture();
+    fixture.writePackage('session-invalid', 'initial');
+    const path = join(fixture.sandboxRoot, 'sessions', 'session-invalid', 'config', 'package.json');
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    if (part === 'scope') manifest.scope.threadId = 'foreign';
+    if (part === 'root') delete manifest.workspace.root;
+    if (part === 'slots') delete manifest.extensions.openkit.sessionWorkspace.layout.slots;
+    if (part === 'slot-path')
+      manifest.extensions.openkit.sessionWorkspace.layout.slots[0].path = 42;
+    if (part === 'supply')
+      manifest.supply = {
+        skills: [
+          {
+            id: 'missing',
+            materialization: {
+              kind: 'filesystem-copy',
+              targetPath: join(fixture.root, 'missing-skill'),
+            },
+          },
+        ],
+      };
+    writeFileSync(path, JSON.stringify(manifest));
+    const invariantError = (
+      {
+        root: 'Initial workspace root is unavailable',
+        slots: 'Initial workspace slots are unavailable',
+        'slot-path': 'Initial workspace slot is invalid',
+      } as Record<string, string>
+    )[part];
+    if (invariantError)
+      await expect(
+        initializeSessionWorkspace(path, join(fixture.sandboxRoot, 'sessions', 'session-invalid'), {
+          agentSessionId: 'session-invalid',
+          threadId: 'thread-one',
+          workspaceId: 'workspace-one',
+        })
+      ).rejects.toThrow(invariantError);
+    const result = await fixture.open('session-invalid');
+    expect(result.disposition).toBe('refused');
+    expect(result.body).toMatchObject({ startupFailure: { stage: 'workspace_materialization' } });
+    expect(fixture.fake.residents).toHaveLength(0);
+  });
+  it('returns a workspace materialization fetch refusal before native open', async () => {
+    const fixture = harnessFixture();
+    fixture.writePackage('session-git-refusal', 'initial');
+    const path = join(
+      fixture.sandboxRoot,
+      'sessions',
+      'session-git-refusal',
+      'config',
+      'package.json'
+    );
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    manifest.workspace.inputs = [
+      {
+        id: 'repo',
+        kind: 'repository',
+        access: 'read-write',
+        target: manifest.extensions.openkit.sessionWorkspace.layout.slots[0].path,
+        source: {
+          kind: 'git',
+          url: 'https://example.invalid/refused.git',
+          commit: 'a'.repeat(40),
+          catalogEntryDigest: `sha256:${'b'.repeat(64)}`,
+          sensitivity: 'internal',
+          sourceId: 'repo',
+          sourceRef: 'source-ref',
+        },
+        materialization: { strategy: 'git' },
+      },
+    ];
+    writeFileSync(path, JSON.stringify(manifest));
+    const bin = join(fixture.root, 'git-bin');
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, 'git'),
+      `#!${process.execPath}\nif (process.argv.includes('fetch')) { process.stderr.write('fatal: The requested URL returned error: 401\\n'); process.exit(1); }\nprocess.exit(0);\n`
+    );
+    chmodSync(join(bin, 'git'), 0o755);
+    const previous = process.env.PATH;
+    try {
+      process.env.PATH = `${bin}:${previous}`;
+      const result = await fixture.open('session-git-refusal');
+      expect(result.disposition).toBe('refused');
+      expect(result.body).toMatchObject({
+        startupFailure: { stage: 'workspace_materialization', reason: 'git_fetch_http_refused' },
+      });
+      expect(fixture.fake.residents).toHaveLength(0);
+    } finally {
+      if (previous === undefined) delete process.env.PATH;
+      else process.env.PATH = previous;
+    }
+  });
+  it('refuses a missing initial AEP before opening the native runtime', async () => {
+    const fixture = harnessFixture();
+    const result = await fixture.open('session-missing', { initialPackage: false });
+    expect(result.disposition).toBe('refused');
+    expect(result.body).toMatchObject({
+      reasonCode: 'dependency_failed',
+      startupFailure: { stage: 'workspace_materialization', reason: 'missing_file' },
+    });
+    expect(fixture.fake.residents).toHaveLength(0);
+  });
+});
 
 describe('Worker Harness loop', () => {
   afterEach(() => {

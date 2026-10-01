@@ -2,15 +2,14 @@ import { createHash } from 'node:crypto';
 import {
   type StagedWorkspaceReview,
   StagedWorkspaceReviewSchema,
-  type WorkspaceChangedPath,
   type WorkspaceChangeSet,
-  WorkspaceChangeSetSchema,
   type WorkspaceInputSnapshot,
   WorkspaceInputSnapshotSchema,
   type WorkspaceMaterializationRecord,
   WorkspaceMaterializationRecordSchema,
   type WorkspaceSynchronizationBackendKind,
   type WorkspaceSyncReviewPatchPayload,
+  workspaceSyncReviewPatchBytes,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
@@ -58,12 +57,6 @@ export interface BuildWorkspaceMaterializationRecordsInput {
   materialization: BuildWorkspaceMaterializationRecordsMaterialization;
 }
 
-/** Options for parsing one worker-produced workspace change manifest. */
-export interface ParseWorkspaceChangeSetManifestOptions {
-  /** Optional relative path prefixes that the change set must stay within. */
-  allowedPathPrefixes?: readonly string[] | undefined;
-}
-
 /** Options for staging one workspace change set for review. */
 export interface StageWorkspaceChangeSetOptions {
   /** ISO timestamp used for created and updated fields. */
@@ -75,8 +68,6 @@ export interface StageWorkspaceChangeSetOptions {
   /** Product-safe reference to the staged diff. */
   stagingRef: string;
 }
-
-const BINARY_ARTIFACT_ONLY_THRESHOLD_BYTES = 1024 * 1024;
 
 /**
  * Builds product-safe workspace input snapshot records from an Agent Environment Package.
@@ -255,39 +246,6 @@ function isAcceptedContextPackageSnapshot(
 }
 
 /**
- * Parses and validates a worker-produced workspace change-set manifest.
- *
- * @param manifestText Serialized JSON manifest.
- * @param options Optional path-scope validation.
- * @returns Parsed workspace change set.
- * @throws Error when the manifest is invalid or escapes the declared scope.
- */
-export function parseWorkspaceChangeSetManifest(
-  manifestText: string,
-  options: ParseWorkspaceChangeSetManifestOptions = {}
-): WorkspaceChangeSet {
-  const parsed = WorkspaceChangeSetSchema.parse(JSON.parse(manifestText) as unknown);
-  if (parsed.changedPaths.length === 0) {
-    throw new Error('workspace change manifest is semantically empty');
-  }
-  const changeSet = withBinaryReviewPresentations(parsed);
-  const allowedPathPrefixes = options.allowedPathPrefixes?.map(normalizeAllowedPrefix) ?? [];
-
-  if (allowedPathPrefixes.length > 0) {
-    for (const changedPath of changeSet.changedPaths) {
-      if (!isPathAllowed(changedPath.path, allowedPathPrefixes)) {
-        throw new Error(`unsafe workspace change path: ${changedPath.path}`);
-      }
-      if (changedPath.oldPath && !isPathAllowed(changedPath.oldPath, allowedPathPrefixes)) {
-        throw new Error(`unsafe workspace change path: ${changedPath.oldPath}`);
-      }
-    }
-  }
-
-  return changeSet;
-}
-
-/**
  * Builds a pending staged review record from a parsed workspace change set.
  *
  * @param changeSet Parsed workspace change set.
@@ -339,7 +297,9 @@ function workspaceDiffSummary(
   let deletions = 0;
   let insideHunk = false;
 
-  for (const line of patchPayload?.text.split('\n') ?? []) {
+  for (const line of patchPayload
+    ? new TextDecoder().decode(workspaceSyncReviewPatchBytes(patchPayload)).split('\n')
+    : []) {
     if (line.startsWith('diff --git ')) {
       insideHunk = false;
     } else if (line.startsWith('@@ ')) {
@@ -366,69 +326,6 @@ function workspaceDiffSummary(
  */
 function toRelativeWorkspacePath(path: string): string {
   return path.replace(/^\/+/, '') || 'generated-file';
-}
-
-/**
- * Normalizes one allowlist prefix for path comparisons.
- *
- * @param prefix User or system supplied path prefix.
- * @returns Relative prefix without trailing slash.
- */
-function normalizeAllowedPrefix(prefix: string): string {
-  return prefix.replace(/^\/+/, '').replace(/\/+$/, '');
-}
-
-/**
- * Checks whether a changed path belongs to one allowed prefix.
- *
- * @param path Changed relative path.
- * @param allowedPathPrefixes Normalized allowlist.
- * @returns True when allowed.
- */
-function isPathAllowed(path: string, allowedPathPrefixes: readonly string[]): boolean {
-  return allowedPathPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
-}
-
-/**
- * Adds product-visible artifact-only presentation to binary changed paths.
- *
- * @param changeSet Parsed workspace change set.
- * @returns Change set enriched with binary review presentation.
- */
-function withBinaryReviewPresentations(changeSet: WorkspaceChangeSet): WorkspaceChangeSet {
-  return WorkspaceChangeSetSchema.parse({
-    ...changeSet,
-    changedPaths: changeSet.changedPaths.map(withBinaryReviewPresentation),
-  });
-}
-
-/**
- * Adds binary review presentation to one path when the text diff is not enough.
- *
- * @param changedPath Worker-declared changed path.
- * @returns Changed path with optional binary review presentation.
- */
-function withBinaryReviewPresentation(changedPath: WorkspaceChangedPath): WorkspaceChangedPath {
-  if (!changedPath.binary) {
-    return changedPath;
-  }
-
-  const reason =
-    (changedPath.size ?? 0) > BINARY_ARTIFACT_ONLY_THRESHOLD_BYTES
-      ? 'binary-payload-too-large'
-      : 'binary-path';
-
-  return {
-    ...changedPath,
-    binaryReview: {
-      bytes: changedPath.size ?? null,
-      digest: changedPath.digest ?? null,
-      mediaType: changedPath.mediaType ?? 'application/octet-stream',
-      mode: 'artifact-only',
-      reason,
-      summary: `Binary change ${changedPath.path} is available as an artifact-only review item.`,
-    },
-  };
 }
 
 /**

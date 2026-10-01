@@ -7391,3 +7391,40 @@ describe('derived approval exact effect', () => {
     ).toBe(false);
   });
 });
+
+it('preserves non-UTF8 patch bytes with canonical encoding and closed encoding admission', () => {
+  const raw = Buffer.from([97, 255, 10]);
+  const payload = {
+    text: raw.toString('base64'),
+    encoding: 'base64',
+    bytes: raw.length,
+    digest: 'sha256:payload',
+    mediaType: 'text/x-diff',
+  };
+  expect(appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse(payload).success).toBe(true);
+  expect(
+    Buffer.from(
+      appApiSchemas.workspaceSyncReviewPatchBytes({ text: payload.text, encoding: 'base64' })
+    )
+  ).toEqual(raw);
+  expect(
+    appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.parse({
+      ...payload,
+      futureDescription: 'harmless',
+    })
+  ).toEqual(payload);
+  const secret = `sk-proj-${'x'.repeat(48)}`;
+  expect(
+    appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse({
+      ...payload,
+      text: Buffer.from(secret).toString('base64'),
+    }).success
+  ).toBe(false);
+  for (const bad of [
+    { ...payload, encoding: 'unknown' },
+    { ...payload, text: 'Zh==' },
+    { ...payload, text: '***' },
+  ]) {
+    expect(appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse(bad).success).toBe(false);
+  }
+});

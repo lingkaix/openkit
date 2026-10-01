@@ -72,3 +72,7 @@ The Thread dashboard pending-request projection includes derived `approvalEffect
 The private administration GET/PUT projection exposes admitted defaults, literal authored overrides, managed names, desired image/default identities, file revision, reload agreement and audience-scoped native acknowledgement. PUT binds the existing configuration CAS to the current image/default identities. Preparation carries names, classification and defaults digest only; activation confirmation explicitly names the image/default digests. Raw defaults enter Core evidence only after fresh exact-image inspection at confirmed activation.
 
 Native environment administration request and response readers, including nested identities and application status, discard inert additive envelope metadata. Image inspection readers likewise discard metadata and emit only the owned image, layout and names-only defaults core. Optional envelope keys are ignored regardless of their name; known core fields, literal maps and identity bounds remain validated. Measured native environment records retain their declared exclusions.
+
+## Workspace Review Patch Bytes
+
+Workspace review patch payloads retain UTF-8 text by default and use explicit canonical base64 encoding when Git patch bytes are not UTF-8. The payload reader discards inert additive members while encoding values stay closed and canonical base64 and decoded secret checks remain required. The shared byte decoder preserves the digest and byte count for persistence and Git; Web decodes those bytes only for presentation.

@@ -4,6 +4,7 @@ import {
   type WorkspaceApplyPlan,
   WorkspaceApplyPlanSchema,
   type WorkspaceApplyResult,
+  WorkspaceApplyResultSchema,
   type WorkspaceSyncReviewDecision,
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
@@ -31,6 +32,10 @@ import {
   getFilesystemWorkspaceStagingRoot,
 } from './workspace-filesystem-staging.js';
 import { applyGitWorkspaceReview, discardGitWorkspaceReview } from './workspace-review-git.js';
+import {
+  acceptAppliedWorkspaceSnapshot,
+  workspaceSnapshotReviewIsStale,
+} from './workspace-snapshot-chain.js';
 import {
   getWorkspaceSyncReview,
   listWorkspaceSyncReviews,
@@ -294,6 +299,28 @@ async function executeWorkspaceSyncReviewDecision(
     };
   }
 
+  if (workspaceSnapshotReviewIsStale(workspaceDb, workspaceId, review.changeSet.id)) {
+    const conflicted = WorkspaceApplyResultSchema.parse({
+      id: `war_${reviewId}`,
+      workspaceId,
+      reviewId,
+      changeSetId: review.changeSet.id,
+      status: 'conflicted',
+      appliedPaths: [],
+      skippedPaths: review.changeSet.changedPaths.map((path) => path.path),
+      conflictRecords: ['snapshot-accepted-base-changed'],
+      verification: [{ command: 'snapshot-accepted-base', status: 'failed', ref: null }],
+      commitIds: [],
+      appliedAt: plan.createdAt,
+    });
+    workspaceDb.sqlite.transaction(() =>
+      recordAcceptedWorkspaceReview(workspaceDb, input, conflicted)
+    )();
+    return {
+      review: requireWorkspaceReview(workspaceDb, workspaceId, reviewId).review,
+      workspaceApplyResult: conflicted,
+    };
+  }
   const result = await applyGitWorkspaceReview({
     appliedAt: plan.createdAt,
     persistResult: (appliedResult) => {
@@ -330,6 +357,15 @@ function recordAcceptedWorkspaceReview(
   result: WorkspaceApplyResult
 ): void {
   recordWorkspaceApplyResult(workspaceDb, { requestId: input.requestId, result });
+  if (result.status === 'applied') {
+    const review = requireWorkspaceReview(workspaceDb, input.workspaceId, input.reviewId);
+    acceptAppliedWorkspaceSnapshot(
+      workspaceDb,
+      input.workspaceId,
+      review.changeSet.id,
+      result.commitIds.at(-1) ?? review.changeSet.head.commit
+    );
+  }
   updateWorkspaceSyncReviewDecision(workspaceDb, {
     requestId: input.requestId,
     reviewId: input.reviewId,

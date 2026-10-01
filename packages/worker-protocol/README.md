@@ -2,7 +2,7 @@
 
 `@openkit/worker-protocol` defines the canonical `Core <-> Worker` schemas used by governed Worker Agent containers, NanoCore import/verification paths, worker sidecars, and runtime adapters.
 
-This package is intentionally protocol-only. Public worker-control request, response, and heartbeat envelopes use the dedicated version-2 literal; canonical transcript, event, Artifact, provenance, workspace-change, and inner capability-summary records retain their independent version-1 literal. Restart reconnection uses a sequence-zero process-key hash commitment and an optional request-only reconnect key; NanoCore owns lease validation and never persists the raw key. This package does not own NanoCore state, runtime-native parsing, OpenShell transport, worker process supervision, or product review decisions.
+This package is intentionally protocol-only. Public worker-control request, response, and heartbeat envelopes use the dedicated version-2 literal; canonical transcript, event, Artifact, provenance, and inner capability-summary records retain their independent version-1 literal. Restart reconnection uses a sequence-zero process-key hash commitment and an optional request-only reconnect key; NanoCore owns lease validation and never persists the raw key. This package does not own NanoCore state, runtime-native parsing, OpenShell transport, worker process supervision, or product review decisions.
 
 The runtime provenance contract keeps `WorkerLineageSchema` unchanged and adds only the restricted raw-stream manifest, synthetic stream references, exact frame coordinates and digests, capture/parse states, and native-origin index entries required by `worker.runtime-provenance.v1`. Cross-stream completeness, graph closure, origin normalization, and evidence promotion remain NanoCore responsibilities.
 
@@ -28,3 +28,7 @@ Unavailable content may identify one earlier expected observation for exact fail
 `native-environment.ts` owns the shared literal namespace, canonical ASCII-key JSON, authored string/null map and measured AEP record. `session.open.nativeEnvironment` is public, session-static and distinct from private `runtimeEnvironment`; its bytes participate in durable queued identity. Command bodies discard inert additions and reject unsupported execution, credential and required semantics before forwarding. Public maps use the authored/AEP 128-entry, 128-character-name and 16 KiB aggregate limits; private credentials retain their separate bounds.
 
 Protected public names follow the actual adapter bindings: DeepSeek owns `DSH_HOME`, `DSH_PERMISSION_MODE`, `DSH_TELEMETRY_MODE` and `DSH_TELEMETRY_OTLP_URL`; Codex's exact retained-state selectors are protected only for Codex. The shared predicate is also the Codex launch check's source; it does not protect an unused name or an entire vendor prefix. Unknown adapter IDs receive the shared bootstrap protections without inheriting another adapter's names.
+
+## Outside Workspace Collection
+
+Workspace snapshots are collected outside the Sandbox through NanoHost; this package defines no worker-written workspace manifest or publisher schema.

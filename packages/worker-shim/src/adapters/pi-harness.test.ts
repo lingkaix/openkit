@@ -94,8 +94,18 @@ function harnessFor(
     agentSessionId: string,
     resume: { digest: string; locator: string } | null = null,
     threadId = 'thread-one'
-  ) =>
-    send('session.open', {
+  ) => {
+    const config = join(sandboxRoot, 'sessions', agentSessionId, 'config');
+    mkdirSync(config, { recursive: true });
+    writeFileSync(
+      join(config, 'package.json'),
+      JSON.stringify({
+        scope: { agentSessionId, threadId, workspaceId: 'workspace-one' },
+        workspace: { root: sandboxRoot, inputs: [] },
+        extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
+      })
+    );
+    return send('session.open', {
       ...selector(agentSessionId),
       adapterId: 'pi',
       agentSessionCompatibilityKey: DIGEST,
@@ -106,6 +116,7 @@ function harnessFor(
       threadId,
       workspaceId: 'workspace-one',
     });
+  };
   return { finalStatuses, nativeRoot, open, sandboxRoot, selector, send };
 }
 

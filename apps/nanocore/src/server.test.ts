@@ -13916,7 +13916,7 @@ describe('nanocore server', () => {
         input: {
           maxByteLength: 268_435_456,
           presence: 'optional',
-          relativePath: 'workspace-changes.json',
+          relativePath: 'optional.md',
           sandboxId: 'sandbox-session-main',
           slot: 'turn-outputs',
           terminalBarrierProved: true,

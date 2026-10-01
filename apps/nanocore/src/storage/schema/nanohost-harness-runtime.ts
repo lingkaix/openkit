@@ -173,6 +173,8 @@ export const agentSessionRuntimeBindings = sqliteTable(
     inferenceLoopbackCredentialDigest: text('inference_loopback_credential_digest'),
     /** Lowercase hex SHA-256 of the delivered capability loopback credential; null until dispatch. */
     capabilityLoopbackCredentialDigest: text('capability_loopback_credential_digest'),
+    /** Exact Vault versions for collection after restart, without raw environment values. */
+    runtimeEnvCheckVersionsJson: text('runtime_env_check_versions_json'),
   },
   (table) => [
     uniqueIndex('agent_session_runtime_bindings_session_idx').on(table.agentSessionId),

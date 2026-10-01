@@ -22,7 +22,10 @@ import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
-import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
+import {
+  getWorkspaceRepositoryResource,
+  upsertWorkspaceRepositoryResource,
+} from '../workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   buildFilesystemWorkspaceChangeSet,
@@ -36,6 +39,14 @@ import {
 } from './workspace-apply-results.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import { decideWorkspaceSyncReview } from './workspace-review-application.js';
+import { stageGitWorkspaceReview } from './workspace-review-git.js';
+import {
+  acceptAppliedWorkspaceSnapshot,
+  acceptWorkspaceBaseline,
+  acceptWorkspaceCapture,
+  authorizeWorkspaceBaselineInitialization,
+  linkWorkspaceSnapshotReview,
+} from './workspace-snapshot-chain.js';
 import {
   getWorkspaceSyncReview,
   recordWorkspaceSyncReview,
@@ -649,6 +660,140 @@ describe('workspace review application', () => {
     }
   });
 
+  it('returns a closed conflict for a cumulative review whose accepted snapshot base has moved', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'n6-stale-review-'));
+    const repositoryRoot = mkdtempSync(join(tmpdir(), 'n6-stale-repository-'));
+    temporaryRoots.push(dataRoot, repositoryRoot);
+    const fallback = gitRenameWorkspaceReviewItem();
+    execFileSync('git', ['init'], { cwd: repositoryRoot, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'fixture@example.invalid'], {
+      cwd: repositoryRoot,
+    });
+    execFileSync('git', ['config', 'user.name', 'Fixture'], { cwd: repositoryRoot });
+    writeFileSync(join(repositoryRoot, 'old.txt'), 'reviewed\n');
+    execFileSync('git', ['add', '.'], { cwd: repositoryRoot });
+    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryRoot, stdio: 'ignore' });
+    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+    }).trim();
+    const store = createDemoStore();
+    const turn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Review cumulative capture',
+      LOCAL_AUTHORITY_ACTOR
+    );
+    const workspaceId = turn.workspaceId;
+    const item = {
+      ...fallback,
+      changeSet: {
+        ...fallback.changeSet,
+        base: { ...fallback.changeSet.base, commit: baseCommit },
+        workspaceId,
+        evidenceRefs: [{ kind: 'worker' as const, ref: turn.id }],
+      },
+      review: { ...fallback.review, workspaceId },
+    };
+    const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(db);
+    const identity = {
+      workspaceId,
+      storageRef: 'storage',
+      scopeDigest: `sha256:${'a'.repeat(64)}`,
+      attachmentGeneration: 1,
+      sandboxId: 'sandbox',
+      workSlot: 'slot',
+      collectionId: 'initial',
+      agentSessionId: 'session',
+      threadId: turn.threadId,
+      turnId: turn.id,
+      packageSnapshotId: 'package',
+    };
+    const base = { tree: '1'.repeat(40), manifest: '2'.repeat(40) };
+    const firstHead = { tree: '3'.repeat(40), manifest: '4'.repeat(40) };
+    try {
+      recordTestWorkspaceReviewMaterialization(db, item);
+      upsertWorkspaceRepositoryResource(db, {
+        workspaceId,
+        resourceId: item.changeSet.resourceId,
+        displayName: 'Existing destination',
+        git: {
+          stagingStrategy: 'review-branch',
+          authorName: 'Approver',
+          authorEmail: 'approver@example.invalid',
+        },
+        localPath: repositoryRoot,
+        workspaceExists: () => true,
+      });
+      item.changeSet.head.commit = await stageGitWorkspaceReview({
+        repository: getWorkspaceRepositoryResource(db, workspaceId, item.changeSet.resourceId)!,
+        review: item,
+        store,
+        persistHead: () => {},
+      });
+      recordWorkspaceSyncReview(db, { item });
+      authorizeWorkspaceBaselineInitialization(db, identity);
+      acceptWorkspaceBaseline(db, identity, base, base.tree);
+      const first = { ...identity, collectionId: 'first' };
+      acceptWorkspaceCapture(
+        db,
+        first,
+        {
+          outcome: 'candidate',
+          head: firstHead,
+          previousHead: base,
+          acceptedBase: base,
+          unstable: false,
+        },
+        Buffer.from('first')
+      );
+      linkWorkspaceSnapshotReview(db, first, 'first-change-set');
+      const later = { ...identity, collectionId: 'later' };
+      acceptWorkspaceCapture(
+        db,
+        later,
+        {
+          outcome: 'candidate',
+          head: { tree: '5'.repeat(40), manifest: '6'.repeat(40) },
+          previousHead: firstHead,
+          acceptedBase: base,
+          unstable: false,
+        },
+        Buffer.from('cumulative')
+      );
+      linkWorkspaceSnapshotReview(db, later, item.changeSet.id);
+      acceptAppliedWorkspaceSnapshot(db, workspaceId, 'first-change-set', null);
+      const decision = decideWorkspaceSyncReview({
+        authorityActor: LOCAL_AUTHORITY_ACTOR,
+        coreDb,
+        decidedAt: '2026-07-11T00:13:00.000Z',
+        decision: 'accepted',
+        requestId: 'request-stale-capture',
+        reviewId: item.review.id,
+        store,
+        workspaceDb: db,
+        workspaceId,
+      });
+      await expect(decision).resolves.toMatchObject({
+        workspaceApplyResult: {
+          status: 'conflicted',
+          conflictRecords: ['snapshot-accepted-base-changed'],
+          appliedPaths: [],
+          commitIds: [],
+        },
+      });
+      expect(
+        execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot, encoding: 'utf8' }).trim()
+      ).toBe(baseCommit);
+      expect(readFileSync(join(repositoryRoot, 'old.txt'), 'utf8')).toBe('reviewed\n');
+      expect(existsSync(join(repositoryRoot, 'new.txt'))).toBe(false);
+    } finally {
+      db.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
   it('rejects branchless fallback acceptance for a review-branch repository', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-git-fallback-branchless-data-'));
     const repositoryRoot = mkdtempSync(

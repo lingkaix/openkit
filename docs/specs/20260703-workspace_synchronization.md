@@ -328,6 +328,8 @@ mode, and cleanup status after redaction.
 
 `WorkspaceChangeSet` is the canonical reviewable unit. It includes changed paths, patch refs, binary refs, permission summaries, delete markers, conflict base digests, generated-file classification, worker rationale when available, and evidence ids. On a snapshot-chain changed-capture link, the link record holds `base` as the previous captured snapshot pair on that work volume, or Core's accepted base pair when the link is the first, `head` as the second scan's snapshot pair with the worktree `HEAD` commit as context only, `unstable` when the scan says so, and the credential-check result. That link is capture provenance and carries no patch Core applies. A nonempty immutable candidate against Core's accepted base produces this reviewable `WorkspaceChangeSet`. An empty candidate records the same link and advances the capture cursor without a `WorkspaceChangeSet` and without a review. An unstable `no_new_head` observation uses this same collection-link owner with `base` and `head` both equal to `previousHead`, creates no `WorkspaceChangeSet` and no review, and does not advance the cursor. A stable unchanged capture needs no additional link. The patch refs on a reviewable change set name the immutable review candidate from the accepted base recorded when the candidate is staged to that `head`.
 
+The change-set review patch payload has an optional closed `encoding` member: absent means UTF-8 text; `base64` means exact bytes carried as canonical base64.
+
 `StagedWorkspaceReview` records where NanoCore staged a change set for review. It
 includes staging strategy, staging reference, optional review branch, diff
 summary, risk summary, validation results, and Action Center row id.
