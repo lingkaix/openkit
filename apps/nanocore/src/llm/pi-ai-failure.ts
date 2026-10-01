@@ -22,6 +22,8 @@ export type PiAiFailureKind =
 export interface PiAiFailure {
   /** Closed Gateway failure category. */
   readonly kind: PiAiFailureKind;
+  /** Positive replay evidence: Provider response/terminal rejection or proven pre-send failure. */
+  readonly settled: boolean;
   /** Actual exposed upstream HTTP status. */
   readonly status?: number;
   /** Actual exposed provider code or error type. */
@@ -37,6 +39,7 @@ function record(value: unknown): Record<string, unknown> {
 
 /**
  * Classifies thrown errors and terminal pi-ai events/results using exposed evidence only.
+ * Stock-wrapped errors default to uncertain unless affirmative Provider or pre-send evidence exists.
  *
  * @param input Original adapter error, terminal error event, or assistant result before wrapping.
  * @returns One closed failure value, or undefined for a successful protocol result.
@@ -82,6 +85,15 @@ export function classifyPiAiFailure(input: unknown): PiAiFailure | undefined {
     .join(' ');
   const refusalCode =
     /^(?:refusal|content_filter|SAFETY|BLOCKLIST|PROHIBITED_CONTENT|SPII|IMAGE_SAFETY|IMAGE_PROHIBITED_CONTENT)$/;
+  // Classification can recognize broad wording; replay needs a retained Provider code, including inline codes in stock terminal messages.
+  const rejectionCode =
+    /\b(insufficient_quota|usage_limit_reached|usage_not_included|subscription_sharing_usage_limit_exceeded|GoUsageLimitError|FreeUsageLimitError|invalid_api_key|authentication_error|invalid_token|unauthorized|unsupported_parameter|unsupported_feature|unsupported_gateway_feature|not_supported|rate_limit_exceeded|rate_limit_error|rate_limited|ThrottlingException|invalid_request_error|invalid_request|validation_error)\b/i;
+  const providerRefusal =
+    refusalCode.test(providerCode ?? '') ||
+    refusalCode.test(typeof source.rawStopReason === 'string' ? source.rawStopReason : '') ||
+    /^(?:Response incomplete: |Provider stopped with: |Error Code )?(?:refusal|content_filter|SAFETY|BLOCKLIST|PROHIBITED_CONTENT|SPII|IMAGE_SAFETY|IMAGE_PROHIBITED_CONTENT)(?::|\s*$)/.test(
+      message
+    );
   let kind: PiAiFailureKind = 'unknown';
   if (
     source.stopReason === 'aborted' ||
@@ -111,14 +123,7 @@ export function classifyPiAiFailure(input: unknown): PiAiFailure | undefined {
     )
   )
     kind = 'auth_rejected';
-  else if (
-    refusalCode.test(providerCode ?? '') ||
-    refusalCode.test(typeof source.rawStopReason === 'string' ? source.rawStopReason : '') ||
-    /^(?:Response incomplete: |Provider stopped with: |Error Code )?(?:refusal|content_filter|SAFETY|BLOCKLIST|PROHIBITED_CONTENT|SPII|IMAGE_SAFETY|IMAGE_PROHIBITED_CONTENT)(?::|\s*$)/.test(
-      message
-    )
-  )
-    kind = 'refused';
+  else if (providerRefusal) kind = 'refused';
   else if (
     /\b(max_tokens|max_output_tokens|max_completion_tokens)\b.*(?:too (?:large|high)|exceed|at most|must be (?:less|<=))|output token limit.*(?:exceed|reject)/i.test(
       text
@@ -149,7 +154,9 @@ export function classifyPiAiFailure(input: unknown): PiAiFailure | undefined {
   else if (
     status === 408 ||
     (status !== undefined && status >= 500) ||
-    /\b(ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b|Provider stream (?:failed|ended)/i.test(text) ||
+    /\b(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)\b|Provider stream (?:failed|ended)/i.test(
+      text
+    ) ||
     isRetryableAssistantError({
       ...source,
       stopReason: 'error',
@@ -159,6 +166,15 @@ export function classifyPiAiFailure(input: unknown): PiAiFailure | undefined {
     kind = 'provider_unavailable';
   return {
     kind,
+    // Stock lazyStream's wrapper and retryable wording supply no delivery proof; default to uncertain and admit only affirmative evidence.
+    settled:
+      status !== undefined ||
+      /\b(ECONNREFUSED|ENOTFOUND|EAI_AGAIN)\b|connection refused|\bconnect (?:ETIMEDOUT|timeout|timed out)\b/i.test(
+        text
+      ) ||
+      rejectionCode.test(providerCode ?? '') ||
+      refusalCode.test(providerCode ?? '') ||
+      (source.stopReason === 'error' && (rejectionCode.test(message) || providerRefusal)),
     ...(status === undefined ? {} : { status }),
     ...(providerCode === undefined ? {} : { providerCode }),
     ...(retryAfter === undefined ? {} : { retryAfter }),

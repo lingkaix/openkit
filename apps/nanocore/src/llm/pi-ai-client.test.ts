@@ -26,6 +26,8 @@ import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
+import { dispatchLogicalModel } from './gateway-routes.js';
+import type { ResolvedLogicalModel } from './logical-models.js';
 import {
   assertCodexResponsesRequestAdmission,
   createDefaultPiAiGatewayModels,
@@ -4043,5 +4045,173 @@ describe('PiAiGatewayClient', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+/** Actual Models distinguish native Responses, the Chat bridge and direct Chat terminal ordering. */
+function terminalOrderingFixture(path: 'chat' | 'native-responses' | 'bridged-responses') {
+  const native = path === 'native-responses';
+  const faux = fauxProvider({
+    api: native ? 'openai-responses' : 'anthropic-messages',
+    provider: native ? 'openai-codex' : 'anthropic',
+    models: [{ id: 'gpt-test' }],
+  });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const provider = providerConfig(
+    native ? { adapterId: 'openai-codex', subscriptionProviderId: 'openai-codex' } : {}
+  );
+  return { faux, models, provider, client: new PiAiGatewayClient({ models }) };
+}
+
+describe('Round 3 observed terminal failure precedes callback abort', () => {
+  for (const path of ['chat', 'native-responses', 'bridged-responses'] as const) {
+    for (const observer of ['usage', 'terminal'] as const) {
+      it.each([false, true])(`${path} abort=${observer} failover=%s`, async (autoFailover) => {
+        const { faux, models, provider, client } = terminalOrderingFixture(path);
+        faux.setResponses([
+          fauxAssistantMessage([], {
+            stopReason: 'error',
+            errorMessage: 'usage_limit_reached: allowance exhausted',
+          }),
+        ]);
+        const caller = new AbortController();
+        const reason = new Error('caller abort after observed rejection');
+        const usage = vi.fn(() => {
+          if (observer === 'usage') caller.abort(reason);
+        });
+        const terminal = vi.fn((event: { type: string }) => {
+          if (event.type === 'error' && observer === 'terminal') caller.abort(reason);
+        });
+        const selected: string[] = [];
+        const logicalModel: ResolvedLogicalModel = {
+          id: 'tier',
+          displayName: 'Tier',
+          capabilities: [],
+          modelFamilyId: null,
+          autoFailover,
+          contextManagement: { type: 'compaction', compactThreshold: 8_000 },
+          routes: ['primary', 'backup'].map((id) => ({
+            id,
+            providerProfileId: id,
+            providerModel: 'gpt-test',
+            available: true,
+            unavailableReason: null,
+          })),
+        };
+        const operation = dispatchLogicalModel({
+          logicalModel,
+          signal: caller.signal,
+          resolveGatewayProvider: (id) => ({ ...provider, id }),
+          attempt: async ({ provider: selectedProvider, execution }) => {
+            selected.push(selectedProvider.id);
+            const transport = {
+              signal: execution.signal,
+              ...(observer === 'terminal' ? { onModelEvent: terminal } : {}),
+            };
+            return path === 'chat'
+              ? client.createChatCompletion(
+                  selectedProvider,
+                  { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
+                  usage,
+                  transport,
+                  models
+                )
+              : client.createResponses(
+                  selectedProvider,
+                  { model: 'gpt-test', input: 'hello' },
+                  usage,
+                  transport,
+                  models
+                );
+          },
+        });
+        await expect(operation).rejects.toMatchObject({
+          failure: { kind: 'quota_exhausted', settled: true },
+        });
+        expect(caller.signal.aborted).toBe(true);
+        expect(usage).toHaveBeenCalledTimes(1);
+        if (observer === 'terminal')
+          expect(terminal.mock.calls.some(([event]) => event.type === 'error')).toBe(true);
+        expect(faux.state.callCount).toBe(1);
+        expect(selected).toEqual(['primary']);
+      });
+    }
+  }
+
+  it.each([
+    'chat',
+    'native-responses',
+    'bridged-responses',
+  ] as const)('%s keeps exact cancellation before any terminal failure', async (path) => {
+    const { faux, models, provider, client } = terminalOrderingFixture(path);
+    const events = createAssistantMessageEventStream();
+    let started!: () => void;
+    const active = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    Object.assign(faux.provider, {
+      stream: () => {
+        started();
+        return events;
+      },
+    });
+    const caller = new AbortController();
+    const reason = new Error('caller cancellation before terminal');
+    const usage = vi.fn();
+    const operation =
+      path === 'chat'
+        ? client.createChatCompletion(
+            provider,
+            { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
+            usage,
+            { signal: caller.signal },
+            models
+          )
+        : client.createResponses(
+            provider,
+            { model: 'gpt-test', input: 'hello' },
+            usage,
+            { signal: caller.signal },
+            models
+          );
+    const outcome = operation.catch((error: unknown) => error);
+    await active;
+    caller.abort(reason);
+    expect(await outcome).toBe(reason);
+    expect(reason).toMatchObject({ failure: { kind: 'cancelled', settled: false } });
+    expect(usage).not.toHaveBeenCalled();
+    events.end(fauxAssistantMessage([]));
+  });
+
+  it.each([
+    'chat',
+    'native-responses',
+    'bridged-responses',
+  ] as const)('%s retains cancellation from successful terminal usage', async (path) => {
+    const { faux, models, provider, client } = terminalOrderingFixture(path);
+    faux.setResponses([fauxAssistantMessage('Successful Provider answer.')]);
+    const caller = new AbortController();
+    const reason = new Error('caller stops before successful result release');
+    const usage = vi.fn(() => caller.abort(reason));
+    const operation =
+      path === 'chat'
+        ? client.createChatCompletion(
+            provider,
+            { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
+            usage,
+            { signal: caller.signal },
+            models
+          )
+        : client.createResponses(
+            provider,
+            { model: 'gpt-test', input: 'hello' },
+            usage,
+            { signal: caller.signal },
+            models
+          );
+    await expect(operation).rejects.toBe(reason);
+    expect(usage).toHaveBeenCalledTimes(1);
+    expect(faux.state.callCount).toBe(1);
   });
 });

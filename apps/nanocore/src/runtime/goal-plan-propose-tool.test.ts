@@ -150,6 +150,7 @@ function admittedOrchestratorBindings(): {
         gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
         id: providerProfile.id,
         models: providerProfile.models,
+        modelMetadata: providerProfile.modelMetadata,
         requiresApiKey: true,
       }) satisfies ResolvedLLMProviderConfig,
   };

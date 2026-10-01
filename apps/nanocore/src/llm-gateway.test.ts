@@ -21,6 +21,7 @@ import { GatewayUnsupportedFeatureError } from './llm/gateway-converters.js';
 import { registerLlmGatewayRoutes } from './llm/gateway-routes.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
+import { attachPiAiFailure } from './llm/pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountError } from './llm/provider-subscription-accounts.js';
 import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
@@ -517,12 +518,14 @@ describe('OpenAI-compatible agent gateway', () => {
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletion: async () => {
-          throw new OpenAICompatibleProviderError({
-            code: 'native_quota_exceeded',
-            message: 'private upstream quota text marker=upstream-json-secret',
-            status: 429,
-            type: 'pi_ai_provider_error',
-          });
+          throw attachPiAiFailure(
+            new OpenAICompatibleProviderError({
+              code: 'native_quota_exceeded',
+              message: 'private upstream quota text marker=upstream-json-secret',
+              status: 429,
+              type: 'pi_ai_provider_error',
+            })
+          ) as OpenAICompatibleProviderError;
         },
       } as unknown as PiAiGatewayClient,
     });
@@ -540,6 +543,7 @@ describe('OpenAI-compatible agent gateway', () => {
     await expect(res.json()).resolves.toEqual({
       error: {
         code: 'gateway_logical_model_unavailable',
+        cause: 'rate_limited',
         message: 'Logical model is temporarily unavailable.',
         type: 'provider_error',
       },
@@ -551,12 +555,14 @@ describe('OpenAI-compatible agent gateway', () => {
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletion: async () => {
-          throw new OpenAICompatibleProviderError({
-            code: 'vault-private-upstream-code',
-            message: 'private upstream vault-shaped failure marker=upstream-code-secret',
-            status: 502,
-            type: 'pi_ai_provider_error',
-          });
+          throw attachPiAiFailure(
+            new OpenAICompatibleProviderError({
+              code: 'vault-private-upstream-code',
+              message: 'private upstream vault-shaped failure marker=upstream-code-secret',
+              status: 502,
+              type: 'pi_ai_provider_error',
+            })
+          ) as OpenAICompatibleProviderError;
         },
       } as unknown as PiAiGatewayClient,
     });
@@ -574,6 +580,7 @@ describe('OpenAI-compatible agent gateway', () => {
     await expect(res.json()).resolves.toEqual({
       error: {
         code: 'gateway_logical_model_unavailable',
+        cause: 'provider_unavailable',
         message: 'Logical model is temporarily unavailable.',
         type: 'provider_error',
       },
@@ -674,7 +681,9 @@ describe('OpenAI-compatible agent gateway', () => {
         createChatCompletion: async (provider, request) => {
           attempts.push({ model: request.model, providerId: provider.id });
           if (provider.id === 'openai-primary') {
-            throw new OpenAICompatibleProviderError({ message: 'quota', status: 429 });
+            throw attachPiAiFailure(
+              new OpenAICompatibleProviderError({ message: 'quota', status: 429 })
+            ) as OpenAICompatibleProviderError;
           }
           return {
             id: 'chatcmpl_fallback',
@@ -707,13 +716,15 @@ describe('OpenAI-compatible agent gateway', () => {
       await expect(res.json()).resolves.toMatchObject({
         error: { code: 'gateway_provider_rate_limited' },
       });
-      expect(attempts).toEqual([{ model: 'gpt-5.1', providerId: 'openai-primary' }]);
+      expect(attempts).toEqual(
+        Array.from({ length: 4 }, () => ({ model: 'gpt-5.1', providerId: 'openai-primary' }))
+      );
       return;
     }
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ model: 'reasoning' });
     expect(attempts).toEqual([
-      { model: 'gpt-5.1', providerId: 'openai-primary' },
+      ...Array.from({ length: 4 }, () => ({ model: 'gpt-5.1', providerId: 'openai-primary' })),
       { model: 'openai/gpt-5.1', providerId: 'openrouter-backup' },
     ]);
   });
@@ -1687,10 +1698,10 @@ describe('OpenAI-compatible agent gateway', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(503);
+      expect(res.status).toBe(400);
       const body = await res.text();
 
-      expect(body).toContain('"code":"gateway_logical_model_unavailable"');
+      expect(body).toContain('"code":"provider_error"');
       expect(body).not.toContain('tok_secret');
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_chat_failed_usage');
@@ -1837,10 +1848,10 @@ describe('OpenAI-compatible agent gateway', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(503);
+      expect(res.status).toBe(400);
       const body = await res.text();
 
-      expect(body).toContain('"code":"gateway_logical_model_unavailable"');
+      expect(body).toContain('"code":"provider_error"');
       expect(body).not.toContain('tok_secret');
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_responses_failed_usage');
@@ -2082,8 +2093,8 @@ describe('OpenAI-compatible agent gateway', () => {
   it('does not infer durable abort or timeout status from pi-ai provider messages', async () => {
     for (const testCase of [
       {
-        code: 'gateway_stream_failed',
-        durableErrorCode: 'llm_gateway_stream_failed',
+        code: 'gateway_request_cancelled',
+        durableErrorCode: 'gateway_request_cancelled',
         message: 'client aborted token=tok_secret',
         requestId: '88888888-8888-4888-8888-888888888888',
         ledgerStatus: 'failed',
@@ -2188,10 +2199,12 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceId: 'ws_provider_abort_failed',
       },
       {
-        error: new OpenAICompatibleProviderError({
-          message: 'provider gateway timeout',
-          status: 504,
-        }),
+        error: attachPiAiFailure(
+          new OpenAICompatibleProviderError({
+            message: 'provider gateway timeout',
+            status: 504,
+          })
+        ) as OpenAICompatibleProviderError,
         ledgerStatus: 'timed-out',
         requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         responseStatus: 503,
@@ -2457,18 +2470,23 @@ describe('OpenAI-compatible agent gateway', () => {
       await expect(res.json()).resolves.toMatchObject({
         error: {
           code: 'gateway_logical_model_unavailable',
+          cause: 'provider_unavailable',
           message: 'Logical model is temporarily unavailable.',
           type: 'provider_error',
         },
       });
-      expect(listVaultUseRecords(coreDb)).toEqual([
-        expect.objectContaining({
-          failureCode: 'vault-locked',
-          outcome: 'failed',
-          resolvingPath: 'provider',
-          vaultReferenceId: 'vault_locked_gateway',
-        }),
-      ]);
+      const uses = listVaultUseRecords(coreDb);
+      expect(uses).toHaveLength(4); // Initial resolution plus three same-member retries; selection adds no extra read.
+      expect(uses).toEqual(
+        Array.from({ length: 4 }, () =>
+          expect.objectContaining({
+            failureCode: 'vault-locked',
+            outcome: 'failed',
+            resolvingPath: 'provider',
+            vaultReferenceId: 'vault_locked_gateway',
+          })
+        )
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -2643,8 +2661,16 @@ describe('OpenAI-compatible agent gateway', () => {
     ]) {
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-inner-stream-'));
       const coreDb = openCoreDb(dataRoot);
+      let outputSent = false;
       const stream = new ReadableStream<Uint8Array>({
         pull(controller) {
+          if (!outputSent) {
+            outputSent = true;
+            controller.enqueue(
+              new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n')
+            );
+            return;
+          }
           controller.error(
             Object.assign(new Error('Provider stream failed. token=tok_secret'), {
               code: testCase.code,
@@ -2721,12 +2747,12 @@ describe('OpenAI-compatible agent gateway', () => {
         publicMessage: 'Provider rate limit exceeded.',
       },
       {
-        message: 'context length exceeds maximum token=tok_secret',
+        message: 'Your input exceeds the context window of this model token=tok_secret',
         code: 'gateway_context_overflow',
         publicMessage: 'Provider context limit exceeded.',
       },
       {
-        message: 'invalid request payload token=tok_secret',
+        message: 'invalid_request_error: invalid request payload token=tok_secret',
         code: 'gateway_provider_request_invalid',
         publicMessage: 'Provider rejected the request.',
       },
@@ -2736,9 +2762,17 @@ describe('OpenAI-compatible agent gateway', () => {
         publicMessage: 'Provider is unavailable.',
       },
     ]) {
+      let outputSent = false;
       const stream = new ReadableStream<Uint8Array>({
         pull(controller) {
-          controller.error(new Error(testCase.message));
+          if (!outputSent) {
+            outputSent = true;
+            controller.enqueue(
+              new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n')
+            );
+            return;
+          }
+          controller.error(attachPiAiFailure(new Error(testCase.message)));
         },
       });
       const app = createApp({
@@ -2770,8 +2804,16 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('classifies unsupported-feature stream failures as invalid request', async () => {
+    let outputSent = false;
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
+        if (!outputSent) {
+          outputSent = true;
+          controller.enqueue(
+            new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n')
+          );
+          return;
+        }
         controller.error(new GatewayUnsupportedFeatureError('pi-ai Responses reasoning stream'));
       },
     });
@@ -3317,6 +3359,7 @@ describe('OpenAI-compatible agent gateway', () => {
     await expect(res.json()).resolves.toEqual({
       error: {
         code: 'gateway_logical_model_unavailable',
+        cause: 'provider_unavailable',
         message: 'Logical model is temporarily unavailable.',
         type: 'provider_error',
       },
@@ -3369,6 +3412,7 @@ describe('OpenAI-compatible agent gateway', () => {
     await expect(res.json()).resolves.toEqual({
       error: {
         code: 'gateway_logical_model_unavailable',
+        cause: 'auth_rejected',
         message: 'Logical model is temporarily unavailable.',
         type: 'provider_error',
       },
@@ -3381,4 +3425,199 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(createChatCompletion).not.toHaveBeenCalled();
     expect(createChatCompletionStream).not.toHaveBeenCalled();
   });
+});
+
+/** Round 2 wire oracle: only an exhausted attempt contributes a public closed kind. */
+const publicCauseCases = [
+  { name: 'retryable rate final', kind: 'rate_limited', text: 'rate limit exceeded', attempts: 4 },
+  {
+    name: 'retryable unavailable final',
+    kind: 'provider_unavailable',
+    text: '503 Service Unavailable',
+    attempts: 4,
+  },
+  { name: 'auth final', kind: 'auth_rejected', text: 'invalid_api_key', attempts: 1 },
+  {
+    name: 'quota final',
+    kind: 'quota_exhausted',
+    text: 'usage_limit_reached: Usage limit reached',
+    attempts: 1,
+  },
+  { name: 'no available member', kind: undefined, text: '', attempts: 0 },
+  {
+    name: 'failover disabled auth',
+    kind: 'auth_rejected',
+    text: 'invalid_api_key',
+    attempts: 1,
+    disabled: true,
+  },
+  {
+    name: 'failover disabled rate',
+    kind: 'rate_limited',
+    text: 'rate limit exceeded',
+    attempts: 4,
+    disabled: true,
+  },
+  {
+    name: 'request-terminal context',
+    kind: 'context_overflow',
+    text: 'Your input exceeds the context window of this model',
+    attempts: 1,
+  },
+] as const;
+
+describe('Round 2 public exhaustion cause', () => {
+  for (const endpoint of ['responses', 'chat/completions'] as const) {
+    for (const stream of [false, true]) {
+      it.each(publicCauseCases)(`${endpoint} stream=${stream}: $name`, async (scenario) => {
+        vi.useFakeTimers();
+        try {
+          const disabled = 'disabled' in scenario;
+          const terminal = scenario.kind === 'context_overflow';
+          const selected = scenario.kind !== undefined;
+          const primary = fauxProvider({ provider: 'openai', models: [{ id: 'gpt-5.1' }] });
+          const backup = fauxProvider({
+            provider: 'anthropic',
+            models: [{ id: 'claude-sonnet-4-5' }],
+          });
+          const models = createModels();
+          models.setProvider(primary.provider);
+          models.setProvider(backup.provider);
+          const primaryText =
+            disabled || terminal
+              ? scenario.text
+              : scenario.kind === 'auth_rejected'
+                ? 'usage_limit_reached: Usage limit reached'
+                : 'invalid_api_key';
+          primary.setResponses(
+            Array.from({ length: 4 }, () =>
+              Object.assign(
+                fauxAssistantMessage([], {
+                  stopReason: 'error',
+                  errorMessage: `${primaryText} marker=private-primary-secret`,
+                }),
+                disabled && scenario.kind === 'rate_limited' ? { code: 'rate_limit_exceeded' } : {}
+              )
+            )
+          );
+          backup.setResponses(
+            Array.from({ length: 4 }, () =>
+              Object.assign(
+                fauxAssistantMessage([], {
+                  stopReason: 'error',
+                  errorMessage: `${scenario.text} marker=private-backup-secret`,
+                }),
+                // Retained Provider status/code is evidence; human-readable status/limit wording alone is not.
+                scenario.kind === 'provider_unavailable'
+                  ? { status: 503 }
+                  : scenario.kind === 'rate_limited'
+                    ? { code: 'rate_limit_exceeded' }
+                    : {}
+              )
+            )
+          );
+          const app = createApp({
+            gatewayConfig: {
+              schemaVersion: 1,
+              enabled: true,
+              defaultLogicalModelId: 'reasoning',
+              logicalModels: [
+                {
+                  id: 'reasoning',
+                  displayName: 'Reasoning',
+                  routing: { autoFailover: !disabled },
+                  contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+                  routes: [
+                    {
+                      id: 'primary',
+                      providerProfileId: selected ? 'private-primary' : 'missing-primary',
+                      providerModel: 'gpt-5.1',
+                    },
+                    {
+                      id: 'backup',
+                      providerProfileId: selected ? 'private-backup' : 'missing-backup',
+                      providerModel: 'claude-sonnet-4-5',
+                    },
+                  ],
+                },
+              ],
+            },
+            openKitConfig: {},
+            providerRegistry: new ProviderRegistry([
+              {
+                id: 'private-primary',
+                displayName: 'Private primary',
+                kind: 'local',
+                vendor: 'openai',
+                models: ['gpt-5.1'],
+              },
+              {
+                id: 'private-backup',
+                displayName: 'Private backup',
+                kind: 'local',
+                vendor: 'anthropic',
+                models: ['claude-sonnet-4-5'],
+              },
+            ]),
+            llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
+              piAiClient: new PiAiGatewayClient({ models }),
+            }),
+          });
+          const pending = app.request(`/v1/${endpoint}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              model: 'reasoning',
+              stream,
+              ...(endpoint === 'responses'
+                ? { input: 'Hello' }
+                : { messages: [{ role: 'user', content: 'Hello' }] }),
+            }),
+          });
+          await vi.runAllTimersAsync();
+          const response = await pending;
+          expect(response.headers.get('content-type')).toContain('application/json');
+          const body = await response.json();
+          if (disabled || terminal) {
+            expect(response.status).toBe(
+              terminal ? 400 : scenario.kind === 'rate_limited' ? 429 : 401
+            );
+            expect(body).toEqual({
+              error: {
+                type: 'provider_error',
+                code: terminal
+                  ? 'gateway_context_overflow'
+                  : scenario.kind === 'rate_limited'
+                    ? 'gateway_provider_rate_limited'
+                    : 'gateway_provider_authentication_failed',
+                message: terminal
+                  ? 'Provider context limit exceeded.'
+                  : scenario.kind === 'rate_limited'
+                    ? 'Provider rate limit exceeded.'
+                    : 'Provider authentication failed.',
+              },
+            });
+          } else {
+            expect(response.status).toBe(503);
+            expect(body).toEqual({
+              error: {
+                code: 'gateway_logical_model_unavailable',
+                type: 'provider_error',
+                message: 'Logical model is temporarily unavailable.',
+                ...(selected ? { cause: scenario.kind } : {}),
+              },
+            });
+          }
+          expect(primary.state.callCount).toBe(
+            selected ? (disabled || terminal ? scenario.attempts : 1) : 0
+          );
+          expect(backup.state.callCount).toBe(
+            selected && !disabled && !terminal ? scenario.attempts : 0
+          );
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    }
+  }
 });

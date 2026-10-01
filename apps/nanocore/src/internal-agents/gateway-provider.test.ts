@@ -39,6 +39,7 @@ function captureBinding(value: 'off' | 'on' = 'off') {
   return { dataRoot, store, turn, workspaceDb, threadId: thread.id, turnId: turn.id };
 }
 
+import { LogicalModelRoutesExhaustedError } from '../llm/gateway-execution.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -113,7 +114,12 @@ describe('internal Agent Gateway provider', () => {
       logicalModel,
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
       resolveGatewayProvider: () =>
-        ({ id: 'provider', models: ['model'], gatewayCapabilities: {} }) as never,
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true } },
+        }) as never,
       promptCacheScope: { sessionId: 'admin:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
       capture: captureBinding(),
@@ -198,6 +204,7 @@ describe('internal Agent Gateway provider', () => {
         gatewayCapabilities: { chatCompletions: 'native' as const, responses: 'native' as const },
         id: 'provider',
         models: ['model'],
+        modelMetadata: { model: { tool_call: true } },
         requiresApiKey: true,
       }),
       promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
@@ -314,6 +321,7 @@ describe('internal Agent Gateway provider', () => {
         gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
         id: 'codex-work',
         models: ['openai-codex/gpt-5.6-sol'],
+        modelMetadata: { 'openai-codex/gpt-5.6-sol': { tool_call: true } },
         requiresApiKey: false,
         subscriptionProviderId: 'openai-codex',
       }),
@@ -357,5 +365,256 @@ describe('internal Agent Gateway provider', () => {
       })
     ).rejects.toMatchObject({ code: 'tool_image_content_unavailable' });
     expect(createResponses).not.toHaveBeenCalled();
+  });
+});
+
+/** The internal role uses the same fixed failure oracle as public Gateway requests. */
+const internalDecisions = [
+  ['auth_rejected', 1, true],
+  ['quota_exhausted', 1, true],
+  ['rate_limited', 4, true],
+  ['provider_unavailable', 4, true],
+  ['context_overflow', 1, false],
+  ['unsupported', 1, false],
+  ['output_limit', 1, false],
+  ['refused', 1, false],
+  ['invalid_request', 1, false],
+  ['cancelled', 1, false],
+  ['unknown', 1, false],
+] as const;
+
+describe('internal role shares Gateway planning and replay rules', () => {
+  it.each(
+    internalDecisions
+  )('%s follows the same retry and advancement rule', async (kind, primaryCalls, advances) => {
+    const capture = captureBinding();
+    vi.useFakeTimers();
+    try {
+      for (const autoFailover of [false, true]) {
+        const model = {
+          ...logicalModel,
+          autoFailover,
+          routes: ['primary', 'backup'].map((id) => ({
+            ...logicalModel.routes[0]!,
+            id,
+            providerProfileId: id,
+          })),
+        };
+        const calls: string[] = [];
+        const createResponses = vi.fn(async (config: { id: string }) => {
+          calls.push(config.id);
+          if (config.id === 'primary')
+            throw Object.assign(new Error('private detail'), { failure: { kind, settled: true } });
+          return {
+            id: 'response',
+            object: 'response' as const,
+            status: 'completed',
+            output: [
+              {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'Backup.' }],
+              },
+            ],
+          };
+        });
+        const provider = createInternalAgentGatewayProvider({
+          logicalModel: model,
+          capture,
+          dispatcher: { createResponses } as unknown as Pick<
+            LLMGatewayProviderDispatcher,
+            'createResponses'
+          >,
+          resolveGatewayProvider: (id) =>
+            ({
+              id,
+              models: ['model'],
+              gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
+              modelMetadata: { model: { tool_call: true } },
+            }) as never,
+          promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+          usageEndpoint: 'responses',
+        });
+        const pending = provider(request()).then(
+          (result) => ({ result }),
+          (error) => ({ error })
+        );
+        await vi.runAllTimersAsync();
+        const outcome = await pending;
+        expect(calls.filter((id) => id === 'primary')).toHaveLength(primaryCalls);
+        expect(calls.filter((id) => id === 'backup')).toHaveLength(
+          autoFailover && advances ? 1 : 0
+        );
+        if (autoFailover && advances)
+          expect(outcome).toMatchObject({
+            result: { message: { content: [{ type: 'text', text: 'Backup.' }] } },
+          });
+        else expect(outcome).toMatchObject({ error: { failure: { kind } } });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips a member unable to satisfy the run-pinned tool capability without dispatch', async () => {
+    const calls: string[] = [];
+    const provider = createInternalAgentGatewayProvider({
+      logicalModel: {
+        ...logicalModel,
+        routes: ['primary', 'backup'].map((id) => ({
+          ...logicalModel.routes[0]!,
+          id,
+          providerProfileId: id,
+        })),
+      },
+      capture: captureBinding(),
+      dispatcher: {
+        createResponses: async (config: { id: string }) => {
+          calls.push(config.id);
+          return {
+            id: 'response',
+            object: 'response',
+            status: 'completed',
+            output: [{ type: 'message', content: [{ type: 'output_text', text: 'Ready.' }] }],
+          };
+        },
+      } as never,
+      resolveGatewayProvider: (id) =>
+        ({
+          id,
+          models: ['model'],
+          gatewayCapabilities: { responses: 'native' },
+          modelMetadata: { model: { tool_call: id === 'backup' } },
+        }) as never,
+      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      usageEndpoint: 'responses',
+    });
+    await expect(provider(request())).resolves.toMatchObject({
+      message: { content: [{ type: 'text', text: 'Ready.' }] },
+    });
+    expect(calls).toEqual(['backup']);
+  });
+
+  it('validates a non-stream result before release and never replays invalid Tool arguments', async () => {
+    const createResponses = vi.fn(async () => ({
+      id: 'response',
+      object: 'response',
+      status: 'completed',
+      output: [
+        { type: 'function_call', call_id: 'call', name: 'environment.status', arguments: '{' },
+      ],
+    }));
+    const onDispatch = vi.fn();
+    const provider = createInternalAgentGatewayProvider({
+      logicalModel: {
+        ...logicalModel,
+        routes: ['primary', 'backup'].map((id) => ({
+          ...logicalModel.routes[0]!,
+          id,
+          providerProfileId: id,
+        })),
+      },
+      capture: captureBinding(),
+      dispatcher: { createResponses } as never,
+      onDispatch,
+      resolveGatewayProvider: (id) =>
+        ({
+          id,
+          models: ['model'],
+          gatewayCapabilities: { responses: 'native' },
+          modelMetadata: { model: { tool_call: true } },
+        }) as never,
+      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      usageEndpoint: 'responses',
+    });
+    await expect(provider(request())).rejects.toThrow('Gateway returned invalid Tool arguments.');
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    expect(onDispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('Round 2 internal-role exhaustion cause', () => {
+  it.each([
+    { kind: 'rate_limited', attempts: 4 },
+    { kind: 'provider_unavailable', attempts: 4 },
+    { kind: 'auth_rejected', attempts: 1 },
+    { kind: 'quota_exhausted', attempts: 1 },
+    { kind: undefined, attempts: 0 },
+    { kind: 'auth_rejected', attempts: 1, disabled: true },
+    { kind: 'rate_limited', attempts: 4, disabled: true },
+    { kind: 'context_overflow', attempts: 1 },
+  ] as const)('propagates only the terminating kind: %j', async (scenario) => {
+    const capture = captureBinding();
+    vi.useFakeTimers();
+    try {
+      const disabled = 'disabled' in scenario;
+      const terminal = scenario.kind === 'context_overflow';
+      // The first member must advance with a kind distinct from the final member's kind.
+      const primaryKind =
+        disabled || terminal
+          ? scenario.kind
+          : scenario.kind === 'quota_exhausted'
+            ? 'auth_rejected'
+            : 'quota_exhausted';
+      const primaryFailure = Object.assign(new Error('private primary marker=internal-secret'), {
+        failure: { kind: primaryKind, settled: true },
+      });
+      const finalFailure = Object.assign(new Error('private backup marker=internal-secret'), {
+        failure: { kind: scenario.kind, settled: true },
+      });
+      const calls: string[] = [];
+      const createResponses = vi.fn(async (config: { id: string }) => {
+        calls.push(config.id);
+        throw config.id === 'primary' ? primaryFailure : finalFailure;
+      });
+      const provider = createInternalAgentGatewayProvider({
+        logicalModel: {
+          ...logicalModel,
+          autoFailover: !disabled,
+          routes: ['primary', 'backup'].map((id) => ({
+            ...logicalModel.routes[0]!,
+            id,
+            providerProfileId: id,
+            available: scenario.kind !== undefined,
+            unavailableReason:
+              scenario.kind === undefined ? ('provider_profile_missing' as const) : null,
+          })),
+        },
+        capture,
+        dispatcher: { createResponses } as never,
+        resolveGatewayProvider: (id) =>
+          ({
+            id,
+            models: ['model'],
+            gatewayCapabilities: { responses: 'native' },
+            modelMetadata: { model: { tool_call: true } },
+          }) as never,
+        promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+        usageEndpoint: 'responses',
+      });
+      const pending = provider(request()).catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      const error = await pending;
+      if (disabled || terminal) {
+        expect(error).toHaveProperty('failure', primaryFailure.failure);
+        expect(error).toHaveProperty('cause', primaryFailure);
+      } else {
+        expect(error).toBeInstanceOf(LogicalModelRoutesExhaustedError);
+        expect(error).toMatchObject({
+          code: 'gateway_logical_model_unavailable',
+          message: 'Logical model is temporarily unavailable.',
+        });
+        if (scenario.kind !== undefined) expect(error).toHaveProperty('cause', scenario.kind);
+        else expect(error).not.toHaveProperty('cause');
+      }
+      expect(calls.filter((id) => id === 'primary')).toHaveLength(
+        scenario.kind === undefined ? 0 : disabled || terminal ? scenario.attempts : 1
+      );
+      expect(calls.filter((id) => id === 'backup')).toHaveLength(
+        scenario.kind !== undefined && !disabled && !terminal ? scenario.attempts : 0
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

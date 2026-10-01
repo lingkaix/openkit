@@ -94,6 +94,7 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { createDemoWorkspaceForUser, FsStore, type FsStoreOptions } from './lib/store.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
+import { attachPiAiFailure } from './llm/pi-ai-failure.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -13284,11 +13285,13 @@ describe('nanocore server', () => {
       turnExecutor: new FakeTurnExecutor(),
       llmPiAiClient: {
         createChatCompletion: async () => {
-          throw new OpenAICompatibleProviderError({
-            status: 429,
-            code: 'rate_limit_exceeded',
-            message: 'Rate limit exceeded token=tok_private_rate_limit.',
-          });
+          throw attachPiAiFailure(
+            new OpenAICompatibleProviderError({
+              status: 429,
+              code: 'rate_limit_exceeded',
+              message: 'Rate limit exceeded token=tok_private_rate_limit.',
+            })
+          );
         },
       } as unknown as PiAiGatewayClient,
     });

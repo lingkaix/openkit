@@ -34,13 +34,26 @@ import { createWorkerRuntimeOriginRef } from '../runtime/worker-runtime-provenan
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
+import {
+  executeGatewayPlan,
+  type GatewayAttemptContext,
+  GatewayAttemptFailure,
+  type GatewayClock,
+  LogicalModelRoutesExhaustedError,
+  planLogicalModel,
+} from './gateway-execution.js';
+import type { PiAiFailure, PiAiFailureKind } from './pi-ai-failure.js';
+
+export { LogicalModelRoutesExhaustedError } from './gateway-execution.js';
+
 import { parseUsage } from './gateway-usage.js';
 import {
   type ResolvedLogicalModel,
+  resolveEffectiveModelMetadata,
   resolveLogicalModel,
   resolveLogicalModelCatalog,
 } from './logical-models.js';
-import { type ModelCaptureContext, ModelCaptureError } from './model-capture.js';
+import type { ModelCaptureContext } from './model-capture.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   type OpenAICompatibleChatCompletionResponse,
@@ -1032,6 +1045,8 @@ function asWorkerInferenceError(error: unknown): Response {
   }
 
   if (
+    error instanceof GatewayAttemptFailure ||
+    (error as { failure?: PiAiFailure } | null)?.failure ||
     error instanceof LogicalModelRoutesExhaustedError ||
     error instanceof GatewayUnsupportedFeatureError ||
     error instanceof OpenAICompatibleProviderError
@@ -1053,11 +1068,19 @@ function asWorkerInferenceError(error: unknown): Response {
 
 /**
  * Converts gateway dispatch failures into OpenAI-compatible error envelopes.
+ * Exhaustion exposes only the final closed kind; selection without an attempt omits cause.
  */
 function asOpenAIGatewayError(error: unknown): Response {
   if (error instanceof LogicalModelRoutesExhaustedError) {
     return Response.json(
-      { error: { message: error.message, type: error.type, code: error.code } },
+      {
+        error: {
+          message: error.message,
+          type: error.type,
+          code: error.code,
+          ...(error.cause === undefined ? {} : { cause: error.cause }),
+        },
+      },
       { status: error.status }
     );
   }
@@ -1101,18 +1124,32 @@ function asOpenAIGatewayError(error: unknown): Response {
         { status: 400 }
       );
     }
-    const normalized = classifyGatewayProviderFailure(error, 'provider_error');
-    const publicCode = publicGatewayFailureCode(normalized.code, 'provider_error');
+  }
 
+  const failure = (error as { failure?: PiAiFailure } | null)?.failure;
+  if (failure) {
+    const code = GATEWAY_FAILURE_CODES[failure.kind];
+    const status =
+      failure.status ??
+      (
+        {
+          auth_rejected: 401,
+          quota_exhausted: 429,
+          rate_limited: 429,
+          provider_unavailable: 503,
+          cancelled: 499,
+        } as Partial<Record<PiAiFailureKind, number>>
+      )[failure.kind] ??
+      400;
     return Response.json(
       {
         error: {
-          message: gatewayProviderFailureMessage(publicCode),
-          type: normalized.type,
-          code: publicCode,
+          code,
+          type: failure.kind === 'unsupported' ? 'invalid_request_error' : 'provider_error',
+          message: gatewayProviderFailureMessage(code),
         },
       },
-      { status: error.status }
+      { status }
     );
   }
 
@@ -1139,7 +1176,7 @@ interface GatewayTerminalStreamOptions {
   readonly durableCall?: DurableLlmGatewayCall | null;
   /** Stable ledger error code used when downstream consumption is cancelled. */
   readonly cancellationCode?: string;
-  /** Envelope ledger error code used as the classifier fallback when upstream streaming fails. */
+  /** Envelope ledger error code used as the projection fallback when upstream streaming fails. */
   readonly failureCode?: string;
   /** Optional product-safe SSE message that hides internal provider details. */
   readonly failureMessage?: string;
@@ -1228,7 +1265,7 @@ function normalizeGatewayTerminalStream(
             cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
             cancelled
               ? (options.cancellationCode ?? 'llm_gateway_cancelled')
-              : classifyGatewayProviderFailure(error, envelopeFailureCode).code
+              : projectGatewayFailure(error, envelopeFailureCode).code
           );
         } finally {
           releaseReader();
@@ -1326,7 +1363,7 @@ function isGatewayTimeout(error: unknown): boolean {
   );
 }
 
-/** OpenKit-owned inner stream diagnostics that the classifier must not collapse. */
+/** OpenKit-owned inner stream diagnostics preserved by the fixed failure projection. */
 const INNER_STREAM_DIAGNOSTIC_CODES = new Set([
   'provider_stream_truncated',
   'provider_stream_failed',
@@ -1370,7 +1407,7 @@ function createGatewayTerminalErrorSse(
   stopReason: 'error' | 'aborted' = 'error',
   errorCode?: string
 ): string {
-  const normalized = classifyGatewayProviderFailure(error, 'gateway_stream_failed');
+  const normalized = projectGatewayFailure(error, 'gateway_stream_failed');
   const publicCode =
     errorCode ?? publicGatewayFailureCode(normalized.code, 'gateway_stream_failed');
   const payload = {
@@ -1395,61 +1432,44 @@ function createGatewayTerminalErrorSse(
 }
 
 /**
- * Normalizes provider failure signal into stable public gateway error identity.
+ * Projects the boundary failure value into stable public Gateway error identity.
  *
  * Allowlisted inner stream diagnostic codes are preserved for durable capability
  * metadata. Public JSON and SSE still project the fixed Gateway class.
  *
  * @param error Unknown provider or stream failure.
- * @param fallbackCode Stable code used when the failure has no known provider signal.
+ * @param fallbackCode Stable code used when the boundary reports an unknown kind.
  * @returns Public gateway error type and code.
  */
-function classifyGatewayProviderFailure(error: unknown, fallbackCode: string) {
-  const detail = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
-  const status = typeof detail.status === 'number' ? detail.status : undefined;
-  const code = typeof detail.code === 'string' ? detail.code : '';
-  const providerType = typeof detail.type === 'string' ? detail.type : '';
-  const message = error instanceof Error ? error.message : String(error);
-  const signal = `${code} ${providerType} ${message}`.toLowerCase();
+function projectGatewayFailure(error: unknown, fallbackCode: string) {
+  const failure = (error as { failure?: PiAiFailure } | null)?.failure;
   const type = 'provider_error';
-
-  if (
-    status === 401 ||
-    status === 403 ||
-    /\b(auth|authentication|unauthorized|forbidden)\b/.test(signal)
-  ) {
-    return { type, code: 'gateway_provider_authentication_failed' };
-  }
-  if (status === 429 || /\b(rate[_ -]?limit|quota|too many requests)\b/.test(signal)) {
-    return { type, code: 'gateway_provider_rate_limited' };
-  }
-  if (/\b(context|token|input).*\b(overflow|exceed|too long|maximum|max)\b/.test(signal)) {
-    return { type, code: 'gateway_context_overflow' };
-  }
-  if (
-    status === 400 ||
-    status === 422 ||
-    /\b(invalid[_ -]?request|validation|bad request|malformed)\b/.test(signal)
-  ) {
+  if (failure)
+    return {
+      type: failure.kind === 'unsupported' ? 'invalid_request_error' : type,
+      code: failure.kind === 'unknown' ? fallbackCode : GATEWAY_FAILURE_CODES[failure.kind],
+    };
+  if (error instanceof GatewayUnsupportedFeatureError)
     return { type, code: 'gateway_provider_request_invalid' };
-  }
-  if (
-    status === 408 ||
-    status === 423 ||
-    status === 500 ||
-    status === 502 ||
-    status === 503 ||
-    status === 504 ||
-    /\b(unavailable|overloaded|timeout|timed out|server error)\b/.test(signal)
-  ) {
-    return { type, code: 'gateway_provider_unavailable' };
-  }
-  if (isInnerStreamDiagnosticCode(code)) {
-    return { type, code };
-  }
-
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && isInnerStreamDiagnosticCode(code)) return { type, code };
   return { type, code: fallbackCode };
 }
+
+/** Fixed public identities project the accepted closed kinds; they never classify upstream evidence. */
+const GATEWAY_FAILURE_CODES: Record<PiAiFailureKind, string> = {
+  auth_rejected: 'gateway_provider_authentication_failed',
+  quota_exhausted: 'gateway_provider_quota_exhausted',
+  rate_limited: 'gateway_provider_rate_limited',
+  provider_unavailable: 'gateway_provider_unavailable',
+  context_overflow: 'gateway_context_overflow',
+  unsupported: 'unsupported_gateway_feature',
+  output_limit: 'gateway_output_limit',
+  refused: 'gateway_provider_refused',
+  invalid_request: 'gateway_provider_request_invalid',
+  cancelled: 'gateway_request_cancelled',
+  unknown: 'provider_error',
+};
 
 /**
  * Projects one normalized provider failure code onto a fixed public message.
@@ -1461,6 +1481,16 @@ function gatewayProviderFailureMessage(code: string): string {
   switch (code) {
     case 'gateway_provider_authentication_failed':
       return 'Provider authentication failed.';
+    case 'gateway_provider_quota_exhausted':
+      return 'Provider quota is exhausted.';
+    case 'gateway_provider_refused':
+      return 'Provider refused the request.';
+    case 'gateway_output_limit':
+      return 'Requested output limit is not supported.';
+    case 'unsupported_gateway_feature':
+      return 'Requested features are not supported by the Gateway.';
+    case 'gateway_request_cancelled':
+      return 'Request was cancelled.';
     case 'gateway_provider_rate_limited':
       return 'Provider rate limit exceeded.';
     case 'gateway_context_overflow':
@@ -1606,6 +1636,7 @@ export function registerWorkerInferenceRoutes({
           'failed',
           'worker_inference_provider_unavailable'
         );
+        if (logicalModel) throw new LogicalModelRoutesExhaustedError();
         throw new WorkerInferenceRouteError(
           'worker_inference_provider_unavailable',
           'Worker inference provider is unavailable.',
@@ -1614,10 +1645,18 @@ export function registerWorkerInferenceRoutes({
       }
       return await dispatchLogicalModel<Response>({
         logicalModel,
+        requiredCapabilities: endpoint === 'responses' ? ['responses'] : ['chat-completions'],
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
         resolveGatewayProvider,
         signal: c.req.raw.signal,
-        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => {
+        attempt: async ({
+          provider,
+          providerModel,
+          subscriptionModels,
+          corr,
+          attempt,
+          execution,
+        }) => {
           const cache = resolveWorkerPromptCacheKey({
             accountSlotId: provider.accountSlotId ?? null,
             model: providerModel,
@@ -1690,7 +1729,7 @@ export function registerWorkerInferenceRoutes({
                   dispatchContext
                 );
                 return workerInferenceStreamResponse(
-                  rewriteGatewayStreamModel(stream, logicalModel.id),
+                  rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
                   durableCall,
                   endpoint,
                   c.req.raw.signal,
@@ -1742,7 +1781,7 @@ export function registerWorkerInferenceRoutes({
                 dispatchContext
               );
               return workerInferenceStreamResponse(
-                rewriteGatewayStreamModel(stream, logicalModel.id),
+                rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
                 durableCall,
                 endpoint,
                 c.req.raw.signal,
@@ -1831,30 +1870,6 @@ function workerInferenceStreamResponse(
   );
 }
 
-/** Stable error returned after every eligible private route fails before output starts. */
-export class LogicalModelRoutesExhaustedError extends Error {
-  public readonly code = 'gateway_logical_model_unavailable';
-  public readonly status = 503;
-  public readonly type = 'provider_error';
-
-  public constructor() {
-    super('Logical model is temporarily unavailable.');
-    this.name = 'LogicalModelRoutesExhaustedError';
-  }
-}
-
-/** Returns whether one pre-output failure permits trying the next ordered route member. */
-function isLogicalModelFallbackEligible(error: unknown): boolean {
-  if (error instanceof WorkerInferenceRouteError || error instanceof ModelCaptureError)
-    return false;
-  const code = classifyGatewayProviderFailure(error, 'provider_error').code;
-  return (
-    code === 'gateway_provider_authentication_failed' ||
-    code === 'gateway_provider_rate_limited' ||
-    code === 'gateway_provider_unavailable'
-  );
-}
-
 /** Rewrites provider-native model fields in one JSON SSE payload to the public logical ID. */
 function rewriteGatewaySseEventModel(event: string, logicalModelId: string): string {
   return event
@@ -1929,10 +1944,16 @@ function assertGatewayModelAuthorized(provider: ResolvedLLMProviderConfig, model
   }
 }
 
-/** Dispatches available ordered members before output starts, selecting only the primary when failover is disabled. */
+/**
+ * Plans and executes a logical request with shared retry, certainty and commit rules.
+ * @param input Current tier, pinned capabilities, cancellation and validated consumer effect.
+ * @returns The selected result; authority and retention errors remain terminal.
+ */
 export async function dispatchLogicalModel<T>(input: {
   logicalModel: ResolvedLogicalModel;
   signal: AbortSignal;
+  requiredCapabilities?: readonly string[];
+  clock?: GatewayClock;
   resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   attempt: (route: {
@@ -1941,41 +1962,119 @@ export async function dispatchLogicalModel<T>(input: {
     subscriptionModels: Awaited<ReturnType<typeof resolveGatewaySubscriptionModels>>;
     corr: string;
     attempt: number;
+    execution: GatewayAttemptContext;
   }) => Promise<T>;
 }): Promise<T> {
   const corr = randomUUID();
-  const routes = input.logicalModel.autoFailover
-    ? input.logicalModel.routes
-    : input.logicalModel.routes.slice(0, 1);
-  for (const [index, route] of routes.entries()) {
-    if (!route.available) continue;
-    try {
-      const provider = input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
-      assertGatewayModelAuthorized(provider, route.providerModel);
-      const subscriptionModels = await resolveGatewaySubscriptionModels(
-        provider,
-        input.providerSubscriptionAccountManager
+  const providers = new Map<string, ResolvedLLMProviderConfig>();
+  const resolutionFailures = new Map<string, unknown>();
+  const selections = planLogicalModel(
+    input.logicalModel,
+    input.requiredCapabilities ?? [],
+    (route, required) => {
+      if (required.length === 0) return true;
+      let provider: ResolvedLLMProviderConfig;
+      try {
+        provider = input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
+      } catch (error) {
+        resolutionFailures.set(route.id, error);
+        return true;
+      } // The first owned failure is consumed once, without a second credential read during selection.
+      providers.set(route.id, provider);
+      const metadata = resolveEffectiveModelMetadata(
+        {
+          id: provider.id,
+          kind: 'direct',
+          displayName: provider.displayName,
+          models: [...provider.models],
+          ...(provider.vendor ? { vendor: provider.vendor } : {}),
+          ...(provider.modelMetadata ? { modelMetadata: provider.modelMetadata } : {}),
+        },
+        route.providerModel
       );
-      return await input.attempt({
-        provider,
-        providerModel: route.providerModel,
-        subscriptionModels,
-        corr,
-        attempt: index,
+      return required.every((capability) => {
+        if (capability === 'responses')
+          return provider.gatewayCapabilities.responses !== 'unsupported';
+        if (capability === 'chat-completions')
+          return provider.gatewayCapabilities.chatCompletions !== 'unsupported';
+        if (capability === 'tool-calling') return metadata.tool_call === true;
+        if (capability === 'reasoning') return metadata.reasoning === true;
+        if (capability === 'attachment') return metadata.attachment === true;
+        if (capability === 'temperature') return metadata.temperature === true;
+        if (capability.startsWith('input:'))
+          return metadata.modalities?.input?.includes(capability.slice(6)) === true;
+        if (capability.startsWith('output:'))
+          return metadata.modalities?.output?.includes(capability.slice(7)) === true;
+        return false;
       });
-    } catch (error) {
-      if (
-        input.signal.aborted ||
-        !input.logicalModel.autoFailover ||
-        !isLogicalModelFallbackEligible(error)
-      )
-        throw error;
-      if (index === routes.length - 1) {
-        throw new LogicalModelRoutesExhaustedError();
-      }
     }
-  }
-  throw new LogicalModelRoutesExhaustedError();
+  );
+  return executeGatewayPlan({
+    selections,
+    autoFailover: input.logicalModel.autoFailover,
+    signal: input.signal,
+    ...(input.clock ? { clock: input.clock } : {}),
+    attempt: async (selection, execution) => {
+      const route = selection.route;
+      let provider: ResolvedLLMProviderConfig;
+      let subscriptionModels: Awaited<ReturnType<typeof resolveGatewaySubscriptionModels>>;
+      try {
+        if (resolutionFailures.has(route.id)) {
+          const error = resolutionFailures.get(route.id);
+          resolutionFailures.delete(route.id);
+          throw error;
+        }
+        provider =
+          providers.get(route.id) ??
+          input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
+        assertGatewayModelAuthorized(provider, route.providerModel);
+        subscriptionModels = await resolveGatewaySubscriptionModels(
+          provider,
+          input.providerSubscriptionAccountManager
+        );
+      } catch (error) {
+        // Only this resolver owns these pre-dispatch mappings; no text/status reclassification.
+        if (error instanceof OpenAICompatibleProviderError) {
+          const unavailable = [
+            'gateway_provider_unavailable',
+            'provider_not_configured',
+            'provider_not_dispatchable',
+            'vault-locked',
+            'backend-unavailable',
+          ].includes(error.code);
+          const authentication = [
+            'gateway_provider_authentication_failed',
+            'reference-not-found',
+            'reference-revoked',
+            'version-expired',
+          ].includes(error.code);
+          if (unavailable || authentication) {
+            // These local resolver outcomes have no Provider effect. Their HTTP values are
+            // Error Contract projections, never claimed as exposed upstream HTTP status.
+            throw new GatewayAttemptFailure(
+              { kind: unavailable ? 'provider_unavailable' : 'auth_rejected', settled: true },
+              error
+            );
+          }
+        }
+        throw error;
+      }
+      try {
+        return await input.attempt({
+          provider,
+          providerModel: route.providerModel,
+          subscriptionModels,
+          corr,
+          attempt: execution.attemptOrder,
+          execution,
+        });
+      } catch (error) {
+        if (error instanceof GatewayUnsupportedFeatureError)
+          throw new GatewayAttemptFailure({ kind: 'unsupported', settled: true }, error);
+        throw error;
+      }
+    },
+  });
 }
 
 /**
@@ -2158,10 +2257,18 @@ export function registerLlmGatewayRoutes({
 
       return await dispatchLogicalModel<Response>({
         logicalModel,
+        requiredCapabilities: ['chat-completions'],
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
         resolveGatewayProvider,
         signal: c.req.raw.signal,
-        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => {
+        attempt: async ({
+          provider,
+          providerModel,
+          subscriptionModels,
+          corr,
+          attempt,
+          execution,
+        }) => {
           const durableCall = startPublicLlmGatewayCall({
             ...(coreDb ? { coreDb } : {}),
             authorityActor,
@@ -2190,7 +2297,7 @@ export function registerLlmGatewayRoutes({
               );
               return new Response(
                 normalizeGatewayTerminalStream(
-                  rewriteGatewayStreamModel(stream, logicalModel.id),
+                  rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
                   'chat_completions',
                   { durableCall, signal: c.req.raw.signal }
                 ),
@@ -2294,10 +2401,18 @@ export function registerLlmGatewayRoutes({
 
       return await dispatchLogicalModel<Response>({
         logicalModel,
+        requiredCapabilities: ['responses'],
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
         resolveGatewayProvider,
         signal: c.req.raw.signal,
-        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => {
+        attempt: async ({
+          provider,
+          providerModel,
+          subscriptionModels,
+          corr,
+          attempt,
+          execution,
+        }) => {
           const durableCall = startPublicLlmGatewayCall({
             ...(coreDb ? { coreDb } : {}),
             authorityActor,
@@ -2326,7 +2441,7 @@ export function registerLlmGatewayRoutes({
               );
               return new Response(
                 normalizeGatewayTerminalStream(
-                  rewriteGatewayStreamModel(stream, logicalModel.id),
+                  rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
                   'responses',
                   { durableCall, signal: c.req.raw.signal }
                 ),

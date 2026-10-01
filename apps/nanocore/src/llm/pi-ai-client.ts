@@ -39,15 +39,14 @@ import {
 } from './gateway-converters.js';
 import { mergeAdapterCostRates, resolveEffectiveModelMetadata } from './logical-models.js';
 import { admittedModelEvent, type ModelSemanticEvent } from './model-semantic-content.js';
-import {
-  type OpenAICompatibleChatCompletionRequest,
-  type OpenAICompatibleChatCompletionResponse,
-  type OpenAICompatibleChatMessage,
-  OpenAICompatibleProviderError,
-  type OpenAICompatibleResponsesRequest,
-  type OpenAICompatibleResponsesResponse,
+import type {
+  OpenAICompatibleChatCompletionRequest,
+  OpenAICompatibleChatCompletionResponse,
+  OpenAICompatibleChatMessage,
+  OpenAICompatibleResponsesRequest,
+  OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
-import { attachPiAiFailure, classifyPiAiFailure } from './pi-ai-failure.js';
+import { attachPiAiFailure } from './pi-ai-failure.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
 import {
   gatewayReasoningAttribution,
@@ -78,11 +77,13 @@ const PI_AI_PROVIDER_ALIASES: Record<string, readonly string[]> = {
  *
  * @param operation Lazy provider operation started after the abort listener is installed.
  * @param signal Optional caller or combined provider signal.
+ * @param observedFailure Failure already observed before terminal callbacks, which wins a later abort.
  * @returns Provider result when it settles before cancellation.
  */
 async function raceProviderWithSignal<T>(
   operation: () => Promise<T>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  observedFailure?: () => Error | undefined
 ): Promise<T> {
   if (!signal) {
     return operation().catch((error) => {
@@ -94,6 +95,11 @@ async function raceProviderWithSignal<T>(
   let abortListener: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
     abortListener = () => {
+      const failure = observedFailure?.();
+      if (failure) {
+        reject(failure);
+        return;
+      }
       try {
         signal.throwIfAborted();
       } catch (error) {
@@ -130,18 +136,30 @@ function observeModelEvent(
   if (admitted) observer(admitted);
 }
 
-/** Consumes one model stream incrementally even when the caller requested a final response. */
+/** Captures a terminal Provider failure without assigning error semantics to normal protocol finishes. */
+function terminalPiAiFailure(message: AssistantMessage): Error | undefined {
+  if (message.stopReason !== 'error' && message.stopReason !== 'aborted') return undefined;
+  return attachPiAiFailure(
+    new Error(message.errorMessage ?? 'pi-ai provider failed'),
+    message
+  ) as Error;
+}
+
+/**
+ * Consumes one model stream incrementally even when the caller requested a final response.
+ * Classifies terminal failure before forwarding usage or invoking terminal observers.
+ */
 async function completeObservedModel(
   models: Models,
   model: Model<string>,
   context: Context,
   options: StreamOptions & Record<string, unknown>,
   transport: LLMGatewayTransportContext,
-  onTerminal: (message: AssistantMessage) => void
+  onTerminal: (message: AssistantMessage, failure: Error | undefined) => void
 ): Promise<AssistantMessage> {
   if (!transport.onModelEvent) {
     const response = await models.complete(model, context, options);
-    onTerminal(response);
+    onTerminal(response, terminalPiAiFailure(response));
     return response;
   }
   const localAbort = new AbortController();
@@ -157,8 +175,10 @@ async function completeObservedModel(
         transport.onModelEvent({ type: 'truncated' });
         throw piAiStreamFailure('Provider stream failed.', 'provider_stream_truncated');
       }
-      if (result.value.type === 'done') onTerminal(result.value.message);
-      if (result.value.type === 'error') onTerminal(result.value.error);
+      if (result.value.type === 'done')
+        onTerminal(result.value.message, terminalPiAiFailure(result.value.message));
+      if (result.value.type === 'error')
+        onTerminal(result.value.error, terminalPiAiFailure(result.value.error));
       observeModelEvent(result.value, transport.onModelEvent);
       if (result.value.type === 'done') return result.value.message;
       if (result.value.type === 'error') return result.value.error;
@@ -244,6 +264,7 @@ export class PiAiGatewayClient {
 
   /**
    * Creates a non-streaming OpenAI-compatible Chat Completions response through pi-ai.
+   * Terminal failure is recorded before callbacks so a later caller abort cannot replace it.
    *
    * @param provider Resolved OpenKit provider config.
    * @param request Chat Completions request.
@@ -263,6 +284,7 @@ export class PiAiGatewayClient {
     this.assertSupportedRequest(request, { allowStream: false });
 
     const { knownCost, model } = this.resolveModel(provider, request.model, models);
+    let observedFailure: Error | undefined;
     const response = await raceProviderWithSignal(
       () =>
         completeObservedModel(
@@ -271,24 +293,16 @@ export class PiAiGatewayClient {
           this.toContext(request, model),
           this.toStreamOptions(provider, request, transport),
           transport,
-          (message) => publishObservedUsage(onUsage, message.usage, model, knownCost)
+          (message, failure) => {
+            observedFailure = failure;
+            publishObservedUsage(onUsage, message.usage, model, knownCost);
+          }
         ),
-      transport.signal
+      transport.signal,
+      () => observedFailure
     );
 
-    if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-      const failure = classifyPiAiFailure(response);
-      throw Object.defineProperty(
-        new OpenAICompatibleProviderError({
-          code: 'provider_error',
-          message: response.errorMessage ?? 'pi-ai provider failed',
-          status: 502,
-          type: 'provider_error',
-        }),
-        'failure',
-        { value: failure }
-      );
-    }
+    if (observedFailure) throw observedFailure;
 
     return this.toChatCompletionResponse(response, request.model);
   }
@@ -339,6 +353,7 @@ export class PiAiGatewayClient {
 
   /**
    * Creates a non-streaming OpenAI-compatible Responses payload through pi-ai.
+   * Native and bridged terminal failures retain their classification across callback-triggered aborts.
    *
    * @param provider Resolved OpenKit provider config.
    * @param request Responses request.
@@ -374,6 +389,7 @@ export class PiAiGatewayClient {
           ),
         };
 
+      let observedFailure: Error | undefined;
       const response = await raceProviderWithSignal(
         () =>
           completeObservedModel(
@@ -392,23 +408,15 @@ export class PiAiGatewayClient {
               ? this.toCodexResponsesOptions(request, model, transport, additionalTools)
               : this.toBridgedResponsesOptions(provider, request, transport),
             transport,
-            (message) => publishObservedUsage(onUsage, message.usage, model, knownCost)
+            (message, failure) => {
+              observedFailure = failure;
+              publishObservedUsage(onUsage, message.usage, model, knownCost);
+            }
           ),
-        transport.signal
+        transport.signal,
+        () => observedFailure
       );
-      if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-        const failure = classifyPiAiFailure(response);
-        throw Object.defineProperty(
-          new OpenAICompatibleProviderError({
-            code: 'provider_error',
-            message: response.errorMessage ?? 'pi-ai provider failed',
-            status: 502,
-            type: 'provider_error',
-          }),
-          'failure',
-          { value: failure }
-        );
-      }
+      if (observedFailure) throw observedFailure;
       const result = toResponsesResponse(response, request.model, additionalTools, bridgeNames);
       for (const item of result.output ?? [])
         recordReturnedReasoning(item, member, this.reasoningAttribution);
@@ -1117,6 +1125,9 @@ export class PiAiGatewayClient {
 
   /**
    * Converts pi-ai stream events into OpenAI-compatible Chat Completions SSE.
+   * Failure classification precedes terminal usage and semantic observers.
+   * Terminal usage is drained before the read rejection, including when private commit
+   * buffering introduces backpressure. Bare iterator exhaustion is uncertain failure.
    *
    * @param iterator pi-ai assistant event iterator.
    * @param requestModel Model requested by the caller.
@@ -1141,6 +1152,7 @@ export class PiAiGatewayClient {
     let usageObserved = false;
     let cancelled = false;
     let terminal = false;
+    let terminalFailure: unknown;
     const toolIndexes = new Map<number, number>();
 
     return new ReadableStream<Uint8Array>({
@@ -1150,6 +1162,11 @@ export class PiAiGatewayClient {
         }
 
         try {
+          if (terminalFailure) {
+            terminal = true;
+            controller.error(terminalFailure);
+            return;
+          }
           while (!cancelled && !terminal) {
             const result = await raceProviderWithSignal(() => iterator.next(), signal);
 
@@ -1159,11 +1176,21 @@ export class PiAiGatewayClient {
             if (result.done) {
               onModelEvent?.({ type: 'truncated' });
               terminal = true;
-              controller.close();
+              controller.error(
+                piAiStreamFailure(
+                  'Provider stream ended before terminal result',
+                  'provider_stream_truncated'
+                )
+              );
               return;
             }
 
             const event = result.value;
+            if (event.type === 'error')
+              terminalFailure = attachPiAiFailure(
+                new Error(event.error.errorMessage ?? 'pi-ai stream failed'),
+                event
+              );
             if (!usageObserved && (event.type === 'done' || event.type === 'error')) {
               usageObserved = true;
               onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
@@ -1265,13 +1292,10 @@ export class PiAiGatewayClient {
                   )
                 );
               }
-              terminal = true;
-              controller.error(
-                attachPiAiFailure(
-                  new Error(event.error.errorMessage ?? 'pi-ai stream failed'),
-                  event
-                )
-              );
+              if (!usage) {
+                terminal = true;
+                controller.error(terminalFailure);
+              }
               await iterator.return?.();
               return;
             }
@@ -2595,8 +2619,7 @@ function toResponsesUsage(usage: unknown): Record<string, unknown> {
  *
  * `code` distinguishes bare iterator exhaustion from a package `error` inside this client,
  * and `stopReason` records the package terminal reason when present. The public Gateway
- * classifier has no direct mapping for these internal codes and does not read `stopReason`,
- * so absent a separate message match they normalize to `gateway_stream_failed`. OpenKit
+ * projection consumes its attached failure value without parsing diagnostic text. OpenKit
  * also forces Codex transport to SSE, so stock pi-ai's WebSocket-only
  * `provider_transport_failure` diagnostic is not produced on the production Codex path.
  *
@@ -2623,6 +2646,7 @@ function piAiStreamFailure(
 
 /**
  * Converts prefetched pi-ai events into native Responses SSE while preserving cancellation.
+ * Terminal failure is classified before usage and semantic observers receive the event.
  *
  * @param iterator Remaining pi-ai event iterator.
  * @param first Prefetched first iterator result, replayed exactly once.
@@ -2718,6 +2742,15 @@ function toResponsesSseStream(
           }
 
           const event = result.value;
+          const observedFailure =
+            event.type === 'error'
+              ? piAiStreamFailure(
+                  event.error.errorMessage ?? 'pi-ai stream failed',
+                  event.error.diagnostics?.[0]?.type ?? 'provider_stream_failed',
+                  event.error.stopReason,
+                  event
+                )
+              : undefined;
           if (!usageObserved && (event.type === 'done' || event.type === 'error')) {
             usageObserved = true;
             onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
@@ -3033,14 +3066,7 @@ function toResponsesSseStream(
               onUsage?.(event.error.usage);
             }
             terminal = true;
-            controller.error(
-              piAiStreamFailure(
-                event.error.errorMessage ?? 'pi-ai stream failed',
-                event.error.diagnostics?.[0]?.type ?? 'provider_stream_failed',
-                event.error.stopReason,
-                event
-              )
-            );
+            controller.error(observedFailure);
             await iterator.return?.();
             return;
           }

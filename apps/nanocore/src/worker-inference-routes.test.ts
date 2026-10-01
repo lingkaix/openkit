@@ -19,6 +19,7 @@ import {
   type OpenAICompatibleResponsesRequest,
   type OpenAICompatibleResponsesResponse,
 } from './llm/openai-compatible-client.js';
+import { attachPiAiFailure } from './llm/pi-ai-failure.js';
 import type {
   LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
@@ -66,6 +67,9 @@ class FakeWorkerInferenceDispatcher {
   public responsesStreamFailure: Error = new Error('private upstream stream failure');
   /** Whether the Responses stream should stay open until its consumer cancels it. */
   public shouldHoldResponsesStream = false;
+  /** Exposes controlled lifecycle-only bytes to test the public commit boundary. */
+  public holdLifecycle = false;
+  public lifecycleController?: ReadableStreamDefaultController<Uint8Array>;
   /** Cancellation reasons observed by the upstream Responses stream. */
   public readonly responsesStreamCancellations: unknown[] = [];
 
@@ -184,6 +188,15 @@ class FakeWorkerInferenceDispatcher {
     }
     context.transport?.onCodexTurnState?.('worker-provider-response-state');
 
+    if (this.holdLifecycle) {
+      return new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          this.lifecycleController = controller;
+          controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
+        },
+      });
+    }
+
     if (this.shouldHoldResponsesStream) {
       return new ReadableStream<Uint8Array>({
         cancel: async (reason) => {
@@ -193,7 +206,7 @@ class FakeWorkerInferenceDispatcher {
         },
         start(controller) {
           controller.enqueue(
-            new TextEncoder().encode('data: {"type":"response.output_text.delta"}\n\n')
+            new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"Hi"}\n\n')
           );
         },
       });
@@ -206,7 +219,11 @@ class FakeWorkerInferenceDispatcher {
         pull(controller) {
           if (!emitted) {
             emitted = true;
-            controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
+              )
+            );
             return;
           }
           controller.error(failure);
@@ -263,7 +280,7 @@ afterEach(() => {
  * @param durableStorage Whether the app receives durable storage.
  * @param includeWorkerProvider Whether the AEP-selected provider is available.
  * @param runtimeProvenance Whether the AEP requires runtime provenance.
- * @param options Optional provider-family and admitted admin bearer fixture selection.
+ * @param options Optional provider family, admitted admin bearer, and authored failover selection.
  * @returns Route fixture.
  */
 function createWorkerInferenceRouteFixture(
@@ -272,7 +289,11 @@ function createWorkerInferenceRouteFixture(
   durableStorage = true,
   includeWorkerProvider = true,
   runtimeProvenance = false,
-  options: { readonly subscriptionFamily?: 'openai-codex'; readonly adminBearer?: boolean } = {}
+  options: {
+    readonly subscriptionFamily?: 'openai-codex';
+    readonly adminBearer?: boolean;
+    readonly autoFailover?: boolean;
+  } = {}
 ): WorkerInferenceRouteFixture {
   const providerProfileId =
     options.subscriptionFamily === 'openai-codex' ? CODEX_PROVIDER_ID : 'agent-openrouter';
@@ -426,6 +447,7 @@ function createWorkerInferenceRouteFixture(
           {
             id: WORKER_LOGICAL_MODEL_ID,
             displayName: 'Worker reasoning',
+            routing: { autoFailover: options.autoFailover ?? true },
             contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               {
@@ -1751,12 +1773,14 @@ describe('worker inference routes', () => {
 
   it('projects typed provider request failures as generic worker errors', async () => {
     const fixture = createWorkerInferenceRouteFixture();
-    fixture.dispatcher.responseError = new OpenAICompatibleProviderError({
-      code: 'model_not_supported',
-      message: 'Unsupported model token=tok_secret',
-      status: 400,
-      type: 'provider_error',
-    });
+    fixture.dispatcher.responseError = attachPiAiFailure(
+      new OpenAICompatibleProviderError({
+        code: 'model_not_supported',
+        message: 'Unsupported model token=tok_secret',
+        status: 400,
+        type: 'provider_error',
+      })
+    ) as OpenAICompatibleProviderError;
 
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
@@ -1866,7 +1890,9 @@ describe('worker inference routes', () => {
   it('records classified worker stream failures as the public OpenKit code', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldFailResponsesStream = true;
-    fixture.dispatcher.responsesStreamFailure = new Error('rate limit exceeded token=tok_secret');
+    fixture.dispatcher.responsesStreamFailure = attachPiAiFailure(
+      new Error('rate limit exceeded token=tok_secret')
+    ) as Error;
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
       model: WORKER_LOGICAL_MODEL_ID,
@@ -1920,7 +1946,7 @@ describe('worker inference routes', () => {
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
-      error: { code: 'worker_inference_provider_unavailable' },
+      error: { code: 'gateway_logical_model_unavailable' },
     });
     expect(fixture.dispatcher.responseCalls).toEqual([]);
 
@@ -2051,4 +2077,180 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
     './test-support/native-environment.js'
   );
   return withTestPreparedNativeEnvironment(actual);
+});
+
+describe('worker inference pre-commit privacy', () => {
+  it.each([
+    { type: 'response.output_text.delta', delta: 'text' },
+    { type: 'response.reasoning_text.delta', delta: 'reasoning' },
+    {
+      type: 'response.output_item.added',
+      item: { type: 'function_call', id: 'call', name: 'status' },
+    },
+  ])('holds Response and heartbeat until the first output: %j', async (output) => {
+    vi.useFakeTimers();
+    const fixture = createWorkerInferenceRouteFixture();
+    fixture.dispatcher.holdLifecycle = true;
+    let visible: Response | undefined;
+    const pending = postWorkerResponses(fixture, {
+      input: 'hello',
+      model: WORKER_LOGICAL_MODEL_ID,
+      stream: true,
+    }).then((response) => {
+      visible = response;
+      return response;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fixture.dispatcher.lifecycleController).toBeDefined();
+      expect(visible).toBeUndefined();
+      fixture.dispatcher.lifecycleController!.enqueue(
+        new TextEncoder().encode(`data: ${JSON.stringify(output)}\n\n`)
+      );
+      const response = await pending;
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      const bytes = new TextDecoder().decode((await reader.read()).value);
+      expect(bytes).toContain('response.created');
+      expect(bytes).not.toContain('heartbeat');
+      await reader.read();
+      const heartbeat = reader.read();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(new TextDecoder().decode((await heartbeat).value)).toContain(
+        'openkit-worker-inference-heartbeat'
+      );
+      await reader.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns private JSON for a held first failure without publishing lifecycle or heartbeat', async () => {
+    vi.useFakeTimers();
+    const fixture = createWorkerInferenceRouteFixture();
+    fixture.dispatcher.holdLifecycle = true;
+    const pending = postWorkerResponses(fixture, {
+      input: 'hello',
+      model: WORKER_LOGICAL_MODEL_ID,
+      stream: true,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      fixture.dispatcher.lifecycleController!.error(
+        Object.assign(new Error('private quota'), {
+          failure: { kind: 'quota_exhausted', settled: true },
+        })
+      );
+      const response = await pending;
+      expect(response.status).toBe(503);
+      expect(response.headers.get('content-type')).toContain('application/json');
+      const body = await response.text();
+      expect(body).toContain('gateway_logical_model_unavailable');
+      expect(body).not.toMatch(/heartbeat|response.created|private quota/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/** Worker wire oracle exercises the same envelope through token and AEP authority. */
+const workerCauseCases = [
+  { name: 'retryable rate final', kind: 'rate_limited', status: 429, attempts: 4 },
+  { name: 'retryable unavailable final', kind: 'provider_unavailable', status: 503, attempts: 4 },
+  { name: 'auth final', kind: 'auth_rejected', status: 401, attempts: 1 },
+  { name: 'quota final', kind: 'quota_exhausted', status: 429, attempts: 1 },
+  { name: 'no available member', kind: undefined, status: 503, attempts: 0 },
+  {
+    name: 'failover disabled auth',
+    kind: 'auth_rejected',
+    status: 401,
+    attempts: 1,
+    disabled: true,
+  },
+  {
+    name: 'failover disabled rate',
+    kind: 'rate_limited',
+    status: 429,
+    attempts: 4,
+    disabled: true,
+  },
+  { name: 'request-terminal context', kind: 'context_overflow', status: 400, attempts: 1 },
+] as const;
+
+describe('Round 2 worker exhaustion cause', () => {
+  for (const endpoint of ['responses', 'chat/completions'] as const) {
+    for (const stream of [false, true]) {
+      it.each(workerCauseCases)(`${endpoint} stream=${stream}: $name`, async (scenario) => {
+        vi.useFakeTimers();
+        try {
+          const disabled = 'disabled' in scenario;
+          const terminal = scenario.kind === 'context_overflow';
+          const fixture = createWorkerInferenceRouteFixture(
+            true,
+            undefined,
+            true,
+            scenario.kind !== undefined,
+            false,
+            { autoFailover: !disabled }
+          );
+          const failure = Object.assign(new Error('private upstream marker=worker-secret'), {
+            failure: { kind: scenario.kind, status: scenario.status, settled: true },
+          });
+          const method =
+            endpoint === 'responses'
+              ? stream
+                ? 'createResponsesStream'
+                : 'createResponses'
+              : stream
+                ? 'createChatCompletionStream'
+                : 'createChatCompletion';
+          const dispatch = vi.spyOn(fixture.dispatcher, method).mockRejectedValue(failure);
+          const pending = fixture.app.request(`/api/worker-inference/v1/${endpoint}`, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${fixture.token}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: WORKER_LOGICAL_MODEL_ID,
+              stream,
+              ...(endpoint === 'responses'
+                ? { input: 'Hello' }
+                : { messages: [{ role: 'user', content: 'Hello' }] }),
+            }),
+          });
+          await vi.runAllTimersAsync();
+          const response = await pending;
+          expect(response.status).toBe(disabled || terminal ? scenario.status : 503);
+          expect(response.headers.get('content-type')).toContain('application/json');
+          expect(await response.json()).toEqual({
+            error:
+              disabled || terminal
+                ? {
+                    type: 'provider_error',
+                    code: terminal
+                      ? 'gateway_context_overflow'
+                      : scenario.kind === 'rate_limited'
+                        ? 'gateway_provider_rate_limited'
+                        : 'gateway_provider_authentication_failed',
+                    message: terminal
+                      ? 'Provider context limit exceeded.'
+                      : scenario.kind === 'rate_limited'
+                        ? 'Provider rate limit exceeded.'
+                        : 'Provider authentication failed.',
+                  }
+                : {
+                    code: 'gateway_logical_model_unavailable',
+                    type: 'provider_error',
+                    message: 'Logical model is temporarily unavailable.',
+                    ...(scenario.kind !== undefined ? { cause: scenario.kind } : {}),
+                  },
+          });
+          expect(dispatch).toHaveBeenCalledTimes(scenario.attempts);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    }
+  }
 });

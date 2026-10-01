@@ -137,6 +137,7 @@ it('binds the actual Administration prompt and ordered tools before model access
         gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
         id: profile.id,
         models: profile.models,
+        modelMetadata: profile.modelMetadata,
         requiresApiKey: true,
       }),
       runtimeConfig: () => snapshot,

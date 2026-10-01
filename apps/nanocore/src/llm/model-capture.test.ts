@@ -25,6 +25,7 @@ import { admittedModelRequest, ModelCapture, withTurnModelCapture } from './mode
 import { admittedModelEvent } from './model-semantic-content.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
+import { attachPiAiFailure } from './pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 import { digestLlmSystemPrompt } from './system-prompt-digest.js';
 
@@ -597,12 +598,14 @@ describe('Gateway model retention', () => {
             reportedModel: 'physical-snapshot',
           });
           if (attempt === 0)
-            throw new OpenAICompatibleProviderError({
-              code: 'unavailable',
-              message: 'Unavailable',
-              status: 503,
-              type: 'provider_error',
-            });
+            throw attachPiAiFailure(
+              new OpenAICompatibleProviderError({
+                code: 'invalid_api_key',
+                message: 'Private authentication failure',
+                status: 401,
+                type: 'provider_error',
+              })
+            );
         },
       });
     await call();

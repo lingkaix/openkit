@@ -5,9 +5,12 @@ import {
   createModels,
   fauxAssistantMessage,
   fauxProvider,
+  isRetryableAssistantError,
 } from '@earendil-works/pi-ai';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { dispatchLogicalModel } from './gateway-routes.js';
+import type { ResolvedLogicalModel } from './logical-models.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import { attachPiAiFailure, classifyPiAiFailure } from './pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
@@ -209,6 +212,43 @@ const failureProbes = [
 ] as const;
 
 describe('pi-ai failure probe table', () => {
+  it('requires affirmative settled evidence instead of private/no-output inference', () => {
+    const probes = [
+      [new Error('connection refused'), true],
+      [new Error('connect ECONNREFUSED 127.0.0.1:443'), true],
+      [new Error('getaddrinfo ENOTFOUND api.example'), true],
+      [new Error('connect ETIMEDOUT 127.0.0.1:443'), true],
+      [Object.assign(new Error('reset'), { status: 503 }), true],
+      [
+        fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'Rate limit reached' }),
+        false,
+      ],
+      [new Error('Rate limit reached'), false],
+      [new Error('read ECONNRESET'), false],
+      [new Error('socket timeout'), false],
+      [new Error('terminated'), false],
+      [new Error('unclassified transport loss'), false],
+      [
+        fauxAssistantMessage([], {
+          stopReason: 'error',
+          errorMessage: 'unclassified transport loss',
+        }),
+        false,
+      ],
+      [new Error('Provider stream ended before terminal result'), false],
+      [fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'read ECONNRESET' }), false],
+      [
+        fauxAssistantMessage([], {
+          stopReason: 'error',
+          errorMessage: 'OpenAI Responses stream ended before a terminal response event',
+        }),
+        false,
+      ],
+    ] as const;
+    expect(
+      probes.map(([input]) => (classifyPiAiFailure(input) as { settled?: boolean })?.settled)
+    ).toEqual(probes.map(([, settled]) => settled));
+  });
   it('diffs every observed classification against the provider probe oracle', () => {
     expect(
       failureProbes.map(([probe, input]) => ({ probe, kind: classifyPiAiFailure(input)?.kind }))
@@ -224,9 +264,11 @@ describe('pi-ai failure probe table', () => {
     }
     expect(classifyPiAiFailure(new Error('usage_limit_reached: limit'))).toEqual({
       kind: 'quota_exhausted',
+      settled: false,
     });
     expect(classifyPiAiFailure(failureProbes[6][1])).toEqual({
       kind: 'rate_limited',
+      settled: true,
       status: 429,
       providerCode: 'rate_limit_exceeded',
       retryAfter: '2',
@@ -385,9 +427,7 @@ describe('pi-ai boundary failure attachment', () => {
     await expect(
       client.createResponses(provider, { model: 'gpt-test', input: 'hello' }, undefined, {}, models)
     ).rejects.toMatchObject({
-      status: 502,
-      code: 'provider_error',
-      failure: { kind: 'rate_limited' },
+      failure: { kind: 'rate_limited', settled: false },
     });
     try {
       await client.createResponses(
@@ -398,7 +438,292 @@ describe('pi-ai boundary failure attachment', () => {
         models
       );
     } catch (error) {
-      expect((error as { failure: unknown }).failure).toEqual({ kind: 'rate_limited' });
+      expect(error).not.toHaveProperty('status');
+      expect((error as { failure: unknown }).failure).toEqual({
+        kind: 'rate_limited',
+        settled: false,
+      });
     }
   });
+});
+
+/** Fixed transport oracle mirrors every pinned retry.js transport family and separator spelling. */
+const stockTransportFamilies: readonly [string, boolean][] = [
+  ...[
+    'network?error',
+    'connection?error',
+    'connection?refused',
+    'connection?lost',
+    'upstream?connect',
+    'websocket?closed',
+    'websocket?error',
+  ].flatMap((family) =>
+    ['', ' ', '.', '_', '-'].map((separator): [string, boolean] => [
+      family.replace('?', separator),
+      family === 'connection?refused' && separator === ' ',
+    ])
+  ),
+  ['other side closed', false],
+  ['fetch failed', false],
+  ['getaddrinfo', false],
+  ['ENOTFOUND', true],
+  ['EAI_AGAIN', true],
+  ['reset before headers', false],
+  ['socket hang up', false],
+  ['socket connection was closed', false],
+  ['time out', false],
+  ['timed out', false],
+  ['timeout', false],
+  ['terminated', false],
+  ['ended without', false],
+  ['Anthropic stream ended before message_stop', false],
+  ['OpenAI Responses stream ended before a terminal response event', false],
+  ['http2 request did not get a response', false],
+  ['Connection error.', false],
+  ['upstream connect error', false],
+  ['retry delay', false],
+  ['you can retry your request', false],
+  ['try your request again', false],
+  ['please retry your request', false],
+  ['ResourceExhausted', false],
+  ['subscription_sharing_usage_unavailable', false],
+  ['subscription_sharing_user_unavailable', false],
+];
+
+/** Named Provider and pre-send controls make the affirmative evidence boundary explicit. */
+const affirmativeControls = [
+  { message: 'connect ECONNREFUSED 127.0.0.1:443', kind: 'provider_unavailable', settled: true },
+  { message: 'getaddrinfo ENOTFOUND api.example', kind: 'provider_unavailable', settled: true },
+  { message: 'connect ETIMEDOUT 127.0.0.1:443', kind: 'provider_unavailable', settled: true },
+  { message: 'connect timeout', kind: 'provider_unavailable', settled: true },
+  { message: 'read ECONNRESET', kind: 'provider_unavailable', settled: false },
+  { message: 'socket timeout', kind: 'provider_unavailable', settled: false },
+  { message: 'unknown future transport', kind: 'unknown', settled: false },
+  { message: 'Unrecognized provider failure', kind: 'unknown', settled: false },
+  { message: '503 Service Unavailable', kind: 'provider_unavailable', settled: false },
+  { message: 'overloaded', kind: 'provider_unavailable', settled: false },
+  { message: 'Provider returned error', kind: 'provider_unavailable', settled: false },
+  { message: 'socket hang up', status: 503, kind: 'provider_unavailable', settled: true },
+  { message: 'Forbidden', status: 403, kind: 'unknown', settled: true },
+  {
+    message: 'quota',
+    status: 429,
+    code: 'insufficient_quota',
+    kind: 'quota_exhausted',
+    settled: true,
+  },
+  {
+    message: 'rate limit',
+    status: 429,
+    code: 'rate_limit_exceeded',
+    kind: 'rate_limited',
+    settled: true,
+  },
+  {
+    message: 'usage_limit_reached: allowance exhausted',
+    kind: 'quota_exhausted',
+    settled: 'wrapped',
+  },
+  {
+    message: 'You have hit your ChatGPT usage limit (plus plan).',
+    kind: 'quota_exhausted',
+    settled: false,
+  },
+  { message: 'insufficient_quota: out of budget', kind: 'quota_exhausted', settled: 'wrapped' },
+  { message: 'rate_limit_exceeded: too many requests', kind: 'rate_limited', settled: 'wrapped' },
+  { message: 'Rate limit reached', kind: 'rate_limited', settled: false },
+  { message: 'invalid_api_key', kind: 'auth_rejected', settled: 'wrapped' },
+  { message: 'Incorrect API key provided', kind: 'auth_rejected', settled: false },
+  {
+    message: 'Your input exceeds the context window of this model',
+    kind: 'context_overflow',
+    settled: false,
+  },
+  {
+    message: "Unsupported parameter: 'temperature' is not supported with this model.",
+    kind: 'unsupported',
+    settled: false,
+  },
+  {
+    message: 'max_tokens is too large: 8192. This model supports at most 4096 completion tokens.',
+    kind: 'output_limit',
+    settled: false,
+  },
+  { message: 'Response incomplete: content_filter', kind: 'refused', settled: 'wrapped' },
+  { message: 'invalid_request_error', kind: 'invalid_request', settled: 'wrapped' },
+  {
+    message: 'socket hang up',
+    code: 'rate_limit_exceeded',
+    kind: 'rate_limited',
+    settled: true,
+  },
+  {
+    message: 'socket timeout',
+    code: 'usage_limit_reached',
+    kind: 'quota_exhausted',
+    settled: true,
+  },
+  { message: 'Connection error.', code: 'invalid_api_key', kind: 'auth_rejected', settled: true },
+  { message: 'Safety timeout', code: 'SAFETY', kind: 'refused', settled: true },
+  {
+    message: 'socket hang up',
+    code: 'unclassified_transport_code',
+    kind: 'provider_unavailable',
+    settled: false,
+  },
+] as const;
+
+/** Literal evidence oracle also used by the report's read-only Round 2 byte comparison. */
+const replayEvidenceProbes = [
+  ...stockTransportFamilies.map(([message, settled]) => ({
+    message,
+    settled,
+    kind: 'provider_unavailable' as const,
+    stockTransport: true,
+  })),
+  ...affirmativeControls,
+].flatMap((probe) =>
+  ['unwrapped', 'wrapped'].map((form) => ({
+    name: `${form}: ${probe.message}${'status' in probe ? ` status=${probe.status}` : ''}${'code' in probe ? ` code=${probe.code}` : ''}`,
+    stockTransport: 'stockTransport' in probe,
+    input: Object.assign(
+      form === 'wrapped'
+        ? fauxAssistantMessage([], { stopReason: 'error', errorMessage: probe.message })
+        : new Error(probe.message),
+      ...('status' in probe ? [{ status: probe.status }] : []),
+      ...('code' in probe ? [{ code: probe.code }] : [])
+    ),
+    expected: {
+      kind: probe.kind,
+      settled: probe.settled === 'wrapped' ? form === 'wrapped' : probe.settled,
+    },
+  }))
+);
+
+describe('Round 3 affirmative replay evidence', () => {
+  it.each(replayEvidenceProbes)('$name', ({ input, expected, stockTransport }) => {
+    if (stockTransport)
+      expect(
+        isRetryableAssistantError(
+          fauxAssistantMessage([], {
+            stopReason: 'error',
+            errorMessage: input instanceof Error ? input.message : input.errorMessage,
+          })
+        )
+      ).toBe(true);
+    expect(classifyPiAiFailure(input)).toMatchObject(expected);
+  });
+});
+
+describe('Round 3 stock-wrapped transport cannot replay', () => {
+  for (const endpoint of ['chat', 'responses'] as const) {
+    for (const stream of [false, true]) {
+      it.each([false, true])(`${endpoint} stream=${stream} failover=%s`, async (autoFailover) => {
+        vi.useFakeTimers();
+        try {
+          const { models, provider, faux } = runtime(
+            fauxAssistantMessage([], { stopReason: 'error' })
+          );
+          let primaryCalls = 0;
+          Object.assign(faux.provider, {
+            stream: () => ({
+              [Symbol.asyncIterator]() {
+                return {
+                  async next() {
+                    primaryCalls++;
+                    throw Object.assign(new Error('Connection error.'), {
+                      cause: new Error('read ECONNRESET'),
+                    });
+                  },
+                  async return() {
+                    return { done: true, value: undefined };
+                  },
+                };
+              },
+            }),
+          });
+          const backup = fauxProvider({ provider: 'anthropic', models: [{ id: 'gpt-test' }] });
+          models.setProvider(backup.provider);
+          backup.setResponses([fauxAssistantMessage('Backup must stay dormant.')]);
+          const dispatcher = new LLMGatewayProviderDispatcher({
+            piAiClient: new PiAiGatewayClient({ models }),
+          });
+          const logicalModel: ResolvedLogicalModel = {
+            id: 'tier',
+            displayName: 'Tier',
+            capabilities: [],
+            modelFamilyId: null,
+            autoFailover,
+            contextManagement: { type: 'compaction', compactThreshold: 8_000 },
+            routes: ['primary', 'backup'].map((id) => ({
+              id,
+              providerProfileId: id,
+              providerModel: 'gpt-test',
+              available: true,
+              unavailableReason: null,
+            })),
+          };
+          const pending = dispatchLogicalModel({
+            logicalModel,
+            signal: new AbortController().signal,
+            resolveGatewayProvider: (id) =>
+              id === 'primary'
+                ? provider
+                : {
+                    ...provider,
+                    id: 'backup',
+                    adapterId: 'anthropic',
+                    subscriptionProviderId: undefined,
+                  },
+            attempt: async ({ provider: selected, execution }) => {
+              const context = { models, transport: { signal: execution.signal } };
+              if (stream) {
+                const upstream =
+                  endpoint === 'chat'
+                    ? await dispatcher.createChatCompletionStream(
+                        selected,
+                        {
+                          model: 'gpt-test',
+                          messages: [{ role: 'user', content: 'hello' }],
+                          stream: true,
+                        },
+                        context
+                      )
+                    : await dispatcher.createResponsesStream(
+                        selected,
+                        { model: 'gpt-test', input: 'hello', stream: true },
+                        context
+                      );
+                return new Response(await execution.prepareStream(upstream)).text();
+              }
+              return endpoint === 'chat'
+                ? dispatcher.createChatCompletion(
+                    selected,
+                    { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
+                    context
+                  )
+                : dispatcher.createResponses(
+                    selected,
+                    { model: 'gpt-test', input: 'hello' },
+                    context
+                  );
+            },
+          }).then(
+            (result) => ({ result }),
+            (error) => ({ error })
+          );
+          await vi.runAllTimersAsync();
+          const outcome = await pending;
+          expect(primaryCalls).toBe(1);
+          expect(backup.state.callCount).toBe(0);
+          expect(outcome).toMatchObject({
+            error: { failure: { kind: 'provider_unavailable', settled: false } },
+          });
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    }
+  }
 });

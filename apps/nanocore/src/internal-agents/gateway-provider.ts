@@ -73,14 +73,21 @@ export function createInternalAgentGatewayProvider(
 
     const selected = await dispatchLogicalModel({
       logicalModel: options.logicalModel,
+      requiredCapabilities: request.model.capabilities,
       signal: request.signal,
       resolveGatewayProvider: options.resolveGatewayProvider,
       ...(options.providerSubscriptionAccountManager
         ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
         : {}),
-      attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => ({
-        providerId: provider.id,
-        response: await options.dispatcher.createResponses(
+      attempt: async ({
+        provider,
+        providerModel,
+        subscriptionModels,
+        corr,
+        attempt,
+        execution,
+      }) => {
+        const response = await options.dispatcher.createResponses(
           provider,
           {
             model: providerModel,
@@ -94,12 +101,15 @@ export function createInternalAgentGatewayProvider(
             capture: { ...options.capture, corr, attempt },
             promptCacheScope: options.promptCacheScope,
             usageEndpoint: options.usageEndpoint,
-            transport: { signal: request.signal },
+            transport: { signal: execution.signal },
           }
-        ),
-      }),
+        );
+        const message = fromResponses(response);
+        execution.commit();
+        return { providerId: provider.id, response, message };
+      },
     });
-    const message = fromResponses(selected.response);
+    const message = selected.message;
     options.onDispatch?.({
       providerId: selected.providerId,
       ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
