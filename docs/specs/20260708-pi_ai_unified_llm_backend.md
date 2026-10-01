@@ -208,7 +208,7 @@ Cancellation propagates through the pi-ai request signal. If cancellation or tra
 
 ## Current Implementation Projection
 
-The proposed classifier can consume the current stock pi-ai `isContextOverflow` export.
+The implemented failure classifier consumes the stock pi-ai `isContextOverflow` export and records settlement only from affirmative evidence.
 
 Every dispatchable provider now routes through `LLMGatewayProviderDispatcher` and `PiAiGatewayClient`. Subscription-backed profiles resolve their explicit provider-slot pair to the manager-owned stock pi-ai `Models` runtime before invocation; there is no active provider-specific dispatcher branch or account fallback. Custom-provider synthesis, Chat Completions, bounded endpoint bridging, streaming conversion, provider-error normalization, cancellation, and usage mapping remain unified in this path.
 
@@ -242,7 +242,7 @@ Acceptance requires: all production LLM dispatch uses stock pi-ai; native Codex 
 
 Additional acceptance requires a bounded probe table of real Provider error strings, statuses, native codes, optional retry guidance, terminal events, and thrown errors. It must distinguish quota from transient throttling, recognize pi-ai context overflow, preserve cancellation, and keep refusals and unsupported requests terminal without a synthetic status broadening them. Verify absent structured evidence honestly, normal length finishes, first-error-event handling before public commit, pi-ai retry options remaining unset, and same-member versus cross-member or unattributed opaque reasoning handoff without a new response field.
 
-The normalized failure value and selective reasoning handoff above are accepted target behavior awaiting implementation; existing generic error wrapping and incoming-item attribution do not prove them.
+The normalized failure value and selective reasoning handoff are implemented; classifier and same-member/cross-member handoff regressions qualify them rather than generic error wrapping or incoming-item attribution alone.
 
 ## Alternatives Considered
 
