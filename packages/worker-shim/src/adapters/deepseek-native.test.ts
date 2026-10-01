@@ -14,8 +14,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import * as filesystem from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type {
   WorkerResidentOpenInput,
@@ -64,6 +66,161 @@ afterEach(async () => {
   vi.mocked(filesystem.cp).mockImplementation((...args) => actualCopy(...args));
   rmSync(root, { recursive: true, force: true });
 });
+
+it.each([
+  'bash',
+  'write',
+])('executes native %s without ACP client filesystem or terminal services', async (name) => {
+  const target = join(work, `${name}-effect.txt`);
+  const sentinel = `native-${name}-effect`;
+  const inference = await startSyntheticInference((_request, n) =>
+    n === 1
+      ? {
+          toolCall: {
+            name,
+            arguments:
+              name === 'bash'
+                ? {
+                    command: `printf ${sentinel} > ${JSON.stringify(target)}; printf shell-observed`,
+                    description: 'Write the native shell sentinel',
+                  }
+                : { file_path: target, content: sentinel },
+          },
+        }
+      : { text: 'native-ok' }
+  );
+  closers.push(() => inference.close());
+  const session = await open(inference);
+  const result = await (await session.startTurn(turn())).settled;
+  expect(result).toMatchObject({ status: 'completed', assistantText: 'native-ok' });
+  expect(inference.requests[0]?.body.tools?.some((tool) => tool.function.name === name)).toBe(true);
+  expect(inference.requests).toHaveLength(2);
+  expect(readFileSync(target, 'utf8')).toBe(sentinel);
+  const toolResults = inference.requests[1]!.body.messages.filter(
+    (message) => message.role === 'tool'
+  );
+  expect(JSON.stringify(toolResults)).toContain(
+    name === 'bash' ? 'shell-observed' : 'Created file'
+  );
+}, 180_000);
+
+it('executes an authored local MCP tool alongside managed MCP without granting it Gateway credentials', async () => {
+  mkdirSync(home);
+  const localScript = join(root, 'local-mcp.cjs');
+  const called = join(root, 'local-mcp-call.json');
+  writeFileSync(
+    localScript,
+    `const { createInterface } = require('node:readline');
+const { writeFileSync } = require('node:fs');
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  let result = {};
+  if (request.method === 'initialize') result = { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'local', version: '1' } };
+  if (request.method === 'tools/list') result = { tools: [{ name: 'local_echo', description: 'Local echo', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } }] };
+  if (request.method === 'tools/call') {
+    writeFileSync(${JSON.stringify(called)}, JSON.stringify(request.params));
+    result = { content: [{ type: 'text', text: 'local-mcp-observed:' + request.params.arguments.text }] };
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
+});`
+  );
+  const managed = await startSyntheticMcp({ managed: 'managed_echo' });
+  closers.push(() => managed.close());
+  const patch = JSON.stringify([
+    {
+      insert: [
+        {
+          id: 'native-local-mcp',
+          name: '@deepseek-ai/dsh-mcp-client',
+          config: {
+            transport: 'stdio',
+            serverName: 'local',
+            command: process.execPath,
+            args: [localScript],
+            failOnStartupError: true,
+            reconnect: { enabled: false },
+          },
+        },
+      ],
+    },
+  ]);
+  writeFileSync(join(home, 'cordis.patch.yml'), patch);
+  const inference = await startSyntheticInference((_request, n) =>
+    n === 1
+      ? {
+          toolCall: { name: 'mcp__local__local_echo', arguments: { text: 'native-call-sentinel' } },
+        }
+      : { text: 'native-ok' }
+  );
+  closers.push(() => inference.close());
+  const session = await open(inference, null, {}, managed.url);
+  const result = await (await session.startTurn(turn([], ['managed']))).settled;
+  expect(result.status).toBe('completed');
+  expect(inference.requests[0]?.body.tools?.map((tool) => tool.function.name)).toEqual(
+    expect.arrayContaining(['mcp__local__local_echo', 'mcp__managed__managed_echo'])
+  );
+  expect(JSON.parse(readFileSync(called, 'utf8'))).toEqual({
+    name: 'local_echo',
+    arguments: { text: 'native-call-sentinel' },
+  });
+  expect(
+    managed.requests.some((request) => request.authorization === 'Bearer native-capability')
+  ).toBe(true);
+  expect(requestTexts(inference.requests[1]!).join('\n')).toContain(
+    'local-mcp-observed:native-call-sentinel'
+  );
+  expect(readFileSync(join(home, 'cordis.patch.yml'), 'utf8')).toBe(patch);
+}, 180_000);
+
+it('loads authored home and workspace instructions into the model request without changing their bytes', async () => {
+  mkdirSync(home);
+  const authored = [
+    [join(home, 'AGENTS.md'), 'HOME-INSTRUCTION-SENTINEL'],
+    [join(work, 'AGENTS.md'), 'WORKSPACE-INSTRUCTION-SENTINEL'],
+  ] as const;
+  for (const [file, text] of authored) writeFileSync(file, text);
+  const inference = await server();
+  const session = await open(inference);
+  expect((await (await session.startTurn(turn())).settled).status).toBe('completed');
+  const modelText = requestTexts(inference.requests[0]!).join('\n');
+  for (const [file, text] of authored) {
+    expect(modelText).toContain(text);
+    expect(readFileSync(file, 'utf8')).toBe(text);
+  }
+}, 180_000);
+
+it('restores omitted protected rows in a native profile while retaining its other capabilities', async () => {
+  const anchor = createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json');
+  const native = createRequire(anchor);
+  const boot = await import(pathToFileURL(native.resolve('@deepseek-ai/dsh-app-boot')).href);
+  const base = readFileSync(
+    join(boot.resolveBundleDir('dsh', '@deepseek-ai/dsh-base', anchor, home), 'cordis.patch.yml'),
+    'utf8'
+  );
+  const omitted = "    - id: llm-pi-ai\n      name: '@deepseek-ai/dsh-llm-pi-ai'\n";
+  expect(base).toContain(omitted);
+  const profile = join(home, 'profiles', 'acp');
+  mkdirSync(profile, { recursive: true });
+  const manifest = JSON.stringify({ private: true, dsh: { profile: { bundles: [] } } });
+  const patch =
+    base.replace(omitted, '') +
+    '\n- insert:\n    - id: acp-app-startup\n      name: "@deepseek-ai/dsh-acp-app"\n';
+  writeFileSync(join(profile, 'package.json'), manifest);
+  writeFileSync(join(profile, 'cordis.patch.yml'), patch);
+  const inference = await server();
+  const session = await open(inference);
+  const result = await (await session.startTurn(turn())).settled;
+  expect(result.status).toBe('completed');
+  expect(result.diagnostics?.nativeConfiguration).toMatch(/warning.*protected/i);
+  expect(inference.requests[0]?.body.model).toBe('probe-model');
+  expect(inference.requests[0]?.headers.authorization).toBe('Bearer native-inference');
+  expect(inference.requests[0]?.body.tools?.some((tool) => tool.function.name === 'bash')).toBe(
+    true
+  );
+  expect(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8')).toBe(patch);
+  expect(readFileSync(join(profile, 'package.json'), 'utf8')).toBe(manifest);
+}, 180_000);
 
 it('copies an image default before a real native Turn and ignores a redirected input HOME', async () => {
   const source = join(image, '.dsh');
@@ -216,15 +373,20 @@ it('removes a stale managed root on exact successor resume while retaining a loc
 it.each([
   'acp',
   'llm-pi-ai',
-])('refuses a native disabled %s binding at open with user bytes unchanged', async (id) => {
+])('overrides a native disabled %s binding with a warning and unchanged user bytes', async (id) => {
   mkdirSync(home);
   writeFileSync(join(home, 'cordis.patch.yml'), `- id: ${id}\n  disabled: true\n`);
   const before = snapshot(state);
   const inference = await server();
-  await expect(open(inference)).rejects.toThrow(/protected/);
-  expect(snapshot(state)).toEqual(before);
-  expect(readdirSync(control)).toEqual([]);
-  expect(inference.requests).toHaveLength(0);
+  const session = await open(inference);
+  const result = await (await session.startTurn(turn())).settled;
+  expect(result.status).toBe('completed');
+  expect(result.diagnostics?.nativeConfiguration).toMatch(/warning.*protected/i);
+  expect(readFileSync(join(home, 'cordis.patch.yml'), 'utf8')).toBe(
+    Buffer.from(before['dsh-home/cordis.patch.yml']!, 'base64').toString()
+  );
+  expect(inference.requests[0]?.body.model).toBe('probe-model');
+  expect(inference.requests[0]?.headers.authorization).toBe('Bearer native-inference');
 });
 
 it('refuses publication over a child created during staging and leaves both trees intact', async () => {
@@ -323,18 +485,23 @@ it('refuses a dangling staging link and leaves it untouched', async () => {
   expect(snapshot(state)).toEqual(before);
 });
 
-it('refuses a protected conflict in image defaults before publishing a home', async () => {
+it('overrides a protected conflict in image defaults without editing source or copied profile', async () => {
   const source = join(image, '.dsh');
   mkdirSync(source);
   writeFileSync(join(source, 'cordis.patch.yml'), '- id: acp\n  disabled: true\n');
   const before = snapshot(source);
   const inference = await server();
-  await expect(open(inference)).rejects.toThrow(/protected/);
+  const session = await open(inference);
+  const result = await (await session.startTurn(turn())).settled;
+  expect(result.status).toBe('completed');
+  expect(result.diagnostics?.nativeConfiguration).toMatch(/warning.*protected/i);
   expect(snapshot(source)).toEqual(before);
-  expect(snapshot(state)).toEqual({});
+  expect(readFileSync(join(home, 'cordis.patch.yml'), 'utf8')).toBe(
+    '- id: acp\n  disabled: true\n'
+  );
 });
 
-it('checks a retained native profile manifest without modifying any user byte', async () => {
+it('overrides a disabled row in a retained native profile manifest without modifying user bytes', async () => {
   const profile = join(home, 'profiles', 'acp');
   mkdirSync(profile, { recursive: true });
   writeFileSync(
@@ -347,8 +514,14 @@ it('checks a retained native profile manifest without modifying any user byte', 
   writeFileSync(join(profile, 'cordis.patch.yml'), '- id: acp\n  disabled: true\n');
   const before = snapshot(state);
   const inference = await server();
-  await expect(open(inference)).rejects.toThrow(/protected/);
-  expect(snapshot(state)).toEqual(before);
+  const session = await open(inference);
+  const result = await (await session.startTurn(turn())).settled;
+  expect(result.status).toBe('completed');
+  expect(result.diagnostics?.nativeConfiguration).toMatch(/warning.*protected/i);
+  for (const file of ['package.json', 'cordis.patch.yml'])
+    expect(readFileSync(join(profile, file)).toString('base64')).toBe(
+      before[`dsh-home/profiles/acp/${file}`]
+    );
 });
 
 it('refuses leftover staging even when there is no image source', async () => {
@@ -375,26 +548,38 @@ it.each([
   'disabled',
   'substituted',
   'grouped',
-])('refuses the effective %s protected row after a native duplicate-id insert', async (kind) => {
+])('overrides the effective %s protected row after a native duplicate-id insert', async (kind) => {
   mkdirSync(home);
   writeFileSync(
     join(home, 'cordis.patch.yml'),
     `- insert:\n    - id: acp\n      name: "${kind === 'disabled' ? '@deepseek-ai/dsh-acp' : '@deepseek-ai/dsh-llm-pi-ai'}"\n${kind === 'disabled' ? '      disabled: true\n' : ''}`
   );
-  if (kind === 'grouped')
+  if (kind === 'grouped') {
+    const local = join(root, 'grouped-local');
+    skill(local, 'nested-native-sibling');
     writeFileSync(
       join(home, 'cordis.patch.yml'),
-      '- insert:\n    - id: probe-group\n      name: "@deepseek-ai/cordis-plugin-group"\n      group: true\n      config:\n        - id: acp\n          name: "@deepseek-ai/dsh-acp"\n          disabled: true\n'
+      '- insert:\n    - id: probe-group\n      name: "@deepseek-ai/cordis-plugin-group"\n      group: true\n      config:\n        - id: acp\n          name: "@deepseek-ai/dsh-acp"\n          disabled: true\n        - id: nested-skills\n          name: "@deepseek-ai/dsh-skill-filesystem"\n          config:\n            providerName: nested-native\n            includeDefaultRoots: false\n            watch: false\n            customSkillDirs: [' +
+        JSON.stringify(local) +
+        ']\n'
     );
+  }
   const before = snapshot(state);
   const inference = await server();
-  await expect(open(inference)).rejects.toThrow(/protected/);
-  expect(snapshot(state)).toEqual(before);
-  expect(readdirSync(control)).toEqual([]);
-  expect(inference.requests).toHaveLength(0);
+  const session = await open(inference);
+  const result = await (await session.startTurn(turn())).settled;
+  expect(result.status).toBe('completed');
+  expect(result.diagnostics?.nativeConfiguration).toMatch(/warning.*protected/i);
+  expect(readFileSync(join(home, 'cordis.patch.yml'), 'utf8')).toBe(
+    Buffer.from(before['dsh-home/cordis.patch.yml']!, 'base64').toString()
+  );
+  expect(inference.requests[0]?.body.model).toBe('probe-model');
+  expect(inference.requests[0]?.headers.authorization).toBe('Bearer native-inference');
+  if (kind === 'grouped')
+    expect(requestTexts(inference.requests[0]!).join('\n')).toContain('nested-native-sibling');
 });
 
-it('refuses a disabled native group containing the protected ACP implementation', async () => {
+it('overrides a disabled native group containing the protected ACP implementation', async () => {
   mkdirSync(home);
   writeFileSync(
     join(home, 'cordis.patch.yml'),
@@ -402,9 +587,13 @@ it('refuses a disabled native group containing the protected ACP implementation'
   );
   const before = snapshot(state);
   const inference = await server();
-  await expect(open(inference)).rejects.toThrow(/protected/);
-  expect(snapshot(state)).toEqual(before);
-  expect(readdirSync(control)).toEqual([]);
+  const session = await open(inference);
+  const result = await (await session.startTurn(turn())).settled;
+  expect(result.status).toBe('completed');
+  expect(result.diagnostics?.nativeConfiguration).toMatch(/warning.*protected/i);
+  expect(readFileSync(join(home, 'cordis.patch.yml'), 'utf8')).toBe(
+    Buffer.from(before['dsh-home/cordis.patch.yml']!, 'base64').toString()
+  );
 });
 
 /** Writes a discoverable native Skill under one root. */

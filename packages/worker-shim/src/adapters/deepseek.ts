@@ -100,7 +100,6 @@ interface ActiveTurn {
   permissionCancelled: number;
   /** Fixed decision label retained in diagnostics, never the untrusted option id. */
   permissionOption: string | null;
-  permissionRejected: number;
   promptFailed: boolean;
   sawCompaction: boolean;
   readonly settled: Promise<WorkerAdapterResult>;
@@ -124,8 +123,7 @@ export const deepseekResidentAdapter: WorkerResidentAdapter = {
 };
 
 /**
- * Selects `reject_once` when that option is offered. Any other set, including allow options,
- * is cancelled. This is not an OpenKit approval.
+ * Selects the offered `allow_once` by default under full Sandbox permission. Without it, the existing reject-once or cancellation response remains available. This is not an OpenKit approval.
  *
  * @param options Permission options offered on `session/request_permission`.
  * @returns The ACP permission outcome.
@@ -133,6 +131,11 @@ export const deepseekResidentAdapter: WorkerResidentAdapter = {
 export function deepseekPermissionOutcome(
   options: readonly { readonly kind: string; readonly optionId: string }[]
 ): { readonly outcome: 'cancelled' } | { readonly outcome: 'selected'; readonly optionId: string } {
+  const allow = options.find(
+    (option) => option.kind === 'allow_once' && option.optionId.length > 0
+  );
+  if (allow) return { outcome: 'selected', optionId: allow.optionId };
+  // Retain refusal for future user-configurable policy; no policy option is implemented yet.
   const reject = options.find(
     (option) => option.kind === 'reject_once' && option.optionId.length > 0
   );
@@ -255,6 +258,8 @@ class DeepSeekSession implements WorkerResidentSession {
   private resolveExited: (() => void) | null = null;
   private sessionId: string | null = null;
   private stderr = Buffer.alloc(0);
+  /** Fixed warning on the existing diagnostic envelope; authored profile content stays private. */
+  private nativeConfigurationConflict = false;
   private suppressExit = false;
   private turn: ActiveTurn | null = null;
   private unknownIdentity = false;
@@ -735,7 +740,6 @@ class DeepSeekSession implements WorkerResidentSession {
       overLimit: false,
       permissionCancelled: 0,
       permissionOption: null,
-      permissionRejected: 0,
       promptFailed: false,
       sawCompaction: false,
       settled,
@@ -788,8 +792,11 @@ class DeepSeekSession implements WorkerResidentSession {
     const turn = this.turn;
     if (turn) {
       if (outcome.outcome === 'selected') {
-        turn.permissionRejected += 1;
-        turn.permissionOption = 'reject_once';
+        turn.permissionOption =
+          params.options.find((option) => option.optionId === outcome.optionId)?.kind ===
+          'allow_once'
+            ? 'allow_once'
+            : 'reject_once';
       } else {
         turn.permissionCancelled += 1;
       }
@@ -876,9 +883,15 @@ class DeepSeekSession implements WorkerResidentSession {
     const patch = join(this.input.controlRoot, PATCH_NAME);
     await mkdir(this.input.controlRoot, { mode: 0o700, recursive: true });
     await mkdir(privateHome(this.input.stateRoot), { mode: 0o700, recursive: true });
-    await writeFile(patch, renderPatch(patchFromRecord(record, this.input.loopback)), {
-      mode: 0o600,
-    });
+    const native = await nativeProtectedBindings(nativeHome(this.input.stateRoot));
+    this.nativeConfigurationConflict = native.conflict;
+    await writeFile(
+      patch,
+      renderPatch(patchFromRecord(record, this.input.loopback), native.groupPatches),
+      {
+        mode: 0o600,
+      }
+    );
     const executable = resolveDshExecutable();
     // Asynchronous setup cannot launch a host after close has fenced admission.
     if (this.closing) throw new Error('DeepSeek binding is closing.');
@@ -1261,6 +1274,9 @@ class DeepSeekSession implements WorkerResidentSession {
     const diagnostics: Record<string, string> = {
       compaction: turn.sawCompaction ? 'observed' : 'unavailable',
     };
+    if (this.nativeConfigurationConflict)
+      diagnostics.nativeConfiguration =
+        'Warning: native protected bindings are overridden by OpenKit.';
     if (turn.permissionOption) diagnostics.permission = turn.permissionOption;
     else if (turn.permissionCancelled > 0) diagnostics.permission = 'cancelled';
     const stderr = this.stderr.toString('utf8');
@@ -1384,7 +1400,6 @@ async function initializeNativeHome(stateRoot: string): Promise<void> {
     if (!(await lstat(home)).isDirectory() || !within(root, await realpath(home))) {
       throw new Error('DeepSeek native home escapes its retained root.');
     }
-    await assertNativeProtectedBindings(home);
     return;
   }
   const staging = `${home}.initializing`;
@@ -1401,8 +1416,9 @@ async function initializeNativeHome(stateRoot: string): Promise<void> {
     await mkdir(home, { mode: 0o700 });
     return;
   }
+  if (!(await lstat(canonicalSource)).isDirectory())
+    throw new Error('DeepSeek image source must be a directory.');
   await validateNativeSource(canonicalSource);
-  await assertNativeProtectedBindings(canonicalSource);
   await cp(canonicalSource, staging, {
     recursive: true,
     dereference: true,
@@ -1432,8 +1448,10 @@ interface NativeConfiguration {
   composeEntries(layers: readonly (readonly unknown[])[]): readonly Record<string, unknown>[];
 }
 
-/** Refuses native row disabling that survives the protected config overlay, without loading plugins or writing profiles. */
-async function assertNativeProtectedBindings(home: string): Promise<void> {
+/** Reads native layers for whole-row protected overrides and warnings, without loading plugins or writing profiles. */
+async function nativeProtectedBindings(
+  home: string
+): Promise<{ conflict: boolean; groupPatches: readonly Record<string, unknown>[] }> {
   const anchor = createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json');
   const native = createRequire(anchor);
   const boot = (await import(
@@ -1441,9 +1459,11 @@ async function assertNativeProtectedBindings(home: string): Promise<void> {
   )) as NativeConfiguration;
   const dir = join(home, 'profiles', 'acp');
   let layers: readonly (readonly unknown[])[];
+  let authored: readonly unknown[];
   if (await pathExists(join(dir, 'package.json'))) {
     const profile = boot.loadProfileDirectory('dsh', dir, anchor);
-    layers = [...profile.layers.map((layer) => layer.patches), profile.patches];
+    authored = profile.patches;
+    layers = [...profile.layers.map((layer) => layer.patches), authored];
   } else {
     const bundles = boot.PROFILE_TEMPLATES.acp?.bundles ?? [];
     layers = bundles.map((name) => {
@@ -1453,29 +1473,63 @@ async function assertNativeProtectedBindings(home: string): Promise<void> {
         .bundlePatchPaths(packageDir, manifest.dsh.bundle)
         .flatMap((path) => boot.loadOverlayPatches('dsh', path));
     });
-    layers = [...layers, boot.loadOptionalPatches('dsh', join(dir, 'cordis.patch.yml')) ?? []];
+    authored = boot.loadOptionalPatches('dsh', join(dir, 'cordis.patch.yml')) ?? [];
+    layers = [...layers, authored];
   }
-  const rows = boot.composeEntries([
-    ...layers,
-    boot.loadOptionalPatches('dsh', join(home, 'cordis.patch.yml')) ?? [],
-  ]);
-  // Patch ids index nested groups globally. A duplicate can redirect the overlay to a
-  // different implementation while leaving the original row outside protected routing.
+  const homePatches = boot.loadOptionalPatches('dsh', join(home, 'cordis.patch.yml')) ?? [];
+  const rows = boot.composeEntries([...layers, homePatches]);
+  // The last-layer whole-row insert replaces the native top-level identity.
+  // Inspect nested rows too so a shadowed native declaration still produces a warning.
   const flatten = (
     entries: readonly Record<string, unknown>[],
     disabled = false
   ): readonly Record<string, unknown>[] =>
     entries.flatMap((row) =>
       row.group && Array.isArray(row.config)
-        ? flatten(row.config, disabled || Boolean(row.disabled))
+        ? [
+            { ...row, disabled: disabled || row.disabled },
+            ...flatten(row.config, disabled || Boolean(row.disabled)),
+          ]
         : [{ ...row, disabled: disabled || row.disabled }]
     );
   const entries = flatten(rows);
+  let conflict = [...authored, ...homePatches].some(
+    (patch) => isRecord(patch) && (patch.id === 'acp' || patch.id === 'llm-pi-ai')
+  );
   for (const id of ['acp', 'llm-pi-ai']) {
     const matches = entries.filter((row) => row.id === id);
-    if (matches.length !== 1 || matches[0]?.disabled)
-      throw new Error('DeepSeek native configuration replaces a protected binding.');
+    if (
+      matches.length !== 1 ||
+      matches[0]?.disabled ||
+      matches[0]?.name !== `@deepseek-ai/dsh-${id === 'acp' ? 'acp' : 'llm-pi-ai'}`
+    )
+      conflict = true;
   }
+  // The pin indexes nested ids globally but mounts groups independently.
+  // The disposable last layer removes nested protected declarations so they cannot race the top-level implementations.
+  // All other group entries stay native.
+  const withoutProtected = (
+    entries: readonly Record<string, unknown>[]
+  ): readonly Record<string, unknown>[] =>
+    entries
+      .filter((row) => row.id !== 'acp' && row.id !== 'llm-pi-ai')
+      .map((row) =>
+        row.group && Array.isArray(row.config)
+          ? { ...row, config: withoutProtected(row.config) }
+          : row
+      );
+  const groupPatches = rows
+    .filter(
+      (row) =>
+        row.group &&
+        Array.isArray(row.config) &&
+        flatten(row.config).some((entry) => entry.id === 'acp' || entry.id === 'llm-pi-ai')
+    )
+    .map((row) => ({
+      id: row.id,
+      config: withoutProtected(row.config as Record<string, unknown>[]),
+    }));
+  return { conflict, groupPatches };
 }
 
 /** Private home so the process does not read the operator's `~/.dsh`. */
@@ -1653,47 +1707,58 @@ function sameRoute(left: WorkerAdapterLlmRoute, right: WorkerAdapterLlmRoute): b
 }
 
 /** Overlays protected routing/control and inserts managed Skills beside native providers. */
-function renderPatch(patch: LoopbackPatch): string {
-  const lines = [
-    '- id: llm-pi-ai',
-    '  config:',
-    '    providers:',
-    '      openkit-loopback:',
-    '        api: openai-completions',
-    `        baseURL: ${JSON.stringify(patch.inferenceBaseUrl)}`,
-    '        headers:',
-    `          Authorization: ${JSON.stringify(`Bearer ${patch.inferenceCredential}`)}`,
-    '        models:',
-  ];
-  for (const model of patch.models) {
-    lines.push(
-      `          - id: ${JSON.stringify(model.model)}`,
-      `            name: ${JSON.stringify(model.model)}`,
-      `            contextWindow: ${model.contextWindow}`,
-      `            maxTokens: ${model.maxTokens}`,
-      `            input: [${model.input.join(', ')}]`,
-      '            reasoningEfforts: false'
-    );
-  }
-  lines.push(
-    '- id: acp',
-    '  config:',
-    '    provider: openkit-loopback',
-    `    model: ${JSON.stringify(patch.model)}`,
-    '- insert:',
-    '    - id: openkit-managed-skills',
-    '      name: "@deepseek-ai/dsh-skill-filesystem"',
-    '      config:',
-    '        providerName: openkit-managed',
-    '        includeDefaultRoots: false',
-    '        watch: false'
-  );
-  if (patch.skillTargetPaths.length > 0) {
-    lines.push('        customSkillDirs:');
-    for (const skillPath of patch.skillTargetPaths)
-      lines.push(`          - ${JSON.stringify(skillPath)}`);
-  }
-  return `${lines.join('\n')}\n`;
+function renderPatch(
+  patch: LoopbackPatch,
+  groupPatches: readonly Record<string, unknown>[]
+): string {
+  // Native patch config replaces the whole value.
+  // Inserting complete rows last restores disabled or missing implementations and wins over duplicate top-level ids.
+  return JSON.stringify([
+    ...groupPatches,
+    {
+      insert: [
+        {
+          id: 'llm-pi-ai',
+          name: '@deepseek-ai/dsh-llm-pi-ai',
+          disabled: false,
+          config: {
+            providers: {
+              'openkit-loopback': {
+                api: 'openai-completions',
+                baseURL: patch.inferenceBaseUrl,
+                headers: { Authorization: `Bearer ${patch.inferenceCredential}` },
+                models: patch.models.map((model) => ({
+                  id: model.model,
+                  name: model.model,
+                  contextWindow: model.contextWindow,
+                  maxTokens: model.maxTokens,
+                  input: model.input,
+                  reasoningEfforts: false,
+                })),
+              },
+            },
+          },
+        },
+        {
+          id: 'acp',
+          name: '@deepseek-ai/dsh-acp',
+          disabled: false,
+          inject: ['acpAppStartup'],
+          config: { provider: 'openkit-loopback', model: patch.model },
+        },
+        {
+          id: 'openkit-managed-skills',
+          name: '@deepseek-ai/dsh-skill-filesystem',
+          config: {
+            providerName: 'openkit-managed',
+            includeDefaultRoots: false,
+            watch: false,
+            customSkillDirs: patch.skillTargetPaths,
+          },
+        },
+      ],
+    },
+  ]);
 }
 
 /** Collects selectable model values from a flat list or grouped select. */

@@ -77,13 +77,17 @@ afterEach(async () => {
 });
 
 describe('deepseek permission and bounds', () => {
-  it('selects reject_once and never an allow option', () => {
+  it('selects allow_once by default and retains reject_once when no allow_once is offered', () => {
     expect(
       deepseekPermissionOutcome([
         { kind: 'allow_once', optionId: 'allow-once' },
         { kind: 'reject_once', optionId: 'reject-once' },
       ])
-    ).toEqual({ outcome: 'selected', optionId: 'reject-once' });
+    ).toEqual({ outcome: 'selected', optionId: 'allow-once' });
+    expect(deepseekPermissionOutcome([{ kind: 'reject_once', optionId: 'reject-once' }])).toEqual({
+      outcome: 'selected',
+      optionId: 'reject-once',
+    });
     expect(deepseekPermissionOutcome([{ kind: 'allow_always', optionId: 'allow-always' }])).toEqual(
       {
         outcome: 'cancelled',
@@ -1392,7 +1396,7 @@ describe('deepseek resident adapter', () => {
   );
 
   it(
-    'records reject_once from a permission request delivered through the SDK',
+    'records allow_once from permission requests delivered through the SDK without leaking option ids',
     async () => {
       const inference = await startSyntheticInference(() => ({ hang: true }));
       closers.push(() => inference.close());
@@ -1425,8 +1429,8 @@ describe('deepseek resident adapter', () => {
             method: 'session/request_permission',
             params: {
               options: [
-                { kind: 'allow_once', name: 'Allow', optionId: 'allow-once' },
-                { kind: 'reject_once', name: 'Reject', optionId: INFERENCE },
+                { kind: 'allow_once', name: 'Allow', optionId: INFERENCE },
+                { kind: 'reject_once', name: 'Reject', optionId: 'reject-once' },
               ],
               sessionId,
               toolCall: { toolCallId: 'call-perm', title: 'read' },
@@ -1442,7 +1446,7 @@ describe('deepseek resident adapter', () => {
             jsonrpc: '2.0',
             method: 'session/request_permission',
             params: {
-              options: [{ kind: 'reject_once', name: 'Reject', optionId: 'x'.repeat(20_000) }],
+              options: [{ kind: 'allow_once', name: 'Allow', optionId: 'x'.repeat(20_000) }],
               sessionId,
               toolCall: { toolCallId: 'call-oversize', title: 'read' },
             },
@@ -1451,7 +1455,7 @@ describe('deepseek resident adapter', () => {
         await waitFor(() => outcomes.length === 2);
         await active.interrupt();
         const result = await active.settled;
-        expect(result.diagnostics?.permission).toBe('reject_once');
+        expect(result.diagnostics?.permission).toBe('allow_once');
         expect(JSON.stringify(result.diagnostics ?? {})).not.toContain(INFERENCE);
         expect(JSON.stringify(result.diagnostics ?? {})).not.toContain('allow-once');
         expect(logged.join('\n')).not.toContain(sessionId);
@@ -1585,12 +1589,29 @@ describe('deepseek resident adapter', () => {
       });
       expect(mcp.requests.length).toBe(mcpCount);
       const patch = readFileSync(join(roots.control, 'deepseek-loopback.patch.yml'), 'utf8');
-      expect(patch).toMatch(
-        /id: "catalog-a"\n\s+name: "catalog-a"\n\s+contextWindow: 32768\n\s+maxTokens: 1024\n\s+input: \[text\]/
-      );
-      expect(patch).toMatch(
-        /id: "catalog-b"\n\s+name: "catalog-b"\n\s+contextWindow: 65536\n\s+maxTokens: 2048\n\s+input: \[text, image\]/
-      );
+      const models = JSON.parse(patch)
+        .at(-1)
+        .insert.find((row: { id: string }) => row.id === 'llm-pi-ai').config.providers[
+        'openkit-loopback'
+      ].models;
+      expect(models).toEqual([
+        {
+          id: 'catalog-a',
+          name: 'catalog-a',
+          contextWindow: 32_768,
+          maxTokens: 1_024,
+          input: ['text'],
+          reasoningEfforts: false,
+        },
+        {
+          id: 'catalog-b',
+          name: 'catalog-b',
+          contextWindow: 65_536,
+          maxTokens: 2_048,
+          input: ['text', 'image'],
+          reasoningEfforts: false,
+        },
+      ]);
       const retained = readFileSync(join(roots.state, 'openkit-deepseek-binding.json'), 'utf8');
       expect(retained).not.toContain(INFERENCE);
       expect(retained).not.toContain(CAPABILITY);
