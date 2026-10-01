@@ -52,7 +52,7 @@ OpenKit keeps its cache optimization above the adapter. NanoCore derives one non
 - Native pi-ai Responses is mandatory for a provider family whose accepted contract is Responses-native. A lossy Chat Completions bridge is not an acceptable Codex implementation.
 - Provider discovery never grants authority. The OpenKit profile, readiness state, model allowlist, caller authorization, and explicit credential path must all allow the call before pi-ai is invoked.
 - Pi-ai receives no ambient credential. API-key providers use explicitly resolved Vault material, and subscription providers use the exact slot-scoped `Models` instance selected before dispatch.
-- No automatic provider fallback, account fallback, or cross-provider handoff occurs.
+- Gateway owns ordered member selection, retry, failover, and cross-member reasoning handoff under its public contract; the backend invokes only the selected member. Vendor-side fallback stays unset.
 
 ## Goals / Non-goals
 
@@ -73,7 +73,7 @@ OpenKit keeps its cache optimization above the adapter. NanoCore derives one non
 - Do not introduce a standalone cache service, local KV-cache, prompt snapshot store, or prewarming scheduler.
 - Do not guarantee cache hits, provider retention, pricing, or routing behavior.
 - Do not expose raw ownership ids, credential ids, prompt text, tool arguments, raw cache input, pi-ai vocabulary, or upstream response bodies through public logs or errors.
-- Do not implement automatic fallback or quota-aware account switching.
+- Do not implement a second fallback owner or quota-aware account selector in the backend.
 
 ## Target Backend Model
 
@@ -142,17 +142,17 @@ Subscription-backed profiles follow `docs/specs/20260721-provider_subscription_a
 
 Only a profile selected by the provider-subscription specification's deterministic recognized-family algorithm, with `kind: oauth`, a strict `extensions.openkit.subscriptionAccount` binding, and no `secretRef` or `baseUrl`, enters this slot path. A recognized normalized vendor wins over id, a recognized id is used when vendor is unrecognized, and conflicting recognized families are invalid. Ordinary xAI `direct`, `gateway`, and `custom` profiles stay on their explicit API-key or provider path and never acquire subscription credentials implicitly.
 
-Pi-ai performs login-time and inference-time refresh through the slot-scoped store. The Gateway does not start Codex app-server, read `CODEX_HOME`, inspect `auth.json`, or maintain a second refresh implementation. Authentication failure for one slot fails that request and marks only that slot unavailable; it never falls through to another account.
+Pi-ai performs login-time and inference-time refresh through the slot-scoped store. The Gateway does not start Codex app-server, read `CODEX_HOME`, inspect `auth.json`, or maintain a second refresh implementation. Authentication failure belongs to that exact member attempt. The backend never falls through to another account; Gateway alone may select another authored member under its routing contract. Account observations follow the subscription owner and never rewrite local login status or skip routes.
 
 Stock pi-ai request identity is accepted for provider-private headers such as `originator`. OpenKit must not fork or patch pi-ai to send `originator: openkit`; the currently accepted stock value is `pi`. This field is not public OpenKit vocabulary or an authority boundary.
 
 ## Codex Turn-State Continuity
 
-Codex may return opaque `x-codex-turn-state` response metadata that must be supplied on the next request in the same provider conversation. NanoCore stores that opaque value only in the bounded process/session continuity owner already used by the Gateway; it never parses it, logs it, returns it publicly, or treats it as credential or durable work provenance.
+Codex may return opaque `x-codex-turn-state` response metadata that must be supplied on the next request in the same provider conversation. This is a caller-held header that Gateway forwards to the Provider and returns to the caller; Gateway holds no existing per-conversation state. NanoCore never parses it, logs it, or treats it as credential or durable work provenance.
 
 Codex Responses Lite message-anchored tools remain client-executed declarations, not provider effect authority. NanoCore accepts only top-level local `custom` and `function` tools, local `custom` or `function` children in a single-level `namespace`, and the exact top-level `tool_search` declaration with `execution: "client"`, a non-empty `description`, and object `parameters`. Local function and custom declarations may carry only the optional native `defer_loading: true` marker. The pinned Codex 0.153.4 prefix may carry its deterministic `at_`-prefixed canonical lowercase UUIDv5 item id; NanoCore validates and preserves that id only in the provider request prefix, with no Core record, credential, authorization, or durable continuity meaning. Missing id is allowed by the native optional field; null, another prefix, malformed ids, nested namespaces, provider-executed tools, duplicate callable keys, malformed deferred markers, and unknown fields fail before credential or provider access.
 
-NanoCore preserves the admitted native message, reasoning, function, and custom history through the existing pi-ai payload callback so namespace and tool kind never depend on pi-ai's bare-name grammar lookup. Native message history may carry the optional `phase` value `commentary` or `final_answer`; native reasoning history preserves nullable `content` and `encrypted_content` without interpreting the opaque payload. Stock pi-ai remains the only provider HTTP/SSE transport and parser. Because the pinned stock parser does not expose native client tool-search calls, this callback lowers the client search declaration to the reserved ordinary function `__openkit_client_tool_search`. It lowers each admitted client `tool_search_call` and matching `tool_search_output` to that function's call and result, preserving call lineage and placing the validated discovered local definitions in a developer `additional_tools` item immediately after the result. Activating discovered definitions consume their deferred markers. Repeated declarations must retain the same callable kind and definition; conflicting definitions fail. The reserved function name is forbidden in caller declarations and ordinary call history, including namespace children, so the projection is unambiguous. The provider-private name carries no execution authority, credential, durable identity, or additional lifecycle. Codex remains the client that executes search and returns discovered definitions.
+NanoCore preserves the admitted native message, reasoning, function, and custom history through the existing pi-ai payload callback so namespace and tool kind never depend on pi-ai's bare-name grammar lookup. Native message history may carry the optional `phase` value `commentary` or `final_answer`; native reasoning history preserves nullable `content` and `encrypted_content` without interpreting the opaque payload. The opaque payload is preserved for the member attributed by the new process-local item-to-member association and omitted, with the [Gateway-owned readable-text handoff](20260526-llm_gateway_responses_api.md#sealed-reasoning-handoff), for every other member and for an unattributed item, as recorded in [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md). Stock pi-ai remains the only provider HTTP/SSE transport and parser. Because the pinned stock parser does not expose native client tool-search calls, this callback lowers the client search declaration to the reserved ordinary function `__openkit_client_tool_search`. It lowers each admitted client `tool_search_call` and matching `tool_search_output` to that function's call and result, preserving call lineage and placing the validated discovered local definitions in a developer `additional_tools` item immediately after the result. Activating discovered definitions consume their deferred markers. Repeated declarations must retain the same callable kind and definition; conflicting definitions fail. The reserved function name is forbidden in caller declarations and ordinary call history, including namespace children, so the projection is unambiguous. The provider-private name carries no execution authority, credential, durable identity, or additional lifecycle. Codex remains the client that executes search and returns discovered definitions.
 
 Native callable identity treats an absent, empty, or explicit `functions` namespace as the same default namespace; other named namespaces remain distinct. Declaration collision and history validation use that identity. A streaming tool item may omit its namespace until the completed item, so NanoCore publishes its tool kind and namespace only once the completed identity is available; incomplete start metadata is not an undeclared-tool failure. Final undeclared calls still fail without tool execution.
 
@@ -188,7 +188,7 @@ For Internal Core Role and worker calls, trusted attribution comes only from ser
 
 `PiAiGatewayClient` passes the derived value through pi-ai's supported `sessionId` and `cacheRetention` inputs when present. Provider-family adapters may translate those generic inputs differently or ignore them. This contract proves only that OpenKit supplied stable bounded input; it does not promise a particular upstream header, breakpoint, cache key, or retained entry.
 
-Codex turn state and prompt cache scope are related continuity inputs but remain distinct values. The opaque turn state is never hashed into diagnostics, and a cache-scope match is required before a stored turn state can be reused.
+Codex turn state and prompt cache scope are related continuity inputs but remain distinct values. The opaque turn state is never hashed into diagnostics, and a cache-scope match is required before caller-held turn state can be reused.
 
 ### Effectiveness Evidence
 
@@ -198,11 +198,17 @@ Only provider-reported cache-read and cache-write quantities prove cache effecti
 
 Pi-ai usage is normalized into input, output, total, cache-read, cache-write, and cost-estimate records when the provider supplies them. Missing values remain absent; NanoCore does not invent usage.
 
+One classifier at the pi-ai boundary converts both thrown errors and terminal assistant error events or results into the same closed failure value. The [Gateway failure table](20260526-llm_gateway_responses_api.md#failure-kinds-and-advancement) is the sole owner of its `kind` values and routing eligibility. Capture actual status, provider code, and `retry-after` where an adapter exposes them. Recognize context overflow using the reviewed stock pi-ai boundary's context-overflow evidence, and use a bounded set of known Provider texts, including Codex usage-limit codes and friendly text. The representative probe table must prove that recognition. Never invent a synthetic HTTP status before classification. Unexposed evidence remains absent and insufficient evidence takes the terminal unknown kind. A normal length/incomplete finish remains a protocol result rather than an error solely because it reached a token limit.
+
+The failure value belongs to one selected member attempt and carries only observed evidence into Gateway handling. It grants no credential, account-status, retry, or routing authority and creates no durable record or recovery lifecycle. The Gateway owner defines its lifetime, restart, missing-evidence, lineage, and commit semantics. Pi-ai retry options stay unset; Gateway owns the bounded same-member retry policy. Adapter transport repair inside an attempt does not become another local routing policy. Vendor-side fallback stays unset. The decisions are recorded in [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md).
+
 Every provider failure crossing JSON or post-start SSE uses a stable OpenKit code and fixed generic message. Pi-ai messages, provider-native codes, raw response bodies, auth payloads, and stack traces remain internal even when used to classify authentication, rate limit, context overflow, invalid request, provider unavailable, cancellation, or generic failure.
 
 Cancellation propagates through the pi-ai request signal. If cancellation or transport loss occurs after an external provider effect may have started, the result may be interrupted or unknown under the Core/external-effect boundary; NanoCore does not retry automatically or dispatch to a different provider.
 
 ## Current Implementation Projection
+
+The proposed classifier can consume the current stock pi-ai `isContextOverflow` export.
 
 Every dispatchable provider now routes through `LLMGatewayProviderDispatcher` and `PiAiGatewayClient`. Subscription-backed profiles resolve their explicit provider-slot pair to the manager-owned stock pi-ai `Models` runtime before invocation; there is no active provider-specific dispatcher branch or account fallback. Custom-provider synthesis, Chat Completions, bounded endpoint bridging, streaming conversion, provider-error normalization, cancellation, and usage mapping remain unified in this path.
 
@@ -233,6 +239,10 @@ This removal is limited to the Gateway and provider-subscription account paths. 
 - L5 NanoCore smoke proves boot and Gateway service with no Codex app-server process, `CODEX_HOME`, `auth.json`, dedicated Codex client, or ambient credential dependency.
 
 Acceptance requires: all production LLM dispatch uses stock pi-ai; native Codex Responses preserves the accepted public semantics; Codex turn state survives sequential requests without crossing account or scope boundaries; the old `codex-oauth` backend and dedicated client are absent; app-server is not started or queried by the Gateway/account path; OpenKit's cache resolver remains authoritative; and no credential, raw scope, pi-ai vocabulary, or upstream error leaks publicly.
+
+Additional acceptance requires a bounded probe table of real Provider error strings, statuses, native codes, optional retry guidance, terminal events, and thrown errors. It must distinguish quota from transient throttling, recognize pi-ai context overflow, preserve cancellation, and keep refusals and unsupported requests terminal without a synthetic status broadening them. Verify absent structured evidence honestly, normal length finishes, first-error-event handling before public commit, pi-ai retry options remaining unset, and same-member versus cross-member or unattributed opaque reasoning handoff without a new response field.
+
+The normalized failure value and selective reasoning handoff above are accepted target behavior awaiting implementation; existing generic error wrapping and incoming-item attribution do not prove them.
 
 ## Alternatives Considered
 
