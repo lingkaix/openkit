@@ -24,6 +24,8 @@ State each fact in its owner and link to it everywhere else. A restated copy car
 
 Write normative sentences in domain terms that survive a rebuild in another language or stack. Do not make a rule depend on an implementation identifier, a file path, or a line citation; put navigation pointers in a clearly marked implementation projection section, a local guide, or a code comment. Constrain boundaries and invariants rather than internal method, unless an internal decision carries weight, such as the ordering that durability depends on. When a technology choice is a decision, state its reason and when it could be replaced; otherwise leave it out of normative text. Write a boundary contract as preconditions, postconditions, and invariants, and illustrate a rule with examples when a reader could misapply it.
 
+A specification prescribes architecture, module interfaces, and key technical details; leave out parts expected to change during implementation and evolution, such as dependency lists, file layout, helper choices, version pins without a stated decision, sizes, and round-by-round results. Agents apply every normative sentence literally, so over-specific text causes errors and stalls; [the decision record](decisions/20261001-specifications_prescribe_architecture_not_implementation.md) explains this scope.
+
 ### Sentences And Words
 
 - One idea per sentence, one topic per paragraph. A sentence over about forty words usually holds two ideas.
