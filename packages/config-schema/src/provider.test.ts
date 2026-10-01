@@ -443,3 +443,49 @@ describe('provider config schema', () => {
     ).toBe(false);
   });
 });
+
+describe('reasoning options metadata', () => {
+  it.each(
+    [
+      [],
+      [{ type: 'toggle' }],
+      [{ type: 'effort', values: ['high', 'low'] }],
+      [{ type: 'toggle' }, { type: 'effort', values: [] }],
+      [{ type: 'effort', values: ['default', 'high'] }],
+    ].map((reasoning_options) => ({ reasoning_options }))
+  )('admits models.dev option arrays without changing values: %j', ({ reasoning_options }) => {
+    const provider = {
+      id: 'test',
+      displayName: 'Test',
+      kind: 'custom',
+      models: ['model'],
+      modelMetadata: { model: { reasoning_options } },
+    };
+    expect(ProviderProfileSchema.parse(provider)).toEqual(provider);
+  });
+
+  it.each(
+    [
+      null,
+      {},
+      'high',
+      [{ type: 'unknown' }],
+      [{ type: 'effort' }],
+      [{ type: 'effort', values: 'high' }],
+      [{ type: 'effort', values: [1] }],
+      [{ type: 'toggle', values: [] }],
+      [{ type: 'effort', values: [], extra: true }],
+      [{ type: 'budget_tokens', min: 0 }],
+    ].map((reasoning_options) => ({ reasoning_options }))
+  )('rejects malformed authored options: %j', ({ reasoning_options }) => {
+    expect(
+      ProviderProfileSchema.safeParse({
+        id: 'test',
+        displayName: 'Test',
+        kind: 'custom',
+        models: ['model'],
+        modelMetadata: { model: { reasoning_options } },
+      }).success
+    ).toBe(false);
+  });
+});

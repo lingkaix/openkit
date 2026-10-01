@@ -7,6 +7,7 @@ import {
 import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-10-01/api.json' with {
   type: 'json',
 };
+import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@openkit/protocol';
 
 import type { ProviderProfile } from '../config/providers-loader.js';
 import { isProviderProfileDispatchable } from '../providers/llm-config.js';
@@ -17,6 +18,12 @@ interface ModelsDevModel {
   readonly family?: string;
   readonly attachment?: boolean;
   readonly reasoning?: boolean;
+  /** Pinned control shapes; budget controls do not contribute ordered effort levels. */
+  readonly reasoning_options?: readonly (
+    | { readonly type: 'toggle' }
+    | { readonly type: 'effort'; readonly values: readonly string[] }
+    | { readonly type: 'budget_tokens'; readonly min?: number; readonly max?: number }
+  )[];
   readonly tool_call?: boolean;
   readonly temperature?: boolean;
   readonly modalities?: { readonly input?: readonly string[]; readonly output?: readonly string[] };
@@ -42,6 +49,11 @@ export interface EffectiveModelMetadata {
   readonly family?: string;
   readonly attachment?: boolean;
   readonly reasoning?: boolean;
+  /** Effective replacement array of supported models.dev control shapes. */
+  readonly reasoning_options?: readonly (
+    | { readonly type: 'toggle' }
+    | { readonly type: 'effort'; readonly values: readonly string[] }
+  )[];
   readonly tool_call?: boolean;
   readonly temperature?: boolean;
   readonly modalities?: { readonly input?: readonly string[]; readonly output?: readonly string[] };
@@ -87,10 +99,12 @@ export interface ResolvedLogicalModel {
   readonly modelParameters?: AgentEnvironmentLlmModelParameters;
   /** Omission of authored routing preserves automatic failover. */
   readonly autoFailover: boolean;
+  /** Current available-member intersection in Core order; absent without reasoning, empty without declared levels. */
+  readonly reasoningEffortLevels?: readonly ReasoningEffort[];
   readonly routes: readonly ResolvedLogicalModelRoute[];
 }
 
-/** Resolves retained logical IDs, coherent contracts, and every ordered member against current Provider and account supply. */
+/** Resolves retained logical IDs, authored contracts, ordered supply and the available-member effort intersection. */
 export function resolveLogicalModelCatalog(
   config: GatewayConfig,
   providers: ProviderRegistry,
@@ -137,6 +151,28 @@ export function resolveLogicalModelCatalog(
       inputModalities,
       reasoning: contracts.length > 0 && contracts.every((contract) => contract.reasoning === true),
     });
+    const routes = logicalModel.routes.map((route) => {
+      const profile = providers.get(route.providerProfileId);
+      const unavailableReason =
+        profile === null
+          ? 'provider_profile_absent'
+          : !profile.models.includes(route.providerModel)
+            ? 'provider_model_delisted'
+            : !isProviderProfileDispatchable(profile)
+              ? 'provider_not_dispatchable'
+              : subscriptionUnavailableReason(profile, subscriptionAccounts);
+      return { ...route, available: unavailableReason === null, unavailableReason };
+    });
+    const availableContracts = authoredContracts.filter(
+      (contract, index): contract is NonNullable<typeof contract> =>
+        contract !== null && routes[index]!.available
+    );
+    const reasoningEffortLevels =
+      availableContracts.length > 0 && availableContracts.every((contract) => contract.reasoning)
+        ? REASONING_EFFORT_LEVELS.filter((level) =>
+            availableContracts.every((contract) => contract.reasoningEffortLevels.includes(level))
+          )
+        : undefined;
     return {
       id: logicalModel.id,
       displayName: logicalModel.displayName,
@@ -147,19 +183,9 @@ export function resolveLogicalModelCatalog(
           ? families[0]!
           : null,
       ...(modelParameters.success ? { modelParameters: modelParameters.data } : {}),
+      ...(reasoningEffortLevels !== undefined ? { reasoningEffortLevels } : {}),
       autoFailover: logicalModel.routing?.autoFailover ?? true,
-      routes: logicalModel.routes.map((route) => {
-        const profile = providers.get(route.providerProfileId);
-        const unavailableReason =
-          profile === null
-            ? 'provider_profile_absent'
-            : !profile.models.includes(route.providerModel)
-              ? 'provider_model_delisted'
-              : !isProviderProfileDispatchable(profile)
-                ? 'provider_not_dispatchable'
-                : subscriptionUnavailableReason(profile, subscriptionAccounts);
-        return { ...route, available: unavailableReason === null, unavailableReason };
-      }),
+      routes,
     };
   });
 }
@@ -187,7 +213,7 @@ export function resolveLogicalModel(
  *
  * @param profile Provider profile that lists the model.
  * @param modelId Configured provider-native model id.
- * @returns Endpoint capabilities plus catalog flags when present, with null family when unknown.
+ * @returns Endpoint capabilities, canonical effort levels and catalog flags, with null family when unknown.
  */
 function modelContract(
   profile: ProviderProfile,
@@ -199,6 +225,7 @@ function modelContract(
   outputLimit: number | null;
   inputModalities?: readonly string[];
   reasoning: boolean;
+  reasoningEffortLevels: readonly ReasoningEffort[];
 } {
   const model = resolveEffectiveModelMetadata(profile, modelId);
   const capabilities = new Set<string>();
@@ -221,6 +248,11 @@ function modelContract(
     outputLimit: model.limit?.output ?? null,
     ...(model.modalities?.input !== undefined ? { inputModalities: model.modalities.input } : {}),
     reasoning: model.reasoning === true,
+    reasoningEffortLevels: REASONING_EFFORT_LEVELS.filter((level) =>
+      model.reasoning_options?.some((option) =>
+        option.type === 'toggle' ? level === 'none' : option.values.includes(level)
+      )
+    ),
   };
 }
 
@@ -241,6 +273,7 @@ export function resolveEffectiveModelMetadata(
     family?: string;
     attachment?: boolean;
     reasoning?: boolean;
+    reasoning_options?: NonNullable<EffectiveModelMetadata['reasoning_options']>;
     tool_call?: boolean;
     temperature?: boolean;
     modalities?: { input?: readonly string[]; output?: readonly string[] };
@@ -250,6 +283,14 @@ export function resolveEffectiveModelMetadata(
   assignLeaf(effective, 'family', pickLeaf(authored?.family, catalogModel?.family));
   assignLeaf(effective, 'attachment', pickLeaf(authored?.attachment, catalogModel?.attachment));
   assignLeaf(effective, 'reasoning', pickLeaf(authored?.reasoning, catalogModel?.reasoning));
+  assignLeaf(
+    effective,
+    'reasoning_options',
+    pickLeaf(
+      authored?.reasoning_options,
+      catalogModel?.reasoning_options?.filter((option) => option.type !== 'budget_tokens')
+    )
+  );
   assignLeaf(effective, 'tool_call', pickLeaf(authored?.tool_call, catalogModel?.tool_call));
   assignLeaf(effective, 'temperature', pickLeaf(authored?.temperature, catalogModel?.temperature));
 

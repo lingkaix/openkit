@@ -340,6 +340,7 @@ describe('resolveLogicalModelCatalog', () => {
         id: 'openrouter-free',
         displayName: 'openrouter-free',
         modelFamilyId: null,
+        reasoningEffortLevels: [],
         modelParameters: {
           contextWindow: 1_000_000,
           maxOutputTokens: 8_000,
@@ -836,4 +837,210 @@ describe('resolveLogicalModelCatalog', () => {
       )
     ).toEqual({ complete: false, rates: { input: 1 } });
   });
+});
+
+describe('reasoning effort levels', () => {
+  it.each([
+    { label: 'toggle', reasoning: true, options: [{ type: 'toggle' }], levels: ['none'] },
+    {
+      label: 'effort order and deduplication',
+      reasoning: true,
+      options: [
+        {
+          type: 'effort',
+          values: ['max', 'high', 'low', 'high', 'minimal', 'medium', 'xhigh', 'none'],
+        },
+      ],
+      levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    },
+    {
+      label: 'toggle plus effort',
+      reasoning: true,
+      options: [{ type: 'effort', values: ['high'] }, { type: 'toggle' }],
+      levels: ['none', 'high'],
+    },
+    { label: 'no options', reasoning: true, options: undefined, levels: [] },
+    { label: 'empty options', reasoning: true, options: [], levels: [] },
+    {
+      label: 'empty effort',
+      reasoning: true,
+      options: [{ type: 'effort', values: [] }],
+      levels: [],
+    },
+    {
+      label: 'false reasoning',
+      reasoning: false,
+      options: [{ type: 'toggle' }],
+      levels: undefined,
+    },
+    {
+      label: 'unknown reasoning',
+      reasoning: undefined,
+      options: [{ type: 'effort', values: ['high'] }],
+      levels: undefined,
+    },
+  ])('derives $label', ({ reasoning, options, levels }) => {
+    const providers = new ProviderRegistry([
+      profile({
+        id: 'test',
+        models: ['model'],
+        modelMetadata: {
+          model: {
+            reasoning,
+            reasoning_options: options,
+            limit: { context: 100000 },
+          },
+        },
+      }),
+    ]);
+    const [model] = resolveLogicalModelCatalog(
+      gateway({ routes: [{ id: 'test', providerProfileId: 'test', providerModel: 'model' }] }),
+      providers
+    );
+    if (levels === undefined) expect(model).not.toHaveProperty('reasoningEffortLevels');
+    else expect(model).toHaveProperty('reasoningEffortLevels', levels);
+  });
+
+  it.each([
+    { options: undefined, levels: [] },
+    { options: [], levels: [] },
+    { options: [{ type: 'effort', values: ['high', 'medium'] }], levels: ['medium', 'high'] },
+    { options: [{ type: 'effort', values: ['max'] }], levels: [] },
+  ])('intersects every available member, including missing options: %j', ({ options, levels }) => {
+    const providers = new ProviderRegistry(
+      ['a', 'b', 'blocked'].map((id) =>
+        profile({
+          id,
+          models: ['model'],
+          ...(id === 'blocked' ? { readiness: { status: 'disabled' as const } } : {}),
+          modelMetadata: {
+            model: {
+              reasoning: true,
+              limit: { context: 100000 },
+              reasoning_options:
+                id === 'a'
+                  ? [{ type: 'effort', values: ['high', 'low', 'medium'] }]
+                  : id === 'b'
+                    ? options
+                    : [],
+            },
+          },
+        })
+      )
+    );
+    const config = gateway({
+      routes: ['a', 'b', 'blocked', 'missing'].map((id) => ({
+        id,
+        providerProfileId: id,
+        providerModel: 'model',
+      })),
+    });
+    expect(resolveLogicalModelCatalog(config, providers)[0]).toHaveProperty(
+      'reasoningEffortLevels',
+      levels
+    );
+  });
+
+  it('ignores out-of-enum pinned catalog values', () => {
+    const providers = new ProviderRegistry([
+      profile({ id: 'groq', vendor: 'groq', models: ['qwen/qwen3.8-27b'] }),
+    ]);
+    const config = gateway({
+      routes: [{ id: 'test', providerProfileId: 'groq', providerModel: 'qwen/qwen3.8-27b' }],
+    });
+    expect(
+      resolveEffectiveModelMetadata(providers.get('groq')!, 'qwen/qwen3.8-27b')
+    ).toHaveProperty('reasoning_options', [
+      { type: 'effort', values: ['none', 'default', 'low', 'medium', 'high'] },
+    ]);
+    expect(resolveLogicalModelCatalog(config, providers)[0]).toHaveProperty(
+      'reasoningEffortLevels',
+      ['none', 'low', 'medium', 'high']
+    );
+  });
+
+  it('recomputes intersection on live subscription supply changes without resolver restart', () => {
+    const providers = new ProviderRegistry(
+      ['a', 'b'].map((id) =>
+        profile({
+          id,
+          vendor: 'openai-codex',
+          kind: 'oauth',
+          models: ['model'],
+          extensions: { openkit: { subscriptionAccount: { accountSlotId: id } } },
+          modelMetadata: {
+            model: {
+              reasoning: true,
+              limit: { context: 100000 },
+              reasoning_options: [
+                { type: 'effort', values: id === 'a' ? ['high', 'low'] : ['low'] },
+              ],
+            },
+          },
+        })
+      )
+    );
+    const config = gateway({
+      routes: ['a', 'b'].map((id) => ({ id, providerProfileId: id, providerModel: 'model' })),
+    });
+    let unavailable = false;
+    const accounts = {
+      gatewayUnavailableReason: ({ accountSlotId }: { accountSlotId: string }) =>
+        unavailable && accountSlotId === 'b' ? 'subscription_account_unavailable' : null,
+    };
+    expect(resolveLogicalModelCatalog(config, providers, accounts)[0]).toHaveProperty(
+      'reasoningEffortLevels',
+      ['low']
+    );
+    unavailable = true;
+    expect(resolveLogicalModelCatalog(config, providers, accounts)[0]).toHaveProperty(
+      'reasoningEffortLevels',
+      ['low', 'high']
+    );
+    unavailable = false;
+    expect(resolveLogicalModelCatalog(config, providers, accounts)[0]).toHaveProperty(
+      'reasoningEffortLevels',
+      ['low']
+    );
+  });
+});
+
+it('does not advertise a control when an available member lacks reasoning', () => {
+  const providers = new ProviderRegistry(
+    ['a', 'b'].map((id) =>
+      profile({
+        id,
+        models: ['model'],
+        modelMetadata: {
+          model: {
+            reasoning: id === 'a',
+            limit: { context: 100000 },
+            reasoning_options: [{ type: 'effort', values: ['high'] }],
+          },
+        },
+      })
+    )
+  );
+  const config = gateway({
+    routes: ['a', 'b'].map((id) => ({ id, providerProfileId: id, providerModel: 'model' })),
+  });
+  expect(resolveLogicalModelCatalog(config, providers)[0]).not.toHaveProperty(
+    'reasoningEffortLevels'
+  );
+});
+
+it('ignores pinned token-budget options without inventing effort levels', () => {
+  const providers = new ProviderRegistry([
+    profile({ id: 'anthropic', models: ['claude-haiku-4-5'] }),
+  ]);
+  const config = gateway({
+    routes: [{ id: 'test', providerProfileId: 'anthropic', providerModel: 'claude-haiku-4-5' }],
+  });
+  expect(
+    resolveEffectiveModelMetadata(providers.get('anthropic')!, 'claude-haiku-4-5')
+  ).toHaveProperty('reasoning_options', []);
+  expect(resolveLogicalModelCatalog(config, providers)[0]).toHaveProperty(
+    'reasoningEffortLevels',
+    []
+  );
 });

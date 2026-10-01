@@ -69,3 +69,5 @@ Server Agent `runtime.environment` is a bounded literal string/null override map
 Authored Agent runtime readers discard unknown optional envelope metadata regardless of its name, while preserving the declared runtime exclusions and protected-name checks. NanoCore reports ignored runtime keys through its existing located configuration warnings; environment variable names are consumed literal settings, not envelope metadata.
 
 Authored `runtime.environment` uses the worker-protocol protected-name predicate, including Codex retained-state bindings. Overrides and null removals fail with `Native environment name is managed.` Harmless `OPENAI_` settings remain admissible; a vendor prefix alone supplies no authority.
+
+Provider `modelMetadata` and deployment extension entries admit strict `reasoning_options` arrays containing `{ type: "toggle" }` or `{ type: "effort", values: string[] }`. Missing effort values, nonstring values, unknown option types and extra fields fail validation. Catalog values such as `default` remain metadata strings; NanoCore filters them against the Core enum when deriving levels. Empty option and value arrays remain explicit replacements.

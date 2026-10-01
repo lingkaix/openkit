@@ -64,6 +64,15 @@ export const ProviderReadinessSchema = z
 
 const ModelModalitySchema = z.enum(['audio', 'image', 'pdf', 'text', 'video']);
 
+/** Strict models.dev control shapes; string values are filtered against Core effort levels at projection. */
+export const ProviderReasoningOptionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('toggle') }).strict(),
+  z.object({ type: z.literal('effort'), values: z.array(z.string()) }).strict(),
+]);
+
+/** One authored reasoning control; catalog-only values do not extend the Core vocabulary. */
+export type ProviderReasoningOption = z.infer<typeof ProviderReasoningOptionSchema>;
+
 /** One models.dev-shaped Provider model metadata entry. */
 export const ProviderModelMetadataEntrySchema = z
   .object({
@@ -93,6 +102,7 @@ export const ProviderModelMetadataEntrySchema = z
       .strict()
       .optional(),
     reasoning: z.boolean().optional(),
+    reasoning_options: z.array(ProviderReasoningOptionSchema).optional(),
     temperature: z.boolean().optional(),
     tool_call: z.boolean().optional(),
   })

@@ -426,3 +426,139 @@ describe('deployment model extension catalog', () => {
     expect(readFileSync(path, 'utf8')).toBe(authorized ? content : before);
   });
 });
+
+it.each([
+  {
+    label: 'snapshot',
+    extension: undefined,
+    overlay: undefined,
+    expected: [{ type: 'effort', values: ['minimal', 'low', 'medium', 'high'] }],
+  },
+  {
+    label: 'extension replaces snapshot',
+    extension: [{ type: 'toggle' }],
+    overlay: undefined,
+    expected: [{ type: 'toggle' }],
+  },
+  { label: 'empty extension replaces snapshot', extension: [], overlay: undefined, expected: [] },
+  {
+    label: 'profile replaces extension',
+    extension: [{ type: 'toggle' }],
+    overlay: [{ type: 'effort', values: ['max'] }],
+    expected: [{ type: 'effort', values: ['max'] }],
+  },
+  {
+    label: 'empty profile replaces extension',
+    extension: [{ type: 'toggle' }],
+    overlay: [],
+    expected: [],
+  },
+  {
+    label: 'empty effort values replace snapshot',
+    extension: undefined,
+    overlay: [{ type: 'effort', values: [] }],
+    expected: [{ type: 'effort', values: [] }],
+  },
+])('resolves reasoning arrays through the file loader: $label', ({
+  extension,
+  overlay,
+  expected,
+}) => {
+  const { root, path, profilePath } = fixture();
+  const profile = {
+    id: 'primary',
+    vendor: 'openai',
+    displayName: 'Primary',
+    kind: 'custom',
+    models: ['gpt-5'],
+    modelMetadata: { 'gpt-5': { reasoning_options: overlay } },
+  };
+  writeFileSync(profilePath, JSON.stringify(profile));
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 1,
+      providers: { openai: { models: { 'gpt-5': { reasoning_options: extension } } } },
+    })
+  );
+  const before = readFileSync(profilePath, 'utf8');
+  const loaded = loadProviderProfiles(root);
+  expect(loaded.diagnostics).toEqual([]);
+  expect(resolveEffectiveModelMetadata(loaded.profiles[0]!, 'gpt-5')).toHaveProperty(
+    'reasoning_options',
+    expected
+  );
+  expect(readFileSync(profilePath, 'utf8')).toBe(before);
+  // Removing only the profile leaf restores extension or pinned inheritance on fresh loading.
+  writeFileSync(profilePath, JSON.stringify({ ...profile, modelMetadata: {} }));
+  const restored = loadProviderProfiles(root);
+  expect(restored.diagnostics).toEqual([]);
+  expect(resolveEffectiveModelMetadata(restored.profiles[0]!, 'gpt-5')).toHaveProperty(
+    'reasoning_options',
+    extension ?? [{ type: 'effort', values: ['minimal', 'low', 'medium', 'high'] }]
+  );
+});
+
+it('retains active reasoning options on safe reload and invalid edits, activating valid options after restart', () => {
+  const { root, path, catalog } = fixture();
+  const initial = {
+    ...catalog,
+    providers: {
+      openai: {
+        models: {
+          ...catalog.providers.openai.models,
+          'future-model': {
+            ...catalog.providers.openai.models['future-model'],
+            reasoning_options: [{ type: 'effort', values: ['high', 'default', 'low'] }],
+          },
+        },
+      },
+    },
+  };
+  writeFileSync(path, JSON.stringify(initial));
+  const manager = createRuntimeConfigManager({ dataRoot: root });
+  const resolve = () =>
+    resolveLogicalModelCatalog(
+      manager.current().gatewayConfig,
+      manager.current().providerRegistry
+    )[0];
+  expect(resolve()).toHaveProperty('reasoningEffortLevels', ['low', 'high']);
+  const edited = {
+    ...initial,
+    providers: {
+      openai: {
+        models: {
+          ...initial.providers.openai.models,
+          'future-model': {
+            ...initial.providers.openai.models['future-model'],
+            reasoning_options: [],
+          },
+        },
+      },
+    },
+  };
+  writeFileSync(path, JSON.stringify(edited));
+  expect(manager.reload({ mode: 'safe', dryRun: false }).plan.requiresRestart).toContainEqual(
+    expect.objectContaining({ path: 'modelCatalog' })
+  );
+  expect(resolve()).toHaveProperty('reasoningEffortLevels', ['low', 'high']);
+  const restarted = loadRuntimeConfig(root);
+  expect(
+    resolveLogicalModelCatalog(restarted.gatewayConfig, restarted.providerRegistry)[0]
+  ).toHaveProperty('reasoningEffortLevels', []);
+  const active = manager.current();
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 1,
+      providers: {
+        openai: {
+          models: { 'future-model': { reasoning_options: [{ type: 'effort', values: [1] }] } },
+        },
+      },
+    })
+  );
+  expect(manager.reload({ mode: 'safe', dryRun: false }).status).toBe('failed');
+  expect(manager.current()).toBe(active);
+  expect(resolve()).toHaveProperty('reasoningEffortLevels', ['low', 'high']);
+});

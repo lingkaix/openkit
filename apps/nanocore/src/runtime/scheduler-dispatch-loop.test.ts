@@ -1187,6 +1187,7 @@ describe('scheduler dispatch loop', () => {
           maxOutputTokens: 128_000,
           reasoning: true,
         },
+        reasoningEffortLevels: ['none', 'low', 'medium', 'high', 'xhigh'],
       };
       expect(turnExecutor.calls).toEqual([
         {

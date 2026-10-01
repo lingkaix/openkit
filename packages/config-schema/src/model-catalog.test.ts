@@ -45,3 +45,21 @@ describe('deployment model extension catalog', () => {
     ).toBe(false);
   });
 });
+
+it.each([
+  { options: [], valid: true },
+  { options: [{ type: 'toggle' }, { type: 'effort', values: ['default', 'high'] }], valid: true },
+  { options: [{ type: 'effort', values: [] }], valid: true },
+  { options: [{ type: 'effort' }], valid: false },
+  { options: [{ type: 'toggle', extra: true }], valid: false },
+  { options: [{ type: 'effort', values: [false] }], valid: false },
+  { options: [{ type: 'budget_tokens' }], valid: false },
+])('validates extension reasoning option shapes: $options', ({ options, valid }) => {
+  const catalog = {
+    schemaVersion: 1,
+    providers: { test: { models: { model: { reasoning_options: options } } } },
+  };
+  const result = ModelCatalogSchema.safeParse(catalog);
+  expect(result.success).toBe(valid);
+  if (result.success) expect(result.data).toEqual(catalog);
+});
