@@ -20,6 +20,7 @@ export * from './models/usage.js';
 export * from './models/workspace.js';
 export * from './requests/approval.js';
 export * from './requests/artifact.js';
+export * from './requests/pending-request.js';
 export * from './requests/thread.js';
 export * from './requests/turn.js';
 export * from './requests/workspace.js';

@@ -1,9 +1,10 @@
 import {
   AnswerUserInputRequestSchema,
+  ApprovalRequestSchema,
   PendingRequestOutcomeSchema,
+  RespondToApprovalRequestSchema,
   WithdrawPendingRequestSchema,
-} from '@openkit/app-api-schemas';
-import { ApprovalRequestSchema, RespondToApprovalRequestSchema } from '@openkit/protocol';
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
 import { asCommandError, asInvalidRequestError } from './api-errors.js';

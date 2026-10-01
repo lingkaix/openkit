@@ -27,6 +27,98 @@ const skillRoot = join(repoRoot, 'skills', 'openkit');
 const cliPath = join(skillRoot, 'scripts', 'openkit');
 const protocolExports = new Map(Object.entries(protocol));
 
+test('pending request commands forward exact path identities and bodies', async () => {
+  const { operationCatalog } = await operations();
+  const answer = operationCatalog.find((entry) => entry.id === 'question.answer');
+  const withdraw = operationCatalog.find((entry) => entry.id === 'pending-request.withdraw');
+  assert.ok(answer);
+  assert.ok(withdraw);
+  assert.equal(answer.protocolSchema, 'AnswerUserInputRequestSchema');
+  assert.equal(withdraw.protocolSchema, 'WithdrawPendingRequestSchema');
+  const scope = { workspaceId: 'ws_demo', threadId: 'th_demo', requestId: 'command' };
+  const answers = { choice: ['left'] };
+  const answerInput = answer.inputSchema.parse({
+    ...scope,
+    userInputRequestId: 'question_demo',
+    answers,
+  });
+  const withdrawInput = withdraw.inputSchema.parse({ ...scope, pendingRequestId: 'pending_demo' });
+  const calls = [];
+  const response = { state: 'resolved' };
+  const client = {
+    core: {
+      answerUserInput: async (...args) => {
+        calls.push(['answer', ...args]);
+        return response;
+      },
+      withdrawPendingRequest: async (...args) => {
+        calls.push(['withdraw', ...args]);
+        return response;
+      },
+    },
+  };
+  assert.equal(await answer.handler({ client }, answerInput), response);
+  assert.equal(await withdraw.handler({ client }, withdrawInput), response);
+  assert.deepEqual(calls, [
+    ['answer', 'question_demo', { ...scope, answers }],
+    ['withdraw', 'pending_demo', scope],
+  ]);
+  assert.equal(answer.inputSchema.safeParse({ ...answerInput, arbitrary: true }).success, false);
+  assert.equal(
+    withdraw.inputSchema.safeParse({ ...withdrawInput, arbitrary: true }).success,
+    false
+  );
+});
+
+test('native environment administration maps exact public reads and revision-bound edits', async () => {
+  const { operationCatalog } = await operations();
+  const read = operationCatalog.find((entry) => entry.id === 'runtime.agent-environment-read');
+  const update = operationCatalog.find((entry) => entry.id === 'runtime.agent-environment-update');
+  assert.ok(read);
+  assert.ok(update);
+  assert.equal(read.appOperationId, 'getAgentNativeEnvironment');
+  assert.equal(update.appOperationId, 'updateAgentNativeEnvironment');
+  assert.equal(read.mutating, false);
+  assert.equal(update.mutating, true);
+  const readInput = read.inputSchema.parse({ fileId: 'agents/codex.agent.jsonc' });
+  const updateInput = update.inputSchema.parse({
+    ...readInput,
+    expectedRevision: `sha256:${'a'.repeat(64)}`,
+    imageDigest: `sha256:${'b'.repeat(64)}`,
+    defaultsDigest: `sha256:${'c'.repeat(64)}`,
+    environment: { COLOR: 'always', OPTIONAL: null },
+  });
+  const calls = [];
+  const response = { persistedRevision: 'updated' };
+  const client = {
+    runtimeConfig: {
+      getAgentNativeEnvironment: async (...args) => {
+        calls.push(['read', ...args]);
+        return response;
+      },
+      updateAgentNativeEnvironment: async (...args) => {
+        calls.push(['update', ...args]);
+        return response;
+      },
+    },
+  };
+  assert.equal(await read.handler({ client }, readInput), response);
+  assert.equal(await update.handler({ client }, updateInput), response);
+  assert.deepEqual(calls, [
+    ['read', readInput.fileId],
+    ['update', updateInput],
+  ]);
+  assert.equal(
+    read.inputSchema.safeParse({ ...readInput, workspaceId: 'ws_other' }).success,
+    false
+  );
+  assert.equal(
+    update.inputSchema.safeParse({ ...updateInput, defaultsDigest: undefined }).success,
+    false
+  );
+  assert.equal(update.inputSchema.safeParse({ ...updateInput, arbitrary: true }).success, false);
+});
+
 test('Goal plan recovery uses the read operation without invoking plan creation', async () => {
   const { operationCatalog } = await operations();
   const operation = operationCatalog.find((entry) => entry.id === 'goal.plan-read');
@@ -341,7 +433,13 @@ test('Worker environment preparation and activation use the global Agent contrac
   };
   const activateInput = activate.inputSchema.parse({
     ...activation,
-    confirmation: appSchemas.workerEnvironmentActivationConfirmation(activation),
+    confirmation: appSchemas.workerEnvironmentActivationConfirmation({
+      ...activation,
+      image: {
+        digest: `sha256:${'d'.repeat(64)}`,
+        environmentDefaults: { defaultsDigest: `sha256:${'b'.repeat(64)}` },
+      },
+    }),
     requestId,
   });
   let observedActivate;
@@ -713,6 +811,8 @@ test('one catalog covers the checked App API and public Core projection', async 
       'provider-subscription.account-status',
       'provider-subscription.account-update',
       'provider-subscription.provider-list',
+      'runtime.agent-environment-read',
+      'runtime.agent-environment-update',
       'runtime.file-create',
       'runtime.file-list',
       'runtime.file-read',
@@ -2360,7 +2460,13 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
     resolvedCandidate,
     target,
   };
-  const activationConfirmation = appSchemas.workerEnvironmentActivationConfirmation(activation);
+  const activationConfirmation = appSchemas.workerEnvironmentActivationConfirmation({
+    ...activation,
+    image: {
+      digest: `sha256:${'d'.repeat(64)}`,
+      environmentDefaults: { defaultsDigest: `sha256:${'b'.repeat(64)}` },
+    },
+  });
   const preparedResponse = {
     activationConfirmation,
     affectedStorage: [],
@@ -2372,6 +2478,11 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
     configuration,
     image: {
       digest: `sha256:${'d'.repeat(64)}`,
+      environmentDefaults: {
+        classification: 'unadmitted',
+        defaultsDigest: `sha256:${'b'.repeat(64)}`,
+        names: ['COLOR'],
+      },
       platform: { architecture: 'arm64', os: 'linux' },
       storageLayout: {
         family: 'openkit-worker',

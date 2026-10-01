@@ -39,3 +39,7 @@ The public administration reference distinguishes host repository diagnostics an
 Goal operations distinguish current intent from Plan approval. `goal.intent-revise` updates the same Goal through its exact command owner; `goal.plan-read` projects active and pending Plans and the next planning action. The [bounded loop reference](openkit/references/loop.md) describes clarification, material revisions and exact approval.
 
 The recovery reference explains normalized Git HTTP-refusal evidence from the existing Turn read surface: unavailable attribution remains explicit, and a new Task still requires current authority and cleanup/storage admission. It does not promise delegated policy writes or whole-service recovery.
+
+Public native environment administration uses `runtime.agent-environment-read` and `runtime.agent-environment-update` through the existing revision-checked Core Client. These deployment-admin operations inspect admitted defaults and application status or edit ordinary overrides for later Turns; they do not expose host environment, credential values, or live process dumps.
+
+`question.answer` and `pending-request.withdraw` project the existing Core pending-request commands with their protocol schemas. Only the responsible user's explicit direction supplies an answer or withdrawal; a secret question cannot be answered. NanoCore owns response authority and later-Turn delivery.

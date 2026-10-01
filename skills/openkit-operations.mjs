@@ -566,6 +566,32 @@ export const operationCatalog = [
   {
     ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'runtime.agent-environment-read',
+    source: 'app-api',
+    appOperationId: 'getAgentNativeEnvironment',
+    clientMethod: 'runtimeConfig.getAgentNativeEnvironment',
+    group: 'runtime',
+    summary: 'Read admitted Agent environment defaults, overrides, and native application status.',
+    mutating: false,
+    inputSchema: strictScope({ fileId: IDENTIFIER }),
+    handler: ({ client }, input) => client.runtimeConfig.getAgentNativeEnvironment(input.fileId),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'runtime.agent-environment-update',
+    source: 'app-api',
+    appOperationId: 'updateAgentNativeEnvironment',
+    clientMethod: 'runtimeConfig.updateAgentNativeEnvironment',
+    group: 'runtime',
+    summary: 'Edit ordinary Agent environment overrides against exact file and image evidence.',
+    mutating: true,
+    inputSchema: strictShared(appSchemas.UpdateAgentNativeEnvironmentRequestSchema),
+    handler: ({ client }, input) => client.runtimeConfig.updateAgentNativeEnvironment(input),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
     id: 'runtime.reload',
     source: 'app-api',
     appOperationId: 'reloadRuntimeConfig',
@@ -3338,6 +3364,38 @@ export const operationCatalog = [
     inputSchema: strictShared(protocol.RespondToApprovalRequestSchema),
     handler: ({ client }, input) =>
       client.core.respondApproval(input.approvalRequestId, bodyWithout(input, 'approvalRequestId')),
+  },
+  {
+    ...STANDARD,
+    id: 'question.answer',
+    source: 'core-projection',
+    clientMethod: 'core.answerUserInput',
+    protocolSchema: 'AnswerUserInputRequestSchema',
+    group: 'question',
+    summary: 'Submit the responsible user’s answer to one pending non-secret question.',
+    mutating: true,
+    inputSchema: strictShared(protocol.AnswerUserInputRequestSchema),
+    handler: ({ client }, input) =>
+      client.core.answerUserInput(
+        input.userInputRequestId,
+        bodyWithout(input, 'userInputRequestId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'pending-request.withdraw',
+    source: 'core-projection',
+    clientMethod: 'core.withdrawPendingRequest',
+    protocolSchema: 'WithdrawPendingRequestSchema',
+    group: 'pending-request',
+    summary: 'Withdraw one pending request on the responsible user’s direction.',
+    mutating: true,
+    inputSchema: strictShared(protocol.WithdrawPendingRequestSchema),
+    handler: ({ client }, input) =>
+      client.core.withdrawPendingRequest(
+        input.pendingRequestId,
+        bodyWithout(input, 'pendingRequestId')
+      ),
   },
   {
     ...STANDARD,

@@ -22,6 +22,8 @@ Thread visibility is explicit and immutable. Private Threads require `privateOwn
 
 Approval-decision Items permit human decisions and narrowly identified `nanocore-repo-push-policy` system grants. Policy grants preserve automatic worker repository approval across reload without impersonating a human. Canonical Zod validation enforces that system actor’s permitted decision.
 
+`src/requests/pending-request.ts` owns the user-input answer and pending-request withdrawal command schemas, inferred types and shared outcome schema alongside the approval response command. These Core payloads strip additive envelope fields while retaining their existing closed lifecycle values.
+
 This version starts from a new data root and does not read earlier-version data ([Earlier-Version Data And Sessions Are Not Carried](../../docs/decisions/20260930-earlier_version_data_not_carried.md)). [Protocol](../../docs/core/protocol.md) owns the live approval-decision rule, and [Pending Requests](../../docs/specs/20260930-pending_requests.md) owns pending requests.
 
 Agent catalog `kind` is a role, with null for supply that does not declare one. Product surfaces display that absence as Worker without inferring a role from the runtime. Catalog entries remain summaries and carry no private launch configuration.

@@ -1,14 +1,14 @@
 import {
-  AnswerUserInputRequestSchema,
   CreateAutomationRequestSchema,
   ExecuteGitPushRequestSchema,
   RequestGitPushApprovalRequestSchema,
-  WithdrawPendingRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
+  AnswerUserInputRequestSchema,
   responsibleUserIdForActor,
   SubmitTurnInputRequestSchema,
+  WithdrawPendingRequestSchema,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';

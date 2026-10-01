@@ -40,6 +40,7 @@ const expectedCommandKeys = [
   'bash',
   'curl',
   'docker',
+  'git',
   'node',
   'sha256sum',
   'slirp4netns',
@@ -151,7 +152,7 @@ test('fixture provisions twice and the shared assertion rejects every observatio
       }))
     );
     assert.equal(scalarCases.length, 6);
-    assert.equal(commandCases.length, 21);
+    assert.equal(commandCases.length, 23);
     for (const mismatch of [...scalarCases, ...commandCases]) {
       await t.test(mismatch.label, () => {
         const observations = structuredClone(manifest);

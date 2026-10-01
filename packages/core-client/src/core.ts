@@ -1,9 +1,5 @@
 import {
   type AnswerUserInputRequestSchema,
-  PendingRequestOutcomeSchema,
-  type WithdrawPendingRequestSchema,
-} from '@openkit/app-api-schemas';
-import {
   ApprovalRequestSchema,
   type ArchiveThreadRequestSchema,
   type ArtifactSchema,
@@ -20,6 +16,7 @@ import {
   ListThreadsResponseSchema,
   ListWorkspacesResponseSchema,
   MetaResponseSchema,
+  PendingRequestOutcomeSchema,
   ProductTurnSchema,
   type RespondToApprovalRequestSchema,
   type SubmitTurnInputRequestSchema,
@@ -28,6 +25,7 @@ import {
   type UpdateKnowledgeEntryRequestSchema,
   type UpdateThreadRequestSchema,
   type UpdateWorkspaceRequestSchema,
+  type WithdrawPendingRequestSchema,
   WorkspaceRecordSchema,
   WorkspaceResourcesResponseSchema,
   type WorkspaceResourcesSchema,
