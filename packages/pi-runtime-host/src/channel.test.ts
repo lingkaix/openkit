@@ -52,6 +52,26 @@ describe('HostRequestSchema', () => {
     expect(HostRequestSchema.safeParse({ ...open, ...overrides }).success).toBe(false);
   });
 
+  it('preserves absent effort and accepts every canonical value and empty advertisement', () => {
+    const turn = { id: 2, op: 'turn', prompt: 'effort', turnId: 't' };
+    expect(HostRequestSchema.parse(turn)).not.toHaveProperty('reasoningEffort');
+    for (const reasoningEffort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+      expect(HostRequestSchema.parse({ ...turn, reasoningEffort })).toMatchObject({
+        reasoningEffort,
+      });
+    }
+    expect(
+      HostRequestSchema.parse({ ...open, model: { ...open.model, reasoningEffortLevels: [] } })
+    ).toMatchObject({ model: { reasoningEffortLevels: [] } });
+    expect(HostRequestSchema.safeParse({ ...turn, reasoningEffort: 'ultra' }).success).toBe(false);
+    expect(
+      HostRequestSchema.safeParse({
+        ...open,
+        model: { ...open.model, reasoningEffortLevels: ['ultra'] },
+      }).success
+    ).toBe(false);
+  });
+
   it('rejects an empty prompt and an unknown operation', () => {
     expect(
       HostRequestSchema.safeParse({ id: 2, op: 'turn', prompt: '', turnId: 't' }).success

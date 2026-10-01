@@ -24,11 +24,11 @@ The adjacent `gateway.jsonc` ships exactly `free`, `flash`, `smart`, and `pro`, 
 | Tier | Primary and ordered backups | Compaction threshold |
 | --- | --- | --- |
 | `free` | OpenRouter Laguna S 2.1 free, Laguna XS 2.1 free, North Mini Code free | 160,000 |
-| `flash` | OpenAI GPT-6 Luna, Google Gemini 3.8 Flash, OpenAI GPT-5.4 Mini | 200,000 |
-| `smart` | OpenAI GPT-6.1 Sol, Anthropic Claude Sonnet 5.5, xAI Grok 4.3, OpenAI GPT-5.1 | 200,000 |
-| `pro` | OpenAI GPT-6 Astra, Anthropic Claude Opus 5.5, OpenAI GPT-5.4 Pro | 200,000 |
+| `flash` | OpenAI GPT-6 Luna, Google Gemini 3.8 Flash | 200,000 |
+| `smart` | OpenAI GPT-6.1 Sol, Anthropic Claude Sonnet 5.5, xAI Grok 4.3 | 200,000 |
+| `pro` | OpenAI GPT-6 Astra, Anthropic Claude Opus 5.5 | 200,000 |
 
-The pinned snapshot lists zero input/output prices for all `free` members; credentials and account access are still required by their Provider. Luna and Flash serve the daily-work tier, Sol and Sonnet the middle tier, and Astra and Opus the flagship tier. The last OpenAI backups retain text/image-only input metadata, so each tier's intersected input contract is representable by the pinned Pi and DeepSeek adapters as well as Codex and OpenCode. Free is text-only; the other tiers support text and image. All members declare reasoning and tool calling. These are template choices from the pinned inventory, not measured latency or quality guarantees.
+The pinned snapshot lists zero input/output prices for all `free` members; credentials and account access are still required by their Provider. Luna and Flash serve the daily-work tier, Sol and Sonnet the middle tier, and Astra and Opus the flagship tier. Free is text-only; the other tiers' intersected input contracts support text, image and PDF. Pi and DeepSeek project text/image to their native models and report omitted PDF in bounded adapter diagnostics; Codex and OpenCode retain the complete contract. The tier members are not narrowed to accommodate a runtime's modality subset. All members declare reasoning and tool calling. These are template choices from the pinned inventory, not measured latency or quality guarantees.
 
 Each threshold reserves every member's full known maximum output within its context window, including unavailable members; the focused shipped-template tests check the effective metadata and coherent contracts. Fresh credential-free configuration completes safe reload without an error diagnostic; missing API keys do not currently determine member availability, and reload warnings follow the existing resolver. A successful setup or reload does not prove upstream credentials or live inference. Creating the matching Vault references prepares Core access. Later template changes never overwrite existing authored Data Root files.
 

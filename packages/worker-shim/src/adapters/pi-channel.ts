@@ -64,6 +64,8 @@ export type PiHostResponse =
 
 /** One parsed `turn_settled` event whose outcome is checked by the projection. */
 export interface PiTurnSettledFrame {
+  /** Effective canonical native level, absent when the host cannot prove it. */
+  readonly reasoningEffort?: unknown;
   readonly compactionEntryIds: readonly string[];
   readonly nativeHandle: unknown;
   readonly outcome: unknown;
@@ -226,6 +228,7 @@ function parseEvent(value: Readonly<Record<string, unknown>>): PiParsedFrame {
       compactionEntryIds: value.compactionEntryIds,
       nativeHandle: value.nativeHandle,
       outcome: value.outcome,
+      ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
       turnId: value.turnId,
     },
   };

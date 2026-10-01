@@ -16,6 +16,11 @@ import {
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
+import {
+  REASONING_EFFORT_LEVELS,
+  type ReasoningEffort,
+  ReasoningEffortSchema,
+} from '@openkit/protocol';
 import { loadPiMcpInternals, OpenKitMcpGate } from './capability-mcp.ts';
 import {
   CHANNEL_NATIVE_EVENT_MAX_BYTES,
@@ -200,7 +205,7 @@ export class PiRuntimeHost {
       case 'configure':
         return this.#configure(request.id, request.model);
       case 'turn':
-        return this.#runTurn(request.id, request.turnId, request.prompt);
+        return this.#runTurn(request.id, request.turnId, request.prompt, request.reasoningEffort);
       case 'interrupt':
         return this.#interrupt(request.id, request.turnId);
       case 'close':
@@ -327,10 +332,15 @@ export class PiRuntimeHost {
   }
 
   /**
-   * Accepts one Turn, answers `started`, then prepares and prompts. A preparation failure, an
-   * interrupt, or a failed identity proof settles the Turn through `turn_settled`.
+   * Accepts one Turn, answers `started`, then prepares and prompts. A preparation or native
+   * selection failure, an interrupt, or a failed identity proof settles through `turn_settled`.
    */
-  async #runTurn(id: number, turnId: string, prompt: string): Promise<void> {
+  async #runTurn(
+    id: number,
+    turnId: string,
+    prompt: string,
+    effort?: ReasoningEffort
+  ): Promise<void> {
     const binding = this.#binding;
     if (this.#state === 'active') {
       this.#fail(id, 'busy', 'A Turn is active.');
@@ -363,6 +373,8 @@ export class PiRuntimeHost {
     let setupFailure: string | null = null;
     try {
       session = await this.#prepareTurn(binding, turn);
+      if (effort !== undefined && binding.model.reasoningEffortLevels !== undefined)
+        session.setThinkingLevel(effort === 'none' ? 'off' : effort);
     } catch (error) {
       if (!(error instanceof TurnCancelledError)) {
         setupFailure =
@@ -373,7 +385,7 @@ export class PiRuntimeHost {
     }
     let earlierEntries = new Set<string>();
     let promptFailed = false;
-    if (session && !cancelled(turn)) {
+    if (session && setupFailure === null && !cancelled(turn)) {
       // Compaction appends its entry without an `entry_appended` event, so the identities this
       // prompt produced are the compaction entries that were not in the graph before it.
       earlierEntries = new Set(session.sessionManager.getEntries().map((entry) => entry.id));
@@ -424,7 +436,17 @@ export class PiRuntimeHost {
     const fenced =
       turn.failure !== null || setupFailure !== null || (!established && binding.handle === null);
     if (this.#state === 'active') this.#state = fenced ? 'failed' : 'open';
-    this.#io.send({ compactionEntryIds, event: 'turn_settled', nativeHandle, outcome, turnId });
+    const effective = ReasoningEffortSchema.safeParse(
+      session?.thinkingLevel === 'off' ? 'none' : session?.thinkingLevel
+    );
+    this.#io.send({
+      compactionEntryIds,
+      event: 'turn_settled',
+      nativeHandle,
+      outcome,
+      reasoningEffort: effective.success ? effective.data : 'unknown',
+      turnId,
+    });
     turn.resolve(outcome);
   }
 
@@ -922,7 +944,18 @@ function registerModel(runtime: ModelRuntime, baseUrl: string, model: PiModelDes
         input: [...model.inputModalities],
         maxTokens: model.maxOutputTokens,
         name: model.modelId,
-        reasoning: model.reasoning,
+        reasoning: model.reasoningEffortLevels !== undefined,
+        compat: {
+          thinkingFormat: 'openai',
+          supportsReasoningEffort: model.reasoningEffortLevels !== undefined,
+        },
+        ...(model.reasoningEffortLevels !== undefined
+          ? {
+              thinkingLevelMap: Object.fromEntries(
+                REASONING_EFFORT_LEVELS.map((level) => [level === 'none' ? 'off' : level, level])
+              ),
+            }
+          : {}),
       },
     ],
   });

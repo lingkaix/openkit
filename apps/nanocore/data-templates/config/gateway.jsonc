@@ -49,11 +49,6 @@
           "id": "flash-gemini-backup",
           "providerProfileId": "google",
           "providerModel": "gemini-3.8-flash"
-        },
-        {
-          "id": "flash-mini-backup",
-          "providerProfileId": "openai",
-          "providerModel": "gpt-5.4-mini"
         }
       ]
     },
@@ -81,11 +76,6 @@
           "id": "smart-grok-backup",
           "providerProfileId": "xai",
           "providerModel": "grok-4.3"
-        },
-        {
-          "id": "smart-gpt-backup",
-          "providerProfileId": "openai",
-          "providerModel": "gpt-5.1"
         }
       ]
     },
@@ -108,11 +98,6 @@
           "id": "pro-opus-backup",
           "providerProfileId": "anthropic",
           "providerModel": "claude-opus-5-5"
-        },
-        {
-          "id": "pro-gpt-backup",
-          "providerProfileId": "openai",
-          "providerModel": "gpt-5.4-pro"
         }
       ]
     }

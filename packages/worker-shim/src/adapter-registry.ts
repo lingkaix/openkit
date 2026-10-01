@@ -1,3 +1,4 @@
+import type { ReasoningEffort } from '@openkit/protocol';
 import type { WorkerLineage } from '@openkit/worker-protocol';
 import { codexResidentAdapter } from './adapters/codex.js';
 import { deepseekResidentAdapter } from './adapters/deepseek.js';
@@ -38,6 +39,8 @@ export interface WorkerAdapterLlmRoute {
         readonly reasoning: boolean;
       }
     | undefined;
+  /** Present (including empty) only for a reasoning route; advertisement does not constrain delivery. */
+  readonly reasoningEffortLevels?: readonly ReasoningEffort[] | undefined;
   /** NanoCore provider instance evidence id. */
   readonly providerInstanceId: string;
 }
@@ -62,7 +65,7 @@ export interface WorkerAdapterRuntimeProvenance {
 export interface WorkerAdapterResult {
   /** Final assistant candidate, or null when none is trustworthy. */
   readonly assistantText: string | null;
-  /** Optional bounded diagnostics for a failed result. */
+  /** Optional bounded diagnostics for native delivery and settlement. */
   readonly diagnostics?: Readonly<Record<string, string>> | undefined;
   /** Normalized terminal status. */
   readonly status: 'completed' | 'failed' | 'interrupted';
@@ -119,6 +122,8 @@ export interface WorkerResidentTurnInput {
   readonly llmRoute: WorkerAdapterLlmRoute;
   /** Exact admitted logical-model routes fixed for this binding; the adapter must use the preferred llmRoute for this Turn and may select only a route in this set for later Turns. */
   readonly allowedLlmRoutes: readonly WorkerAdapterLlmRoute[];
+  /** Recorded preference from this Turn's AEP; absence leaves native selection in place. */
+  readonly reasoningEffort?: ReasoningEffort | undefined;
   /** Catalog-selected MCP server ids exposed through the fixed capability route. */
   readonly mcpServerIds: readonly string[];
   /** Admission-bound live observation capture. */

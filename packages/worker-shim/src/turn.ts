@@ -1,6 +1,7 @@
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import {
   CaptureCoverageBindingSchema,
   canonicalNativeEnvironment,
@@ -172,7 +173,7 @@ async function runResidentTurnImplementation(
   if (resolveWorkerAdapterId(packageManifest) !== options.adapterId) {
     throw new Error('Worker package adapter does not match its owning Harness.');
   }
-  const { llmRoute, allowedLlmRoutes } = resolveWorkerLlmRoutes(packageManifest);
+  const { llmRoute, allowedLlmRoutes, reasoningEffort } = resolveWorkerLlmRoutes(packageManifest);
   const mcpServerIds = resolveWorkerMcpServerIds(packageManifest);
   const skillSupply = resolveSkillSupply(packageManifest.supply?.skills);
   const turnInput = resolveWorkerTurnInput(packageManifest);
@@ -300,6 +301,7 @@ async function runResidentTurnImplementation(
     const startedTurn = await options.resident.startTurn({
       llmRoute,
       allowedLlmRoutes,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
       mcpServerIds,
       runtimeCapture: {
         captureCoverage,
@@ -521,6 +523,8 @@ interface WorkerShimPackageManifest {
     mode?: unknown;
     /** Logical model selected from the allowed route set. */
     preferredLogicalModelId?: unknown;
+    /** Recorded preference, validated before native effects. */
+    reasoningEffort?: unknown;
     /** Non-empty allowed route set. */
     routes?: unknown;
   };
@@ -986,9 +990,13 @@ function resolveWorkerAdapterId(packageManifest: WorkerShimPackageManifest): str
  * @throws Error when the mode, selection, route count, or selected shape is invalid.
  */
 function resolveWorkerLlmRoutes(packageManifest: WorkerShimPackageManifest): {
+  reasoningEffort?: ReasoningEffort | undefined;
   llmRoute: WorkerAdapterLlmRoute;
   allowedLlmRoutes: readonly WorkerAdapterLlmRoute[];
 } {
+  const reasoningEffort = ReasoningEffortSchema.optional().parse(
+    packageManifest.llm?.reasoningEffort
+  );
   const mode = packageManifest.llm?.mode;
   const preferredLogicalModelId = packageManifest.llm?.preferredLogicalModelId;
   const routes = packageManifest.llm?.routes;
@@ -1039,6 +1047,7 @@ function resolveWorkerLlmRoutes(packageManifest: WorkerShimPackageManifest): {
     throw new Error('Worker shim requires matching LLM routing-mode authority.');
   }
   return {
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     llmRoute: allowedLlmRoutes.find((candidate) => candidate.model === preferredLogicalModelId)!,
     allowedLlmRoutes,
   };
@@ -1089,6 +1098,11 @@ function projectWorkerLlmRoute(route: unknown): WorkerAdapterLlmRoute {
     ...(route.modelParameters !== undefined
       ? { modelParameters: projectWorkerModelParameters(route.modelParameters) }
       : {}),
+    ...(route.reasoningEffortLevels === undefined
+      ? {}
+      : {
+          reasoningEffortLevels: ReasoningEffortSchema.array().parse(route.reasoningEffortLevels),
+        }),
     providerInstanceId: route.providerInstanceId,
   };
 }

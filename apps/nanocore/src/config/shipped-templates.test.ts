@@ -34,6 +34,12 @@ describe('shipped tier templates', () => {
     const snapshot = loadRuntimeConfig(freshDataRoot());
     const catalog = resolveLogicalModelCatalog(snapshot.gatewayConfig, snapshot.providerRegistry);
     expect(catalog.map((model) => model.id)).toEqual(['free', 'flash', 'smart', 'pro']);
+    expect(catalog.map((model) => model.routes.map((route) => route.providerModel))).toEqual([
+      ['poolside/laguna-s-2.1:free', 'poolside/laguna-xs-2.1:free', 'cohere/north-mini-code:free'],
+      ['gpt-6-luna', 'gemini-3.8-flash'],
+      ['gpt-6.1-sol', 'claude-sonnet-5-5', 'grok-4.3'],
+      ['gpt-6-astra', 'claude-opus-5-5'],
+    ]);
     const contracts = [
       {
         contextWindow: 256_000,
@@ -42,21 +48,21 @@ describe('shipped tier templates', () => {
         reasoning: true,
       },
       {
-        contextWindow: 400_000,
+        contextWindow: 1_048_576,
         maxOutputTokens: 65_536,
-        inputModalities: ['text', 'image'],
+        inputModalities: ['text', 'image', 'pdf'],
         reasoning: true,
       },
       {
-        contextWindow: 400_000,
+        contextWindow: 1_000_000,
         maxOutputTokens: 30_000,
-        inputModalities: ['text', 'image'],
+        inputModalities: ['text', 'image', 'pdf'],
         reasoning: true,
       },
       {
         contextWindow: 1_000_000,
         maxOutputTokens: 128_000,
-        inputModalities: ['text', 'image'],
+        inputModalities: ['text', 'image', 'pdf'],
         reasoning: true,
       },
     ];
@@ -125,15 +131,10 @@ describe('shipped tier templates', () => {
         'smart',
         'pro',
       ]);
-      // Pi and DeepSeek reject descriptors carrying audio, video or PDF inputs;
-      // complete text/image contracts admit all four pinned template adapters.
+      // Native adapters project their supported subset and diagnose omissions; the
+      // Gateway contract preserves the members' complete intersected modalities.
       for (const model of result.setup!.logicalModels.allowed) {
-        expect(model.modelParameters?.inputModalities.length).toBeGreaterThan(0);
-        expect(
-          model.modelParameters?.inputModalities.every(
-            (input) => input === 'text' || input === 'image'
-          )
-        ).toBe(true);
+        expect(model.modelParameters?.inputModalities).toContain('text');
       }
     }
     expect(snapshot.internalRoleProfiles.profiles.length).toBeGreaterThan(0);

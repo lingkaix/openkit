@@ -2342,7 +2342,7 @@ describe('session-static public native environment', () => {
   });
 });
 
-it('ignores unconsumed Core effort fields while parsing a per-Turn package', async () => {
+it('projects canonical effort and empty advertised levels while parsing a per-Turn package', async () => {
   const f = harnessFixture();
   await f.open('as-a');
   f.writePackage('as-a', 'turn-1');
@@ -2355,7 +2355,22 @@ it('ignores unconsumed Core effort fields while parsing a per-Turn package', asy
   });
   await f.settle('as-a');
   expect(f.fake.residents[0]?.turns).toHaveLength(1);
-  expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes[0]).not.toHaveProperty(
-    'reasoningEffortLevels'
-  );
+  expect(f.fake.residents[0]?.turns[0]?.reasoningEffort).toBe('none');
+  expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes[0]?.reasoningEffortLevels).toEqual([]);
+});
+
+it.each([
+  'turn',
+  'route',
+])('rejects an unknown %s effort before native Turn effects', async (where) => {
+  const f = harnessFixture();
+  await f.open('as-a');
+  f.writePackage('as-a', 'turn-1');
+  const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+  if (where === 'turn') pkg.llm.reasoningEffort = 'ultra';
+  else pkg.llm.routes[0].reasoningEffortLevels = ['ultra'];
+  writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
+  await f.send('turn.start', f.startBody('as-a', 'turn-1'));
+  await f.settle('as-a');
+  expect(f.fake.residents[0]?.turns).toHaveLength(0);
 });

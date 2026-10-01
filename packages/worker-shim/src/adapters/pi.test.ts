@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -17,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const spawnCalls = vi.hoisted(
@@ -1278,7 +1280,15 @@ describe('Pi resident host', () => {
       const first = await (
         await session.startTurn(turnInput(f.dirs, { prompt: 'remember cobalt', turnId: 'turn-1' }))
       ).settled;
-      expect(first).toEqual({ assistantText: 'answer-1', status: 'completed', stopReason: 'stop' });
+      expect(first).toEqual({
+        assistantText: 'answer-1',
+        status: 'completed',
+        stopReason: 'stop',
+        diagnostics: {
+          reasoningEffort: 'none',
+          reasoningEffortDelivery: 'not-delivered: model has no reasoning',
+        },
+      });
       const firstHandle = await session.nativeHandle();
       expect(session.nativeEventCount).toBeGreaterThan(0);
       expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit-work__echo');
@@ -2354,3 +2364,133 @@ async function snapshot(root: string): Promise<Record<string, string>> {
   }
   return result;
 }
+
+it.each([
+  { levels: [] },
+  { levels: ['low'] },
+])('s4: delivers effort on retained native conversation and reports native selection %j', async ({
+  levels,
+}) => {
+  const f = await fixture(() => ({ text: 'effort-answer' }), []);
+  const session = await f.open();
+  const base = turnInput(f.dirs, { mcpServerIds: [] });
+  const reasoning = {
+    ...base.llmRoute,
+    reasoningEffortLevels: levels as ReasoningEffort[],
+    modelParameters: {
+      ...base.llmRoute.modelParameters!,
+      reasoning: true,
+      inputModalities: ['text', 'image', 'pdf'] as const,
+    },
+  };
+  const plain = {
+    ...reasoning,
+    model: 'logical-b',
+    id: 'logical-b',
+    reasoningEffortLevels: undefined,
+  };
+  const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
+    ...base,
+    turnId: text,
+    turnInput: text,
+    llmRoute,
+    allowedLlmRoutes: [reasoning, plain],
+  });
+  const bodies = () => f.inference.requests.map((request) => request.body);
+  const level = (body: Record<string, unknown>) => body.reasoning_effort;
+  let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
+  for (const [index, effort] of (
+    ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
+  ).entries()) {
+    // Live Gateway advertisement never resets or restricts the retained native selection.
+    if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+    const before = bodies().length;
+    const admitted = input(`effort-${index}`);
+    const result = await (
+      await session.startTurn({
+        ...admitted,
+        ...(effort === undefined ? {} : { reasoningEffort: effort }),
+      })
+    ).settled;
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+    const expected = effort ?? 'high';
+    expect(bodies().slice(before).map(level)).toEqual([expected]);
+    expect(result.diagnostics?.reasoningEffort).toBe(expected);
+    expect(result.diagnostics?.omittedModalities).toBe('pdf');
+    if (handle) expect(await session.nativeHandle()).toEqual(handle);
+    else handle = await session.nativeHandle();
+    expect(handle.state).toBe('ready');
+  }
+  const before = bodies().length;
+  const result = await (
+    await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
+  ).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(bodies().slice(before).map(level)).toEqual([undefined]);
+  expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
+  expect(result.diagnostics?.reasoningEffort).toBe('none');
+  expect(await session.nativeHandle()).toEqual(handle);
+  const count = bodies().length;
+  await expect(
+    session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
+  ).rejects.toThrow();
+  expect(bodies()).toHaveLength(count);
+  const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
+  await expect(
+    session.startTurn({
+      ...input('unknown-route'),
+      llmRoute: invalidRoute,
+      allowedLlmRoutes: [invalidRoute, plain],
+    })
+  ).rejects.toThrow();
+  expect(bodies()).toHaveLength(count);
+}, 180000);
+
+it('s4: refuses modality subset without text before native inference', async () => {
+  const f = await fixture(() => ({ text: 'unexpected' }), []);
+  const session = await f.open();
+  const base = turnInput(f.dirs, { mcpServerIds: [] });
+  const route = {
+    ...base.llmRoute,
+    modelParameters: {
+      contextWindow: 32000,
+      maxOutputTokens: 1024,
+      inputModalities: ['image', 'pdf'] as const,
+      reasoning: false,
+    },
+  };
+  await expect(
+    session.startTurn({ ...base, llmRoute: route, allowedLlmRoutes: [route] })
+  ).rejects.toThrow();
+  expect(f.inference.requests).toHaveLength(0);
+}, 180000);
+
+it('s4: reports an effective native Extension override instead of the requested effort', async () => {
+  const f = await fixture(() => ({ text: 'override-answer' }), []);
+  const extensions = join(f.dirs.workingDirectory, '.pi', 'extensions');
+  await mkdir(extensions, { recursive: true });
+  await writeFile(
+    join(extensions, 'thinking.ts'),
+    "export default function(pi) { pi.on('before_agent_start', (_event,ctx) => { console.error('S4-NATIVE-INPUT:' + JSON.stringify(ctx.model.input)); pi.setThinkingLevel('low'); }); }\n"
+  );
+  const session = await f.open();
+  const base = turnInput(
+    f.dirs,
+    { mcpServerIds: [] },
+    {
+      reasoningEffortLevels: [],
+      modelParameters: {
+        contextWindow: 32000,
+        maxOutputTokens: 4000,
+        reasoning: true,
+        inputModalities: ['text', 'image', 'pdf'],
+      },
+    }
+  );
+  const result = await (await session.startTurn({ ...base, reasoningEffort: 'high' })).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(f.inference.requests.map((request) => request.body.reasoning_effort)).toEqual(['low']);
+  expect(result.diagnostics?.reasoningEffort).toBe('low');
+  expect(result.diagnostics?.omittedModalities).toBe('pdf');
+  expect(result.diagnostics?.stderr).toContain('S4-NATIVE-INPUT:["text","image"]');
+}, 180000);

@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import {
@@ -16,8 +17,9 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import type { ReasoningEffort } from '@openkit/protocol';
 import { WorkerErrorEnvelopeSchema } from '@openkit/worker-protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   WorkerAdapterLlmRoute,
   WorkerResidentOpenInput,
@@ -3182,3 +3184,125 @@ function replyFor(body: string): string {
   if (latestMarker(body) === 'What word did I ask you to remember?') return 'beta-answer';
   return 'alpha-answer';
 }
+
+it.each([
+  { levels: [] },
+  { levels: ['low'] },
+])('s4: delivers effort on retained native conversation and reports native selection %j', async ({
+  levels,
+}) => {
+  const roots = await tempRoots();
+  closers.push(() => rm(roots.base, { recursive: true, force: true }));
+  const inference = await responsesServer();
+  const session = await testAdapter.openSession(
+    openInput(roots, {
+      inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+      capabilityBaseUrl: 'http://127.0.0.1:9',
+    })
+  );
+  sessions.push(session);
+  const nativeRpc = vi.spyOn((session as unknown as { rpc: CodexAppServer }).rpc, 'request');
+  const base = turnInput(roots, []);
+  const reasoning = { ...base.llmRoute, reasoningEffortLevels: levels as ReasoningEffort[] };
+  const plain = { ...base.allowedLlmRoutes[1]!, reasoningEffortLevels: undefined };
+  const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
+    ...base,
+    turnId: text,
+    turnInput: text,
+    llmRoute,
+    allowedLlmRoutes: [reasoning, plain],
+  });
+  const bodies = () => inference.bodies.map((body) => JSON.parse(body));
+  const level = (body: Record<string, unknown>) =>
+    (body.reasoning as { effort?: string } | undefined)?.effort;
+  let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
+  for (const [index, effort] of (
+    ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
+  ).entries()) {
+    // Live Gateway advertisement never resets or restricts the retained native selection.
+    if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+    const before = bodies().length;
+    const admitted = input(`effort-${index}`);
+    const result = await (
+      await session.startTurn({
+        ...admitted,
+        ...(effort === undefined ? {} : { reasoningEffort: effort }),
+      })
+    ).settled;
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+    const control = nativeRpc.mock.calls
+      .filter(([method]) => method === 'turn/start')
+      .at(-1)?.[1] as Record<string, unknown>;
+    if (effort === undefined) expect(control).not.toHaveProperty('effort');
+    else expect(control.effort).toBe(effort);
+    const expected = effort ?? 'high';
+    expect(bodies().slice(before).map(level)).toEqual([expected]);
+    expect(result.diagnostics?.reasoningEffort).toBe('unknown');
+
+    if (handle) expect(await session.nativeHandle()).toEqual(handle);
+    else handle = await session.nativeHandle();
+    expect(handle.state).toBe('ready');
+  }
+  const before = bodies().length;
+  const result = await (
+    await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
+  ).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  const plainControl = nativeRpc.mock.calls
+    .filter(([method]) => method === 'turn/start')
+    .at(-1)?.[1];
+  expect(plainControl).not.toHaveProperty('effort');
+  // Engineer Ruling 11: the adapter omits its control and preserves the native
+  // selection. Gateway owns dropping this inherited wire value for this route.
+  expect(bodies().slice(before).map(level)).toEqual(['max']);
+  expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
+  expect(result.diagnostics?.reasoningEffort).toBe('unknown');
+  expect(await session.nativeHandle()).toEqual(handle);
+  const count = bodies().length;
+  await expect(
+    session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
+  ).rejects.toThrow();
+  expect(bodies()).toHaveLength(count);
+  const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
+  await expect(
+    session.startTurn({
+      ...input('unknown-route'),
+      llmRoute: invalidRoute,
+      allowedLlmRoutes: [invalidRoute, plain],
+    })
+  ).rejects.toThrow();
+  expect(bodies()).toHaveLength(count);
+}, 180000);
+
+it.each([
+  'turn',
+  'route',
+])('s4: rejects unknown %s effort before native control effects', async (where) => {
+  const roots = await tempRoots();
+  closers.push(() => rm(roots.base, { recursive: true, force: true }));
+  const inference = await responsesServer();
+  const session = await testAdapter.openSession(
+    openInput(roots, {
+      inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+      capabilityBaseUrl: 'http://127.0.0.1:9',
+    })
+  );
+  sessions.push(session);
+  const native = vi.spyOn((session as unknown as { rpc: CodexAppServer }).rpc, 'request');
+  const base = turnInput(roots, []);
+  const route = {
+    ...base.llmRoute,
+    reasoningEffortLevels: (where === 'route' ? ['ultra'] : []) as ReasoningEffort[],
+  };
+  await expect(
+    session.startTurn({
+      ...base,
+      llmRoute: route,
+      allowedLlmRoutes: [route],
+      ...(where === 'turn' ? { reasoningEffort: 'ultra' as ReasoningEffort } : {}),
+    })
+  ).rejects.toThrow();
+  expect(native).not.toHaveBeenCalled();
+  expect(inference.bodies).toHaveLength(0);
+  expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+}, 180000);

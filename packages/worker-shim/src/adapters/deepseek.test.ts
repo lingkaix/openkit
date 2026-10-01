@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { spawn } from 'node:child_process';
 import {
   existsSync,
@@ -15,13 +16,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { zstdDecompressSync } from 'node:zlib';
-
 import {
   ClientSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
   RequestError,
 } from '@agentclientprotocol/sdk';
+import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   WorkerResidentOpenInput,
@@ -2718,3 +2719,155 @@ function snapshotRetainedBytes(root: string): Record<string, string> {
   walk(root, '');
   return bytes;
 }
+
+it.each([
+  { levels: [] },
+  { levels: ['low'] },
+])('s4: delivers effort on retained native conversation and reports native selection %j', async ({
+  levels,
+}) => {
+  const inference = await startSyntheticInference(() => ({ text: 'effort-answer' }));
+  closers.push(() => inference.close());
+  const roots = tempRoots();
+  const session = await open(roots, inference, null);
+  const reasoning = {
+    ...catalogRoute('effort-model', 128000, 8192),
+    reasoningEffortLevels: levels as ReasoningEffort[],
+    modelParameters: {
+      contextWindow: 128000,
+      maxOutputTokens: 8192,
+      inputModalities: ['text', 'image', 'pdf'] as const,
+      reasoning: true,
+    },
+  };
+  const plain = {
+    ...reasoning,
+    model: 'plain-model',
+    id: 'plain-model',
+    reasoningEffortLevels: undefined,
+  };
+  const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) =>
+    catalogTurn(roots, inference, [reasoning, plain], llmRoute, text);
+  const bodies = () => inference.requests.map((request) => request.body);
+  const level = (body: Record<string, unknown>) => body.reasoning_effort;
+  let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
+  for (const [index, effort] of (
+    ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
+  ).entries()) {
+    // Live Gateway advertisement never resets or restricts the retained native selection.
+    if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+    const before = bodies().length;
+    const admitted = input(`effort-${index}`);
+    const result = await (
+      await session.startTurn({
+        ...admitted,
+        ...(effort === undefined ? {} : { reasoningEffort: effort }),
+      })
+    ).settled;
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+    const expected = effort ?? 'high';
+    expect(bodies().slice(before).map(level)).toEqual([expected]);
+    expect(result.diagnostics?.reasoningEffort).toBe(effort === undefined ? 'unknown' : expected);
+    expect(result.diagnostics?.omittedModalities).toBe('pdf');
+    const patch = JSON.parse(
+      readFileSync(join(roots.control, 'deepseek-loopback.patch.yml'), 'utf8')
+    );
+    const plugin = patch
+      .flatMap(
+        (row: {
+          insert?: {
+            id: string;
+            config?: { providers?: Record<string, { models: { id: string; input: string[] }[] }> };
+          }[];
+        }) => row.insert ?? []
+      )
+      .findLast((row: { id: string }) => row.id === 'llm-pi-ai');
+    expect(
+      plugin.config.providers['openkit-loopback'].models.find(
+        (model: { id: string }) => model.id === reasoning.model
+      ).input
+    ).toEqual(['text', 'image']);
+    if (handle) expect(await session.nativeHandle()).toEqual(handle);
+    else handle = await session.nativeHandle();
+    expect(handle.state).toBe('ready');
+  }
+  const before = bodies().length;
+  const result = await (
+    await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
+  ).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(bodies().slice(before).map(level)).toEqual([undefined]);
+  expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
+  expect(result.diagnostics?.reasoningEffort).toBe('unknown');
+  expect(await session.nativeHandle()).toEqual(handle);
+  const count = bodies().length;
+  await expect(
+    session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
+  ).rejects.toThrow();
+  expect(bodies()).toHaveLength(count);
+  const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
+  await expect(
+    session.startTurn({
+      ...input('unknown-route'),
+      llmRoute: invalidRoute,
+      allowedLlmRoutes: [invalidRoute, plain],
+    })
+  ).rejects.toThrow();
+  expect(bodies()).toHaveLength(count);
+}, 180000);
+
+it('s4: refuses modality subset without text before native inference', async () => {
+  const inference = await startSyntheticInference(() => ({ text: 'unexpected' }));
+  closers.push(() => inference.close());
+  const roots = tempRoots();
+  const session = await open(roots, inference, null);
+  const base = turn(roots, inference, 'no-text', [], 'no-text');
+  const route = {
+    ...base.llmRoute,
+    modelParameters: {
+      contextWindow: 32000,
+      maxOutputTokens: 1024,
+      inputModalities: ['image', 'pdf'] as const,
+      reasoning: false,
+    },
+  };
+  await expect(
+    session.startTurn({ ...base, llmRoute: route, allowedLlmRoutes: [route] })
+  ).rejects.toThrow();
+  expect(inference.requests).toHaveLength(0);
+}, 180000);
+
+it('s4: rejects an unproved native effort acknowledgement before prompting', async () => {
+  const inference = await startSyntheticInference(() => ({ text: 'selection-answer' }));
+  closers.push(() => inference.close());
+  const roots = tempRoots();
+  const session = await open(roots, inference, null);
+  const route = { ...catalogRoute('effort-proof', 128000, 8192), reasoningEffortLevels: [] };
+  const input = {
+    ...catalogTurn(roots, inference, [route], route, 'establish'),
+    reasoningEffort: 'low' as const,
+  };
+  expect((await (await session.startTurn(input)).settled).status).toBe('completed');
+  const agent = (session as unknown as { agent: ClientSideConnection }).agent;
+  const select = agent.setSessionConfigOption.bind(agent);
+  vi.spyOn(agent, 'setSessionConfigOption').mockImplementation(async (params) => {
+    const updated = await select(params);
+    if (params.configId !== 'reasoning_effort') return updated;
+    return {
+      ...updated,
+      configOptions: updated.configOptions.map((option) =>
+        option.id === 'reasoning_effort' ? { ...option, currentValue: 'low' } : option
+      ),
+    };
+  });
+  await expect(
+    session.startTurn({
+      ...input,
+      turnId: 'unproved-effort',
+      turnInput: 'unproved-effort',
+      reasoningEffort: 'high',
+    })
+  ).rejects.toThrow('effort selection was not proved');
+  expect(inference.requests).toHaveLength(1);
+  expect(session.childState()).toBe('absent');
+}, 180000);

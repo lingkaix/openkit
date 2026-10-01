@@ -15,6 +15,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { CodexRuntimeCapture } from '../codex-runtime-capture.js';
+import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import {
   CODEX_APPROVAL_POLICY,
   CODEX_RPC_TIMEOUT_MS,
@@ -163,6 +164,7 @@ function routeKey(route: WorkerAdapterLlmRoute): string {
     route.id,
     route.model,
     route.providerInstanceId,
+    route.reasoningEffortLevels !== undefined,
     route.credentialVisibility,
     route.endpoint.kind,
     route.endpoint.upstream?.kind,
@@ -317,6 +319,8 @@ class CodexResidentSession implements WorkerResidentSession {
   /** A terminal can arrive in the same stdout chunk as turn/start acceptance. */
   private earlyTerminal: { turnId: string; status: string; texts: readonly string[] } | null = null;
   private acceptingTurn = false;
+  /** Per-Turn delivery evidence; no native effort selection is cached. */
+  private reasoningEffortDelivery: string | undefined;
   /** Setup collisions reported through existing result diagnostics for this fixed supply. */
   private nativeConfigurationWarning: string | null = null;
   private currentTurnId: string | null = null;
@@ -480,6 +484,7 @@ class CodexResidentSession implements WorkerResidentSession {
    * exited. Otherwise the returned Turn is one the Harness cannot settle and therefore fences.
    */
   async startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn> {
+    const effort = validateTurnReasoningEffort(input);
     if (this.closing) throw new Error('Codex binding is closing.');
     if (this.exitUnproved && this.processIsLive()) {
       return this.surfaceLive(new Error('Codex runtime is unavailable.'));
@@ -502,6 +507,10 @@ class CodexResidentSession implements WorkerResidentSession {
     if (this.unusable || this.phase !== 'running' || this.active) {
       throw new Error('Codex binding cannot accept a Turn.');
     }
+    this.reasoningEffortDelivery =
+      input.llmRoute.reasoningEffortLevels === undefined
+        ? 'not-delivered: model has no reasoning'
+        : undefined;
     this.boundRoutes = routeSet;
     this.active = true;
     this.terminalSeen = false;
@@ -532,6 +541,9 @@ class CodexResidentSession implements WorkerResidentSession {
             threadId,
             input: [{ type: 'text', text: input.turnInput }],
             model: input.llmRoute.model,
+            ...(effort !== undefined && input.llmRoute.reasoningEffortLevels !== undefined
+              ? { effort }
+              : {}),
           },
           native
         )) as TurnBody;
@@ -793,7 +805,9 @@ class CodexResidentSession implements WorkerResidentSession {
 
   /** Adds bounded native diagnostics, including setup warnings on completed results. */
   private withDiagnostics(result: WorkerAdapterResult): WorkerAdapterResult {
-    const diagnostics: Record<string, string> = {};
+    const diagnostics: Record<string, string> = { reasoningEffort: 'unknown' };
+    if (this.reasoningEffortDelivery)
+      diagnostics.reasoningEffortDelivery = this.reasoningEffortDelivery;
     if (this.nativeConfigurationWarning)
       diagnostics.nativeConfiguration = this.nativeConfigurationWarning;
     const stderr = this.rpc.stderrDiagnostic();
@@ -804,7 +818,6 @@ class CodexResidentSession implements WorkerResidentSession {
         .join(',')
         .slice(0, 1024);
     }
-    if (Object.keys(diagnostics).length === 0) return result;
     return { ...result, diagnostics };
   }
 

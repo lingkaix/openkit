@@ -1,3 +1,4 @@
+import { type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { PI_SESSION_HANDLE_MAX_BYTES } from './identity.ts';
 import { PI_RESULT_CONTENT_MAX_BYTES } from './outcome.ts';
@@ -51,6 +52,7 @@ export const PiModelDescriptorSchema = z
     maxOutputTokens: z.int().positive(),
     modelId: z.string().min(1).max(256),
     reasoning: z.boolean(),
+    reasoningEffortLevels: ReasoningEffortSchema.array().optional(),
   })
   .refine(
     (value) =>
@@ -92,6 +94,7 @@ export const HostRequestSchema = z.discriminatedUnion('op', [
   z.strictObject({
     id: requestId,
     op: z.literal('turn'),
+    reasoningEffort: ReasoningEffortSchema.optional(),
     prompt: z
       .string()
       .min(1)
@@ -146,6 +149,8 @@ export type HostEvent =
   | {
       readonly compactionEntryIds: readonly string[];
       readonly event: 'turn_settled';
+      /** Effective native selection after prompt settlement; unknown if it is outside Core. */
+      readonly reasoningEffort: ReasoningEffort | 'unknown';
       readonly nativeHandle: HostNativeHandle;
       readonly outcome:
         | { readonly assistantText: string; readonly status: 'completed' }

@@ -18,7 +18,6 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { PassThrough, Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { pathToFileURL } from 'node:url';
-
 import {
   type Client,
   ClientSideConnection,
@@ -30,6 +29,7 @@ import {
   type SessionNotification,
   type SessionUpdate,
 } from '@agentclientprotocol/sdk';
+import { REASONING_EFFORT_LEVELS, ReasoningEffortSchema } from '@openkit/protocol';
 import type { HarnessRefusalReason } from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
@@ -42,6 +42,7 @@ import type {
   WorkerResidentTurn,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 
 /** Accumulated `session/update` payload ceiling for one Turn. */
 export const DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES = 16 * 1024 * 1024;
@@ -65,6 +66,8 @@ interface NativeModel {
   readonly contextWindow: number;
   readonly input: readonly ('text' | 'image')[];
   readonly maxTokens: number;
+  /** Optional native catalog capability; never a retained effort selection. */
+  readonly reasoning?: boolean | undefined;
   readonly model: string;
 }
 
@@ -89,6 +92,8 @@ interface LoopbackPatch {
 
 /** One in-flight prompt and the updates that belong to it. */
 interface ActiveTurn {
+  /** Observed native selection and bounded modality projection for this Turn only. */
+  deliveryDiagnostics: Record<string, string>;
   badContent: boolean;
   cancelRequested: boolean;
   readonly diagnostics: () => Record<string, string>;
@@ -256,6 +261,8 @@ class DeepSeekSession implements WorkerResidentSession {
   private processExit: Promise<void> = Promise.resolve();
   private record: BindingRecord | null = null;
   private resolveExited: (() => void) | null = null;
+  /** Last model proved by native configuration, used only to avoid a resetting reselect. */
+  private selectedNativeModel: string | null = null;
   private sessionId: string | null = null;
   private stderr = Buffer.alloc(0);
   /** Fixed warning on the existing diagnostic envelope; authored profile content stays private. */
@@ -460,6 +467,7 @@ class DeepSeekSession implements WorkerResidentSession {
     }
     if (this.exitUnproved || this.unknownIdentity)
       throw new Error('DeepSeek binding did not prove the native session.');
+    const effort = validateTurnReasoningEffort(input);
     const patch = routePatch(input, this.input.loopback);
     if (!isAbsolute(input.workingDirectory)) {
       throw new Error('DeepSeek working directory must be absolute.');
@@ -484,9 +492,46 @@ class DeepSeekSession implements WorkerResidentSession {
       if (this.closing) throw new Error('DeepSeek binding is closing.');
       const sessionId = this.sessionId;
       if (!sessionId) throw new Error('DeepSeek native session is not running.');
-      await this.selectModel(patch.model, sessionId);
+      const reasoning = input.llmRoute.reasoningEffortLevels !== undefined;
+      // Reselecting this pin's reasoning model resets its level to off, even when
+      // the model is unchanged. Preserve native omission without an effort cache.
+      let options =
+        reasoning && this.selectedNativeModel === patch.model
+          ? undefined
+          : await this.selectModel(patch.model, sessionId);
+      if (reasoning && effort !== undefined) {
+        const value = effort === 'none' ? 'off' : effort;
+        const updated = await this.rpc(
+          this.agentConnection().setSessionConfigOption({
+            configId: 'reasoning_effort',
+            sessionId,
+            value,
+          })
+        );
+        options = updated.configOptions;
+        const selected = options?.find((item) => item.id === 'reasoning_effort');
+        if (!selected || selected.type !== 'select' || selected.currentValue !== value)
+          throw new Error('DeepSeek effort selection was not proved.');
+      }
+      const selectedEffort = options?.find((item) => item.id === 'reasoning_effort');
+      const effective = ReasoningEffortSchema.safeParse(
+        selectedEffort?.type === 'select'
+          ? selectedEffort.currentValue === 'off'
+            ? 'none'
+            : selectedEffort.currentValue
+          : undefined
+      );
+      const deliveryDiagnostics: Record<string, string> = {
+        reasoningEffort: effective.success ? effective.data : 'unknown',
+        ...(!reasoning ? { reasoningEffortDelivery: 'not-delivered: model has no reasoning' } : {}),
+      };
+      const omitted = input.llmRoute.modelParameters?.inputModalities.filter(
+        (value) => value !== 'text' && value !== 'image'
+      );
+      if (omitted?.length) deliveryDiagnostics.omittedModalities = [...new Set(omitted)].join(',');
       if (this.closing) throw new Error('DeepSeek binding is closing.');
       const turn = this.beginTurn();
+      turn.deliveryDiagnostics = deliveryDiagnostics;
       const pending = this.agentConnection().prompt({
         prompt: [{ type: 'text', text: input.turnInput }],
         sessionId,
@@ -701,6 +746,7 @@ class DeepSeekSession implements WorkerResidentSession {
     settled.catch(() => undefined);
     let done = false;
     const turn: ActiveTurn = {
+      deliveryDiagnostics: {},
       badContent: false,
       cancelRequested: false,
       diagnostics: () => this.turnDiagnostics(turn),
@@ -856,12 +902,15 @@ class DeepSeekSession implements WorkerResidentSession {
     if (option.currentValue !== value && !advertised.includes(value)) {
       throw new Error('DeepSeek model is not the advertised loopback model.');
     }
-    if (option.currentValue === value) return;
+    if (option.currentValue === value) {
+      this.selectedNativeModel = model;
+      return;
+    }
     await this.selectModel(model, sessionId);
   }
 
   /** A setter acknowledgement is usable only when it proves the exact selected provider/model. */
-  private async selectModel(model: string, sessionId: string): Promise<void> {
+  private async selectModel(model: string, sessionId: string) {
     const value = JSON.stringify([PROVIDER_ID, model]);
     const updated = await this.rpc(
       this.agentConnection().setSessionConfigOption({
@@ -874,12 +923,15 @@ class DeepSeekSession implements WorkerResidentSession {
     if (!selected || selected.type !== 'select' || selected.currentValue !== value) {
       throw new Error('DeepSeek model selection was not proved.');
     }
+    this.selectedNativeModel = model;
+    return updated.configOptions;
   }
 
   /** Spawns `dsh` from the pinned package and completes ACP initialize. */
   private async spawnHost(record: BindingRecord): Promise<void> {
     if (this.closing) throw new Error('DeepSeek binding is closing.');
     if (this.child && this.child.exitCode === null) return;
+    this.selectedNativeModel = null;
     const patch = join(this.input.controlRoot, PATCH_NAME);
     await mkdir(this.input.controlRoot, { mode: 0o700, recursive: true });
     await mkdir(privateHome(this.input.stateRoot), { mode: 0o700, recursive: true });
@@ -1272,6 +1324,7 @@ class DeepSeekSession implements WorkerResidentSession {
   /** Bounded diagnostics for the active Turn. Credential values are redacted first. */
   private turnDiagnostics(turn: ActiveTurn): Record<string, string> {
     const diagnostics: Record<string, string> = {
+      ...turn.deliveryDiagnostics,
       compaction: turn.sawCompaction ? 'observed' : 'unavailable',
     };
     if (this.nativeConfigurationConflict)
@@ -1654,7 +1707,7 @@ function routePatch(
   };
 }
 
-/** Validates all admitted native models; reasoning support does not enable effort controls. */
+/** Projects admitted modality subsets and whether native reasoning controls exist. */
 function nativeModelFromRoute(route: WorkerAdapterLlmRoute): NativeModel {
   if (route.endpoint.upstream?.kind === 'direct-provider') {
     throw new Error('DeepSeek route is not representable.');
@@ -1682,13 +1735,18 @@ function nativeModelFromRoute(route: WorkerAdapterLlmRoute): NativeModel {
   const requested = parameters?.inputModalities ?? ['text'];
   const inputModalities: ('text' | 'image')[] = [];
   for (const modality of requested) {
-    if (modality !== 'text' && modality !== 'image') {
+    if (!['text', 'image', 'audio', 'video', 'pdf'].includes(modality))
       throw new Error('DeepSeek route is not representable.');
-    }
-    inputModalities.push(modality);
+    if (modality === 'text' || modality === 'image') inputModalities.push(modality);
   }
-  if (inputModalities.length === 0) throw new Error('DeepSeek route is not representable.');
-  return { contextWindow, input: inputModalities, maxTokens, model: route.model };
+  if (!inputModalities.includes('text')) throw new Error('DeepSeek route is not representable.');
+  return {
+    contextWindow,
+    input: inputModalities,
+    maxTokens,
+    model: route.model,
+    ...(route.reasoningEffortLevels === undefined ? {} : { reasoning: true }),
+  };
 }
 
 /** Compares the preferred route with its admitted identity and effective native descriptor. */
@@ -1725,6 +1783,7 @@ function renderPatch(
               'openkit-loopback': {
                 api: 'openai-completions',
                 baseURL: patch.inferenceBaseUrl,
+                compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
                 headers: { Authorization: `Bearer ${patch.inferenceCredential}` },
                 models: patch.models.map((model) => ({
                   id: model.model,
@@ -1732,7 +1791,14 @@ function renderPatch(
                   contextWindow: model.contextWindow,
                   maxTokens: model.maxTokens,
                   input: model.input,
-                  reasoningEfforts: false,
+                  reasoningEfforts: model.reasoning
+                    ? Object.fromEntries(
+                        REASONING_EFFORT_LEVELS.map((level) => [
+                          level === 'none' ? 'off' : level,
+                          level,
+                        ])
+                      )
+                    : false,
                 })),
               },
             },
@@ -1859,7 +1925,14 @@ function readNativeModel(parsed: unknown): NativeModel | null {
   const contextWindow = strictPositive(parsed.contextWindow);
   const maxTokens = strictPositive(parsed.maxTokens);
   if (!input || contextWindow === null || maxTokens === null) return null;
-  return { model: parsed.model, input, contextWindow, maxTokens };
+  if (parsed.reasoning !== undefined && typeof parsed.reasoning !== 'boolean') return null;
+  return {
+    model: parsed.model,
+    input,
+    contextWindow,
+    maxTokens,
+    ...(parsed.reasoning === undefined ? {} : { reasoning: parsed.reasoning }),
+  };
 }
 
 /** True for a JSON object. Arrays and null are not records. */
@@ -1936,6 +2009,7 @@ function sameCatalog(left: readonly NativeModel[], right: readonly NativeModel[]
         other !== undefined &&
         other.contextWindow === model.contextWindow &&
         other.maxTokens === model.maxTokens &&
+        other.reasoning === model.reasoning &&
         sameList(other.input, model.input)
       );
     })

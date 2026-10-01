@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { lstat, open } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { type Duplex, PassThrough } from 'node:stream';
-
+import { type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
@@ -15,6 +15,7 @@ import type {
   WorkerResidentTurn,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import {
   createPiLineReader,
   PI_CHANNEL_FRAME_MAX_BYTES,
@@ -83,6 +84,7 @@ interface PiModel {
   readonly maxOutputTokens: number;
   readonly modelId: string;
   readonly reasoning: boolean;
+  readonly reasoningEffortLevels?: readonly ReasoningEffort[] | undefined;
 }
 
 /** Canonical handle proved before a resume is allowed to spawn or prompt. */
@@ -304,6 +306,7 @@ export class PiResidentBinding implements WorkerResidentSession {
   #stateRoot: string;
   #stderrChunks: Buffer[] = [];
   #stderrBytes = 0;
+  #effortDiagnostics: Record<string, string> = {};
   #stdoutChunks: Buffer[] = [];
   #stdoutBytes = 0;
   #turn: ActiveTurn | null = null;
@@ -509,6 +512,7 @@ export class PiResidentBinding implements WorkerResidentSession {
    * @returns The accepted Turn, or a Turn the Harness must fence when the stop is unproved.
    */
   public async startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn> {
+    const effort = validateTurnReasoningEffort(input);
     if (this.#closing) throw new PiAdapterError('Pi host is closing.');
     if (this.#exitUnproved || (this.#lost && !this.#exitSeen)) {
       if (!(await this.#confirmStopped())) {
@@ -526,6 +530,16 @@ export class PiResidentBinding implements WorkerResidentSession {
     try {
       this.#unansweredWrite = false;
       const prepared = prepareTurn(input, this.#loopback);
+      this.#effortDiagnostics = {
+        reasoningEffort: 'unknown',
+        ...(input.llmRoute.reasoningEffortLevels === undefined
+          ? { reasoningEffortDelivery: 'not-delivered: model has no reasoning' }
+          : {}),
+      };
+      const omitted = input.llmRoute.modelParameters?.inputModalities.filter(
+        (value) => value !== 'text' && value !== 'image'
+      );
+      if (omitted?.length) this.#effortDiagnostics.omittedModalities = omitted.join(',');
       if (this.#routes && !sameIds(this.#routes, prepared.routes)) {
         throw new PiAdapterError('Pi admitted route set changed; use a successor binding.');
       }
@@ -542,6 +556,9 @@ export class PiResidentBinding implements WorkerResidentSession {
       const active = this.#beginTurn(prepared.turnId);
       const response = await this.#request({
         op: 'turn',
+        ...(effort !== undefined && input.llmRoute.reasoningEffortLevels !== undefined
+          ? { reasoningEffort: effort }
+          : {}),
         prompt: prepared.prompt,
         turnId: prepared.turnId,
       });
@@ -636,7 +653,7 @@ export class PiResidentBinding implements WorkerResidentSession {
   #diagnostics(): Record<string, string> | undefined {
     const stdout = redactPiText(Buffer.concat(this.#stdoutChunks).toString('utf8'), this.#secrets);
     const stderr = redactPiText(Buffer.concat(this.#stderrChunks).toString('utf8'), this.#secrets);
-    const diagnostics: Record<string, string> = {};
+    const diagnostics: Record<string, string> = { ...this.#effortDiagnostics };
     if (stdout) diagnostics.stdout = stdout;
     if (stderr) diagnostics.stderr = stderr;
     return Object.keys(diagnostics).length > 0 ? diagnostics : undefined;
@@ -968,6 +985,8 @@ export class PiResidentBinding implements WorkerResidentSession {
     if (projected.establishes && readyText !== null) this.#established = true;
     else if (!this.#established) this.#fenced = true;
     const status = projected.status;
+    const effective = ReasoningEffortSchema.safeParse(settled.reasoningEffort);
+    this.#effortDiagnostics.reasoningEffort = effective.success ? effective.data : 'unknown';
     const diagnostics = this.#diagnostics();
     active.resolve({
       assistantText: projected.assistantText,
@@ -1380,7 +1399,9 @@ function routeDescriptor(
     workerBaseUrl: route.endpoint.workerBaseUrl,
     upstreamKind: route.endpoint.upstream?.kind,
     baseUrlRef: route.endpoint.upstream?.baseUrlRef,
-    model: modelFromRoute(route),
+    model: { ...modelFromRoute(route), reasoningEffortLevels: undefined },
+    reasoningControls: route.reasoningEffortLevels !== undefined,
+    inputModalities: route.modelParameters?.inputModalities,
   });
 }
 
@@ -1399,7 +1420,7 @@ function modelFromRoute(route: WorkerAdapterLlmRoute): PiModel {
     modalities.length === 0 ||
     !modalities.includes('text') ||
     new Set(modalities).size !== modalities.length ||
-    modalities.some((modality) => modality !== 'text' && modality !== 'image') ||
+    modalities.some((modality) => !['text', 'image', 'audio', 'video', 'pdf'].includes(modality)) ||
     typeof parameters.reasoning !== 'boolean' ||
     !route.model
   ) {
@@ -1407,10 +1428,15 @@ function modelFromRoute(route: WorkerAdapterLlmRoute): PiModel {
   }
   return {
     contextWindow: parameters.contextWindow,
-    inputModalities: modalities as ('image' | 'text')[],
+    inputModalities: modalities.filter(
+      (value): value is 'text' | 'image' => value === 'text' || value === 'image'
+    ),
     maxOutputTokens: parameters.maxOutputTokens,
     modelId: route.model,
     reasoning: parameters.reasoning,
+    ...(route.reasoningEffortLevels === undefined
+      ? {}
+      : { reasoningEffortLevels: route.reasoningEffortLevels }),
   };
 }
 
@@ -1453,6 +1479,7 @@ function sameModel(left: PiModel, right: PiModel): boolean {
     left.contextWindow === right.contextWindow &&
     left.maxOutputTokens === right.maxOutputTokens &&
     left.reasoning === right.reasoning &&
+    (left.reasoningEffortLevels !== undefined) === (right.reasoningEffortLevels !== undefined) &&
     sameIds(left.inputModalities, right.inputModalities)
   );
 }

@@ -825,11 +825,8 @@ describe('runtime config loading and reload planning', () => {
     expect(snapshot.providerRegistry.get('openai-compatible-custom')).toBeNull();
     expect(snapshot.providerRegistry.get('openai')?.models).toEqual([
       'gpt-6-luna',
-      'gpt-5.4-mini',
       'gpt-6.1-sol',
-      'gpt-5.1',
       'gpt-6-astra',
-      'gpt-5.4-pro',
     ]);
     expect(snapshot.providerRegistry.get('anthropic')?.models).toEqual([
       'claude-sonnet-5-5',

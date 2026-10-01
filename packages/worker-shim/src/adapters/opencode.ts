@@ -8,9 +8,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-
 import type { OpenCodeClient } from '@opencode/client';
-
+import { REASONING_EFFORT_LEVELS, ReasoningEffortSchema } from '@openkit/protocol';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
@@ -21,6 +20,7 @@ import type {
   WorkerResidentTurn,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import { OPENCODE_PLUGIN_SOURCE } from './opencode-plugin.js';
 
 /** Slash-free native provider id for the trusted relay. It is not an AEP provider instance id. */
@@ -446,6 +446,9 @@ async function supervise(
         return { state: 'ready', reference: proved.reference };
       },
       async startTurn(turn) {
+        const effort = validateTurnReasoningEffort(turn);
+        const reasoning = turn.llmRoute.reasoningEffortLevels !== undefined;
+        let reasoningEffortDiagnostic = 'unknown';
         if (exitObserved || child.exitCode !== null || child.signalCode !== null) {
           throw new Error('OpenCode binding is not running.');
         }
@@ -464,7 +467,13 @@ async function supervise(
         if (turnActive) throw new Error('OpenCode binding already has an active Turn.');
         const routes = [...turn.allowedLlmRoutes].sort((a, b) => a.id.localeCompare(b.id));
         for (const route of routes) assertRoute(route, input.loopback.inferenceBaseUrl);
-        const routeKey = JSON.stringify(routes);
+        // Advertisement can change without changing the native all-level declaration.
+        const routeKey = JSON.stringify(
+          routes.map(({ reasoningEffortLevels, ...route }) => ({
+            ...route,
+            reasoningControls: reasoningEffortLevels !== undefined,
+          }))
+        );
         if (!routes.some((route) => JSON.stringify(route) === JSON.stringify(turn.llmRoute))) {
           throw new Error('OpenCode preferred route is outside the admitted set.');
         }
@@ -563,21 +572,41 @@ async function supervise(
           ) {
             throw new Error('OpenCode native catalog does not match the admitted model set.');
           }
-          await rpc(
-            'session.switchModel',
-            client.session.switchModel({
-              sessionID: sessionId,
-              model: { providerID: OPENCODE_PROVIDER_ID, id: turn.llmRoute.model },
-            })
+          const previousSelection = await rpc(
+            'session.get before model selection',
+            client.session.get({ sessionID: sessionId })
           );
-          await rpc(
-            'session.wait after model selection',
-            client.session.wait({ sessionID: sessionId })
-          );
+          assertSessionInfo(previousSelection, sessionId);
+          const selectingEffort = reasoning && effort !== undefined;
+          if (
+            selectingEffort ||
+            previousSelection.model?.providerID !== OPENCODE_PROVIDER_ID ||
+            previousSelection.model?.id !== turn.llmRoute.model
+          ) {
+            await rpc(
+              'session.switchModel',
+              client.session.switchModel({
+                sessionID: sessionId,
+                model: {
+                  providerID: OPENCODE_PROVIDER_ID,
+                  id: turn.llmRoute.model,
+                  ...(selectingEffort ? { variant: effort } : {}),
+                },
+              })
+            );
+            await rpc(
+              'session.wait after model selection',
+              client.session.wait({ sessionID: sessionId })
+            );
+          }
           const selected = await rpc(
             'session.get selected model',
             client.session.get({ sessionID: sessionId })
           );
+          if (selectingEffort && selected.model?.variant !== effort)
+            throw new Error('OpenCode effort selection was not proved.');
+          const effective = ReasoningEffortSchema.safeParse(selected.model?.variant);
+          reasoningEffortDiagnostic = effective.success ? effective.data : 'unknown';
           assertSessionInfo(selected, sessionId);
           // Full permission is the default; preserve authored denies from the native agent.
           const agent = await rpc(
@@ -681,6 +710,16 @@ async function supervise(
           },
         }).then((result) => {
           collected = true;
+          result = {
+            ...result,
+            diagnostics: {
+              ...result.diagnostics,
+              reasoningEffort: reasoningEffortDiagnostic,
+              ...(!reasoning
+                ? { reasoningEffortDelivery: 'not-delivered: model has no reasoning' }
+                : {}),
+            },
+          };
           return nativeWarnings
             ? {
                 ...result,
@@ -913,6 +952,14 @@ function serverConfig(
                 modelID: route.model,
                 package: '@ai-sdk/openai-compatible',
                 disabled: false,
+                ...(route.reasoningEffortLevels !== undefined
+                  ? {
+                      variants: REASONING_EFFORT_LEVELS.map((id) => ({
+                        id,
+                        settings: { reasoningEffort: id },
+                      })),
+                    }
+                  : {}),
                 ...(route.modelParameters
                   ? {
                       limit: {

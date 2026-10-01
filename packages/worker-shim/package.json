@@ -23,6 +23,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
     "@openkit/codex-app-server-schema": "workspace:*",
+    "@openkit/protocol": "workspace:*",
     "@openkit/worker-protocol": "workspace:*"
   },
   "devDependencies": {
