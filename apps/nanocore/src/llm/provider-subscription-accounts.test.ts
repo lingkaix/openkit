@@ -1558,7 +1558,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(authoritySnapshot(pathFixture)).toEqual(pathBefore);
   });
 
-  it('classifies pair authority and rejects an invalid provider list without partial results', async () => {
+  describe('pair authority classification', () => {
     const validCases: Array<{
       readonly name: string;
       readonly pair: ProviderSubscriptionAccountPair;
@@ -1601,7 +1601,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       },
     ];
 
-    for (const validCase of validCases) {
+    it.each(validCases)('classifies valid authority: $name', async (validCase) => {
       const fixture = createFixture();
       validCase.prepare(fixture, validCase.pair);
       const before = authoritySnapshot(fixture);
@@ -1616,7 +1616,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         )
       );
       expect(authoritySnapshot(fixture), validCase.name).toEqual(before);
-    }
+    });
 
     const invalidCases: Array<{
       readonly name: string;
@@ -1687,7 +1687,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       },
     ];
 
-    for (const invalidCase of invalidCases) {
+    it.each(invalidCases)('rejects invalid authority: $name', async (invalidCase) => {
       const fixture = createFixture();
       invalidCase.prepare(fixture, invalidCase.pair);
       const before = authoritySnapshot(fixture);
@@ -1697,7 +1697,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         PERSISTENCE_ERROR
       );
       expect(authoritySnapshot(fixture), invalidCase.name).toEqual(before);
-    }
+    });
 
     const coreViolations: Array<{
       readonly name: string;
@@ -1756,55 +1756,57 @@ describe('ProviderSubscriptionAccountManager', () => {
       },
     ];
 
-    for (const [index, violation] of coreViolations.entries()) {
-      const liveFixture = createFixture();
-      const livePair = accountPair(`live_core_${index}`);
-      const liveReferenceId = `live_core_r${index}`;
-      createLivePair(liveFixture, livePair, liveReferenceId);
-      violation.mutate(liveFixture, liveReferenceId);
-      const liveBefore = authoritySnapshot(liveFixture);
-
-      await expectAccountError(
-        () => liveFixture.manager.listAccounts('openai-codex'),
-        PERSISTENCE_ERROR
-      );
-      expect(authoritySnapshot(liveFixture), `live ${violation.name}`).toEqual(liveBefore);
-
-      const historyFixture = createFixture();
-      const historyPair = accountPair(`history_core_${index}`);
-      const historyReferenceId = `history_core_r${index}`;
-      createCompletedHistory(historyFixture, historyPair, historyReferenceId);
-      if (violation.name === 'wrong status') {
-        mutateCoreReference(historyFixture, historyReferenceId, "status = 'active'");
+    // Live bindings and completed histories have independent authority checks and test budgets.
+    it.each(
+      coreViolations.flatMap((violation, index) => [
+        { ...violation, authority: 'live' as const, index },
+        { ...violation, authority: 'history' as const, index },
+      ])
+    )('rejects $authority Core authority: $name', async (violation) => {
+      const fixture = createFixture();
+      const pair = accountPair(`${violation.authority}_core_${violation.index}`);
+      const referenceId = `${violation.authority}_core_r${violation.index}`;
+      if (violation.authority === 'live') {
+        createLivePair(fixture, pair, referenceId);
       } else {
-        violation.mutate(historyFixture, historyReferenceId);
+        createCompletedHistory(fixture, pair, referenceId);
       }
-      const historyBefore = authoritySnapshot(historyFixture);
+      if (violation.authority === 'history' && violation.name === 'wrong status') {
+        mutateCoreReference(fixture, referenceId, "status = 'active'");
+      } else {
+        violation.mutate(fixture, referenceId);
+      }
+      const before = authoritySnapshot(fixture);
 
       await expectAccountError(
-        () => historyFixture.manager.listAccounts('openai-codex'),
+        () => fixture.manager.listAccounts('openai-codex'),
         PERSISTENCE_ERROR
       );
-      expect(authoritySnapshot(historyFixture), `history ${violation.name}`).toEqual(historyBefore);
-    }
+      expect(authoritySnapshot(fixture), `${violation.authority} ${violation.name}`).toEqual(
+        before
+      );
+    });
 
-    const allOrNothing = createFixture();
-    const goodPair = accountPair('a_good');
-    const badPair = accountPair('z_bad');
-    writeAccountJson(allOrNothing.dataRoot, goodPair, validAccountRecord(goodPair));
-    writeAccountJson(
-      allOrNothing.dataRoot,
-      badPair,
-      validAccountRecord(badPair, { vaultReferenceId: 'bad_r1' })
-    );
-    createExactCoreReference(allOrNothing, 'bad_r1');
-    const allOrNothingBefore = authoritySnapshot(allOrNothing);
+    // Keep both ordered pairs in one fixture: list failure must not return the preceding valid pair.
+    it('rejects a mixed provider list without partial results', async () => {
+      const allOrNothing = createFixture();
+      const goodPair = accountPair('a_good');
+      const badPair = accountPair('z_bad');
+      writeAccountJson(allOrNothing.dataRoot, goodPair, validAccountRecord(goodPair));
+      writeAccountJson(
+        allOrNothing.dataRoot,
+        badPair,
+        validAccountRecord(badPair, { vaultReferenceId: 'bad_r1' })
+      );
+      createExactCoreReference(allOrNothing, 'bad_r1');
+      const allOrNothingBefore = authoritySnapshot(allOrNothing);
 
-    await expectAccountError(
-      () => allOrNothing.manager.listAccounts('openai-codex'),
-      PERSISTENCE_ERROR
-    );
-    expect(authoritySnapshot(allOrNothing)).toEqual(allOrNothingBefore);
+      await expectAccountError(
+        () => allOrNothing.manager.listAccounts('openai-codex'),
+        PERSISTENCE_ERROR
+      );
+      expect(authoritySnapshot(allOrNothing)).toEqual(allOrNothingBefore);
+    });
   });
 
   it('commits an initial OAuth credential in binding-Core-Vault order and rejects reused Core rows', async () => {
