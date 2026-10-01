@@ -1639,6 +1639,27 @@ class FakeEventSource {
 }
 
 describe('createCoreClient', () => {
+  it('sends exact revision-bound Provider deletion JSON and validates before transport', async () => {
+    const { client, requests } = createFakeClient({
+      'DELETE /api/admin/config/file': { status: 204 },
+    });
+    const input = {
+      id: 'providers/exact.provider.jsonc',
+      kind: 'provider' as const,
+      expectedRevision: 'exact-revision',
+    };
+    await expect(client.runtimeConfig.deleteFile(input)).resolves.toBeUndefined();
+    expect(requests).toEqual([
+      expect.objectContaining({
+        body: input,
+        method: 'DELETE',
+        path: '/api/admin/config/file',
+        headers: { 'content-type': 'application/json' },
+      }),
+    ]);
+    expect(() => client.runtimeConfig.deleteFile({ ...input, expectedRevision: '' })).toThrow();
+    expect(requests).toHaveLength(1);
+  });
   it('streams portable Workspace archive downloads and uploads without JSON encoding', async () => {
     const archive = new Uint8Array([40, 181, 47, 253]);
     const requests: Array<{ body: Uint8Array; headers: Headers; method: string; path: string }> =
@@ -5100,6 +5121,7 @@ describe('createCoreClient', () => {
       'GET /api/admin/config/schemas': {
         body: { schemas: [{ kind: 'server', title: 'Server config', schema: {} }] },
       },
+      'DELETE /api/admin/config/file': { status: 204 },
       'DELETE /api/app/automations/auto_demo': { status: 204 },
     });
 
@@ -5122,6 +5144,13 @@ describe('createCoreClient', () => {
     await expect(client.runtimeConfig.getSchemas()).resolves.toEqual({
       schemas: [{ kind: 'server', title: 'Server config', schema: {} }],
     });
+    await expect(
+      client.runtimeConfig.deleteFile({
+        id: 'providers/exact.provider.jsonc',
+        kind: 'provider',
+        expectedRevision: 'exact-revision',
+      })
+    ).resolves.toBeUndefined();
     expect(client.runtimeConfig).not.toHaveProperty('restartStaleSession');
     await expect(client.app.deleteAutomation('auto_demo')).resolves.toBeUndefined();
   });

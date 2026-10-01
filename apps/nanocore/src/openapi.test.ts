@@ -736,6 +736,18 @@ describe('app api openapi projection', () => {
         },
       },
     });
+    expect(document.paths['/api/admin/config/file']?.delete).toMatchObject({
+      operationId: 'deleteRuntimeConfigFile',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/RuntimeConfigFileDeleteRequest' },
+          },
+        },
+      },
+      responses: { '204': { description: expect.any(String) } },
+    });
     for (const route of [
       ['post', 'createRuntimeConfigFile'],
       ['put', 'updateRuntimeConfigFile'],
@@ -3584,6 +3596,7 @@ describe('app api openapi projection', () => {
       'getRuntimeConfigFile',
       'createRuntimeConfigFile',
       'updateRuntimeConfigFile',
+      'deleteRuntimeConfigFile',
       'getRuntimeConfigSchemas',
       'validateRuntimeConfig',
       'applyAdministrationConfiguration',

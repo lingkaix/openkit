@@ -28,3 +28,5 @@ Run provider registry, profile, data-root, LLM config, dispatcher, diagnostics, 
 - [Vault Secret Injection](../../../../docs/specs/20260703-vault_secret_injection.md)
 
 `data-root.ts` captures the model extension catalog together with loaded Provider profiles. The registry contains projected extension-plus-profile metadata for listed models only; the loader never persists that projection into authored profiles.
+
+`revokeVaultProviderCredential` removes the exact server-scoped Provider API key through existing backend revocation and Core dependent-state revocation. It validates both authorities before effects, rejects subscription-owned material and unsupported external references, and returns redacted failures without restoring material after a partial effect. Runtime-config profile deletion supplies deployment-admin and file-revision authority before invoking it.

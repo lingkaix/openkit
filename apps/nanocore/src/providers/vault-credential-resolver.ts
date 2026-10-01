@@ -5,6 +5,7 @@ import {
   VaultBackendError,
   vaultSecretMaterialToString,
 } from '../vault/vault-backend.js';
+import { getVaultReference, revokeVaultReference } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import type { ProviderCredentialResolver } from './registry.js';
 
@@ -88,4 +89,63 @@ export function readVaultReferenceId(secretRef: string): string | null {
   const referenceId = secretRef.slice(prefix.length);
 
   return referenceId.length > 0 ? referenceId : null;
+}
+
+/**
+ * Revokes one exact server key reference before its Provider profile is removed.
+ * Backend material and the Core cascade are separate effects; failure requires inspection.
+ *
+ * @param input Existing Core and current backend dependencies.
+ * @param secretRef Exact authored Vault reference; external references cannot be revoked here.
+ * @throws VaultBackendError with redacted failure when authority or either effect fails.
+ */
+export function revokeVaultProviderCredential(
+  input: Pick<CreateVaultProviderCredentialResolverInput, 'coreDb' | 'vaultBackend'>,
+  secretRef: string
+): void {
+  const referenceId = readVaultReferenceId(secretRef);
+  if (!referenceId)
+    throw new VaultBackendError(
+      'backend-unavailable',
+      'Provider secret reference cannot be revoked through Vault.'
+    );
+  const backend = input.vaultBackend();
+  const health = backend.health().state;
+  if (health !== 'available')
+    throw new VaultBackendError(
+      health === 'locked' ? 'vault-locked' : 'backend-unavailable',
+      'Vault backend is not available.'
+    );
+  try {
+    const reference = getVaultReference(input.coreDb, referenceId);
+    const inventory = backend
+      .listReferences({ ownerScope: 'server' })
+      .find((entry) => entry.referenceId === referenceId);
+    if (
+      !reference ||
+      reference.ownerScope !== 'server' ||
+      reference.workspaceId !== null ||
+      reference.userId !== null ||
+      reference.status !== 'active' ||
+      reference.secretKind !== 'provider-api-key' ||
+      !inventory ||
+      inventory.revoked ||
+      inventory.currentVersion !== reference.currentVersion ||
+      inventory.backendKind !== reference.backendKind ||
+      reference.backendKind !== backend.kind ||
+      inventory.workspaceId !== undefined ||
+      inventory.userId !== undefined ||
+      inventory.providerSubscriptionAccount !== undefined ||
+      reference.backendLocator !== `${backend.kind}://server/vault/${referenceId}`
+    ) {
+      throw new Error('Vault storage requires inspection.');
+    }
+    backend.revoke({ referenceId });
+    revokeVaultReference(input.coreDb, { referenceId });
+  } catch {
+    throw new VaultBackendError(
+      'backend-unavailable',
+      'Vault mutation failed; inspect inventory before a new request.'
+    );
+  }
 }

@@ -1,4 +1,5 @@
 import {
+  RuntimeConfigFileDeleteRequestSchema,
   RuntimeConfigFileWriteRequestSchema,
   RuntimeConfigReloadRequestSchema,
   RuntimeConfigValidationRequestSchema,
@@ -187,6 +188,21 @@ export function registerRuntimeConfigRoutes({
 
     try {
       return c.json(runtimeConfigFileService(c).updateFile(parsed.data));
+    } catch (error) {
+      return asRuntimeConfigFileError(error);
+    }
+  });
+
+  registerAppApiRoute(app, 'deleteRuntimeConfigFile', async (c) => {
+    const adminError = requireRuntimeConfigAdminActor(c);
+    if (adminError) return adminError;
+    const parsed = RuntimeConfigFileDeleteRequestSchema.safeParse(
+      await c.req.json().catch(() => ({}))
+    );
+    if (!parsed.success) return asInvalidRequestError(parsed.error);
+    try {
+      runtimeConfigFileService(c).deleteFile(parsed.data);
+      return c.body(null, 204);
     } catch (error) {
       return asRuntimeConfigFileError(error);
     }

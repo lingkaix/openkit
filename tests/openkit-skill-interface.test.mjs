@@ -70,6 +70,34 @@ test('pending request commands forward exact path identities and bodies', async 
   );
 });
 
+test('Provider removal forwards exact file identity and revision through the existing client', async () => {
+  const { operationCatalog } = await import('../skills/openkit-operations.mjs');
+  const operation = operationCatalog.find((entry) => entry.id === 'runtime.file-delete');
+  const input = {
+    id: 'providers/exact.provider.jsonc',
+    kind: 'provider',
+    expectedRevision: 'exact-revision',
+  };
+  assert.equal(operation.appOperationId, 'deleteRuntimeConfigFile');
+  assert.equal(operation.mutating, true);
+  assert.deepEqual(operation.inputSchema.parse(input), input);
+  assert.equal(operation.inputSchema.safeParse({ ...input, force: true }).success, false);
+  const calls = [];
+  await operation.handler(
+    {
+      client: {
+        runtimeConfig: {
+          deleteFile: async (command) => {
+            calls.push(command);
+          },
+        },
+      },
+    },
+    input
+  );
+  assert.deepEqual(calls, [input]);
+});
+
 test('native environment administration maps exact public reads and revision-bound edits', async () => {
   const { operationCatalog } = await operations();
   const read = operationCatalog.find((entry) => entry.id === 'runtime.agent-environment-read');
@@ -814,6 +842,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       'runtime.agent-environment-read',
       'runtime.agent-environment-update',
       'runtime.file-create',
+      'runtime.file-delete',
       'runtime.file-list',
       'runtime.file-read',
       'runtime.file-update',

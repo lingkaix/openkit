@@ -666,56 +666,35 @@ describe('provider-subscription app API', () => {
           accountSlotId: slot,
           subscriptionProviderId,
         });
-        expect(deleteCall?.[1]()).toBe(false);
+        expect(deleteCall).toHaveLength(1);
       } finally {
         fixture.close();
       }
     }
   );
 
-  it('rejects xAI account deletion through a live configured-profile binding predicate', async () => {
-    const fixture = createFixture(
-      new ProviderRegistry([
-        {
-          displayName: 'Bound xAI profile',
-          extensions: {
-            openkit: {
-              subscriptionAccount: { accountSlotId: 'bound_slot' },
-            },
-          },
-          id: 'xai-bound-private-profile',
-          kind: 'oauth',
-          models: ['xai/grok-4'],
-          vendor: 'xai',
-        },
-      ])
-    );
-    fixture.spies.deleteAccount.mockImplementationOnce(async (pair, isBound) => {
-      expect(pair).toEqual({
-        accountSlotId: 'bound_slot',
-        subscriptionProviderId: 'xai',
-      });
-      expect(isBound()).toBe(true);
-      throw new ProviderSubscriptionAccountError(
-        'provider_subscription_account_bound' as never,
-        'Private configured provider binding.'
-      );
-    });
-
+  it('deletes a bound xAI slot without consulting configured-profile references', async () => {
+    const profile = {
+      displayName: 'Bound xAI',
+      id: 'bound',
+      kind: 'oauth' as const,
+      vendor: 'xai' as const,
+      models: ['xai/grok-4'],
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'bound_slot' } } },
+    };
+    const registry = new ProviderRegistry([profile]);
+    const fixture = createFixture(registry);
     try {
       const response = await fixture.app.request(
         '/api/app/provider-subscriptions/xai/accounts/bound_slot',
         { method: 'DELETE' }
       );
-      const body = await response.json();
-
-      expect(response.status).toBe(409);
-      expect(body).toEqual({
-        code: 'provider_subscription_account_bound',
-        message: 'Provider subscription account is bound to a provider profile.',
-        protocolVersion: PROTOCOL_VERSION,
-      });
-      expect(fixture.spies.deleteAccount).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(204);
+      expect(await response.text()).toBe('');
+      expect(fixture.spies.deleteAccount.mock.calls).toEqual([
+        [{ accountSlotId: 'bound_slot', subscriptionProviderId: 'xai' }],
+      ]);
+      expect(registry.get('bound')).toMatchObject(profile);
     } finally {
       fixture.close();
     }
@@ -922,18 +901,6 @@ describe('provider-subscription app API', () => {
         spy: 'createAccount',
         status: 409,
         message: 'Provider subscription account already exists.',
-      },
-      {
-        error: () =>
-          new ProviderSubscriptionAccountError(
-            'provider_subscription_account_bound' as never,
-            'Bearer private binding failure'
-          ),
-        method: 'DELETE',
-        path: '/api/app/provider-subscriptions/xai/accounts/default',
-        spy: 'deleteAccount',
-        status: 409,
-        message: 'Provider subscription account is bound to a provider profile.',
       },
       {
         body: { mode: 'device_code' },

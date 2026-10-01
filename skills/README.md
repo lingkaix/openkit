@@ -43,3 +43,5 @@ The recovery reference explains normalized Git HTTP-refusal evidence from the ex
 Public native environment administration uses `runtime.agent-environment-read` and `runtime.agent-environment-update` through the existing revision-checked Core Client. These deployment-admin operations inspect admitted defaults and application status or edit ordinary overrides for later Turns; they do not expose host environment, credential values, or live process dumps.
 
 `question.answer` and `pending-request.withdraw` project the existing Core pending-request commands with their protocol schemas. Only the responsible user's explicit direction supplies an answer or withdrawal; a secret question cannot be answered. NanoCore owns response authority and later-Turn delivery.
+
+`runtime.file-delete` projects deployment-admin Provider profile removal through `client.runtimeConfig.deleteFile`. It requires the exact file ID, `kind: provider` and current revision. Subscription account removal remains a separate operation. Both preserve configuration references; Provider activation follows the existing reload and restart workflow.

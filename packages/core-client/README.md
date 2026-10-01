@@ -69,3 +69,5 @@ Deprecated flat aliases are not exported.
 `client.runtimeConfig.getAgentNativeEnvironment(fileId)` reads the private administration projection; `updateAgentNativeEnvironment` sends literal overrides/removals with the existing file revision and exact image/default identities. Both validate the shared App API contract. Persisted, reloaded and acknowledged native state remain separate; an edit applies to later Turns through a successor.
 
 The private native environment configuration client discards inert additive response metadata, including nested status and environment identities, through the shared App API readers before returning the owned core.
+
+`runtimeConfig.deleteFile` sends the strict Provider deletion command through the existing JSON DELETE transport. It requires an exact Provider file ID and existing revision and accepts the empty successful response. NanoCore owns revocation and restart-required activation.

@@ -17,6 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
+  type RuntimeConfigFileDeleteRequest,
   type RuntimeConfigFileDiagnostic,
   type RuntimeConfigFileKind,
   type RuntimeConfigFileListResponse,
@@ -52,6 +53,7 @@ import {
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
+import { VaultBackendError } from '../vault/vault-backend.js';
 import {
   diffRuntimeConfig,
   loadRuntimeConfig,
@@ -87,6 +89,8 @@ export interface RuntimeConfigFileServiceOptions {
   runtimeConfigManager: RuntimeConfigManager;
   /** Reads stale-session-aware runtime config status for API responses. */
   readRuntimeConfigStatus: () => RuntimeConfigStatus;
+  /** Revokes a key profile reference through the existing Vault lifecycle before file removal. */
+  revokeProviderSecret?: (secretRef: string) => void;
   /** Optional hook for durable audit of authority-bearing catalog edits. */
   onDataSourceAuthorityChange?: (change: RuntimeConfigDataSourceAuthorityChange) => void;
 }
@@ -137,6 +141,7 @@ export class RuntimeConfigFileService {
   private readonly userId: string;
   private readonly runtimeConfigManager: RuntimeConfigManager;
   private readonly readRuntimeConfigStatus: () => RuntimeConfigStatus;
+  private readonly revokeProviderSecret: ((secretRef: string) => void) | undefined;
   private readonly onDataSourceAuthorityChange:
     | ((change: RuntimeConfigDataSourceAuthorityChange) => void)
     | undefined;
@@ -155,6 +160,7 @@ export class RuntimeConfigFileService {
       );
     }
 
+    this.revokeProviderSecret = options.revokeProviderSecret;
     this.dataRoot = options.dataRoot;
     this.workspaceIds = options.workspaceIds;
     this.userId = options.userId;
@@ -304,6 +310,66 @@ export class RuntimeConfigFileService {
       file: this.summaryForSpec(spec),
       diagnostics,
     });
+  }
+
+  /**
+   * Removes one contained Provider file after revision validation and secret revocation.
+   * Config and Vault have separate effect domains: a failed unlink does not restore a revoked key.
+   *
+   * @param input Exact file identity and expected existing revision.
+   * @throws RuntimeConfigFileServiceError for validation, revision or partial-effect failures.
+   */
+  public deleteFile(input: RuntimeConfigFileDeleteRequest): void {
+    const spec = this.resolveFileSpec(input.id, input.kind);
+    if (!existsSync(spec.absolutePath)) {
+      throw new RuntimeConfigFileServiceError(
+        'config_file_not_found',
+        'Runtime config file not found.',
+        404
+      );
+    }
+    if (input.expectedRevision !== this.summaryForSpec(spec).revision) {
+      throw new RuntimeConfigFileServiceError(
+        'config_revision_conflict',
+        `Runtime config file ${input.id} changed on disk.`,
+        409
+      );
+    }
+    const content = readFileSync(spec.absolutePath, 'utf8');
+    const diagnostics = this.validateSingleFile(spec, content);
+    if (hasBlockingDiagnostics(diagnostics)) throw invalidConfigContentError(diagnostics);
+    const profile = ProviderProfileSchema.parse(parse(content));
+    if (profile.secretRef) {
+      if (!this.revokeProviderSecret) {
+        throw new RuntimeConfigFileServiceError(
+          'vault_storage_unavailable',
+          'Vault storage is unavailable.',
+          503
+        );
+      }
+      try {
+        this.revokeProviderSecret(profile.secretRef);
+      } catch (error) {
+        if (error instanceof RuntimeConfigFileServiceError) throw error;
+        throw new RuntimeConfigFileServiceError(
+          error instanceof VaultBackendError && error.code === 'vault-locked'
+            ? 'vault_backend_not_available'
+            : 'vault_mutation_failed',
+          'Vault mutation failed; inspect inventory before a new request.',
+          error instanceof VaultBackendError && error.code === 'vault-locked' ? 423 : 409
+        );
+      }
+    }
+    try {
+      this.assertInsideConfigRoot(spec.absolutePath, false);
+      rmSync(spec.absolutePath);
+    } catch {
+      throw new RuntimeConfigFileServiceError(
+        'config_file_delete_failed',
+        'Provider file removal failed; inspect the file and Vault inventory before a new request.',
+        409
+      );
+    }
   }
 
   /**

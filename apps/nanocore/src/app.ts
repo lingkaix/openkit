@@ -78,7 +78,10 @@ import {
   type RuntimeConfigSnapshot,
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
-import { RuntimeConfigFileService } from './config/runtime-config-files.js';
+import {
+  RuntimeConfigFileService,
+  RuntimeConfigFileServiceError,
+} from './config/runtime-config-files.js';
 import { registerRuntimeConfigRoutes } from './config/runtime-config-routes.js';
 import { createProcessDiagnosticsSample } from './diagnostics/process-sample.js';
 import { createSetupDiagnostics } from './diagnostics/setup.js';
@@ -112,7 +115,10 @@ import {
   type ProviderRegistry,
   resolveEnvSecretRef,
 } from './providers/registry.js';
-import { createVaultProviderCredentialResolver } from './providers/vault-credential-resolver.js';
+import {
+  createVaultProviderCredentialResolver,
+  revokeVaultProviderCredential,
+} from './providers/vault-credential-resolver.js';
 import { registerRepositoryRoutes } from './repository-routes.js';
 import { registerReviewDecisionRoutes } from './review-decision-routes.js';
 import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-routes.js';
@@ -1219,6 +1225,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
       runtimeConfigManager,
       readRuntimeConfigStatus: () => runtimeConfigManager.status(),
+      revokeProviderSecret: (secretRef) => {
+        if (!options.coreDb || !vaultUnlockState) {
+          throw new RuntimeConfigFileServiceError(
+            'vault_storage_unavailable',
+            'Vault storage is unavailable.',
+            503
+          );
+        }
+        revokeVaultProviderCredential(
+          { coreDb: options.coreDb, vaultBackend: () => vaultUnlockState.backend() },
+          secretRef
+        );
+      },
       ...(options.coreDb
         ? {
             onDataSourceAuthorityChange: (change) => {

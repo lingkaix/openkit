@@ -76,7 +76,6 @@ type ProviderSubscriptionAccountErrorCode =
   | 'provider_subscription_account_slot_invalid'
   | 'provider_subscription_account_not_found'
   | 'provider_subscription_account_exists'
-  | 'provider_subscription_account_bound'
   | 'provider_subscription_login_active'
   | 'provider_subscription_login_not_active'
   | 'provider_subscription_login_interaction_mismatch'
@@ -418,46 +417,38 @@ export class ProviderSubscriptionAccountManager {
   }
 
   /**
-   * Deletes one account after completing any exact credential-removal prefix.
+   * Cancels pending login and deletes metadata after exact credential revocation.
    *
-   * @param pair Provider-slot identity.
-   * @param isBoundToProviderProfile Reads the live configured-profile binding predicate.
+   * @param pair Provider-slot identity; configured references do not prevent removal.
    * @returns Promise settled after account metadata is absent.
    * @throws ProviderSubscriptionAccountError when the pair is absent or inconsistent.
    */
-  public async deleteAccount(
-    pair: ProviderSubscriptionAccountPair,
-    isBoundToProviderProfile: () => boolean
-  ): Promise<void> {
+  public async deleteAccount(pair: ProviderSubscriptionAccountPair): Promise<void> {
     const exactPair = this.requirePair(pair);
-
-    await this.withLifecycleAudit('provider_subscription.account.delete', exactPair, () =>
-      this.withPairFence(exactPair, async () => {
-        let inspection = this.inspectPair(exactPair, true);
-        if (inspection.kind === 'absent') {
-          throw accountNotFoundError();
-        }
-        if (this.handles.get(pairKey(exactPair))?.login) {
-          throw loginActiveError();
-        }
-        if (isBoundToProviderProfile()) {
-          throw new ProviderSubscriptionAccountError(
-            'provider_subscription_account_bound',
-            'Provider subscription account is bound to a provider profile.'
-          );
-        }
-        if (inspection.kind === 'live' || inspection.kind === 'current-tombstone') {
-          await this.removeCredential(exactPair, inspection, true);
-          inspection = this.inspectPair(exactPair);
-        }
-        if (inspection.kind !== 'unbound') {
-          throw persistenceError();
-        }
-
-        this.removeAccount(inspection.record);
-        this.invalidateHandle(exactPair);
-      })
-    );
+    await this.withLifecycleAudit('provider_subscription.account.delete', exactPair, async () => {
+      // Settlement must run outside the mutation fence because login completion also takes it.
+      for (;;) {
+        const interactionId = await this.withPairFence(exactPair, async () => {
+          let inspection = this.inspectPair(exactPair, true);
+          if (inspection.kind === 'absent') throw accountNotFoundError();
+          const login = this.handles.get(pairKey(exactPair))?.login;
+          if (login) {
+            login.settling = true;
+            return login.interactionId;
+          }
+          if (inspection.kind === 'live' || inspection.kind === 'current-tombstone') {
+            await this.removeCredential(exactPair, inspection, true);
+            inspection = this.inspectPair(exactPair);
+          }
+          if (inspection.kind !== 'unbound') throw persistenceError();
+          this.removeAccount(inspection.record);
+          this.invalidateHandle(exactPair);
+          return null;
+        });
+        if (interactionId === null) return;
+        await this.cancelLogin(exactPair, interactionId);
+      }
+    });
   }
 
   /**

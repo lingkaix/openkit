@@ -75,10 +75,6 @@ const ACCOUNT_NOT_FOUND_ERROR = {
   code: 'provider_subscription_account_not_found',
   message: 'Provider subscription account not found.',
 } as const;
-const ACCOUNT_BOUND_ERROR = {
-  code: 'provider_subscription_account_bound',
-  message: 'Provider subscription account is bound to a provider profile.',
-} as const;
 const LOGIN_ACTIVE_ERROR = {
   code: 'provider_subscription_login_active',
   message: 'A login interaction is already active for this account.',
@@ -943,6 +939,32 @@ function writeAvailabilitySupply(fixture: ProviderSubscriptionFixture): void {
 }
 
 describe('ProviderSubscriptionAccountManager', () => {
+  it('deletes a bound slot without rewriting its profile or logical routes', async () => {
+    const fixture = createFixture();
+    const pair = accountPair('availability');
+    await createStoredPair(fixture, pair, 'bound_delete_live');
+    writeAvailabilitySupply(fixture);
+    const paths = ['providers/bound.provider.jsonc', 'gateway.jsonc'].map((path) =>
+      join(fixture.dataRoot, 'config', path)
+    );
+    const before = paths.map((path) => readFileSync(path));
+    await fixture.manager.deleteAccount(pair);
+    expect(paths.map((path) => readFileSync(path))).toEqual(before);
+    expect(
+      existsSync(
+        join(
+          fixture.dataRoot,
+          'server/files/provider-subscriptions',
+          pair.subscriptionProviderId,
+          'accounts',
+          pair.accountSlotId,
+          'account.json'
+        )
+      )
+    ).toBe(false);
+    expect(getVaultReference(fixture.coreDb, 'bound_delete_live')?.status).toBe('revoked');
+  });
+
   it('reads live Gateway availability without resolving secrets or writing Vault-use records', async () => {
     const fixture = createFixture();
     try {
@@ -2255,7 +2277,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       updatedAt: DEFAULT_TIME,
     });
 
-    await credentialFixture.manager.deleteAccount(pair, () => false);
+    await credentialFixture.manager.deleteAccount(pair);
     expect(existsSync(accountDirectory(credentialFixture.dataRoot, pair))).toBe(false);
     const historicalCore = getVaultReference(credentialFixture.coreDb, 'delete_r1');
     const historicalVault = backend
@@ -2335,7 +2357,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       vi.spyOn(accountDeleteFixture.backend(), 'revoke'),
     ];
 
-    await accountDeleteFixture.manager.deleteAccount(accountDeletePair, () => false);
+    await accountDeleteFixture.manager.deleteAccount(accountDeletePair);
 
     for (const write of accountRetryWrites) {
       expect(write).not.toHaveBeenCalled();
@@ -2434,7 +2456,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         return realLaggedAccountRevoke(input);
       });
 
-    await laggedAccountFixture.manager.deleteAccount(laggedAccountPair, () => false);
+    await laggedAccountFixture.manager.deleteAccount(laggedAccountPair);
     expect(laggedAccountRevoke).toHaveBeenCalledTimes(1);
     expect(existsSync(accountDirectory(laggedAccountFixture.dataRoot, laggedAccountPair))).toBe(
       false
@@ -2836,7 +2858,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       status: 'revoked',
     });
 
-    await fixture.manager.deleteAccount(firstPair, () => false);
+    await fixture.manager.deleteAccount(firstPair);
     fixture.queueReferenceIds('shared_openai_r2');
     await fixture.manager.createAccount(firstPair);
     const freshHandle = await fixture.manager.getPairHandle(firstPair);
@@ -2895,39 +2917,27 @@ describe('ProviderSubscriptionAccountManager', () => {
       }
     );
     await boundRefreshEntered.promise;
-    let bound = false;
-    let boundAuthority: AuthoritySnapshot | undefined;
-    const isBound = vi.fn(() => {
-      boundAuthority = authoritySnapshot(boundFixture);
-      return bound;
-    });
-    const boundDeletion = boundFixture.manager.deleteAccount(boundPair, isBound);
-    bound = true;
+    const boundDeletion = boundFixture.manager.deleteAccount(boundPair);
     releaseBoundRefresh.resolve();
-
     await boundRefresh;
-    await expectAccountError(() => boundDeletion, ACCOUNT_BOUND_ERROR);
-    expect(isBound.mock.calls).toEqual([[]]);
-    expect(authoritySnapshot(boundFixture)).toEqual(boundAuthority);
-    expect(boundRevoke).not.toHaveBeenCalled();
-    expect(
-      boundFixture.coreDb.sqlite
-        .prepare(
-          `SELECT action, error_code, outcome, resource, severity, summary
-           FROM audit_events
-           WHERE action = 'provider_subscription.account.delete'
-           ORDER BY rowid DESC
-           LIMIT 1`
-        )
-        .get()
-    ).toMatchObject({
-      action: 'provider_subscription.account.delete',
-      error_code: ACCOUNT_BOUND_ERROR.code,
-      outcome: 'failed',
-      resource: 'provider-subscription:openai-codex:queued_bound_delete',
-      severity: 'error',
-      summary: 'Provider subscription account deletion failed.',
+    await expect(boundDeletion).resolves.toBeUndefined();
+    expect(boundRevoke).toHaveBeenCalledOnce();
+    expect(getVaultReference(boundFixture.coreDb, 'queued_bound_delete_r1')).toMatchObject({
+      currentVersion: 2,
+      status: 'revoked',
     });
+    expect(
+      existsSync(
+        join(
+          boundFixture.dataRoot,
+          'server/files/provider-subscriptions',
+          boundPair.subscriptionProviderId,
+          'accounts',
+          boundPair.accountSlotId,
+          'account.json'
+        )
+      )
+    ).toBe(false);
   });
 
   it('caches one provider-only stock Models generation per pair and follows dynamic Vault replacement', async () => {
@@ -3198,7 +3208,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     );
     await handle.credentials.delete('openai-codex');
     expect(findLiteralCanaryBytes(fixture.dataRoot, canaries)).toEqual([]);
-    await fixture.manager.deleteAccount(pair, () => false);
+    await fixture.manager.deleteAccount(pair);
 
     const expectedActions = [
       'provider_subscription.account.create',
@@ -3629,7 +3639,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const deleteFirstPair = accountPair('delete_first');
     await deleteFirstFixture.manager.createAccount(deleteFirstPair);
     const deleteFirstLifecycle = lifecycleOperations(deleteFirstFixture.manager);
-    const deletion = deleteFirstFixture.manager.deleteAccount(deleteFirstPair, () => false);
+    const deletion = deleteFirstFixture.manager.deleteAccount(deleteFirstPair);
     const lateStart = deleteFirstLifecycle.startLogin(deleteFirstPair);
 
     await expect(deletion).resolves.toBeUndefined();
@@ -3658,8 +3668,6 @@ describe('ProviderSubscriptionAccountManager', () => {
           return result;
         });
       });
-    const before = authoritySnapshot(fixture);
-
     vi.spyOn(oauth, 'login').mockImplementation(async (interaction: AuthInteraction) => {
       interaction.signal?.addEventListener('abort', aborted.resolve, { once: true });
       interaction.notify({
@@ -3674,31 +3682,32 @@ describe('ProviderSubscriptionAccountManager', () => {
     const lifecycle = lifecycleOperations(fixture.manager);
     const pending = await lifecycle.startLogin(pair);
     expect(pending).toMatchObject({ status: 'pending' });
-    await expectAccountError(
-      () => fixture.manager.deleteAccount(pair, () => false),
-      LOGIN_ACTIVE_ERROR
-    );
-
+    const pendingDeletion = fixture.manager.deleteAccount(pair);
+    await aborted.promise;
     releaseProvider.resolve();
     await modifyEntered.promise;
-    const cancellation = lifecycle.cancelLogin(pair, pending.interaction?.interactionId ?? '');
-    await aborted.promise;
     await expectAccountError(() => lifecycle.startLogin(pair), LOGIN_ACTIVE_ERROR);
-    await expectAccountError(
-      () => fixture.manager.deleteAccount(pair, () => false),
-      LOGIN_ACTIVE_ERROR
-    );
     releaseModify.resolve();
-
-    await expect(cancellation).resolves.toMatchObject({ status: 'logged_out' });
+    await expect(pendingDeletion).resolves.toBeUndefined();
     expect(modify).toHaveBeenCalledTimes(1);
     expect(modelsLogin).not.toHaveBeenCalled();
-    await expect(handle.credentials.read(pair.subscriptionProviderId)).resolves.toBeUndefined();
-    expect(authoritySnapshot(fixture)).toEqual(before);
+    expect(
+      existsSync(
+        join(
+          fixture.dataRoot,
+          'server/files/provider-subscriptions',
+          pair.subscriptionProviderId,
+          'accounts',
+          pair.accountSlotId,
+          'account.json'
+        )
+      )
+    ).toBe(false);
+    expect(fixture.backend().listReferences()).toEqual([]);
     expect(updaterResults.mock.calls).toEqual([[undefined]]);
   });
 
-  it('rejects invalid account authority before login conflict or binding evaluation', async () => {
+  it('rejects invalid account authority before cancelling login', async () => {
     const fixture = createFixture();
     const pair = accountPair('login_invalid_delete');
     await fixture.manager.createAccount(pair);
@@ -3724,10 +3733,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       validAccountRecord(pair, { vaultReferenceId: 'login_invalid_delete_r1' })
     );
     createExactCoreReference(fixture, 'login_invalid_delete_r1');
-    const isBound = vi.fn(() => true);
-
-    await expectAccountError(() => fixture.manager.deleteAccount(pair, isBound), PERSISTENCE_ERROR);
-    expect(isBound).not.toHaveBeenCalled();
+    await expectAccountError(() => fixture.manager.deleteAccount(pair), PERSISTENCE_ERROR);
     expect(aborted).not.toHaveBeenCalled();
   });
 

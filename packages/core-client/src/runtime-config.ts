@@ -1,6 +1,8 @@
 import {
   type AgentNativeEnvironmentResponse,
   AgentNativeEnvironmentResponseSchema,
+  type RuntimeConfigFileDeleteRequest,
+  RuntimeConfigFileDeleteRequestSchema,
   type RuntimeConfigFileListResponse,
   RuntimeConfigFileListResponseSchema,
   type RuntimeConfigFileReadResponse,
@@ -42,6 +44,8 @@ export interface RuntimeConfigClient {
   createFile(input: RuntimeConfigFileWriteRequest): Promise<RuntimeConfigFileWriteResponse>;
   /** Updates one runtime config file with revision protection. */
   updateFile(input: RuntimeConfigFileWriteRequest): Promise<RuntimeConfigFileWriteResponse>;
+  /** Removes one exact Provider profile; activation follows the existing restart-required lifecycle. */
+  deleteFile(input: RuntimeConfigFileDeleteRequest): Promise<void>;
   /** Validates draft runtime config source without writing it to disk. */
   validate(input: RuntimeConfigValidationRequest): Promise<RuntimeConfigValidationResponse>;
   /** Reads editor JSON Schema catalog entries for runtime config files. */
@@ -86,6 +90,11 @@ export function createRuntimeConfigClient(transport: ClientTransport): RuntimeCo
         '/api/admin/config/file',
         RuntimeConfigFileWriteRequestSchema.parse(input),
         RuntimeConfigFileWriteResponseSchema
+      ),
+    deleteFile: (input) =>
+      transport.deleteJson(
+        '/api/admin/config/file',
+        RuntimeConfigFileDeleteRequestSchema.parse(input)
       ),
     validate: (input) =>
       transport.postJson(

@@ -61,10 +61,6 @@ const ERROR_RESPONSES = {
     409,
     'Login interaction does not match the active interaction.',
   ],
-  provider_subscription_account_bound: [
-    409,
-    'Provider subscription account is bound to a provider profile.',
-  ],
   provider_subscription_vault_locked: [503, 'Provider subscription Vault is locked.'],
   provider_subscription_vault_unavailable: [503, 'Provider subscription Vault is unavailable.'],
   provider_subscription_provider_unavailable: [503, 'Subscription provider is unavailable.'],
@@ -197,7 +193,7 @@ export function registerProviderSubscriptionRoutes(
       return pair;
     }
     try {
-      await manager().deleteAccount(pair, () => boundProviderIds(pair).length > 0);
+      await manager().deleteAccount(pair);
       return c.body(null, 204);
     } catch (error) {
       return accountError(error);

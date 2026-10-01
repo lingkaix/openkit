@@ -213,6 +213,7 @@ import {
   RotateWorkspaceVaultSecretRequestSchema,
   RunThreadGoalStepRequestSchema,
   RunThreadGoalStepResponseSchema,
+  RuntimeConfigFileDeleteRequestSchema,
   RuntimeConfigFileListResponseSchema,
   RuntimeConfigFileReadResponseSchema,
   RuntimeConfigFileWriteRequestSchema,
@@ -1625,6 +1626,29 @@ export function createAppOpenApiDocument() {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/ApiError' },
                 },
+              },
+            },
+          },
+        },
+        delete: {
+          operationId: 'deleteRuntimeConfigFile',
+          tags: ['runtime-config'],
+          summary: 'Delete one exact Provider profile and revoke its key reference.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/RuntimeConfigFileDeleteRequest' },
+              },
+            },
+          },
+          responses: {
+            '204': { description: 'Provider profile removed; empty response body.' },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
               },
             },
           },
@@ -6706,6 +6730,7 @@ export function createAppOpenApiDocument() {
         UpdateAgentNativeEnvironmentRequest: toJsonSchema(
           UpdateAgentNativeEnvironmentRequestSchema
         ),
+        RuntimeConfigFileDeleteRequest: toJsonSchema(RuntimeConfigFileDeleteRequestSchema),
         RuntimeConfigFileWriteRequest: toJsonSchema(RuntimeConfigFileWriteRequestSchema),
         RuntimeConfigFileWriteResponse: toJsonSchema(RuntimeConfigFileWriteResponseSchema),
         RuntimeConfigReloadRequest: toJsonSchema(RuntimeConfigReloadRequestSchema),

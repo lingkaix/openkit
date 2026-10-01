@@ -150,6 +150,7 @@ registerOperations(
     'reloadRuntimeConfig',
     'createRuntimeConfigFile',
     'updateRuntimeConfigFile',
+    'deleteRuntimeConfigFile',
     'updateAgentNativeEnvironment',
     'createProviderSubscriptionAccount',
     'updateProviderSubscriptionAccount',

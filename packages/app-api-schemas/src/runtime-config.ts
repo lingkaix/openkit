@@ -124,6 +124,16 @@ export const RuntimeConfigFileWriteRequestSchema = z.object({
   expectedRevision: z.string().min(1).nullable().optional(),
 });
 
+/** Exact revision-bound Provider profile removal command; other file kinds are not deletable. */
+export const RuntimeConfigFileDeleteRequestSchema = z.strictObject({
+  id: z.string().min(1),
+  kind: z.literal('provider'),
+  expectedRevision: z.string().min(1),
+});
+
+/** Exact Provider profile deletion input. */
+export type RuntimeConfigFileDeleteRequest = z.infer<typeof RuntimeConfigFileDeleteRequestSchema>;
+
 /** Runtime config file write response payload. */
 export const RuntimeConfigFileWriteResponseSchema = z.object({
   file: RuntimeConfigFileSummarySchema,
