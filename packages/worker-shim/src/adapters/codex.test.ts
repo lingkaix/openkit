@@ -16,6 +16,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { WorkerErrorEnvelopeSchema } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
   WorkerAdapterLlmRoute,
@@ -84,14 +85,17 @@ describe('Codex App Server adapter', () => {
     );
     const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
     expect(version.stdout).toContain('codex-cli 0.159.2');
-    expect(codexLaunchArguments().slice(0, 6)).toEqual([
-      'app-server',
+    expect(codexLaunchArguments()[0]).toBe('app-server');
+    for (const restriction of [
       '--strict-config',
-      '--disable',
       'plugins',
-      '--disable',
       'hooks',
-    ]);
+      'features.memories=false',
+      'features.shell_snapshot=false',
+      'skills.bundled.enabled=false',
+    ]) {
+      expect(codexLaunchArguments()).not.toContain(restriction);
+    }
     expect(JSON.stringify(codexLaunchArguments())).not.toContain(INFERENCE_SECRET);
     const childEnvironment = codexChildEnvironment(
       { PATH: '/usr/bin', HOME: '/tmp/home' },
@@ -101,6 +105,226 @@ describe('Codex App Server adapter', () => {
     expect(JSON.stringify(childEnvironment)).not.toContain(INFERENCE_SECRET);
     expect(JSON.stringify(childEnvironment)).not.toContain(CAPABILITY_SECRET);
   });
+
+  it('loads an authored plugin and retained-home hook during a native Turn', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const pluginRoot = join(roots.state, 'plugins/cache/test/capability/local');
+    await mkdir(join(pluginRoot, '.codex-plugin'), { recursive: true });
+    await mkdir(join(pluginRoot, 'hooks'), { recursive: true });
+    await mkdir(join(pluginRoot, 'skills/plugin-proof'), { recursive: true });
+    const manifest = '{"name":"capability"}';
+    const skill =
+      '---\nname: plugin-proof\ndescription: authored-plugin-capability-marker\n---\nUse the plugin locally.\n';
+    await writeFile(join(pluginRoot, '.codex-plugin/plugin.json'), manifest);
+    await writeFile(join(pluginRoot, 'skills/plugin-proof/SKILL.md'), skill);
+    const hook = (marker: string) => ({
+      hooks: {
+        UserPromptSubmit: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: `${JSON.stringify(process.execPath)} ${JSON.stringify(join(roots.state, `${marker}.cjs`))}`,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    for (const marker of ['home-hook', 'plugin-hook']) {
+      await writeFile(
+        join(roots.state, `${marker}.cjs`),
+        `const fs = require('node:fs'); let input = ''; process.stdin.on('data', d => input += d); process.stdin.on('end', () => { fs.writeFileSync(${JSON.stringify(join(roots.work, marker))}, input); console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: ${JSON.stringify(`${marker}-context`)} } })); });`
+      );
+    }
+    const homeHooks = JSON.stringify(hook('home-hook'));
+    const pluginHooks = JSON.stringify(hook('plugin-hook'));
+    await writeFile(join(roots.state, 'hooks.json'), homeHooks);
+    await writeFile(join(pluginRoot, 'hooks/hooks.json'), pluginHooks);
+    let authored =
+      '[features]\nplugins = true\nhooks = true\n[plugins."capability@test"]\nenabled = true\n';
+    await writeFile(join(roots.state, 'config.toml'), authored);
+    const discovery = await testAdapter.openSession(openInput(roots));
+    sessions.push(discovery);
+    const hooks = (await (discovery as unknown as { rpc: CodexAppServer }).rpc.request(
+      'hooks/list',
+      { cwds: [roots.work] }
+    )) as { data: { hooks: { key: string; currentHash: string }[]; errors: unknown[] }[] };
+    expect(hooks.data[0]!.errors).toEqual([]);
+    expect(hooks.data[0]!.hooks).toHaveLength(2);
+    for (const hook of hooks.data[0]!.hooks) {
+      authored += `[hooks.state.${JSON.stringify(hook.key)}]\ntrusted_hash = ${JSON.stringify(hook.currentHash)}\n`;
+    }
+    await discovery.close();
+    await writeFile(join(roots.state, 'config.toml'), authored);
+    const session = await testAdapter.openSession(
+      openInput(roots, { inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1` })
+    );
+    sessions.push(session);
+    const result = await (await session.startTurn(turnInput(roots, [], 'Say other.'))).settled;
+    expect(result.status).toBe('completed');
+    for (const marker of ['home-hook', 'plugin-hook']) {
+      expect(await readFile(join(roots.work, marker), 'utf8')).toContain('Say other.');
+      expect(inference.bodies.at(-1)).toContain(`${marker}-context`);
+    }
+    expect(inference.bodies.at(-1)).toContain('authored-plugin-capability-marker');
+    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+    expect(await readFile(join(roots.state, 'hooks.json'), 'utf8')).toBe(homeHooks);
+    expect(await readFile(join(pluginRoot, 'hooks/hooks.json'), 'utf8')).toBe(pluginHooks);
+    expect(await readFile(join(pluginRoot, '.codex-plugin/plugin.json'), 'utf8')).toBe(manifest);
+    expect(await readFile(join(pluginRoot, 'skills/plugin-proof/SKILL.md'), 'utf8')).toBe(skill);
+  }, 30_000);
+
+  it('executes a model-directed shell command and observes its workspace write', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const target = join(roots.work, 'model-written.txt');
+    const inference = await responsesServer((body, response) => {
+      if (body.includes('function_call_output')) return false;
+      writeFunctionCall(
+        response,
+        { namespace: 'functions', name: 'exec_command' },
+        JSON.stringify({
+          cmd: `printf shell-capability-proof; printf workspace-capability-proof > ${JSON.stringify(target)}`,
+          yield_time_ms: 1000,
+        })
+      );
+      return true;
+    });
+    const session = await testAdapter.openSession(
+      openInput(roots, { inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1` })
+    );
+    sessions.push(session);
+    expect(
+      (await (await session.startTurn(turnInput(roots, [], 'Run the workspace command.'))).settled)
+        .status
+    ).toBe('completed');
+    expect(await readFile(target, 'utf8')).toBe('workspace-capability-proof');
+    expect(inference.bodies.at(-1)).toContain('shell-capability-proof');
+    expect(inference.bodies.at(-1)).toContain('function_call_output');
+  }, 30_000);
+
+  it('preserves an authored native deny rule during full-permission shell execution', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const target = join(roots.work, 'native-denied-file');
+    await mkdir(join(roots.state, 'rules'));
+    const rule = 'prefix_rule(pattern=["touch"], decision="forbidden")\n';
+    await writeFile(join(roots.state, 'rules/deny.rules'), rule);
+    const inference = await responsesServer((body, response) => {
+      if (body.includes('function_call_output')) return false;
+      writeFunctionCall(
+        response,
+        { namespace: 'functions', name: 'exec_command' },
+        JSON.stringify({ cmd: `touch ${JSON.stringify(target)}` })
+      );
+      return true;
+    });
+    const session = await testAdapter.openSession(
+      openInput(roots, { inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1` })
+    );
+    sessions.push(session);
+    expect(
+      (
+        await (
+          await session.startTurn(turnInput(roots, [], 'Try the authored forbidden command.'))
+        ).settled
+      ).status
+    ).toBe('completed');
+    await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(inference.bodies.at(-1)).toContain('function_call_output');
+    expect(inference.bodies.at(-1)).toMatch(/forbidden|rejected|denied/);
+    expect(await readFile(join(roots.state, 'rules/deny.rules'), 'utf8')).toBe(rule);
+  }, 30_000);
+
+  it.each([
+    'stdio',
+    'disabled',
+  ] as const)('refuses an authored protected MCP id before native work and recovers after rename: %s', async (transport) => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const gateway = await mcpServer();
+    const entry = `command = ${JSON.stringify(process.execPath)}\nargs = ["-e", "process.exit(1)"]\n`;
+    const authored = `[mcp_servers.alpha]\n${transport === 'disabled' ? 'enabled = false\n' : ''}${entry}`;
+    await writeFile(join(roots.state, 'config.toml'), authored);
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
+      })
+    );
+    sessions.push(session);
+    const error = await session
+      .startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))
+      .catch((error: unknown) => error);
+    const refusal = WorkerErrorEnvelopeSchema.parse(error);
+    expect(refusal.code).toBe('codex_mcp_id_collision');
+    expect(refusal.message).toContain('Rename your authored entry');
+    expect(refusal.diagnostics[0]?.message).toContain('"alpha"');
+    expect(inference.bodies).toHaveLength(0);
+    expect(gateway.requestCount).toBe(0);
+    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+    expect(session.childState()).toBe('running');
+    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+    const renamed = `[mcp_servers.user_alpha]\nenabled = false\n${entry}`;
+    await writeFile(join(roots.state, 'config.toml'), renamed);
+    expect(
+      (await (await session.startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))).settled)
+        .status
+    ).toBe('completed');
+    expect(inference.bodies.at(-1)).toContain('tool-done');
+    expect(gateway.requestCount).toBeGreaterThan(0);
+    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(renamed);
+    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
+  }, 30_000);
+
+  it.each([
+    false,
+    true,
+  ])('overlays an authored HTTP MCP collision and warns on completed Turns; disabled=%s', async (disabled) => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const gateway = await mcpServer();
+    const authoredServer = await mcpServer({
+      port: 0,
+      host: '127.0.0.1',
+      credential: 'authored-local-token',
+    });
+    const authored = `[mcp_servers.alpha]\nenabled = ${!disabled}\nurl = "http://127.0.0.1:${authoredServer.port}/authored-mcp"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer authored-local-token"\n`;
+    await writeFile(join(roots.state, 'config.toml'), authored);
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
+      })
+    );
+    sessions.push(session);
+    const result = await (await session.startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool')))
+      .settled;
+    expect(result.status).toBe('completed');
+    expect(result.diagnostics?.nativeConfiguration).toBe(
+      'Warning: managed MCP entry "alpha" overrides authored HTTP entry.'
+    );
+    expect(JSON.stringify(result.diagnostics)).not.toContain(INFERENCE_SECRET);
+    expect(JSON.stringify(result.diagnostics)).not.toContain(CAPABILITY_SECRET);
+    expect(inference.bodies.at(-1)).toContain('tool-done');
+    expect(gateway.requestCount).toBeGreaterThan(0);
+    expect(
+      gateway.requests.every((request) => request.authorization === `Bearer ${CAPABILITY_SECRET}`)
+    ).toBe(true);
+    expect(authoredServer.requestCount).toBe(0);
+    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
+    expect(session.childState()).toBe('running');
+    const later = await (await session.startTurn(turnInput(roots, ['alpha'], 'Say other.')))
+      .settled;
+    expect(later.status).toBe('completed');
+    expect(later.diagnostics?.nativeConfiguration).toBe(result.diagnostics?.nativeConfiguration);
+  }, 30_000);
 
   it('bounds assistant text and redacts a diagnostic prefix', () => {
     expect(normalizeCodexAssistant('completed', ['  cedar  '])).toEqual({
@@ -125,28 +349,33 @@ describe('Codex App Server adapter', () => {
     expect(diagnostic).toContain('[redacted]');
   });
 
-  it('cancels native permission requests and never accepts them', () => {
-    expect(codexPermissionResponse('item/commandExecution/requestApproval', {}).result).toEqual({
-      decision: 'cancel',
-    });
-    expect(
-      codexPermissionResponse('item/commandExecution/requestApproval', {
-        options: ['accept', 'reject_once'],
-      }).result
-    ).toEqual({ decision: 'reject_once' });
+  it('allows native permissions once and retains the deny-capable response path', () => {
+    for (const method of [
+      'item/commandExecution/requestApproval',
+      'item/fileChange/requestApproval',
+    ]) {
+      expect(codexPermissionResponse(method, {}).result).toEqual({ decision: 'accept' });
+      expect(
+        codexPermissionResponse(method, { options: ['accept', 'reject_once'] }).result
+      ).toEqual({ decision: 'accept' });
+      expect(codexPermissionResponse(method, { options: ['reject_once'] }).result).toEqual({
+        decision: 'reject_once',
+      });
+      expect(codexPermissionResponse(method, { options: ['cancel'] }).result).toEqual({
+        decision: 'cancel',
+      });
+    }
     expect(codexPermissionResponse('mcpServer/elicitation/request', {}).result).toEqual({
-      action: 'cancel',
+      action: 'accept',
     });
-    expect(codexPermissionResponse('item/permissions/requestApproval', {}).outcome).toBe(
-      'unsupported'
-    );
+    const permissions = { network: { enabled: true }, fileSystem: { write: ['/workspace'] } };
+    expect(
+      codexPermissionResponse('item/permissions/requestApproval', { permissions }).result
+    ).toEqual({ permissions, scope: 'turn' });
     expect(codexPermissionResponse('item/tool/requestUserInput', {}).outcome).toBe('unsupported');
-    const encoded = JSON.stringify(codexPermissionResponse('item/fileChange/requestApproval', {}));
-    expect(encoded).not.toContain('accept');
-    expect(encoded).not.toContain('decline');
   });
 
-  it('answers a live permission request with cancel', async () => {
+  it('answers a live permission request with allow once', async () => {
     const child = spawn(
       process.execPath,
       [
@@ -163,10 +392,10 @@ describe('Codex App Server adapter', () => {
     );
     await expect
       .poll(() => server.permissionRecords)
-      .toEqual([{ method: 'item/commandExecution/requestApproval', outcome: 'cancel' }]);
+      .toEqual([{ method: 'item/commandExecution/requestApproval', outcome: 'accept' }]);
     await expect(server.request('probe', {})).resolves.toEqual({
       id: 7,
-      result: { decision: 'cancel' },
+      result: { decision: 'accept' },
     });
     child.kill('SIGKILL');
   });
@@ -434,6 +663,10 @@ describe('Codex App Server adapter', () => {
         },
       },
     });
+    expect(
+      (await (await successor.startTurn(turnInput(roots, ['alpha'], 'Say other.'))).settled)
+        .diagnostics?.nativeConfiguration
+    ).toContain('"alpha"');
     expect(mcp.idle).toBe(false);
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(homeConfig);
     if (source === 'trusted project') {
@@ -481,6 +714,9 @@ describe('Codex App Server adapter', () => {
     ).toBe(true);
     expect(inference.bodies.at(-1)).not.toContain('mcp__alpha');
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+    // Scan retained bytes after host exit so shell snapshot renames cannot invalidate the scan.
+    await expect(successor.close()).rejects.toThrow(/drain\/persistence/);
+    expect(successor.childState()).toBe('absent');
     expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
   }, 30_000);
 
@@ -532,9 +768,9 @@ requires_openai_auth = true
 experimental_bearer_token = "retained-inference-auth"
 [model_providers.openkit-worker-inference.http_headers]
 Authorization = "Bearer retained-header-auth"
-[mcp_servers.alpha]
+[mcp_servers.retained_gateway]
 url = "http://127.0.0.1:${mcp.port}/capabilities/mcp/alpha"
-[mcp_servers.alpha.http_headers]
+[mcp_servers.retained_gateway.http_headers]
 Authorization = "Bearer retained-capability-auth"
 `;
     const auth = JSON.stringify({ OPENAI_API_KEY: 'retained-auth-store-token' });
@@ -586,10 +822,26 @@ Authorization = "Bearer retained-capability-auth"
     expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
   }, 30_000);
 
+  it('preserves unknown optional native configuration while executing a Turn', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const authored = 'future_optional_native_setting = true\n';
+    await writeFile(join(roots.state, 'config.toml'), authored);
+    const inference = await responsesServer();
+    const session = await testAdapter.openSession(
+      openInput(roots, { inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1` })
+    );
+    sessions.push(session);
+    expect(
+      (await (await session.startTurn(turnInput(roots, [], 'Say other.'))).settled).status
+    ).toBe('completed');
+    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+  });
+
   it('preserves invalid authored configuration and fails without a replacement home', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const authored = 'w2_unknown_launch_authority = true\n';
+    const authored = '[mcp_servers.broken]\ncommand = [\n';
     await writeFile(join(roots.state, 'config.toml'), authored);
     await expect(testAdapter.openSession(openInput(roots))).rejects.toThrow();
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
@@ -735,13 +987,29 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
       await delay(250);
       await expect(readFile(launched)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(gateway.requestCount).toBe(0);
-      // The native merge retains command/args. Refusal must not substitute the authored tool for supply.
-      await expect(
-        successor.startTurn(turnInput(roots, ['local'], 'invoke alpha tool'))
-      ).rejects.toThrow(/url is not supported for stdio/);
-      expect(successor.childState()).toBe('absent');
+      const error = await successor
+        .startTurn(turnInput(roots, ['local'], 'invoke alpha tool'))
+        .catch((error: unknown) => error);
+      const refusal = WorkerErrorEnvelopeSchema.parse(error);
+      expect(refusal.code).toBe('codex_mcp_id_collision');
+      expect(refusal.message).toContain('Rename your authored entry');
+      expect(refusal.diagnostics).toEqual([
+        {
+          code: 'native_config_collision',
+          message:
+            'Warning: authored MCP entry "local" conflicts with a protected OpenKit id; Turn preparation was refused.',
+        },
+      ]);
+      expect(successor.childState()).toBe('running');
+      expect(await readyReferenceOf(successor)).toEqual(exact);
       expect(gateway.requestCount).toBe(0);
       await expect(readFile(launched)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(
+        (await (await successor.startTurn(turnInput(roots, [], 'invoke alpha tool'))).settled)
+          .status
+      ).toBe('completed');
+      expect(await readFile(launched, 'utf8')).toBe('launched');
+      expect(gateway.requestCount).toBe(0);
       expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
       expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
     }
@@ -1458,6 +1726,35 @@ describe('round 4 failure boundaries', () => {
   }
 
   it.each([
+    { transport: 'unknown' },
+    { url: 'http://127.0.0.1:9/mcp', command: 'authored-stdio' },
+  ])('refuses a protected non-HTTP effective entry before native setup: %j', async (entry) => {
+    const { roots, child, session } = await fixture();
+    const methods: string[] = [];
+    child.stdin.removeAllListeners('data');
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(chunk.toString());
+      methods.push(request.method);
+      child.stdout.write(
+        `${JSON.stringify({ id: request.id, result: { config: { mcp_servers: { alpha: entry } } } })}\n`
+      );
+    });
+    const error = await session
+      .startTurn(turnInput(roots, ['alpha']))
+      .catch((error: unknown) => error);
+    expect(WorkerErrorEnvelopeSchema.parse(error)).toMatchObject({
+      code: 'codex_mcp_id_collision',
+      message: expect.stringContaining('Rename your authored entry'),
+      diagnostics: [
+        { code: 'native_config_collision', message: expect.stringContaining('"alpha"') },
+      ],
+    });
+    expect(methods).toEqual(['config/read']);
+    expect(session.childState()).toBe('running');
+    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+  });
+
+  it.each([
     'EOF',
     'close',
     'stream-error',
@@ -1953,7 +2250,7 @@ describe('round 4 failure boundaries', () => {
       `${JSON.stringify({ id: 200, method: 'item/commandExecution/requestApproval', params: {} })}\n` +
         terminalFrame()
     );
-    expect((await first.settled).diagnostics?.nativePermissions).toContain('cancel:');
+    expect((await first.settled).diagnostics?.nativePermissions).toContain('accept:');
     const second = await session.startTurn(turnInput(roots, [], 'next turn'));
     child.stdout.write(terminalFrame());
     expect((await second.settled).diagnostics?.nativePermissions).toBeUndefined();
@@ -2148,6 +2445,8 @@ function openInput(
       PATH: process.env.PATH ?? '',
       HOME: roots.home,
       TMPDIR: roots.home,
+      // Keep native marketplace bootstrap offline without disabling cached authored plugins.
+      GIT_ALLOW_PROTOCOL: 'file',
       ...environment,
     },
     loopback: {
@@ -2345,7 +2644,10 @@ function turnInput(
   };
 }
 
-async function responsesServer(): Promise<{
+/** Synthetic authenticated Responses relay; an optional reply directs a native tool call. */
+async function responsesServer(
+  toolReply?: (body: string, response: ServerResponse) => boolean
+): Promise<{
   port: number;
   bodies: string[];
   hang: boolean;
@@ -2374,6 +2676,7 @@ async function responsesServer(): Promise<{
       response.end();
       return;
     }
+    if (toolReply?.(body, response)) return;
     if (latestMarker(body) === 'hang please') {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.write(
@@ -2628,10 +2931,11 @@ function advertisedMcpTool(body: string): { namespace: string; name: string } {
   return { namespace: 'mcp__alpha', name: 'alpha_tool' };
 }
 
-/** Streams one namespaced Responses function call. The MCP server is what then blocks. */
+/** Streams one namespaced native tool call through the synthetic Responses relay. */
 function writeFunctionCall(
   response: ServerResponse,
-  tool: { namespace: string; name: string }
+  tool: { namespace: string; name: string },
+  argumentsJson = '{}'
 ): void {
   const item = {
     id: 'fc_alpha',
@@ -2640,7 +2944,7 @@ function writeFunctionCall(
     name: tool.name,
     namespace: tool.namespace,
     call_id: 'call_alpha',
-    arguments: '{}',
+    arguments: argumentsJson,
   };
   const payload = { id: 'resp_tool', status: 'completed', output: [item] };
   response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -2651,7 +2955,7 @@ function writeFunctionCall(
     `event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress', arguments: '' } })}\n\n`
   );
   response.write(
-    `event: response.function_call_arguments.done\ndata: ${JSON.stringify({ type: 'response.function_call_arguments.done', output_index: 0, item_id: 'fc_alpha', arguments: '{}' })}\n\n`
+    `event: response.function_call_arguments.done\ndata: ${JSON.stringify({ type: 'response.function_call_arguments.done', output_index: 0, item_id: 'fc_alpha', arguments: argumentsJson })}\n\n`
   );
   response.write(
     `event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', output_index: 0, item })}\n\n`

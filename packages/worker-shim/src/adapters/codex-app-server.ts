@@ -73,8 +73,15 @@ const turnStartRequired = loadSchema('v2/TurnStartParams.json').required ?? [];
 if (!approvalPolicies.includes('never') || !sandboxModes.includes('danger-full-access')) {
   throw new Error('Pinned Codex schema is missing the fail-closed approval or sandbox value.');
 }
-if (!commandDecisions.includes('cancel') || !elicitationActions.includes('cancel')) {
-  throw new Error('Pinned Codex schema is missing cancel for a native permission request.');
+if (
+  !commandDecisions.includes('accept') ||
+  !commandDecisions.includes('cancel') ||
+  !elicitationActions.includes('accept') ||
+  !elicitationActions.includes('cancel')
+) {
+  throw new Error(
+    'Pinned Codex schema is missing an allow-once or cancellation response for a native permission request.'
+  );
 }
 if (!turnStartRequired.includes('threadId') || !turnStartRequired.includes('input')) {
   throw new Error('Pinned Codex schema no longer requires threadId and input on turn/start.');
@@ -88,26 +95,31 @@ export const CODEX_SANDBOX = 'danger-full-access' as const;
 /** Product-safe record of one answered native permission or question. */
 export interface CodexPermissionRecord {
   readonly method: string;
-  readonly outcome: 'cancel' | 'reject_once' | 'unsupported';
+  readonly outcome: 'accept' | 'cancel' | 'reject_once' | 'unsupported';
 }
 
-/**
- * Answers one App Server permission or question. `reject_once` is selected only when that
- * option is offered. This pin's schema has no `reject_once`; cancel interrupts the turn,
- * while permissions and user-input requests have no qualified cancellation and break the binding.
- * Accept, decline, and allow are never sent.
- */
+/** Answers unexpected native permissions with the pin's shortest-lived grant by default. */
 export function codexPermissionResponse(
   method: string,
   params: unknown
 ): { readonly result: unknown; readonly outcome: CodexPermissionRecord['outcome'] } {
   if (!KNOWN_PERMISSION_METHODS.has(method)) return { result: null, outcome: 'unsupported' };
   const options = offeredOptions(params);
-  if (options.includes('reject_once'))
-    return { result: { decision: 'reject_once' }, outcome: 'reject_once' };
+  // Retain refusal responses for future user-configurable policy; no policy setting is supplied yet.
+  if (options.length > 0 && !options.includes('accept')) {
+    if (options.includes('reject_once'))
+      return { result: { decision: 'reject_once' }, outcome: 'reject_once' };
+    if (method === 'mcpServer/elicitation/request')
+      return { result: { action: 'cancel' }, outcome: 'cancel' };
+    return { result: { decision: 'cancel' }, outcome: 'cancel' };
+  }
   if (method === 'mcpServer/elicitation/request')
-    return { result: { action: 'cancel' }, outcome: 'cancel' };
-  return { result: { decision: 'cancel' }, outcome: 'cancel' };
+    return { result: { action: 'accept' }, outcome: 'accept' };
+  if (method === 'item/permissions/requestApproval') {
+    const permissions = (params as { permissions: unknown }).permissions;
+    return { result: { permissions, scope: 'turn' }, outcome: 'accept' };
+  }
+  return { result: { decision: 'accept' }, outcome: 'accept' };
 }
 
 /** Reads a shallow `options` string list when a request offers explicit decisions. */
@@ -135,6 +147,7 @@ export const CODEX_RPC_TIMEOUT_MS = 4_000;
 const KNOWN_PERMISSION_METHODS = new Set([
   'item/commandExecution/requestApproval',
   'item/fileChange/requestApproval',
+  'item/permissions/requestApproval',
   'mcpServer/elicitation/request',
 ]);
 

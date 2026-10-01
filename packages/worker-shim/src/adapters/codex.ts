@@ -1,6 +1,9 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
-import { isProtectedNativeEnvironmentName } from '@openkit/worker-protocol';
+import {
+  isProtectedNativeEnvironmentName,
+  WorkerErrorEnvelopeSchema,
+} from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
@@ -74,25 +77,14 @@ export function codexChildEnvironment(
   return { ...environment, CODEX_HOME: stateRoot };
 }
 
-/** Launch arguments. Plugins and hooks stay disabled so a test does not touch the network. */
+/** Launch controls protect external routing and credential custody without limiting local tools. */
 export function codexLaunchArguments(): readonly string[] {
   return [
     'app-server',
-    '--strict-config',
-    '--disable',
-    'plugins',
-    '--disable',
-    'hooks',
     '-c',
     'check_for_update_on_startup=false',
     '-c',
-    'features.memories=false',
-    '-c',
-    'features.shell_snapshot=false',
-    '-c',
     'features.web_search_request=false',
-    '-c',
-    'skills.bundled.enabled=false',
     '-c',
     'cli_auth_credentials_store="ephemeral"',
     '-c',
@@ -325,6 +317,8 @@ class CodexResidentSession implements WorkerResidentSession {
   /** A terminal can arrive in the same stdout chunk as turn/start acceptance. */
   private earlyTerminal: { turnId: string; status: string; texts: readonly string[] } | null = null;
   private acceptingTurn = false;
+  /** Setup collisions reported through existing result diagnostics for this fixed supply. */
+  private nativeConfigurationWarning: string | null = null;
   private currentTurnId: string | null = null;
 
   constructor(
@@ -441,7 +435,7 @@ class CodexResidentSession implements WorkerResidentSession {
       }
       cwd = metadata.thread.cwd;
     }
-    const idleMcpServerIds = await this.readEffectiveMcpIds(cwd);
+    const idleMcpServerIds = Object.keys(await this.readEffectiveMcpServers(cwd));
     if (!resumeThreadId) return;
     const resumed = (await this.rpc.request('thread/resume', {
       approvalPolicy: CODEX_APPROVAL_POLICY,
@@ -454,8 +448,10 @@ class CodexResidentSession implements WorkerResidentSession {
     this.rememberThread(resumed, resumeThreadId);
   }
 
-  /** Reads and validates the directory's effective MCP identities without activating clients. */
-  private async readEffectiveMcpIds(cwd: string): Promise<string[]> {
+  /** Reads and validates effective MCP entries without activating clients. */
+  private async readEffectiveMcpServers(
+    cwd: string
+  ): Promise<Record<string, Record<string, unknown>>> {
     const effective = (await this.rpc.request('config/read', { includeLayers: false, cwd })) as {
       config?: { mcp_servers?: Record<string, unknown> };
     };
@@ -475,7 +471,7 @@ class CodexResidentSession implements WorkerResidentSession {
       if (!server || typeof server !== 'object' || Array.isArray(server))
         throw new Error('Codex native MCP configuration is malformed.');
     }
-    return ids;
+    return servers as Record<string, Record<string, unknown>>;
   }
 
   /**
@@ -623,7 +619,37 @@ class CodexResidentSession implements WorkerResidentSession {
       throw new Error('Codex rejected a supply change; this binding does not re-list tools.');
     }
     if (this.boundSupply === null) {
-      await this.readEffectiveMcpIds(input.workingDirectory);
+      const authoredServers = await this.readEffectiveMcpServers(input.workingDirectory);
+      const collisions = input.mcpServerIds.filter((id) => Object.hasOwn(authoredServers, id));
+      const collision = collisions.find((id) => {
+        const server = authoredServers[id]!;
+        return typeof server.url !== 'string' || Object.hasOwn(server, 'command');
+      });
+      // HTTP entries accept the managed URL/header overlay. Other transports would produce a
+      // broken merged entry; remove this refusal when native whole-entry replacement is available.
+      if (collision) {
+        const id = redactDiagnostic(collision, this.secrets);
+        const envelope = WorkerErrorEnvelopeSchema.parse({
+          code: 'codex_mcp_id_collision',
+          message: `Codex ${CODEX_ADAPTER_VERSION} cannot replace authored MCP entry "${id}". Rename your authored entry to a different id before retrying this Turn.`,
+          retryable: false,
+          diagnostics: [
+            {
+              code: 'native_config_collision',
+              message: `Warning: authored MCP entry "${id}" conflicts with a protected OpenKit id; Turn preparation was refused.`,
+            },
+          ],
+        });
+        throw Object.assign(new Error(envelope.message), envelope);
+      }
+      this.nativeConfigurationWarning = collisions.length
+        ? redactDiagnostic(
+            collisions
+              .map((id) => `Warning: managed MCP entry "${id}" overrides authored HTTP entry.`)
+              .join(' '),
+            this.secrets
+          )
+        : null;
       // Omit idle overrides so native directory layers restore authored enabled/disabled state.
       // Only current supplied identities receive the authenticated Gateway projection.
       const config = sessionConfig(this.open, input.mcpServerIds);
@@ -765,8 +791,11 @@ class CodexResidentSession implements WorkerResidentSession {
     return settled;
   }
 
+  /** Adds bounded native diagnostics, including setup warnings on completed results. */
   private withDiagnostics(result: WorkerAdapterResult): WorkerAdapterResult {
     const diagnostics: Record<string, string> = {};
+    if (this.nativeConfigurationWarning)
+      diagnostics.nativeConfiguration = this.nativeConfigurationWarning;
     const stderr = this.rpc.stderrDiagnostic();
     if (stderr) diagnostics.stderr = stderr;
     if (this.rpc.permissionRecords.length > 0) {
