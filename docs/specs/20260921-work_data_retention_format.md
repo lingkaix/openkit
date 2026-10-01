@@ -176,7 +176,7 @@ The UI projection is lossy and carries fixed structural labels plus bounded expl
 
 **Family discrimination.** An observation line has a `v` header field. An Item line does not. Family MUST be decidable from the line itself, not only from the path.
 
-**Join.** When the same event appears on both families, the observation MUST anchor with `parent` to the Item `id`. `corr` MUST NOT be used as that anchor. UI merge is not a contract. Pointer direction is observation → Item only.
+**Join.** When the same event appears on both families, the observation MUST anchor with `parent` to the Item `id`. `corr` MUST NOT be used as that anchor. The route chain of a logical call lives on its CapabilityCall under [the evidence owner](20260703-audit_usage_evidence_records.md#gateway-route-lineage), is not an observation type, and is not copied into `ext`. UI merge is not a contract. Pointer direction is observation → Item only.
 
 **Three-tier location.**
 
