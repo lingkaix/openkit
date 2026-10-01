@@ -17,3 +17,7 @@ This directory owns the deterministic Workflow Coordinator, Internal Role Execut
 ## Verification
 
 Run `internal-agent-loop.test.ts`, `gateway-provider.test.ts`, `profile-resolver.test.ts`, and the focused entry or Coordinator tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).
+
+Production administration and Goal consumers supply their existing capability context to the Gateway provider. It opens one call before route planning, associates reported usage with reached attempts, and finishes once on success or no-supply failure. Capture retains the actual admitted Turn and the logical call reference.
+
+The internal Gateway producer settles callback ownership at logical closeout on both success and failure. Later usage callbacks are ignored before any ledger access, including after the capture database closes. Its transport carries the executor’s unchanged absolute deadline through retry and failover; no deadline consumer is added here.

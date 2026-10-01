@@ -10,6 +10,11 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import {
+  listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
+} from './capability/usage-ledger.js';
+import { FsStore } from './lib/store.js';
+import {
   convertResponsesRequestToChatCompletionRequest,
   GatewayUnsupportedFeatureError,
 } from './llm/gateway-converters.js';
@@ -34,6 +39,7 @@ import {
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { readWorkObservations } from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -291,6 +297,8 @@ function createWorkerInferenceRouteFixture(
   runtimeProvenance = false,
   options: {
     readonly subscriptionFamily?: 'openai-codex';
+    readonly subscriptionCheckUnavailable?: boolean;
+    readonly persistedTurn?: boolean;
     readonly adminBearer?: boolean;
     readonly autoFailover?: boolean;
   } = {}
@@ -321,6 +329,20 @@ function createWorkerInferenceRouteFixture(
     kind: 'user',
     id: 'user_local',
   });
+  if (options.persistedTurn && appCoreDb) {
+    const persisted = new FsStore({ dataRoot: appCoreDb.dataRoot });
+    persisted.importWorkspaceSnapshot({
+      workspace: store.getWorkspace(turn.workspaceId),
+      threads: [store.getThread(turn.workspaceId, turn.threadId)],
+      turns: [turn],
+      knowledge: [],
+      itemRevisions: store.listThreadItems(turn.workspaceId, turn.threadId),
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+      turnCaptureCoverage: new Map([[turn.id, store.getTurnCaptureCoverage(turn.id)!]]),
+    });
+  }
   const agentSetup = createTestAgentSetup({
     logicalModelId: WORKER_LOGICAL_MODEL_ID,
     privateRoute: {
@@ -460,6 +482,16 @@ function createWorkerInferenceRouteFixture(
         ],
         requiredFeatures: [],
       },
+      ...(options.subscriptionCheckUnavailable
+        ? {
+            providerSubscriptionAccountManager: {
+              gatewayUnavailableReason: () => null,
+              getPairHandle: async () => {
+                throw new Error('private account detail');
+              },
+            } as never,
+          }
+        : {}),
       llmGatewayDispatcher: dispatcher as unknown as LLMGatewayProviderDispatcher,
       mode: 'server',
       openKitConfig: {},
@@ -471,7 +503,18 @@ function createWorkerInferenceRouteFixture(
                     defaultModel: providerModel,
                     displayName: 'OpenAI Codex',
                     id: providerProfileId,
-                    kind: 'gateway' as const,
+                    kind: options.subscriptionCheckUnavailable
+                      ? ('oauth' as const)
+                      : ('gateway' as const),
+                    ...(options.subscriptionCheckUnavailable
+                      ? {
+                          extensions: {
+                            openkit: {
+                              subscriptionAccount: { accountSlotId: 'private-account-slot' },
+                            },
+                          },
+                        }
+                      : {}),
                     models: [providerModel],
                     vendor: 'openai-codex' as const,
                   }
@@ -1357,7 +1400,7 @@ describe('worker inference routes', () => {
             agentSessionId: fixture.environmentPackage.scope.agentSessionId,
             capabilityId: 'llm.responses',
             operation: 'responses',
-            providerRef: 'agent-openrouter',
+            providerRef: null,
             status: 'succeeded',
             threadId: fixture.environmentPackage.scope.threadId,
             turnId: fixture.environmentPackage.scope.turnId,
@@ -1938,7 +1981,9 @@ describe('worker inference routes', () => {
   });
 
   it('records provider registry drift as a failed capability call without fallback', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, false);
+    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, false, false, {
+      persistedTurn: true,
+    });
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
       model: WORKER_LOGICAL_MODEL_ID,
@@ -1952,9 +1997,9 @@ describe('worker inference routes', () => {
 
     expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
       expect.objectContaining({
-        errorCode: 'worker_inference_provider_unavailable',
+        errorCode: 'gateway_logical_model_unavailable',
         packageSnapshotId: fixture.environmentPackage.snapshotId,
-        providerRef: WORKER_LOGICAL_MODEL_ID,
+        providerRef: null,
         runtimeCacheLineageRef: null,
         runtimeOriginRef: null,
         status: 'failed',
@@ -2253,4 +2298,168 @@ describe('Round 2 worker exhaustion cause', () => {
       });
     }
   }
+});
+
+describe('slice 1d Worker durable selection', () => {
+  it('A2 retains one failed logical call with exclusions and no dispatch observations or usage', async () => {
+    const f = createWorkerInferenceRouteFixture(true, undefined, true, false, false, {
+      persistedTurn: true,
+    });
+    const response = await postWorkerResponses(f, {
+      input: 'Hello',
+      model: WORKER_LOGICAL_MODEL_ID,
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'gateway_logical_model_unavailable' },
+    });
+    const db = openWorkspaceDb(f.coreDb!.dataRoot, f.environmentPackage.scope.workspaceId);
+    try {
+      const calls = listWorkspaceCapabilityCalls(db, f.environmentPackage.scope.workspaceId);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        status: 'failed',
+        errorCode: 'gateway_logical_model_unavailable',
+        providerRef: null,
+        extensions: {
+          'openkit.gateway/routeLineage': {
+            entries: [
+              {
+                kind: 'unavailable',
+                routeMemberId: 'primary',
+                failureKind: 'provider_unavailable',
+              },
+            ],
+          },
+        },
+      });
+      expect(listWorkspaceUsageRecords(db, f.environmentPackage.scope.workspaceId)).toEqual([]);
+      expect(f.dispatcher.responseCalls).toEqual([]);
+      expect(
+        readWorkObservations(db, {
+          threadId: f.environmentPackage.scope.threadId,
+          turnId: f.environmentPackage.scope.turnId,
+        }).filter((row) => row.type === 'model.observed')
+      ).toEqual([]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+  it('A2 subscription check failure records one unavailable entry, no attempt and the closed public cause', async () => {
+    vi.useFakeTimers();
+    const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      subscriptionFamily: 'openai-codex',
+      subscriptionCheckUnavailable: true,
+      persistedTurn: true,
+    });
+    try {
+      const pending = postWorkerResponses(f, { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID });
+      await vi.runAllTimersAsync();
+      const response = await pending;
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        error: { code: 'gateway_logical_model_unavailable', cause: 'provider_unavailable' },
+      });
+      const db = openWorkspaceDb(f.coreDb!.dataRoot, f.environmentPackage.scope.workspaceId);
+      try {
+        const calls = listWorkspaceCapabilityCalls(db, f.environmentPackage.scope.workspaceId);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({
+          status: 'failed',
+          errorCode: 'gateway_logical_model_unavailable',
+          extensions: {
+            'openkit.gateway/routeLineage': {
+              entries: [{ kind: 'unavailable', failureKind: 'provider_unavailable' }],
+            },
+          },
+        });
+        expect(calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries).toHaveLength(1);
+        expect(JSON.stringify(calls)).not.toContain('accountSlotId');
+        expect(JSON.stringify(calls)).not.toContain('private-account-slot');
+        expect(listWorkspaceUsageRecords(db, f.environmentPackage.scope.workspaceId)).toEqual([]);
+        expect(
+          readWorkObservations(db, {
+            threadId: f.environmentPackage.scope.threadId,
+            turnId: f.environmentPackage.scope.turnId,
+          }).filter((row) => row.type === 'model.observed')
+        ).toEqual([]);
+        expect(f.dispatcher.responseCalls).toEqual([]);
+      } finally {
+        db.sqlite.close();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  for (const endpoint of ['responses', 'chat/completions'])
+    for (const stream of [false, true]) {
+      it(`${endpoint} stream=${stream} transport carries the absolute deadline`, async () => {
+        const f = createWorkerInferenceRouteFixture();
+        const before = Date.now();
+        const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: WORKER_LOGICAL_MODEL_ID,
+            stream,
+            ...(endpoint === 'responses'
+              ? { input: 'Hello' }
+              : { messages: [{ role: 'user', content: 'Hello' }] }),
+          }),
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+        const call = [...f.dispatcher.responseCalls, ...f.dispatcher.chatCalls][0];
+        expect(call?.context.transport?.deadline).toBeGreaterThanOrEqual(before + 120000);
+        expect(call?.context.transport?.deadline).toBeLessThanOrEqual(Date.now() + 120000);
+      });
+    }
+});
+
+describe('slice 1d round 2 terminal frame closeout', () => {
+  for (const failed of [true, false])
+    it(`Worker released ${failed ? 'failed' : 'incomplete'} frame keeps its logical outcome`, async () => {
+      const f = createWorkerInferenceRouteFixture();
+      const frames = [
+        { type: 'response.output_text.delta', delta: 'released' },
+        {
+          type: failed ? 'response.failed' : 'response.incomplete',
+          response: {
+            status: failed ? 'failed' : 'incomplete',
+            ...(failed ? { error: { code: 'gateway_provider_unavailable' } } : {}),
+          },
+        },
+      ];
+      let index = 0;
+      const dispatch = vi.spyOn(f.dispatcher, 'createResponsesStream').mockResolvedValue(
+        new ReadableStream({
+          pull(controller) {
+            if (index < frames.length)
+              controller.enqueue(
+                new TextEncoder().encode(`data: ${JSON.stringify(frames[index++])}\n\n`)
+              );
+            else controller.close();
+          },
+        })
+      );
+      const response = await postWorkerResponses(f, {
+        input: 'Hello',
+        model: WORKER_LOGICAL_MODEL_ID,
+        stream: true,
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain(failed ? 'response.failed' : 'response.incomplete');
+      const db = openWorkspaceDb(f.coreDb!.dataRoot, f.environmentPackage.scope.workspaceId);
+      try {
+        expect(
+          listWorkspaceCapabilityCalls(db, f.environmentPackage.scope.workspaceId)[0]
+        ).toMatchObject({
+          status: failed ? 'failed' : 'succeeded',
+          errorCode: failed ? 'gateway_provider_unavailable' : null,
+        });
+        expect(dispatch).toHaveBeenCalledTimes(1);
+      } finally {
+        db.sqlite.close();
+      }
+    });
 });

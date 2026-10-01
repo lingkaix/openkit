@@ -13,7 +13,9 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
+import { GatewayAttemptFailure } from './llm/gateway-execution.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
+import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { ProviderRegistry } from './providers/registry.js';
 import type { TurnExecutor } from './runtime/types.js';
@@ -1015,6 +1017,9 @@ describe('quick chat app API', () => {
           .get(call?.call_id) as Record<string, unknown> | undefined;
 
         expect(usage).toMatchObject({
+          request_id: requestId,
+          thread_id: thread.id,
+          turn_id: parsed.turn.id,
           category: 'llm',
           quantity: 7,
           unit: 'tokens',
@@ -2159,7 +2164,7 @@ describe('quick chat app API', () => {
           capability_id: 'inference.local.quick_chat',
           family: 'llm',
           operation: 'quick_chat',
-          provider_ref: 'ollama',
+          provider_ref: null,
           status: 'succeeded',
           workspace_id: 'ws_quick_chat',
         });
@@ -2175,6 +2180,7 @@ describe('quick chat app API', () => {
           unit: 'tokens',
           workspace_id: 'ws_quick_chat',
         });
+        expect(usage?.provider_ref).toBe('ollama');
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -2284,5 +2290,63 @@ describe('quick chat app API', () => {
       modelId: 'codex-fast',
       content: 'Quick response',
     });
+  });
+});
+
+describe('slice 1d round 2 Quick Chat deadline', () => {
+  it('keeps the execution deadline across same-member retry and failover', async () => {
+    vi.useFakeTimers();
+    const options = createQuickChatProviderOptions();
+    options.gatewayConfig.logicalModels[0]!.routes.push({
+      id: 'backup',
+      providerProfileId: 'backup',
+      providerModel: 'openai/gpt-5.2',
+    });
+    const contexts: Array<Parameters<LLMGatewayProviderDispatcher['createChatCompletion']>[2]> = [];
+    const dispatch = vi.fn(async (_provider, request, context) => {
+      contexts.push(context);
+      if (contexts.length < 3)
+        throw new GatewayAttemptFailure({
+          kind: contexts.length === 1 ? 'rate_limited' : 'auth_rejected',
+          settled: true,
+        });
+      return {
+        id: 'chat_deadline',
+        object: 'chat.completion',
+        created: 1,
+        model: request.model,
+        choices: [
+          { index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'served' } },
+        ],
+      };
+    });
+    const app = createApp({
+      ...options,
+      providerRegistry: new ProviderRegistry([
+        { id: 'ollama', displayName: 'Primary', kind: 'local', models: ['openai/gpt-5.2'] },
+        { id: 'backup', displayName: 'Backup', kind: 'local', models: ['openai/gpt-5.2'] },
+      ]),
+      llmGatewayDispatcher: { createChatCompletion: dispatch } as never,
+      turnExecutor: new ThrowingTurnExecutor(),
+    });
+    try {
+      const before = Date.now();
+      const pending = app.request('/api/app/quick-chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ input: 'Hello' }),
+      });
+      await vi.runAllTimersAsync();
+      const response = await pending;
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(dispatch.mock.calls.map(([p]) => p.id)).toEqual(['ollama', 'ollama', 'backup']);
+      expect(contexts.map((c) => c?.transport?.deadline)).toEqual([
+        before + 120000,
+        before + 120000,
+        before + 120000,
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

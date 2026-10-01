@@ -19,8 +19,11 @@ import {
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import {
   finishCapabilityCall,
+  type GatewayCallLedgerBinding,
+  hasCapabilityCallRequestId,
   recordUsage,
   startCapabilityCall,
+  writeGatewayRouteLineage,
 } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
@@ -147,8 +150,6 @@ function startPublicLlmGatewayCall(input: {
   authorityActor: ActorRef;
   /** Optional Core database handle for durable workspace storage. */
   coreDb?: CoreDb;
-  /** Provider selected for the public gateway call. */
-  provider: ResolvedLLMProviderConfig;
   /** Gateway endpoint family. */
   endpoint: 'chat_completions' | 'responses';
   /** OpenAI-compatible request metadata. */
@@ -171,6 +172,12 @@ function startPublicLlmGatewayCall(input: {
   try {
     applyScopedMigrations(workspaceDb);
 
+    if (
+      lineage.requestId &&
+      hasCapabilityCallRequestId(workspaceDb, lineage.workspaceId, lineage.requestId)
+    ) {
+      throw new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
+    }
     const call = startCapabilityCall({
       agentId: lineage.agentId ?? null,
       agentSessionId: lineage.agentSessionId ?? null,
@@ -179,7 +186,7 @@ function startPublicLlmGatewayCall(input: {
       family: 'llm',
       itemId: lineage.itemId ?? null,
       operation: input.endpoint,
-      providerRef: input.provider.id,
+      providerRef: null,
       redactionClass: 'metadata-only',
       requestId: lineage.requestId ?? randomUUID(),
       serviceRef: 'llm-gateway',
@@ -246,9 +253,9 @@ function recordLlmGatewayUsage(input: {
   model: string;
   /** Provider usage payload. */
   usage: unknown;
-}): void {
+}): string[] {
   if (!input.durableCall || input.durableCall.finished) {
-    return;
+    return [];
   }
 
   const parsed = parseUsage(input.usage);
@@ -308,10 +315,10 @@ function recordLlmGatewayUsage(input: {
   );
 
   if (!records.length) {
-    return;
+    return [];
   }
 
-  recordUsage({
+  return recordUsage({
     call: input.durableCall.call,
     records,
     workspaceDb: input.durableCall.workspaceDb,
@@ -692,7 +699,7 @@ function startWorkerInferenceCall(input: {
   /** Worker inference endpoint family. */
   readonly endpoint: WorkerInferenceEndpoint;
   /** AEP-selected provider reference. */
-  readonly providerRef: string;
+  readonly providerRef: string | null;
   /** Product-safe runtime origin reference when provenance is required. */
   readonly runtimeOriginRef: string | null;
   /** Product-safe runtime cache lineage reference when explicitly reported. */
@@ -1204,6 +1211,44 @@ function normalizeGatewayTerminalStream(
   let pendingRead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
   let released = false;
   let terminal = false;
+  let terminalFailureCode: string | undefined;
+  let frames = '';
+  const decoder = new TextDecoder();
+
+  /** Carries an already released terminal failure into logical closeout, without classifying Provider evidence. */
+  function observeTerminalFrames(chunk: Uint8Array): void {
+    frames += decoder.decode(chunk, { stream: true });
+    let boundary = /\r?\n\r?\n/.exec(frames);
+    while (boundary?.index !== undefined) {
+      const data = frames
+        .slice(0, boundary.index)
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n');
+      try {
+        const event = JSON.parse(data);
+        if (
+          event?.error ||
+          event?.type === 'response.failed' ||
+          event?.response?.status === 'failed'
+        ) {
+          const code = event.error?.code ?? event.response?.error?.code;
+          const fallback = options.failureCode ?? 'llm_gateway_stream_failed';
+          terminalFailureCode ??=
+            typeof code === 'string' &&
+            (Object.values(GATEWAY_FAILURE_CODES).includes(code) ||
+              isInnerStreamDiagnosticCode(code))
+              ? code
+              : fallback;
+        }
+      } catch {
+        /* Non-JSON comments and DONE carry no failed outcome. */
+      }
+      frames = frames.slice(boundary.index + boundary[0].length);
+      boundary = /\r?\n\r?\n/.exec(frames);
+    }
+  }
 
   /** Releases the upstream reader lock exactly once. */
   function releaseReader(): void {
@@ -1227,8 +1272,8 @@ function normalizeGatewayTerminalStream(
         try {
           finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
-            'aborted',
-            options.cancellationCode ?? 'llm_gateway_cancelled'
+            terminalFailureCode ? 'failed' : 'aborted',
+            terminalFailureCode ?? options.cancellationCode ?? 'llm_gateway_cancelled'
           );
         } finally {
           releaseReader();
@@ -1262,10 +1307,17 @@ function normalizeGatewayTerminalStream(
         try {
           finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
-            cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
-            cancelled
-              ? (options.cancellationCode ?? 'llm_gateway_cancelled')
-              : projectGatewayFailure(error, envelopeFailureCode).code
+            terminalFailureCode
+              ? 'failed'
+              : cancelled
+                ? 'aborted'
+                : isGatewayTimeout(error)
+                  ? 'timed-out'
+                  : 'failed',
+            terminalFailureCode ??
+              (cancelled
+                ? (options.cancellationCode ?? 'llm_gateway_cancelled')
+                : projectGatewayFailure(error, envelopeFailureCode).code)
           );
         } finally {
           releaseReader();
@@ -1300,7 +1352,11 @@ function normalizeGatewayTerminalStream(
       if (result.done) {
         terminal = true;
         try {
-          finishDurableLlmGatewayStreamCall(options.durableCall ?? null, 'succeeded');
+          finishDurableLlmGatewayStreamCall(
+            options.durableCall ?? null,
+            terminalFailureCode ? 'failed' : 'succeeded',
+            terminalFailureCode
+          );
         } finally {
           releaseReader();
         }
@@ -1308,6 +1364,7 @@ function normalizeGatewayTerminalStream(
         return;
       }
 
+      observeTerminalFrames(result.value);
       controller.enqueue(result.value);
     },
   });
@@ -1321,7 +1378,13 @@ function normalizeGatewayTerminalStream(
  * @returns True when the failure represents cancellation.
  */
 function isGatewayCancellation(error: unknown, signal?: AbortSignal): boolean {
-  return Boolean(signal?.aborted && error === signal.reason);
+  return Boolean(
+    signal?.aborted &&
+      (error === signal.reason ||
+        (error instanceof GatewayAttemptFailure &&
+          error.failure.kind === 'cancelled' &&
+          error.cause === signal.reason))
+  );
 }
 
 /**
@@ -1347,9 +1410,12 @@ function finishDurableLlmGatewayFailure(
     cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
     cancelled
       ? cancellationCode
-      : error instanceof GatewayUnsupportedFeatureError
-        ? error.code
-        : failureCode
+      : error instanceof GatewayUnsupportedFeatureError ||
+          (error as { failure?: PiAiFailure } | null)?.failure?.kind === 'unsupported'
+        ? 'unsupported_gateway_feature'
+        : error instanceof LogicalModelRoutesExhaustedError
+          ? error.code
+          : failureCode
   );
   return cancelled;
 }
@@ -1441,7 +1507,9 @@ function createGatewayTerminalErrorSse(
  * @param fallbackCode Stable code used when the boundary reports an unknown kind.
  * @returns Public gateway error type and code.
  */
-function projectGatewayFailure(error: unknown, fallbackCode: string) {
+export function projectGatewayFailure(error: unknown, fallbackCode: string) {
+  if (error instanceof LogicalModelRoutesExhaustedError)
+    return { type: error.type, code: error.code };
   const failure = (error as { failure?: PiAiFailure } | null)?.failure;
   const type = 'provider_error';
   if (failure)
@@ -1619,98 +1687,87 @@ export function registerWorkerInferenceRoutes({
       } catch {
         logicalModel = null;
       }
-      // Retained configured IDs without current supply use the existing worker failure ledger.
-      if (!logicalModel || !logicalModel.routes.some((member) => member.available)) {
-        const unavailableCall = startWorkerInferenceCall({
-          ...(coreDb ? { coreDb } : {}),
-          cacheDegraded: false,
-          endpoint,
-          environmentPackage,
-          providerRef: route.model,
-          request: input,
-          runtimeCacheLineageRef: null,
-          runtimeOriginRef,
-        });
-        finishDurableLlmGatewayCall(
-          unavailableCall,
-          'failed',
-          'worker_inference_provider_unavailable'
-        );
-        if (logicalModel) throw new LogicalModelRoutesExhaustedError();
-        throw new WorkerInferenceRouteError(
-          'worker_inference_provider_unavailable',
-          'Worker inference provider is unavailable.',
-          503
-        );
-      }
-      return await dispatchLogicalModel<Response>({
-        logicalModel,
-        requiredCapabilities: endpoint === 'responses' ? ['responses'] : ['chat-completions'],
-        ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-        resolveGatewayProvider,
-        signal: c.req.raw.signal,
-        attempt: async ({
-          provider,
-          providerModel,
-          subscriptionModels,
-          corr,
-          attempt,
-          execution,
-        }) => {
-          const cache = resolveWorkerPromptCacheKey({
-            accountSlotId: provider.accountSlotId ?? null,
-            model: providerModel,
-            ...(runtimeHint?.nativeCacheLineageId
-              ? { nativeCacheLineageId: runtimeHint.nativeCacheLineageId }
-              : {}),
-            providerId: provider.id,
-            runtimeFamily:
-              runtimeHint?.runtimeFamily ?? environmentPackage.control.adapter.targetRuntime,
-            subscriptionProviderId: provider.subscriptionProviderId ?? null,
-            workspaceId: environmentPackage.scope.workspaceId,
-          });
-          const requestBody = { ...sanitized, prompt_cache_key: cache.promptCacheKey };
-          let durableCall: DurableLlmGatewayCall | null;
-          try {
-            durableCall = startWorkerInferenceCall({
-              ...(coreDb ? { coreDb } : {}),
-              cacheDegraded: cache.degraded,
-              endpoint,
-              environmentPackage,
-              providerRef: provider.id,
-              request: sanitized,
-              runtimeCacheLineageRef: cache.runtimeCacheLineageRef,
-              runtimeOriginRef,
+      const durableCall = startWorkerInferenceCall({
+        ...(coreDb ? { coreDb } : {}),
+        cacheDegraded: false,
+        endpoint,
+        environmentPackage,
+        providerRef: null,
+        request: sanitized,
+        runtimeCacheLineageRef: null,
+        runtimeOriginRef,
+      });
+      try {
+        if (!logicalModel) {
+          throw new WorkerInferenceRouteError(
+            'worker_inference_provider_unavailable',
+            'Worker inference provider is unavailable.',
+            503
+          );
+        }
+        const result = await dispatchLogicalModel<Response>({
+          ledger: durableCall,
+          logicalModel,
+          requiredCapabilities: endpoint === 'responses' ? ['responses'] : ['chat-completions'],
+          ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+          resolveGatewayProvider,
+          signal: c.req.raw.signal,
+          attempt: async ({
+            provider,
+            providerModel,
+            subscriptionModels,
+            corr,
+            attempt,
+            execution,
+          }) => {
+            const cache = resolveWorkerPromptCacheKey({
+              accountSlotId: provider.accountSlotId ?? null,
+              model: providerModel,
+              ...(runtimeHint?.nativeCacheLineageId
+                ? { nativeCacheLineageId: runtimeHint.nativeCacheLineageId }
+                : {}),
+              providerId: provider.id,
+              runtimeFamily:
+                runtimeHint?.runtimeFamily ?? environmentPackage.control.adapter.targetRuntime,
+              subscriptionProviderId: provider.subscriptionProviderId ?? null,
+              workspaceId: environmentPackage.scope.workspaceId,
             });
-          } catch {
-            throw new WorkerInferenceRouteError(
-              'worker_inference_unavailable',
-              'Worker inference durable attribution is unavailable.',
-              503
-            );
-          }
-          let responseTurnState: string | undefined;
-          const requestTurnState = c.req.header('x-codex-turn-state');
-          const dispatchContext = {
-            capture: captureForCall(durableCall, corr, attempt),
-            onUsage: (usage: unknown) =>
-              recordLlmGatewayUsage({
-                durableCall,
-                model: logicalModel.id,
-                provider,
-                usage,
-              }),
-            ...(subscriptionModels ? { models: subscriptionModels } : {}),
-            transport: {
-              ...(requestTurnState ? { codexTurnState: requestTurnState } : {}),
-              onCodexTurnState: (value: string) => {
-                responseTurnState = value;
+            const requestBody = { ...sanitized, prompt_cache_key: cache.promptCacheKey };
+            durableCall.workspaceDb.sqlite
+              .prepare(
+                'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'
+              )
+              .run(
+                cache.runtimeCacheLineageRef,
+                cache.degraded
+                  ? `Worker ${endpoint} inference gateway call with request-scoped cache isolation.`
+                  : `Worker ${endpoint} inference gateway call.`,
+                durableCall.call.id
+              );
+            let responseTurnState: string | undefined;
+            const requestTurnState = c.req.header('x-codex-turn-state');
+            const dispatchContext = {
+              capture: captureForCall(durableCall, corr, attempt),
+              onUsage: (usage: unknown) =>
+                execution.addUsageRecordIds(
+                  recordLlmGatewayUsage({
+                    durableCall,
+                    model: logicalModel.id,
+                    provider,
+                    usage,
+                  })
+                ),
+              ...(subscriptionModels ? { models: subscriptionModels } : {}),
+              transport: {
+                deadline: execution.deadline,
+                ...(requestTurnState ? { codexTurnState: requestTurnState } : {}),
+                onCodexTurnState: (value: string) => {
+                  responseTurnState = value;
+                },
+                signal: c.req.raw.signal,
               },
-              signal: c.req.raw.signal,
-            },
-          };
+            };
 
-          try {
             if (endpoint === 'chat_completions') {
               const chatInput = input as z.infer<typeof GatewayChatCompletionRequestSchema>;
               const request: OpenAICompatibleChatCompletionRequest = {
@@ -1747,7 +1804,6 @@ export function registerWorkerInferenceRoutes({
                   ? { headers: { 'x-codex-turn-state': responseTurnState } }
                   : undefined
               );
-              finishDurableLlmGatewayCall(durableCall, 'succeeded');
               return workerResponse;
             }
 
@@ -1799,27 +1855,27 @@ export function registerWorkerInferenceRoutes({
                 ? { headers: { 'x-codex-turn-state': responseTurnState } }
                 : undefined
             );
-            finishDurableLlmGatewayCall(durableCall, 'succeeded');
             return workerResponse;
-          } catch (error) {
-            const cancelled = finishDurableLlmGatewayFailure(
-              durableCall,
-              error,
-              c.req.raw.signal,
-              'worker_inference_failed',
-              'worker_inference_cancelled'
-            );
-            if (cancelled) {
-              throw new WorkerInferenceRouteError(
-                'worker_inference_cancelled',
-                'Worker inference request was cancelled.',
-                499
-              );
-            }
-            throw error;
-          }
-        },
-      });
+          },
+        });
+        if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        return result;
+      } catch (error) {
+        const cancelled = finishDurableLlmGatewayFailure(
+          durableCall,
+          error,
+          c.req.raw.signal,
+          'worker_inference_failed',
+          'worker_inference_cancelled'
+        );
+        if (cancelled)
+          throw new WorkerInferenceRouteError(
+            'worker_inference_cancelled',
+            'Worker inference request was cancelled.',
+            499
+          );
+        throw error;
+      }
     } catch (error) {
       return asWorkerInferenceError(error);
     }
@@ -1950,6 +2006,8 @@ function assertGatewayModelAuthorized(provider: ResolvedLLMProviderConfig, model
  * @returns The selected result; authority and retention errors remain terminal.
  */
 export async function dispatchLogicalModel<T>(input: {
+  /** Already-opened attributed logical invocation; absence retains the blind coverage gap. */
+  ledger?: GatewayCallLedgerBinding;
   logicalModel: ResolvedLogicalModel;
   signal: AbortSignal;
   requiredCapabilities?: readonly string[];
@@ -2009,6 +2067,37 @@ export async function dispatchLogicalModel<T>(input: {
       });
     }
   );
+  const writeEntry = (
+    entry: import('@openkit/protocol').GatewayRouteLineageEntry,
+    entryIndex?: number
+  ) =>
+    input.ledger
+      ? writeGatewayRouteLineage({
+          ...input.ledger,
+          logicalModelId: input.logicalModel.id,
+          entry,
+          ...(entryIndex === undefined ? {} : { entryIndex }),
+        })
+      : undefined;
+  for (const selection of selections) {
+    if (!selection.selected)
+      writeEntry({
+        kind: 'unavailable',
+        routeMemberId: selection.route.id,
+        ...(providers.get(selection.route.id)
+          ? {
+              providerProfileId: providers.get(selection.route.id)!.id,
+              providerModel: selection.route.providerModel,
+            }
+          : {}),
+        selectionReason: selection.reason,
+        failureKind:
+          selection.reason === 'pinned_capability_unavailable'
+            ? 'unsupported'
+            : 'provider_unavailable',
+        unavailableReason: selection.reason,
+      });
+  }
   return executeGatewayPlan({
     selections,
     autoFailover: input.logicalModel.autoFailover,
@@ -2027,50 +2116,131 @@ export async function dispatchLogicalModel<T>(input: {
         provider =
           providers.get(route.id) ??
           input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
+        providers.set(route.id, provider);
         assertGatewayModelAuthorized(provider, route.providerModel);
         subscriptionModels = await resolveGatewaySubscriptionModels(
           provider,
           input.providerSubscriptionAccountManager
         );
       } catch (error) {
+        const code = error instanceof OpenAICompatibleProviderError ? error.code : 'unknown';
+        const unavailable = [
+          'gateway_provider_unavailable',
+          'provider_not_configured',
+          'provider_not_dispatchable',
+          'vault-locked',
+          'backend-unavailable',
+        ].includes(code);
+        const authentication = [
+          'gateway_provider_authentication_failed',
+          'reference-not-found',
+          'reference-revoked',
+          'version-expired',
+        ].includes(code);
+        writeEntry({
+          kind: 'unavailable',
+          routeMemberId: route.id,
+          ...(providers.get(route.id)
+            ? { providerProfileId: providers.get(route.id)!.id, providerModel: route.providerModel }
+            : {}),
+          selectionReason: selection.reason,
+          failureKind: authentication
+            ? 'auth_rejected'
+            : unavailable
+              ? 'provider_unavailable'
+              : code === 'model_not_configured'
+                ? 'invalid_request'
+                : 'unknown',
+          unavailableReason:
+            unavailable || authentication || code === 'model_not_configured'
+              ? code
+              : 'provider_unavailable',
+        });
         // Only this resolver owns these pre-dispatch mappings; no text/status reclassification.
         if (error instanceof OpenAICompatibleProviderError) {
-          const unavailable = [
-            'gateway_provider_unavailable',
-            'provider_not_configured',
-            'provider_not_dispatchable',
-            'vault-locked',
-            'backend-unavailable',
-          ].includes(error.code);
-          const authentication = [
-            'gateway_provider_authentication_failed',
-            'reference-not-found',
-            'reference-revoked',
-            'version-expired',
-          ].includes(error.code);
           if (unavailable || authentication) {
             // These local resolver outcomes have no Provider effect. Their HTTP values are
             // Error Contract projections, never claimed as exposed upstream HTTP status.
             throw new GatewayAttemptFailure(
               { kind: unavailable ? 'provider_unavailable' : 'auth_rejected', settled: true },
-              error
+              error,
+              true
             );
           }
         }
         throw error;
       }
+      const entry: Extract<
+        import('@openkit/protocol').GatewayRouteLineageEntry,
+        { kind: 'attempt' }
+      > = {
+        kind: 'attempt',
+        routeMemberId: route.id,
+        providerProfileId: provider.id,
+        providerModel: route.providerModel,
+        selectionReason: selection.reason,
+        attemptOrder: execution.attemptOrder,
+        retryIndex: execution.retryIndex,
+        outputBegan: false,
+        terminalResult: 'unknown',
+      };
+      const entryIndex = writeEntry(entry);
+      const retain = () => {
+        entry.outputBegan = execution.outputBegan;
+        writeEntry(entry, entryIndex);
+      };
+      const observedExecution: GatewayAttemptContext = {
+        ...execution,
+        get outputBegan() {
+          return execution.outputBegan;
+        },
+        get streamPrepared() {
+          return execution.streamPrepared;
+        },
+        addUsageRecordIds: (ids) => {
+          if (!ids.length) return;
+          entry.usageRecordIds = [...new Set([...(entry.usageRecordIds ?? []), ...ids])];
+          retain();
+        },
+        prepareStream: (stream) =>
+          execution.prepareStream(stream, (state, error) => {
+            if (state === 'completed' && entry.terminalResult === 'unknown')
+              entry.terminalResult = 'succeeded';
+            else if (state === 'incomplete') entry.terminalResult = 'incomplete';
+            else if (state === 'failed') {
+              entry.terminalResult = 'failed';
+              entry.failureKind =
+                (error as { failure?: PiAiFailure } | null)?.failure?.kind ?? 'unknown';
+            } else if (state === 'unknown' || state === 'interrupted') entry.terminalResult = state;
+            retain();
+          }),
+      };
       try {
-        return await input.attempt({
+        const result = await input.attempt({
           provider,
           providerModel: route.providerModel,
           subscriptionModels,
           corr,
           attempt: execution.attemptOrder,
-          execution,
+          execution: observedExecution,
         });
-      } catch (error) {
-        if (error instanceof GatewayUnsupportedFeatureError)
-          throw new GatewayAttemptFailure({ kind: 'unsupported', settled: true }, error);
+        if (!execution.streamPrepared) {
+          execution.commit();
+          entry.terminalResult = 'succeeded';
+          retain();
+        }
+        return result;
+      } catch (original) {
+        const error =
+          original instanceof GatewayUnsupportedFeatureError
+            ? new GatewayAttemptFailure({ kind: 'unsupported', settled: true }, original)
+            : original;
+        const failure = (error as { failure?: PiAiFailure } | null)?.failure;
+        entry.failureKind =
+          failure?.kind ??
+          (input.signal.aborted && error === input.signal.reason ? 'cancelled' : 'unknown');
+        entry.terminalResult = 'failed';
+        retain();
         throw error;
       }
     },
@@ -2255,29 +2425,29 @@ export function registerLlmGatewayRoutes({
         }),
       };
 
-      return await dispatchLogicalModel<Response>({
-        logicalModel,
-        requiredCapabilities: ['chat-completions'],
-        ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-        resolveGatewayProvider,
-        signal: c.req.raw.signal,
-        attempt: async ({
-          provider,
-          providerModel,
-          subscriptionModels,
-          corr,
-          attempt,
-          execution,
-        }) => {
-          const durableCall = startPublicLlmGatewayCall({
-            ...(coreDb ? { coreDb } : {}),
-            authorityActor,
-            endpoint: 'chat_completions',
-            metadata: (request as { metadata?: unknown }).metadata,
+      const durableCall = startPublicLlmGatewayCall({
+        ...(coreDb ? { coreDb } : {}),
+        authorityActor,
+        endpoint: 'chat_completions',
+        metadata: (request as { metadata?: unknown }).metadata,
+        request,
+      });
+      try {
+        const result = await dispatchLogicalModel<Response>({
+          ...(durableCall ? { ledger: durableCall } : {}),
+          logicalModel,
+          requiredCapabilities: ['chat-completions'],
+          ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+          resolveGatewayProvider,
+          signal: c.req.raw.signal,
+          attempt: async ({
             provider,
-            request,
-          });
-          try {
+            providerModel,
+            subscriptionModels,
+            corr,
+            attempt,
+            execution,
+          }) => {
             if (input.stream) {
               const stream = await llmGatewayDispatcher.createChatCompletionStream(
                 provider,
@@ -2285,14 +2455,16 @@ export function registerLlmGatewayRoutes({
                 {
                   capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
-                    recordLlmGatewayUsage({
-                      durableCall,
-                      model: logicalModel.id,
-                      provider,
-                      usage,
-                    }),
+                    execution.addUsageRecordIds(
+                      recordLlmGatewayUsage({
+                        durableCall,
+                        model: logicalModel.id,
+                        provider,
+                        usage,
+                      })
+                    ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: { signal: c.req.raw.signal },
+                  transport: { signal: c.req.raw.signal, deadline: execution.deadline },
                 }
               );
               return new Response(
@@ -2318,31 +2490,34 @@ export function registerLlmGatewayRoutes({
                 {
                   capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
-                    recordLlmGatewayUsage({
-                      durableCall,
-                      model: logicalModel.id,
-                      provider,
-                      usage,
-                    }),
+                    execution.addUsageRecordIds(
+                      recordLlmGatewayUsage({
+                        durableCall,
+                        model: logicalModel.id,
+                        provider,
+                        usage,
+                      })
+                    ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: { signal: c.req.raw.signal },
+                  transport: { signal: c.req.raw.signal, deadline: execution.deadline },
                 }
               );
-            finishDurableLlmGatewayCall(durableCall, 'succeeded');
             return c.json({ ...completion, model: logicalModel.id });
-          } catch (error) {
-            const cancelled = finishDurableLlmGatewayFailure(
-              durableCall,
-              error,
-              c.req.raw.signal,
-              'llm_gateway_failed',
-              'llm_gateway_cancelled'
-            );
-            if (cancelled) throw new GatewayRequestCancelledError();
-            throw error;
-          }
-        },
-      });
+          },
+        });
+        if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        return result;
+      } catch (error) {
+        const cancelled = finishDurableLlmGatewayFailure(
+          durableCall,
+          error,
+          c.req.raw.signal,
+          'llm_gateway_failed',
+          'llm_gateway_cancelled'
+        );
+        if (cancelled) throw new GatewayRequestCancelledError();
+        throw error;
+      }
     } catch (error) {
       return asOpenAIGatewayError(error);
     }
@@ -2399,29 +2574,29 @@ export function registerLlmGatewayRoutes({
         stream: input.stream ?? false,
       };
 
-      return await dispatchLogicalModel<Response>({
-        logicalModel,
-        requiredCapabilities: ['responses'],
-        ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-        resolveGatewayProvider,
-        signal: c.req.raw.signal,
-        attempt: async ({
-          provider,
-          providerModel,
-          subscriptionModels,
-          corr,
-          attempt,
-          execution,
-        }) => {
-          const durableCall = startPublicLlmGatewayCall({
-            ...(coreDb ? { coreDb } : {}),
-            authorityActor,
-            endpoint: 'responses',
-            metadata: (request as { metadata?: unknown }).metadata,
+      const durableCall = startPublicLlmGatewayCall({
+        ...(coreDb ? { coreDb } : {}),
+        authorityActor,
+        endpoint: 'responses',
+        metadata: (request as { metadata?: unknown }).metadata,
+        request,
+      });
+      try {
+        const result = await dispatchLogicalModel<Response>({
+          ...(durableCall ? { ledger: durableCall } : {}),
+          logicalModel,
+          requiredCapabilities: ['responses'],
+          ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+          resolveGatewayProvider,
+          signal: c.req.raw.signal,
+          attempt: async ({
             provider,
-            request,
-          });
-          try {
+            providerModel,
+            subscriptionModels,
+            corr,
+            attempt,
+            execution,
+          }) => {
             if (input.stream) {
               const stream = await llmGatewayDispatcher.createResponsesStream(
                 provider,
@@ -2429,14 +2604,16 @@ export function registerLlmGatewayRoutes({
                 {
                   capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
-                    recordLlmGatewayUsage({
-                      durableCall,
-                      model: logicalModel.id,
-                      provider,
-                      usage,
-                    }),
+                    execution.addUsageRecordIds(
+                      recordLlmGatewayUsage({
+                        durableCall,
+                        model: logicalModel.id,
+                        provider,
+                        usage,
+                      })
+                    ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: { signal: c.req.raw.signal },
+                  transport: { signal: c.req.raw.signal, deadline: execution.deadline },
                 }
               );
               return new Response(
@@ -2462,31 +2639,34 @@ export function registerLlmGatewayRoutes({
                 {
                   capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
-                    recordLlmGatewayUsage({
-                      durableCall,
-                      model: logicalModel.id,
-                      provider,
-                      usage,
-                    }),
+                    execution.addUsageRecordIds(
+                      recordLlmGatewayUsage({
+                        durableCall,
+                        model: logicalModel.id,
+                        provider,
+                        usage,
+                      })
+                    ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: { signal: c.req.raw.signal },
+                  transport: { signal: c.req.raw.signal, deadline: execution.deadline },
                 }
               );
-            finishDurableLlmGatewayCall(durableCall, 'succeeded');
             return c.json({ ...response, model: logicalModel.id });
-          } catch (error) {
-            const cancelled = finishDurableLlmGatewayFailure(
-              durableCall,
-              error,
-              c.req.raw.signal,
-              'llm_gateway_failed',
-              'llm_gateway_cancelled'
-            );
-            if (cancelled) throw new GatewayRequestCancelledError();
-            throw error;
-          }
-        },
-      });
+          },
+        });
+        if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        return result;
+      } catch (error) {
+        const cancelled = finishDurableLlmGatewayFailure(
+          durableCall,
+          error,
+          c.req.raw.signal,
+          'llm_gateway_failed',
+          'llm_gateway_cancelled'
+        );
+        if (cancelled) throw new GatewayRequestCancelledError();
+        throw error;
+      }
     } catch (error) {
       return asOpenAIGatewayError(error);
     }

@@ -71,3 +71,5 @@ Deprecated flat aliases are not exported.
 The private native environment configuration client discards inert additive response metadata, including nested status and environment identities, through the shared App API readers before returning the owned core.
 
 `runtimeConfig.deleteFile` sends the strict Provider deletion command through the existing JSON DELETE transport. It requires an exact Provider file ID and existing revision and accepts the empty successful response. NanoCore owns revocation and restart-required activation.
+
+`client.app.getCapabilityUsage` preserves the Workspace-authorized redacted `routeLineage` projection from the shared App schema. The Skill `usage.read` operation returns that same reader result without rebuilding private Provider lineage.

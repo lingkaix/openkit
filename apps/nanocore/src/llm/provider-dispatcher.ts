@@ -42,6 +42,8 @@ export interface LLMGatewayProviderDispatcherOptions {
  * Provider transport state shared across one gateway dispatch.
  */
 export interface LLMGatewayTransportContext {
+  /** Absolute Gateway deadline in milliseconds on the executor clock (production Date.now); never reset per attempt. */
+  readonly deadline?: number;
   /** Private observer for admitted semantic events, before public response conversion. */
   readonly onModelEvent?: (event: ModelSemanticEvent) => void;
   /** Optional caller signal used to abort provider work. */

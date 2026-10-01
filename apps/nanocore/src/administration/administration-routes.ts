@@ -17,11 +17,6 @@ import {
   DeploymentAdminRequiredError,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
-import {
-  finishCapabilityCall,
-  recordUsage,
-  startCapabilityCall,
-} from '../capability/usage-ledger.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import type { CoreMode } from '../config/mode.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -34,7 +29,6 @@ import { type AgentMessage, runInternalAgentLoop } from '../internal-agents/inte
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
-import { parseUsage } from '../llm/gateway-usage.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
@@ -45,8 +39,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
-import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import type { CoreDb } from '../storage/db.js';
 import {
   type AdministrationEnvironmentTools,
   createAdministrationTools,
@@ -339,18 +332,18 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
                       : {}),
                     promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
                     usageEndpoint: 'responses',
-                    onDispatch: ({ providerId, usage }) => {
-                      recordAdministrationLlmUsage({
-                        authorityActor: triggerActor,
-                        coreDb: input.coreDb!,
-                        logicalModelId: selection.logicalModel.id,
-                        providerId,
-                        requestId: request.requestId,
-                        threadId: thread.id,
-                        turnId: turn.id,
-                        usage,
-                        workspaceId,
-                      });
+                    callContext: {
+                      authorityActor: triggerActor,
+                      agentId: ADMINISTRATION_AGENT_ID,
+                      workspaceId,
+                      family: 'llm',
+                      operation: 'administration',
+                      capabilityId: 'inference.local.administration',
+                      providerRef: null,
+                      requestId: null,
+                      serviceRef: 'llm-gateway',
+                      redactionClass: 'metadata-only',
+                      summary: 'Private administration Assistant LLM call.',
                     },
                   })
                 )
@@ -691,58 +684,4 @@ function administrationTurnId(userId: string, threadId: string, requestId: strin
 
 function administrationThreadTitle(text: string): string {
   return text.trim().split(/\r?\n/, 1)[0]?.slice(0, 120) || 'Administration';
-}
-
-function recordAdministrationLlmUsage(input: {
-  readonly authorityActor: ActorRef;
-  readonly coreDb: CoreDb;
-  readonly logicalModelId: string;
-  readonly providerId: string;
-  readonly requestId: string;
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly usage?: unknown;
-  readonly workspaceId: string;
-}): void {
-  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, input.workspaceId);
-  try {
-    applyScopedMigrations(workspaceDb);
-    const call = startCapabilityCall({
-      authorityActor: input.authorityActor,
-      agentId: ADMINISTRATION_AGENT_ID,
-      agentSessionId: null,
-      capabilityId: 'inference.local.administration',
-      family: 'llm',
-      operation: 'administration',
-      providerRef: input.providerId,
-      redactionClass: 'metadata-only',
-      requestId: input.requestId,
-      serviceRef: 'llm-gateway',
-      summary: 'Private administration Assistant LLM call.',
-      threadId: input.threadId,
-      turnId: input.turnId,
-      itemId: null,
-      workspaceDb,
-      workspaceId: input.workspaceId,
-    });
-    const parsed = parseUsage(input.usage);
-    const tokens = parsed.totalTokens || parsed.inputTokens + parsed.completionTokens;
-    recordUsage({
-      call,
-      records: [
-        {
-          category: 'llm',
-          modelId: input.logicalModelId,
-          providerRef: input.providerId,
-          quantity: tokens > 0 ? tokens : 1,
-          source: tokens > 0 ? 'gateway-reported' : 'gateway-observed',
-          unit: tokens > 0 ? 'tokens' : 'requests',
-        },
-      ],
-      workspaceDb,
-    });
-    finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
-  } finally {
-    workspaceDb.sqlite.close();
-  }
 }

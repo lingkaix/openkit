@@ -91,3 +91,45 @@ describe('CapabilityCall system-prompt digest slot', () => {
     ).toBe(false);
   });
 });
+
+describe('CapabilityCall route-lineage extension', () => {
+  const lineage = {
+    logicalModelId: 'tier',
+    entries: [
+      {
+        kind: 'attempt',
+        routeMemberId: 'primary',
+        providerProfileId: 'profile',
+        providerModel: 'native',
+        selectionReason: 'primary',
+        attemptOrder: 0,
+        retryIndex: 0,
+        outputBegan: false,
+        terminalResult: 'unknown',
+      },
+    ],
+  };
+  it('retains known lineage and ignores an unknown namespace', () => {
+    const parsed = CapabilityCallSchema.parse({
+      ...runningCapabilityCall(),
+      extensions: {
+        'openkit.gateway/routeLineage': lineage,
+        'other.example/future': { ignored: true },
+      },
+    });
+    expect(parsed.extensions).toEqual({ 'openkit.gateway/routeLineage': lineage });
+  });
+  it('rejects unknown core values inside the known namespace', () => {
+    expect(
+      CapabilityCallSchema.safeParse({
+        ...runningCapabilityCall(),
+        extensions: {
+          'openkit.gateway/routeLineage': {
+            ...lineage,
+            entries: [{ ...lineage.entries[0], failureKind: 'made_up' }],
+          },
+        },
+      }).success
+    ).toBe(false);
+  });
+});

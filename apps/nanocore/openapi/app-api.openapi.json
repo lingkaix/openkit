@@ -23246,6 +23246,140 @@
                   "type": "string",
                   "pattern": "^sha256:[a-f0-9]{64}$"
                 },
+                "extensions": {
+                  "not": {}
+                },
+                "routeLineage": {
+                  "type": "object",
+                  "properties": {
+                    "logicalModelId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "routeMemberId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "selectionReason": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "failureKind": {
+                                "type": "string",
+                                "enum": [
+                                  "auth_rejected",
+                                  "quota_exhausted",
+                                  "rate_limited",
+                                  "provider_unavailable",
+                                  "context_overflow",
+                                  "unsupported",
+                                  "output_limit",
+                                  "refused",
+                                  "invalid_request",
+                                  "cancelled",
+                                  "unknown"
+                                ]
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "unavailable"
+                              }
+                            },
+                            "required": [
+                              "routeMemberId",
+                              "selectionReason",
+                              "kind"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "routeMemberId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "selectionReason": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "failureKind": {
+                                "type": "string",
+                                "enum": [
+                                  "auth_rejected",
+                                  "quota_exhausted",
+                                  "rate_limited",
+                                  "provider_unavailable",
+                                  "context_overflow",
+                                  "unsupported",
+                                  "output_limit",
+                                  "refused",
+                                  "invalid_request",
+                                  "cancelled",
+                                  "unknown"
+                                ]
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "attempt"
+                              },
+                              "attemptOrder": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "retryIndex": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "outputBegan": {
+                                "type": "boolean"
+                              },
+                              "terminalResult": {
+                                "type": "string",
+                                "enum": [
+                                  "unknown",
+                                  "succeeded",
+                                  "failed",
+                                  "interrupted",
+                                  "incomplete",
+                                  "refused"
+                                ]
+                              },
+                              "released": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "routeMemberId",
+                              "selectionReason",
+                              "kind",
+                              "attemptOrder",
+                              "retryIndex",
+                              "outputBegan",
+                              "terminalResult",
+                              "released"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "logicalModelId",
+                    "entries"
+                  ],
+                  "additionalProperties": false
+                },
                 "family": {
                   "type": "string",
                   "enum": [
@@ -70011,5 +70145,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:db19f62693a23722757f752dea8d9b9970426289a5003f9981a2d2cc01db392c"
+  "x-openkit-source-digest": "sha256:5ce4fe83fc1822fe509d7efce34c5acca4df28bc33c8b816a8a12c1c19dee179"
 }

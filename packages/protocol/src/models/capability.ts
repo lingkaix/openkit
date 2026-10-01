@@ -78,6 +78,63 @@ const capabilityCallLifecycleProjection = {
     'Capability call timestamp nullability is determined by status. Parsed-instant ordering of terminal timestamps is enforced by the canonical Zod schema because JSON Schema cannot compare sibling date-time values.',
 };
 
+/** Closed Gateway failure kinds retained as descriptive evidence, never replay authority. */
+export const GatewayFailureKindSchema = z.enum([
+  'auth_rejected',
+  'quota_exhausted',
+  'rate_limited',
+  'provider_unavailable',
+  'context_overflow',
+  'unsupported',
+  'output_limit',
+  'refused',
+  'invalid_request',
+  'cancelled',
+  'unknown',
+]);
+const gatewayMemberFields = {
+  routeMemberId: z.string().min(1),
+  providerProfileId: z.string().min(1).optional(),
+  providerModel: z.string().min(1).optional(),
+  selectionReason: z.string().min(1),
+};
+/** One exclusion or reached callback in a logical invocation's ordered private chain. */
+export const GatewayRouteLineageEntrySchema = z.discriminatedUnion('kind', [
+  z.object({
+    ...gatewayMemberFields,
+    kind: z.literal('unavailable'),
+    failureKind: GatewayFailureKindSchema,
+    unavailableReason: z.string().min(1),
+  }),
+  z.object({
+    ...gatewayMemberFields,
+    kind: z.literal('attempt'),
+    providerProfileId: z.string().min(1),
+    providerModel: z.string().min(1),
+    attemptOrder: z.number().int().nonnegative(),
+    retryIndex: z.number().int().nonnegative(),
+    failureKind: GatewayFailureKindSchema.optional(),
+    outputBegan: z.boolean(),
+    terminalResult: z.enum([
+      'unknown',
+      'succeeded',
+      'failed',
+      'interrupted',
+      'incomplete',
+      'refused',
+    ]),
+    usageRecordIds: z.array(z.string().min(1)).optional(),
+  }),
+]);
+/** Optional call-owned route evidence; unknown namespaces and additive fields are ignored. */
+export const CapabilityCallExtensionsSchema = z.object({
+  'openkit.gateway/routeLineage': z
+    .object({ logicalModelId: z.string().min(1), entries: z.array(GatewayRouteLineageEntrySchema) })
+    .optional(),
+});
+/** Descriptive entry only; it grants no dispatch, replay or metering authority. */
+export type GatewayRouteLineageEntry = z.infer<typeof GatewayRouteLineageEntrySchema>;
+
 /**
  * Product-visible capability call attribution and summary. `systemPromptDigest` is valid only on CapabilityCall records opened above the provider split (`llm.chat_completions` and `llm.responses`); other families and other family-llm usage rows omit it.
  */
@@ -111,6 +168,7 @@ export const CapabilityCallSchema = z
     startedAt: TimestampSchema.nullable(),
     completedAt: TimestampSchema.nullable(),
     systemPromptDigest: SystemPromptDigestSchema.optional(),
+    extensions: CapabilityCallExtensionsSchema.optional(),
   })
   .superRefine((call, context) => {
     if (

@@ -1,6 +1,12 @@
 import { Buffer } from 'node:buffer';
 
-import { dispatchLogicalModel } from '../llm/gateway-routes.js';
+import {
+  finishCapabilityCall,
+  type GatewayCallContext,
+  startCapabilityCall,
+} from '../capability/usage-ledger.js';
+import { dispatchLogicalModel, projectGatewayFailure } from '../llm/gateway-routes.js';
+import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { type ModelCaptureContext, ModelCaptureError } from '../llm/model-capture.js';
 import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
@@ -19,6 +25,8 @@ export interface InternalAgentGatewayProviderOptions {
   /** Exact entry-admitted Turn; internal Agents never use public metadata as authority. */
   readonly capture: Omit<ModelCaptureContext, 'corr'>;
   readonly logicalModel: ResolvedLogicalModel;
+  /** Entry-owned attribution for each logical model invocation; Turn and database come from admitted capture. */
+  readonly callContext?: GatewayCallContext;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
@@ -71,50 +79,105 @@ export function createInternalAgentGatewayProvider(
       request.contextManagement.compactThreshold
     );
 
-    const selected = await dispatchLogicalModel({
-      logicalModel: options.logicalModel,
-      requiredCapabilities: request.model.capabilities,
-      signal: request.signal,
-      resolveGatewayProvider: options.resolveGatewayProvider,
-      ...(options.providerSubscriptionAccountManager
-        ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
-        : {}),
-      attempt: async ({
-        provider,
-        providerModel,
-        subscriptionModels,
-        corr,
-        attempt,
-        execution,
-      }) => {
-        const response = await options.dispatcher.createResponses(
+    const workspaceDb = options.capture.workspaceDb;
+    const call = options.callContext
+      ? startCapabilityCall({
+          ...options.callContext,
+          workspaceDb,
+          providerRef: null,
+          threadId: options.capture.threadId,
+          turnId: options.capture.turnId,
+        })
+      : undefined;
+    let callFinished = false;
+    try {
+      const selected = await dispatchLogicalModel({
+        ...(call ? { ledger: { workspaceDb, call } } : {}),
+        logicalModel: options.logicalModel,
+        requiredCapabilities: request.model.capabilities,
+        signal: request.signal,
+        resolveGatewayProvider: options.resolveGatewayProvider,
+        ...(options.providerSubscriptionAccountManager
+          ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
+          : {}),
+        attempt: async ({
           provider,
-          {
-            model: providerModel,
-            instructions: request.systemPrompt,
-            input: providerInput,
-            parallel_tool_calls: false,
-            tools: providerTools,
-          },
-          {
-            ...(subscriptionModels ? { models: subscriptionModels } : {}),
-            capture: { ...options.capture, corr, attempt },
-            promptCacheScope: options.promptCacheScope,
-            usageEndpoint: options.usageEndpoint,
-            transport: { signal: execution.signal },
-          }
-        );
-        const message = fromResponses(response);
-        execution.commit();
-        return { providerId: provider.id, response, message };
-      },
-    });
-    const message = selected.message;
-    options.onDispatch?.({
-      providerId: selected.providerId,
-      ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
-    });
-    return { message };
+          providerModel,
+          subscriptionModels,
+          corr,
+          attempt,
+          execution,
+        }) => {
+          const response = await options.dispatcher.createResponses(
+            provider,
+            {
+              model: providerModel,
+              instructions: request.systemPrompt,
+              input: providerInput,
+              parallel_tool_calls: false,
+              tools: providerTools,
+            },
+            {
+              ...(subscriptionModels ? { models: subscriptionModels } : {}),
+              capture: {
+                ...options.capture,
+                ...(call ? { capabilityCallId: call.id } : {}),
+                corr,
+                attempt,
+              },
+              promptCacheScope: options.promptCacheScope,
+              usageEndpoint: options.usageEndpoint,
+              onUsage: (usage) => {
+                if (call && !callFinished)
+                  execution.addUsageRecordIds(
+                    recordInternalLlmGatewayUsage({
+                      workspaceDb,
+                      call,
+                      logicalModelId: options.logicalModel.id,
+                      providerId: provider.id,
+                      usage,
+                      succeeded: false,
+                    })
+                  );
+              },
+              transport: { signal: execution.signal, deadline: execution.deadline },
+            }
+          );
+          const message = fromResponses(response);
+          if (call)
+            execution.addUsageRecordIds(
+              recordInternalLlmGatewayUsage({
+                workspaceDb,
+                call,
+                logicalModelId: options.logicalModel.id,
+                providerId: provider.id,
+                usage: response.usage,
+                succeeded: true,
+              })
+            );
+          execution.commit();
+          return { providerId: provider.id, response, message };
+        },
+      });
+      callFinished = true;
+      if (call) finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
+      const message = selected.message;
+      options.onDispatch?.({
+        providerId: selected.providerId,
+        ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
+      });
+      return { message };
+    } catch (error) {
+      callFinished = true;
+      if (call)
+        finishCapabilityCall({
+          workspaceDb,
+          callId: call.id,
+          status: 'failed',
+          errorCode: projectGatewayFailure(error, 'internal_inference_failed').code,
+        });
+      throw error;
+    }
   };
 }
 

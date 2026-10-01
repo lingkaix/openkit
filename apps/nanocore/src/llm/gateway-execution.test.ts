@@ -296,7 +296,7 @@ describe('Gateway private stream preparation', () => {
     { choices: [{ delta: { tool_calls: [{ id: 'call', function: { name: 'status' } }] } }] },
   ])('commits on admitted text, reasoning and tool output: %j', async (output) => {
     const lifecycle = 'data: {"type":"response.created"}\n\n';
-    const bytes = `${lifecycle}data: ${JSON.stringify(output)}\n\n`;
+    const bytes = `${lifecycle}data: ${JSON.stringify(output)}\n\ndata: [DONE]\n\n`;
     const stream = new ReadableStream<Uint8Array>({
       start(c) {
         c.enqueue(new TextEncoder().encode(bytes));

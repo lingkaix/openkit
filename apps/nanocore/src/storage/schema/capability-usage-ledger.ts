@@ -77,6 +77,7 @@ export const capabilityCalls = sqliteTable(
     completedAt: text('completed_at'),
     /** Pre-adapter system-prompt digest; present only on gateway-entry llm rows. */
     systemPromptDigest: text('system_prompt_digest'),
+    extensionsJson: text('extensions_json'),
   },
   (table) => [
     uniqueIndex('capability_calls_idempotency_idx').on(

@@ -68,10 +68,13 @@ export function planLogicalModel(
 export class GatewayAttemptFailure extends Error {
   /** Boundary-produced or owner-assigned failure evidence. */
   public readonly failure: PiAiFailure;
+  /** Local member checks may advance but are never retried as reached Provider attempts. */
+  public readonly beforeDispatch: boolean;
   /** Creates a typed private failure without inventing upstream status. */
-  public constructor(failure: PiAiFailure, original?: unknown) {
+  public constructor(failure: PiAiFailure, original?: unknown, beforeDispatch = false) {
     super('Provider attempt failed.', { cause: original });
     this.failure = failure;
+    this.beforeDispatch = beforeDispatch;
   }
 }
 
@@ -112,10 +115,19 @@ export interface GatewayAttemptContext {
   readonly attemptOrder: number;
   readonly retryIndex: number;
   readonly selectionReason: string;
-  /** Releases a validated non-stream result, or commits a live deadline-expired attempt. */
+  /** True only after outward model content or a validated non-stream result is released. */
+  readonly outputBegan: boolean;
+  /** True once stream preparation succeeded; its terminal result arrives during consumption. */
+  readonly streamPrepared: boolean;
+  /** Releases a validated non-stream result. Deadline/cap commits do not imply output. */
   commit(): void;
   /** Reads privately before releasing the public Response/heartbeat. */
-  prepareStream(stream: ReadableStream<Uint8Array>): Promise<ReadableStream<Uint8Array>>;
+  prepareStream(
+    stream: ReadableStream<Uint8Array>,
+    observe?: (state: GatewayStreamState, error?: unknown) => void
+  ): Promise<ReadableStream<Uint8Array>>;
+  /** Associates existing retained measurements with this descriptive attempt. */
+  addUsageRecordIds(ids: readonly string[]): void;
 }
 
 /**
@@ -147,7 +159,16 @@ export async function executeGatewayPlan<T>(input: {
       for (let retryIndex = 0; ; retryIndex++) {
         input.signal.throwIfAborted();
         if (expired || clock.now() >= deadline) break;
+        let outputBegan = false;
+        let streamPrepared = false;
         const context: GatewayAttemptContext = {
+          get outputBegan() {
+            return outputBegan;
+          },
+          get streamPrepared() {
+            return streamPrepared;
+          },
+          addUsageRecordIds: () => {},
           signal: input.signal,
           deadline,
           retryIndex,
@@ -155,9 +176,20 @@ export async function executeGatewayPlan<T>(input: {
           selectionReason: selection.reason,
           commit: () => {
             committed = true;
+            if (!streamPrepared) outputBegan = true;
           },
-          prepareStream: async (stream) => {
-            const prepared = await prepareGatewayStream(stream, input.signal, deadline, clock);
+          prepareStream: async (stream, observe) => {
+            const prepared = await prepareGatewayStream(
+              stream,
+              input.signal,
+              deadline,
+              clock,
+              (state, error) => {
+                if (state === 'output') outputBegan = true;
+                observe?.(state, error);
+              }
+            );
+            streamPrepared = true;
             committed = true;
             return prepared;
           },
@@ -183,7 +215,11 @@ export async function executeGatewayPlan<T>(input: {
           )
             throw new GatewayAttemptFailure(failure, error);
           if (expired || clock.now() >= deadline) throw new GatewayAttemptFailure(failure, error);
-          if (decision.retry && retryIndex < GATEWAY_RETRY_DELAYS_MS.length) {
+          if (
+            decision.retry &&
+            !(error instanceof GatewayAttemptFailure && error.beforeDispatch) &&
+            retryIndex < GATEWAY_RETRY_DELAYS_MS.length
+          ) {
             const delay = retryDelay(failure, retryIndex, clock.now());
             if (delay !== undefined && delay < deadline - clock.now()) {
               active = false;
@@ -263,8 +299,18 @@ async function withGatewayCancellation<T>(
   }
 }
 
+/** Released stream facts; unknown EOF is never successful terminal evidence. */
+export type GatewayStreamState =
+  | 'output'
+  | 'failed'
+  | 'completed'
+  | 'incomplete'
+  | 'interrupted'
+  | 'unknown'
+  | 'lifecycle';
+
 /** Reads only event structure, never upstream text, to recognize released output or terminal failure. */
-function streamEventState(frame: string): 'output' | 'failed' | 'completed' | 'lifecycle' {
+function streamEventState(frame: string): GatewayStreamState {
   const data = frame
     .split(/\r?\n/)
     .filter((line) => line.startsWith('data:'))
@@ -275,8 +321,8 @@ function streamEventState(frame: string): 'output' | 'failed' | 'completed' | 'l
     const event = JSON.parse(data);
     if (event.error || event.type === 'response.failed' || event.response?.status === 'failed')
       return 'failed';
-    if (event.type === 'response.completed' || event.type === 'response.incomplete')
-      return 'completed';
+    if (event.type === 'response.incomplete') return 'incomplete';
+    if (event.type === 'response.completed') return 'completed';
     if (
       typeof event.type === 'string' &&
       /^response\.(?:output_text|reasoning(?:_text|_summary_text)?|function_call_arguments|custom_tool_call_input)\.(?:delta|done)$/.test(
@@ -341,7 +387,8 @@ export async function prepareGatewayStream(
   stream: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   deadline: number,
-  clock: GatewayClock = gatewayClock
+  clock: GatewayClock = gatewayClock,
+  observe?: (state: GatewayStreamState, error?: unknown) => void
 ): Promise<ReadableStream<Uint8Array>> {
   const reader = stream.getReader();
   const held: Uint8Array[] = [];
@@ -368,7 +415,7 @@ export async function prepareGatewayStream(
       while (boundary?.index !== undefined) {
         const state = streamEventState(frames.slice(0, boundary.index));
         if (state === 'failed') throw new GatewayAttemptFailure({ kind: 'unknown', settled: true });
-        output ||= state === 'output' || state === 'completed';
+        output ||= state === 'output' || state === 'completed' || state === 'incomplete';
         frames = frames.slice(boundary.index + boundary[0].length);
         boundary = /\r?\n\r?\n/.exec(frames);
       }
@@ -383,12 +430,28 @@ export async function prepareGatewayStream(
   } finally {
     if (timer !== undefined) clock.clearTimer(timer);
   }
+  let releasedFrames = '';
+  const releasedDecoder = new TextDecoder();
+  let terminalObserved = false;
+  const release = (chunk: Uint8Array) => {
+    releasedFrames += releasedDecoder.decode(chunk, { stream: true });
+    let boundary = /\r?\n\r?\n/.exec(releasedFrames);
+    while (boundary?.index !== undefined) {
+      const state = streamEventState(releasedFrames.slice(0, boundary.index));
+      if (['failed', 'completed', 'incomplete'].includes(state)) terminalObserved = true;
+      observe?.(state);
+      releasedFrames = releasedFrames.slice(boundary.index + boundary[0].length);
+      boundary = /\r?\n\r?\n/.exec(releasedFrames);
+    }
+  };
   let index = 0;
   return new ReadableStream<Uint8Array>(
     {
       async pull(controller) {
         if (index < held.length) {
-          controller.enqueue(held[index++]!);
+          const chunk = held[index++]!;
+          release(chunk);
+          controller.enqueue(chunk);
           return;
         }
         try {
@@ -396,15 +459,27 @@ export async function prepareGatewayStream(
           pending = undefined;
           if (result.done) {
             reader.releaseLock();
-            controller.close();
-          } else controller.enqueue(result.value);
+            if (!terminalObserved) {
+              observe?.('unknown');
+              controller.error(
+                Object.assign(new Error('Provider stream ended without terminal evidence.'), {
+                  code: 'provider_stream_truncated',
+                })
+              );
+            } else controller.close();
+          } else {
+            release(result.value);
+            controller.enqueue(result.value);
+          }
         } catch (error) {
+          observe?.('failed', error);
           reader.releaseLock();
           controller.error(error);
         }
       },
       async cancel(reason) {
         try {
+          observe?.('interrupted');
           await reader.cancel(reason);
         } finally {
           reader.releaseLock();

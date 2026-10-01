@@ -4,6 +4,10 @@ import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
+} from '../capability/usage-ledger.js';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
@@ -39,7 +43,10 @@ function captureBinding(value: 'off' | 'on' = 'off') {
   return { dataRoot, store, turn, workspaceDb, threadId: thread.id, turnId: turn.id };
 }
 
-import { LogicalModelRoutesExhaustedError } from '../llm/gateway-execution.js';
+import {
+  GatewayAttemptFailure,
+  LogicalModelRoutesExhaustedError,
+} from '../llm/gateway-execution.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -142,7 +149,9 @@ describe('internal Agent Gateway provider', () => {
           },
         ],
       }),
-      expect.objectContaining({ transport: { signal: expect.any(AbortSignal) } })
+      expect.objectContaining({
+        transport: { signal: expect.any(AbortSignal), deadline: expect.any(Number) },
+      })
     );
     expect(createResponses.mock.calls[0]?.[1]).not.toHaveProperty('metadata');
     expect(response.message).toEqual({
@@ -613,6 +622,185 @@ describe('Round 2 internal-role exhaustion cause', () => {
       expect(calls.filter((id) => id === 'backup')).toHaveLength(
         scenario.kind !== undefined && !disabled && !terminal ? scenario.attempts : 0
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('slice 1d internal logical call', () => {
+  it('retains a failed call when every member is excluded before model dispatch', async () => {
+    const capture = captureBinding();
+    const createResponses = vi.fn();
+    const resolveGatewayProvider = vi.fn();
+    const provider = createInternalAgentGatewayProvider({
+      capture,
+      logicalModel: {
+        ...logicalModel,
+        routes: logicalModel.routes.map((route) => ({
+          ...route,
+          available: false,
+          unavailableReason: 'provider_profile_absent',
+        })),
+      },
+      dispatcher: { createResponses } as never,
+      resolveGatewayProvider,
+      promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+      usageEndpoint: 'responses',
+      callContext: {
+        workspaceId: capture.turn.workspaceId,
+        authorityActor: capture.turn.triggerActor,
+        agentId: 'administration',
+        family: 'llm',
+        operation: 'administration',
+        capabilityId: 'inference.local.administration',
+        redactionClass: 'metadata-only',
+      },
+    });
+    await expect(provider(request())).rejects.toMatchObject({
+      code: 'gateway_logical_model_unavailable',
+    });
+    const calls = listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'gateway_logical_model_unavailable',
+      turnId: capture.turn.id,
+      extensions: { 'openkit.gateway/routeLineage': { entries: [{ kind: 'unavailable' }] } },
+    });
+    expect(listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId)).toEqual([]);
+    expect(
+      readWorkObservations(capture.workspaceDb, capture).filter(
+        (row) => row.type === 'model.observed'
+      )
+    ).toEqual([]);
+    expect(createResponses).not.toHaveBeenCalled();
+    expect(resolveGatewayProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe('slice 1d round 2 internal lifecycle', () => {
+  for (const failed of [false, true])
+    it(`ignores late usage after ${failed ? 'failed' : 'successful'} closeout`, async () => {
+      const capture = captureBinding();
+      let usageCallback: ((usage: unknown) => void) | undefined;
+      const createResponses = vi.fn(async (_p, _r, context) => {
+        usageCallback = context.onUsage;
+        if (failed) throw new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
+        return {
+          id: 'resp_late',
+          object: 'response',
+          status: 'completed',
+          model: 'model',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'served' }],
+            },
+          ],
+        };
+      });
+      const provider = createInternalAgentGatewayProvider({
+        capture,
+        logicalModel,
+        dispatcher: { createResponses } as never,
+        resolveGatewayProvider: () =>
+          ({
+            id: 'provider',
+            models: ['model'],
+            gatewayCapabilities: {},
+            modelMetadata: { model: { tool_call: true } },
+          }) as never,
+        promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+        usageEndpoint: 'responses',
+        callContext: {
+          workspaceId: capture.turn.workspaceId,
+          authorityActor: capture.turn.triggerActor,
+          family: 'llm',
+          operation: 'administration',
+          capabilityId: 'inference.local.administration',
+          redactionClass: 'metadata-only',
+        },
+      });
+      if (failed)
+        await expect(provider(request())).rejects.toHaveProperty('failure.kind', 'invalid_request');
+      else await provider(request());
+      const read = () => ({
+        calls: listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId),
+        usage: listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId),
+        rows: capture.workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all(),
+      });
+      const before = read();
+      expect(usageCallback).toBeTypeOf('function');
+      expect(() => usageCallback?.({ total_tokens: 42 })).not.toThrow();
+      expect(read()).toEqual(before);
+      capture.workspaceDb.sqlite.close();
+      databases.splice(databases.indexOf(capture.workspaceDb), 1);
+      expect(() => usageCallback?.({ total_tokens: 43 })).not.toThrow();
+    });
+  it('carries one absolute deadline through internal retry and failover', async () => {
+    const capture = captureBinding();
+    vi.useFakeTimers();
+    const contexts: Array<Parameters<LLMGatewayProviderDispatcher['createResponses']>[2]> = [];
+    const createResponses = vi.fn(async (_p, _r, context) => {
+      contexts.push(context);
+      if (contexts.length < 3)
+        throw new GatewayAttemptFailure({
+          kind: contexts.length === 1 ? 'rate_limited' : 'auth_rejected',
+          settled: true,
+        });
+      return {
+        id: 'resp_deadline',
+        object: 'response',
+        status: 'completed',
+        model: 'model',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'served' }],
+          },
+        ],
+      };
+    });
+    const provider = createInternalAgentGatewayProvider({
+      capture,
+      logicalModel: {
+        ...logicalModel,
+        routes: [
+          ...logicalModel.routes,
+          { ...logicalModel.routes[0]!, id: 'backup', providerProfileId: 'backup' },
+        ],
+      },
+      dispatcher: { createResponses } as never,
+      resolveGatewayProvider: (id) =>
+        ({
+          id,
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true } },
+        }) as never,
+      promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+      usageEndpoint: 'responses',
+    });
+    try {
+      const before = Date.now();
+      const pending = provider(request());
+      await vi.runAllTimersAsync();
+      await pending;
+      expect(createResponses.mock.calls.map(([p]) => p.id)).toEqual([
+        'provider',
+        'provider',
+        'backup',
+      ]);
+      expect(contexts.map((c) => c?.transport?.deadline)).toEqual([
+        before + 120000,
+        before + 120000,
+        before + 120000,
+      ]);
     } finally {
       vi.useRealTimers();
     }

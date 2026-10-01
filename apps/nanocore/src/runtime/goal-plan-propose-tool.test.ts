@@ -553,7 +553,6 @@ describe('pre-approval Goal Plan revision planner factory', () => {
         workspaceId: GOAL.workspaceId,
         userId: REVISION_ACTOR.id,
         authorityActor: REVISION_ACTOR,
-        coreDb,
         signal: new AbortController().signal,
       });
 
@@ -658,7 +657,6 @@ describe('pre-approval Goal Plan revision planner factory', () => {
         workspaceId: GOAL.workspaceId,
         userId: REVISION_ACTOR.id,
         authorityActor: REVISION_ACTOR,
-        coreDb,
         signal: new AbortController().signal,
       });
 
@@ -681,7 +679,7 @@ describe('pre-approval Goal Plan revision planner factory', () => {
         expect(record).toMatchObject({
           workspaceId: GOAL.workspaceId,
           threadId: GOAL.threadId,
-          turnId: null,
+          turnId: 'tu_revision_capture',
           requestId: null,
           responsibleUserId: REVISION_ACTOR.id,
           category: 'llm',
@@ -697,13 +695,13 @@ describe('pre-approval Goal Plan revision planner factory', () => {
         expect(call).toMatchObject({
           workspaceId: GOAL.workspaceId,
           threadId: GOAL.threadId,
-          turnId: null,
+          turnId: 'tu_revision_capture',
           requestId: null,
           capabilityId: 'inference.local.goal_orchestrator',
           family: 'llm',
           operation: 'goal.plan',
           status: 'succeeded',
-          providerRef: 'provider',
+          providerRef: null,
         });
       }
     } finally {
@@ -737,7 +735,6 @@ describe('pre-approval Goal Plan revision planner factory', () => {
         workspaceId: GOAL.workspaceId,
         userId: REVISION_ACTOR.id,
         authorityActor: REVISION_ACTOR,
-        coreDb,
         signal: new AbortController().signal,
       });
 

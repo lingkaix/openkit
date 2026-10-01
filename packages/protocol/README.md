@@ -33,3 +33,5 @@ Agent catalog `kind` is a role, with null for supply that does not declare one. 
 `src/common/reasoning-effort.ts` exports `REASONING_EFFORT_LEVELS` and `ReasoningEffort` as the single Core effort vocabulary in ascending fitting order. Metadata and inference consumers use this export rather than authoring another level set.
 
 `ReasoningEffortSchema` validates explicit Turn preferences using the canonical vocabulary. `turn.start`, canonical Turns, terminal events, and product Turn projections preserve optional `reasoningEffort`; retained absence stays absent. Turn admission freezes the preference and command identity includes the supplied field.
+
+CapabilityCall admits optional namespaced extensions. `openkit.gateway/routeLineage` defines unavailable members and reached attempts with closed failure and terminal-result values; unknown extension namespaces are ignored, while unknown values in the recognized core fail validation. The canonical system-prompt digest restriction remains unchanged.

@@ -71,3 +71,5 @@ Pending requests live in the Workspace SQLite `pending_requests` family. Canonic
 Snapshot cursors and exact collection receipts (including private candidate bytes) are operational state bound to the source storage attachment and NanoHost scan store. Complete same-deployment backup retains them; portable Workspace export carries the existing output manifests, change sets, reviews, and apply history without importing live scan or replay authority.
 
 Scheduler admission rows carry optional canonical `reasoning_effort` through delayed Worker dispatch. The pre-release Core baseline includes this nullable column; absent values project as an omitted preference. Work observation sampling uses the shared Protocol effort validator rather than a second enum.
+
+CapabilityCall archives use the ledger’s canonical extension validation to preserve safe stored namespaces across scope remapping and import. Live protocol and App audit projections retain their stricter unknown-namespace omission; this does not add an archive format or a second persistence path.

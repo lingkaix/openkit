@@ -16,6 +16,7 @@ import { asApiError } from './api-errors.js';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import { isDeploymentAdminActor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { isThreadIdVisible } from './auth/thread-visibility.js';
 import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
@@ -74,8 +75,56 @@ export function registerGovernanceRoutes({
         return c.json(
           CapabilityUsageResponseSchema.parse({
             workspaceId,
-            capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
-            usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
+            capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId)
+              .filter(
+                (call) =>
+                  !call.threadId ||
+                  isThreadIdVisible(
+                    requestStore(c),
+                    workspaceId,
+                    call.threadId,
+                    c.get('actor').userId
+                  )
+              )
+              .map((call) => {
+                const { extensions, ...projection } = call;
+                const lineage = extensions?.['openkit.gateway/routeLineage'];
+                return {
+                  ...projection,
+                  ...(lineage
+                    ? {
+                        routeLineage: {
+                          logicalModelId: lineage.logicalModelId,
+                          entries: lineage.entries.map((entry) => ({
+                            kind: entry.kind,
+                            routeMemberId: entry.routeMemberId,
+                            selectionReason: entry.selectionReason,
+                            ...(entry.failureKind ? { failureKind: entry.failureKind } : {}),
+                            ...(entry.kind === 'attempt'
+                              ? {
+                                  attemptOrder: entry.attemptOrder,
+                                  retryIndex: entry.retryIndex,
+                                  outputBegan: entry.outputBegan,
+                                  terminalResult: entry.terminalResult,
+                                  released: entry.outputBegan,
+                                }
+                              : {}),
+                          })),
+                        },
+                      }
+                    : {}),
+                };
+              }),
+            usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId).filter(
+              (usage) =>
+                !usage.threadId ||
+                isThreadIdVisible(
+                  requestStore(c),
+                  workspaceId,
+                  usage.threadId,
+                  c.get('actor').userId
+                )
+            ),
           })
         );
       } finally {

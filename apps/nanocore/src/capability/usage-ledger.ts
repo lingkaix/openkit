@@ -2,12 +2,16 @@ import { randomUUID } from 'node:crypto';
 import {
   type ActorRef,
   type CapabilityCall,
+  CapabilityCallExtensionsSchema,
   CapabilityCallSchema,
+  type GatewayRouteLineageEntry,
+  GatewayRouteLineageEntrySchema,
   RequestIdSchema,
   responsibleUserIdForActor,
   type UsageRecord,
   UsageRecordSchema,
 } from '@openkit/protocol';
+import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
@@ -37,10 +41,19 @@ type CapabilityCallRow = {
   error_code: string | null;
   started_at: string | null;
   completed_at: string | null;
+  system_prompt_digest: string | null;
+  extensions_json: string | null;
 };
+
+/** Storage/export-only validation preserves other canonical namespaces; live protocol projections still strip them. */
+export const CanonicalCapabilityCallExtensionsSchema = CapabilityCallExtensionsSchema.catchall(
+  z.unknown()
+);
 
 /** Exportable capability call ledger record. */
 export interface CapabilityCallLedgerRecord extends CapabilityCall {
+  /** Canonical optional content for storage and archives, never a live protocol projection. */
+  extensions?: z.infer<typeof CanonicalCapabilityCallExtensionsSchema> | undefined;
   /** Capability family used by gateway dispatch and idempotency. */
   family: CapabilityCallFamily;
   /** Gateway operation used by idempotency. */
@@ -287,7 +300,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
       protocolCall.runtimeCacheLineageRef
     );
 
-  const stored = findCapabilityCallByIdOrIdempotency(input.workspaceDb, input);
+  const stored = findCapabilityCallByIdOrIdempotency(input.workspaceDb, { ...input, callId });
   assertMatchingCapabilityCallAttribution(stored, protocolCall, input);
 
   return {
@@ -322,8 +335,10 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
  * Records measured usage linked to a started capability call.
  *
  * @param input Usage rows and durable call summary.
+ * @returns Retained IDs, including existing equivalent measurements, in input order.
  */
-export function recordUsage(input: RecordUsageInput): void {
+export function recordUsage(input: RecordUsageInput): string[] {
+  const ids: string[] = [];
   const recordedAt = (input.now ?? new Date()).toISOString();
 
   try {
@@ -353,9 +368,9 @@ export function recordUsage(input: RecordUsageInput): void {
         recordedAt,
       });
 
-      if (hasEquivalentUsageRecord(input.workspaceDb, usage)) {
-        continue;
-      }
+      const equivalent = hasEquivalentUsageRecord(input.workspaceDb, usage);
+      ids.push(equivalent ?? usage.id);
+      if (equivalent) continue;
 
       input.workspaceDb.sqlite
         .prepare(
@@ -412,6 +427,7 @@ export function recordUsage(input: RecordUsageInput): void {
     } catch {}
     throw error;
   }
+  return ids;
 }
 
 /**
@@ -419,9 +435,12 @@ export function recordUsage(input: RecordUsageInput): void {
  *
  * @param workspaceDb Workspace-scoped database handle.
  * @param usage Protocol-validated usage row.
- * @returns True when an equivalent measurement is already stored.
+ * @returns The retained measurement ID when an equivalent record is already stored.
  */
-function hasEquivalentUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): boolean {
+function hasEquivalentUsageRecord(
+  workspaceDb: WorkspaceDb,
+  usage: UsageRecord
+): string | undefined {
   const row = workspaceDb.sqlite
     .prepare(
       `SELECT usage_id FROM usage_records
@@ -446,7 +465,7 @@ function hasEquivalentUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord):
       sourceIdsJson(usage.sourceIds)
     ) as { usage_id: string } | undefined;
 
-  return Boolean(row);
+  return row?.usage_id;
 }
 
 /**
@@ -725,8 +744,10 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
         package_snapshot_id,
         schema_snapshot_id,
         runtime_origin_ref,
-        runtime_cache_lineage_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        runtime_cache_lineage_ref,
+        system_prompt_digest,
+        extensions_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       call.id,
@@ -752,7 +773,11 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
       call.packageSnapshotId,
       call.schemaSnapshotId,
       call.runtimeOriginRef,
-      call.runtimeCacheLineageRef
+      call.runtimeCacheLineageRef,
+      call.systemPromptDigest ?? null,
+      call.extensions === undefined
+        ? null
+        : JSON.stringify(CanonicalCapabilityCallExtensionsSchema.parse(call.extensions))
     );
 }
 
@@ -806,6 +831,10 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
 /** Converts one stored capability call row into an exportable record. */
 function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
   const call = row as CapabilityCallRow;
+  const extensions =
+    call.extensions_json === null
+      ? undefined
+      : CanonicalCapabilityCallExtensionsSchema.parse(JSON.parse(call.extensions_json));
   const protocolCall = CapabilityCallSchema.parse({
     id: call.call_id,
     workspaceId: call.workspace_id,
@@ -826,10 +855,15 @@ function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
     errorCode: call.error_code,
     startedAt: call.started_at,
     completedAt: call.completed_at,
+    ...(call.system_prompt_digest === null
+      ? {}
+      : { systemPromptDigest: call.system_prompt_digest }),
+    ...(extensions === undefined ? {} : { extensions }),
   });
 
   return {
     ...protocolCall,
+    ...(extensions === undefined ? {} : { extensions }),
     family: call.family as CapabilityCallFamily,
     operation: call.operation,
     providerRef: call.provider_ref,
@@ -1074,4 +1108,54 @@ function findUnsafeLedgerKey(value: unknown): string | null {
   }
 
   return null;
+}
+
+/** Existing call and Workspace authority supplied to the shared Gateway dispatcher. */
+export interface GatewayCallLedgerBinding {
+  readonly workspaceDb: WorkspaceDb;
+  readonly call: StartedCapabilityCall;
+}
+
+/** Appends or settles one entry atomically; the open logical call remains the sole owner. */
+export function writeGatewayRouteLineage(
+  input: GatewayCallLedgerBinding & {
+    readonly logicalModelId: string;
+    readonly entry: GatewayRouteLineageEntry;
+    readonly entryIndex?: number;
+  }
+): number {
+  return input.workspaceDb.sqlite.transaction(() => {
+    const row = findCapabilityCallById(input.workspaceDb, input.call.id);
+    if (!row || row.status !== 'running')
+      throw new Error('Gateway lineage requires its running CapabilityCall.');
+    const extensions = CanonicalCapabilityCallExtensionsSchema.parse(
+      row.extensions_json === null ? {} : JSON.parse(row.extensions_json)
+    );
+    const lineage = extensions['openkit.gateway/routeLineage'] ?? {
+      logicalModelId: input.logicalModelId,
+      entries: [],
+    };
+    if (lineage.logicalModelId !== input.logicalModelId)
+      throw new Error('Gateway lineage logical model conflicts.');
+    const index = input.entryIndex ?? lineage.entries.length;
+    if (index > lineage.entries.length || index < 0)
+      throw new Error('Gateway lineage entry is missing.');
+    lineage.entries[index] = GatewayRouteLineageEntrySchema.parse(input.entry);
+    extensions['openkit.gateway/routeLineage'] = lineage;
+    input.workspaceDb.sqlite
+      .prepare('UPDATE capability_calls SET extensions_json = ? WHERE call_id = ?')
+      .run(JSON.stringify(extensions), input.call.id);
+    return index;
+  })();
+}
+
+/** Caller request identities are single-use across running and terminal Gateway calls. */
+export function hasCapabilityCallRequestId(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  requestId: string
+): boolean {
+  return !!workspaceDb.sqlite
+    .prepare('SELECT 1 FROM capability_calls WHERE workspace_id = ? AND request_id = ? LIMIT 1')
+    .get(workspaceId, requestId);
 }

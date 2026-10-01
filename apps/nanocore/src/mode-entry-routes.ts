@@ -41,7 +41,6 @@ import {
 import {
   finishCapabilityCall,
   normalizeCapabilityRequestId,
-  recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import {
@@ -74,8 +73,12 @@ import {
   DISPLAY_PROJECTION_REFRESH_ADMISSION,
   type FsStore,
 } from './lib/store.js';
-import { dispatchLogicalModel, LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
-import { parseUsage } from './llm/gateway-usage.js';
+import {
+  dispatchLogicalModel,
+  LogicalModelRoutesExhaustedError,
+  projectGatewayFailure,
+} from './llm/gateway-routes.js';
+import { recordInternalLlmGatewayUsage } from './llm/gateway-usage.js';
 import type { ResolvedLogicalModel } from './llm/logical-models.js';
 import { type ModelCaptureContext, withTurnModelCapture } from './llm/model-capture.js';
 import {
@@ -1494,84 +1497,6 @@ function directTaskKnowledgeRetrievalTraceId(
 }
 
 /**
- * Records durable usage for one successful QuickChat LLM call when storage is available.
- *
- * @param input QuickChat usage attribution and provider usage payload.
- */
-function recordQuickChatLlmUsage(input: {
-  /** Optional Core database handle for durable workspace storage. */
-  coreDb?: CoreDb;
-  /** Fresh request actor responsible for this Workspace-attributed call. */
-  authorityActor: ActorRef;
-  /** Workspace that owns the QuickChat request. */
-  workspaceId: string;
-  /** Thread lineage when the call belongs to a thread-scoped mode. */
-  threadId?: string | null;
-  /** Turn lineage when the call belongs to a durable turn. */
-  turnId?: string | null;
-  /** Item lineage when the call belongs to a durable item. */
-  itemId?: string | null;
-  /** Request id used by the originating caller. */
-  requestId?: string | null;
-  /** Provider id selected for the call. */
-  providerId: string;
-  /** Model selected for the call. */
-  model: string;
-  /** Provider-native usage payload. */
-  usage?: unknown;
-}): void {
-  if (!input.coreDb) {
-    return;
-  }
-
-  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, input.workspaceId);
-
-  try {
-    applyScopedMigrations(workspaceDb);
-    const call = startCapabilityCall({
-      authorityActor: input.authorityActor,
-      agentId: QUICK_CHAT_AGENT_ID,
-      agentSessionId: null,
-      capabilityId: 'inference.local.quick_chat',
-      family: 'llm',
-      operation: 'quick_chat',
-      providerRef: input.providerId,
-      redactionClass: 'metadata-only',
-      requestId: normalizeCapabilityRequestId(input.requestId) ?? randomUUID(),
-      serviceRef: 'llm-gateway',
-      summary: input.turnId
-        ? 'QuickChatAgent LLM call.'
-        : 'QuickChatAgent LLM call. Model capture unavailable: no Turn admission.',
-      threadId: input.threadId ?? null,
-      turnId: input.turnId ?? null,
-      itemId: input.itemId ?? null,
-      workspaceDb,
-      workspaceId: input.workspaceId,
-    });
-    const parsed = parseUsage(input.usage);
-    const tokenQuantity = parsed.totalTokens || parsed.inputTokens + parsed.completionTokens;
-
-    recordUsage({
-      call,
-      records: [
-        {
-          category: 'llm',
-          modelId: input.model,
-          providerRef: input.providerId,
-          quantity: tokenQuantity > 0 ? tokenQuantity : 1,
-          source: tokenQuantity > 0 ? 'gateway-reported' : 'gateway-observed',
-          unit: tokenQuantity > 0 ? 'tokens' : 'requests',
-        },
-      ],
-      workspaceDb,
-    });
-    finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
-  } finally {
-    workspaceDb.sqlite.close();
-  }
-}
-
-/**
  * Converts upstream provider failures into status-preserving protocol errors.
  *
  * @param error Provider failure to normalize.
@@ -2539,6 +2464,10 @@ export function registerQuickAndChatModeRoutes({
    * @throws Error when provider resolution or dispatch fails.
    */
   async function callQuickChatProvider(input: {
+    /** Authenticated actor responsible for the existing Workspace usage attribution. */
+    readonly authorityActor: ActorRef;
+    /** Existing command request lineage, when this invocation belongs to a submitted Chat Turn. */
+    readonly requestId?: string;
     /** Entry-admitted Chat Turn; standalone Quick Chat remains an explicit no-Turn gap. */
     readonly capture?: Omit<ModelCaptureContext, 'corr'>;
     /** Selected logical-model contract. */
@@ -2559,6 +2488,32 @@ export function registerQuickAndChatModeRoutes({
     readonly providerId: string;
     readonly usage?: unknown;
   }> {
+    const workspaceDb =
+      input.capture?.workspaceDb ??
+      (coreDb ? openWorkspaceDb(coreDb.dataRoot, input.workspaceId) : undefined);
+    if (workspaceDb) applyScopedMigrations(workspaceDb);
+    const call = workspaceDb
+      ? startCapabilityCall({
+          workspaceDb,
+          workspaceId: input.workspaceId,
+          authorityActor: input.authorityActor,
+          agentId: QUICK_CHAT_AGENT_ID,
+          agentSessionId: null,
+          capabilityId: 'inference.local.quick_chat',
+          family: 'llm',
+          operation: 'quick_chat',
+          providerRef: null,
+          redactionClass: 'metadata-only',
+          requestId: normalizeCapabilityRequestId(input.requestId),
+          serviceRef: 'llm-gateway',
+          threadId: input.capture?.threadId ?? null,
+          turnId: input.capture?.turnId ?? null,
+          summary: input.capture
+            ? 'QuickChatAgent LLM call.'
+            : 'QuickChatAgent LLM call. Model capture unavailable: no Turn admission.',
+        })
+      : undefined;
+    let callFinished = false;
     const timeoutSignal = AbortSignal.timeout(QUICK_CHAT_TIMEOUT_MS);
     const signal = AbortSignal.any([input.signal, timeoutSignal]);
     let abortListener: (() => void) | undefined;
@@ -2569,18 +2524,26 @@ export function registerQuickAndChatModeRoutes({
     let selected: {
       response: Awaited<ReturnType<LLMGatewayProviderDispatcher['createChatCompletion']>>;
       providerId: string;
+      content: string;
     };
 
     try {
       signal.throwIfAborted();
       selected = await dispatchLogicalModel({
+        ...(workspaceDb && call ? { ledger: { workspaceDb, call } } : {}),
         logicalModel: input.logicalModel,
         signal,
         resolveGatewayProvider,
         ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-        attempt: async ({ provider, providerModel, subscriptionModels, corr, attempt }) => ({
-          providerId: provider.id,
-          response: await Promise.race([
+        attempt: async ({
+          provider,
+          providerModel,
+          subscriptionModels,
+          corr,
+          attempt,
+          execution,
+        }) => {
+          const response = await Promise.race([
             llmGatewayDispatcher.createChatCompletion(
               provider,
               {
@@ -2593,20 +2556,70 @@ export function registerQuickAndChatModeRoutes({
               },
               {
                 ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                ...(input.capture ? { capture: { ...input.capture, corr, attempt } } : {}),
+                ...(input.capture
+                  ? {
+                      capture: {
+                        ...input.capture,
+                        ...(call ? { capabilityCallId: call.id } : {}),
+                        corr,
+                        attempt,
+                      },
+                    }
+                  : {}),
                 promptCacheScope: {
                   sessionId: input.sessionId,
                   workspaceId: input.workspaceId,
                 },
                 usageEndpoint: 'quick_chat',
-                transport: { signal },
+                onUsage: (usage) => {
+                  if (workspaceDb && call && !callFinished)
+                    execution.addUsageRecordIds(
+                      recordInternalLlmGatewayUsage({
+                        workspaceDb,
+                        call,
+                        logicalModelId: input.logicalModel.id,
+                        providerId: provider.id,
+                        usage,
+                        succeeded: false,
+                      })
+                    );
+                },
+                transport: { signal, deadline: execution.deadline },
               }
             ),
             aborted,
-          ]),
-        }),
+          ]);
+          const content = response.choices[0]?.message.content;
+          if (typeof content !== 'string' || content.trim().length === 0)
+            throw new TurnStartValidationError(
+              'provider_response_invalid',
+              'Quick chat provider returned invalid assistant content.',
+              502
+            );
+          if (workspaceDb && call)
+            execution.addUsageRecordIds(
+              recordInternalLlmGatewayUsage({
+                workspaceDb,
+                call,
+                logicalModelId: input.logicalModel.id,
+                providerId: provider.id,
+                usage: response.usage,
+                succeeded: true,
+              })
+            );
+          return { response, providerId: provider.id, content };
+        },
       });
+      if (workspaceDb && call)
+        finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
     } catch (error) {
+      if (workspaceDb && call)
+        finishCapabilityCall({
+          workspaceDb,
+          callId: call.id,
+          status: 'failed',
+          errorCode: projectGatewayFailure(error, 'quick_chat_inference_failed').code,
+        });
       if (input.signal.aborted) {
         throw new TurnStartValidationError(
           'provider_call_aborted',
@@ -2625,23 +2638,15 @@ export function registerQuickAndChatModeRoutes({
 
       throw error;
     } finally {
+      callFinished = true;
+      if (!input.capture) workspaceDb?.sqlite.close();
       if (abortListener) {
         signal.removeEventListener('abort', abortListener);
       }
     }
-    const content = selected.response.choices[0]?.message.content;
-
-    if (typeof content !== 'string' || content.trim().length === 0) {
-      throw new TurnStartValidationError(
-        'provider_response_invalid',
-        'Quick chat provider returned invalid assistant content.',
-        502
-      );
-    }
-
     return {
       id: selected.response.id,
-      content,
+      content: selected.content,
       providerId: selected.providerId,
       ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
     };
@@ -2682,19 +2687,12 @@ export function registerQuickAndChatModeRoutes({
       }
 
       const result = await callQuickChatProvider({
+        authorityActor: { kind: 'user', id: c.get('actor').userId },
         logicalModel: selection.logicalModel,
         prompt: input.input,
         sessionId,
         workspaceId,
         signal: c.req.raw.signal,
-      });
-      recordQuickChatLlmUsage({
-        ...(coreDb ? { coreDb } : {}),
-        authorityActor: { kind: 'user', id: c.get('actor').userId },
-        model: selection.logicalModel.id,
-        providerId: result.providerId,
-        ...(result.usage === undefined ? {} : { usage: result.usage }),
-        workspaceId,
       });
 
       return c.json(
@@ -3802,6 +3800,8 @@ export function registerQuickAndChatModeRoutes({
             },
             (capture) =>
               callQuickChatProvider({
+                authorityActor: triggerActor,
+                requestId: chatInput.requestId,
                 logicalModel: selection.logicalModel,
                 prompt: conversationPrompt,
                 history,
@@ -3852,17 +3852,6 @@ export function registerQuickAndChatModeRoutes({
           throw error;
         }
         const completedAt = new Date().toISOString();
-        recordQuickChatLlmUsage({
-          ...(coreDb ? { coreDb } : {}),
-          authorityActor: triggerActor,
-          model: selection.logicalModel.id,
-          providerId: result.providerId,
-          requestId: chatInput.requestId,
-          threadId,
-          turnId: turn.id,
-          ...(result.usage === undefined ? {} : { usage: result.usage }),
-          workspaceId,
-        });
 
         const item = store.createItem({
           id: `it_chat_answer_${turn.id}`,
@@ -4241,6 +4230,7 @@ export function registerQuickAndChatModeRoutes({
           },
           (capture) =>
             callQuickChatProvider({
+              authorityActor: turn.triggerActor,
               logicalModel: selection.logicalModel,
               prompt,
               history,
@@ -4250,17 +4240,6 @@ export function registerQuickAndChatModeRoutes({
               capture,
             })
         );
-        recordQuickChatLlmUsage({
-          coreDb,
-          authorityActor: turn.triggerActor,
-          model: selection.logicalModel.id,
-          providerId: result.providerId,
-          requestId: null,
-          threadId: turn.threadId,
-          turnId: turn.id,
-          ...(result.usage === undefined ? {} : { usage: result.usage }),
-          workspaceId: turn.workspaceId,
-        });
         const completedAt = new Date().toISOString();
         store.createItem({
           id: `it_chat_answer_${turn.id}`,

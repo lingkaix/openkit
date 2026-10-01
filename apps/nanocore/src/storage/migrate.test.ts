@@ -632,6 +632,7 @@ describe('database setup', () => {
         'runtime_origin_ref',
         'runtime_cache_lineage_ref',
         'system_prompt_digest',
+        'extensions_json',
       ]);
       expect(listColumnNames(workspaceDb, 'usage_records')).toEqual([
         'usage_id',

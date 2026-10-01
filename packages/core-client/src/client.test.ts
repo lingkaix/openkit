@@ -6012,3 +6012,34 @@ describe('workspace secret client', () => {
     expect(requests.map(({ path }) => path).join(' ')).not.toContain('canary');
   });
 });
+
+describe('Gateway audit route lineage consumer', () => {
+  it('preserves the authorized redacted projection through the existing usage reader', async () => {
+    const base = capabilityUsageResponse();
+    const payload = {
+      ...base,
+      capabilityCalls: base.capabilityCalls.map((call) => ({
+        ...call,
+        routeLineage: {
+          logicalModelId: 'tier',
+          entries: [
+            {
+              kind: 'attempt',
+              routeMemberId: 'backup',
+              selectionReason: 'backup',
+              attemptOrder: 1,
+              retryIndex: 0,
+              outputBegan: true,
+              terminalResult: 'succeeded',
+              released: true,
+            },
+          ],
+        },
+      })),
+    };
+    const { client } = createFakeClient({
+      'GET /api/app/workspaces/ws_demo/capability-usage': { body: payload },
+    });
+    await expect(client.app.getCapabilityUsage('ws_demo')).resolves.toEqual(payload);
+  });
+});

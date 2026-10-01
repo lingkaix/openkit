@@ -8,7 +8,6 @@ import {
 } from '@openkit/config-schema';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
 import {
   ArtifactReviewFollowUpRequestSchema,
   deriveArtifactReviewFollowUpTurnId,
@@ -16,6 +15,10 @@ import {
   deriveArtifactReviewWorkerRequestId,
   serializeArtifactReviewFollowUpRequest,
 } from '../artifact-reviews.js';
+import {
+  importWorkspaceCapabilityUsageLedger,
+  listWorkspaceCapabilityCalls,
+} from '../capability/usage-ledger.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
   createWorkerContextPackageFiles,
@@ -32,6 +35,8 @@ import { computeGoalPlanDigest, GoalPlanOutputSchema } from '../runtime/goal-pla
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { openWorkspaceDb } from './db.js';
+import { applyScopedMigrations } from './migrate.js';
 import {
   type WriteWorkspaceExportTreeInput,
   writeWorkspaceExportTree,
@@ -3217,4 +3222,104 @@ vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
     '../test-support/native-environment.js'
   );
   return withTestPreparedNativeEnvironment(actual);
+});
+
+describe('slice 1d portable call fields', () => {
+  it('preserves route extensions and present or absent system-prompt digests through archive export and import', () => {
+    const input = createLineageExportInput();
+    const digest = `sha256:${'b'.repeat(64)}`;
+    const lineage = {
+      logicalModelId: 'tier',
+      entries: [
+        {
+          kind: 'attempt',
+          routeMemberId: 'primary',
+          providerProfileId: 'profile',
+          providerModel: 'native',
+          selectionReason: 'primary',
+          attemptOrder: 0,
+          retryIndex: 0,
+          outputBegan: true,
+          terminalResult: 'succeeded',
+          usageRecordIds: ['use_source'],
+        },
+      ],
+    };
+    input.capabilityCalls = [
+      {
+        ...input.capabilityCalls![0],
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        systemPromptDigest: digest,
+        extensions: {
+          'openkit.gateway/routeLineage': lineage,
+          'future.example/evidence': { label: 'retained' },
+        },
+      },
+      { ...input.capabilityCalls![0], id: 'cap_absent' },
+    ];
+    const sourceDb = openWorkspaceDb(
+      mkdtempSync(join(tmpdir(), 'gateway-call-source-')),
+      source.workspaceId
+    );
+    try {
+      applyScopedMigrations(sourceDb);
+      importWorkspaceCapabilityUsageLedger({
+        workspaceDb: sourceDb,
+        capabilityCalls: input.capabilityCalls as never,
+        usageRecords: [],
+      });
+      sourceDb.sqlite
+        .prepare('UPDATE capability_calls SET extensions_json = ? WHERE call_id = ?')
+        .run(
+          JSON.stringify({
+            'openkit.gateway/routeLineage': lineage,
+            'future.example/evidence': { label: 'retained' },
+          }),
+          'cap_source'
+        );
+      input.capabilityCalls = listWorkspaceCapabilityCalls(sourceDb, source.workspaceId);
+    } finally {
+      sourceDb.sqlite.close();
+    }
+    const exportRoot = join(mkdtempSync(join(tmpdir(), 'gateway-call-export-')), 'export');
+    const verified = writeWorkspaceExportTree({ ...input, exportRoot });
+    const snapshot = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    const db = openWorkspaceDb(
+      mkdtempSync(join(tmpdir(), 'gateway-call-import-')),
+      targetWorkspaceId
+    );
+    try {
+      applyScopedMigrations(db);
+      importWorkspaceCapabilityUsageLedger({
+        workspaceDb: db,
+        capabilityCalls: snapshot.capabilityCalls,
+        usageRecords: snapshot.usageRecords,
+      });
+      const imported = listWorkspaceCapabilityCalls(db, targetWorkspaceId);
+      expect(imported.find((call) => call.id === 'cap_source')).toMatchObject({
+        systemPromptDigest: digest,
+        extensions: {
+          'openkit.gateway/routeLineage': lineage,
+          'future.example/evidence': { label: 'retained' },
+        },
+      });
+      expect(imported.find((call) => call.id === 'cap_absent')).not.toHaveProperty(
+        'systemPromptDigest'
+      );
+      expect(imported.find((call) => call.id === 'cap_absent')).not.toHaveProperty('extensions');
+      const row = db.sqlite
+        .prepare(
+          'SELECT system_prompt_digest, extensions_json FROM capability_calls WHERE call_id = ?'
+        )
+        .get('cap_source') as { system_prompt_digest: string; extensions_json: string };
+      expect(row.system_prompt_digest).toBe(digest);
+      expect(JSON.parse(row.extensions_json)).toEqual({
+        'openkit.gateway/routeLineage': lineage,
+        'future.example/evidence': { label: 'retained' },
+      });
+    } finally {
+      db.sqlite.close();
+    }
+  });
 });

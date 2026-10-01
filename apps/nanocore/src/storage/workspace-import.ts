@@ -56,6 +56,7 @@ import {
   deriveArtifactReviewWorkerRequestId,
   serializeArtifactReviewFollowUpRequest,
 } from '../artifact-reviews.js';
+import { CanonicalCapabilityCallExtensionsSchema } from '../capability/usage-ledger.js';
 import {
   AGENT_RESOURCE_CATALOG_EXPORT_PATH,
   readPortableAgentResourceCatalog,
@@ -248,7 +249,8 @@ type ExportedWorkspaceRepositoryResource = z.infer<
   typeof ExportedWorkspaceRepositoryResourceSchema
 >;
 
-const ExportedCapabilityCallSchema = CapabilityCallSchema.extend({
+const ExportedCapabilityCallSchema = CapabilityCallSchema.safeExtend({
+  extensions: CanonicalCapabilityCallExtensionsSchema.optional(),
   family: z.enum(['llm', 'mcp', 'knowledge', 'runtime', 'storage', 'workspace']),
   operation: z.string().min(1),
   providerRef: z.string().min(1).nullable(),

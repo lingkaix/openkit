@@ -113,6 +113,7 @@ CREATE TABLE `capability_calls` (
 	`started_at` text,
 	`completed_at` text
 , `package_snapshot_id` text, `schema_snapshot_id` text, `runtime_origin_ref` text, `runtime_cache_lineage_ref` text, `system_prompt_digest` text,
+	`extensions_json` text,
 	CONSTRAINT `capability_calls_system_prompt_digest_check` CHECK (`system_prompt_digest` IS NULL OR (`family` = 'llm' AND `capability_id` IN ('llm.chat_completions', 'llm.responses')))
 );
 

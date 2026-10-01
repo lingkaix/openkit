@@ -48,3 +48,7 @@ pnpm --filter @openkit/nanocore run build
 ```
 
 Run `openapi:generate` and `openapi:validate` whenever a documented App API operation or schema projection changes.
+
+Gateway consumers in Administration, Goal planning and Quick Chat open their existing capability IDs before logical route planning and finish once, including failures without measurements. Usage retains the measured Provider while the logical call has no Provider reference. The Workspace capability-usage audit reader applies Thread visibility and exposes only the redacted route explanation.
+
+Quick Chat passes the same executor deadline on every inference transport and keeps a submitted Chat command’s normalized request ID in its logical call and measurements. It uses logical dispatch and may span members, so the new call reference stays null while UsageRecord retains the measured Provider.

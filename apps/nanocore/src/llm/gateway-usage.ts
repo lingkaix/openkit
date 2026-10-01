@@ -1,3 +1,4 @@
+import { type GatewayCallLedgerBinding, recordUsage } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 
 /**
@@ -328,4 +329,31 @@ function readRecord(value: unknown): Record<string, unknown> {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/** Retains internal reported consumption; a successful unmetered call keeps its existing observed-request measurement. */
+export function recordInternalLlmGatewayUsage(
+  input: GatewayCallLedgerBinding & {
+    readonly logicalModelId: string;
+    readonly providerId: string;
+    readonly usage?: unknown;
+    readonly succeeded: boolean;
+  }
+): string[] {
+  const parsed = parseUsage(input.usage);
+  const tokens = parsed.totalTokens || parsed.inputTokens + parsed.completionTokens;
+  if (!tokens && !input.succeeded) return [];
+  return recordUsage({
+    ...input,
+    records: [
+      {
+        category: 'llm',
+        modelId: input.logicalModelId,
+        providerRef: input.providerId,
+        quantity: tokens > 0 ? tokens : 1,
+        source: tokens > 0 ? 'gateway-reported' : 'gateway-observed',
+        unit: tokens > 0 ? 'tokens' : 'requests',
+      },
+    ],
+  });
 }

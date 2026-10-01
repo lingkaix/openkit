@@ -82,3 +82,5 @@ Workspace review patch payloads retain UTF-8 text by default and use explicit ca
 `RuntimeConfigFileDeleteRequestSchema` is the closed, revision-bound Provider deletion command. It permits only the `provider` kind and requires the exact existing source revision; successful deletion has an empty `204` response.
 
 Structured conversation submission accepts optional canonical `reasoningEffort`. Conversation model choices expose optional `reasoningEffortLevels`, preserving the distinction between declared empty controls and absent controls. Existing product Turn projections expose the immutable admitted preference.
+
+The capability-usage response exposes `routeLineage` as the Workspace audit projection, omitting the canonical extensions document, Provider/native-model identity and measurement references. It uses the shared closed failure kinds and preserves the existing system-prompt digest restriction.

@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,11 +6,13 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   finishCapabilityCall,
+  importWorkspaceCapabilityUsageLedger,
   listWorkspaceCapabilityCalls,
   readLatestCurrentAgentSessionLlmUsage,
   recordUsage,
   recoverRunningCapabilityCalls,
   startCapabilityCall,
+  writeGatewayRouteLineage,
 } from './usage-ledger.js';
 
 describe('capability usage ledger', () => {
@@ -794,3 +796,176 @@ function auditRows(
     .prepare('SELECT * FROM audit_events WHERE capability_call_id = ? ORDER BY created_at')
     .all(callId) as Array<Record<string, unknown>>;
 }
+
+describe('retained call digest round-trip', () => {
+  it('exports then imports a digest and preserves absence on an old row', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-digest-transfer-'));
+    const source = openWorkspaceDb(dataRoot, 'ws_source');
+    const target = openWorkspaceDb(dataRoot, 'ws_target');
+    try {
+      applyScopedMigrations(source);
+      applyScopedMigrations(target);
+      for (const callId of ['cap_digest', 'cap_absent']) {
+        startCapabilityCall({
+          workspaceDb: source,
+          workspaceId: 'ws_source',
+          authorityActor: null,
+          capabilityId: 'llm.responses',
+          family: 'llm',
+          operation: 'responses',
+          redactionClass: 'metadata-only',
+          callId,
+        });
+      }
+      const digest = `sha256:${'a'.repeat(64)}`;
+      source.sqlite
+        .prepare('UPDATE capability_calls SET system_prompt_digest = ? WHERE call_id = ?')
+        .run(digest, 'cap_digest');
+      const exported = JSON.parse(
+        JSON.stringify(listWorkspaceCapabilityCalls(source, 'ws_source'))
+      );
+      importWorkspaceCapabilityUsageLedger({
+        workspaceDb: target,
+        capabilityCalls: exported.map((call: Record<string, unknown>) => ({
+          ...call,
+          workspaceId: 'ws_target',
+        })),
+        usageRecords: [],
+      });
+      expect(
+        listWorkspaceCapabilityCalls(target, 'ws_target').find((call) => call.id === 'cap_digest')
+          ?.systemPromptDigest
+      ).toBe(digest);
+      expect(
+        listWorkspaceCapabilityCalls(target, 'ws_target').find((call) => call.id === 'cap_absent')
+      ).not.toHaveProperty('systemPromptDigest');
+      expect(
+        listWorkspaceCapabilityCalls(target, 'ws_target').find((call) => call.id === 'cap_absent')
+      ).not.toHaveProperty('extensions');
+      expect(
+        target.sqlite
+          .prepare('SELECT extensions_json FROM capability_calls WHERE call_id = ?')
+          .get('cap_absent')
+      ).toEqual({ extensions_json: null });
+      expect(
+        target.sqlite
+          .prepare('SELECT system_prompt_digest FROM capability_calls WHERE call_id = ?')
+          .get('cap_digest')
+      ).toEqual({ system_prompt_digest: digest });
+    } finally {
+      source.sqlite.close();
+      target.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Gateway lineage recovery', () => {
+  it('keeps committed unknown attempt evidence when a running call is recovered', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-lineage-recovery-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_recovery');
+    try {
+      applyScopedMigrations(workspaceDb);
+      const call = startCapabilityCall({
+        workspaceDb,
+        workspaceId: 'ws_recovery',
+        authorityActor: null,
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses',
+        redactionClass: 'metadata-only',
+      });
+      writeGatewayRouteLineage({
+        workspaceDb,
+        call,
+        logicalModelId: 'tier',
+        entry: {
+          kind: 'attempt',
+          routeMemberId: 'primary',
+          providerProfileId: 'p',
+          providerModel: 'gpt-5.1',
+          selectionReason: 'primary',
+          attemptOrder: 0,
+          retryIndex: 0,
+          outputBegan: false,
+          terminalResult: 'unknown',
+        },
+      });
+      const before = workspaceDb.sqlite
+        .prepare('SELECT extensions_json FROM capability_calls')
+        .get();
+      expect(recoverRunningCapabilityCalls({ workspaceDb })).toBe(1);
+      expect(
+        workspaceDb.sqlite.prepare('SELECT extensions_json FROM capability_calls').get()
+      ).toEqual(before);
+      expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_recovery')[0]).toMatchObject({
+        status: 'unknown',
+        extensions: {
+          'openkit.gateway/routeLineage': {
+            entries: [{ terminalResult: 'unknown', outputBegan: false }],
+          },
+        },
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('slice 1d round 2 canonical extension rewrite', () => {
+  it('keeps another stored namespace while validating and updating its owned namespace', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'canonical-extensions-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_extensions');
+    try {
+      applyScopedMigrations(workspaceDb);
+      const call = startCapabilityCall({
+        workspaceDb,
+        workspaceId: 'ws_extensions',
+        authorityActor: null,
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses',
+        redactionClass: 'metadata-only',
+      });
+      const other = { label: 'retained', nested: [false, 0, null] };
+      workspaceDb.sqlite
+        .prepare('UPDATE capability_calls SET extensions_json = ? WHERE call_id = ?')
+        .run(JSON.stringify({ 'future.example/evidence': other }), call.id);
+      const entry = {
+        kind: 'attempt' as const,
+        routeMemberId: 'primary',
+        providerProfileId: 'p',
+        providerModel: 'native',
+        selectionReason: 'primary',
+        attemptOrder: 0,
+        retryIndex: 0,
+        outputBegan: false,
+        terminalResult: 'unknown' as const,
+      };
+      writeGatewayRouteLineage({ workspaceDb, call, logicalModelId: 'tier', entry });
+      const read = () =>
+        JSON.parse(
+          (
+            workspaceDb.sqlite
+              .prepare('SELECT extensions_json FROM capability_calls WHERE call_id = ?')
+              .get(call.id) as { extensions_json: string }
+          ).extensions_json
+        );
+      expect(read()['future.example/evidence']).toEqual(other);
+      expect(() =>
+        writeGatewayRouteLineage({
+          workspaceDb,
+          call,
+          logicalModelId: 'tier',
+          entry: { ...entry, failureKind: 'new_kind' as never },
+        })
+      ).toThrow();
+      expect(read()['future.example/evidence']).toEqual(other);
+      expect(read()['openkit.gateway/routeLineage'].entries).toHaveLength(1);
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+});

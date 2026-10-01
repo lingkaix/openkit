@@ -1308,7 +1308,7 @@ describe('OpenAI-compatible agent gateway', () => {
           family: 'llm',
           item_id: 'item_1',
           operation: 'chat_completions',
-          provider_ref: 'anthropic',
+          provider_ref: null,
           redaction_class: 'metadata-only',
           request_id: '11111111-1111-4111-8111-111111111111',
           service_ref: 'llm-gateway',
@@ -1366,7 +1366,7 @@ describe('OpenAI-compatible agent gateway', () => {
           expect.objectContaining({
             capabilityId: 'llm.chat_completions',
             operation: 'chat_completions',
-            providerRef: 'anthropic',
+            providerRef: null,
             status: 'succeeded',
           }),
         ],
@@ -1548,6 +1548,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     const store = createDemoStore({ dataRoot });
     const workspace = store.createWorkspace('Native OpenAI usage');
+    store.createThread(workspace.id, 'Native OpenAI usage', 'thread_openai');
 
     try {
       applyMigrations(coreDb);
@@ -1622,7 +1623,7 @@ describe('OpenAI-compatible agent gateway', () => {
           expect.objectContaining({
             capabilityId: 'llm.chat_completions',
             operation: 'chat_completions',
-            providerRef: 'runtime-openai',
+            providerRef: null,
             status: 'succeeded',
             threadId: 'thread_openai',
           }),
@@ -1785,7 +1786,7 @@ describe('OpenAI-compatible agent gateway', () => {
         ).toMatchObject({
           capability_id: 'llm.responses',
           operation: 'responses',
-          provider_ref: 'anthropic',
+          provider_ref: null,
           request_id: '22222222-2222-4222-8222-222222222222',
           status: 'succeeded',
           thread_id: 'thread_2',
@@ -2194,6 +2195,7 @@ describe('OpenAI-compatible agent gateway', () => {
       {
         error: new DOMException('provider-originated abort', 'AbortError'),
         ledgerStatus: 'failed',
+        ledgerCode: 'llm_gateway_failed',
         requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         responseStatus: 400,
         workspaceId: 'ws_provider_abort_failed',
@@ -2205,7 +2207,8 @@ describe('OpenAI-compatible agent gateway', () => {
             status: 504,
           })
         ) as OpenAICompatibleProviderError,
-        ledgerStatus: 'timed-out',
+        ledgerStatus: 'failed',
+        ledgerCode: 'gateway_logical_model_unavailable',
         requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         responseStatus: 503,
         workspaceId: 'ws_typed_provider_timeout',
@@ -2250,7 +2253,7 @@ describe('OpenAI-compatible agent gateway', () => {
             workspaceDb.sqlite.prepare('SELECT status, error_code FROM capability_calls').get()
           ).toMatchObject({
             status: testCase.ledgerStatus,
-            error_code: 'llm_gateway_failed',
+            error_code: testCase.ledgerCode,
           });
         } finally {
           workspaceDb.sqlite.close();
@@ -2476,9 +2479,9 @@ describe('OpenAI-compatible agent gateway', () => {
         },
       });
       const uses = listVaultUseRecords(coreDb);
-      expect(uses).toHaveLength(4); // Initial resolution plus three same-member retries; selection adds no extra read.
+      expect(uses).toHaveLength(1); // A pre-dispatch failure excludes this member without reached-attempt retries.
       expect(uses).toEqual(
-        Array.from({ length: 4 }, () =>
+        Array.from({ length: 1 }, () =>
           expect.objectContaining({
             failureCode: 'vault-locked',
             outcome: 'failed',
