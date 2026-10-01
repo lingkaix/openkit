@@ -323,13 +323,13 @@ function writeReloadableModelCatalog(dataRoot: string): void {
     join(dataRoot, 'config', 'gateway.jsonc'),
     `${JSON.stringify(
       {
-        defaultLogicalModelId: 'reasoning',
+        defaultLogicalModelId: 'smart',
         enabled: true,
         logicalModels: [
           {
             contextManagement: [{ compactThreshold: 8_000, type: 'compaction' }],
-            displayName: 'Reasoning',
-            id: 'reasoning',
+            displayName: 'Smart',
+            id: 'smart',
             routes: [
               {
                 id: 'worker-environment-fixture',
@@ -804,7 +804,7 @@ describe('Worker environment App composition', () => {
       });
       const executor = new DeferredInterruptTurnExecutor(coreDb);
       const agentSetupOptions = {
-        logicalModelId: 'reasoning',
+        logicalModelId: 'smart',
         privateRoute: {
           providerModel: 'openai/gpt-5.2',
           providerProfileId: 'worker-environment-fixture',

@@ -1,10 +1,11 @@
-// Anthropic provider metadata for the pinned Pi worker route.
-// The Pi AgentManifest credential declaration and its VaultGrant remain the only credential authority.
+// Anthropic Core Gateway provider template.
+// Create the matching vault reference before using this provider.
 {
   "id": "anthropic",
-  "displayName": "Anthropic Worker Direct",
+  "displayName": "Anthropic",
   "kind": "direct",
   "baseUrl": "https://api.anthropic.com",
-  "models": ["claude-sonnet-4-5"],
-  "defaultModel": "claude-sonnet-4-5"
+  "models": ["claude-sonnet-5-5", "claude-opus-5-5"],
+  "defaultModel": "claude-sonnet-5-5",
+  "secretRef": "vault://provider_anthropic"
 }

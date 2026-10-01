@@ -73,19 +73,19 @@ describe('loadAgentManifests', () => {
         expect.objectContaining({
           displayName: 'Codex Agent',
           id: 'agent_codex_host',
-          models: expect.objectContaining({ preferredLogicalModelId: 'reasoning' }),
+          models: expect.objectContaining({ preferredLogicalModelId: 'smart' }),
           runtime: expect.objectContaining({ kind: 'codex' }),
         }),
         expect.objectContaining({
           displayName: 'OpenCode Agent',
           id: 'agent_opencode_server',
-          models: expect.objectContaining({ preferredLogicalModelId: 'reasoning' }),
+          models: expect.objectContaining({ preferredLogicalModelId: 'smart' }),
           runtime: expect.objectContaining({ kind: 'opencode' }),
         }),
         expect.objectContaining({
           displayName: 'Pi Agent',
           id: 'agent_pi',
-          models: expect.objectContaining({ preferredLogicalModelId: 'grok' }),
+          models: expect.objectContaining({ preferredLogicalModelId: 'smart' }),
           readiness: expect.objectContaining({ status: 'disabled' }),
           runtime: expect.objectContaining({ adapter: 'pi', kind: 'pi' }),
         }),

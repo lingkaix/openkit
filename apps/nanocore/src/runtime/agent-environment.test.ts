@@ -250,7 +250,7 @@ describe('agent environment package resolver', () => {
     const manifest = loaded.manifests.find((candidate) => candidate.id === 'agent_deepseek');
     if (!manifest) throw new Error('Expected the shipped DeepSeek template to load.');
     const result = resolveAgentSetup(manifest, {
-      gatewayConfig: createTestGatewayConfig({ logicalModelId: 'reasoning' }),
+      gatewayConfig: createTestGatewayConfig({ logicalModelId: 'smart' }),
       providerRegistry: new ProviderRegistry([
         {
           id: 'agent-openrouter',
@@ -290,7 +290,7 @@ describe('agent environment package resolver', () => {
     const manifest = loaded.manifests.find((entry) => entry.id === 'agent_codex_host');
     if (!manifest) throw new Error('Expected the shipped Codex template.');
     const result = resolveAgentSetup(manifest, {
-      gatewayConfig: createTestGatewayConfig({ logicalModelId: 'reasoning' }),
+      gatewayConfig: createTestGatewayConfig({ logicalModelId: 'smart' }),
       providerRegistry: new ProviderRegistry([
         {
           id: 'agent-openrouter',

@@ -25,11 +25,11 @@ import { loadProviderProfiles } from './providers-loader.js';
 const EXPECTED_V003_PROVIDER_TEMPLATES = [
   {
     baseUrl: 'https://api.anthropic.com',
-    displayName: 'Anthropic Worker Direct',
+    displayName: 'Anthropic',
     fileName: 'anthropic-worker-direct.provider.jsonc',
     id: 'anthropic',
     kind: 'direct',
-    secretRef: undefined,
+    secretRef: 'vault://provider_anthropic',
   },
   {
     baseUrl: 'https://api.openai.com/v1',

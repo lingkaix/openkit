@@ -4,7 +4,7 @@ These templates are copied into `OPENKIT_DATA_ROOT/config/providers/` when missi
 
 ## Templates
 
-- `anthropic-worker-direct.provider.jsonc`: credential-free registry metadata for the pinned Pi worker route; the Pi AgentManifest and its VaultGrant own `ANTHROPIC_API_KEY` injection.
+- `anthropic-worker-direct.provider.jsonc`: Anthropic Core Gateway provider using `vault://provider_anthropic`; the retained filename does not authorize direct Worker access.
 - `openai-default.provider.jsonc`: OpenAI direct provider using `vault://provider_openai`.
 - `openrouter-default.provider.jsonc`: OpenRouter gateway provider using `vault://provider_openrouter`.
 - `xai-grok-default.provider.jsonc`: xAI Grok direct provider using `vault://provider_xai`.
@@ -17,11 +17,26 @@ Operators should keep credentials out of provider files and create the matching 
 
 The active starter provider ids and model ids are traceable to the vendored `models.dev` snapshot under `packages/models-dev-catalog/snapshots/2026-10-01/`.
 
+## Shipped Logical Tiers
+
+The adjacent `gateway.jsonc` ships exactly `free`, `flash`, `smart`, and `pro`, with default `smart`. These are administrator-remappable logical IDs, not a limit on authored logical models. Each request starts with the first available authored member and follows backups in the listed order. All tiers omit `routing`, retaining the default `autoFailover: true`.
+
+| Tier | Primary and ordered backups | Compaction threshold |
+| --- | --- | --- |
+| `free` | OpenRouter Laguna S 2.1 free, Laguna XS 2.1 free, North Mini Code free | 160,000 |
+| `flash` | OpenAI GPT-6 Luna, Google Gemini 3.8 Flash, OpenAI GPT-5.4 Mini | 200,000 |
+| `smart` | OpenAI GPT-6.1 Sol, Anthropic Claude Sonnet 5.5, xAI Grok 4.3, OpenAI GPT-5.1 | 200,000 |
+| `pro` | OpenAI GPT-6 Astra, Anthropic Claude Opus 5.5, OpenAI GPT-5.4 Pro | 200,000 |
+
+The pinned snapshot lists zero input/output prices for all `free` members; credentials and account access are still required by their Provider. Luna and Flash serve the daily-work tier, Sol and Sonnet the middle tier, and Astra and Opus the flagship tier. The last OpenAI backups retain text/image-only input metadata, so each tier's intersected input contract is representable by the pinned Pi and DeepSeek adapters as well as Codex and OpenCode. Free is text-only; the other tiers support text and image. All members declare reasoning and tool calling. These are template choices from the pinned inventory, not measured latency or quality guarantees.
+
+Each threshold reserves every member's full known maximum output within its context window, including unavailable members; the focused shipped-template tests check the effective metadata and coherent contracts. Fresh credential-free configuration completes safe reload without an error diagnostic; missing API keys do not currently determine member availability, and reload warnings follow the existing resolver. A successful setup or reload does not prove upstream credentials or live inference. Creating the matching Vault references prepares Core access. Later template changes never overwrite existing authored Data Root files.
+
 The custom OpenAI-compatible template is operator-defined and intentionally has no upstream `models.dev` provider id. Its placeholder model has no real context limit; adding a fabricated limit to satisfy startup validation is not a supported activation procedure.
 
 ## Current OpenAI Flagships
 
-`openai-flagship.provider.jsonc` and `openai-codex-subscription.provider.jsonc` are installed with a non-loadable `.example` suffix. They provide official `modelMetadata` overlays for models newer than the pinned inventory, using the existing [Gateway metadata contract](../../../../../docs/specs/20260526-llm_gateway_responses_api.md#provider-model-metadata). They do not replace an operator profile, select an account slot, or change the default Gateway routes automatically.
+`openai-flagship.provider.jsonc` and `openai-codex-subscription.provider.jsonc` are installed with a non-loadable `.example` suffix. They provide optional `modelMetadata` overlays using the existing [Gateway metadata contract](../../../../../docs/specs/20260526-llm_gateway_responses_api.md#provider-model-metadata). They do not replace an operator profile, select an account slot, or change the default Gateway routes automatically.
 
 All four direct API models use the official 1,050,000-token context window. The opt-in subscription template declares conservative 256,000-token context defaults. Deployment operators can centralize different operating limits in `model-catalog.jsonc` and remove the superseded profile leaves; there is no subscription-family clamp after metadata composition. Both templates retain the official 128,000-token maximum output, text/image input, text output, reasoning, and function calling. The direct API template uses the API IDs below; the subscription template prefixes each with `openai-codex/`. Metadata keys exactly match the corresponding `models` entries.
 

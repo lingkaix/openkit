@@ -363,6 +363,10 @@ describe('runtime config file API', () => {
       'utf8'
     );
     expect(agentTemplate).toContain('"id": "new-agent"');
+    expect(JSON.parse(agentTemplate).models).toEqual({
+      preferredLogicalModelId: 'smart',
+      allowedLogicalModelIds: 'all',
+    });
     expect(agentTemplate).toContain('"kind": "reference"');
     expect(JSON.parse(agentTemplate).runtime).toMatchObject({
       adapter: 'codex',

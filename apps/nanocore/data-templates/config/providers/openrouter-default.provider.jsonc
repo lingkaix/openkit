@@ -1,11 +1,15 @@
 // OpenRouter provider template.
 // Create the matching vault reference before using this provider.
-// The provider id and starter model are traceable to the vendored models.dev snapshot.
+// The provider id and tier models are traceable to the vendored models.dev snapshot.
 {
   "id": "openrouter",
   "displayName": "OpenRouter",
   "kind": "gateway",
   "baseUrl": "https://openrouter.ai/api/v1",
-  "models": ["openai/gpt-5.1"],
+  "models": [
+    "poolside/laguna-s-2.1:free",
+    "poolside/laguna-xs-2.1:free",
+    "cohere/north-mini-code:free"
+  ],
   "secretRef": "vault://provider_openrouter"
 }

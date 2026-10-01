@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "defaultLogicalModelId": "reasoning",
+  "defaultLogicalModelId": "smart",
   "profiles": [
     {
       "id": "assistant-default",
       "roleId": "assistant",
-      "preferredLogicalModelId": "reasoning",
-      "compatibleLogicalModelIds": ["claude", "gemini", "grok"],
+      "preferredLogicalModelId": "smart",
+      "compatibleLogicalModelIds": ["free", "flash", "pro"],
       "requiredLogicalModelCapabilities": ["chat-completions"]
     }
   ],

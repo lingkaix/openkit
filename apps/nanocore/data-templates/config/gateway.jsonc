@@ -1,46 +1,120 @@
 {
   "schemaVersion": 1,
   "enabled": true,
-  "defaultLogicalModelId": "reasoning",
+  "defaultLogicalModelId": "smart",
   "logicalModels": [
     {
-      "id": "reasoning",
-      "displayName": "Reasoning",
-      "contextManagement": [{ "type": "compaction", "compactThreshold": 200000 }],
-      "routes": [
-        { "id": "openai-primary", "providerProfileId": "openai", "providerModel": "gpt-5.1" },
+      "id": "free",
+      "displayName": "Free",
+      "contextManagement": [
         {
-          "id": "openrouter-fallback",
+          "type": "compaction",
+          "compactThreshold": 160000
+        }
+      ],
+      "routes": [
+        {
+          "id": "free-laguna-primary",
           "providerProfileId": "openrouter",
-          "providerModel": "openai/gpt-5.1"
+          "providerModel": "poolside/laguna-s-2.1:free"
+        },
+        {
+          "id": "free-laguna-xs-backup",
+          "providerProfileId": "openrouter",
+          "providerModel": "poolside/laguna-xs-2.1:free"
+        },
+        {
+          "id": "free-north-backup",
+          "providerProfileId": "openrouter",
+          "providerModel": "cohere/north-mini-code:free"
         }
       ]
     },
     {
-      "id": "claude",
-      "displayName": "Claude",
-      "contextManagement": [{ "type": "compaction", "compactThreshold": 200000 }],
+      "id": "flash",
+      "displayName": "Flash",
+      "contextManagement": [
+        {
+          "type": "compaction",
+          "compactThreshold": 200000
+        }
+      ],
       "routes": [
         {
-          "id": "anthropic-primary",
-          "providerProfileId": "anthropic",
-          "providerModel": "claude-sonnet-4-5"
+          "id": "flash-luna-primary",
+          "providerProfileId": "openai",
+          "providerModel": "gpt-6-luna"
+        },
+        {
+          "id": "flash-gemini-backup",
+          "providerProfileId": "google",
+          "providerModel": "gemini-3.8-flash"
+        },
+        {
+          "id": "flash-mini-backup",
+          "providerProfileId": "openai",
+          "providerModel": "gpt-5.4-mini"
         }
       ]
     },
     {
-      "id": "gemini",
-      "displayName": "Gemini",
-      "contextManagement": [{ "type": "compaction", "compactThreshold": 200000 }],
+      "id": "smart",
+      "displayName": "Smart",
+      "contextManagement": [
+        {
+          "type": "compaction",
+          "compactThreshold": 200000
+        }
+      ],
       "routes": [
-        { "id": "google-primary", "providerProfileId": "google", "providerModel": "gemini-2.5-pro" }
+        {
+          "id": "smart-sol-primary",
+          "providerProfileId": "openai",
+          "providerModel": "gpt-6.1-sol"
+        },
+        {
+          "id": "smart-sonnet-backup",
+          "providerProfileId": "anthropic",
+          "providerModel": "claude-sonnet-5-5"
+        },
+        {
+          "id": "smart-grok-backup",
+          "providerProfileId": "xai",
+          "providerModel": "grok-4.3"
+        },
+        {
+          "id": "smart-gpt-backup",
+          "providerProfileId": "openai",
+          "providerModel": "gpt-5.1"
+        }
       ]
     },
     {
-      "id": "grok",
-      "displayName": "Grok",
-      "contextManagement": [{ "type": "compaction", "compactThreshold": 200000 }],
-      "routes": [{ "id": "xai-primary", "providerProfileId": "xai", "providerModel": "grok-4.3" }]
+      "id": "pro",
+      "displayName": "Pro",
+      "contextManagement": [
+        {
+          "type": "compaction",
+          "compactThreshold": 200000
+        }
+      ],
+      "routes": [
+        {
+          "id": "pro-astra-primary",
+          "providerProfileId": "openai",
+          "providerModel": "gpt-6-astra"
+        },
+        {
+          "id": "pro-opus-backup",
+          "providerProfileId": "anthropic",
+          "providerModel": "claude-opus-5-5"
+        },
+        {
+          "id": "pro-gpt-backup",
+          "providerProfileId": "openai",
+          "providerModel": "gpt-5.4-pro"
+        }
+      ]
     }
   ],
   "requiredFeatures": [],

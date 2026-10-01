@@ -907,7 +907,7 @@ export class RuntimeConfigFileService {
     ]
   },
   "models": {
-    "preferredLogicalModelId": "reasoning",
+    "preferredLogicalModelId": "smart",
     "allowedLogicalModelIds": "all"
   },
   "profiles": [{ "id": "default" }],

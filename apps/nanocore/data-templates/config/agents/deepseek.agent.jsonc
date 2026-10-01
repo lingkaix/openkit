@@ -34,7 +34,7 @@
     ]
   },
   "models": {
-    "preferredLogicalModelId": "reasoning",
+    "preferredLogicalModelId": "smart",
     "allowedLogicalModelIds": "all"
   },
   "profiles": [

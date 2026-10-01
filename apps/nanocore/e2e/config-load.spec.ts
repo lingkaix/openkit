@@ -33,6 +33,8 @@ describe('nanocore e2e config loading', () => {
         baseUrl: 'https://provider.example.com/v1',
         models: ['model-e2e'],
         defaultModel: 'model-e2e',
+        // The synthetic uncatalogued model still obeys boot's known-context contract.
+        modelMetadata: { 'model-e2e': { limit: { context: 16_000 } } },
         readiness: { status: 'ready' },
       })
     );
@@ -43,8 +45,8 @@ describe('nanocore e2e config loading', () => {
         id: 'agent_e2e',
         displayName: 'E2E Agent',
         models: {
-          preferredLogicalModelId: 'reasoning',
-          allowedLogicalModelIds: ['reasoning'],
+          preferredLogicalModelId: 'smart',
+          allowedLogicalModelIds: ['smart'],
         },
         runtime: {
           kind: 'custom',

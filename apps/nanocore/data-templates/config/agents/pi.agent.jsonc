@@ -35,7 +35,7 @@
     ]
   },
   "models": {
-    "preferredLogicalModelId": "grok",
+    "preferredLogicalModelId": "smart",
     "allowedLogicalModelIds": "all"
   },
   "profiles": [

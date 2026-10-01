@@ -6,6 +6,7 @@ import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
+import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
 import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
 
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -194,6 +195,26 @@ function writeWorkspaceMcpServers(dataRoot: string, workspaceId: string, body: s
 }
 
 describe('runtime config loading and reload planning', () => {
+  it('reloads fresh shipped templates without credentials with exactly the authored tiers and routes', () => {
+    const dataRoot = createDataRoot();
+    ensureConfigTemplateSurface(dataRoot);
+    const manager = createRuntimeConfigManager({ dataRoot });
+
+    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    const snapshot = manager.current();
+    expect(snapshot.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
+      []
+    );
+    const catalog = resolveLogicalModelCatalog(snapshot.gatewayConfig, snapshot.providerRegistry);
+    expect(catalog.map((model) => model.id)).toEqual(['free', 'flash', 'smart', 'pro']);
+    expect(snapshot.gatewayConfig.defaultLogicalModelId).toBe('smart');
+    expect(
+      catalog.map((model) =>
+        model.routes.map(({ available, unavailableReason, ...route }) => route)
+      )
+    ).toEqual(snapshot.gatewayConfig.logicalModels.map((model) => model.routes));
+  });
+
   it.each([
     'absent',
     'delisted',
@@ -802,11 +823,25 @@ describe('runtime config loading and reload planning', () => {
       )
     ).toBe(true);
     expect(snapshot.providerRegistry.get('openai-compatible-custom')).toBeNull();
-    expect(snapshot.providerRegistry.get('openai')?.models).toEqual(['gpt-5.1']);
-    expect(snapshot.providerRegistry.get('anthropic')?.models).toEqual(['claude-sonnet-4-5']);
-    expect(snapshot.providerRegistry.get('openrouter')?.models).toEqual(['openai/gpt-5.1']);
+    expect(snapshot.providerRegistry.get('openai')?.models).toEqual([
+      'gpt-6-luna',
+      'gpt-5.4-mini',
+      'gpt-6.1-sol',
+      'gpt-5.1',
+      'gpt-6-astra',
+      'gpt-5.4-pro',
+    ]);
+    expect(snapshot.providerRegistry.get('anthropic')?.models).toEqual([
+      'claude-sonnet-5-5',
+      'claude-opus-5-5',
+    ]);
+    expect(snapshot.providerRegistry.get('openrouter')?.models).toEqual([
+      'poolside/laguna-s-2.1:free',
+      'poolside/laguna-xs-2.1:free',
+      'cohere/north-mini-code:free',
+    ]);
     expect(snapshot.providerRegistry.get('xai')?.models).toEqual(['grok-4.3']);
-    expect(snapshot.providerRegistry.get('google')?.models).toEqual(['gemini-2.5-pro']);
+    expect(snapshot.providerRegistry.get('google')?.models).toEqual(['gemini-3.8-flash']);
   });
 
   it('applies server.jsonc workDataCapture to later Turns without interrupting a running Turn', () => {
