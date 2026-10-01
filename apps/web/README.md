@@ -263,6 +263,8 @@ The existing `+` chooser exposes Advanced settings for new Task Worker work: def
 
 The Composer Agent selector shows target descriptions and availability reasons through React Aria label and description slots.
 
+The Composer's lower row includes a React Aria reasoning-effort selector only when the selected logical model advertises reasoning levels. Options follow the canonical effort order. Active Threads preselect the latest recorded admitted Turn effort only while that model advertises it; starter conversations have no Thread preselection. The existing structured submission forwards explicit effort and preserves both effort and omission with the full draft and request identity after failure or transport uncertainty, even when the catalog or dashboard refreshes. An effort removed from current advertisements remains explained in the retained retry draft.
+
 An Assistant submission returning the typed `499 provider_call_aborted` confirms that its admitted Turn was interrupted. The Composer retains the full draft and explains that the next explicit Send starts a new Turn. That Send mints and stores a fresh request identity before dispatch; if the new attempt then has transport uncertainty, its retry reuses that new identity and the same draft, including target, model, Artifacts, and Worker environment choice. Other failures keep their existing exact-retry behavior. A local abort, a Stop click, or an untyped error is not cancellation proof, and this path never automatically resubmits or clears the draft.
 
 ### Goal

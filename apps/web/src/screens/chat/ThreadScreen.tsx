@@ -541,6 +541,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   : submission?.variables?.draft
               }
               isSubmitting={submission?.status === 'pending'}
+              lastAdmittedEffort={
+                dashboard.data?.turns.findLast((turn) => turn.reasoningEffort !== undefined)
+                  ?.reasoningEffort
+              }
               cancelledRequestId={cancelledRequestId}
               completedRequestId={
                 submission?.status === 'success' ? submission.variables?.draft.requestId : undefined

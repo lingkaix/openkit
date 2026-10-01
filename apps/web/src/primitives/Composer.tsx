@@ -1,4 +1,5 @@
 import type { ConversationTargetCatalog } from '@openkit/app-api-schemas';
+import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@openkit/protocol';
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -38,6 +39,8 @@ export interface ComposerDraft {
   input: string;
   targetRef: string;
   logicalModelId?: string;
+  /** Explicit user or admitted-Turn preference; absence sends no effort override. */
+  reasoningEffort?: ReasoningEffort;
   artifactRefs: Array<{ artifactId: string; artifactVersion: number }>;
   requestId: string;
   workerStorageChoice?: {
@@ -90,6 +93,8 @@ export interface ComposerProps {
   placeholder?: string;
   disabledReason?: string;
   targetCatalog?: ConversationTargetCatalog | null;
+  /** Most recent recorded effort from this Thread's admitted Turns, never runtime state. */
+  lastAdmittedEffort?: ReasoningEffort;
   artifacts?: ComposerArtifactOption[];
   workerEnvironments?: ComposerWorkerEnvironments;
   onImportFile?: (file: File) => Promise<ComposerArtifactOption>;
@@ -105,6 +110,7 @@ export function Composer({
   placeholder = 'Describe what you need — from a quick question to a whole project',
   disabledReason,
   targetCatalog,
+  lastAdmittedEffort,
   artifacts = [],
   workerEnvironments,
   onImportFile,
@@ -113,6 +119,16 @@ export function Composer({
   const [value, setValue] = useState(initialDraft?.input ?? '');
   const [targetRef, setTargetRef] = useState(initialDraft?.targetRef ?? '');
   const [logicalModelId, setLogicalModelId] = useState(initialDraft?.logicalModelId ?? '');
+  const [effortChoice, setEffortChoice] = useState<{
+    logicalModelId: string;
+    value?: ReasoningEffort;
+  } | null>(() =>
+    initialDraft?.requestId || initialDraft?.reasoningEffort
+      ? { logicalModelId: initialDraft.logicalModelId ?? '', value: initialDraft.reasoningEffort }
+      : null
+  );
+  // Freeze both explicit effort and omission after dispatch, including restored uncertain requests.
+  const [effortSubmitted, setEffortSubmitted] = useState(Boolean(initialDraft?.requestId));
   const [selectedArtifacts, setSelectedArtifacts] = useState<ComposerArtifactOption[]>(() =>
     (initialDraft?.artifactRefs ?? []).map(
       (ref) =>
@@ -139,6 +155,24 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled = Boolean(disabledReason) || isSubmitting;
   const selectedTarget = targetCatalog?.targets.find((target) => target.targetRef === targetRef);
+  const selectedModel = selectedTarget?.logicalModels.find((model) => model.id === logicalModelId);
+  const effortLevels = selectedModel?.capabilities.includes('reasoning')
+    ? REASONING_EFFORT_LEVELS.filter((level) =>
+        selectedModel.reasoningEffortLevels?.includes(level)
+      )
+    : [];
+  const advertisedChoice =
+    effortChoice?.logicalModelId === logicalModelId &&
+    effortChoice.value &&
+    effortLevels.includes(effortChoice.value)
+      ? effortChoice.value
+      : undefined;
+  const reasoningEffort = effortSubmitted
+    ? effortChoice?.value
+    : (advertisedChoice ??
+      (lastAdmittedEffort && effortLevels.includes(lastAdmittedEffort)
+        ? lastAdmittedEffort
+        : undefined));
   const environmentApplicable = isWorkerEnvironmentTarget(selectedTarget?.kind);
   const environmentReady = selectedEnvironment === null || environmentApplicable;
   const canSubmit =
@@ -157,6 +191,8 @@ export function Composer({
     setValue('');
     setSelectedArtifacts([]);
     setSelectedEnvironment(null);
+    setEffortChoice(null);
+    setEffortSubmitted(false);
     setRequestId(crypto.randomUUID());
   }, []);
 
@@ -190,6 +226,15 @@ export function Composer({
         ? current
         : (nextTarget?.defaultLogicalModelId ?? '')
     );
+    setEffortChoice(null);
+    setEffortSubmitted(false);
+  }
+
+  /** Reprojects the Thread preference for an explicitly selected logical model. */
+  function selectModel(nextModelId: string) {
+    setLogicalModelId(nextModelId);
+    setEffortChoice(null);
+    setEffortSubmitted(false);
   }
 
   async function submit(event?: FormEvent) {
@@ -198,12 +243,15 @@ export function Composer({
     const submittedRequestId = cancelledRequestId === requestId ? crypto.randomUUID() : requestId;
     // Retain the new attempt's identity even if dispatch later has an uncertain outcome.
     if (submittedRequestId !== requestId) setRequestId(submittedRequestId);
+    setEffortChoice({ logicalModelId, value: reasoningEffort });
+    setEffortSubmitted(true);
     setPending(true);
     try {
       await onSubmit({
         input: value,
         targetRef,
         ...(logicalModelId ? { logicalModelId } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         artifactRefs: selectedArtifacts.map((artifact) => ({
           artifactId: artifact.id,
           artifactVersion: artifact.version,
@@ -380,8 +428,26 @@ export function Composer({
             availability: 'available' as const,
             unavailableReason: null,
           }))}
-          onChange={setLogicalModelId}
+          onChange={selectModel}
         />
+        {effortLevels.length ? (
+          <InlineSelect
+            isDisabled={disabled}
+            ariaLabel="Reasoning effort"
+            selectedKey={reasoningEffort ?? ''}
+            placeholder="Effort"
+            items={effortLevels.map((level) => ({
+              targetRef: level,
+              label: effortLabel(level),
+              availability: 'available' as const,
+              unavailableReason: null,
+            }))}
+            onChange={(level) => {
+              setEffortChoice({ logicalModelId, value: level as ReasoningEffort });
+              setEffortSubmitted(false);
+            }}
+          />
+        ) : null}
         <AriaButton
           type="submit"
           isDisabled={!canSubmit}
@@ -391,6 +457,11 @@ export function Composer({
           <Icon name={pending || isSubmitting ? 'spinner' : 'send'} />
         </AriaButton>
       </div>
+      {reasoningEffort && !effortLevels.includes(reasoningEffort) ? (
+        <p className="mt-2 text-xs text-fg-muted">
+          Retained effort: {effortLabel(reasoningEffort)}. This model no longer advertises it.
+        </p>
+      ) : null}
       {selectedEnvironment && !environmentApplicable ? (
         <div className="mt-2 flex flex-col items-start gap-1">
           <p className="text-xs text-fg-muted">
@@ -407,6 +478,11 @@ export function Composer({
       ) : null}
     </form>
   );
+}
+
+/** Sentence-case label for the canonical effort vocabulary. */
+function effortLabel(effort: ReasoningEffort): string {
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
 /** Identifies targets that start new Task work and accept a storage choice. */

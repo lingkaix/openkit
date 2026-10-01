@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Partial
+implementation: Implemented
 kind: boundary
 date: 2026-08-31
 ---
@@ -154,7 +154,7 @@ NanoCore implements `GET /api/app/workspaces/:workspaceId/conversation-targets` 
 
 `@openkit/core-client` exposes `client.app.getConversationTargets` and `client.app.submitConversation`; `StartChatMode*`, `client.app.startChatMode`, the Chat-specific App route, and `chat.start` are absent. Direct Task, Goal, and Knowledge operations remain available to non-Composer callers.
 
-The Web Composer implements the accepted two-region design with bounded auto-growth, Artifact selection and bounded text upload, context-filtered Agent targets, logical model selection, send action, accessible keyboard behavior, and exact draft plus request-identity preservation after failure. Product surfaces display only logical model and product target identities. The effort control, Thread-last-admitted-effort preselection, and effort submission and draft retention remain accepted targets awaiting implementation.
+The Web Composer implements the accepted two-region design with bounded auto-growth, Artifact selection and bounded text upload, context-filtered Agent targets, logical model selection, send action, accessible keyboard behavior, and exact draft plus request-identity preservation after failure. Product surfaces display only logical model and product target identities. The effort control offers only the selected logical model's advertised levels, preselects the Thread's last admitted effort only while that model advertises it, and submits and retains effort, or its omission, with the exact draft and request identity.
 
 ## Testing Strategy / Acceptance Criteria
 

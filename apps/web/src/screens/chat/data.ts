@@ -9,7 +9,7 @@ import {
   type SseEventEnvelope,
   type Thread,
 } from '@openkit/core-client';
-import { ItemSchema } from '@openkit/protocol';
+import { ItemSchema, type ReasoningEffort } from '@openkit/protocol';
 import {
   skipToken,
   useMutation,
@@ -54,6 +54,8 @@ export interface ConversationDraft {
   input: string;
   targetRef: string;
   logicalModelId?: string;
+  /** Optional explicit effort retained with the command's exact retry identity. */
+  reasoningEffort?: ReasoningEffort;
   artifactRefs: Array<{ artifactId: string; artifactVersion: number }>;
   requestId: string;
   workerStorageChoice?: {
