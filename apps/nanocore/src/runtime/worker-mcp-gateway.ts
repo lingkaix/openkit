@@ -22,6 +22,9 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
 const MCP_RESULT_MAX_BYTES = 512 * 1024;
+/** Worker-facing oversized-result refusal shared by upstream and built-in MCP tools. */
+export const MCP_RESULT_TOO_LARGE_MESSAGE =
+  'MCP tool result exceeds the capability response limit. Route bulk output through artifacts or the data plane.';
 const MCP_PROTOCOL_RESPONSE_MAX_BYTES = 2 * MCP_RESULT_MAX_BYTES;
 const MCP_HEALTH_CHECK_MS = 15_000;
 const MCP_SESSION_IDLE_MS = 60_000;
@@ -314,7 +317,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       if (Buffer.byteLength(JSON.stringify(result), 'utf8') > MCP_RESULT_MAX_BYTES) {
         throw new WorkerMcpGatewayCallError(
           'mcp-result-too-large',
-          'MCP tool result exceeds the capability response limit.',
+          MCP_RESULT_TOO_LARGE_MESSAGE,
           413,
           'contacted'
         );
@@ -1024,9 +1027,7 @@ function normalizeMcpError(error: unknown, operation: 'call' | 'list'): WorkerCo
   if (error instanceof McpHttpResponseTooLargeError) {
     return new WorkerMcpGatewayCallError(
       operation === 'call' ? 'mcp-result-too-large' : 'mcp-server-unavailable',
-      operation === 'call'
-        ? 'MCP tool result exceeds the capability response limit.'
-        : 'MCP server is unavailable.',
+      operation === 'call' ? MCP_RESULT_TOO_LARGE_MESSAGE : 'MCP server is unavailable.',
       operation === 'call' ? 413 : 503,
       'contacted',
       false,
@@ -1071,7 +1072,7 @@ function normalizeMcpCallError(
     }
     return new WorkerMcpGatewayCallError(
       'mcp-result-too-large',
-      'MCP tool result exceeds the capability response limit.',
+      MCP_RESULT_TOO_LARGE_MESSAGE,
       413,
       'contacted',
       false,

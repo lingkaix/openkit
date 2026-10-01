@@ -10,6 +10,8 @@ Successful Harness `session.close` proves the binding closed and its disposable 
 
 This directory owns accepted-turn execution, scheduler dispatch integration, worker lifecycle, runtime recovery, worker-control transport, context preparation, and runtime-specific App API feature paths.
 
+`worker-mcp-gateway.ts` and `openkit-work-mcp.ts` share the oversized-result refusal message, which directs Workers to route bulk output through artifacts or the data plane. Upstream tool results retain the 512 KiB semantic limit and 1 MiB protocol envelope allowance; refused results are never truncated, as [Worker MCP Tool Supply](../../../../docs/specs/20260704-worker_mcp_tool_supply.md#routes-on-capabilitylocal) requires.
+
 ## Boundaries
 
 - AEP LLM routes preserve optional complete effective `modelParameters` from the admitted setup. The producer copies no private Provider identity or current configuration lookup into this projection; incomplete or conflicting authored-route metadata stays absent, and the native adapter owns whether that absence prevents launch.

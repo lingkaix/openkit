@@ -58,6 +58,7 @@ import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
   createDefaultWorkerMcpGateway,
+  MCP_RESULT_TOO_LARGE_MESSAGE,
   WorkerMcpGatewayCallError,
 } from './runtime/worker-mcp-gateway.js';
 import {
@@ -2285,7 +2286,7 @@ describe('worker MCP routes', () => {
       if (message === 'oversize') {
         throw new WorkerMcpGatewayCallError(
           'mcp-result-too-large',
-          'MCP tool result exceeds the capability response limit.',
+          MCP_RESULT_TOO_LARGE_MESSAGE,
           413,
           'contacted'
         );
@@ -2487,7 +2488,16 @@ describe('worker MCP routes', () => {
         const before = callTool.mock.calls.length;
         await expect(
           echo.callTool({ arguments: failure.arguments, name: failure.name })
-        ).rejects.toMatchObject({ data: { code: failure.code } });
+        ).rejects.toMatchObject({
+          data: { code: failure.code },
+          ...(failure.code === 'mcp-result-too-large'
+            ? {
+                message: expect.stringContaining(
+                  'MCP tool result exceeds the capability response limit. Route bulk output through artifacts or the data plane.'
+                ),
+              }
+            : {}),
+        });
         expect(callTool.mock.calls.length - before).toBe(
           ['mcp-timeout', 'mcp-call-failed', 'mcp-result-too-large'].includes(failure.code) ? 1 : 0
         );

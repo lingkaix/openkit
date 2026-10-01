@@ -200,7 +200,13 @@ describe('worker MCP gateway', () => {
           toolName: 'echo',
           workspaceId: 'ws_demo',
         })
-      ).rejects.toMatchObject({ code: 'mcp-result-too-large', upstreamEffect: 'contacted' });
+      ).rejects.toMatchObject({
+        code: 'mcp-result-too-large',
+        message:
+          'MCP tool result exceeds the capability response limit. Route bulk output through artifacts or the data plane.',
+        status: 413,
+        upstreamEffect: 'contacted',
+      });
       await expect(
         gateway.callTool({
           arguments: { message: 'crash' },
@@ -259,6 +265,9 @@ describe('worker MCP gateway', () => {
         })
       ).rejects.toMatchObject({
         code: 'mcp-result-too-large',
+        message:
+          'MCP tool result exceeds the capability response limit. Route bulk output through artifacts or the data plane.',
+        status: 413,
         upstreamEffect: 'contacted',
       });
     } finally {

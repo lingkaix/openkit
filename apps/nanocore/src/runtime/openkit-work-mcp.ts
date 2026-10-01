@@ -23,6 +23,7 @@ import {
   type RaisePendingRequestInput,
 } from './pending-requests.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
+import { MCP_RESULT_TOO_LARGE_MESSAGE } from './worker-mcp-gateway.js';
 
 /** Reserved built-in Worker MCP server supplied to every worker AgentSession. */
 export const OPENKIT_WORK_MCP_ID = 'openkit-work';
@@ -244,7 +245,7 @@ export async function dispatchOpenkitWorkTool(
     if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024) {
       throw new WorkerControlGatewayError(
         'mcp-result-too-large',
-        'MCP tool result exceeds the capability response limit. Route bulk output through artifacts or the data plane.',
+        MCP_RESULT_TOO_LARGE_MESSAGE,
         413
       );
     }
