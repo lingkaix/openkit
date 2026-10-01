@@ -169,6 +169,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
   });
 
   try {
+    let attributedQueueEntryId: string | null = null;
     const dispatch = await runSchedulerDispatchLoop({
       agentManifests: input.snapshot.agentManifests,
       coreDb: input.coreDb,
@@ -182,6 +183,9 @@ export async function startProductTurn(input: StartProductTurnInput) {
       heartbeatTimeoutMs: 30_000,
       leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
       maxDispatches: 1,
+      onDispatchAttribution: (queueEntryId) => {
+        attributedQueueEntryId = queueEntryId;
+      },
       providerRegistry: input.snapshot.providerRegistry,
       gatewayConfig: input.snapshot.gatewayConfig,
       workspaceConfigs: input.snapshot.workspaceConfigs,
@@ -207,14 +211,20 @@ export async function startProductTurn(input: StartProductTurnInput) {
         : {}),
       workspaceDataSourceCatalogs: input.snapshot.workspaceDataSourceCatalogs,
       workspaceMcpServerCatalogs: input.snapshot.workspaceMcpServerCatalogs,
+    }).catch((error: unknown) => {
+      // Shared acquisition has no attribution; only this caller's attributed errors escape.
+      if (attributedQueueEntryId === queueEntryId) {
+        throw error;
+      }
+      return null;
     });
-    const started = dispatch.startedTurns.find(
+    const started = dispatch?.startedTurns.find(
       (turn) => turn.dispatch.entry.queueEntryId === queueEntryId
     );
 
     if (!started) {
       if (
-        dispatch.terminalResult.status === 'denied' &&
+        dispatch?.terminalResult.status === 'denied' &&
         dispatch.terminalResult.entry.queueEntryId === queueEntryId
       ) {
         throw new TurnStartValidationError(

@@ -147,6 +147,7 @@ This exception does not apply to Goal checkpoints, nonterminal checkpoints, chec
 
 ## Backpressure And Failure Semantics
 
+- A synchronous admission caller that runs dispatch receives only its own admission's outcome. Another admission's dispatch failure keeps that admission's existing failure handling, is never returned or disclosed to this caller, and leaves the caller's response to follow its own admission's state. A failure not proved to belong to the caller's own admission, including any failure of the shared lease acquisition that rechecks every queued admission, is treated the same way.
 - A target with no compatible Harness or Sandbox capacity keeps eligible work in the bounded queue or returns the existing typed capacity denial.
 - A missing or unready configured target denies new launch with a typed diagnostic.
 - A missed heartbeat stops new authorization but does not itself prove the Turn succeeded or failed.
@@ -181,6 +182,7 @@ Rejected. Durable lease identity and reconnect fencing are necessary to reject s
 
 ## Testing Strategy / Acceptance Criteria
 
+- L1 covers synchronous admission outcome isolation: another Workspace and User's preparation or post-lease Turn start failure retains its existing admission and lease handling, discloses no foreign error to the caller, and returns the caller's own deferred outcome with its requested cancellation behavior; the caller's own preparation and post-lease failures still reach it unchanged, a failure of the shared lease acquisition, including the caller's own expected-entry race or lease write, returns the caller's deferred outcome with its requested cancellation behavior, and background error reporting keeps every original error.
 - L1 covers admission validation, per-Turn, per-Thread, and per-AgentSession uniqueness, Harness and Sandbox capacity bounds, lease-before-launch, heartbeat and renewal bounds, exact reconnect predicates, wrong-key rejection, ordinary terminal unit release without Sandbox deletion, and Harness-, Sandbox-, and Runtime-Epoch-width cleanup fencing.
 - L1 covers the missing-Turn checkpoint command: a proved cancelled admission and a proved pre-persistence `turn-start-failed` lease are reported by dry-run, removed only on explicit apply, and unchanged by a repeated apply. Lineage mismatch, unreadable history, a live or multiple lease, a non-null session, a nonterminal checkpoint, Goal ownership, runtime evidence, and missing provenance preserve the checkpoint. Boot classification of a missing Turn stays fail-closed.
 - L1 covers atomic recurring-occurrence acceptance with the exact deterministic admission row, idempotent exact replay, and conflicting replay rejection.

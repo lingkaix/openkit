@@ -105,6 +105,8 @@ export interface RunSchedulerDispatchLoopInput {
    * Product callers must filter this to the exact requested admission Turn.
    */
   onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
+  /** Reports the admission owning subsequent failures, or null during shared acquisition. */
+  onDispatchAttribution?: (queueEntryId: string | null) => void;
 }
 
 /** One turn started by a scheduler dispatch loop run. */
@@ -171,6 +173,7 @@ export async function runSchedulerDispatchLoop(
         },
       };
     }
+    input.onDispatchAttribution?.(entry.queueEntryId);
     const freshAgentSessionId = (input.createAgentSessionId ?? generateUuidV7)();
     const timestamp = input.now?.() ?? new Date().toISOString();
     const responsibleUserId =
@@ -266,6 +269,7 @@ export async function runSchedulerDispatchLoop(
       };
     }
     const leaseId = (input.createLeaseId ?? createLeaseId)();
+    input.onDispatchAttribution?.(null);
     const dispatch = dispatchNextSchedulerEntry(input.coreDb, {
       agentSessionId: preparedAgentSession.agentSessionId,
       expectedControlMode: input.expectedControlMode,
@@ -286,6 +290,7 @@ export async function runSchedulerDispatchLoop(
     if (dispatch.status !== 'dispatched') {
       return { startedTurns, terminalResult: dispatch };
     }
+    input.onDispatchAttribution?.(entry.queueEntryId);
 
     const store = input.store;
     try {
