@@ -33,8 +33,8 @@ export const OPENCODE_PROVIDER_ID = 'openkit-worker-inference';
  */
 export const OPENCODE_LISTS_TOOLS_AT_TURN_START = false;
 
-/** Native permission reply used when an ask still arrives. OpenCode has no `reject_once`. */
-export const OPENCODE_PERMISSION_REPLY = 'reject';
+/** Native permission reply used when an ask still arrives. The shortest-lived grant is `once`. */
+export const OPENCODE_PERMISSION_REPLY = 'once';
 
 const CLIENT_PACKAGE = '@opencode/client@2.0.20';
 const CLI_PACKAGE = '@opencode/cli@2.0.20';
@@ -51,10 +51,9 @@ const RPC_TIMEOUT_MS = 8_000;
 // Leaves four seconds for SIGTERM/SIGKILL inside the Harness ten-second stop budget.
 const INTERRUPT_TIMEOUT_MS = 5_000;
 
-/** Disables autonomous update traffic and watchers while preserving native discovery. */
+/** Disables autonomous update and model-catalog traffic while preserving native discovery. */
 const ISOLATION_ENV: Readonly<Record<string, string>> = {
   OPENCODE_DISABLE_AUTOUPDATE: '1',
-  OPENCODE_DISABLE_FILEWATCHER: '1',
   OPENCODE_DISABLE_MODELS_FETCH: '1',
 };
 
@@ -491,13 +490,23 @@ async function supervise(
         }
         turnActive = true;
 
+        let nativeWarnings = '';
+        let nativeModels: string[] = [];
         let before = new Set<string>();
         let promptStartedAt = 0;
         let promptId = '';
         let promptAttempted = false;
         try {
           if (boundSupply === null) {
-            await assertNativeBindings(client, turn.workingDirectory, configPath, serverIds, rpc);
+            const native = await inspectNativeBindings(
+              client,
+              turn.workingDirectory,
+              configPath,
+              serverIds,
+              rpc
+            );
+            nativeWarnings = native.warnings;
+            nativeModels = native.models;
             // The final inline native Skill source is separate from all authored roots.
             // Populate it once before reload, including an explicitly empty selection.
             for (const skill of turn.skillTargetPaths) {
@@ -510,7 +519,12 @@ async function supervise(
           if (boundRoutes === null) {
             // Explicit configuration and location.reload are supported by the pin. Reload
             // rebuilds services in this same host; it neither creates nor replaces a session.
-            const config = serverConfig(directories.pluginDir, directories.skillsDir, routes);
+            const config = serverConfig(
+              directories.pluginDir,
+              directories.skillsDir,
+              routes,
+              nativeModels
+            );
             writeSecret(configPath, JSON.stringify(config));
             await rpc('location.reload catalog', client.location.reload());
             boundRoutes = routeKey;
@@ -541,7 +555,7 @@ async function supervise(
             client.model.list({ location: { directory: turn.workingDirectory } })
           );
           const actual = catalog.data
-            .filter((model) => model.providerID === OPENCODE_PROVIDER_ID)
+            .filter((model) => model.providerID === OPENCODE_PROVIDER_ID && model.enabled)
             .map((model) => model.id)
             .sort();
           if (
@@ -565,6 +579,25 @@ async function supervise(
             client.session.get({ sessionID: sessionId })
           );
           assertSessionInfo(selected, sessionId);
+          // Full permission is the default; preserve authored denies from the native agent.
+          const agent = await rpc(
+            'agent.get permissions',
+            client.agent.get({
+              agentID: selected.agent ?? 'build',
+              location: { directory: turn.workingDirectory },
+            })
+          );
+          await rpc(
+            'session.update permissions',
+            client.session.update({
+              sessionID: sessionId,
+              permissions: [
+                { action: '*', resource: '*', effect: 'allow' },
+                ...agent.data.permissions.filter((rule) => rule.effect === 'deny'),
+              ],
+            })
+          );
+
           if (
             selected.model?.providerID !== OPENCODE_PROVIDER_ID ||
             selected.model.id !== turn.llmRoute.model
@@ -648,7 +681,18 @@ async function supervise(
           },
         }).then((result) => {
           collected = true;
-          return result;
+          return nativeWarnings
+            ? {
+                ...result,
+                diagnostics: {
+                  ...result.diagnostics,
+                  native: boundOpenCodeDiagnostic(
+                    [nativeWarnings, result.diagnostics?.native].filter(Boolean).join(' '),
+                    secretValues
+                  ),
+                },
+              }
+            : result;
         });
         const settled = Promise.race([collection, unprovedStop])
           .then(async (result) => {
@@ -834,8 +878,10 @@ function serverEnvironment(
   // Inline safety/discovery settings retain highest precedence while the explicit file
   // supplies the first-Turn catalog, which can be reloaded without replacing this host.
   const baseConfig = serverConfig(directories.pluginDir, directories.skillsDir);
-  delete baseConfig.providers;
-  env.OPENCODE_CONFIG_CONTENT = JSON.stringify(baseConfig);
+  // The pin reads explicit files before Workspace documents. Its native environment
+  // substitution lets the existing host plugin refresh this final inline projection on reload.
+  env.OPENKIT_OPENCODE_CONFIG = JSON.stringify(baseConfig);
+  env.OPENCODE_CONFIG_CONTENT = '{env:OPENKIT_OPENCODE_CONFIG}';
   env.OPENCODE_PASSWORD = password;
   for (const [key, value] of Object.entries(ISOLATION_ENV)) env[key] = value;
   return env;
@@ -845,37 +891,45 @@ function serverEnvironment(
 function serverConfig(
   pluginDir: string,
   skillsDir: string,
-  routes: readonly WorkerAdapterLlmRoute[] = []
+  routes: readonly WorkerAdapterLlmRoute[] = [],
+  nativeModels: readonly string[] = []
 ): Record<string, unknown> {
   return {
+    // This pin exposes no setting that disables downloads while preserving local LSP.
     lsp: false,
     permissions: [{ action: '*', resource: '*', effect: 'allow' }],
     plugins: [pluginDir],
     providers: {
       [OPENCODE_PROVIDER_ID]: {
-        models: Object.fromEntries(
-          routes.map((route) => [
-            route.model,
-            {
-              name: route.model,
-              modelID: route.model,
-              disabled: false,
-              ...(route.modelParameters
-                ? {
-                    limit: {
-                      context: route.modelParameters.contextWindow,
-                      output: route.modelParameters.maxOutputTokens,
-                    },
-                    capabilities: {
-                      tools: true,
-                      input: route.modelParameters.inputModalities,
-                      output: ['text', ...(route.modelParameters.reasoning ? ['reasoning'] : [])],
-                    },
-                  }
-                : {}),
-            },
-          ])
-        ),
+        canonical: OPENCODE_PROVIDER_ID,
+        // Native documents merge model maps. Tombstones keep foreign models unavailable.
+        models: {
+          ...Object.fromEntries(nativeModels.map((id) => [id, { disabled: true }])),
+          ...Object.fromEntries(
+            routes.map((route) => [
+              route.model,
+              {
+                name: route.model,
+                modelID: route.model,
+                package: '@ai-sdk/openai-compatible',
+                disabled: false,
+                ...(route.modelParameters
+                  ? {
+                      limit: {
+                        context: route.modelParameters.contextWindow,
+                        output: route.modelParameters.maxOutputTokens,
+                      },
+                      capabilities: {
+                        tools: true,
+                        input: route.modelParameters.inputModalities,
+                        output: ['text', ...(route.modelParameters.reasoning ? ['reasoning'] : [])],
+                      },
+                    }
+                  : {}),
+              },
+            ])
+          ),
+        },
         package: '@ai-sdk/openai-compatible',
         settings: { baseURL: 'http://127.0.0.1:9/wrong' },
       },
@@ -1075,14 +1129,16 @@ function assertMcpList(
   }
 }
 
-/** Uses the pin's parsed native documents to refuse static protected-supply collisions. */
-async function assertNativeBindings(
+/** Inspects native documents for value-free warnings and shadowed managed model ids. */
+async function inspectNativeBindings(
   client: OpenCodeClient,
   workingDirectory: string,
   configPath: string,
   ids: readonly string[],
   rpc: NativeRpc
-): Promise<void> {
+): Promise<{ warnings: string; models: string[] }> {
+  const models = new Set<string>();
+  const warnings = new Set<string>();
   const entries = await rpc(
     'config.get native bindings',
     client.config.get({ location: { directory: workingDirectory } })
@@ -1090,12 +1146,15 @@ async function assertNativeBindings(
   for (const entry of entries) {
     if (entry.type !== 'document' || !entry.path || entry.path === configPath) continue;
     if (Object.hasOwn(entry.info.providers ?? {}, OPENCODE_PROVIDER_ID)) {
-      throw new Error('OpenCode native configuration replaces the protected provider.');
+      warnings.add('OpenCode protected provider overrides a native configuration entry.');
+      for (const id of Object.keys(entry.info.providers?.[OPENCODE_PROVIDER_ID]?.models ?? {}))
+        models.add(id);
     }
     if (ids.some((id) => Object.hasOwn(entry.info.mcp?.servers ?? {}, id))) {
-      throw new Error('OpenCode native configuration replaces a protected MCP entry.');
+      warnings.add('OpenCode protected MCP binding overrides a native configuration entry.');
     }
   }
+  return { warnings: [...warnings].join(' '), models: [...models] };
 }
 
 async function syncMcpServers(
@@ -1235,7 +1294,7 @@ async function settleTurn(options: {
         options.client.session.get({ sessionID: options.sessionId })
       );
       assertSessionInfo(info, options.sessionId);
-      if (await rejectNativePrompts(options.client, options.sessionId, options.rpc)) {
+      if (await replyNativePrompts(options.client, options.sessionId, options.rpc)) {
         return lostEvidence(
           'OpenCode unexpected native permission was refused; native drain was not proved.'
         );
@@ -1268,17 +1327,19 @@ function attachStreams(
   return { ...result, diagnostics };
 }
 
-async function rejectNativePrompts(
+async function replyNativePrompts(
   client: OpenCodeClient,
   sessionId: string,
-  rpc: NativeRpc
+  rpc: NativeRpc,
+  // Retain refusal for future user-configurable policy; the current default grants once.
+  decision: 'once' | 'reject' = OPENCODE_PERMISSION_REPLY
 ): Promise<boolean> {
   const requests = await rpc('permission.list', client.permission.list({ sessionID: sessionId }));
   for (const request of requests) {
     await rpc(
       'permission.reply',
       client.permission.reply({
-        decision: OPENCODE_PERMISSION_REPLY,
+        decision,
         requestID: request.id,
         sessionID: sessionId,
       })
@@ -1291,7 +1352,7 @@ async function rejectNativePrompts(
       client.session.form.cancel({ formID: form.id, sessionID: sessionId })
     );
   }
-  return requests.length > 0 || forms.length > 0;
+  return (decision === 'reject' && requests.length > 0) || forms.length > 0;
 }
 
 interface NativeMessage {

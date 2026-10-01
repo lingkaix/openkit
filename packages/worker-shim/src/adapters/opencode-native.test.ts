@@ -84,8 +84,12 @@ function snapshot(path: string): Record<string, string> {
 }
 
 /** Creates an actual pinned resident binding over synthetic endpoints. */
-async function fixture(adapter = opencodeAdapter, resumeReference: Uint8Array | null = null) {
-  const inference = await startSyntheticInference(() => ({ text: 'native-ok' }));
+async function fixture(
+  adapter = opencodeAdapter,
+  resumeReference: Uint8Array | null = null,
+  reply: Parameters<typeof startSyntheticInference>[0] = () => ({ text: 'native-ok' })
+) {
+  const inference = await startSyntheticInference(reply);
   const capability = await startSyntheticCapability();
   closers.push(
     () => inference.close(),
@@ -294,14 +298,24 @@ it.each([
 it.each([
   'provider',
   'mcp',
-])('refuses a native %s collision before provider work without editing configuration', async (kind) => {
+  'mcp-stdio',
+])('overlays a native %s collision without editing configuration', async (kind) => {
   const config = JSON.stringify(
     kind === 'provider'
       ? {
           providers: {
             [OPENCODE_PROVIDER_ID]: {
+              canonical: 'openai',
               package: '@ai-sdk/openai-compatible',
-              models: { injected: {} },
+              models: {
+                injected: {},
+                'native-model': {
+                  modelID: 'foreign-model',
+                  package: 'file:///synthetic-missing-provider.js',
+                  headers: { authorization: 'Bearer synthetic-native-credential' },
+                },
+              },
+              headers: { authorization: 'Bearer synthetic-native-credential' },
               settings: { baseURL: 'http://127.0.0.1:9/foreign' },
             },
           },
@@ -309,18 +323,35 @@ it.each([
       : {
           mcp: {
             servers: {
-              selected: { type: 'remote', url: 'http://127.0.0.1:9/mcp/selected', oauth: false },
+              selected:
+                kind === 'mcp'
+                  ? { type: 'remote', url: 'http://127.0.0.1:9/mcp/selected', oauth: false }
+                  : { type: 'local', command: ['/usr/bin/false'] },
             },
           },
         }
   );
   writeFileSync(join(work, 'opencode.json'), config);
   const f = await fixture();
-  await expect(f.session.startTurn(f.turn([], kind === 'mcp' ? ['selected'] : []))).rejects.toThrow(
-    /protected.*(provider|MCP)/
-  );
-  expect(f.inference.requests).toHaveLength(0);
-  expect(f.capability.hits).toHaveLength(0);
+  const result = await (
+    await f.session.startTurn(f.turn([], kind !== 'provider' ? ['selected'] : []))
+  ).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(result.diagnostics?.native).toContain('protected');
+  const request = f.inference.requests.findLast((entry) =>
+    requestTexts(entry).join(' ').includes('native-user')
+  )!;
+  expect(request.body.model).toBe('native-model');
+  expect(request.headers.authorization).toBe('Bearer synthetic-inference-credential');
+  if (kind !== 'provider') {
+    expect(JSON.stringify(request.body.tools)).toContain('echo-selected');
+    expect(f.capability.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
+    expect(
+      f.capability.hits.every(
+        (hit) => hit.authorization === 'Bearer synthetic-capability-credential'
+      )
+    ).toBe(true);
+  }
   expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
   await expect(f.session.close()).resolves.toBeUndefined();
 }, 60000);
@@ -488,3 +519,98 @@ it('refuses a regular-file image source root before spawn without publishing a h
   expect(readFileSync(source, 'utf8')).toBe('invalid-directory-source');
   expect(readdirSync(control)).toEqual([]);
 });
+
+it.each([
+  'shell',
+  'write',
+])('executes a model-directed workspace %s and observes its effect', async (tool) => {
+  const target = join(work, `${tool}-effect.txt`);
+  let called = false;
+  const f = await fixture(opencodeAdapter, null, (request) => {
+    const names = request.body.tools?.map((entry) => entry.function?.name) ?? [];
+    if (
+      !called &&
+      names.includes(tool) &&
+      requestTexts(request).join(' ').includes('native-user')
+    ) {
+      called = true;
+      return {
+        toolCall: {
+          name: tool,
+          arguments:
+            tool === 'shell'
+              ? { command: `printf shell-observed > '${target}'` }
+              : { path: target, content: 'write-observed' },
+        },
+      };
+    }
+    return { text: 'effect-completed' };
+  });
+  const result = await (await f.session.startTurn(f.turn())).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(called).toBe(true);
+  expect(readFileSync(target, 'utf8')).toBe(`${tool}-observed`);
+  expect(
+    f.inference.requests.some((request) =>
+      request.body.messages.some((message) => message.role === 'tool')
+    )
+  ).toBe(true);
+}, 60000);
+
+it.each([
+  'global',
+  'agent',
+])('preserves an explicit native %s deny rule under full launch permission', async (scope) => {
+  const target = join(work, 'denied-effect');
+  const permissions = [{ action: 'shell', resource: '*', effect: 'deny' }];
+  const config = JSON.stringify(
+    scope === 'global' ? { permissions } : { agents: { build: { permissions } } }
+  );
+  writeFileSync(join(work, 'opencode.json'), config);
+  let called = false;
+  const f = await fixture(opencodeAdapter, null, (request) => {
+    if (
+      !called &&
+      (request.body.tools?.length ?? 0) > 0 &&
+      requestTexts(request).join(' ').includes('native-user')
+    ) {
+      called = true;
+      return { toolCall: { name: 'shell', arguments: { command: `touch '${target}'` } } };
+    }
+    return { text: 'deny-completed' };
+  });
+  const result = await (await f.session.startTurn(f.turn())).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(called).toBe(true);
+  expect(existsSync(target)).toBe(false);
+  expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
+}, 60000);
+
+it('cancels a native typed-answer form without inventing an answer', async () => {
+  let called = false;
+  const f = await fixture(opencodeAdapter, null, (request) => {
+    if (!called && request.body.tools?.some((tool) => tool.function?.name === 'question')) {
+      called = true;
+      return {
+        toolCall: {
+          name: 'question',
+          arguments: {
+            questions: [
+              {
+                question: 'Choose a value',
+                header: 'Value',
+                options: [{ label: 'authored-value', description: 'Requires user input' }],
+              },
+            ],
+          },
+        },
+      };
+    }
+    return { text: 'form-followup' };
+  });
+  const result = await (await f.session.startTurn(f.turn())).settled;
+  expect(called).toBe(true);
+  expect(result.status).toBe('failed');
+  expect(result.diagnostics?.native).toContain('native drain was not proved');
+  expect(f.session.childState()).toBe('absent');
+}, 60000);

@@ -84,7 +84,7 @@ describe('OpenCode resident adapter', () => {
     expect(OPENCODE_PROVIDER_ID).toBe('openkit-worker-inference');
     expect(OPENCODE_PROVIDER_ID.includes('/')).toBe(false);
     expect(OPENCODE_LISTS_TOOLS_AT_TURN_START).toBe(false);
-    expect(OPENCODE_PERMISSION_REPLY).toBe('reject');
+    expect(OPENCODE_PERMISSION_REPLY).toBe('once');
     const decoy = mkdtempSync(join(tmpdir(), 'openkit-opencode-decoy-'));
     roots.push(decoy);
     const decoyBin = join(decoy, 'opencode');
@@ -614,7 +614,7 @@ describe('OpenCode resident adapter', () => {
     const sessionId = 'sess-1';
     const native = fake.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
     native.model.list = async () =>
-      ({ data: [{ id: 'model', providerID: OPENCODE_PROVIDER_ID }] }) as never;
+      ({ data: [{ id: 'model', providerID: OPENCODE_PROVIDER_ID, enabled: true }] }) as never;
     native.session.create = async () => ({ id: sessionId }) as never;
     native.session.prompt = async () => ({ id: 'user-1' }) as never;
     native.session.get = async () => {
@@ -932,7 +932,7 @@ describe('OpenCode resident adapter', () => {
     expect(primaryOrNull(inference, 'missing-user')).toBeNull();
   }, 180_000);
 
-  it('rejects a native tool turn without allowing it, and leaves the session up', async () => {
+  it('interrupts a running native shell tool and leaves the session up', async () => {
     let toolCalls = 0;
     const inference = await startSyntheticInference((request) => {
       const text = requestTexts(request).join('\n');
@@ -968,7 +968,7 @@ describe('OpenCode resident adapter', () => {
     });
     expect(session.childState()).toBe('running');
     expect((await session.nativeHandle()).state).toBe('ready');
-    const denies = join(layout.controlRoot, 'loopback', 'permission-denies.jsonl');
+    const denies = join(layout.controlRoot, 'loopback', 'permission-decisions.jsonl');
     const recorded = existsSync(denies) ? readFileSync(denies, 'utf8') : '';
     expect(recorded.includes('once')).toBe(false);
     expect(recorded.includes('always')).toBe(false);
@@ -1437,7 +1437,7 @@ describe('W4 round-five proof regressions', () => {
       model: { id: 'model', providerID: OPENCODE_PROVIDER_ID },
     });
     client.model.list = async () =>
-      ({ data: [{ id: 'model', providerID: OPENCODE_PROVIDER_ID }] }) as never;
+      ({ data: [{ id: 'model', providerID: OPENCODE_PROVIDER_ID, enabled: true }] }) as never;
     client.session.interrupt = async () => ({ interrupted: true });
     module.OpenCode.make = () => client;
     const adapter = createOpenCodeAdapter({
@@ -1554,9 +1554,9 @@ describe('W4 round-five proof regressions', () => {
   }
 
   for (const path of ['plugin', 'rpc']) {
-    it(`R8 observes and refuses an unexpected native permission through ${path}`, async () => {
+    it(`allows an unexpected native permission once through ${path}`, async () => {
       const layout = makeRoots();
-      const protectedEffect = join(layout.root, 'protected-effect');
+      const protectedEffect = join(layout.work, 'allowed-effect');
       const observed = join(layout.root, 'ask-observed');
       let called = false;
       const inference = await startSyntheticInference((request) => {
@@ -1566,7 +1566,7 @@ describe('W4 round-five proof regressions', () => {
             toolCall: { name: 'shell', arguments: { command: `touch '${protectedEffect}'` } },
           };
         }
-        return { text: 'after-refusal' };
+        return { text: 'after-allow' };
       });
       servers.push(inference);
       const creds = loopback(path, inference.url);
@@ -1603,17 +1603,16 @@ describe('W4 round-five proof regressions', () => {
       );
       expect(called).toBe(true);
       expect(existsSync(observed)).toBe(true);
-      expect(existsSync(protectedEffect)).toBe(false);
+      expect(existsSync(protectedEffect)).toBe(true);
       if (path === 'plugin')
         expect(
-          readFileSync(join(layout.controlRoot, 'loopback', 'permission-denies.jsonl'), 'utf8')
-        ).toContain('"decision":"reject"');
+          readFileSync(join(layout.controlRoot, 'loopback', 'permission-decisions.jsonl'), 'utf8')
+        ).toContain('"decision":"once"');
       else {
-        expect(decisions).toContain('reject');
-        expect(session.childState()).toBe('absent');
-        expect(result.status).toBe('failed');
+        expect(decisions).toEqual(['once']);
+        expect(session.childState()).toBe('running');
       }
-      expect(['completed', 'failed', 'interrupted']).toContain(result.status);
+      expect(result.status).toBe('completed');
     }, 120_000);
   }
 
@@ -1734,10 +1733,13 @@ describe('W4 round-five proof regressions', () => {
   }, 120_000);
   it('R1 lends the MCP bearer only to the exact admitted id and URL', async () => {
     const layout = makeRoots();
+    vi.stubEnv('OPENKIT_OPENCODE_CONFIG', '');
     const pluginDir = join(layout.controlRoot, 'plugin');
     const carriers = join(layout.controlRoot, 'loopback');
     mkdirSync(pluginDir);
     mkdirSync(carriers);
+    mkdirSync(join(layout.controlRoot, 'config'));
+    writeFileSync(join(layout.controlRoot, 'config', 'openkit.json'), '{}');
     writeFileSync(join(carriers, 'capability-bearer'), 'synthetic-bearer');
     writeFileSync(
       join(carriers, 'mcp-grants'),
@@ -2240,11 +2242,12 @@ function failingModule(method: 'create' | 'prompt') {
     OpenCode: {
       make() {
         return {
+          agent: { get: async () => ({ data: { permissions: [] } }) },
           config: { get: async () => [] },
           location: { reload: async () => undefined },
           model: {
             list: async () => ({
-              data: [{ id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID }],
+              data: [{ id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID, enabled: true }],
             }),
           },
           mcp: {
@@ -2257,6 +2260,7 @@ function failingModule(method: 'create' | 'prompt') {
           },
           permission: { list: async () => [] },
           session: {
+            update: async () => undefined,
             create: async () => {
               if (method === 'create') throw new Error('create acceptance is unknown');
               return { id: sessionId };
