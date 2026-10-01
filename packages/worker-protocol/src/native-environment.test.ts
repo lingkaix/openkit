@@ -109,6 +109,23 @@ describe('native environment core', () => {
     for (const adapter of ['codex', 'pi', 'opencode', 'future-adapter'])
       expect(isProtectedNativeEnvironmentName(name, adapter)).toBe(false);
   });
+  it.each([
+    'CODEX_HOME',
+    'CODEX_SQLITE_HOME',
+    'CODEX_ROLLOUT_TRACE_ROOT',
+  ])('protects the pinned Codex binding %s only for Codex', (name) => {
+    expect(isProtectedNativeEnvironmentName(name, 'codex')).toBe(true);
+    for (const adapter of ['deepseek', 'pi', 'opencode', 'future-adapter'])
+      expect(isProtectedNativeEnvironmentName(name, adapter)).toBe(false);
+  });
+  it.each([
+    'OPENAI_LOG',
+    'CODEX_BIN',
+    'CODEX_ARGS',
+    'CODEX_EXECUTABLE',
+  ])('admits unused Codex name %s', (name) => {
+    expect(isProtectedNativeEnvironmentName(name, 'codex')).toBe(false);
+  });
   it('keeps Codex home protection specific to Codex', () => {
     expect(isProtectedNativeEnvironmentName('CODEX_HOME', 'codex')).toBe(true);
     for (const adapter of ['deepseek', 'pi', 'opencode', 'future-adapter'])

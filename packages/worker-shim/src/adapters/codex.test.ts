@@ -215,6 +215,47 @@ describe('Codex App Server adapter', () => {
     expect(await session.nativeHandle()).toEqual({ state: 'pending' });
   });
 
+  it.each([
+    'CODEX_HOME',
+    'CODEX_SQLITE_HOME',
+    'CODEX_ROLLOUT_TRACE_ROOT',
+  ])('refuses Codex managed environment %s before spawn', async (name) => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    let spawned = false;
+    await expect(
+      openCodexResidentSession(openInput(roots, {}, { [name]: 'literal-canary' }), {
+        spawnProcess: () => {
+          spawned = true;
+          return controlledPeer();
+        },
+        stopGraceMs: 5,
+      })
+    ).rejects.toThrow(`Codex rejected environment ${name}.`);
+    expect(spawned).toBe(false);
+  });
+
+  it('launches pinned Codex with a harmless OPENAI_ setting in the child environment', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    let environment: NodeJS.ProcessEnv | undefined;
+    const session = await openCodexResidentSession(
+      openInput(roots, {}, { OPENAI_LOG: 'public-canary', CODEX_BIN: '/unused', CODEX_ARGS: '' }),
+      {
+        binaryPath: vendorBinary,
+        spawnProcess: (binary, args, options) => {
+          environment = options.env;
+          return spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+        },
+      }
+    );
+    sessions.push(session);
+    expect(environment?.OPENAI_LOG).toBe('public-canary');
+    expect(environment?.CODEX_BIN).toBe('/unused');
+    expect(environment?.CODEX_ARGS).toBe('');
+    expect((await session.nativeHandle()).state).toBe('pending');
+  });
+
   it('refuses native SQLite-home environment relocation before spawn', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));

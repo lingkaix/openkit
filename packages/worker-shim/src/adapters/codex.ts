@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
+import { isProtectedNativeEnvironmentName } from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
@@ -59,21 +60,6 @@ export const CODEX_RESULT_MAX_BYTES = 16 * 1024 * 1024;
 
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MCP_SERVER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-/**
- * Environment names that would replace the adapter's command, home, or credential carrier.
- * Their presence fails `session.open` before the native process starts.
- */
-const FORBIDDEN_ENVIRONMENT = new Set([
-  'CODEX_ARGS',
-  'CODEX_BIN',
-  'CODEX_EXECUTABLE',
-  'CODEX_HOME',
-  'CODEX_SQLITE_HOME',
-  'OPENKIT_CODEX_LAUNCH_ARGS',
-  'OPENKIT_WORKER_CAPABILITY_TOKEN',
-  'OPENKIT_WORKER_INFERENCE_TOKEN',
-]);
-
 /** Image-owned immutable binary, installed by the worker-runtimes Codex slice. */
 export const CODEX_PRODUCTION_BINARY = '/usr/local/lib/codex/bin/codex';
 
@@ -206,7 +192,12 @@ function assertLaunchEnvironment(
   secrets: readonly string[]
 ): void {
   for (const [name, value] of Object.entries(environment)) {
-    if (FORBIDDEN_ENVIRONMENT.has(name) || name.startsWith('OPENAI_')) {
+    // The Harness has already supplied trusted shared bootstrap bindings such as HOME and TMPDIR.
+    // Refuse the Codex-specific projection without rejecting that managed bootstrap supply.
+    if (
+      isProtectedNativeEnvironmentName(name, 'codex') &&
+      !isProtectedNativeEnvironmentName(name, '')
+    ) {
       throw new Error(`Codex rejected environment ${name}.`);
     }
     if (secrets.some((secret) => secret && value.includes(secret))) {

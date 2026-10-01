@@ -137,7 +137,7 @@ export function isProtectedNativeEnvironmentName(name: string, adapterId: string
         : adapterId === 'deepseek'
           ? ['DSH_HOME', 'DSH_PERMISSION_MODE', 'DSH_TELEMETRY_MODE', 'DSH_TELEMETRY_OTLP_URL']
           : adapterId === 'codex'
-            ? ['CODEX_HOME']
+            ? ['CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ROLLOUT_TRACE_ROOT']
             : [];
   return (
     name.startsWith('OPENKIT_') ||

@@ -404,6 +404,39 @@ describe('authored native environment', () => {
     }
   });
 
+  it.each([
+    'CODEX_HOME',
+    'CODEX_SQLITE_HOME',
+    'CODEX_ROLLOUT_TRACE_ROOT',
+  ])('refuses Codex managed override or removal %s', (name) => {
+    const manifest = validAgentConfig();
+    for (const value of ['literal-canary', null]) {
+      const result = AuthoredAgentConfigSchema.safeParse({
+        ...manifest,
+        runtime: { ...manifest.runtime, adapter: 'codex', environment: { [name]: value } },
+      });
+      expect(result.success, `${name}=${value}`).toBe(false);
+      if (!result.success)
+        expect(result.error.issues).toContainEqual(
+          expect.objectContaining({
+            path: ['runtime', 'environment', name],
+            message: 'Native environment name is managed.',
+          })
+        );
+    }
+  });
+
+  it('admits harmless Codex vendor names at authoring', () => {
+    const manifest = validAgentConfig();
+    const environment = { OPENAI_LOG: 'public-canary', CODEX_BIN: '/unused', CODEX_ARGS: '' };
+    expect(
+      AuthoredAgentConfigSchema.parse({
+        ...manifest,
+        runtime: { ...manifest.runtime, adapter: 'codex', environment },
+      }).runtime.environment
+    ).toEqual(environment);
+  });
+
   it('admits benign vendor settings and literal overrides/removals', () => {
     const manifest = validAgentConfig();
     const runtime = {
