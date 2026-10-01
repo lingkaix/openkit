@@ -1,3 +1,7 @@
+import {
+  ProviderSubscriptionAccountSchema,
+  ProviderSubscriptionAccountsResponseSchema,
+} from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -5,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AiInterfaceScreen } from './AiInterfaceScreen';
+import { settingsKeys } from './data';
 
 const TIMESTAMP = '2026-08-30T00:00:00.000Z';
 const REFRESHED_AT = '2026-08-30T01:00:00.000Z';
@@ -275,8 +280,10 @@ function makeClient(
   } as unknown as CoreClient;
 }
 
-function renderScreen(client: CoreClient) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderScreen(
+  client: CoreClient,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
@@ -292,6 +299,182 @@ beforeEach(() => {
 });
 
 describe('AI interface deployment-admin workflow', () => {
+  describe.each(['openai-codex', 'xai'] as const)('%s inference observations', (providerId) => {
+    const accessAt = '2026-10-02T01:00:00.000Z';
+    const exhaustedAt = '2026-10-02T02:00:00.000Z';
+    const quotaResponse = providerId === 'xai' ? XAI_QUOTA : CODEX_QUOTA;
+    const quotaLabel =
+      providerId === 'xai' ? 'Included 87.5% remaining' : 'Primary 59.6% remaining';
+    const providerName = providerId === 'xai' ? 'xAI' : 'OpenAI Codex';
+
+    it.each([
+      { state: 'access rejection alone', access: true, exhausted: false },
+      { state: 'quota exhaustion alone', access: false, exhausted: true },
+      { state: 'both parts', access: true, exhausted: true },
+      { state: 'absence', access: false, exhausted: false },
+    ])('shows $state beside unchanged live quota without requesting it', async ({
+      access,
+      exhausted,
+    }) => {
+      const user = userEvent.setup();
+      const account = ProviderSubscriptionAccountSchema.parse({
+        ...LOGGED_IN_ACCOUNT,
+        subscriptionProviderId: providerId,
+        ...(access || exhausted
+          ? {
+              inferenceObservation: {
+                ...(access ? { accessRejected: { observedAt: accessAt } } : {}),
+                ...(exhausted ? { quotaExhausted: { observedAt: exhaustedAt } } : {}),
+              },
+            }
+          : {}),
+      });
+      const getAccountQuota = vi.fn().mockResolvedValue(quotaResponse);
+      const client = makeClient({
+        providerSubscriptions: {
+          listAccounts: vi.fn().mockImplementation((id: string) =>
+            Promise.resolve(
+              ProviderSubscriptionAccountsResponseSchema.parse({
+                accounts: id === providerId ? [account] : [],
+              })
+            )
+          ),
+          getAccountStatus: vi.fn().mockResolvedValue(account),
+          getAccountQuota,
+          startAccountLogin: vi.fn().mockResolvedValue(
+            ProviderSubscriptionAccountSchema.parse({
+              ...PENDING_ACCOUNT,
+              subscriptionProviderId: providerId,
+            })
+          ),
+        },
+      });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      // Reuse a supplied live quota response to isolate rendering from the existing page-load read.
+      queryClient.setQueryData(
+        [...settingsKeys.aiInterface, 'quota', providerId, 'primary'],
+        quotaResponse
+      );
+      renderScreen(client, queryClient);
+      const card = await screen.findByRole('region', { name: providerName });
+      await waitFor(() => expect(client.providerSubscriptions.getAccountStatus).toHaveBeenCalled());
+      expect(within(card).getByText(quotaLabel)).toBeInTheDocument();
+      expect(card.querySelector(`time[datetime="${TIMESTAMP}"]`)).toBeInTheDocument();
+      if (access) expect(within(card).queryByText('Inference access rejected')).toBeInTheDocument();
+      else expect(within(card).queryByText('Inference access rejected')).not.toBeInTheDocument();
+      if (exhausted)
+        expect(within(card).queryByText('Inference quota exhausted')).toBeInTheDocument();
+      else expect(within(card).queryByText('Inference quota exhausted')).not.toBeInTheDocument();
+      if (access) expect(card.querySelector(`time[datetime="${accessAt}"]`)).toBeInTheDocument();
+      else expect(card.querySelector(`time[datetime="${accessAt}"]`)).not.toBeInTheDocument();
+      if (exhausted)
+        expect(card.querySelector(`time[datetime="${exhaustedAt}"]`)).toBeInTheDocument();
+      else expect(card.querySelector(`time[datetime="${exhaustedAt}"]`)).not.toBeInTheDocument();
+      if (access)
+        expect(within(card).queryByRole('button', { name: 'Sign in again' })).toBeInTheDocument();
+      else
+        expect(
+          within(card).queryByRole('button', { name: 'Sign in again' })
+        ).not.toBeInTheDocument();
+      expect(getAccountQuota).not.toHaveBeenCalled();
+      expect(client.providerSubscriptions.logoutAccount).not.toHaveBeenCalled();
+      expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+      await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+      await waitFor(() =>
+        expect(client.providerSubscriptions.listAccounts).toHaveBeenCalledTimes(4)
+      );
+      expect(getAccountQuota).not.toHaveBeenCalled();
+      if (access) {
+        expect(
+          within(card).getByText(/Inference was rejected for the current credential/)
+        ).toBeInTheDocument();
+        await user.click(within(card).getByRole('button', { name: 'Sign in again' }));
+        expect(client.providerSubscriptions.startAccountLogin).toHaveBeenCalledExactlyOnceWith(
+          providerId,
+          'primary',
+          { mode: 'device_code' }
+        );
+        expect(getAccountQuota).not.toHaveBeenCalled();
+      } else {
+        expect(client.providerSubscriptions.startAccountLogin).not.toHaveBeenCalled();
+      }
+      if (exhausted) {
+        await user.click(within(card).getByRole('button', { name: 'Refresh quota' }));
+        await waitFor(() =>
+          expect(getAccountQuota).toHaveBeenCalledExactlyOnceWith(providerId, 'primary')
+        );
+        expect(within(card).getByText(quotaLabel)).toBeInTheDocument();
+      }
+    });
+
+    it('projects list observations, replaces them from detail and honors owner-cleared absence', async () => {
+      const user = userEvent.setup();
+      const account = ProviderSubscriptionAccountSchema.parse({
+        ...LOGGED_IN_ACCOUNT,
+        subscriptionProviderId: providerId,
+        inferenceObservation: { accessRejected: { observedAt: accessAt } },
+      });
+      const detail = ProviderSubscriptionAccountSchema.parse({
+        ...account,
+        inferenceObservation: { quotaExhausted: { observedAt: exhaustedAt } },
+      });
+      const cleared = ProviderSubscriptionAccountSchema.parse({
+        ...LOGGED_IN_ACCOUNT,
+        subscriptionProviderId: providerId,
+      });
+      let resolveDetail!: (value: typeof detail) => void;
+      const getAccountStatus = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<typeof detail>((resolve) => {
+              resolveDetail = resolve;
+            })
+        )
+        .mockResolvedValue(cleared);
+      const getAccountQuota = vi.fn();
+      const client = makeClient({
+        providerSubscriptions: {
+          listAccounts: vi.fn().mockImplementation((id: string) =>
+            Promise.resolve(
+              ProviderSubscriptionAccountsResponseSchema.parse({
+                accounts: id === providerId ? [account] : [],
+              })
+            )
+          ),
+          getAccountStatus,
+          getAccountQuota,
+        },
+      });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      queryClient.setQueryData([...settingsKeys.aiInterface, 'quota', providerId, 'primary'], {
+        subscriptionProviderId: providerId,
+        accountSlotId: 'primary',
+        availability: 'temporarily_unavailable',
+        observedAt: TIMESTAMP,
+      });
+      renderScreen(client, queryClient);
+      const card = await screen.findByRole('region', { name: providerName });
+      expect(within(card).getByText('Inference access rejected')).toBeInTheDocument();
+      expect(within(card).getByRole('button', { name: 'Sign in again' })).toBeInTheDocument();
+      resolveDetail(detail);
+      await waitFor(() =>
+        expect(within(card).getByText('Inference quota exhausted')).toBeInTheDocument()
+      );
+      expect(within(card).queryByText('Inference access rejected')).not.toBeInTheDocument();
+      expect(within(card).queryByRole('button', { name: 'Sign in again' })).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+      await waitFor(() =>
+        expect(within(card).queryByText('Inference quota exhausted')).not.toBeInTheDocument()
+      );
+      expect(within(card).queryByText('Inference access rejected')).not.toBeInTheDocument();
+      expect(within(card).getByText('Login saved')).toBeInTheDocument();
+      expect(within(card).queryByText('Connected')).not.toBeInTheDocument();
+      expect(within(card).queryByRole('meter')).not.toBeInTheDocument();
+      expect(getAccountQuota).not.toHaveBeenCalled();
+    });
+  });
+
   it('offers pair-scoped re-login when Codex rejects a saved login', async () => {
     const user = userEvent.setup();
     const startAccountLogin = vi.fn().mockResolvedValue(PENDING_ACCOUNT);

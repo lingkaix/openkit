@@ -568,7 +568,8 @@ function AccountControls({
     if (isAdminDenied(quotaRead.error)) onAccessDenied(providerId, account.accountSlotId);
   }, [quotaRead.error, onAccessDenied, providerId, account.accountSlotId]);
   const rejectedLogin =
-    live.status === 'logged_in' && live.quotaAvailability === 'authentication_required';
+    (live.status === 'logged_in' && live.quotaAvailability === 'authentication_required') ||
+    Boolean(live.inferenceObservation?.accessRejected);
   const statusLabel = rejectedLogin
     ? { label: 'Access rejected', tone: 'negative' as const }
     : live.status === 'logged_in' && live.quotaAvailability !== 'available'
@@ -695,6 +696,32 @@ function AccountControls({
           </StatusChip>
         </div>
         <QuotaStatus account={live} />
+        {live.inferenceObservation?.accessRejected ? (
+          <div className="flex min-w-0 w-full flex-col gap-1">
+            <p className="text-wrap text-sm font-bold text-fg-strong">Inference access rejected</p>
+            <p className="text-wrap text-xs text-fg-muted">
+              Inference was rejected for the current credential. The login may still be refreshable;
+              use Sign in again to recover access.
+            </p>
+            <QuotaInstant
+              label="Inference rejection observed"
+              value={live.inferenceObservation.accessRejected.observedAt}
+            />
+          </div>
+        ) : null}
+        {live.inferenceObservation?.quotaExhausted ? (
+          <div className="flex min-w-0 w-full flex-col gap-1">
+            <p className="text-wrap text-sm font-bold text-fg-strong">Inference quota exhausted</p>
+            <p className="text-wrap text-xs text-fg-muted">
+              Inference reported quota exhaustion. Use Refresh quota to check the live quota
+              posture.
+            </p>
+            <QuotaInstant
+              label="Inference exhaustion observed"
+              value={live.inferenceObservation.quotaExhausted.observedAt}
+            />
+          </div>
+        ) : null}
         {live.message ? <p className="text-wrap text-xs text-fg-muted">{live.message}</p> : null}
         {live.status === 'pending' && live.verificationUrl && live.userCode ? (
           <p className="min-w-0 w-full text-wrap text-xs text-fg">
@@ -941,6 +968,10 @@ function overlayAccount(
       ? (projectSafeValue(snapshot.planLabel) as string)
       : account.planLabel,
     boundProviderCount: snapshot.boundProviderIds.length,
+    // Detail absence clears observations; only the account owner decides their lifetime.
+    inferenceObservation: projectSafeValue(
+      snapshot.inferenceObservation
+    ) as ConnectedAppRow['inferenceObservation'],
     verificationUrl: interaction?.verificationUrl
       ? (projectSafeValue(interaction.verificationUrl) as string)
       : null,

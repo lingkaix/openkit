@@ -76,6 +76,8 @@ export interface ConnectedAppRow {
   accountLabel: string | null;
   planLabel: string | null;
   boundProviderCount: number;
+  /** Account-owned inference observations, independent of the live quota response. */
+  inferenceObservation?: ProviderSubscriptionAccountsPayload['accounts'][number]['inferenceObservation'];
   quotaAvailability: ProviderSubscriptionQuotaPayload['availability'] | null;
   quotaPlanType: string | null;
   quotaSubscriptionActive: boolean | null;
@@ -675,6 +677,7 @@ export function projectConnectedApps(
         accountLabel: account.accountLabel ?? null,
         planLabel: account.planLabel ?? null,
         boundProviderCount: account.boundProviderIds.length,
+        inferenceObservation: account.inferenceObservation,
         ...projectQuotaObservation(quota),
         verificationUrl: interaction?.verificationUrl
           ? (projectSafeValue(interaction.verificationUrl) as string)
