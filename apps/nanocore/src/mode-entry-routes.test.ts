@@ -7,8 +7,13 @@ import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ensureLocalUser } from './auth/identity.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
+import { ProviderRegistry } from './providers/registry.js';
 import type { TurnStartRuntimeContext } from './runtime/types.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { isTerminalWorkerTurnStage } from './runtime/worker-stage.js';
@@ -20,7 +25,7 @@ import {
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { artifactReferenceItemId } from './storage/workspace-file-records.js';
-import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -940,4 +945,159 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
     './test-support/native-environment.js'
   );
   return withTestPreparedNativeEnvironment(actual);
+});
+
+describe('mode command failure diagnostics', () => {
+  it.each([
+    'conversation',
+    'task',
+  ] as const)('returns missing image admission through the real %s route before Worker launch', async (mode) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mode-image-admission-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const setup = createTestAgentSetup({ imageRef: `sha256:${'d'.repeat(64)}` });
+    const executor = new CompletingTurnExecutor({ coreDb });
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      turnExecutor: executor,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          agentManifests: [setup.manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Test provider',
+              kind: 'local',
+              defaultModel: 'openai/gpt-5.2',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+          openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+          workspaceConfigs: [
+            {
+              workspaceId: 'ws_demo',
+              path: join(dataRoot, 'workspaces/ws_demo/config/workspace.jsonc'),
+              config: {
+                schemaVersion: 1,
+                workspace: { name: 'Demo Workspace', defaultAgentId: setup.manifest.id },
+              },
+            },
+          ],
+        }),
+      }),
+    });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const thread =
+      mode === 'conversation'
+        ? store.getThread('ws_demo', 'th_demo')
+        : store.createThread('ws_demo', 'Task admission');
+    // The generic App fixture admits synthetic defaults; retain acquisition but remove admission.
+    coreDb.sqlite
+      .prepare('UPDATE worker_image_settlements SET native_environment_json = NULL')
+      .run();
+    // Bypass this module's automatic admission wrapper at the actual scheduler preview seam.
+    const actual = await vi.importActual<typeof import('./runtime/agent-environment.js')>(
+      './runtime/agent-environment.js'
+    );
+    vi.spyOn(executor, 'prepareAgentSessionForTurn').mockImplementation(async (_store, input) => {
+      actual.resolveAgentSessionCompatibilityKey({
+        ...input,
+        agentSessionId: input.freshAgentSessionId,
+        triggerActor: input.turn.triggerActor,
+        coreDb,
+        backend: { kind: 'openshell' },
+      });
+      throw new Error('Missing image admission unexpectedly succeeded.');
+    });
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const requestId = '0190f4c8-0000-7000-8000-000000000951';
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/${mode === 'conversation' ? 'conversation-turns' : 'task'}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body:
+            mode === 'conversation'
+              ? conversationBody({
+                  input: 'Implement a bounded README correction.',
+                  requestId,
+                  targetRef: `warm-worker:${setup.manifest.id}:default`,
+                })
+              : JSON.stringify({ input: 'Implement a bounded README correction.', requestId }),
+        }
+      );
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'worker_environment_preparation_required',
+        message: `Agent "${setup.manifest.id}" requires Worker environment preparation and activation before starting work; verified image defaults are unavailable.`,
+      });
+      expect(executor.startContexts).toEqual([]);
+      expect(diagnostics).not.toHaveBeenCalled();
+    } finally {
+      diagnostics.mockRestore();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'conversation',
+    'task',
+  ] as const)('logs a redacted unexpected %s command error at the existing console sink', async (mode) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mode-unexpected-error-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const app = createApp({ coreDb, dataRoot, store });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const thread =
+      mode === 'conversation'
+        ? store.getThread('ws_demo', 'th_demo')
+        : store.createThread('ws_demo', 'Task diagnostics');
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Fail inside command execution, after request authorization has read the Workspace.
+    vi.spyOn(store, 'getCommandRequest').mockImplementation(() => {
+      throw new Error('Unexpected command defect; token=synthetic-canary');
+    });
+    try {
+      const requestId = '0190f4c8-0000-7000-8000-000000000952';
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/${mode === 'conversation' ? 'conversation-turns' : 'task'}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body:
+            mode === 'conversation'
+              ? conversationBody({
+                  input: 'Hello',
+                  requestId,
+                  targetRef: 'internal-role:assistant',
+                })
+              : JSON.stringify({ input: 'Implement a bounded README correction.', requestId }),
+        }
+      );
+      expect(await response.json()).toMatchObject({
+        code: mode === 'conversation' ? 'chat_mode_failed' : 'task_mode_start_failed',
+      });
+      expect(diagnostics.mock.calls).toEqual([
+        [
+          mode === 'conversation' ? 'chat_mode_failed' : 'task_mode_start_failed',
+          'Unexpected command defect; token=[redacted]',
+        ],
+      ]);
+    } finally {
+      vi.restoreAllMocks();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
 });

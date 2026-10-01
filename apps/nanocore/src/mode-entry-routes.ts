@@ -2704,6 +2704,10 @@ export function registerQuickAndChatModeRoutes({
         return asApiError(redactInternalAgentText(error.message), error.code, error.status);
       }
 
+      console.error(
+        'quick_chat_failed',
+        redactInternalAgentText(error instanceof Error ? error.message : String(error))
+      );
       return asApiError('Quick chat failed.', 'quick_chat_failed', 500);
     }
   });
@@ -4001,6 +4005,10 @@ export function registerQuickAndChatModeRoutes({
         return asApiError(redactInternalAgentText(error.message), error.code, error.status);
       }
 
+      console.error(
+        'chat_mode_failed',
+        redactInternalAgentText(error instanceof Error ? error.message : String(error))
+      );
       return asApiError('Chat Mode failed.', 'chat_mode_failed', 500);
     }
   });
@@ -4645,6 +4653,10 @@ export function registerTaskModeRoute({
         }
       }
 
+      console.error(
+        'task_mode_start_failed',
+        redactInternalAgentText(error instanceof Error ? error.message : String(error))
+      );
       return asCommandError(error, 'task_mode_start_failed');
     }
   });

@@ -120,7 +120,14 @@ function fixture() {
 describe('Agent public native environment administration', () => {
   it('refuses unadmitted defaults and actors without current administrator authority', () => {
     const f = fixture();
-    expect(() => f.service.view(actor, f.fileId)).toThrow('preparation-required');
+    expect(() => f.service.view(actor, f.fileId)).toThrow(
+      expect.objectContaining({
+        code: 'worker_environment_preparation_required',
+        status: 409,
+        message:
+          'Agent "agent_native" requires Worker environment preparation and activation before starting work; verified image defaults are unavailable.',
+      })
+    );
     f.admit();
     expect(() => f.service.view({ kind: 'session', userId: 'foreign' }, f.fileId)).toThrow();
     expect(f.service.view(actor, f.fileId)).toMatchObject({

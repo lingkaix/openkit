@@ -1728,6 +1728,36 @@ describe('quick chat app API', () => {
     }
   });
 
+  it('logs a redacted unexpected Quick Chat error at the existing console sink', async () => {
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      turnExecutor: new ThrowingTurnExecutor(),
+      llmPiAiClient: {
+        createChatCompletion: async () => {
+          throw new Error('Unexpected provider defect; token=synthetic-canary');
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+    try {
+      const response = await app.request('/api/app/quick-chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ input: 'Hello' }),
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({
+        code: 'quick_chat_failed',
+        message: 'Quick chat failed.',
+      });
+      expect(diagnostics.mock.calls).toEqual([
+        ['quick_chat_failed', 'Unexpected provider defect; token=[redacted]'],
+      ]);
+    } finally {
+      diagnostics.mockRestore();
+    }
+  });
+
   it('routes Quick Chat through one direct provider call', async () => {
     const calls: Array<{
       providerId: string;

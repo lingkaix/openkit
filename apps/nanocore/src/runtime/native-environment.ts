@@ -6,17 +6,21 @@ import type { AgentManifest } from '../agents/manifest.js';
 import type { CoreDb } from '../storage/db.js';
 import { materializeRuntimeImage } from '../worker-environments/worker-environment-preparation.js';
 import { commandInputHash } from './idempotent-command.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import { readAdmittedWorkerImageEnvironment } from './worker-image-settlements.js';
 
-/** Resolves only exact confirmed image evidence before compatibility or lease admission. */
+/**
+ * Resolves only exact confirmed image evidence before compatibility or lease admission.
+ *
+ * @throws TurnStartValidationError when the Agent's image requires preparation and activation.
+ * @throws Error when Core storage is unavailable or admitted defaults violate their owner.
+ */
 export function resolvePublicNativeEnvironment(
   coreDb: CoreDb | undefined,
   manifest: AgentManifest
 ) {
   if (!coreDb)
-    throw new Error(
-      'Native environment preparation-required: verified image defaults are unavailable.'
-    );
+    throw new Error('Native environment resolution failed: Core storage is unavailable.');
   const image = materializeRuntimeImage(manifest.runtime.image);
   let imageDigest: string | null =
     image.kind === 'reference' && /^sha256:[0-9a-f]{64}$/.test(image.ref) ? image.ref : null;
@@ -31,8 +35,10 @@ export function resolvePublicNativeEnvironment(
   }
   const defaults = imageDigest ? readAdmittedWorkerImageEnvironment(coreDb, imageDigest) : null;
   if (!defaults)
-    throw new Error(
-      'Native environment preparation-required: verified image defaults are unavailable.'
+    throw new TurnStartValidationError(
+      'worker_environment_preparation_required',
+      `Agent "${manifest.id}" requires Worker environment preparation and activation before starting work; verified image defaults are unavailable.`,
+      409
     );
   const protectedName = (name: string) =>
     isProtectedNativeEnvironmentName(name, manifest.runtime.adapter);

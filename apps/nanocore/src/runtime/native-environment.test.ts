@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import {
   admitWorkerImageEnvironment,
   writeWorkerImageSettlement,
@@ -75,10 +76,23 @@ describe('public native environment resolution', () => {
   it('blocks absent or merely acquired defaults without dispatching any image effect', () => {
     const f = fixture();
     expect(() => resolvePublicNativeEnvironment(undefined, nativeEnvironmentManifest())).toThrow(
-      'preparation-required'
+      'Core storage is unavailable'
     );
     expect(() => resolvePublicNativeEnvironment(f.db, nativeEnvironmentManifest())).toThrow(
-      'preparation-required'
+      new TurnStartValidationError(
+        'worker_environment_preparation_required',
+        'Agent "agent_native" requires Worker environment preparation and activation before starting work; verified image defaults are unavailable.',
+        409
+      )
+    );
+  });
+  it('keeps corrupt admitted defaults distinct from missing preparation', () => {
+    const f = fixture();
+    f.db.sqlite
+      .prepare('UPDATE worker_image_settlements SET native_environment_json = ?')
+      .run('{invalid-json');
+    expect(() => resolvePublicNativeEnvironment(f.db, nativeEnvironmentManifest())).toThrow(
+      SyntaxError
     );
   });
   it('inherits, overrides, suppresses and restores empty/literal values while excluding managed defaults', () => {
