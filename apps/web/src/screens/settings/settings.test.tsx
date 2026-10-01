@@ -839,7 +839,13 @@ function makeClient(
       createAccount: vi.fn(),
       updateAccount: vi.fn(),
       deleteAccount: vi.fn(),
-      getAccountStatus: vi.fn(),
+      getAccountStatus: vi.fn().mockImplementation((provider: string, slot: string) =>
+        Promise.resolve({
+          ...(provider === 'xai' ? XAI_ACCOUNT : CODEX_ACCOUNT),
+          subscriptionProviderId: provider,
+          accountSlotId: slot,
+        })
+      ),
       startAccountLogin: vi.fn(),
       cancelAccountLogin: vi.fn(),
       logoutAccount: vi.fn(),
@@ -1799,7 +1805,7 @@ describe('General settings (board 10)', () => {
   });
 });
 
-describe('AI interface (board 20)', () => {
+describe('Gateway (board 20)', () => {
   it('is a published Tier-A Settings destination', async () => {
     const surface = surfaceById('ai-interface');
     expect(surface).toMatchObject({
@@ -1812,11 +1818,9 @@ describe('AI interface (board 20)', () => {
     const client = makeClient();
     renderApp('/settings/ai-interface', client);
 
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'AI interface' })
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Gateway' })).toBeInTheDocument();
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
-    expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
     expect(screen.queryByText(/status only/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
@@ -1840,8 +1844,8 @@ describe('AI interface (board 20)', () => {
 
     renderApp('/settings/ai-interface', client);
 
-    const codexProvider = await screen.findByText('OpenAI Codex');
-    const xaiProvider = screen.getByText('xAI');
+    const codexProvider = await screen.findByRole('heading', { name: 'OpenAI Codex' });
+    const xaiProvider = screen.getByRole('heading', { name: 'xAI' });
     expect(
       codexProvider.compareDocumentPosition(xaiProvider) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
@@ -1974,11 +1978,11 @@ describe('AI interface (board 20)', () => {
       .mockResolvedValue(PROVIDERS);
     const client = makeClient({ providerSubscriptions: { listProviders } });
     renderApp('/settings/ai-interface', client);
-    expect(await screen.findByText(/Couldn't load AI interface/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Couldn't load Gateway/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listProviders).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText('OpenAI Codex')).toBeInTheDocument();
-    expect(screen.queryByText(/Couldn't load AI interface/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'OpenAI Codex' })).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't load Gateway/i)).not.toBeInTheDocument();
     expect(screen.getByText('Codex primary')).toBeInTheDocument();
     expect(screen.getByText('xAI primary')).toBeInTheDocument();
     expect(screen.getByText('Primary 59.6% remaining')).toBeInTheDocument();
@@ -1997,7 +2001,7 @@ describe('AI interface (board 20)', () => {
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
     });
     renderApp('/settings/ai-interface', client);
-    expect(await screen.findByRole('heading', { name: 'AI interface' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Gateway' })).toBeInTheDocument();
     await waitFor(
       () => {
         expect(screen.getByRole('button', { name: /Refresh status/i })).toBeDisabled();
@@ -2009,9 +2013,7 @@ describe('AI interface (board 20)', () => {
 
   it('exposes landmarks and headings for a11y', async () => {
     renderApp('/settings/ai-interface', makeClient());
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'AI interface' })
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Gateway' })).toBeInTheDocument();
     expect(await screen.findByText('Codex primary')).toBeInTheDocument();
     expect(screen.getByRole('main')).toBeInTheDocument();
   });

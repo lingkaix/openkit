@@ -1,15 +1,22 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  type ProviderProfile as AuthoredProviderProfile,
   type ModelCatalog,
-  type ProviderProfile,
   ProviderProfileSchema,
 } from '@openkit/config-schema';
 import { z } from 'zod';
 import { parseJsoncObject } from './jsonc.js';
 import { extendProviderModelMetadata, loadModelCatalog } from './model-catalog.js';
 
-export type { ProviderProfile };
+/** Provenance of a known effective metadata leaf; absent leaves have no source. */
+export type ModelMetadataSource = 'upstream-snapshot' | 'deployment-extension' | 'profile-override';
+
+/** Loaded profile with non-authoring provenance retained alongside composed metadata. */
+export type ProviderProfile = AuthoredProviderProfile & {
+  /** Exact model/leaf provenance for deployment and profile inputs; never persisted. */
+  modelMetadataSources?: Record<string, Record<string, ModelMetadataSource>>;
+};
 export { ProviderProfileSchema };
 
 /**

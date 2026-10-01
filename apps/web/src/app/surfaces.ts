@@ -308,7 +308,7 @@ export const SURFACES: Surface[] = [
   },
   {
     id: 'ai-interface',
-    title: 'AI interface',
+    title: 'Gateway',
     path: '/settings/ai-interface',
     tier: 'A',
     nav: 'settings-server',

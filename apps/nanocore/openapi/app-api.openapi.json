@@ -21160,6 +21160,148 @@
                         "type": "string",
                         "minLength": 1
                       }
+                    },
+                    "autoFailover": {
+                      "type": "boolean"
+                    },
+                    "routes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "providerProfileId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "providerModel": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "available": {
+                            "type": "boolean"
+                          },
+                          "unavailableReason": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "provider_profile_absent",
+                                  "provider_model_delisted",
+                                  "provider_not_dispatchable",
+                                  "subscription_vault_unavailable",
+                                  "subscription_account_absent",
+                                  "subscription_account_logged_out",
+                                  "subscription_account_integrity_unavailable"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "providerProfileId",
+                          "providerModel",
+                          "available",
+                          "unavailableReason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "contract": {
+                      "type": "object",
+                      "properties": {
+                        "context": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "output": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "inputModalities": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reasoning": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "context",
+                        "output",
+                        "inputModalities",
+                        "reasoning"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "reasoningEffortLevels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "minimal",
+                          "low",
+                          "medium",
+                          "high",
+                          "xhigh",
+                          "max"
+                        ]
+                      }
+                    },
+                    "contextManagement": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "compaction"
+                        },
+                        "compactThreshold": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "compactThreshold"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -21337,6 +21479,438 @@
                       "items": {
                         "type": "string",
                         "minLength": 1
+                      }
+                    },
+                    "metadataKey": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "subscriptionAccount": {
+                      "type": "object",
+                      "properties": {
+                        "subscriptionProviderId": {
+                          "type": "string",
+                          "enum": [
+                            "openai-codex",
+                            "xai"
+                          ]
+                        },
+                        "accountSlotId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "subscriptionProviderId",
+                        "accountSlotId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "modelDetails": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "context": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "output": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "inputModalities": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "outputModalities": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reasoning": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reasoningEffortLevels": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "enum": [
+                                        "none",
+                                        "minimal",
+                                        "low",
+                                        "medium",
+                                        "high",
+                                        "xhigh",
+                                        "max"
+                                      ]
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "cost": {
+                            "type": "object",
+                            "properties": {
+                              "input": {
+                                "type": "object",
+                                "properties": {
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "upstream-snapshot",
+                                          "deployment-extension",
+                                          "profile-override"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "value",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "output": {
+                                "type": "object",
+                                "properties": {
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "upstream-snapshot",
+                                          "deployment-extension",
+                                          "profile-override"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "value",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "cache_read": {
+                                "type": "object",
+                                "properties": {
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "upstream-snapshot",
+                                          "deployment-extension",
+                                          "profile-override"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "value",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "cache_write": {
+                                "type": "object",
+                                "properties": {
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "upstream-snapshot",
+                                          "deployment-extension",
+                                          "profile-override"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "value",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "input",
+                              "output",
+                              "cache_read",
+                              "cache_write"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "context",
+                          "output",
+                          "inputModalities",
+                          "outputModalities",
+                          "reasoning",
+                          "reasoningEffortLevels",
+                          "cost"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "baseUrl": {
@@ -69437,5 +70011,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:c0cd515e5d5808bba22cca5f1658aae7deb64c988794bc488699d89ca2014a33"
+  "x-openkit-source-digest": "sha256:db19f62693a23722757f752dea8d9b9970426289a5003f9981a2d2cc01db392c"
 }

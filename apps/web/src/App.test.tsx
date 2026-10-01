@@ -149,7 +149,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     await renderAt('/settings');
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Channels' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
   });
 
   it('mounts the component sheet under Settings → Debug', async () => {
@@ -181,11 +181,11 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 
-  it('mounts the published AI interface under Settings without a credential prompt', async () => {
+  it('mounts the published Gateway under Settings without a credential prompt', async () => {
     await renderAt('/settings/ai-interface');
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
-    expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'AI interface' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Gateway' })).toBeInTheDocument();
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
     expect(screen.queryByText(/status only/i)).not.toBeInTheDocument();
@@ -212,7 +212,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Portability' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Configuration' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'App update' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Administration' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Access tokens' })).toBeInTheDocument();
   });

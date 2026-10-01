@@ -1,3 +1,4 @@
+import type { ProviderModelDiagnostic } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentLlmModelParameters,
   AgentEnvironmentLlmModelParametersSchema,
@@ -8,7 +9,6 @@ import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-10-01/a
   type: 'json',
 };
 import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@openkit/protocol';
-
 import type { ProviderProfile } from '../config/providers-loader.js';
 import { isProviderProfileDispatchable } from '../providers/llm-config.js';
 import { gatewayCapabilitiesForProfile, type ProviderRegistry } from '../providers/registry.js';
@@ -99,6 +99,13 @@ export interface ResolvedLogicalModel {
   readonly modelParameters?: AgentEnvironmentLlmModelParameters;
   /** Omission of authored routing preserves automatic failover. */
   readonly autoFailover: boolean;
+  /** Partial coherent metadata for deployment diagnostics, without requiring a complete adapter shape. */
+  readonly contract?: {
+    readonly context: number | null;
+    readonly output: number | null;
+    readonly inputModalities: readonly string[] | null;
+    readonly reasoning: boolean | null;
+  };
   /** Current available-member intersection in Core order; absent without reasoning, empty without declared levels. */
   readonly reasoningEffortLevels?: readonly ReasoningEffort[];
   readonly routes: readonly ResolvedLogicalModelRoute[];
@@ -178,6 +185,15 @@ export function resolveLogicalModelCatalog(
       displayName: logicalModel.displayName,
       capabilities: intersectCapabilities(contracts.map((contract) => contract.capabilities)),
       contextManagement,
+      contract: {
+        context: minimumKnownLimit(contracts.map((contract) => contract.contextLimit)) ?? null,
+        output: minimumKnownLimit(contracts.map((contract) => contract.outputLimit)) ?? null,
+        inputModalities: inputModalities ?? null,
+        reasoning:
+          contracts.length > 0 && contracts.every((contract) => contract.reasoning !== undefined)
+            ? contracts.every((contract) => contract.reasoning === true)
+            : null,
+      },
       modelFamilyId:
         families[0] != null && families.every((family) => family === families[0])
           ? families[0]!
@@ -224,7 +240,7 @@ function modelContract(
   modelFamilyId: string | null;
   outputLimit: number | null;
   inputModalities?: readonly string[];
-  reasoning: boolean;
+  reasoning: boolean | undefined;
   reasoningEffortLevels: readonly ReasoningEffort[];
 } {
   const model = resolveEffectiveModelMetadata(profile, modelId);
@@ -247,7 +263,7 @@ function modelContract(
     modelFamilyId: family,
     outputLimit: model.limit?.output ?? null,
     ...(model.modalities?.input !== undefined ? { inputModalities: model.modalities.input } : {}),
-    reasoning: model.reasoning === true,
+    reasoning: model.reasoning,
     reasoningEffortLevels: REASONING_EFFORT_LEVELS.filter((level) =>
       model.reasoning_options?.some((option) =>
         option.type === 'toggle' ? level === 'none' : option.values.includes(level)
@@ -339,6 +355,66 @@ export function resolveEffectiveModelMetadata(
   }
 
   return effective;
+}
+
+/** Projects effective native metadata using the same resolver as dispatch, with per-leaf provenance. */
+export function resolveProviderModelDiagnostic(
+  profile: ProviderProfile,
+  nativeId: string
+): ProviderModelDiagnostic {
+  const effective = resolveEffectiveModelMetadata(profile, nativeId);
+  const sources = profile.modelMetadataSources?.[nativeId];
+  const leaf = <T>(path: string, value: T | undefined) => ({
+    value: value ?? null,
+    source:
+      value === undefined
+        ? null
+        : (sources?.[path] ??
+          (profile.modelMetadata &&
+          !profile.modelMetadataSources &&
+          readMetadataLeaf(profile.modelMetadata[nativeId], path) !== undefined
+            ? ('profile-override' as const)
+            : ('upstream-snapshot' as const))),
+  });
+  return {
+    id: nativeId,
+    context: leaf('limit.context', effective.limit?.context),
+    output: leaf('limit.output', effective.limit?.output),
+    inputModalities: leaf(
+      'modalities.input',
+      effective.modalities?.input ? [...effective.modalities.input] : undefined
+    ),
+    outputModalities: leaf(
+      'modalities.output',
+      effective.modalities?.output ? [...effective.modalities.output] : undefined
+    ),
+    reasoning: leaf('reasoning', effective.reasoning),
+    reasoningEffortLevels: leaf(
+      'reasoning_options',
+      effective.reasoning_options === undefined
+        ? undefined
+        : effective.reasoning === false
+          ? []
+          : [...modelContract(profile, nativeId).reasoningEffortLevels]
+    ),
+    cost: {
+      input: leaf('cost.input', effective.cost?.input),
+      output: leaf('cost.output', effective.cost?.output),
+      cache_read: leaf('cost.cache_read', effective.cost?.cache_read),
+      cache_write: leaf('cost.cache_write', effective.cost?.cache_write),
+    },
+  };
+}
+
+/** Reads an already validated metadata leaf for profiles supplied directly rather than through the loader. */
+function readMetadataLeaf(metadata: unknown, path: string): unknown {
+  return path
+    .split('.')
+    .reduce<unknown>(
+      (value, key) =>
+        value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined,
+      metadata
+    );
 }
 
 /**

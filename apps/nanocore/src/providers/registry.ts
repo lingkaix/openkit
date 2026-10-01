@@ -1,6 +1,7 @@
+import type { ProviderRegistryEntry } from '@openkit/app-api-schemas';
 import { resolveProviderSubscriptionFamily } from '@openkit/config-schema';
-
 import type { ProviderProfile } from '../config/providers-loader.js';
+import { resolveProviderModelDiagnostic } from '../llm/logical-models.js';
 
 /** Gateway support matrix for one runtime provider profile. */
 export interface ProviderGatewayCapabilities {
@@ -28,6 +29,12 @@ export interface ProviderRegistrySummary {
   gatewayCapabilities: ProviderGatewayCapabilities;
   /** Models declared by the provider profile. */
   models: string[];
+  /** Active exact extension key and effective metadata for deployment administration. */
+  metadataKey: string;
+  /** Safe subscription pair identity; no credential or upstream account identity. */
+  subscriptionAccount?: ProviderRegistryEntry['subscriptionAccount'];
+  /** Effective values resolved against active loaded metadata. */
+  modelDetails: NonNullable<ProviderRegistryEntry['modelDetails']>;
   /** Provider readiness state, when configured. */
   readiness?: ProviderProfile['readiness'];
 }
@@ -122,8 +129,14 @@ export class ProviderRegistry {
         kind: profile.kind,
         gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
         models: [...profile.models],
+        metadataKey: profile.vendor ?? profile.id,
+        modelDetails: profile.models.map((id) => resolveProviderModelDiagnostic(profile, id)),
       };
 
+      const family = resolveProviderSubscriptionFamily(profile);
+      const slot = profile.extensions?.openkit?.subscriptionAccount?.accountSlotId;
+      if (profile.kind === 'oauth' && family && slot)
+        summary.subscriptionAccount = { subscriptionProviderId: family, accountSlotId: slot };
       if (profile.baseUrl) {
         summary.baseUrl = redactBaseUrl(profile.baseUrl);
       }

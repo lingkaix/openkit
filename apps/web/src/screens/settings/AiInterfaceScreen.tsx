@@ -1,7 +1,7 @@
 import { ProviderApiKeyProfileIdSchema } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useState } from 'react';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -23,6 +23,14 @@ import {
   projectConnectedApps,
   settingsKeys,
 } from './data';
+import {
+  affectedLogicalModels,
+  GatewayConfiguration,
+  GuidedSubscriptionSetup,
+  KeyProviderCard,
+  ProfileRemoval,
+  ProviderHeader,
+} from './GatewayConfiguration';
 import { projectSafeValue, providerSubscriptionAccountStatusLabel } from './secret-safe';
 
 type SubscriptionProviderId = ConnectedAppProviderRow['subscriptionProviderId'];
@@ -51,7 +59,7 @@ function isAdminDenied(error: unknown): boolean {
 }
 
 /**
- * AI interface settings — published deployment-admin provider, account, and default workflow.
+ * Gateway settings — active deployment-admin Provider, model, and routing workflow.
  *
  * Uses the signed-in session client. Derived server-admin authority is required.
  * Web never asks for a bearer token. Honors §9.13.
@@ -60,62 +68,116 @@ export function AiInterfaceScreen() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   const { failed: disconnected } = useConnection();
-  const [quotaAccessDenied, setQuotaAccessDenied] = useState(false);
+  const [initialAccountsObserved, setInitialAccountsObserved] = useState(false);
+  const [quotaAccessDenied, setQuotaAccessDenied] = useState<{
+    providerId: SubscriptionProviderId;
+    slot: string;
+  } | null>(null);
   const accountsKey = [...settingsKeys.aiInterface, 'accounts'] as const;
   const diagnosticsKey = [...settingsKeys.aiInterface, 'diagnostics'] as const;
 
-  const accounts = useQuery({
-    queryKey: accountsKey,
-    queryFn: async () => {
-      const inventory = await client.providerSubscriptions.listProviders();
-      return Promise.all(
-        inventory.providers.map(async (provider) => {
-          const listed = await client.providerSubscriptions.listAccounts(
-            provider.subscriptionProviderId
-          );
-          const quotas = await Promise.all(
-            listed.accounts.map((account) =>
-              client.providerSubscriptions
-                .getAccountQuota(provider.subscriptionProviderId, account.accountSlotId)
-                .catch((error: unknown) => {
-                  if (isAdminDenied(error)) throw error;
-                  return null;
-                })
-            )
-          );
-          return projectConnectedApps(provider, listed, quotas);
-        })
-      );
-    },
+  const inventory = useQuery({
+    queryKey: [...settingsKeys.aiInterface, 'inventory'],
+    queryFn: () => client.providerSubscriptions.listProviders(),
     gcTime: 0,
     retry: false,
   });
-
+  const accountLists = useQueries({
+    queries: (inventory.data?.providers ?? []).map((provider) => ({
+      queryKey: [...accountsKey, provider.subscriptionProviderId],
+      queryFn: async () => {
+        const listed = await client.providerSubscriptions.listAccounts(
+          provider.subscriptionProviderId
+        );
+        return projectConnectedApps(
+          provider,
+          listed,
+          listed.accounts.map(() => null)
+        );
+      },
+      gcTime: 0,
+      retry: false,
+    })),
+  });
+  const listedAccounts = accountLists.flatMap((query) => (query.data ? [query.data] : []));
+  const quotaPairs = listedAccounts.flatMap((provider) =>
+    provider.accounts.map(
+      (account) => `${provider.subscriptionProviderId}/${account.accountSlotId}`
+    )
+  );
+  const quotaQueries = useQueries({
+    queries: listedAccounts.flatMap((provider) =>
+      provider.accounts.map((account) => ({
+        queryKey: [
+          ...settingsKeys.aiInterface,
+          'quota',
+          provider.subscriptionProviderId,
+          account.accountSlotId,
+        ],
+        queryFn: () =>
+          readAccountQuota(client, provider.subscriptionProviderId, account.accountSlotId),
+        retry: false,
+        gcTime: 0,
+        staleTime: Infinity,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+      }))
+    ),
+  });
+  const accounts = quotaQueries.reduce(
+    (rows, query) =>
+      query.data && !query.isError ? overlayConnectedAppQuota(rows, query.data) : rows,
+    listedAccounts
+  );
+  const accountsReady =
+    accountLists.every((query) => !query.isPending) &&
+    quotaQueries.every((query) => !query.isPending);
   const diagnostics = useQuery({
     queryKey: diagnosticsKey,
     queryFn: async () =>
       projectSafeValue(await client.app.getDiagnostics()) as Awaited<
         ReturnType<CoreClient['app']['getDiagnostics']>
       >,
-    enabled: accounts.isSuccess,
+    enabled: inventory.isSuccess,
     gcTime: 0,
     retry: false,
   });
 
+  useEffect(() => {
+    if (inventory.isSuccess && accountsReady && diagnostics.isSuccess)
+      setInitialAccountsObserved(true);
+  }, [inventory.isSuccess, accountsReady, diagnostics.isSuccess]);
+
   function retry() {
-    setQuotaAccessDenied(false);
+    if (quotaAccessDenied) {
+      const { providerId, slot } = quotaAccessDenied;
+      void queryClient
+        .fetchQuery({
+          queryKey: [...settingsKeys.aiInterface, 'quota', providerId, slot],
+          queryFn: () => readAccountQuota(client, providerId, slot),
+          retry: false,
+          staleTime: 0,
+        })
+        .catch(() => undefined);
+    }
+    setQuotaAccessDenied(null);
     queryClient.removeQueries({
       queryKey: [...settingsKeys.aiInterface, 'status'],
     });
-    void accounts.refetch();
+    void inventory.refetch();
+    for (const query of accountLists) void query.refetch();
+    for (const query of quotaQueries) if (query.isError) void query.refetch();
     void diagnostics.refetch();
   }
 
-  const adminDenied = quotaAccessDenied || isAdminDenied(accounts.error);
+  const adminDenied =
+    quotaAccessDenied !== null ||
+    isAdminDenied(inventory.error) ||
+    accountLists.some((query) => isAdminDenied(query.error)) ||
+    quotaQueries.some((query) => isAdminDenied(query.error));
   const onAccountsChanged = useCallback(() => {
-    queryClient.removeQueries({
-      queryKey: [...settingsKeys.aiInterface, 'status'],
-    });
+    void queryClient.invalidateQueries({ queryKey: [...settingsKeys.aiInterface, 'status'] });
+    void queryClient.invalidateQueries({ queryKey: [...settingsKeys.aiInterface, 'diagnostics'] });
     void queryClient.invalidateQueries({
       queryKey: [...settingsKeys.aiInterface, 'accounts'],
     });
@@ -136,13 +198,18 @@ export function AiInterfaceScreen() {
     <Page>
       <PageHeader
         eyebrow="Deployment administration"
-        title="AI interface"
-        subtitle="Manage subscription accounts, provider profiles, API keys, and the core and gateway default models for this deployment."
+        title="Gateway"
+        subtitle="Manage Providers, effective model metadata, and logical model routing for this deployment."
         actions={
           <Button
             size="sm"
             variant="outline"
-            isDisabled={disconnected || accounts.isFetching || adminDenied}
+            isDisabled={
+              disconnected ||
+              inventory.isFetching ||
+              accountLists.some((query) => query.isFetching) ||
+              adminDenied
+            }
             onPress={retry}
           >
             Refresh status
@@ -150,39 +217,88 @@ export function AiInterfaceScreen() {
         }
       />
 
-      {accounts.isLoading ? (
+      {inventory.isLoading ? (
         <Skeleton lines={6} />
       ) : adminDenied ? (
         <EmptyState
           icon="key"
           title="Access denied"
-          hint="AI interface requires derived server-admin authority on the signed-in session."
+          hint="Gateway requires derived server-admin authority on the signed-in session."
           action={
-            <Button variant="outline" onPress={retry}>
-              Retry
-            </Button>
+            <div className="flex flex-col gap-2">
+              <Button variant="outline" onPress={retry}>
+                Retry
+              </Button>
+              {isAdminDenied(inventory.error) ? (
+                <Button variant="outline" onPress={() => void inventory.refetch()}>
+                  Retry subscription inventory
+                </Button>
+              ) : null}
+              {accountLists.map((query, index) =>
+                isAdminDenied(query.error) ? (
+                  <Button
+                    key={inventory.data!.providers[index]!.subscriptionProviderId}
+                    variant="outline"
+                    onPress={() => void query.refetch()}
+                  >
+                    Retry {inventory.data!.providers[index]!.displayName} account slots
+                  </Button>
+                ) : null
+              )}
+              {quotaQueries.map((query, index) =>
+                isAdminDenied(query.error) ? (
+                  <Button
+                    key={quotaPairs[index]}
+                    variant="outline"
+                    onPress={() => void query.refetch()}
+                  >
+                    Retry quota{' '}
+                    {
+                      listedAccounts.flatMap((provider) =>
+                        provider.accounts.map(
+                          (account) => `${provider.displayName} / ${account.accountSlotId}`
+                        )
+                      )[index]
+                    }
+                  </Button>
+                ) : null
+              )}
+              {quotaAccessDenied ? (
+                <p className="text-xs text-fg-muted">
+                  Quota denied: {quotaAccessDenied.providerId} / {quotaAccessDenied.slot}. Retry
+                  rechecks that exact dependency.
+                </p>
+              ) : null}
+            </div>
           }
         />
-      ) : accounts.isError ? (
+      ) : inventory.isError ? (
         <ErrorBanner
-          message="Couldn't load AI interface."
-          onRetry={() => void accounts.refetch()}
+          message="Couldn't load Gateway subscription inventory."
+          onRetry={() => void inventory.refetch()}
         />
       ) : (
         <>
-          <SubscriptionAccounts
-            client={client}
-            disconnected={disconnected}
-            providers={accounts.data ?? []}
-            onAccountsChanged={onAccountsChanged}
-            onAccessDenied={() => setQuotaAccessDenied(true)}
-          />
+          {accountLists.map((query, index) =>
+            query.isError ? (
+              <ErrorBanner
+                key={inventory.data!.providers[index]!.subscriptionProviderId}
+                message={dependencyMessage(
+                  query.error,
+                  `${inventory.data!.providers[index]!.displayName} account slots`
+                )}
+                onRetry={() => void query.refetch()}
+              />
+            ) : query.isLoading ? (
+              <Skeleton key={inventory.data!.providers[index]!.subscriptionProviderId} lines={3} />
+            ) : null
+          )}
           {diagnostics.isError ? (
             <ErrorBanner
-              message="Couldn't load provider profiles."
+              message={dependencyMessage(diagnostics.error, 'Gateway diagnostics')}
               onRetry={() => void diagnostics.refetch()}
             />
-          ) : diagnostics.isLoading ? (
+          ) : diagnostics.isLoading || (!initialAccountsObserved && !accountsReady) ? (
             <Skeleton lines={4} />
           ) : (
             <ProviderProfiles
@@ -190,13 +306,54 @@ export function AiInterfaceScreen() {
               disconnected={disconnected}
               profiles={diagnostics.data?.providers.registry ?? []}
               diagnostics={diagnostics.data?.providers.diagnostics ?? []}
-              accounts={accounts.data ?? []}
+              accounts={accounts}
               gateway={diagnostics.data?.gateway ?? null}
               onProfilesChanged={onProfilesChanged}
+              onAccountsChanged={onAccountsChanged}
+              onAccessDenied={(providerId, slot) => setQuotaAccessDenied({ providerId, slot })}
             />
           )}
+          {initialAccountsObserved || accountsReady ? (
+            <SubscriptionAccounts
+              client={client}
+              disconnected={disconnected}
+              providers={accounts.map((provider) => ({
+                ...provider,
+                accounts: provider.accounts.filter(
+                  (account) =>
+                    !diagnostics.data?.providers.registry.some(
+                      (profile) =>
+                        profile.subscriptionAccount?.subscriptionProviderId ===
+                          provider.subscriptionProviderId &&
+                        profile.subscriptionAccount.accountSlotId === account.accountSlotId
+                    )
+                ),
+              }))}
+              onAccountsChanged={onAccountsChanged}
+              onAccessDenied={(providerId, slot) => setQuotaAccessDenied({ providerId, slot })}
+            />
+          ) : null}
+          {diagnostics.data ? (
+            <GatewayConfiguration
+              client={client}
+              disconnected={disconnected}
+              diagnostics={diagnostics.data}
+              onChanged={onProfilesChanged}
+            />
+          ) : null}
         </>
       )}
+      {/* Keep admitted setup progress mounted when a dependency projection is loading or fails. */}
+      {initialAccountsObserved ? (
+        <GuidedSubscriptionSetup
+          client={client}
+          disconnected={
+            disconnected || adminDenied || !inventory.isSuccess || !diagnostics.isSuccess
+          }
+          accounts={accounts}
+          onChanged={onProfilesChanged}
+        />
+      ) : null}
     </Page>
   );
 }
@@ -213,7 +370,7 @@ function SubscriptionAccounts({
   disconnected: boolean;
   providers: ConnectedAppProviderRow[];
   onAccountsChanged: () => void;
-  onAccessDenied: () => void;
+  onAccessDenied: (providerId: SubscriptionProviderId, slot: string) => void;
 }) {
   return (
     <section className="flex min-w-0 w-full flex-col gap-3" aria-labelledby="ai-connected-apps">
@@ -222,7 +379,7 @@ function SubscriptionAccounts({
           id="ai-connected-apps"
           className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
         >
-          Subscription accounts
+          Retained subscription slots
         </h2>
         <span className="text-wrap text-xs text-fg-muted">
           OpenAI Codex and xAI device-code login
@@ -264,7 +421,7 @@ function ProviderAccounts({
   disconnected: boolean;
   provider: ConnectedAppProviderRow;
   onAccountsChanged: () => void;
-  onAccessDenied: () => void;
+  onAccessDenied: (providerId: SubscriptionProviderId, slot: string) => void;
 }) {
   const [slotId, setSlotId] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -332,7 +489,7 @@ function ProviderAccounts({
           />
           {create.isError ? (
             <ErrorBanner
-              message="Couldn't create that account slot."
+              message={dependencyMessage(create.error, "Couldn't create that account slot.")}
               onRetry={() => create.mutate()}
             />
           ) : null}
@@ -359,13 +516,17 @@ function AccountControls({
   providerId,
   onAccountsChanged,
   onAccessDenied,
+  profile,
+  affected = [],
 }: {
   account: ConnectedAppRow;
+  profile?: ProviderRegistryEntry;
+  affected?: string[];
   client: CoreClient;
   disconnected: boolean;
   providerId: SubscriptionProviderId;
   onAccountsChanged: () => void;
-  onAccessDenied: () => void;
+  onAccessDenied: (providerId: SubscriptionProviderId, slot: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [displayName, setDisplayName] = useState(account.displayName);
@@ -383,12 +544,29 @@ function AccountControls({
   const status = useQuery({
     queryKey: statusKey,
     queryFn: () => client.providerSubscriptions.getAccountStatus(providerId, account.accountSlotId),
-    enabled: shouldPoll,
+    enabled: true,
     refetchInterval: shouldPoll ? STATUS_POLL_MS : false,
     gcTime: 0,
     retry: false,
   });
-  const live = overlayAccount(account, status.data ?? snapshot ?? cachedStatus);
+  const quotaKey = [...settingsKeys.aiInterface, 'quota', providerId, account.accountSlotId];
+  const quotaRead = useQuery({
+    queryKey: quotaKey,
+    queryFn: () => readAccountQuota(client, providerId, account.accountSlotId),
+    gcTime: 0,
+    retry: false,
+    enabled: false,
+  });
+  const quotaAccount = overlayConnectedAppQuota(
+    [{ subscriptionProviderId: providerId, displayName: '', accounts: [account] }],
+    quotaRead.isError || !quotaRead.data
+      ? { subscriptionProviderId: providerId, accountSlotId: account.accountSlotId }
+      : quotaRead.data
+  )[0]!.accounts[0]!;
+  const live = overlayAccount(quotaAccount, status.data ?? snapshot ?? cachedStatus);
+  useEffect(() => {
+    if (isAdminDenied(quotaRead.error)) onAccessDenied(providerId, account.accountSlotId);
+  }, [quotaRead.error, onAccessDenied, providerId, account.accountSlotId]);
   const rejectedLogin =
     live.status === 'logged_in' && live.quotaAvailability === 'authentication_required';
   const statusLabel = rejectedLogin
@@ -408,11 +586,11 @@ function AccountControls({
     }
   }, [account.updatedAt]);
 
+  const previousStatus = useRef(live.status);
   useEffect(() => {
-    if (status.data && status.data.status !== 'pending') {
-      onAccountsChanged();
-    }
-  }, [onAccountsChanged, status.data]);
+    if (previousStatus.current === 'pending' && live.status !== 'pending') onAccountsChanged();
+    previousStatus.current = live.status;
+  }, [live.status, onAccountsChanged]);
 
   const rename = useMutation({
     mutationFn: () =>
@@ -455,36 +633,12 @@ function AccountControls({
   });
   const quota = useMutation({
     mutationFn: async () => {
-      const result = await client.providerSubscriptions.getAccountQuota(
-        providerId,
-        account.accountSlotId
-      );
-      if (
-        result.subscriptionProviderId !== providerId ||
-        result.accountSlotId !== account.accountSlotId
-      ) {
-        throw new Error('Provider subscription projection failed.');
-      }
-      return result;
+      const result = await quotaRead.refetch({ throwOnError: true });
+      if (!result.data) throw new Error('Quota observation unavailable.');
+      return result.data;
     },
     onError: (error) => {
-      if (isAdminDenied(error)) onAccessDenied();
-      queryClient.setQueryData<ConnectedAppProviderRow[]>(
-        [...settingsKeys.aiInterface, 'accounts'],
-        (current) =>
-          current
-            ? overlayConnectedAppQuota(current, {
-                subscriptionProviderId: providerId,
-                accountSlotId: account.accountSlotId,
-              })
-            : current
-      );
-    },
-    onSuccess: (result) => {
-      queryClient.setQueryData<ConnectedAppProviderRow[]>(
-        [...settingsKeys.aiInterface, 'accounts'],
-        (current) => (current ? overlayConnectedAppQuota(current, result) : current)
-      );
+      if (isAdminDenied(error)) onAccessDenied(providerId, account.accountSlotId);
     },
   });
 
@@ -502,186 +656,230 @@ function AccountControls({
       }
       return result;
     },
-    onError: (error) => {
-      if (isAdminDenied(error)) onAccessDenied();
-    },
   });
   const rule =
     !autoTopup.isError && autoTopup.data?.availability === 'available' ? autoTopup.data : null;
   const refresh = () => {
+    void status.refetch();
     quota.mutate();
     if (costsOpen) autoTopup.mutate();
   };
 
   return (
-    <Card className="flex min-w-0 w-full flex-col gap-3">
-      <div className="flex min-w-0 w-full flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-wrap text-sm font-bold text-fg-strong">{live.displayName}</p>
-          <p className="text-wrap text-xs text-fg-muted">
-            {live.quotaPlanType ?? live.planLabel ?? 'Plan not reported'}
-            {live.quotaBilling?.sharedAllowance === true ? ' · Shared allowance' : ''}
-          </p>
-        </div>
-        <StatusChip tone={disconnected ? 'notice' : statusLabel.tone} dot>
-          {disconnected ? `${statusLabel.label} · may be stale` : statusLabel.label}
-        </StatusChip>
-      </div>
-      <QuotaStatus account={live} />
-      {live.message ? <p className="text-wrap text-xs text-fg-muted">{live.message}</p> : null}
-      {live.status === 'pending' && live.verificationUrl && live.userCode ? (
-        <p className="min-w-0 w-full text-wrap text-xs text-fg">
-          Open{' '}
-          <a
-            className="font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
-            href={live.verificationUrl}
-            rel="noreferrer"
-            target="_blank"
-          >
-            {live.verificationUrl}
-          </a>{' '}
-          and enter <code>{live.userCode}</code>
-        </p>
-      ) : null}
-      {login.isError ? (
-        <ErrorBanner message="Couldn't start login." onRetry={() => login.mutate()} />
-      ) : null}
-      {cancel.isError ? (
-        <ErrorBanner message="Couldn't cancel login." onRetry={() => cancel.mutate()} />
-      ) : null}
-      {quota.isError ? <ErrorBanner message="Couldn't refresh quota." onRetry={refresh} /> : null}
-      {status.isError ? (
-        <ErrorBanner
-          message="Couldn't refresh login status."
-          onRetry={() => void status.refetch()}
-        />
-      ) : null}
-      <div className="flex min-w-0 w-full flex-wrap gap-2">
-        <Button size="sm" isDisabled={disconnected || quota.isPending} onPress={refresh}>
-          Refresh quota
-        </Button>
-        {live.status === 'pending' ? (
-          <Button
-            size="sm"
-            variant="outline"
-            isDisabled={disconnected || cancel.isPending || !live.interactionId}
-            onPress={() => cancel.mutate()}
-          >
-            Cancel login
-          </Button>
-        ) : rejectedLogin ||
-          live.status === 'logged_out' ||
-          live.status === 'error' ||
-          live.status === 'unavailable' ? (
-          <Button
-            size="sm"
-            isDisabled={disconnected || login.isPending}
-            onPress={() => login.mutate()}
-          >
-            {rejectedLogin ? 'Sign in again' : 'Start login'}
-          </Button>
-        ) : null}
-      </div>
-      {providerId === 'xai' ? (
-        <details
-          className="min-w-0 w-full border-t border-border pt-3"
-          onToggle={(event) => {
-            const open = event.currentTarget.open;
-            setCostsOpen(open);
-            if (
-              open &&
-              !autoTopup.data &&
-              !autoTopup.isPending &&
-              !autoTopup.isError &&
-              !disconnected
-            )
-              autoTopup.mutate();
-          }}
-        >
-          <summary className="cursor-pointer text-sm font-medium text-fg">
-            Balance and costs
-          </summary>
-          <div className="mt-3 flex min-w-0 w-full flex-col gap-2">
-            <BillingAmount label="Prepaid" cents={live.quotaBilling?.prepaidBalanceCents} />
-            <BillingAmount label="Extra spend" cents={live.quotaBilling?.onDemandUsedCents} />
-            <BillingAmount label="Spend cap" cents={live.quotaBilling?.onDemandCapCents} />
-            {autoTopup.isPending ? (
-              <p className="text-xs text-fg-muted">Checking auto top-up…</p>
-            ) : autoTopup.isError || autoTopup.data?.availability === 'temporarily_unavailable' ? (
-              <ErrorBanner message="Auto top-up query failed." onRetry={() => autoTopup.mutate()} />
-            ) : (
-              <>
-                <p className="text-xs text-fg">
-                  Auto top-up{' '}
-                  {rule?.enabled === true
-                    ? 'enabled'
-                    : rule?.enabled === false
-                      ? 'disabled'
-                      : 'not reported'}
-                </p>
-                {rule?.thresholdCents !== undefined ? (
-                  <BillingAmount label="Top-up threshold" cents={rule.thresholdCents} />
-                ) : null}
-                {rule?.amountCents !== undefined ? (
-                  <BillingAmount label="Top-up amount" cents={rule.amountCents} />
-                ) : null}
-                {rule?.monthlyCapCents !== undefined ? (
-                  <BillingAmount label="Monthly top-up cap" cents={rule.monthlyCapCents} />
-                ) : null}
-              </>
-            )}
-            {autoTopup.data && !autoTopup.isError ? (
-              <QuotaInstant label="Auto top-up checked" value={autoTopup.data.observedAt} />
-            ) : null}
-          </div>
-        </details>
-      ) : null}
-      <details className="min-w-0 w-full border-t border-border pt-3">
-        <summary className="cursor-pointer text-sm font-medium text-fg">Account settings</summary>
-        <div className="mt-3 flex min-w-0 w-full flex-col gap-3">
-          <p className="text-wrap text-xs text-fg-muted">
-            Slot {live.accountSlotId} · {live.boundProviderCount} provider bindings
-          </p>
-          {live.accountLabel ? (
-            <p className="text-wrap text-xs text-fg-muted">{live.accountLabel}</p>
-          ) : null}
-          {live.quotaSubscriptionActive !== null ? (
+    <Card>
+      <section className="flex min-w-0 w-full flex-col gap-3" aria-label={profile?.displayName}>
+        {profile ? (
+          <>
+            <ProviderHeader profile={profile} />
             <p className="text-xs text-fg-muted">
-              Build subscription eligibility:{' '}
-              {live.quotaSubscriptionActive ? 'eligible' : 'not eligible'}
+              Affected logical models: {affected.join(', ') || 'None'}
             </p>
-          ) : null}
-          {live.quotaAccountObservedAt ? (
-            <QuotaInstant label="Account checked" value={live.quotaAccountObservedAt} />
-          ) : null}
-          <TextField
-            className="min-w-0 w-full"
-            label="Account display name"
-            value={displayName}
-            onChange={setDisplayName}
-            isDisabled={disconnected}
+            <ProfileRemoval
+              client={client}
+              profile={profile}
+              disconnected={disconnected}
+              onChanged={onAccountsChanged}
+            />
+          </>
+        ) : null}
+        <div className="flex min-w-0 w-full flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="text-wrap text-sm font-bold text-fg-strong">{live.displayName}</p>
+            <p className="text-wrap text-xs text-fg-muted">
+              {live.quotaPlanType ?? live.planLabel ?? 'Plan not reported'}
+              {live.quotaBilling?.sharedAllowance === true ? ' · Shared allowance' : ''}
+            </p>
+          </div>
+          <StatusChip tone={disconnected ? 'notice' : statusLabel.tone} dot>
+            {disconnected ? `${statusLabel.label} · may be stale` : statusLabel.label}
+          </StatusChip>
+        </div>
+        <QuotaStatus account={live} />
+        {live.message ? <p className="text-wrap text-xs text-fg-muted">{live.message}</p> : null}
+        {live.status === 'pending' && live.verificationUrl && live.userCode ? (
+          <p className="min-w-0 w-full text-wrap text-xs text-fg">
+            Open{' '}
+            <a
+              className="font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
+              href={live.verificationUrl}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {live.verificationUrl}
+            </a>{' '}
+            and enter <code>{live.userCode}</code>
+          </p>
+        ) : null}
+        {quotaRead.isError && !quota.isError ? (
+          <ErrorBanner
+            message={dependencyMessage(quotaRead.error, 'account quota')}
+            onRetry={() => void quotaRead.refetch()}
           />
-          {rename.isError ? (
-            <ErrorBanner message="Couldn't rename this account." onRetry={() => rename.mutate()} />
-          ) : null}
-          {remove.isError ? (
-            <ErrorBanner message="Couldn't delete this account." onRetry={() => remove.mutate()} />
-          ) : null}
-          {logout.isError ? (
-            <ErrorBanner message="Couldn't log out this account." onRetry={() => logout.mutate()} />
-          ) : null}
-          <div className="flex min-w-0 w-full flex-wrap gap-2">
+        ) : null}
+        {login.isError ? (
+          <ErrorBanner
+            message={dependencyMessage(login.error, "Couldn't start login.")}
+            onRetry={() => login.mutate()}
+          />
+        ) : null}
+        {cancel.isError ? (
+          <ErrorBanner
+            message={dependencyMessage(cancel.error, "Couldn't cancel login.")}
+            onRetry={() => cancel.mutate()}
+          />
+        ) : null}
+        {quota.isError ? (
+          <ErrorBanner
+            message={dependencyMessage(quota.error, "Couldn't refresh quota.")}
+            onRetry={refresh}
+          />
+        ) : null}
+        {status.isError ? (
+          <ErrorBanner
+            message={dependencyMessage(status.error, "Couldn't refresh login status.")}
+            onRetry={() => void status.refetch()}
+          />
+        ) : null}
+        <div className="flex min-w-0 w-full flex-wrap gap-2">
+          <Button size="sm" isDisabled={disconnected || quota.isPending} onPress={refresh}>
+            Refresh quota
+          </Button>
+          {live.status === 'pending' ? (
             <Button
               size="sm"
               variant="outline"
-              isDisabled={disconnected || rename.isPending || !displayName.trim()}
-              onPress={() => rename.mutate()}
+              isDisabled={disconnected || cancel.isPending || !live.interactionId}
+              onPress={() => cancel.mutate()}
             >
-              Rename account
+              Cancel login
             </Button>
-            {live.status === 'logged_in' ||
+          ) : rejectedLogin ||
+            live.status === 'logged_out' ||
             live.status === 'error' ||
             live.status === 'unavailable' ? (
+            <Button
+              size="sm"
+              isDisabled={disconnected || login.isPending}
+              onPress={() => login.mutate()}
+            >
+              {rejectedLogin ? 'Sign in again' : 'Start login'}
+            </Button>
+          ) : null}
+        </div>
+        {providerId === 'xai' ? (
+          <details
+            className="min-w-0 w-full border-t border-border pt-3"
+            onToggle={(event) => {
+              const open = event.currentTarget.open;
+              setCostsOpen(open);
+              if (
+                open &&
+                !autoTopup.data &&
+                !autoTopup.isPending &&
+                !autoTopup.isError &&
+                !disconnected
+              )
+                autoTopup.mutate();
+            }}
+          >
+            <summary className="cursor-pointer text-sm font-medium text-fg">
+              Balance and costs
+            </summary>
+            <div className="mt-3 flex min-w-0 w-full flex-col gap-2">
+              <BillingAmount label="Prepaid" cents={live.quotaBilling?.prepaidBalanceCents} />
+              <BillingAmount label="Extra spend" cents={live.quotaBilling?.onDemandUsedCents} />
+              <BillingAmount label="Spend cap" cents={live.quotaBilling?.onDemandCapCents} />
+              {autoTopup.isPending ? (
+                <p className="text-xs text-fg-muted">Checking auto top-up…</p>
+              ) : autoTopup.isError ||
+                autoTopup.data?.availability === 'temporarily_unavailable' ? (
+                <ErrorBanner
+                  message={
+                    isAdminDenied(autoTopup.error)
+                      ? dependencyMessage(autoTopup.error, 'auto top-up')
+                      : 'Auto top-up query failed.'
+                  }
+                  onRetry={() => autoTopup.mutate()}
+                />
+              ) : (
+                <>
+                  <p className="text-xs text-fg">
+                    Auto top-up{' '}
+                    {rule?.enabled === true
+                      ? 'enabled'
+                      : rule?.enabled === false
+                        ? 'disabled'
+                        : 'not reported'}
+                  </p>
+                  {rule?.thresholdCents !== undefined ? (
+                    <BillingAmount label="Top-up threshold" cents={rule.thresholdCents} />
+                  ) : null}
+                  {rule?.amountCents !== undefined ? (
+                    <BillingAmount label="Top-up amount" cents={rule.amountCents} />
+                  ) : null}
+                  {rule?.monthlyCapCents !== undefined ? (
+                    <BillingAmount label="Monthly top-up cap" cents={rule.monthlyCapCents} />
+                  ) : null}
+                </>
+              )}
+              {autoTopup.data && !autoTopup.isError ? (
+                <QuotaInstant label="Auto top-up checked" value={autoTopup.data.observedAt} />
+              ) : null}
+            </div>
+          </details>
+        ) : null}
+        <details className="min-w-0 w-full border-t border-border pt-3">
+          <summary className="cursor-pointer text-sm font-medium text-fg">Account settings</summary>
+          <div className="mt-3 flex min-w-0 w-full flex-col gap-3">
+            <p className="text-wrap text-xs text-fg-muted">
+              Slot {live.accountSlotId} · {live.boundProviderCount} provider bindings
+            </p>
+            {live.accountLabel ? (
+              <p className="text-wrap text-xs text-fg-muted">{live.accountLabel}</p>
+            ) : null}
+            {live.quotaSubscriptionActive !== null ? (
+              <p className="text-xs text-fg-muted">
+                Build subscription eligibility:{' '}
+                {live.quotaSubscriptionActive ? 'eligible' : 'not eligible'}
+              </p>
+            ) : null}
+            {live.quotaAccountObservedAt ? (
+              <QuotaInstant label="Account checked" value={live.quotaAccountObservedAt} />
+            ) : null}
+            <TextField
+              className="min-w-0 w-full"
+              label="Account display name"
+              value={displayName}
+              onChange={setDisplayName}
+              isDisabled={disconnected}
+            />
+            {rename.isError ? (
+              <ErrorBanner
+                message={dependencyMessage(rename.error, "Couldn't rename this account.")}
+                onRetry={() => rename.mutate()}
+              />
+            ) : null}
+            {remove.isError ? (
+              <ErrorBanner
+                message={dependencyMessage(remove.error, "Couldn't delete this account.")}
+                onRetry={() => remove.mutate()}
+              />
+            ) : null}
+            {logout.isError ? (
+              <ErrorBanner
+                message={dependencyMessage(logout.error, "Couldn't log out this account.")}
+                onRetry={() => logout.mutate()}
+              />
+            ) : null}
+            <div className="flex min-w-0 w-full flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                isDisabled={disconnected || rename.isPending || !displayName.trim()}
+                onPress={() => rename.mutate()}
+              >
+                Rename account
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -690,21 +888,21 @@ function AccountControls({
               >
                 Log out
               </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant="negative-outline"
-              isDisabled={disconnected || remove.isPending}
-              onPress={() => {
-                if (!window.confirm('Delete this account slot?')) return;
-                remove.mutate();
-              }}
-            >
-              Delete account
-            </Button>
+              <Button
+                size="sm"
+                variant="negative-outline"
+                isDisabled={disconnected || remove.isPending}
+                onPress={() => {
+                  if (!window.confirm('Delete this account slot?')) return;
+                  remove.mutate();
+                }}
+              >
+                Remove account
+              </Button>
+            </div>
           </div>
-        </div>
-      </details>
+        </details>
+      </section>
     </Card>
   );
 }
@@ -732,10 +930,16 @@ function overlayAccount(
   const interaction = snapshot.status === 'pending' ? snapshot.interaction : undefined;
   return {
     ...account,
-    displayName: snapshot.displayName ?? account.displayName,
+    displayName: snapshot.displayName
+      ? (projectSafeValue(snapshot.displayName) as string)
+      : account.displayName,
     status: snapshot.status,
-    accountLabel: snapshot.accountLabel ?? account.accountLabel,
-    planLabel: snapshot.planLabel ?? account.planLabel,
+    accountLabel: snapshot.accountLabel
+      ? (projectSafeValue(snapshot.accountLabel) as string)
+      : account.accountLabel,
+    planLabel: snapshot.planLabel
+      ? (projectSafeValue(snapshot.planLabel) as string)
+      : account.planLabel,
     boundProviderCount: snapshot.boundProviderIds.length,
     verificationUrl: interaction?.verificationUrl
       ? (projectSafeValue(interaction.verificationUrl) as string)
@@ -887,7 +1091,7 @@ function QuotaStatus({ account }: { account: ConnectedAppRow }) {
   );
 }
 
-/** Configured Provider profiles, logical Gateway catalog, profile creation, and API-key controls. */
+/** Composes each active profile with its exact account slot; unbound retained slots stay separately reachable. */
 function ProviderProfiles({
   client,
   disconnected,
@@ -896,6 +1100,8 @@ function ProviderProfiles({
   accounts,
   gateway,
   onProfilesChanged,
+  onAccountsChanged,
+  onAccessDenied,
 }: {
   client: CoreClient;
   disconnected: boolean;
@@ -904,167 +1110,125 @@ function ProviderProfiles({
   accounts: ConnectedAppProviderRow[];
   gateway: GatewayDiagnostics | null;
   onProfilesChanged: () => void;
+  onAccountsChanged: () => void;
+  onAccessDenied: (providerId: SubscriptionProviderId, slot: string) => void;
 }) {
-  const [apiKey, setApiKey] = useState('');
-  const [apiKeyProviderId, setApiKeyProviderId] = useState<string | null>(null);
-  const apiKeyProfiles = profiles.filter(
-    (profile) =>
-      profile.kind === 'direct' || profile.kind === 'gateway' || profile.kind === 'custom'
-  );
-  const apiKeyProfile = apiKeyProfiles.find((profile) => profile.id === apiKeyProviderId) ?? null;
-  useEffect(() => {
-    setApiKeyProviderId((current) => {
-      const eligible = profiles.filter(
-        (profile) =>
-          profile.kind === 'direct' || profile.kind === 'gateway' || profile.kind === 'custom'
-      );
-      if (current && eligible.some((profile) => profile.id === current)) {
-        return current;
-      }
-      return eligible[0]?.id ?? null;
-    });
-  }, [profiles]);
-  const saveKey = useMutation({
-    mutationFn: () => {
-      if (!apiKeyProfile) {
-        throw new Error('Select an API-key provider profile.');
-      }
-      return client.app.setProviderApiKey(apiKeyProfile.id, { apiKey });
-    },
-    onSuccess: () => {
-      setApiKey('');
-      onProfilesChanged();
-    },
-  });
-
   return (
-    <section className="flex flex-col gap-3" aria-labelledby="ai-provider-profiles">
-      <div className="flex items-baseline gap-2">
-        <h2
-          id="ai-provider-profiles"
-          className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
-        >
-          Provider profiles
-        </h2>
-        <span className="text-xs text-fg-muted">Models, defaults, and API keys</span>
-      </div>
+    <section className="flex min-w-0 flex-col gap-3" aria-labelledby="gateway-providers">
+      <h2
+        id="gateway-providers"
+        className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
+      >
+        Providers
+      </h2>
+      <p className="text-xs text-fg-muted">
+        Active server state. Provider registry changes require restart.
+      </p>
       {profiles.length === 0 ? (
         <EmptyState
           icon="connect"
           title="No provider profiles"
-          hint="Create a provider profile to choose a core default model."
+          hint="Add a Provider or edit authored configuration."
         />
       ) : (
-        <Card className="flex flex-col gap-3 p-4">
-          {profiles.map((profile) => (
-            <div key={profile.id} className="flex flex-col gap-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-bold text-fg-strong">{profile.displayName}</p>
-                <StatusChip tone={profile.readiness?.status === 'ready' ? 'positive' : 'notice'}>
-                  {profile.readiness?.status ?? 'unknown'}
-                </StatusChip>
-              </div>
-              <p className="text-xs text-fg-muted">{profile.id}</p>
-              <ul className="flex flex-wrap gap-2 text-xs text-fg">
-                {profile.models.map((model) => (
-                  <li key={model}>{model}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </Card>
+        profiles.map((profile) => {
+          const pair = profile.subscriptionAccount;
+          const account = accounts
+            .find((provider) => provider.subscriptionProviderId === pair?.subscriptionProviderId)
+            ?.accounts.find((slot) => slot.accountSlotId === pair?.accountSlotId);
+          const affected = affectedLogicalModels(
+            gateway,
+            profiles
+              .filter((candidate) =>
+                pair
+                  ? candidate.subscriptionAccount?.subscriptionProviderId ===
+                      pair.subscriptionProviderId &&
+                    candidate.subscriptionAccount.accountSlotId === pair.accountSlotId
+                  : candidate.id === profile.id
+              )
+              .map((candidate) => candidate.id)
+          );
+          return pair && account ? (
+            <AccountControls
+              key={profile.id}
+              profile={profile}
+              affected={affected}
+              account={account}
+              providerId={pair.subscriptionProviderId}
+              client={client}
+              disconnected={disconnected}
+              onAccountsChanged={onAccountsChanged}
+              onAccessDenied={onAccessDenied}
+            />
+          ) : pair ? (
+            <Card key={profile.id}>
+              <section aria-label={profile.displayName} className="flex flex-col gap-3">
+                <ProviderHeader profile={profile} />
+                <p className="text-xs text-fg-muted">
+                  Account slot {pair.subscriptionProviderId} / {pair.accountSlotId} is missing or
+                  unavailable.
+                </p>
+                <Button variant="outline" onPress={onAccountsChanged}>
+                  Retry account slots
+                </Button>
+                <p className="text-xs text-fg-muted">
+                  Affected logical models: {affected.join(', ') || 'None'}
+                </p>
+                <ProfileRemoval
+                  client={client}
+                  profile={profile}
+                  disconnected={disconnected}
+                  onChanged={onProfilesChanged}
+                />
+              </section>
+            </Card>
+          ) : (
+            <KeyProviderCard
+              key={profile.id}
+              client={client}
+              profile={profile}
+              affected={affected}
+              disconnected={disconnected}
+              onChanged={onProfilesChanged}
+            />
+          );
+        })
       )}
       {diagnostics.length > 0 ? (
-        <Card className="flex flex-col gap-2" aria-label="Provider diagnostics">
+        <Card aria-label="Provider diagnostics" className="flex flex-col gap-2">
           <h3 className="text-sm font-bold text-fg-strong">Provider diagnostics</h3>
           {diagnostics.map((diagnostic) => (
-            <div
-              key={`${diagnostic.source}:${diagnostic.profileId ?? 'none'}:${diagnostic.code}:${diagnostic.message}`}
-              className="text-xs"
+            <p
+              key={`${diagnostic.source}:${diagnostic.profileId}:${diagnostic.code}`}
+              className="text-xs text-fg-muted"
             >
-              <p className="font-bold text-fg-strong">
-                {diagnostic.status} · {diagnostic.code}
-              </p>
-              <p className="text-fg-muted">
-                {diagnostic.profileId ? `${diagnostic.profileId} · ` : ''}
-                {diagnostic.message}
-              </p>
-            </div>
-          ))}
-        </Card>
-      ) : null}
-
-      {gateway ? (
-        <Card className="flex flex-col gap-2" aria-label="Logical Gateway models">
-          <h3 className="text-sm font-bold text-fg-strong">Logical Gateway models</h3>
-          <p className="text-xs text-fg-muted">
-            Default: {gateway.defaultModelId ?? 'Not configured'}
-          </p>
-          {gateway.models.map((model) => (
-            <div key={model.id} className="flex flex-wrap items-center gap-2 text-sm text-fg">
-              <span className="font-bold">{model.displayName}</span>
-              <span className="text-xs text-fg-muted">{model.id}</span>
-              {model.id === gateway.defaultModelId ? (
-                <StatusChip tone="positive">Default</StatusChip>
-              ) : null}
-            </div>
-          ))}
-        </Card>
-      ) : null}
-
-      {apiKeyProfiles.length > 0 ? (
-        <Card className="flex flex-col gap-3">
-          <Select
-            label="API key provider"
-            items={apiKeyProfiles.map((profile) => ({
-              id: profile.id,
-              label: profile.displayName,
-            }))}
-            selectedKey={apiKeyProviderId}
-            onSelectionChange={(key) => {
-              if (typeof key !== 'string') return;
-              setApiKeyProviderId(key);
-              setApiKey('');
-              saveKey.reset();
-            }}
-            isDisabled={disconnected || saveKey.isPending}
-          />
-          <TextField
-            label="Provider API key"
-            type="password"
-            value={apiKey}
-            onChange={setApiKey}
-            autoComplete="off"
-            isDisabled={disconnected || saveKey.isPending}
-          />
-          {saveKey.isError ? (
-            <ErrorBanner message="Couldn't save that API key." onRetry={() => saveKey.mutate()} />
-          ) : null}
-          {saveKey.isSuccess ? (
-            <p role="status" className="text-xs text-positive-fg">
-              API key saved.
+              {diagnostic.status} · {diagnostic.code} · {diagnostic.message}
             </p>
-          ) : null}
-          <div className="flex justify-end">
-            <Button
-              size="sm"
-              isDisabled={disconnected || saveKey.isPending || !apiKey.trim()}
-              onPress={() => saveKey.mutate()}
-            >
-              Save or Replace API key
-            </Button>
-          </div>
+          ))}
         </Card>
       ) : null}
-
-      <ProviderProfileForm
-        client={client}
-        disconnected={disconnected}
-        accounts={accounts}
-        onCreated={onProfilesChanged}
-      />
+      <details>
+        <summary className="cursor-pointer text-sm text-fg">
+          Add a Provider profile manually
+        </summary>
+        <ProviderProfileForm
+          client={client}
+          disconnected={disconnected}
+          accounts={accounts}
+          onCreated={onProfilesChanged}
+        />
+      </details>
     </section>
   );
+}
+
+/** Labels typed denial without displaying private error payloads; every caller supplies its own retry. */
+export function dependencyMessage(error: unknown, dependency: string): string {
+  return isAdminDenied(error)
+    ? `Access denied: ${dependency}. Retry with deployment-admin authority.`
+    : dependency.startsWith("Couldn't")
+      ? dependency
+      : `Couldn't load ${dependency}.`;
 }
 
 /** Creates one provider profile document through runtime-config createFile. */
@@ -1198,7 +1362,12 @@ function ProviderProfileForm({
           />
         </>
       )}
-      <TextField label="Models" value={models} onChange={setModels} isDisabled={disconnected} />
+      <TextField
+        label="Provider models"
+        value={models}
+        onChange={setModels}
+        isDisabled={disconnected}
+      />
       <TextField
         label="Default model"
         value={defaultModel}
@@ -1207,13 +1376,14 @@ function ProviderProfileForm({
       />
       {create.isError ? (
         <ErrorBanner
-          message="Couldn't create that provider profile."
+          message={dependencyMessage(create.error, "Couldn't create that provider profile.")}
           onRetry={() => create.mutate()}
         />
       ) : null}
       {create.isSuccess ? (
         <p role="status" className="text-xs text-fg-muted">
-          Provider file saved. Apply configuration to load it.
+          Provider persisted revision: {create.data?.file.revision}. Provider activation: restart
+          required; apply saved configuration to inspect the reload plan.
         </p>
       ) : null}
       <div className="flex justify-end">
@@ -1235,4 +1405,16 @@ function ProviderProfileForm({
       </div>
     </Card>
   );
+}
+
+/** Keeps quota cache identity exact before any card consumes the typed observation. */
+async function readAccountQuota(
+  client: CoreClient,
+  providerId: SubscriptionProviderId,
+  slot: string
+) {
+  const result = await client.providerSubscriptions.getAccountQuota(providerId, slot);
+  if (result.subscriptionProviderId !== providerId || result.accountSlotId !== slot)
+    throw new Error('Provider subscription projection failed.');
+  return result;
 }

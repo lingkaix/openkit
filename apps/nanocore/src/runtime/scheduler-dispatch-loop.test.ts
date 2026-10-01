@@ -1181,6 +1181,13 @@ describe('scheduler dispatch loop', () => {
       // Dispatch resolves complete Provider metadata rather than forwarding an unresolved fixture.
       expectedSetup.logicalModels.allowed[0] = {
         ...expectedSetup.logicalModels.allowed[0]!,
+        // This is the resolver's diagnostic contract; it is not projected into the setup ledger or the AEP.
+        contract: {
+          context: 400_000,
+          output: 128_000,
+          inputModalities: ['text', 'image'],
+          reasoning: true,
+        },
         modelParameters: {
           contextWindow: 400_000,
           inputModalities: ['text', 'image'],

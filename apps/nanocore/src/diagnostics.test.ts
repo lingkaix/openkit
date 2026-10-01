@@ -131,7 +131,19 @@ describe('Settings diagnostics app API', () => {
       const body = await res.json();
 
       expect(res.status).toBe(200);
-      expect(body.providers.registry).toEqual([
+      expect(
+        body.providers.registry.map(
+          ({
+            metadataKey,
+            modelDetails,
+            ...existing
+          }: {
+            metadataKey: string;
+            modelDetails: unknown;
+            [key: string]: unknown;
+          }) => existing
+        )
+      ).toEqual([
         {
           baseUrl: 'https://openrouter.ai/api/v1',
           displayName: 'OpenRouter',

@@ -57,25 +57,34 @@ describe('ProviderRegistry', () => {
 
     const summary = registry.summarize();
 
-    expect.soft(summary).toEqual([
-      {
-        baseUrl: 'https://example.com/v1',
-        defaultModel: 'gpt-5.1',
-        displayName: 'Redacted Provider',
-        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-        id: 'redacted',
-        kind: 'direct',
-        models: ['gpt-5.1'],
-        readiness: { status: 'ready' },
-      },
-      {
-        displayName: 'Codex Subscription',
-        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-        id: 'codex-work',
-        kind: 'oauth',
-        models: ['openai-codex/gpt-5.6-sol'],
-      },
-    ]);
+    expect(summary[1]?.subscriptionAccount).toEqual({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'default',
+    });
+    expect(summary[0]?.metadataKey).toBe('redacted');
+    expect
+      .soft(
+        summary.map(({ metadataKey, modelDetails, subscriptionAccount, ...existing }) => existing)
+      )
+      .toEqual([
+        {
+          baseUrl: 'https://example.com/v1',
+          defaultModel: 'gpt-5.1',
+          displayName: 'Redacted Provider',
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+          id: 'redacted',
+          kind: 'direct',
+          models: ['gpt-5.1'],
+          readiness: { status: 'ready' },
+        },
+        {
+          displayName: 'Codex Subscription',
+          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+          id: 'codex-work',
+          kind: 'oauth',
+          models: ['openai-codex/gpt-5.6-sol'],
+        },
+      ]);
     for (const provider of summary) {
       expect(provider).not.toHaveProperty('dispatchFamily');
     }

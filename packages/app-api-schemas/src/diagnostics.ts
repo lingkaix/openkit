@@ -1,4 +1,4 @@
-import { MetaResponseSchema } from '@openkit/protocol';
+import { MetaResponseSchema, ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 import { RuntimeConfigStatusSchema } from './runtime-config.js';
@@ -29,6 +29,86 @@ export const ProviderDiagnosticSchema = z
   })
   .strict();
 
+const ModalitySchema = z
+  .string()
+  .refine(
+    (value) => ['text', 'image', 'audio', 'video', 'pdf'].includes(value),
+    'Unknown core modality.'
+  );
+
+const MetadataSourceSchema = z.enum([
+  'upstream-snapshot',
+  'deployment-extension',
+  'profile-override',
+]);
+
+/** A public metadata leaf with explicit unknown and its winning composition source. */
+function sourcedLeaf<T extends z.ZodType>(value: T) {
+  return z
+    .object({ value: value.nullable(), source: MetadataSourceSchema.nullable() })
+    .strict()
+    .refine(
+      (leaf) => ('value' in leaf && leaf.value === null) === (leaf.source === null),
+      'Unknown values have no source; known values require their source.'
+    );
+}
+
+/** Effective, non-secret native model metadata from the active Provider registry. */
+export const ProviderModelDiagnosticSchema = z
+  .object({
+    id: z.string().min(1),
+    context: sourcedLeaf(z.number().int().positive()),
+    output: sourcedLeaf(z.number().int().positive()),
+    inputModalities: sourcedLeaf(z.array(ModalitySchema)),
+    outputModalities: sourcedLeaf(z.array(ModalitySchema)),
+    reasoning: sourcedLeaf(z.boolean()),
+    reasoningEffortLevels: sourcedLeaf(z.array(ReasoningEffortSchema)),
+    cost: z
+      .object({
+        input: sourcedLeaf(z.number().nonnegative()),
+        output: sourcedLeaf(z.number().nonnegative()),
+        cache_read: sourcedLeaf(z.number().nonnegative()),
+        cache_write: sourcedLeaf(z.number().nonnegative()),
+      })
+      .strict(),
+  })
+  .strict();
+
+/** Ordered route availability; reading this projection performs no upstream request. */
+const LogicalModelRouteDiagnosticSchema = z
+  .object({
+    id: z.string().min(1),
+    providerProfileId: z.string().min(1),
+    providerModel: z.string().min(1),
+    available: z.boolean(),
+    unavailableReason: z
+      .enum([
+        'provider_profile_absent',
+        'provider_model_delisted',
+        'provider_not_dispatchable',
+        'subscription_vault_unavailable',
+        'subscription_account_absent',
+        'subscription_account_logged_out',
+        'subscription_account_integrity_unavailable',
+      ])
+      .nullable(),
+  })
+  .strict()
+  .refine(
+    (route) => route.available === (route.unavailableReason === null),
+    'Unavailable routes require their supply reason.'
+  );
+
+/** Coherent partial logical contract, retaining unknown limits and modalities. */
+const LogicalModelContractDiagnosticSchema = z
+  .object({
+    context: z.number().int().positive().nullable(),
+    output: z.number().int().positive().nullable(),
+    inputModalities: z.array(ModalitySchema).nullable(),
+    reasoning: z.boolean().nullable(),
+  })
+  .strict();
+
 /** Provider registry row returned by App Diagnostics. */
 export const ProviderRegistryEntrySchema = z
   .object({
@@ -37,6 +117,15 @@ export const ProviderRegistryEntrySchema = z
     kind: z.string().min(1),
     gatewayCapabilities: GatewayCapabilitiesSchema,
     models: z.array(z.string().min(1)),
+    metadataKey: z.string().min(1).optional(),
+    subscriptionAccount: z
+      .object({
+        subscriptionProviderId: z.enum(['openai-codex', 'xai']),
+        accountSlotId: z.string().min(1),
+      })
+      .strict()
+      .optional(),
+    modelDetails: z.array(ProviderModelDiagnosticSchema).optional(),
     baseUrl: z.string().min(1).optional(),
     defaultModel: z.string().min(1).optional(),
     readiness: z
@@ -223,6 +312,17 @@ export const AppDiagnosticsResponseSchema = z
             id: z.string().min(1),
             displayName: z.string().min(1),
             capabilities: z.array(z.string().min(1)),
+            autoFailover: z.boolean().optional(),
+            routes: z.array(LogicalModelRouteDiagnosticSchema).optional(),
+            contract: LogicalModelContractDiagnosticSchema.optional(),
+            reasoningEffortLevels: z.array(ReasoningEffortSchema).optional(),
+            contextManagement: z
+              .object({
+                type: z.literal('compaction'),
+                compactThreshold: z.number().int().positive(),
+              })
+              .strict()
+              .optional(),
           })
           .strict()
       ),
@@ -255,3 +355,6 @@ export type ProcessTelemetryConfiguration = z.infer<typeof ProcessTelemetryConfi
 export type ProcessDiagnosticsSample = z.infer<typeof ProcessDiagnosticsSampleSchema>;
 /** App-facing diagnostics response. */
 export type AppDiagnosticsResponse = z.infer<typeof AppDiagnosticsResponseSchema>;
+
+/** Effective native model diagnostics with source-per-leaf values. */
+export type ProviderModelDiagnostic = z.infer<typeof ProviderModelDiagnosticSchema>;

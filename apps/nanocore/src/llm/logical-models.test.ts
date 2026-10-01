@@ -294,6 +294,7 @@ describe('resolveLogicalModelCatalog', () => {
     expect(catalog).toEqual([
       {
         autoFailover: true,
+        contract: { context: 1000000, output: null, inputModalities: null, reasoning: null },
         id: 'local-free',
         displayName: 'local-free',
         modelFamilyId: null,
@@ -337,6 +338,12 @@ describe('resolveLogicalModelCatalog', () => {
     expect(catalog).toEqual([
       {
         autoFailover: true,
+        contract: {
+          context: 1000000,
+          output: 8000,
+          inputModalities: ['text', 'image'],
+          reasoning: true,
+        },
         id: 'openrouter-free',
         displayName: 'openrouter-free',
         modelFamilyId: null,
@@ -584,6 +591,7 @@ describe('resolveLogicalModelCatalog', () => {
 
     expect(resolveLogicalModel(config, providers)).toEqual({
       autoFailover: true,
+      contract: { context: 1000000, output: null, inputModalities: null, reasoning: null },
       id: 'local-free',
       displayName: 'local-free',
       modelFamilyId: null,

@@ -1467,7 +1467,27 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             runtimeConfig().gatewayConfig,
             runtimeConfig().providerRegistry,
             providerSubscriptionAccountManager ?? undefined
-          ).map(({ id, displayName, capabilities }) => ({ id, displayName, capabilities })),
+          ).map(
+            ({
+              id,
+              displayName,
+              capabilities,
+              autoFailover,
+              routes,
+              contract,
+              reasoningEffortLevels,
+              contextManagement,
+            }) => ({
+              id,
+              displayName,
+              capabilities,
+              autoFailover,
+              routes,
+              contract,
+              reasoningEffortLevels,
+              contextManagement,
+            })
+          ),
           usage: gatewayUsageTracker.snapshot(),
         },
         providers: {

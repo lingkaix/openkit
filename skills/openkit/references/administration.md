@@ -138,7 +138,7 @@ The optional xAI `billing` object reports `currency: USD`, `prepaidBalanceCents`
 
 Read auto-top-up only when the user requests or expands costs: `provider-subscription.account-auto-topup` with the same xAI pair. This separate read returns its own `availability` and `observedAt`, optional `enabled`, and USD-cent `thresholdCents`, `amountCents`, and `monthlyCapCents`. Missing enabled state is unknown; explicit false is disabled. Never infer enabled state from a saved payment method, balance, or extra spending. A rule query failure does not discard the separate quota observation. The operation neither changes rules nor triggers payments.
 
-Web **Settings → AI interface** uses the same fields, an account-scoped Refresh action, and collapsed Balance and costs and Account settings. Refresh only the selected account; no background polling or automatic account switching is needed. Account management is separate from observation: never log out, rebind credentials, or alter billing merely to refresh. No provider-private identity, raw billing payload, or credential is returned.
+Web **Settings → Gateway** uses the same fields, an account-scoped Refresh action, and collapsed Balance and costs and Account settings. Refresh only the selected account; no background polling or automatic account switching is needed. Account management is separate from observation: never log out, rebind credentials, or alter billing merely to refresh. No provider-private identity, raw billing payload, or credential is returned.
 
 ## Pi Task readiness
 

@@ -251,7 +251,13 @@ function makeClient(
         displayName: 'Renamed Codex',
       }),
       deleteAccount: vi.fn().mockResolvedValue(undefined),
-      getAccountStatus: vi.fn().mockResolvedValue(CODEX_ACCOUNT),
+      getAccountStatus: vi.fn().mockImplementation((provider: string, slot: string) =>
+        Promise.resolve({
+          ...(provider === 'xai' ? CODEX_ACCOUNT : CODEX_ACCOUNT),
+          subscriptionProviderId: provider,
+          accountSlotId: slot,
+        })
+      ),
       startAccountLogin: vi.fn().mockResolvedValue(PENDING_ACCOUNT),
       cancelAccountLogin: vi.fn().mockResolvedValue(CODEX_ACCOUNT),
       logoutAccount: vi.fn().mockResolvedValue(CODEX_ACCOUNT),
@@ -296,6 +302,7 @@ describe('AI interface deployment-admin workflow', () => {
             accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
           })
         ),
+        getAccountStatus: vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
         getAccountQuota: vi.fn().mockResolvedValue({
           subscriptionProviderId: 'openai-codex',
           accountSlotId: 'primary',
@@ -326,6 +333,7 @@ describe('AI interface deployment-admin workflow', () => {
             accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
           })
         ),
+        getAccountStatus: vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
         getAccountQuota: vi.fn().mockResolvedValue({
           subscriptionProviderId: 'openai-codex',
           accountSlotId: 'primary',
@@ -499,7 +507,7 @@ describe('AI interface deployment-admin workflow', () => {
     );
 
     vi.spyOn(window, 'confirm').mockReturnValue(true);
-    await user.click(within(codex).getByRole('button', { name: 'Delete account' }));
+    await user.click(within(codex).getByRole('button', { name: 'Remove account' }));
     await waitFor(() =>
       expect(client.providerSubscriptions.deleteAccount).toHaveBeenCalledWith(
         'openai-codex',
@@ -510,7 +518,10 @@ describe('AI interface deployment-admin workflow', () => {
 
   it('starts device-code login, shows the verification URL and user code, polls status, and can cancel', async () => {
     const user = userEvent.setup();
-    const getAccountStatus = vi.fn().mockResolvedValue(PENDING_ACCOUNT);
+    const getAccountStatus = vi
+      .fn()
+      .mockResolvedValueOnce(CODEX_ACCOUNT)
+      .mockResolvedValue(PENDING_ACCOUNT);
     const client = makeClient({
       providerSubscriptions: {
         listAccounts: vi.fn().mockImplementation((providerId: string) =>
@@ -585,6 +596,7 @@ describe('AI interface deployment-admin workflow', () => {
             accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
           })
         ),
+        getAccountStatus: vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
         logoutAccount,
       },
     });
@@ -697,7 +709,7 @@ describe('AI interface deployment-admin workflow', () => {
         name: 'OpenAI Codex · primary',
       })
     );
-    await user.type(screen.getByLabelText('Models'), 'gpt-5');
+    await user.type(screen.getByLabelText('Provider models'), 'gpt-5');
     await user.type(screen.getByLabelText('Default model'), 'gpt-5');
     await user.click(screen.getByRole('button', { name: 'Create provider profile' }));
 
@@ -712,9 +724,7 @@ describe('AI interface deployment-admin workflow', () => {
     expect(created?.content).toContain('"accountSlotId": "primary"');
     expect(created?.content).not.toContain('secretRef');
     expect(created?.content).not.toContain('baseUrl');
-    expect(
-      await screen.findByText('Provider file saved. Apply configuration to load it.')
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Provider persisted revision:/)).toBeInTheDocument();
   });
 
   it('creates a provider profile file with vault://provider_<id> for API-key kinds', async () => {
@@ -730,7 +740,7 @@ describe('AI interface deployment-admin workflow', () => {
     );
     await user.type(screen.getByLabelText('Vendor'), 'openrouter');
     await user.type(screen.getByLabelText('Base URL'), 'https://openrouter.ai/api/v1');
-    await user.type(screen.getByLabelText('Models'), 'openai/gpt-5.1, openai/gpt-4.1');
+    await user.type(screen.getByLabelText('Provider models'), 'openai/gpt-5.1, openai/gpt-4.1');
     await user.type(screen.getByLabelText('Default model'), 'openai/gpt-5.1');
     await user.click(screen.getByRole('button', { name: 'Create provider profile' }));
 
@@ -753,7 +763,7 @@ describe('AI interface deployment-admin workflow', () => {
     const id = await screen.findByLabelText('Provider id');
     await user.type(id, 'openrouter.ai');
     await user.type(screen.getByLabelText('Provider display name'), 'OpenRouter');
-    await user.type(screen.getByLabelText('Models'), 'model-demo');
+    await user.type(screen.getByLabelText('Provider models'), 'model-demo');
     await user.type(screen.getByLabelText('Default model'), 'model-demo');
 
     expect(
@@ -856,7 +866,7 @@ describe('AI interface deployment-admin workflow', () => {
     expect(createSlot?.open).toBe(false);
     await user.click(within(codex).getByText('Account settings'));
     expect(settings?.open).toBe(true);
-    expect(within(codex).getByRole('button', { name: 'Delete account' })).toBeInTheDocument();
+    expect(within(codex).getByRole('button', { name: 'Remove account' })).toBeInTheDocument();
     await user.click(within(codex).getByText('Add account slot'));
     expect(createSlot?.open).toBe(true);
     expect(within(codex).getByRole('textbox', { name: 'Account slot id' })).toBeInTheDocument();
@@ -1058,5 +1068,584 @@ describe('AI interface deployment-admin workflow', () => {
     expect(await within(xai).findByText('Auto top-up query failed.')).toBeInTheDocument();
     expect(within(xai).queryByText('Auto top-up not reported')).not.toBeInTheDocument();
     expect(within(xai).queryByText(/private-rule-canary/)).not.toBeInTheDocument();
+  });
+});
+
+const GATEWAY_DIAGNOSTICS = {
+  ...DIAGNOSTICS,
+  providers: {
+    ...DIAGNOSTICS.providers,
+    registry: [
+      {
+        ...DIAGNOSTICS.providers.registry[0],
+        metadataKey: 'openai',
+        modelDetails: [
+          {
+            id: 'gpt-demo',
+            context: { value: 300000, source: 'deployment-extension' },
+            output: { value: null, source: null },
+            inputModalities: { value: [], source: 'profile-override' },
+            outputModalities: { value: ['text'], source: 'upstream-snapshot' },
+            reasoning: { value: false, source: 'profile-override' },
+            reasoningEffortLevels: { value: [], source: 'deployment-extension' },
+            cost: {
+              input: { value: 0, source: 'profile-override' },
+              output: { value: null, source: null },
+              cache_read: { value: null, source: null },
+              cache_write: { value: null, source: null },
+            },
+          },
+        ],
+      },
+      {
+        ...DIAGNOSTICS.providers.registry[0],
+        id: 'provider_codex',
+        displayName: 'Codex work',
+        kind: 'oauth',
+        metadataKey: 'openai_codex',
+        subscriptionAccount: { subscriptionProviderId: 'openai-codex', accountSlotId: 'primary' },
+      },
+    ],
+  },
+  gateway: {
+    ...DIAGNOSTICS.gateway,
+    models: [
+      {
+        id: 'tier',
+        displayName: 'Tier',
+        capabilities: ['responses'],
+        autoFailover: false,
+        contract: { context: 300000, output: null, inputModalities: [], reasoning: false },
+        routes: [
+          {
+            id: 'primary',
+            providerProfileId: 'provider_codex',
+            providerModel: 'gpt-demo',
+            available: false,
+            unavailableReason: 'subscription_account_logged_out',
+          },
+          {
+            id: 'backup',
+            providerProfileId: 'provider_demo',
+            providerModel: 'gpt-demo',
+            available: true,
+            unavailableReason: null,
+          },
+        ],
+      },
+    ],
+  },
+};
+
+describe('Unified Gateway acceptance', () => {
+  it('composes cards and displays active model sources and ordered unavailable routes without promotion', async () => {
+    const client = makeClient({
+      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+    });
+    renderScreen(client);
+    expect(await screen.findByRole('heading', { name: 'Gateway', level: 1 })).toBeInTheDocument();
+    for (const name of ['Providers', 'Models', 'Logical models'])
+      expect(await screen.findByRole('heading', { name, level: 2 })).toBeInTheDocument();
+    const card = screen.getByRole('region', { name: 'Codex work' });
+    expect(within(card).getByText('Codex primary')).toBeInTheDocument();
+    expect(within(card).getByText(/Affected logical models: Tier/)).toBeInTheDocument();
+    expect(screen.getByText('Context: 300000 · deployment extension')).toBeInTheDocument();
+    expect(screen.getByText('Output: Unknown · not reported')).toBeInTheDocument();
+    expect(screen.getByText('Input price: 0 · profile override')).toBeInTheDocument();
+    const logical = screen.getByRole('region', { name: 'Tier' });
+    expect(
+      within(logical).getByText(/Primary.*provider_codex.*subscription_account_logged_out/)
+    ).toBeInTheDocument();
+    expect(within(logical).getByText(/Backup 1.*provider_demo.*Available/)).toBeInTheDocument();
+    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+  });
+
+  it('discovers pending status on mount and leaves Log out and Remove enabled with references', async () => {
+    const user = userEvent.setup();
+    const client = makeClient({
+      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+      providerSubscriptions: { getAccountStatus: vi.fn().mockResolvedValue(PENDING_ACCOUNT) },
+    });
+    renderScreen(client);
+    const card = await screen.findByRole('region', { name: 'Codex work' });
+    expect(await within(card).findByText('Connecting')).toBeInTheDocument();
+    await user.click(within(card).getByText('Account settings'));
+    expect(within(card).getByRole('button', { name: 'Log out' })).toBeEnabled();
+    expect(within(card).getByRole('button', { name: 'Remove account' })).toBeEnabled();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await user.click(within(card).getByRole('button', { name: 'Remove account' }));
+    expect(client.providerSubscriptions.deleteAccount).toHaveBeenCalledWith(
+      'openai-codex',
+      'primary'
+    );
+    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+  });
+
+  it('reports completed setup steps after profile failure and retries only the failed step', async () => {
+    const user = userEvent.setup();
+    const createFile = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiCallError(403, 'private-canary'))
+      .mockResolvedValue({ file: { revision: 'profile-2' } });
+    const client = makeClient({ runtimeConfig: { createFile } });
+    renderScreen(client);
+    await user.type(await screen.findByLabelText('Setup Provider id'), 'codex-new');
+    await user.type(screen.getByLabelText('Setup account slot'), 'secondary');
+    await user.type(screen.getByLabelText('Setup models'), 'gpt-5');
+    await user.click(screen.getByRole('button', { name: 'Add subscription Provider' }));
+    expect(await screen.findByText(/Slot creation: completed/)).toBeInTheDocument();
+    expect(await screen.findByText(/Profile creation: Access denied/)).toBeInTheDocument();
+    expect(client.providerSubscriptions.startAccountLogin).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Retry profile creation' }));
+    expect(await screen.findByText(/Profile persisted revision: profile-2/)).toBeInTheDocument();
+    expect(client.providerSubscriptions.createAccount).toHaveBeenCalledTimes(1);
+    expect(client.providerSubscriptions.startAccountLogin).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Provider activation: restart required/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('private-canary');
+  });
+
+  it('removes a key profile through its source revision without rewriting routes', async () => {
+    const user = userEvent.setup();
+    const client = makeClient({
+      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+      runtimeConfig: {
+        listFiles: vi.fn().mockResolvedValue({
+          files: [{ id: 'providers/provider_demo.provider.jsonc', kind: 'provider' }],
+        }),
+        getFile: vi.fn().mockResolvedValue({
+          file: {
+            id: 'providers/provider_demo.provider.jsonc',
+            kind: 'provider',
+            revision: 'profile-read',
+          },
+          content: '{"id":"provider_demo"}',
+        }),
+        deleteFile: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    renderScreen(client);
+    const card = await screen.findByRole('region', { name: 'Demo provider' });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await user.click(within(card).getByRole('button', { name: 'Remove Provider' }));
+    await waitFor(() =>
+      expect(client.runtimeConfig.deleteFile).toHaveBeenCalledWith({
+        id: 'providers/provider_demo.provider.jsonc',
+        kind: 'provider',
+        expectedRevision: 'profile-read',
+      })
+    );
+    expect(await screen.findByText(/Profile removed.*restart required/)).toBeInTheDocument();
+    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+  });
+
+  it('validates an exact extension key, saves with the read revision and distinguishes persistence, reload and restart', async () => {
+    const user = userEvent.setup();
+    const client = makeClient({
+      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+      runtimeConfig: {
+        getFile: vi.fn().mockResolvedValue({
+          file: { id: 'model-catalog.jsonc', kind: 'model-catalog', revision: 'catalog-read' },
+          content: '{\n// preserve\n"schemaVersion":1,"providers":{}}',
+        }),
+        updateFile: vi.fn().mockResolvedValue({ file: { revision: 'catalog-saved' } }),
+        reload: vi.fn().mockResolvedValue({
+          status: 'applied',
+          runtimeConfig: {
+            ...RUNTIME_CONFIG,
+            pendingRestart: [{ path: 'modelCatalog', summary: 'Catalog needs restart' }],
+          },
+          plan: {
+            ...PLAN,
+            requiresRestart: [{ path: 'modelCatalog', summary: 'Catalog needs restart' }],
+          },
+        }),
+      },
+    });
+    renderScreen(client);
+    await user.click(
+      await screen.findByRole('button', { name: 'Edit metadata openai / gpt-demo' })
+    );
+    const metadata = await screen.findByLabelText('Extension metadata JSON');
+    await user.clear(metadata);
+    await user.paste('{"cost":{"input":0},"reasoning":false,"modalities":{"input":[]}}');
+    await user.click(screen.getByRole('button', { name: 'Save extension' }));
+    await waitFor(() => expect(client.runtimeConfig.updateFile).toHaveBeenCalled());
+    const request = vi.mocked(client.runtimeConfig.updateFile).mock.calls[0]![0];
+    expect(request.expectedRevision).toBe('catalog-read');
+    expect(request.content).toContain('// preserve');
+    expect(request.content).toContain('"gpt-demo"');
+    expect(request.content).toContain('"input": 0');
+    expect(client.runtimeConfig.validate).toHaveBeenCalledBefore(
+      vi.mocked(client.runtimeConfig.updateFile)
+    );
+    expect(screen.getByText('Persisted revision: catalog-saved')).toBeInTheDocument();
+    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Apply saved Gateway configuration' }));
+    expect(await screen.findByText(/Reload application: applied/)).toBeInTheDocument();
+    expect(screen.getByText(/Restart-required activation: modelCatalog/)).toBeInTheDocument();
+    expect(screen.getByText('Context: 300000 · deployment extension')).toBeInTheDocument();
+  });
+});
+
+describe('Gateway dependency and routing completion', () => {
+  it('edits primary, ordered backups and failover through validation/CAS while active routes remain unchanged until reload', async () => {
+    const user = userEvent.setup();
+    const original = {
+      schemaVersion: 1,
+      enabled: true,
+      logicalModels: [
+        {
+          id: 'tier',
+          displayName: 'Tier',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
+          routes: GATEWAY_DIAGNOSTICS.gateway.models[0]!.routes,
+          routing: { autoFailover: false },
+        },
+      ],
+    };
+    const updateFile = vi.fn().mockResolvedValue({ file: { revision: 'routes-saved' } });
+    const client = makeClient({
+      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+      runtimeConfig: {
+        getFile: vi.fn().mockResolvedValue({
+          file: { id: 'gateway.jsonc', kind: 'gateway', revision: 'routes-read' },
+          content: JSON.stringify(original),
+        }),
+        updateFile,
+      },
+    });
+    renderScreen(client);
+    await user.click(await screen.findByRole('button', { name: 'Edit routes tier' }));
+    const routes = await screen.findByLabelText('Ordered routes JSON');
+    await user.clear(routes);
+    const edited = [
+      { id: 'primary', providerProfileId: 'provider_demo', providerModel: 'gpt-demo' },
+      { id: 'backup', providerProfileId: 'provider_codex', providerModel: 'gpt-demo' },
+    ];
+    await user.paste(JSON.stringify(edited));
+    await user.click(screen.getByRole('switch', { name: 'Automatic failover' }));
+    await user.click(screen.getByRole('button', { name: 'Save routes' }));
+    await waitFor(() => expect(updateFile).toHaveBeenCalled());
+    const request = updateFile.mock.calls[0]![0];
+    expect(request).toMatchObject({
+      id: 'gateway.jsonc',
+      kind: 'gateway',
+      expectedRevision: 'routes-read',
+    });
+    expect(JSON.parse(request.content).logicalModels[0]).toMatchObject({
+      routes: edited,
+      routing: { autoFailover: true },
+    });
+    expect(client.runtimeConfig.validate).toHaveBeenCalledBefore(updateFile);
+    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(/Primary.*provider_codex.*subscription_account_logged_out/)
+    ).toBeInTheDocument();
+    expect(await screen.findByText('Persisted revision: routes-saved')).toBeInTheDocument();
+  });
+
+  it('retains the exact draft and original revision after conflict until explicit source reload', async () => {
+    const user = userEvent.setup();
+    const read = vi.fn().mockResolvedValue({
+      file: { id: 'model-catalog.jsonc', kind: 'model-catalog', revision: 'read-1' },
+      content: '{"schemaVersion":1,"providers":{}}',
+    });
+    const write = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiCallError(409, 'private-conflict'))
+      .mockResolvedValue({ file: { revision: 'saved-3' } });
+    const client = makeClient({
+      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+      runtimeConfig: { getFile: read, updateFile: write },
+    });
+    renderScreen(client);
+    await user.click(
+      await screen.findByRole('button', { name: 'Edit metadata openai / gpt-demo' })
+    );
+    const field = await screen.findByLabelText('Extension metadata JSON');
+    await user.clear(field);
+    await user.paste('{"reasoning":false}');
+    await user.click(screen.getByRole('button', { name: 'Save extension' }));
+    expect(await screen.findByText(/source revision changed/)).toBeInTheDocument();
+    expect(field).toHaveValue('{"reasoning":false}');
+    expect(read).toHaveBeenCalledTimes(1);
+    read.mockResolvedValue({
+      file: { id: 'model-catalog.jsonc', kind: 'model-catalog', revision: 'read-2' },
+      content: '{"schemaVersion":1,"providers":{"other":{"models":{}}}}',
+    });
+    await user.click(screen.getByRole('button', { name: 'Reload source revision' }));
+    expect(await screen.findByText('Read revision: read-2')).toBeInTheDocument();
+    expect(field).toHaveValue('{"reasoning":false}');
+    await user.click(screen.getByRole('button', { name: 'Save extension' }));
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+    expect(write.mock.calls[1]![0].expectedRevision).toBe('read-2');
+    expect(JSON.parse(write.mock.calls[1]![0].content).providers.other).toEqual({ models: {} });
+    expect(document.body.textContent).not.toContain('private-conflict');
+  });
+
+  it('keeps guided step evidence when the new retained slot appears and retries only a failed post-login observation', async () => {
+    const user = userEvent.setup();
+    let created = false;
+    const createdAccount = { ...CODEX_ACCOUNT, accountSlotId: 'secondary' };
+    const listAccounts = vi.fn().mockImplementation((provider: string) =>
+      Promise.resolve({
+        accounts:
+          provider === 'openai-codex'
+            ? created
+              ? [CODEX_ACCOUNT, createdAccount]
+              : [CODEX_ACCOUNT]
+            : [],
+      })
+    );
+    const status = vi
+      .fn()
+      .mockImplementation((_provider: string, slot: string) =>
+        slot === 'secondary'
+          ? Promise.reject(new ApiCallError(403, 'private-status-denial'))
+          : Promise.resolve(CODEX_ACCOUNT)
+      );
+    const startAccountLogin = vi
+      .fn()
+      .mockResolvedValue({ ...PENDING_ACCOUNT, accountSlotId: 'secondary' });
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts,
+        createAccount: vi.fn().mockImplementation(() => {
+          created = true;
+          return Promise.resolve(createdAccount);
+        }),
+        getAccountStatus: status,
+        startAccountLogin,
+      },
+    });
+    renderScreen(client);
+    await user.type(await screen.findByLabelText('Setup Provider id'), 'codex-new');
+    await user.type(screen.getByLabelText('Setup account slot'), 'secondary');
+    await user.type(screen.getByLabelText('Setup models'), 'gpt-5');
+    await user.click(screen.getByRole('button', { name: 'Add subscription Provider' }));
+    expect(await screen.findByText(/Login observation: Access denied/)).toBeInTheDocument();
+    for (const step of ['Slot creation', 'Profile creation', 'Device login'])
+      expect(screen.getByText(`${step}: completed`)).toBeInTheDocument();
+    status.mockResolvedValue({ ...PENDING_ACCOUNT, accountSlotId: 'secondary' });
+    await user.click(screen.getByRole('button', { name: 'Retry login observation' }));
+    expect(await screen.findByText('Login observation: completed')).toBeInTheDocument();
+    expect(startAccountLogin).toHaveBeenCalledTimes(1);
+    expect(client.runtimeConfig.createFile).toHaveBeenCalledTimes(1);
+    expect(client.providerSubscriptions.createAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps typed diagnostics denial visible and retries only that read', async () => {
+    const user = userEvent.setup();
+    const getDiagnostics = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiCallError(403, 'private-diagnostics-denial'))
+      .mockResolvedValue(GATEWAY_DIAGNOSTICS);
+    const client = makeClient({ app: { getDiagnostics } });
+    renderScreen(client);
+    const denial = await screen.findByText(/Access denied: Gateway diagnostics/);
+    await user.click(
+      within(denial.closest('[role="alert"]')!).getByRole('button', { name: 'Try again' })
+    );
+    expect(await screen.findByRole('heading', { name: 'Models', level: 2 })).toBeInTheDocument();
+    expect(getDiagnostics).toHaveBeenCalledTimes(2);
+    expect(client.providerSubscriptions.listProviders).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain('private-diagnostics-denial');
+  });
+
+  it('retries an initially denied quota pair without refreshing another account', async () => {
+    const user = userEvent.setup();
+    const quota = vi
+      .fn()
+      .mockImplementation((provider: string) =>
+        provider === 'openai-codex'
+          ? Promise.reject(new ApiCallError(403, 'private-quota-denial'))
+          : Promise.resolve(XAI_QUOTA)
+      );
+    const client = makeClient({
+      providerSubscriptions: {
+        listAccounts: vi
+          .fn()
+          .mockImplementation((provider: string) =>
+            Promise.resolve({ accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: provider }] })
+          ),
+        getAccountQuota: quota,
+      },
+    });
+    renderScreen(client);
+    const retry = await screen.findByRole('button', { name: 'Retry quota OpenAI Codex / primary' });
+    quota.mockImplementation((provider: string) =>
+      Promise.resolve(provider === 'openai-codex' ? CODEX_QUOTA : XAI_QUOTA)
+    );
+    await user.click(retry);
+    expect(await screen.findByText('Primary 59.6% remaining')).toBeInTheDocument();
+    expect(quota.mock.calls.filter(([provider]) => provider === 'xai')).toHaveLength(1);
+  });
+});
+
+it('retries the source observation after a successful save without repeating the persisted write', async () => {
+  const user = userEvent.setup();
+  const source = {
+    file: { id: 'model-catalog.jsonc', kind: 'model-catalog', revision: 'catalog-read' },
+    content: '{"schemaVersion":1,"providers":{}}',
+  };
+  const getFile = vi
+    .fn()
+    .mockResolvedValueOnce(source)
+    .mockRejectedValueOnce(new ApiCallError(403, 'private-source-denial'))
+    .mockResolvedValue({ ...source, file: { ...source.file, revision: 'catalog-saved' } });
+  const updateFile = vi.fn().mockResolvedValue({ file: { revision: 'catalog-saved' } });
+  const client = makeClient({
+    app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+    runtimeConfig: { getFile, updateFile },
+  });
+  renderScreen(client);
+  await user.click(await screen.findByRole('button', { name: 'Edit metadata openai / gpt-demo' }));
+  await screen.findByLabelText('Extension metadata JSON');
+  await user.click(screen.getByRole('button', { name: 'Save extension' }));
+  const failure = await screen.findByText(/Access denied: Source read/);
+  expect(screen.getByText('Persisted revision: catalog-saved')).toBeInTheDocument();
+  expect(screen.queryByText(/Configuration save failed/)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Save extension' })).toBeDisabled();
+  await user.click(
+    within(failure.closest('[role="alert"]')!).getByRole('button', { name: 'Try again' })
+  );
+  expect(await screen.findByText('Read revision: catalog-saved')).toBeInTheDocument();
+  expect(updateFile).toHaveBeenCalledTimes(1);
+  expect(getFile).toHaveBeenCalledTimes(3);
+  expect(document.body.textContent).not.toContain('private-source-denial');
+});
+
+describe('Round 2 Gateway dependency recovery', () => {
+  it.each([
+    { dependency: 'diagnostics', status: 500 },
+    { dependency: 'diagnostics', status: 403 },
+    { dependency: 'accounts', status: 403 },
+  ])('retains completed setup and exact failed-step retry after $dependency refresh fails with $status', async ({
+    dependency,
+    status,
+  }) => {
+    const user = userEvent.setup();
+    const getDiagnostics = vi
+      .fn()
+      .mockResolvedValueOnce(GATEWAY_DIAGNOSTICS)
+      .mockImplementation(() =>
+        dependency === 'diagnostics'
+          ? Promise.reject(new ApiCallError(status, 'private-diagnostics-refresh'))
+          : Promise.resolve(GATEWAY_DIAGNOSTICS)
+      );
+    let slotCreated = false;
+    const listAccounts = vi
+      .fn()
+      .mockImplementation((provider: string) =>
+        dependency === 'accounts' && slotCreated
+          ? Promise.reject(new ApiCallError(403, 'private-account-list-refresh'))
+          : Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
+      );
+    const createAccount = vi.fn().mockImplementation(() => {
+      slotCreated = true;
+      return Promise.resolve({ ...CODEX_ACCOUNT, accountSlotId: 'secondary' });
+    });
+    const createFile = vi.fn().mockRejectedValue(new ApiCallError(403, 'private-profile-create'));
+    const client = makeClient({
+      app: { getDiagnostics },
+      runtimeConfig: { createFile },
+      providerSubscriptions: { listAccounts, createAccount },
+    });
+    renderScreen(client);
+    await user.type(await screen.findByLabelText('Setup Provider id'), 'codex-new');
+    await user.type(screen.getByLabelText('Setup account slot'), 'secondary');
+    await user.type(screen.getByLabelText('Setup models'), 'gpt-5');
+    await user.click(screen.getByRole('button', { name: 'Add subscription Provider' }));
+    const diagnosticsFailure =
+      dependency === 'diagnostics'
+        ? await screen.findByText(
+            status === 403
+              ? /Access denied: Gateway diagnostics/
+              : "Couldn't load Gateway diagnostics."
+          )
+        : await screen.findByText('Access denied');
+    await waitFor(() => expect(createFile).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('Slot creation: completed')).toBeInTheDocument();
+    expect(screen.getByText(/Profile creation: Access denied/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry profile creation' })).toBeDisabled();
+    getDiagnostics.mockResolvedValue(GATEWAY_DIAGNOSTICS);
+    listAccounts.mockImplementation((provider: string) =>
+      Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
+    );
+    await user.click(
+      dependency === 'diagnostics'
+        ? within(diagnosticsFailure.closest('[role="alert"]')!).getByRole('button', {
+            name: 'Try again',
+          })
+        : screen.getByRole('button', { name: 'Retry' })
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Retry profile creation' })).toBeEnabled()
+    );
+    createFile.mockResolvedValue({ file: { revision: 'profile-recovered' } });
+    await user.click(screen.getByRole('button', { name: 'Retry profile creation' }));
+    expect(await screen.findByText('Profile creation: completed')).toBeInTheDocument();
+    expect(screen.getByText(/Profile persisted revision: profile-recovered/)).toBeInTheDocument();
+    expect(client.providerSubscriptions.createAccount).toHaveBeenCalledTimes(1);
+    expect(createFile).toHaveBeenCalledTimes(2);
+    expect(createFile.mock.calls[0]).toEqual(createFile.mock.calls[1]);
+    expect(document.body.textContent).not.toMatch(
+      /private-diagnostics-refresh|private-profile-create|private-account-list-refresh/
+    );
+  });
+
+  it('discloses affected tiers and preserves removal and read retry when the bound slot is initially absent', async () => {
+    const user = userEvent.setup();
+    const client = makeClient({
+      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+      providerSubscriptions: { listAccounts: vi.fn().mockResolvedValue({ accounts: [] }) },
+    });
+    renderScreen(client);
+    const card = await screen.findByRole('region', { name: 'Codex work' });
+    expect(within(card).getByText(/Account slot openai-codex/)).toBeInTheDocument();
+    expect(within(card).getByText('Affected logical models: Tier')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Remove Provider' })).toBeEnabled();
+    await user.click(within(card).getByRole('button', { name: 'Retry account slots' }));
+    await waitFor(() => expect(client.providerSubscriptions.listAccounts).toHaveBeenCalledTimes(4));
+    expect(screen.getByText(/Primary · primary · provider_codex/)).toBeInTheDocument();
+    expect(screen.getByText(/Backup 1 · backup · provider_demo/)).toBeInTheDocument();
+    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+  });
+
+  it('retains affected tiers after account deletion with active profiles and ordered routes unchanged', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let removed = false;
+    const listAccounts = vi.fn().mockImplementation((provider: string) =>
+      Promise.resolve({
+        accounts: provider === 'openai-codex' && !removed ? [CODEX_ACCOUNT] : [],
+      })
+    );
+    const deleteAccount = vi.fn().mockImplementation(() => {
+      removed = true;
+      return Promise.resolve();
+    });
+    const client = makeClient({
+      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+      providerSubscriptions: { listAccounts, deleteAccount },
+      runtimeConfig: { deleteFile: vi.fn() },
+    });
+    renderScreen(client);
+    const card = await screen.findByRole('region', { name: 'Codex work' });
+    await user.click(within(card).getByText('Account settings'));
+    await user.click(within(card).getByRole('button', { name: 'Remove account' }));
+    const warning = await screen.findByText(/Account slot openai-codex/);
+    const absentCard = warning.closest('section')!;
+    expect(within(absentCard).getByText('Affected logical models: Tier')).toBeInTheDocument();
+    expect(within(absentCard).getByRole('button', { name: 'Remove Provider' })).toBeEnabled();
+    expect(within(absentCard).getByRole('button', { name: 'Retry account slots' })).toBeEnabled();
+    expect(deleteAccount).toHaveBeenCalledExactlyOnceWith('openai-codex', 'primary');
+    expect(screen.getByText(/Primary · primary · provider_codex/)).toBeInTheDocument();
+    expect(screen.getByText(/Backup 1 · backup · provider_demo/)).toBeInTheDocument();
+    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+    expect(client.runtimeConfig.deleteFile).not.toHaveBeenCalled();
+    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
   });
 });
