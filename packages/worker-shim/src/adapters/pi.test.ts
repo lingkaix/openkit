@@ -1,7 +1,9 @@
 // openkit-test-platform: posix
+import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -27,6 +29,20 @@ const spawnCalls = vi.hoisted(
       ]
     >
 );
+
+const copyControl = vi.hoisted(() => ({ publishRace: false }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    cp: async (...args: Parameters<typeof actual.cp>) => {
+      await actual.cp(...args);
+      if (copyControl.publishRace)
+        await actual.mkdir(String(args[1]).replace(/\.initializing$/, ''));
+    },
+  };
+});
 
 const spawnControl = vi.hoisted(() => ({
   blockKill: false,
@@ -162,6 +178,7 @@ const sessions: PiResidentBinding[] = [];
 const stops: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
+  copyControl.publishRace = false;
   spawnControl.blockKill = false;
   spawnControl.hideChannel = false;
   for (const child of spawnControl.children) {
@@ -187,6 +204,7 @@ afterEach(async () => {
   for (const stop of stops.splice(0).reverse()) await stop();
   spawnCalls.length = 0;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 interface Dirs {
@@ -217,6 +235,7 @@ async function createDirs(): Promise<Dirs> {
     workingDirectory: join(root, 'work'),
   };
   for (const path of Object.values(dirs)) await mkdir(path, { recursive: true });
+  vi.stubEnv('HOME', dirs.home);
   return dirs;
 }
 
@@ -1148,14 +1167,18 @@ describe('Pi controlled channel faults', () => {
 
 it.each([
   'setting',
+  'project-setting',
   'late-registration',
 ] as const)('M4 adapter preserves the explicit unsupported script outcome from %s before provider work', async (source) => {
   const f = await fixture(() => ({ text: 'must not prompt' }));
   const agentDir = piAgentDirectory(f.dirs.stateRoot);
   await mkdir(agentDir, { recursive: true });
-  if (source === 'setting') {
+  if (source !== 'late-registration') {
+    const settingsDir =
+      source === 'project-setting' ? join(f.dirs.workingDirectory, '.pi') : agentDir;
+    await mkdir(settingsDir, { recursive: true });
     await writeFile(
-      join(agentDir, 'settings.json'),
+      join(settingsDir, 'settings.json'),
       JSON.stringify({ defaultTools: ['+codemode'] })
     );
   } else {
@@ -1170,12 +1193,27 @@ export default function(pi) { pi.on('session_start', () => {
     );
     await writeFile(join(agentDir, 'settings.json'), JSON.stringify({ extensions: [extension] }));
   }
+  const localCredential = credential();
+  const local = await startSyntheticCapability(localCredential, ['local']);
+  local.bound = true;
+  stops.push(() => local.close());
+  const nativeMcp = JSON.stringify({
+    mcpServers: {
+      local: {
+        url: `${local.base}/mcp/local`,
+        headers: { Authorization: `Bearer ${localCredential}` },
+      },
+    },
+  });
+  await writeFile(join(agentDir, 'mcp.json'), nativeMcp);
   f.capability.bound = true;
   const session = await f.open();
   const result = await (await session.startTurn(turnInput(f.dirs))).settled;
   expect(result).toMatchObject({ status: 'failed', stopReason: 'pi-codemode-unsupported' });
+  expect(await readFile(join(agentDir, 'mcp.json'), 'utf8')).toBe(nativeMcp);
+  expect(local.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
   expect(f.inference.requests).toHaveLength(0);
-  if (source === 'setting') expect(f.capability.log).toHaveLength(0);
+  if (source !== 'late-registration') expect(f.capability.log).toHaveLength(0);
   expect(f.capability.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
   await session.close();
 });
@@ -1622,7 +1660,7 @@ export default function (pi) {
       const body = JSON.stringify(f.inference.requests[0]?.body);
       expect(body).toContain('Template says hello to world.');
       expect(body).toContain('Greets people in the synthetic fixture.');
-      for (const marker of Object.values(markers)) expect(body).not.toContain(marker);
+      for (const marker of Object.values(markers)) expect(body).toContain(marker);
       expect(f.inference.requests[0]?.headers.authorization).toBe(
         `Bearer ${f.inferenceCredential}`
       );
@@ -1945,3 +1983,346 @@ export default function (pi) {
     TIMEOUT
   );
 });
+
+describe('M native configuration', () => {
+  it.each([false, true])(
+    'loads project settings, context, Skills and searched MCP with managed=%s',
+    async (managed) => {
+      const replies: InferenceReply[] = [
+        { toolCall: { name: 'tool_search', arguments: { query: 'echo' } } },
+        { toolCall: { name: 'mcp__local__echo', arguments: { text: 'native-project' } } },
+        ...(managed
+          ? [{ toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'managed' } } }]
+          : []),
+        { text: 'native configuration served' },
+      ];
+      const f = await fixture((_request, n) => replies[n - 1] ?? { text: 'late' });
+      const session = await f.open();
+      const project = join(f.dirs.workingDirectory, '.pi');
+      await mkdir(join(project, 'skills', 'local-skill'), { recursive: true });
+      await mkdir(join(f.dirs.root, 'selected'), { recursive: true });
+      await writeFile(
+        join(project, 'skills', 'local-skill', 'SKILL.md'),
+        '---\nname: local-skill\ndescription: LOCAL_SKILL_SENTINEL\n---\nNative skill.\n'
+      );
+      await writeFile(
+        join(f.dirs.root, 'selected', 'SKILL.md'),
+        '---\nname: selected-skill\ndescription: SELECTED_SKILL_SENTINEL\n---\nManaged skill.\n'
+      );
+      const settings = JSON.stringify({
+        defaultTools: ['read'],
+        defaultProvider: 'stale',
+        defaultModel: 'stale',
+      });
+      await writeFile(join(project, 'settings.json'), settings);
+      await writeFile(join(f.dirs.workingDirectory, 'AGENTS.md'), 'PROJECT_CONTEXT_SENTINEL');
+      await writeFile(
+        join(piAgentDirectory(f.dirs.stateRoot), 'APPEND_SYSTEM.md'),
+        'HOME_CONTEXT_SENTINEL'
+      );
+      const localCredential = credential();
+      const local = await startSyntheticCapability(localCredential, ['local']);
+      local.bound = true;
+      stops.push(() => local.close());
+      await writeFile(
+        join(project, 'mcp.json'),
+        JSON.stringify({
+          mcpServers: {
+            local: {
+              url: `${local.base}/mcp/local`,
+              headers: { Authorization: `Bearer ${localCredential}` },
+            },
+          },
+        })
+      );
+      f.capability.bound = true;
+      const input = {
+        ...turnInput(f.dirs, { mcpServerIds: managed ? ['openkit-work'] : [] }),
+        skillTargetPaths: managed
+          ? [{ id: 'selected', targetPath: join(f.dirs.root, 'selected') }]
+          : [],
+      };
+      expect(await (await session.startTurn(input)).settled).toMatchObject({ status: 'completed' });
+      const first = f.inference.requests[0]!;
+      const text = requestTexts(first).join('\n');
+      expect(text).toContain('PROJECT_CONTEXT_SENTINEL');
+      expect(text).toContain('HOME_CONTEXT_SENTINEL');
+      expect(text).toContain('LOCAL_SKILL_SENTINEL');
+      expect(text.includes('SELECTED_SKILL_SENTINEL')).toBe(managed);
+      const names = first.body.tools?.map((tool) => tool.function.name) ?? [];
+      expect(names).toContain('read');
+      expect(names).toContain('tool_search');
+      expect(names).not.toContain('bash');
+      expect(names).not.toContain('codemode');
+      expect(first.body.model).toBe('logical-a');
+      expect(
+        local.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual([{ text: 'native-project' }]);
+      expect(
+        f.capability.log
+          .filter((entry) => entry.method === 'tools/call')
+          .map((entry) => entry.params?.arguments)
+      ).toEqual(managed ? [{ text: 'managed' }] : []);
+      expect(await readFile(join(project, 'settings.json'), 'utf8')).toBe(settings);
+      await session.close();
+    },
+    TIMEOUT
+  );
+
+  it.each(['static', 'session_start', 'registry'])(
+    'refuses a native Extension replacing the protected provider during %s before inference',
+    async (phase) => {
+      const f = await fixture(() => ({ text: 'unexpected protected replacement' }));
+      const session = await f.open();
+      const extensionDir = join(piAgentDirectory(f.dirs.stateRoot), 'extensions');
+      await mkdir(extensionDir, { recursive: true });
+      const registration = `pi.registerProvider('openkit-worker-inference', { api: 'openai-completions', baseUrl: ${JSON.stringify(f.inference.url)}, models: [{ id: 'logical-a', name: 'replaced', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4000 }] });`;
+      const extension = `export default function(pi) { ${phase === 'static' ? registration : phase === 'registry' ? `pi.on('session_start', (_event, ctx) => { ${registration.replace('pi.registerProvider', 'ctx.modelRegistry.registerProvider')} });` : `pi.on('${phase}', () => { ${registration} });`} }`;
+      const path = join(extensionDir, 'replace.js');
+      await writeFile(path, extension);
+      f.capability.bound = true;
+      expect(
+        await (await session.startTurn({ ...turnInput(f.dirs), skillTargetPaths: [] })).settled
+      ).toMatchObject({ status: 'failed', stopReason: 'pi-setup-failed' });
+      expect(f.inference.requests).toHaveLength(0);
+      expect(await readFile(path, 'utf8')).toBe(extension);
+      await session.close();
+    },
+    TIMEOUT
+  );
+
+  it(
+    'refuses a native setup Extension selecting another model before inference',
+    async () => {
+      const f = await fixture(() => ({ text: 'unexpected local model' }));
+      const session = await f.open();
+      const extensionDir = join(piAgentDirectory(f.dirs.stateRoot), 'extensions');
+      await mkdir(extensionDir, { recursive: true });
+      const extension = `export default function(pi) {
+      pi.registerProvider('local-models', { api: 'openai-completions', apiKey: 'native-only-key', baseUrl: ${JSON.stringify(f.inference.url)}, models: [{ id: 'native-b', name: 'native model', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 4000 }] });
+      pi.on('session_start', async (_event, ctx) => { await pi.setModel(ctx.modelRegistry.find('local-models', 'native-b')); });
+    }`;
+      const path = join(extensionDir, 'select.js');
+      await writeFile(path, extension);
+      f.capability.bound = true;
+      expect(
+        await (await session.startTurn({ ...turnInput(f.dirs), skillTargetPaths: [] })).settled
+      ).toMatchObject({ status: 'failed', stopReason: 'pi-setup-failed' });
+      expect(f.inference.requests).toHaveLength(0);
+      expect(await readFile(path, 'utf8')).toBe(extension);
+      await session.close();
+    },
+    TIMEOUT
+  );
+
+  it(
+    'refuses a native Skill name replacing selected supply',
+    async () => {
+      const f = await fixture(() => ({ text: 'unexpected shadowed Skill' }));
+      const session = await f.open();
+      const local = join(piAgentDirectory(f.dirs.stateRoot), 'skills', 'shadow');
+      const selected = join(f.dirs.root, 'selected');
+      await mkdir(local, { recursive: true });
+      await mkdir(selected);
+      const native = '---\nname: selected-skill\ndescription: NATIVE_SHADOW\n---\nLocal.\n';
+      await writeFile(join(local, 'SKILL.md'), native);
+      await writeFile(
+        join(selected, 'SKILL.md'),
+        '---\nname: selected-skill\ndescription: MANAGED_SKILL\n---\nSelected.\n'
+      );
+      f.capability.bound = true;
+      expect(
+        await (
+          await session.startTurn({
+            ...turnInput(f.dirs),
+            skillTargetPaths: [{ id: 'selected', targetPath: selected }],
+          })
+        ).settled
+      ).toMatchObject({ status: 'failed', stopReason: 'pi-setup-failed' });
+      expect(f.inference.requests).toHaveLength(0);
+      expect(await readFile(join(local, 'SKILL.md'), 'utf8')).toBe(native);
+      await session.close();
+    },
+    TIMEOUT
+  );
+
+  it(
+    'refuses changed selected Skills on a resident host before work',
+    async () => {
+      const f = await fixture(() => ({ text: 'first admitted supply' }));
+      const session = await f.open();
+      f.capability.bound = true;
+      expect(
+        await (await session.startTurn({ ...turnInput(f.dirs), skillTargetPaths: [] })).settled
+      ).toMatchObject({ status: 'completed' });
+      await expect(
+        session.startTurn({
+          ...turnInput(f.dirs, { turnId: 'second' }),
+          skillTargetPaths: [{ id: 'new', targetPath: join(f.dirs.root, 'new') }],
+        })
+      ).rejects.toThrow('Pi Skill supply changed');
+      expect(f.inference.requests).toHaveLength(1);
+      await session.close();
+    },
+    TIMEOUT
+  );
+
+  it(
+    'refuses an existing native home symlink without touching its target',
+    async () => {
+      const f = await fixture(() => ({ text: 'unexpected' }));
+      const outside = join(f.dirs.root, 'outside');
+      await mkdir(outside);
+      await writeFile(join(outside, 'settings.json'), '{}');
+      await symlink(outside, piAgentDirectory(f.dirs.stateRoot));
+      const before = await snapshot(outside);
+      await expect(f.open()).rejects.toThrow();
+      expect(await snapshot(outside)).toEqual(before);
+      expect(spawnCalls).toHaveLength(0);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'initializes image defaults once and preserves a populated home across source changes',
+    async () => {
+      const f = await fixture(() => ({ text: 'defaults applied' }));
+      vi.stubEnv('HOME', f.dirs.home);
+      const source = join(f.dirs.home, '.pi', 'agent');
+      await mkdir(source, { recursive: true });
+      const settings = JSON.stringify({ defaultTools: ['read'] });
+      await writeFile(join(source, 'settings.json'), settings);
+      await writeFile(join(source, 'AGENTS.md'), 'IMAGE_DEFAULT_SENTINEL');
+      const session = await f.open();
+      f.capability.bound = true;
+      expect(
+        await readFile(join(piAgentDirectory(f.dirs.stateRoot), 'settings.json'), 'utf8')
+      ).toBe(settings);
+      expect(
+        await (await session.startTurn({ ...turnInput(f.dirs), skillTargetPaths: [] })).settled
+      ).toMatchObject({ status: 'completed' });
+      expect(requestTexts(f.inference.requests[0]!).join('\n')).toContain('IMAGE_DEFAULT_SENTINEL');
+      expect(f.inference.requests[0]!.body.tools?.map((tool) => tool.function.name)).not.toContain(
+        'bash'
+      );
+      const handle = await session.nativeHandle();
+      if (handle.state !== 'ready') throw new Error('Expected exact ready reference.');
+      const reference = handle.reference;
+      await session.close();
+      const before = await snapshot(piAgentDirectory(f.dirs.stateRoot));
+      await writeFile(join(source, 'settings.json'), '{}');
+      await writeFile(join(source, 'AGENTS.md'), 'CHANGED_IMAGE');
+      const successor = await f.open(reference);
+      expect(await snapshot(piAgentDirectory(f.dirs.stateRoot))).toEqual(before);
+      expect(
+        await (await successor.startTurn({ ...turnInput(f.dirs), skillTargetPaths: [] })).settled
+      ).toMatchObject({ status: 'completed' });
+      expect(requestTexts(f.inference.requests[1]!).join('\n')).toContain('IMAGE_DEFAULT_SENTINEL');
+      expect(requestTexts(f.inference.requests[1]!).join('\n')).not.toContain('CHANGED_IMAGE');
+      await successor.close();
+      expect(await snapshot(piAgentDirectory(f.dirs.stateRoot))).toEqual(before);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'refuses publication when an empty home appears during copying',
+    async () => {
+      const f = await fixture(() => ({ text: 'unexpected' }));
+      vi.stubEnv('HOME', f.dirs.home);
+      const source = join(f.dirs.home, '.pi', 'agent');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'settings.json'), '{}');
+      copyControl.publishRace = true;
+      await expect(f.open()).rejects.toThrow('created during initialization');
+      expect(await readdir(piAgentDirectory(f.dirs.stateRoot))).toEqual([]);
+      expect(
+        await readFile(
+          join(`${piAgentDirectory(f.dirs.stateRoot)}.initializing`, 'settings.json'),
+          'utf8'
+        )
+      ).toBe('{}');
+      expect(spawnCalls).toHaveLength(0);
+    },
+    TIMEOUT
+  );
+
+  it.each(['lexical', 'canonical'])(
+    'does not seed from a %s source inside retained state',
+    async (kind) => {
+      const f = await fixture(() => ({ text: 'unexpected' }));
+      const inside = join(f.dirs.stateRoot, '.pi', 'agent');
+      const outside = join(f.dirs.home, '.pi', 'agent');
+      await mkdir(join(f.dirs.home, '.pi'), { recursive: true });
+      await mkdir(join(f.dirs.stateRoot, '.pi'), { recursive: true });
+      if (kind === 'lexical') {
+        await mkdir(outside);
+        await writeFile(join(outside, 'settings.json'), '{}');
+        await symlink(outside, inside);
+        vi.stubEnv('HOME', f.dirs.stateRoot);
+      } else {
+        await mkdir(inside);
+        await writeFile(join(inside, 'settings.json'), '{}');
+        await symlink(inside, outside);
+        vi.stubEnv('HOME', f.dirs.home);
+      }
+      const session = await f.open();
+      expect(await readdir(piAgentDirectory(f.dirs.stateRoot))).toEqual([]);
+      await session.close();
+    },
+    TIMEOUT
+  );
+
+  it.each(['unreadable', 'escape', 'file', 'special', 'staging'])(
+    'refuses %s image initialization before native work without changing retained bytes',
+    async (kind) => {
+      const f = await fixture(() => ({ text: 'unexpected work' }));
+      vi.stubEnv('HOME', f.dirs.home);
+      const source = join(f.dirs.home, '.pi', 'agent');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'settings.json'), '{}');
+      await writeFile(join(f.dirs.stateRoot, 'retained'), 'KEEP');
+      if (kind === 'unreadable') {
+        await chmod(join(source, 'settings.json'), 0);
+        stops.push(() => chmod(join(source, 'settings.json'), 0o600));
+      } else if (kind === 'escape') {
+        await symlink(join(f.dirs.stateRoot, 'retained'), join(source, 'escape'));
+      } else if (kind === 'file') {
+        await rm(source, { recursive: true });
+        await writeFile(source, '{}');
+      } else if (kind === 'special') {
+        execFileSync('mkfifo', [join(source, 'pipe')]);
+      } else {
+        await rm(source, { recursive: true });
+        await mkdir(`${piAgentDirectory(f.dirs.stateRoot)}.initializing`);
+        await writeFile(
+          join(`${piAgentDirectory(f.dirs.stateRoot)}.initializing`, 'partial'),
+          'PARTIAL'
+        );
+      }
+      const before = await snapshot(f.dirs.stateRoot);
+      await expect(f.open()).rejects.toThrow();
+      expect(await snapshot(f.dirs.stateRoot)).toEqual(before);
+      expect(f.inference.requests).toHaveLength(0);
+      expect(f.capability.log).toHaveLength(0);
+      expect(spawnCalls).toHaveLength(0);
+    },
+    TIMEOUT
+  );
+});
+
+/** Compares every retained file byte without a runtime-specific inventory. */
+async function snapshot(root: string): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      result[`${entry.name}/`] = '';
+      for (const [name, bytes] of Object.entries(await snapshot(path)))
+        result[`${entry.name}/${name}`] = bytes;
+    } else result[entry.name] = (await readFile(path)).toString('base64');
+  }
+  return result;
+}

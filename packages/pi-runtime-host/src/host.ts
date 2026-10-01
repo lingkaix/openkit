@@ -11,6 +11,7 @@ import {
   type ExtensionFactory,
   type ExtensionUIContext,
   initTheme,
+  loadSkills,
   ModelRuntime,
   SessionManager,
   SettingsManager,
@@ -630,7 +631,7 @@ export class PiRuntimeHost {
     // so user themes stay off.
     initTheme('dark', false);
     const settingsManager = SettingsManager.create(request.workingDirectory, request.agentDir, {
-      projectTrusted: false,
+      projectTrusted: true,
     });
     const nativeSettings = settingsManager.getSettings();
     if (
@@ -641,18 +642,31 @@ export class PiRuntimeHost {
     }
     const resourceLoader = new DefaultResourceLoader({
       agentDir: request.agentDir,
-      // Retained `SYSTEM.md` and `APPEND_SYSTEM.md` in the agent or project directory would
-      // otherwise replace or extend the system prompt; `noContextFiles` covers only AGENTS files.
-      appendSystemPromptOverride: () => [],
       cwd: request.workingDirectory,
       extensionFactories,
-      noContextFiles: true,
       noThemes: true,
       settingsManager,
-      systemPromptOverride: () => undefined,
+      // Selected supply is a separate native load, so local precedence cannot shadow it.
+      skillsOverride: (native) => {
+        const managed = loadSkills({
+          agentDir: request.agentDir,
+          cwd: request.workingDirectory,
+          includeDefaults: false,
+          skillPaths: request.skillTargetPaths,
+        });
+        const managedNames = new Set(managed.skills.map((skill) => skill.name));
+        if (native.skills.some((skill) => managedNames.has(skill.name))) {
+          throw new Error('Native Pi Skill replaces selected supply.');
+        }
+        return {
+          skills: [...native.skills, ...managed.skills],
+          diagnostics: [...native.diagnostics, ...managed.diagnostics],
+        };
+      },
     });
     await resourceLoader.reload();
     checkpoint();
+    const protectedProvider = binding.runtime.getRegisteredProviderConfig(PI_PROVIDER_ALIAS);
     const { extensionsResult, session } = await createAgentSession({
       agentDir: request.agentDir,
       cwd: request.workingDirectory,
@@ -714,6 +728,14 @@ export class PiRuntimeHost {
       session.getActiveToolNames().includes('codemode')
     ) {
       throw new NativeCodemodeUnsupportedError();
+    }
+    // The supported setup may not displace the host registration or selected model.
+    // Later user Extension code is outside supported supply, as with native codemode.
+    if (
+      binding.runtime.getRegisteredProviderConfig(PI_PROVIDER_ALIAS) !== protectedProvider ||
+      session.model !== model
+    ) {
+      throw new Error('Native Pi Extension replaces the protected model or provider.');
     }
     if (session.extensionRunner.getShortcuts({}).size > 0) this.#reportUi('registerShortcut');
     const override = gate.overrideError();

@@ -81,6 +81,7 @@ export default function(pi) { pi.on('session_start', () => writeFileSync(${JSON.
       JSON.stringify({
         id: 1,
         op: 'open',
+        skillTargetPaths: [],
         agentDir: directories.agentDir,
         stateRoot: directories.stateRoot,
         workingDirectory: directories.workingDirectory,

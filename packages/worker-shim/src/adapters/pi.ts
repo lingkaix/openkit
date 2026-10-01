@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } from 'node:constants';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, open } from 'node:fs/promises';
+import { lstat, open } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { type Duplex, PassThrough } from 'node:stream';
 
@@ -31,6 +31,7 @@ import {
   parsePiHostFrame,
   redactPiText,
 } from './pi-channel.js';
+import { initializePiNativeHome, piAgentDirectory } from './pi-native-home.js';
 
 /**
  * Image path of the dedicated Pi SDK host. The runtime image installs the
@@ -129,6 +130,7 @@ interface ActiveTurn {
 interface PreparedTurn {
   readonly routes: readonly string[];
   readonly mcpServerIds: readonly string[];
+  readonly skillTargetPaths: readonly string[];
   readonly model: PiModel;
   readonly prompt: string;
   readonly turnId: string;
@@ -220,18 +222,7 @@ export function projectPiTurnSettlement(
   return failed('pi-output-malformed');
 }
 
-/**
- * Retained Pi agent directory for one Thread state root.
- *
- * The host reads user settings and packages from this directory. It is created at `openSession`
- * so a caller can install them before the first Turn, which is when the host process opens.
- *
- * @param stateRoot Retained native state root.
- * @returns Absolute agent directory.
- */
-export function piAgentDirectory(stateRoot: string): string {
-  return join(resolve(stateRoot), 'agent');
-}
+export { piAgentDirectory } from './pi-native-home.js';
 
 /**
  * Creates the resident Pi adapter.
@@ -292,6 +283,7 @@ export class PiResidentBinding implements WorkerResidentSession {
   #fenced = false;
   #hostOpen = false;
   #mcpServerIds: readonly string[] | null = null;
+  #skillTargetPaths: readonly string[] | null = null;
   #model: PiModel | null = null;
   #nativeEventCount = 0;
   #nextId = 1;
@@ -368,7 +360,7 @@ export class PiResidentBinding implements WorkerResidentSession {
     const resume = input.resumeReference
       ? await proveResumeReference(input.resumeReference, input.stateRoot)
       : null;
-    await mkdir(piAgentDirectory(input.stateRoot), { mode: 0o700, recursive: true });
+    await initializePiNativeHome(input.stateRoot);
     if (hostCommand.length === 0 || !hostCommand[0]) {
       throw new PiAdapterError('Pi host command is missing.');
     }
@@ -539,6 +531,11 @@ export class PiResidentBinding implements WorkerResidentSession {
       }
       this.#ensureWorkingDirectory(prepared.workingDirectory);
       this.#ensureSupply(prepared.mcpServerIds);
+      if (this.#skillTargetPaths && !sameIds(this.#skillTargetPaths, prepared.skillTargetPaths)) {
+        throw new PiAdapterError(
+          'Pi Skill supply changed; a successor host must resume the session.'
+        );
+      }
       await this.#ensureOpen(prepared);
       this.#routes ??= prepared.routes;
       await this.#ensureModel(prepared.model);
@@ -695,6 +692,7 @@ export class PiResidentBinding implements WorkerResidentSession {
       inferenceBaseUrl: this.#loopback.inferenceBaseUrl,
       inferenceCredential: this.#loopback.inferenceCredential,
       mcpServers: [...prepared.mcpServerIds],
+      skillTargetPaths: [...prepared.skillTargetPaths],
       model: prepared.model,
       op: 'open',
       resume: this.#resume ? { handle: this.#resume.text } : null,
@@ -719,6 +717,7 @@ export class PiResidentBinding implements WorkerResidentSession {
     }
     this.#hostOpen = true;
     this.#mcpServerIds = prepared.mcpServerIds;
+    this.#skillTargetPaths = prepared.skillTargetPaths;
     this.#model = prepared.model;
     this.#boundCwd = prepared.workingDirectory;
   }
@@ -1345,6 +1344,7 @@ function prepareTurn(
   return {
     routes,
     mcpServerIds: input.mcpServerIds,
+    skillTargetPaths: input.skillTargetPaths.map((skill) => skill.targetPath),
     model: modelFromRoute(route),
     prompt: input.turnInput,
     turnId: input.turnId,

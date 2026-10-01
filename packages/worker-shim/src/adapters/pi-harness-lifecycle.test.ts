@@ -249,6 +249,7 @@ async function fixture(
   observations.getResponses = [];
   await mkdir(SCRATCH, { recursive: true });
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-harness-lifecycle-')));
+  vi.stubEnv('HOME', join(root, 'image-home'));
   const events: string[] = [];
   const finalStatuses: Array<{ lineage: { turnId: string }; body: { status: string } }> = [];
   const upstream: Array<{ path: string; authorization: string; body: string }> = [];
@@ -360,6 +361,7 @@ async function fixture(
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const close of cleanup.splice(0)) await close();
 });
 async function waitIdle(f: Awaited<ReturnType<typeof fixture>>, id = 'session-a') {

@@ -106,7 +106,7 @@ export class OpenKitMcpGate {
     const loaded = this.#loadMcpConfig({
       agentDir: this.#agentDir,
       cwd: this.#cwd,
-      projectTrusted: false,
+      projectTrusted: true,
     });
     const overridden = loaded.servers
       .filter((server) => this.#admitted.has(server.name))

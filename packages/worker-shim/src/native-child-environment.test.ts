@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { OpenCodeClient } from '@opencode/client';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenCodeAdapter } from './adapters/opencode.js';
 import { createPiResidentAdapter } from './adapters/pi.js';
 import { WorkerHarness } from './harness.js';
@@ -64,6 +64,10 @@ function integration(): SandboxIntegrationClient {
 const credential = (seed: string) => createHash('sha256').update(seed).digest('base64url');
 
 describe('real native child environment through Harness', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it.each([
     'pi',
     'opencode',
@@ -77,6 +81,8 @@ describe('real native child environment through Harness', () => {
       LANG: 'fixture-ambient-language',
     };
     await mkdir(harnessEnvironment.HOME, { recursive: true });
+    // Image-default discovery must stay inside this test's fixture.
+    vi.stubEnv('HOME', harnessEnvironment.HOME);
     await mkdir('/tmp/openkit-bootstrap', { recursive: true });
     const nativeClients: OpenCodeClient[] = [];
     const adapter =

@@ -124,6 +124,7 @@ describe('Pi Harness integration', () => {
   const roots: string[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true });
   });
 
@@ -132,6 +133,7 @@ describe('Pi Harness integration', () => {
     async () => {
       await mkdir(SCRATCH, { recursive: true });
       const root = await realpath(await mkdtemp(join(tmpdir(), 'openkit-pi-harness-')));
+      vi.stubEnv('HOME', join(root, 'image-home'));
       roots.push(root);
       mkdirSync(join(root, 'home'), { recursive: true });
       const requests: Array<{ model: string }> = [];
@@ -303,6 +305,7 @@ describe('Pi Harness integration', () => {
     async () => {
       await mkdir(SCRATCH, { recursive: true });
       const root = await realpath(await mkdtemp(join(tmpdir(), 'openkit-pi-harness-')));
+      vi.stubEnv('HOME', join(root, 'image-home'));
       roots.push(root);
       mkdirSync(join(root, 'home'), { recursive: true });
       const harness = harnessFor(root);
@@ -360,6 +363,7 @@ describe('Pi Harness integration', () => {
     async () => {
       await mkdir(SCRATCH, { recursive: true });
       const root = await realpath(await mkdtemp(join(tmpdir(), 'openkit-pi-harness-')));
+      vi.stubEnv('HOME', join(root, 'image-home'));
       roots.push(root);
       mkdirSync(join(root, 'home'), { recursive: true });
       const marker = join(root, 'spawned');

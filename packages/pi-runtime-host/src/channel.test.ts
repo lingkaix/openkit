@@ -24,6 +24,7 @@ const open = {
     reasoning: false,
   },
   op: 'open',
+  skillTargetPaths: [],
   resume: null,
   stateRoot: '/sandbox/state',
   workingDirectory: '/workspace',

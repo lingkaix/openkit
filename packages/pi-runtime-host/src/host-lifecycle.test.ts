@@ -23,6 +23,7 @@ function openLine(id: number, directories: HostDirectories): string {
     mcpServers: [],
     model: modelDescriptor('logical-a'),
     op: 'open',
+    skillTargetPaths: [],
     resume: null,
     stateRoot: directories.stateRoot,
     workingDirectory: directories.workingDirectory,

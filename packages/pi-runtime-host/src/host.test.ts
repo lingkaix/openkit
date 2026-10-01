@@ -75,6 +75,7 @@ async function fixture(
         mcpServers: ['openkit-work'],
         model: modelDescriptor('logical-a'),
         op: 'open',
+        skillTargetPaths: [],
         resume: null,
         stateRoot: directories.stateRoot,
         workingDirectory: directories.workingDirectory,
@@ -768,7 +769,7 @@ describe('Pi runtime host', () => {
   );
 
   it(
-    'does not let a same-named project mcp.json override the OpenKit server',
+    'refuses a same-named project mcp.json before native work',
     async () => {
       const f = await fixture((n) => ({ text: `answer-${n}` }));
       const local = await startSyntheticCapability(null, ['openkit-work']);
@@ -787,8 +788,9 @@ describe('Pi runtime host', () => {
       const host = f.start();
       await f.open(host);
       const settled = await turn(host, 'turn-1', 'first');
-      expect(settled.outcome).toEqual({ assistantText: 'answer-1', status: 'completed' });
-      expect(f.capability.log.some((entry) => entry.method === 'initialize')).toBe(true);
+      expect(settled.outcome).toEqual({ reason: 'pi-setup-failed', status: 'failed' });
+      expect(f.capability.log).toEqual([]);
+      expect(f.inference.requests).toEqual([]);
       expect(
         f.capability.log.every(
           (entry) => entry.headers.authorization === `Bearer ${f.capabilityCredential}`
@@ -1854,7 +1856,7 @@ export default function (pi) {
   );
 
   it(
-    'keeps recognized ambient prompt and context files out of provider input',
+    'loads native context with project system prompts taking precedence without changing bytes',
     async () => {
       const f = await fixture((n) => ({ text: `answer-${n}` }));
       const markers: Record<string, string> = {
@@ -1873,7 +1875,15 @@ export default function (pi) {
       await f.open(host);
       expect((await turn(host, 'turn-1', 'work')).outcome.status).toBe('completed');
       const body = JSON.stringify(f.inference.requests[0]?.body);
-      for (const marker of Object.values(markers)) expect(body).not.toContain(marker);
+      for (const marker of [
+        'marker-agent-agents',
+        'marker-project-agents',
+        'marker-project-system',
+        'marker-project-append',
+      ])
+        expect(body).toContain(marker);
+      for (const marker of ['marker-agent-system', 'marker-agent-append', 'marker-project-claude'])
+        expect(body).not.toContain(marker);
       for (const [path, marker] of Object.entries(markers)) {
         expect(await readFile(path, 'utf8')).toBe(`${marker}\n`);
       }
@@ -1937,6 +1947,7 @@ export default function (pi) {
         mcpServers: [],
         model: modelDescriptor('logical-a'),
         op: 'open',
+        skillTargetPaths: [],
         resume: null,
         stateRoot: f.directories.stateRoot,
         workingDirectory: f.directories.workingDirectory,

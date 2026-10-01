@@ -83,6 +83,7 @@ export const HostRequestSchema = z.discriminatedUnion('op', [
           .refine((value) => Buffer.byteLength(value, 'utf8') <= PI_SESSION_HANDLE_MAX_BYTES),
       })
       .nullable(),
+    skillTargetPaths: z.array(absolutePath),
     stateRoot: absolutePath,
     workingDirectory: absolutePath,
   }),
