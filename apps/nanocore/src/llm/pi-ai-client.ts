@@ -47,7 +47,13 @@ import {
   type OpenAICompatibleResponsesRequest,
   type OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
+import { attachPiAiFailure, classifyPiAiFailure } from './pi-ai-failure.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
+import {
+  gatewayReasoningAttribution,
+  type ReasoningAttribution,
+  type ReasoningMember,
+} from './reasoning-attribution.js';
 import {
   isWorkerAdditionalToolsItem,
   WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
@@ -79,10 +85,12 @@ async function raceProviderWithSignal<T>(
   signal?: AbortSignal
 ): Promise<T> {
   if (!signal) {
-    return operation();
+    return operation().catch((error) => {
+      throw attachPiAiFailure(error);
+    });
   }
 
-  signal.throwIfAborted();
+  if (signal.aborted) throw attachPiAiFailure(signal.reason, { stopReason: 'aborted' });
   let abortListener: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
     abortListener = () => {
@@ -100,6 +108,11 @@ async function raceProviderWithSignal<T>(
 
   try {
     return await Promise.race([operation(), aborted]);
+  } catch (error) {
+    throw attachPiAiFailure(
+      error,
+      signal.aborted && error === signal.reason ? { stopReason: 'aborted' } : error
+    );
   } finally {
     if (abortListener) {
       signal.removeEventListener('abort', abortListener);
@@ -185,6 +198,8 @@ export class PiAiGatewayConfigurationError extends Error {
 export interface PiAiGatewayClientOptions {
   /** pi-ai model collection used for model lookup and calls. */
   readonly models?: MutableModels;
+  /** Process-local attribution owner; injectable to prove restart and eviction behavior. */
+  readonly reasoningAttribution?: ReasoningAttribution;
 }
 
 /**
@@ -212,6 +227,7 @@ export function createDefaultPiAiGatewayModels(): MutableModels {
 export class PiAiGatewayClient {
   private readonly adapterProviders: ReadonlyMap<string, Provider>;
   private readonly models: MutableModels;
+  private readonly reasoningAttribution: ReasoningAttribution;
 
   /**
    * Creates one pi-ai gateway adapter.
@@ -219,6 +235,7 @@ export class PiAiGatewayClient {
    * @param options Optional injected pi-ai model collection.
    */
   public constructor(options: PiAiGatewayClientOptions = {}) {
+    this.reasoningAttribution = options.reasoningAttribution ?? gatewayReasoningAttribution;
     this.models = options.models ?? createDefaultPiAiGatewayModels();
     this.adapterProviders = new Map(
       this.models.getProviders().map((provider) => [provider.id, provider])
@@ -260,12 +277,17 @@ export class PiAiGatewayClient {
     );
 
     if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-      throw new OpenAICompatibleProviderError({
-        code: 'provider_error',
-        message: response.errorMessage ?? 'pi-ai provider failed',
-        status: 502,
-        type: 'provider_error',
-      });
+      const failure = classifyPiAiFailure(response);
+      throw Object.defineProperty(
+        new OpenAICompatibleProviderError({
+          code: 'provider_error',
+          message: response.errorMessage ?? 'pi-ai provider failed',
+          status: 502,
+          type: 'provider_error',
+        }),
+        'failure',
+        { value: failure }
+      );
     }
 
     return this.toChatCompletionResponse(response, request.model);
@@ -333,7 +355,7 @@ export class PiAiGatewayClient {
     models: Models = this.models
   ): Promise<OpenAICompatibleResponsesResponse> {
     const codexProvider = provider.subscriptionProviderId === 'openai-codex';
-    const { additionalTools, bridgedFunctionTools, bridgeNames } = admitPiResponsesNativeRequest(
+    let { additionalTools, bridgedFunctionTools, bridgeNames } = admitPiResponsesNativeRequest(
       request,
       false,
       !codexProvider
@@ -341,6 +363,17 @@ export class PiAiGatewayClient {
     if (codexProvider || additionalTools || bridgedFunctionTools) {
       this.assertExplicitCredential(provider);
       const { knownCost, model } = this.resolveModel(provider, request.model, models);
+      const member = { providerId: provider.id, modelId: model.id };
+      if (additionalTools?.providerInput)
+        additionalTools = {
+          ...additionalTools,
+          providerInput: handoffResponsesInput(
+            additionalTools.providerInput,
+            member,
+            this.reasoningAttribution
+          ),
+        };
+
       const response = await raceProviderWithSignal(
         () =>
           completeObservedModel(
@@ -350,6 +383,8 @@ export class PiAiGatewayClient {
               request,
               model,
               additionalTools,
+              member,
+              this.reasoningAttribution,
               bridgedFunctionTools,
               bridgeNames
             ),
@@ -362,14 +397,22 @@ export class PiAiGatewayClient {
         transport.signal
       );
       if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-        throw new OpenAICompatibleProviderError({
-          code: 'provider_error',
-          message: response.errorMessage ?? 'pi-ai provider failed',
-          status: 502,
-          type: 'provider_error',
-        });
+        const failure = classifyPiAiFailure(response);
+        throw Object.defineProperty(
+          new OpenAICompatibleProviderError({
+            code: 'provider_error',
+            message: response.errorMessage ?? 'pi-ai provider failed',
+            status: 502,
+            type: 'provider_error',
+          }),
+          'failure',
+          { value: failure }
+        );
       }
-      return toResponsesResponse(response, request.model, additionalTools, bridgeNames);
+      const result = toResponsesResponse(response, request.model, additionalTools, bridgeNames);
+      for (const item of result.output ?? [])
+        recordReturnedReasoning(item, member, this.reasoningAttribution);
+      return result;
     }
 
     const response = await this.createChatCompletion(
@@ -400,7 +443,7 @@ export class PiAiGatewayClient {
     models: Models = this.models
   ): Promise<ReadableStream<Uint8Array>> {
     const codexProvider = provider.subscriptionProviderId === 'openai-codex';
-    const { additionalTools, bridgedFunctionTools, bridgeNames } = admitPiResponsesNativeRequest(
+    let { additionalTools, bridgedFunctionTools, bridgeNames } = admitPiResponsesNativeRequest(
       request,
       true,
       !codexProvider
@@ -408,13 +451,32 @@ export class PiAiGatewayClient {
     if (codexProvider || additionalTools || bridgedFunctionTools) {
       this.assertExplicitCredential(provider);
       const { knownCost, model } = this.resolveModel(provider, request.model, models);
+      const member = { providerId: provider.id, modelId: model.id };
+      if (additionalTools?.providerInput)
+        additionalTools = {
+          ...additionalTools,
+          providerInput: handoffResponsesInput(
+            additionalTools.providerInput,
+            member,
+            this.reasoningAttribution
+          ),
+        };
+
       const localAbortController = new AbortController();
       const signal = transport.signal
         ? AbortSignal.any([transport.signal, localAbortController.signal])
         : localAbortController.signal;
       const events = models.stream(
         model,
-        toPiResponsesContext(request, model, additionalTools, bridgedFunctionTools, bridgeNames),
+        toPiResponsesContext(
+          request,
+          model,
+          additionalTools,
+          member,
+          this.reasoningAttribution,
+          bridgedFunctionTools,
+          bridgeNames
+        ),
         codexProvider
           ? this.toCodexResponsesOptions(request, model, { ...transport, signal }, additionalTools)
           : this.toBridgedResponsesOptions(provider, request, { ...transport, signal })
@@ -447,7 +509,8 @@ export class PiAiGatewayClient {
         signal,
         (reason) => localAbortController.abort(reason),
         bridgeNames,
-        transport.onModelEvent
+        transport.onModelEvent,
+        (item) => recordReturnedReasoning(item, member, this.reasoningAttribution)
       );
     }
 
@@ -1203,7 +1266,12 @@ export class PiAiGatewayClient {
                 );
               }
               terminal = true;
-              controller.error(new Error(event.error.errorMessage ?? 'pi-ai stream failed'));
+              controller.error(
+                attachPiAiFailure(
+                  new Error(event.error.errorMessage ?? 'pi-ai stream failed'),
+                  event
+                )
+              );
               await iterator.return?.();
               return;
             }
@@ -1243,7 +1311,7 @@ export class PiAiGatewayClient {
           abortUpstream(error);
           try {
             onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
-            controller.error(error);
+            controller.error(attachPiAiFailure(error));
           } catch (captureError) {
             controller.error(captureError);
           } finally {
@@ -1481,6 +1549,52 @@ function assertResponsesToolHistoryDeclarations(
   }
 }
 
+/** Records only identities that have crossed the outward reasoning boundary. */
+function recordReturnedReasoning(
+  item: Record<string, unknown>,
+  member: ReasoningMember,
+  attribution: ReasoningAttribution
+): void {
+  if (item.type === 'reasoning' && typeof item.id === 'string' && item.id)
+    attribution.record(item.id, member);
+}
+
+/** Removes unattributed capsules and their paired fc_ ids before context or native payload restoration. */
+function handoffResponsesInput(
+  input: readonly unknown[],
+  member: ReasoningMember,
+  attribution: ReasoningAttribution
+): unknown[] {
+  let omitPairedId = false;
+  return input.flatMap((item): unknown[] => {
+    const record = readRecord(item);
+    if (!record) return [item];
+    if (record.role === 'user') omitPairedId = false;
+    if (record.type === 'reasoning') {
+      assertExactPreservedResponsesItem(record);
+      if (attribution.matches(record.id, member)) {
+        omitPairedId = false;
+        return [item];
+      }
+      omitPairedId = true;
+      const text = readResponsesReasoningText(record);
+      return text.trim()
+        ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }]
+        : [];
+    }
+    if (
+      omitPairedId &&
+      (record.type === 'function_call' || record.type === 'custom_tool_call') &&
+      typeof record.id === 'string' &&
+      record.id.startsWith('fc_')
+    ) {
+      const { id: _pairedId, ...call } = record;
+      return [call];
+    }
+    return [item];
+  });
+}
+
 /**
  * Converts a native Responses request into the pi-ai context consumed by Codex or a chat-native bridge.
  *
@@ -1489,12 +1603,16 @@ function assertResponsesToolHistoryDeclarations(
  * @param additionalTools Admitted message-anchored tools, when present.
  * @param bridgedFunctionTools Chat-native function restore. Codex omits this so payload restore stays authoritative.
  * @param bridgeNames Request-local function identities for bridged history.
+ * @param member Provider profile/native model identity permitted to replay attributed capsules.
+ * @param attribution Process-local, payload-free producer association.
  * @returns Text, function history, instructions, and tools without a Chat conversion.
  */
 function toPiResponsesContext(
   request: OpenAICompatibleResponsesRequest,
   model: AssistantModel,
   additionalTools: ResponsesAdditionalTools | undefined,
+  member: ReasoningMember,
+  attribution: ReasoningAttribution,
   bridgedFunctionTools?: NonNullable<Context['tools']>,
   bridgeNames?: ResponsesBridgeNames
 ): Context {
@@ -1510,7 +1628,10 @@ function toPiResponsesContext(
       ? [{ role: 'user', content: request.input }]
       : request.input);
 
-  for (const [index, item] of input.entries()) {
+  const handedOffInput = !additionalTools?.providerInput
+    ? handoffResponsesInput(input, member, attribution)
+    : input;
+  for (const [index, item] of handedOffInput.entries()) {
     const record = readRecord(item);
     if (!record) {
       throw new GatewayUnsupportedFeatureError('pi-ai Responses input');
@@ -2482,13 +2603,22 @@ function toResponsesUsage(usage: unknown): Record<string, unknown> {
  * @param message Failure message that also feeds the classifier's text signal.
  * @param code Stable non-secret failure category.
  * @param stopReason Closed pi-ai terminal stop reason, when pi-ai reported one.
+ * @param source Original terminal evidence, before internal diagnostics are attached.
  * @returns Error carrying the internal fields used by downstream normalization.
  */
-function piAiStreamFailure(message: string, code: string, stopReason?: string): Error {
-  return Object.assign(new Error(message), {
-    code,
-    ...(stopReason === undefined ? {} : { stopReason }),
-  });
+function piAiStreamFailure(
+  message: string,
+  code: string,
+  stopReason?: string,
+  source?: unknown
+): Error {
+  return attachPiAiFailure(
+    Object.assign(new Error(message), {
+      code,
+      ...(stopReason === undefined ? {} : { stopReason }),
+    }),
+    source ?? { message, ...(stopReason === undefined ? {} : { stopReason }) }
+  ) as Error;
 }
 
 /**
@@ -2504,6 +2634,8 @@ function piAiStreamFailure(message: string, code: string, stopReason?: string): 
  * @param signal Combined caller and downstream cancellation signal.
  * @param abortUpstream Aborts provider work when the downstream stream stops.
  * @param bridgeNames Request-local function identities to restore on public output.
+ * @param onModelEvent Private admitted semantic-event observer.
+ * @param onReasoningItem Records reasoning identity only when returned in an outward event.
  * @returns Native Responses SSE stream.
  */
 function toResponsesSseStream(
@@ -2517,7 +2649,8 @@ function toResponsesSseStream(
   signal: AbortSignal,
   abortUpstream: (reason?: unknown) => void,
   bridgeNames?: ResponsesBridgeNames,
-  onModelEvent?: (event: ModelSemanticEvent) => void
+  onModelEvent?: (event: ModelSemanticEvent) => void,
+  onReasoningItem?: (item: Record<string, unknown>) => void
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const itemNamespace = randomUUID();
@@ -2528,8 +2661,17 @@ function toResponsesSseStream(
   let usageObserved = false;
   const pendingReasoning = new Set<number>();
   const pendingToolCalls = new Set<number>();
-  const encodeEvent = (event: Record<string, unknown>) =>
-    encoder.encode(responsesStreamEvent({ ...event, sequence_number: sequenceNumber++ }));
+  const encodeEvent = (event: Record<string, unknown>) => {
+    const item = readRecord(event.item);
+    if (item) onReasoningItem?.(item);
+    const response = readRecord(event.response);
+    if (Array.isArray(response?.output))
+      for (const output of response.output) {
+        const returned = readRecord(output);
+        if (returned) onReasoningItem?.(returned);
+      }
+    return encoder.encode(responsesStreamEvent({ ...event, sequence_number: sequenceNumber++ }));
+  };
 
   /** Opens one text item and its content part under the same identity used by completion. */
   function enqueueTextStart(
@@ -2895,7 +3037,8 @@ function toResponsesSseStream(
               piAiStreamFailure(
                 event.error.errorMessage ?? 'pi-ai stream failed',
                 event.error.diagnostics?.[0]?.type ?? 'provider_stream_failed',
-                event.error.stopReason
+                event.error.stopReason,
+                event
               )
             );
             await iterator.return?.();
@@ -2957,7 +3100,7 @@ function toResponsesSseStream(
         abortUpstream(error);
         try {
           onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
-          controller.error(error);
+          controller.error(attachPiAiFailure(error));
         } catch (captureError) {
           controller.error(captureError);
         } finally {

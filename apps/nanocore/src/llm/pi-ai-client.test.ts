@@ -2171,7 +2171,11 @@ describe('PiAiGatewayClient', () => {
             name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
             type: 'function_call',
           }),
-          nullableReasoning,
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'Retain the native reasoning item.' }],
+          },
           phasedMessage,
         ])
       );
@@ -3071,11 +3075,14 @@ describe('PiAiGatewayClient', () => {
       expect(observedUpstreamInput).toEqual([
         additionalTools,
         { content: [{ text: 'Delegate.', type: 'input_text' }], role: 'user' },
-        previousReasoning,
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Previous reasoning.' }],
+        },
         {
           arguments: '{"task_name":"previous"}',
           call_id: 'call_previous_shared',
-          id: 'fc_previous_spawn',
           name: 'spawn_agent',
           namespace: 'collaboration',
           type: 'function_call',
