@@ -380,6 +380,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 requireGenerativeToolPolicy(input.coreDb!, environmentPackage, request.params.name);
               if (
                 workBuiltin &&
+                request.params.name === 'work_request_input' &&
                 workRequestInputIsSecret(
                   (request.params.arguments ?? {}) as Record<string, unknown>
                 )
@@ -403,7 +404,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 );
                 if (duplicate) return mcp.projectCallToolResult(duplicate, undefined);
               }
-              if (workBuiltin) {
+              if (workBuiltin && request.params.name === 'work_request_input') {
                 try {
                   const duplicate = preflightWorkRequestInput(
                     environmentPackage,
@@ -505,10 +506,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 if (workBuiltin) {
                   const result = await dispatchOpenkitWorkTool(
                     {
+                      coreDb: input.coreDb!,
                       environmentPackage,
                       store: input.store,
                       workspaceDb: activeWorkspaceDb,
                     },
+                    request.params.name,
                     (request.params.arguments ?? {}) as Record<string, unknown>
                   );
                   finishCapabilityCall({

@@ -1,14 +1,20 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
+import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
+  isSealedTurnTerminal,
+  ProductTurnSchema,
   RequestIdSchema,
   responsibleUserIdForActor,
   UserInputQuestionSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './pending-request-flow.js';
 import {
   canonicalJsonText,
@@ -29,19 +35,51 @@ const WorkRequestInputArgsSchema = z
   })
   .strip();
 
+const WorkListPeersArgsSchema = z.object({}).strip();
+const WorkReadPeerArgsSchema = z
+  .object({
+    handle: z.string().min(1),
+    cursor: z
+      .string()
+      .regex(/^(0|[1-9]\d*)$/)
+      .default('0'),
+    limit: z.number().int().min(1).max(50).default(20),
+  })
+  .strip();
+
+// Stateless handles contain no reversible identity and have no retained per-peer state.
+// The running-Turn admission and HMAC scope expire them at the Turn boundary; restart also invalidates them.
+// This key is never persisted or supplied to a worker.
+const peerHandleKey = randomBytes(32);
+
 function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
-  const projection = z.toJSONSchema(schema, { target: 'draft-2020-12' }) as Record<string, unknown>;
+  const projection = z.toJSONSchema(schema, { target: 'draft-2020-12', io: 'input' }) as Record<
+    string,
+    unknown
+  >;
   delete projection.$schema;
   return projection;
 }
 
-/** The only openkit-work tool in this slice. Peer tools are later. */
+/** Fixed built-in work tools; their schemas ignore inert additive input members. */
 export const OPENKIT_WORK_TOOLS = [
   {
     name: 'work_request_input',
     description:
       'Ask the responsible user one or more non-secret questions. The answer arrives on a later Turn. Recording the question is the result of this call.',
     inputSchema: mcpInputSchema(WorkRequestInputArgsSchema),
+  },
+  {
+    name: 'work_list_peers',
+    description:
+      'List other AgentSessions currently in your Sandbox through opaque handles valid only within this Turn. Thread metadata requires current read access.',
+    inputSchema: mcpInputSchema(WorkListPeersArgsSchema),
+  },
+  {
+    name: 'work_read_peer',
+    description:
+      'Read recent product Turns and Items for one current peer. Results are newest first; use nextCursor for older records. This does not control or change the peer.',
+    inputSchema: mcpInputSchema(WorkReadPeerArgsSchema),
   },
 ] as const;
 
@@ -73,20 +111,145 @@ export function workRequestInputIsSecret(args: Record<string, unknown>): boolean
 }
 
 /**
- * Raises one pending user-input request and returns its pending-input tool result.
+ * Dispatches the built-in work tools under the existing authenticated MCP admission.
  *
  * @param input Authenticated package and open workspace database.
+ * @param toolName Tool admitted by the fixed built-in supply.
  * @param args Untrusted tool arguments.
  * @returns MCP tool result with isError false.
  */
 export async function dispatchOpenkitWorkTool(
   input: {
     readonly environmentPackage: AgentEnvironmentPackage;
+    readonly coreDb: CoreDb;
     readonly store: FsStore;
     readonly workspaceDb: WorkspaceDb;
   },
+  toolName: string,
   args: Record<string, unknown>
 ) {
+  const { scope } = input.environmentPackage;
+  const responsibleUserId = responsibleUserIdForActor(scope.triggerActor);
+  const turn = input.store.getTurnById(scope.turnId);
+  if (
+    !responsibleUserId ||
+    turn.workspaceId !== scope.workspaceId ||
+    turn.threadId !== scope.threadId ||
+    turn.status !== 'running'
+  ) {
+    throw new WorkerControlGatewayError('turn_not_active', 'The Turn is not running.', 409);
+  }
+  if (toolName === 'work_list_peers' || toolName === 'work_read_peer') {
+    const peers = input.coreDb.sqlite
+      .prepare(`
+      SELECT peer.agent_session_runtime_binding_id AS bindingId,
+             peer.agent_session_id AS agentSessionId, peer.workspace_id AS workspaceId,
+             peer.thread_id AS threadId, peer_harness.adapter_id AS runtime
+      FROM agent_session_runtime_bindings caller
+      JOIN harness_instance_records caller_harness ON caller_harness.harness_instance_id = caller.harness_instance_id
+      JOIN harness_instance_records peer_harness ON peer_harness.sandbox_runtime_id = caller_harness.sandbox_runtime_id
+      JOIN agent_session_runtime_bindings peer ON peer.harness_instance_id = peer_harness.harness_instance_id
+      WHERE caller.agent_session_id = ? AND peer.agent_session_id <> caller.agent_session_id
+      ORDER BY peer.agent_session_runtime_binding_id
+    `)
+      .all(scope.agentSessionId) as Array<{
+      bindingId: string;
+      agentSessionId: string;
+      workspaceId: string;
+      threadId: string;
+      runtime: string;
+    }>;
+    const handleFor = (bindingId: string) =>
+      createHmac('sha256', peerHandleKey)
+        .update(JSON.stringify([scope.turnId, scope.agentSessionId, bindingId]))
+        .digest('base64url');
+    // The MCP Gateway already admitted this exact lineage; retain its current bearer context for the peer Workspace.
+    const admission = findSchedulerAdmissionForWorkerLineage(input.coreDb, {
+      workspaceId: scope.workspaceId,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      agentSessionId: scope.agentSessionId,
+      packageSnapshotId: input.environmentPackage.snapshotId,
+    })!;
+    const canRead = (peer: (typeof peers)[number]) =>
+      Boolean(
+        currentSchedulerAdmissionWorkspaceAuthority(
+          input.coreDb,
+          { ...admission, workspaceId: peer.workspaceId },
+          'thread.read',
+          true
+        ) && isThreadIdVisible(input.store, peer.workspaceId, peer.threadId, responsibleUserId)
+      );
+    let projection: Record<string, unknown>;
+    if (toolName === 'work_list_peers') {
+      projection = {
+        peers: peers.map((peer) => ({
+          handle: handleFor(peer.bindingId),
+          agentId: input.store.getAgentSession(peer.agentSessionId).agentId,
+          runtime: peer.runtime,
+          ...(canRead(peer)
+            ? {
+                title: input.store.getThread(peer.workspaceId, peer.threadId).name,
+                activeTurn: input.store
+                  .listThreadTurns(peer.workspaceId, peer.threadId)
+                  .some((candidate) => !isSealedTurnTerminal(candidate.status)),
+              }
+            : {}),
+        })),
+      };
+    } else {
+      const parsed = WorkReadPeerArgsSchema.safeParse(args);
+      if (!parsed.success) {
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidParams,
+          'MCP tool arguments are invalid.',
+          {
+            code: 'mcp-call-failed',
+          }
+        );
+      }
+      const { handle, cursor, limit } = parsed.data;
+      const peer = peers.find((candidate) => handleFor(candidate.bindingId) === handle);
+      if (!peer || !canRead(peer)) {
+        throw new WorkerControlGatewayError('peer_not_found', 'Peer not found.', 404);
+      }
+      const offset = Number(cursor);
+      const turns = input.store.listThreadTurns(peer.workspaceId, peer.threadId).toReversed();
+      const items = input.store
+        .listThreadItems(peer.workspaceId, peer.threadId)
+        .filter((item) =>
+          ['user-message', 'assistant-message', 'plan', 'tool-call', 'status'].includes(item.type)
+        )
+        .toReversed();
+      projection = {
+        turns: turns.slice(offset, offset + limit).map((record) => {
+          // The ordinary Thread dashboard's schema owns identity redaction.
+          // Items are paged separately so a Turn cannot smuggle its complete nested history.
+          const { id, status, triggerActor, triggerSource, startedAt, completedAt } =
+            ProductTurnSchema.parse({ ...record, items: [] });
+          return { id, status, triggerActor, triggerSource, startedAt, completedAt };
+        }),
+        ...ListThreadItemsResponseSchema.parse({
+          items: items.slice(offset, offset + limit),
+          nextCursor:
+            offset + limit < Math.max(turns.length, items.length) ? String(offset + limit) : null,
+        }),
+      };
+    }
+    const result = {
+      isError: false,
+      structuredContent: projection,
+      content: [{ type: 'text' as const, text: JSON.stringify(projection) }],
+    };
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024) {
+      throw new WorkerControlGatewayError(
+        'mcp-result-too-large',
+        'MCP tool result exceeds the capability response limit. Route bulk output through artifacts or the data plane.',
+        413
+      );
+    }
+    return result;
+  }
   const parsed = WorkRequestInputArgsSchema.safeParse(args);
   if (!parsed.success) {
     throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
@@ -99,17 +262,6 @@ export async function dispatchOpenkitWorkTool(
       'Secret input is not supported.',
       400
     );
-  }
-  const { scope } = input.environmentPackage;
-  const responsibleUserId = responsibleUserIdForActor(scope.triggerActor);
-  const turn = input.store.getTurnById(scope.turnId);
-  if (
-    !responsibleUserId ||
-    turn.workspaceId !== scope.workspaceId ||
-    turn.threadId !== scope.threadId ||
-    turn.status !== 'running'
-  ) {
-    throw new WorkerControlGatewayError('turn_not_active', 'The Turn is not running.', 409);
   }
   const now = new Date().toISOString();
   const raiseInput = workRaiseInput(input.environmentPackage, parsed.data, now);

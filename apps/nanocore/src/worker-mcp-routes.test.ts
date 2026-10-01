@@ -27,6 +27,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
+import { retainWorkObservationBody } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
@@ -37,7 +38,9 @@ import {
   recordMcpToolSchemaSnapshot,
 } from './runtime/mcp-tool-schema-snapshots.js';
 import {
+  createNanoHostHarnessRuntime,
   dispatchNanoHostHarnessOperation,
+  openNanoHostAgentSessionBinding,
   settleNanoHostHarnessOperation,
 } from './runtime/nanohost-harness-records.js';
 import {
@@ -224,6 +227,8 @@ describe('worker MCP routes', () => {
       expect(statelessTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect((await workClient.listTools()).tools.map((tool) => tool.name)).toEqual([
         'work_request_input',
+        'work_list_peers',
+        'work_read_peer',
       ]);
       const pending = await workClient.callTool({
         name: 'work_request_input',
@@ -316,6 +321,498 @@ describe('worker MCP routes', () => {
       await statelessClient.close().catch(() => undefined);
       await workerMcpGateway.close();
       coreDb.sqlite.close();
+    }
+  });
+
+  it('reads only current same-Sandbox peers through Turn-scoped handles without changing their records', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-work-peers-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const timestamp = '2026-09-30T00:00:00.000Z';
+    const physicalEpoch = 'e'.repeat(64);
+    coreDb.sqlite
+      .prepare(`INSERT INTO nanohost_runtime_targets (
+      target_id, identity_id, deployment_id, connection_generation,
+      predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+    ) VALUES ('target_test', 'target_test', 'deployment_test', 1, 1, 1, 1, ?, ?, 1)`)
+      .run(physicalEpoch, timestamp);
+    for (const sandbox of ['shared', 'foreign']) {
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: 'test',
+        harnessBindingRef: `harness_binding_${sandbox}`,
+        harnessCompatibilityKey: 'b'.repeat(64),
+        harnessInstanceId: `harness_${sandbox}`,
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: `sandbox_binding_${sandbox}`,
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: `integration_${sandbox}`,
+        sandboxRuntimeId: `sandbox_${sandbox}`,
+        runtimeTargetId: 'target_test',
+        timestamp,
+      });
+    }
+    const threads = ['caller', 'peer', 'private', 'foreign'].map((name) =>
+      store.createThread(
+        'ws_demo',
+        name,
+        `th_peers_${name}`,
+        'conversation',
+        name === 'private'
+          ? { visibility: 'private', privateOwnerUserId: 'user_other' }
+          : { visibility: 'workspace' }
+      )
+    );
+    const otherWorkspace = store.createWorkspace('Unreadable peer Workspace');
+    threads.push(store.createThread(otherWorkspace.id, 'external', 'th_peers_external'));
+    for (let index = 0; index < 3; index += 1) {
+      const history = store.createTurn('ws_demo', threads[1]!.id, 'Earlier work', {
+        kind: 'user',
+        id: 'user_local',
+      });
+      store.updateTurn(history.id, {
+        status: 'completed',
+        completedAt: timestamp,
+        triggerSource: { kind: 'user-input', summary: 'Earlier work' },
+      });
+    }
+    const turns = threads.map((thread) => {
+      const turn = store.createTurn(thread.workspaceId, thread.id, 'Read peers', {
+        kind: 'user',
+        id: 'user_local',
+      });
+      const sessionId = `as_native_${thread.name}`;
+      store.createAgentSession({
+        id: sessionId,
+        agentId: 'agent_codex_host',
+        workspaceId: thread.workspaceId,
+        threadId: thread.id,
+        status: 'busy',
+        message: 'native-state-canary credential-canary',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      store.updateTurn(turn.id, {
+        agentSessionId: sessionId,
+        agentId: 'agent_codex_host',
+        triggerSource: { kind: 'user-input', summary: 'Read peers' },
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'c'.repeat(64),
+        agentSessionId: sessionId,
+        agentSessionRuntimeBindingId: `binding_${thread.name}`,
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: thread.name === 'foreign' ? 'harness_foreign' : 'harness_shared',
+        workspaceId: thread.workspaceId,
+        threadId: thread.id,
+        timestamp,
+      });
+      return store.getTurnById(turn.id);
+    });
+    const peer = turns[1]!;
+    const itemFields = {
+      workspaceId: 'ws_demo',
+      threadId: peer.threadId,
+      turnId: peer.id,
+      status: 'completed' as const,
+      createdAt: timestamp,
+      completedAt: timestamp,
+    };
+    for (let index = 0; index < 23; index += 1) {
+      store.createItem({
+        ...itemFields,
+        id: `it_peer_${String(index).padStart(2, '0')}`,
+        createdAt: `2026-09-30T00:00:${String(index).padStart(2, '0')}.000Z`,
+        type: 'assistant-message',
+        text: `Product message ${index}`,
+      });
+    }
+    store.createItem({
+      ...itemFields,
+      id: 'it_peer_plan',
+      type: 'plan',
+      title: 'Product plan',
+      summary: null,
+      steps: [],
+    });
+    store.createItem({
+      ...itemFields,
+      id: 'it_peer_tool',
+      type: 'tool-call',
+      tool: 'test',
+      server: null,
+      arguments: null,
+      result: 'Product tool summary',
+      error: null,
+      durationMs: 1,
+    });
+    store.createItem({
+      ...itemFields,
+      id: 'it_peer_status',
+      type: 'status',
+      title: 'Product status',
+      summary: null,
+      level: 'info',
+    });
+    store.createItem({
+      ...itemFields,
+      id: 'it_peer_reasoning',
+      type: 'reasoning',
+      summary: [],
+      content: ['restricted-evidence-canary'],
+    });
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    applyScopedMigrations(workspaceDb);
+    const rawEvidence = Buffer.from('restricted-raw-canary credential-canary');
+    retainWorkObservationBody(workspaceDb, {
+      bundleId: 'evidence_peer_private',
+      threadId: peer.threadId,
+      turnId: peer.id,
+      createdAt: timestamp,
+      sha256: createHash('sha256').update(rawEvidence).digest('hex'),
+      bytes: rawEvidence,
+    });
+    let environmentPackage: AgentEnvironmentPackage;
+    const packages = turns.map((turn) => {
+      const resolved = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: turn.agentSessionId!,
+        agentSetup: createTestAgentSetup(),
+        backend: { kind: 'openshell' },
+        createdAt: timestamp,
+        requestId: `req_${turn.id}`,
+        triggerActor: turn.triggerActor,
+        turn,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      });
+      recordMcpWorkerLineage(coreDb, resolved);
+      return resolved;
+    });
+    environmentPackage = packages[0]!;
+    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+    const app = new Hono();
+    registerWorkerMcpRoutes({
+      app,
+      coreDb,
+      store,
+      workerMcpGateway,
+      workerControlGateway: {
+        authenticatePackageToken: () => environmentPackage,
+      } as unknown as WorkerControlGateway,
+      runtimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          agentManifests: [],
+          workspaceMcpServerCatalogs: [],
+        }),
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    });
+    const client = new Client({ name: 'work-peers', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(
+      new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
+      {
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+        requestInit: { headers: { authorization: 'Bearer test' } },
+      }
+    );
+    try {
+      await client.connect(transport);
+      environmentPackage = packages[1]!;
+      await client.callTool({
+        name: 'work_request_input',
+        arguments: {
+          requestId: '00000000-0000-4000-8000-000000000255',
+          prompt: 'Keep this pending.',
+          questions: [
+            {
+              id: 'peer_question',
+              header: 'Peer',
+              question: 'Which next step?',
+              options: null,
+              isOther: false,
+              isSecret: false,
+            },
+          ],
+        },
+      });
+      environmentPackage = packages[0]!;
+      // The owner requires peer reads to leave Turns, Items, requests, and bindings unchanged.
+      // The brief requires byte-identical peer records, including retained Turn and Item file bytes.
+      const peerTurnFiles = threads
+        .slice(1)
+        .flatMap((thread) =>
+          store
+            .listThreadTurns(thread.workspaceId, thread.id)
+            .flatMap((turn) =>
+              ['turn.json', 'items.jsonl'].map((name) =>
+                join(
+                  dataRoot,
+                  'workspaces',
+                  thread.workspaceId,
+                  'threads',
+                  thread.id,
+                  'turns',
+                  turn.id,
+                  name
+                )
+              )
+            )
+        );
+      const before = JSON.stringify({
+        files: peerTurnFiles.map((path) => readFileSync(path).toString('base64')),
+        turns: threads
+          .slice(1)
+          .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id)),
+        items: threads
+          .slice(1)
+          .flatMap((thread) => store.listThreadItems(thread.workspaceId, thread.id)),
+        requests: workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all(),
+        bindings: coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all(),
+      });
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toHaveLength(1);
+      const tools = (await client.listTools()).tools;
+      expect(tools.map((tool) => tool.name)).toEqual([
+        'work_request_input',
+        'work_list_peers',
+        'work_read_peer',
+      ]);
+      const readSchema = tools.find((tool) => tool.name === 'work_read_peer')!.inputSchema;
+      expect(readSchema.required).toEqual(['handle']);
+      expect(readSchema.additionalProperties).not.toBe(false);
+      const listed = await client.callTool({
+        name: 'work_list_peers',
+        arguments: {
+          future: 'additive-canary',
+          agentSessionId: 'as_native_foreign',
+          requestId: '00000000-0000-4000-8000-000000000256',
+          prompt: 'additive-canary',
+          questions: [
+            {
+              id: 'ignored',
+              header: 'Ignored',
+              question: 'additive-canary',
+              options: null,
+              isOther: false,
+              isSecret: true,
+            },
+          ],
+        },
+      });
+      expect(listed.isError).toBe(false);
+      const peers = listed.structuredContent!.peers as Array<Record<string, unknown>>;
+      expect(peers).toHaveLength(3);
+      const readable = peers.find((entry) => entry.title === 'peer')!;
+      expect(readable).toMatchObject({
+        agentId: 'agent_codex_host',
+        runtime: 'codex',
+        activeTurn: true,
+      });
+      const hiddenPeers = peers.filter((entry) => !('title' in entry));
+      expect(hiddenPeers).toHaveLength(2);
+      for (const entry of hiddenPeers)
+        expect(Object.keys(entry).sort()).toEqual(['agentId', 'handle', 'runtime']);
+      expect(JSON.stringify(listed)).not.toMatch(
+        /as_native_|binding_|private|foreign|external|additive-canary/
+      );
+      const callsBefore = workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all().length;
+      const defaultRead = await client.callTool({
+        name: 'work_read_peer',
+        arguments: { handle: readable.handle },
+      });
+      expect(defaultRead.structuredContent!.items).toHaveLength(20);
+      const read = await client.callTool({
+        name: 'work_read_peer',
+        arguments: { handle: readable.handle, limit: 2, future: 'additive-canary' },
+      });
+      expect(read.structuredContent).toMatchObject({
+        turns: [
+          { id: peer.id, status: 'running', triggerSource: { kind: 'user-input' } },
+          { status: 'completed' },
+        ],
+        items: [{ id: 'it_peer_22' }, { id: 'it_peer_21' }],
+        nextCursor: '2',
+      });
+      const next = await client.callTool({
+        name: 'work_read_peer',
+        arguments: { handle: readable.handle, cursor: '2', limit: 50 },
+      });
+      expect(
+        (next.structuredContent!.items as Array<{ type: string }>).map((item) => item.type)
+      ).toEqual(expect.arrayContaining(['assistant-message', 'plan', 'tool-call', 'status']));
+      expect(next.structuredContent!.nextCursor).toBeNull();
+      expect(JSON.stringify([read, next])).not.toMatch(
+        /agentSessionId|as_native_|native-state-canary|restricted-evidence-canary|restricted-raw-canary|additive-canary|credential/
+      );
+      for (const hiddenPeer of hiddenPeers) {
+        await expect(
+          client.callTool({ name: 'work_read_peer', arguments: { handle: hiddenPeer.handle } })
+        ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+      }
+      await expect(
+        client.callTool({ name: 'work_read_peer', arguments: { handle: 'as_native_peer' } })
+      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all()).toHaveLength(
+        callsBefore + 6
+      );
+      expect(
+        (
+          workspaceDb.sqlite
+            .prepare('SELECT status FROM capability_calls ORDER BY rowid')
+            .all() as Array<{
+            status: string;
+          }>
+        )
+          .slice(callsBefore)
+          .map((call) => call.status)
+      ).toEqual(['succeeded', 'succeeded', 'succeeded', 'failed', 'failed', 'failed']);
+      for (const argumentsOverride of [
+        { handle: '' },
+        { handle: 1 },
+        { cursor: '-1' },
+        { cursor: '01' },
+        { cursor: 'not-a-cursor' },
+        { limit: 0 },
+        { limit: 51 },
+        { limit: 1.5 },
+      ]) {
+        await expect(
+          client.callTool({
+            name: 'work_read_peer',
+            arguments: { handle: readable.handle, ...argumentsOverride },
+          })
+        ).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
+      }
+      expect(
+        JSON.stringify(workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all())
+      ).not.toContain('additive-canary');
+      const after = JSON.stringify({
+        files: peerTurnFiles.map((path) => readFileSync(path).toString('base64')),
+        turns: threads
+          .slice(1)
+          .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id)),
+        items: threads
+          .slice(1)
+          .flatMap((thread) => store.listThreadItems(thread.workspaceId, thread.id)),
+        requests: workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all(),
+        bindings: coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all(),
+      });
+      expect(after).toBe(before);
+      store.updateTurn(peer.id, { status: 'pending' });
+      const pendingPeers = (await client.callTool({ name: 'work_list_peers', arguments: {} }))
+        .structuredContent!.peers as Array<Record<string, unknown>>;
+      expect(pendingPeers.find((entry) => entry.handle === readable.handle)).toMatchObject({
+        activeTurn: true,
+      });
+      store.updateTurn(peer.id, { status: 'running' });
+      environmentPackage = packages[1]!;
+      const reverse = (await client.callTool({ name: 'work_list_peers', arguments: {} }))
+        .structuredContent!.peers as Array<Record<string, unknown>>;
+      expect(reverse.map((entry) => entry.title)).toContain('caller');
+      expect(reverse.map((entry) => entry.title)).not.toContain('peer');
+      environmentPackage = packages[0]!;
+      Object.assign(store.getThread('ws_demo', peer.threadId), {
+        visibility: 'private',
+        privateOwnerUserId: 'user_other',
+      });
+      await expect(
+        client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
+      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+      const relisted = (await client.callTool({ name: 'work_list_peers', arguments: {} }))
+        .structuredContent!.peers as Array<Record<string, unknown>>;
+      expect(
+        Object.keys(relisted.find((entry) => entry.handle === readable.handle)!).sort()
+      ).toEqual(['agentId', 'handle', 'runtime']);
+      Object.assign(store.getThread('ws_demo', peer.threadId), {
+        visibility: 'workspace',
+        privateOwnerUserId: undefined,
+      });
+      store.createItem({
+        ...itemFields,
+        id: 'it_peer_oversized',
+        createdAt: '2026-09-30T01:00:00.000Z',
+        type: 'assistant-message',
+        text: 'x'.repeat(524_288),
+      });
+      await expect(
+        client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
+      ).rejects.toMatchObject({
+        data: { code: 'mcp-result-too-large' },
+        message: expect.stringContaining('Route bulk output through artifacts or the data plane.'),
+      });
+      coreDb.sqlite
+        .prepare('DELETE FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+        .run('as_native_peer');
+      await expect(
+        client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
+      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+      // Restore the same binding; a later Turn still cannot use its predecessor's handle.
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'c'.repeat(64),
+        agentSessionId: 'as_native_peer',
+        agentSessionRuntimeBindingId: 'binding_peer',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness_shared',
+        workspaceId: 'ws_demo',
+        threadId: peer.threadId,
+        timestamp,
+      });
+      store.updateTurn(turns[0]!.id, { status: 'completed', completedAt: timestamp });
+      coreDb.sqlite
+        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
+        VALUES ('user_peer_admin', 'Peer Admin', 'peer-admin@example.com', 0, ?, ?, 'human', 'active')`)
+        .run(Date.now(), Date.now());
+      const later = store.createTurn('ws_demo', turns[0]!.threadId, 'Later read', {
+        kind: 'user',
+        id: 'user_peer_admin',
+      });
+      store.updateTurn(later.id, { agentSessionId: 'as_native_caller' });
+      environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: 'as_native_caller',
+        agentSetup: createTestAgentSetup(),
+        backend: { kind: 'openshell' },
+        createdAt: timestamp,
+        requestId: 'req_later_peers',
+        triggerActor: later.triggerActor,
+        turn: later,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      });
+      const adminToken = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: 'user_peer_admin',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      recordMcpWorkerLineage(coreDb, environmentPackage, adminToken.tokenId);
+      await expect(
+        client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
+      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+      const adminPeers = (await client.callTool({ name: 'work_list_peers', arguments: {} }))
+        .structuredContent!.peers as Array<Record<string, unknown>>;
+      const adminPeer = adminPeers.find((entry) => entry.title === 'peer');
+      expect(adminPeer).toMatchObject({
+        title: 'peer',
+        agentId: 'agent_codex_host',
+        runtime: 'codex',
+      });
+      expect(adminPeers.filter((entry) => !('title' in entry))).toHaveLength(2);
+      const adminRead = await client.callTool({
+        name: 'work_read_peer',
+        arguments: { handle: adminPeer!.handle, cursor: '1', limit: 1 },
+      });
+      expect(adminRead.structuredContent!.items).toHaveLength(1);
+    } finally {
+      await client.close();
+      await workerMcpGateway.close();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
