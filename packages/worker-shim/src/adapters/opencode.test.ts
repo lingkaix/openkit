@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
@@ -56,10 +56,18 @@ const sessions: WorkerResidentSession[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
 const roots: string[] = [];
 
+beforeEach(() => {
+  // Image-default qualification owns its own fixtures; ordinary adapter cases use an empty image.
+  const image = mkdtempSync(join(tmpdir(), 'openkit-opencode-image-'));
+  roots.push(image);
+  vi.stubEnv('HOME', image);
+});
+
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map((session) => session.close().catch(() => undefined)));
   await Promise.all(servers.splice(0).map((server) => server.close().catch(() => undefined)));
   for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
+  vi.unstubAllEnvs();
 });
 
 describe('OpenCode resident adapter', () => {
@@ -327,8 +335,8 @@ describe('OpenCode resident adapter', () => {
         writeFileSync(
           pluginPath,
           plugin.replace(
-            'const key = createHash',
-            'if (generation > 0) return; const key = createHash'
+            "writeFileSync(join(root, 'tools-' + key),",
+            "try { readFileSync(join(root, 'tools-' + key)); return; } catch {} writeFileSync(join(root, 'tools-' + key),"
           )
         );
         return spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -1769,7 +1777,7 @@ describe('W4 round-five proof regressions', () => {
     expect(drafts.get('selected')?.headers.authorization).toBeUndefined();
   });
 
-  it('R1 excludes retained executable plugins and rogue MCP on first and successor Turns', async () => {
+  it('loads retained native plugins and MCP on first and successor Turns', async () => {
     const layout = makeRoots();
     const marker = join(layout.root, 'executed');
     const rogue = join(layout.root, 'rogue-plugin');
@@ -1812,8 +1820,9 @@ describe('W4 round-five proof regressions', () => {
     expect((await complete(session, turnInput(layout, creds, 'isolate', 'model'))).status).toBe(
       'completed'
     );
-    expect(existsSync(marker)).toBe(false);
-    expect(capability.hits).toHaveLength(0);
+    expect(existsSync(marker)).toBe(true);
+    expect(capability.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
+    expect(capability.hits.every((hit) => hit.authorization === null)).toBe(true);
     const handle = await session.nativeHandle();
     expect(handle.state).toBe('ready');
     if (handle.state !== 'ready') throw new Error('missing reference');
@@ -1826,8 +1835,9 @@ describe('W4 round-five proof regressions', () => {
     expect(
       (await complete(successor, turnInput(successorLayout, creds, 'successor', 'model'))).status
     ).toBe('completed');
-    expect(existsSync(marker)).toBe(false);
-    expect(capability.hits).toHaveLength(0);
+    expect(existsSync(marker)).toBe(true);
+    expect(capability.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
+    expect(capability.hits.every((hit) => hit.authorization === null)).toBe(true);
     expect(readFileSync(join(layout.stateRoot, 'config', 'opencode.json'), 'utf8')).toBe(config);
   }, 120_000);
 });
@@ -2160,9 +2170,12 @@ function stubbornChild(signals: string[]): ChildProcess {
     child.killed = true;
     return true;
   };
-  setTimeout(() => {
-    stdout.emit('data', Buffer.from('server listening on http://127.0.0.1:9\n'));
-  }, 0);
+  // Async home initialization precedes spawn; emit startup only after observation begins.
+  stdout.once('newListener', () => {
+    setTimeout(() => {
+      stdout.emit('data', Buffer.from('server listening on http://127.0.0.1:9\n'));
+    }, 0);
+  });
   return child as unknown as ChildProcess;
 }
 
@@ -2227,6 +2240,7 @@ function failingModule(method: 'create' | 'prompt') {
     OpenCode: {
       make() {
         return {
+          config: { get: async () => [] },
           location: { reload: async () => undefined },
           model: {
             list: async () => ({

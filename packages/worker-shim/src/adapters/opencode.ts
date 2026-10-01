@@ -1,8 +1,9 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { access, cp, lstat, mkdir, readdir, realpath, rename } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -50,12 +51,11 @@ const RPC_TIMEOUT_MS = 8_000;
 // Leaves four seconds for SIGTERM/SIGKILL inside the Harness ten-second stop budget.
 const INTERRUPT_TIMEOUT_MS = 5_000;
 
-/** Overrides that keep one binding off ambient home, project config, and update traffic. */
+/** Disables autonomous update traffic and watchers while preserving native discovery. */
 const ISOLATION_ENV: Readonly<Record<string, string>> = {
   OPENCODE_DISABLE_AUTOUPDATE: '1',
   OPENCODE_DISABLE_FILEWATCHER: '1',
   OPENCODE_DISABLE_MODELS_FETCH: '1',
-  OPENCODE_DISABLE_PROJECT_CONFIG: '1',
 };
 
 interface OpenCodeClientModule {
@@ -199,7 +199,7 @@ async function supervise(
   }
   const password = randomBytes(24).toString('base64url');
   const secretValues = [...secrets, password];
-  const directories = prepareDirectories(input);
+  const directories = await prepareDirectories(input);
   writeFileSync(join(directories.pluginDir, 'package.json'), '{"type":"module"}\n', {
     mode: 0o600,
   });
@@ -215,7 +215,10 @@ async function supervise(
   writeSecret(join(directories.loopbackDir, 'inference-base'), input.loopback.inferenceBaseUrl);
 
   const configPath = join(directories.configDir, 'openkit.json');
-  writeSecret(configPath, JSON.stringify(serverConfig(directories.pluginDir)));
+  writeSecret(
+    configPath,
+    JSON.stringify(serverConfig(directories.pluginDir, directories.skillsDir))
+  );
 
   let stdout = '';
   let stderr = '';
@@ -476,7 +479,11 @@ async function supervise(
         }
         assertNoSecret(turn, secretValues);
         const serverIds = normalizeServerIds(turn.mcpServerIds);
-        const supplyKey = JSON.stringify([turn.workingDirectory, [...serverIds].sort()]);
+        const supplyKey = JSON.stringify([
+          turn.workingDirectory,
+          [...serverIds].sort(),
+          turn.skillTargetPaths.map((skill) => [skill.id, skill.targetPath]).sort(),
+        ]);
         if (boundSupply !== null && boundSupply !== supplyKey) {
           throw new Error(
             'OpenCode does not re-list tools at Turn start, so this supply change needs a successor AgentSession that resumes the native conversation.'
@@ -489,17 +496,35 @@ async function supervise(
         let promptId = '';
         let promptAttempted = false;
         try {
+          if (boundSupply === null) {
+            await assertNativeBindings(client, turn.workingDirectory, configPath, serverIds, rpc);
+            // The final inline native Skill source is separate from all authored roots.
+            // Populate it once before reload, including an explicitly empty selection.
+            for (const skill of turn.skillTargetPaths) {
+              if (basename(skill.id) !== skill.id || skill.id === '.' || skill.id === '..') {
+                throw new Error('OpenCode managed Skill id escapes its projection root.');
+              }
+              symlinkSync(skill.targetPath, join(directories.skillsDir, skill.id), 'dir');
+            }
+          }
           if (boundRoutes === null) {
             // Explicit configuration and location.reload are supported by the pin. Reload
             // rebuilds services in this same host; it neither creates nor replaces a session.
-            const config = serverConfig(directories.pluginDir, routes);
+            const config = serverConfig(directories.pluginDir, directories.skillsDir, routes);
             writeSecret(configPath, JSON.stringify(config));
             await rpc('location.reload catalog', client.location.reload());
             boundRoutes = routeKey;
           }
           if (boundSupply === null) {
-            // MCP registries are location-scoped on this pin. Configure the destination,
-            // not the server launch cwd, so session.move consumes this exact supply.
+            // Move initializes the destination services. Configure that location
+            // before prompting, keeping native and managed MCP in its own registry.
+            await rpc(
+              'session.move',
+              client.session.move({ directory: turn.workingDirectory, sessionID: sessionId })
+            );
+            // Move is itself a native inbox operation. Drain it before recording the
+            // prompt boundary, so its idle event cannot settle the admitted Turn.
+            await rpc('session.wait after move', client.session.wait({ sessionID: sessionId }));
             await syncMcpServers(
               client,
               serverIds,
@@ -509,13 +534,6 @@ async function supervise(
               rpc,
               rpcTimeoutMs
             );
-            await rpc(
-              'session.move',
-              client.session.move({ directory: turn.workingDirectory, sessionID: sessionId })
-            );
-            // Move is itself a native inbox operation. Drain it before recording the
-            // prompt boundary, so its idle event cannot settle the admitted Turn.
-            await rpc('session.wait after move', client.session.wait({ sessionID: sessionId }));
             boundSupply = supplyKey;
           }
           const catalog = await rpc(
@@ -685,31 +703,114 @@ async function supervise(
   }
 }
 
-function prepareDirectories(input: WorkerResidentOpenInput): {
+/** Tests lexical and canonical containment without accepting path-prefix siblings. */
+function within(root: string, path: string): boolean {
+  const suffix = relative(root, path);
+  return (
+    suffix === '' || (!isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith(`..${sep}`))
+  );
+}
+
+/** Observes dangling links too; only genuine absence permits initialization. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/** Validates the complete source before copying, dereferencing only contained links. */
+async function validateNativeSource(source: string, path = source): Promise<void> {
+  const target = await realpath(path);
+  if (!within(source, target)) throw new Error('OpenCode image source escapes its root.');
+  const entry = await lstat(target);
+  await access(target, entry.isDirectory() ? 5 : 4);
+  if (entry.isDirectory()) {
+    for (const name of await readdir(path)) await validateNativeSource(source, join(path, name));
+  } else if (!entry.isFile()) {
+    throw new Error('OpenCode image source contains an unreadable native entry.');
+  }
+}
+
+/** Seeds only an absent native configuration home under the existing Thread writer lease. */
+async function initializeNativeHome(stateRoot: string): Promise<void> {
+  const home = join(stateRoot, 'config');
+  const root = await realpath(stateRoot);
+  if (await pathExists(home)) {
+    if (!(await lstat(home)).isDirectory() || !within(root, await realpath(home))) {
+      throw new Error('OpenCode native home escapes its retained root.');
+    }
+    return;
+  }
+  const staging = `${home}.initializing`;
+  if (await pathExists(staging))
+    throw new Error('OpenCode native home initialization is incomplete.');
+  // The shim image user's home, never the redirected launch HOME, owns defaults.
+  const source = process.env.HOME ? resolve(process.env.HOME, '.config', 'opencode') : null;
+  if (!source || within(resolve(stateRoot), source) || !(await pathExists(source))) {
+    await mkdir(home, { mode: 0o700 });
+    return;
+  }
+  const canonicalSource = await realpath(source);
+  if (within(root, canonicalSource)) {
+    await mkdir(home, { mode: 0o700 });
+    return;
+  }
+  if (!(await lstat(canonicalSource)).isDirectory()) {
+    throw new Error('OpenCode image source root must be a directory.');
+  }
+  await validateNativeSource(canonicalSource);
+  await cp(canonicalSource, staging, {
+    recursive: true,
+    dereference: true,
+    errorOnExist: true,
+    force: false,
+  });
+  if (await pathExists(home))
+    throw new Error('OpenCode native home was created during initialization.');
+  await rename(staging, home);
+}
+
+async function prepareDirectories(input: WorkerResidentOpenInput): Promise<{
   configDir: string;
   homeDir: string;
   loopbackDir: string;
   pluginDir: string;
+  skillsDir: string;
   tmpDir: string;
   workDir: string;
   xdgDir: string;
-} {
-  const homeDir = join(input.controlRoot, 'home');
+}> {
+  await initializeNativeHome(input.stateRoot);
+  const homeDir = join(input.stateRoot, 'home');
   const xdgDir = join(input.stateRoot, 'xdg');
   const configDir = join(input.controlRoot, 'config');
+  const skillsDir = join(input.controlRoot, 'skills');
   const tmpDir = join(input.stateRoot, 'tmp');
   const workDir = join(input.stateRoot, 'work');
   const pluginDir = join(input.controlRoot, 'plugin');
   const loopbackDir = join(input.controlRoot, 'loopback');
-  for (const directory of [homeDir, xdgDir, configDir, tmpDir, workDir, pluginDir, loopbackDir]) {
+  for (const directory of [
+    homeDir,
+    xdgDir,
+    configDir,
+    skillsDir,
+    tmpDir,
+    workDir,
+    pluginDir,
+    loopbackDir,
+  ]) {
     mkdirSync(directory, { mode: 0o700, recursive: true });
   }
-  return { configDir, homeDir, loopbackDir, pluginDir, tmpDir, workDir, xdgDir };
+  return { configDir, homeDir, loopbackDir, pluginDir, skillsDir, tmpDir, workDir, xdgDir };
 }
 
 function serverEnvironment(
   input: WorkerResidentOpenInput,
-  directories: ReturnType<typeof prepareDirectories>,
+  directories: Awaited<ReturnType<typeof prepareDirectories>>,
   password: string,
   secrets: readonly string[]
 ): NodeJS.ProcessEnv {
@@ -721,18 +822,18 @@ function serverEnvironment(
   env.HOME = directories.homeDir;
   env.OPENCODE_TEST_HOME = directories.homeDir;
   env.XDG_CACHE_HOME = directories.xdgDir;
-  env.XDG_CONFIG_HOME = directories.configDir;
+  env.XDG_CONFIG_HOME = input.stateRoot;
   env.XDG_DATA_HOME = directories.xdgDir;
   env.XDG_STATE_HOME = directories.xdgDir;
   env.TMPDIR = directories.tmpDir;
   env.TEMP = directories.tmpDir;
   env.TMP = directories.tmpDir;
   env.PATH = env.PATH ?? '/usr/bin:/bin';
-  env.OPENCODE_CONFIG_DIR = directories.configDir;
+  env.OPENCODE_CONFIG_DIR = join(input.stateRoot, 'config');
   env.OPENCODE_CONFIG = join(directories.configDir, 'openkit.json');
   // Inline safety/discovery settings retain highest precedence while the explicit file
   // supplies the first-Turn catalog, which can be reloaded without replacing this host.
-  const baseConfig = serverConfig(directories.pluginDir);
+  const baseConfig = serverConfig(directories.pluginDir, directories.skillsDir);
   delete baseConfig.providers;
   env.OPENCODE_CONFIG_CONTENT = JSON.stringify(baseConfig);
   env.OPENCODE_PASSWORD = password;
@@ -743,6 +844,7 @@ function serverEnvironment(
 /** Generates the exact native catalog with no invented model or upstream credential. */
 function serverConfig(
   pluginDir: string,
+  skillsDir: string,
   routes: readonly WorkerAdapterLlmRoute[] = []
 ): Record<string, unknown> {
   return {
@@ -779,7 +881,7 @@ function serverConfig(
       },
     },
     share: 'disabled',
-    skills: [],
+    skills: [skillsDir],
     update: 'disable',
     websearch: false,
   };
@@ -924,6 +1026,7 @@ function assertNoSecret(turn: WorkerResidentTurnInput, secrets: readonly string[
     turn.llmRoute.model,
     turn.workingDirectory,
     ...turn.mcpServerIds,
+    ...turn.skillTargetPaths.flatMap((skill) => [skill.id, skill.targetPath]),
   ];
   if (fields.some((field) => secrets.some((secret) => secret && field.includes(secret)))) {
     throw new Error('OpenCode refused a Turn field that contains a loopback credential.');
@@ -938,7 +1041,7 @@ function normalizeServerIds(ids: readonly string[]): string[] {
   return unique;
 }
 
-/** Validates the native MCP status core before any server operation or admission. */
+/** Validates native MCP shape and status core without imposing managed id policy. */
 function assertMcpList(
   value: unknown
 ): asserts value is { data: Array<{ name: string; status: { status: string } }> } {
@@ -956,7 +1059,6 @@ function assertMcpList(
     const status = row.status as { status?: unknown; error?: unknown } | null;
     if (
       typeof row.name !== 'string' ||
-      !SERVER_ID_PATTERN.test(row.name) ||
       typeof status !== 'object' ||
       status === null ||
       typeof status.status !== 'string' ||
@@ -969,6 +1071,29 @@ function assertMcpList(
       typeof status.error !== 'string'
     ) {
       throw new Error('OpenCode MCP server error status is malformed.');
+    }
+  }
+}
+
+/** Uses the pin's parsed native documents to refuse static protected-supply collisions. */
+async function assertNativeBindings(
+  client: OpenCodeClient,
+  workingDirectory: string,
+  configPath: string,
+  ids: readonly string[],
+  rpc: NativeRpc
+): Promise<void> {
+  const entries = await rpc(
+    'config.get native bindings',
+    client.config.get({ location: { directory: workingDirectory } })
+  );
+  for (const entry of entries) {
+    if (entry.type !== 'document' || !entry.path || entry.path === configPath) continue;
+    if (Object.hasOwn(entry.info.providers ?? {}, OPENCODE_PROVIDER_ID)) {
+      throw new Error('OpenCode native configuration replaces the protected provider.');
+    }
+    if (ids.some((id) => Object.hasOwn(entry.info.mcp?.servers ?? {}, id))) {
+      throw new Error('OpenCode native configuration replaces a protected MCP entry.');
     }
   }
 }
@@ -989,17 +1114,24 @@ async function syncMcpServers(
       Object.fromEntries(ids.map((id) => [id, `${capabilityBaseUrl.replace(/\/$/, '')}/mcp/${id}`]))
     )
   );
-  const existing = await rpc('mcp.list', client.mcp.list({ location }));
-  assertMcpList(existing);
-  for (const server of existing.data) {
-    if (!ids.includes(server.name))
-      await rpc('mcp.remove', client.mcp.remove({ location, server: server.name }));
-  }
   const marker = join(
     loopbackDir,
     `tools-${createHash('sha256').update(workingDirectory).digest('hex')}`
   );
-  if (ids.length > 0) await waitForToolGeneration(marker, 0, timeoutMs);
+  const existing = await rpc('mcp.list', client.mcp.list({ location }));
+  assertMcpList(existing);
+  const nativeServers = existing.data.filter(
+    (server) =>
+      !ids.includes(server.name) && ['connected', 'pending'].includes(server.status.status)
+  );
+  if (ids.length > 0 || nativeServers.length > 0) await waitForToolGeneration(marker, 0, timeoutMs);
+  for (const server of nativeServers) {
+    const before = toolGeneration(marker);
+    // Native connect drains its startup and publishes ToolsChanged even when already connected.
+    // Reuse the existing location-specific reload proof for native as well as managed supply.
+    await rpc('mcp.connect native', client.mcp.connect({ location, server: server.name }));
+    await waitForToolGeneration(marker, before, timeoutMs);
+  }
   for (const id of ids) {
     const before = toolGeneration(marker);
     await rpc(
