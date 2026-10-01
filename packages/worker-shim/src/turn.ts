@@ -139,10 +139,7 @@ export interface ResidentTurnResult {
 }
 
 /**
- * Runs one admitted Turn on a resident binding: validates its AEP, materializes supply and
- * workspace inputs, binds the Turn's routes, proves worker-control readiness, starts the Turn on
- * the retained conversation, and after settlement drains the loopback, publishes output, and
- * reports one final status. The binding itself stays open.
+ * Runs one admitted Turn on a resident binding: validates the AEP, materializes supply and workspace inputs, binds routes, proves worker-control readiness, starts native work on the retained conversation, drains the loopback after settlement, publishes output, and reports final status. Setup and execution rejections retain their bounded, redacted explanation in final-status diagnostics while closed startup metadata stays value-free. The binding stays open.
  *
  * @param options Turn inputs.
  * @returns The worker-local terminal status.
@@ -207,7 +204,7 @@ async function runResidentTurnImplementation(
     ...options.lineage,
     requestId: resolveRequestId(packageManifest.scope?.requestId),
   };
-  const credentialValues = options.credentialValues;
+  const credentialValues = [...options.credentialValues, ...Object.values(options.tokens)];
 
   await mkdir(options.sessionDir, { recursive: true });
   await writeFile(join(options.sessionDir, 'events.jsonl'), '', 'utf8');
@@ -420,7 +417,13 @@ async function runResidentTurnImplementation(
   } catch (error) {
     if (!terminalOutcomeAttempted) {
       terminalOutcomeAttempted = true;
+      // Keep the deciding native failure while the settlement wrapper retains cleanup ownership.
+      const failure = error instanceof NativeSettlementUnknownError ? error.cause : error;
       await writeAndReportTerminalOutcome(writer, workerControlReady ? controlSession : null, {
+        diagnostics: sanitizeAdapterDiagnostics(
+          { native: failure instanceof Error ? failure.message : String(failure) },
+          credentialValues
+        ),
         status: 'failed',
         stopReason: 'error',
       }).catch(() => undefined);
@@ -1332,9 +1335,9 @@ function containsExactCredentialValue(
 }
 
 /**
- * Redacts and bounds every adapter-owned diagnostic before shared terminal merging.
+ * Redacts and bounds adapter or local failure diagnostics before shared terminal merging.
  *
- * @param diagnostics Adapter-owned failure diagnostics.
+ * @param diagnostics Adapter or local failure diagnostics.
  * @param credentialValues Exact child credential values to remove.
  * @returns Product-safe non-empty diagnostic summaries.
  */

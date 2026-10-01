@@ -282,6 +282,45 @@ describe('agent environment package resolver', () => {
     ).toEqual(manifest.runtime.binaries);
   });
 
+  it('resolves the shipped Codex template without unsupported runtime provenance', () => {
+    const loaded = loadAgentManifests(
+      fileURLToPath(new URL('../../data-templates/', import.meta.url))
+    );
+    expect(loaded.diagnostics.filter((entry) => entry.agentId === 'agent_codex_host')).toEqual([]);
+    const manifest = loaded.manifests.find((entry) => entry.id === 'agent_codex_host');
+    if (!manifest) throw new Error('Expected the shipped Codex template.');
+    const result = resolveAgentSetup(manifest, {
+      gatewayConfig: createTestGatewayConfig({ logicalModelId: 'reasoning' }),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Test Provider',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    expect(result.diagnostics).toEqual([]);
+    if (!result.setup) throw new Error('Expected the shipped Codex setup.');
+    const input = {
+      agentSetup: result.setup,
+      agentSessionId: 'session_codex_template',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('Resolve the shipped Codex Agent'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    const preview = resolveAgentEnvironmentPackageMetadata(input);
+    const resolved = resolveAgentEnvironmentPackage({
+      ...input,
+      captureCoverage: { scope: 'server', value: 'off' },
+    });
+    expect(preview.backend.requiredCapabilities).toContain('trusted-worker-inference-relay');
+    expect(resolved.backend.requiredCapabilities).not.toContain('worker.runtime-provenance.v1');
+    expect(preview.control.transcript.runtimeProvenance).toBeUndefined();
+    expect(resolved.control.transcript.runtimeProvenance).toBeUndefined();
+  });
+
   it('previews a future Turn without fabricating admitted capture coverage', () => {
     const input = {
       agentSetup: createTestSetup(),

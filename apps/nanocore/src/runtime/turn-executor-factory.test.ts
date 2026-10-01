@@ -10314,7 +10314,10 @@ describe('createConfiguredTurnExecutor', () => {
         workerControlGateway: new WorkerControlGateway(),
       });
       const previewInput = {
-        agentSetup: createTestAgentSetup({ imageRef: `sha256:${'4'.repeat(64)}` }),
+        agentSetup: createTestAgentSetup({
+          imageRef: `sha256:${'4'.repeat(64)}`,
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        }),
         freshAgentSessionId: 'as_restart_selected_next',
         requestId,
         turn: {
@@ -10419,7 +10422,12 @@ describe('createConfiguredTurnExecutor', () => {
       let observedError: unknown;
       try {
         await runSchedulerDispatchLoop({
-          agentManifests: [createTestAgentSetup({ imageRef: `sha256:${'4'.repeat(64)}` }).manifest],
+          agentManifests: [
+            createTestAgentSetup({
+              imageRef: `sha256:${'4'.repeat(64)}`,
+              requiredCapabilities: ['trusted-worker-inference-relay'],
+            }).manifest,
+          ],
           coreDb,
           createAgentSessionId: () => 'as_restart_selected_next',
           createLeaseId: () => 'lease_restart_selected_next',

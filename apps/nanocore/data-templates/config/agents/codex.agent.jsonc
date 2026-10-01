@@ -121,7 +121,7 @@
     "backend": {
       "allowedKinds": ["openshell"],
       "preferred": "openshell",
-      "requiredCapabilities": ["trusted-worker-inference-relay", "worker.runtime-provenance.v1"]
+      "requiredCapabilities": ["trusted-worker-inference-relay"]
     }
   },
   "extensions": {}

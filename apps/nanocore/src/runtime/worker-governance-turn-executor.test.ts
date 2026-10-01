@@ -18,6 +18,7 @@ import type {
   AgentEnvironmentValidationDiagnostic,
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
+import { validateAgentEnvironmentPackageForBackend } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { RequestIdSchema } from '@openkit/protocol';
 import {
@@ -95,6 +96,7 @@ import {
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './goal-store.js';
 import { commandInputHash } from './idempotent-command.js';
 import {
@@ -2085,6 +2087,63 @@ describe('WorkerGovernanceTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('refuses unadvertised runtime provenance before backend effects with a deterministic error', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-provenance-admission-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Require unsupported provenance');
+    const backend = new FakeWorkerGovernanceBackend();
+    const validation = vi
+      .spyOn(backend, 'validatePackage')
+      .mockImplementation(async (...args: [AgentEnvironmentPackage]) => {
+        const environmentPackage = args[0];
+        return validateAgentEnvironmentPackageForBackend(environmentPackage, {
+          capabilities: environmentPackage.backend.requiredCapabilities.filter(
+            (capability) => capability !== 'worker.runtime-provenance.v1'
+          ),
+          dynamicCapabilities: [],
+          kind: 'openshell',
+        });
+      });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      now: () => '2026-07-15T00:00:01.000Z',
+    });
+    try {
+      const execution = startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_unsupported_provenance',
+        '2026-07-15T00:00:00.000Z',
+        'Require unsupported provenance',
+        {
+          agentSetup: createTestAgentSetup({
+            requiredCapabilities: [
+              'trusted-worker-inference-relay',
+              'worker.runtime-provenance.v1',
+            ],
+          }),
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
+      const failure = await execution.catch((error: unknown) => error);
+      expect(validation).toHaveBeenCalledOnce();
+      expect(backend.calls).toEqual([]);
+      expect(failure).toBeInstanceOf(DeterministicAgentPreparationError);
+      expect(failure).toMatchObject({
+        message:
+          'Backend openshell does not support required capability worker.runtime-provenance.v1.',
+      });
+      expect(store.listThreadAgentSessions(turn.workspaceId, turn.threadId)).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
     }
   });
 

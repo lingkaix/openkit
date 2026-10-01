@@ -82,7 +82,7 @@ type TurnScript =
   | { readonly kind: 'complete'; readonly text?: string }
   | { readonly kind: 'fail' }
   | { readonly kind: 'hold' }
-  | { readonly kind: 'reject' }
+  | { readonly kind: 'reject'; readonly error?: unknown }
   | { readonly kind: 'reject-settlement'; readonly stopProved: boolean }
   | { readonly kind: 'interrupt-race'; readonly status: 'completed' | 'failed' }
   /** Keeps working: its interrupt rejects and it never settles. */
@@ -153,7 +153,7 @@ function fakeAdapter(
         },
         async startTurn(turnInput) {
           const next = script.shift() ?? { kind: 'complete' };
-          if (next.kind === 'reject') throw new Error('native turn refused');
+          if (next.kind === 'reject') throw next.error ?? new Error('native turn refused');
           resident.turns.push(turnInput);
           let interrupt!: () => void;
           const interrupted = new Promise<WorkerAdapterResult>((resolve) => {
@@ -239,7 +239,10 @@ function fakeIntegration(options: { readyAppendStatus?: number; registerFails?: 
     string,
     { capabilityCredential: string; inferenceCredential: string }
   >();
-  const finalStatuses: Array<{ body: { status: string }; lineage: { turnId: string } }> = [];
+  const finalStatuses: Array<{
+    body: { status: string; diagnostics?: Record<string, string> };
+    lineage: { turnId: string };
+  }> = [];
   const boundTokens: unknown[] = [];
   const client = {
     ready: Promise.resolve(),
@@ -1174,7 +1177,9 @@ describe('Worker Harness resident AgentSessions', () => {
     });
     expect(
       f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')
-    ).toMatchObject({ body: { status: 'failed' } });
+    ).toMatchObject({
+      body: { status: 'failed', diagnostics: { native: 'native settlement unproved' } },
+    });
     expect(await f.send('harness.drain', {})).toMatchObject({
       body: { activeTurns: stopProved ? 0 : 1, openSessions: 1 },
     });
@@ -1348,6 +1353,51 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(await f.send('harness.drain', {})).toMatchObject({
       body: { activeTurns: 0, openSessions: 0 },
     });
+  });
+
+  it('retains a bounded redacted first-Turn refusal cause in final-status diagnostics', async () => {
+    const f = harnessFixture();
+    const runtimeSecret = 'private-vault-value';
+    await f.open('as-a', { runtimeEnvironment: { FIXTURE_SECRET: runtimeSecret } });
+    const secrets = [
+      runtimeSecret,
+      credential('inference-as-a'),
+      credential('capability-as-a'),
+      credential('control-token-turn-1'),
+      credential('inference-token-turn-1'),
+      credential('capability-token-turn-1'),
+    ];
+    const prefix = `Codex setup rejected: ${secrets.join(' ')} Authorization: Bearer unknown-bearer api_key=unknown-key ghp_unknown`;
+    f.fake.script.push({ kind: 'reject', error: new Error(`${prefix} ${'界'.repeat(20_000)}`) });
+    const result = await f.start('as-a', 'turn-1', { runtimeEnvNames: ['FIXTURE_SECRET'] });
+    expect(result).toMatchObject({
+      body: {
+        reasonCode: 'dependency_failed',
+        startupFailure: { stage: 'native_spawn', reason: 'failed' },
+      },
+      disposition: 'refused',
+    });
+    expect(Object.keys(result.body).sort()).toEqual(['reasonCode', 'startupFailure']);
+    expect(result.body.startupFailure).toEqual({ stage: 'native_spawn', reason: 'failed' });
+    await f.settle('as-a');
+    const final = f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-1');
+    expect(final).toMatchObject({
+      body: {
+        status: 'failed',
+        diagnostics: { native: expect.stringContaining('Codex setup rejected:') },
+      },
+    });
+    const diagnostic = final?.body.diagnostics?.native ?? '';
+    expect(diagnostic.length).toBeLessThanOrEqual(1000);
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(16 * 1024);
+    for (const secret of [...secrets, 'unknown-bearer', 'unknown-key', 'ghp_unknown']) {
+      expect(JSON.stringify(final)).not.toContain(secret);
+      expect(
+        readFileSync(join(f.root, 'openkit', 'session', 'events.jsonl'), 'utf8')
+      ).not.toContain(secret);
+    }
+    expect(diagnostic).toContain('[redacted]');
+    await f.send('session.close', f.selector('as-a'));
   });
 
   it('keeps an established binding usable and resumable after a refused later native Turn', async () => {

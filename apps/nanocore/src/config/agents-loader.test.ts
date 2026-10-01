@@ -62,9 +62,9 @@ describe('loadAgentManifests', () => {
     expect(result.manifests.every((manifest) => manifest.runtime.image.kind === 'reference')).toBe(
       true
     );
-    expect(codexManifest?.sandbox?.backend?.requiredCapabilities).toEqual(
-      expect.arrayContaining(['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'])
-    );
+    expect(codexManifest?.sandbox?.backend?.requiredCapabilities).toEqual([
+      'trusted-worker-inference-relay',
+    ]);
     expect(result.manifests.every((manifest) => manifest.readiness?.status !== 'unknown')).toBe(
       true
     );

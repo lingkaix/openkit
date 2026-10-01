@@ -81,6 +81,7 @@ import {
   resolveAgentEnvironmentPackage,
   resolveAgentEnvironmentPackageMetadata,
 } from './agent-environment.js';
+import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { frozenPendingOutcomeInput, proveFrozenDelivery } from './pending-requests.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
@@ -1297,11 +1298,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   /**
    * Starts and completes one backend-governed worker turn.
    *
+   * Validates the complete AEP against the backend before creating an AgentSession or attempting runtime effects; unsupported authored requirements retain their diagnostic as deterministic preparation failures.
+   *
    * @param store Store that owns the workspace and thread.
    * @param turnId Turn id to execute.
    * @param input User-facing turn input.
    * @param context Runtime context with request id and workspace roots.
    * @returns Promise that resolves after transcript import and teardown.
+   * @throws DeterministicAgentPreparationError when backend package validation rejects an authored requirement.
    */
   public async startTurn(
     store: FsStore,
@@ -1465,6 +1469,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             },
           }
         : resolvedEnvironmentPackage;
+      // Validate the complete package before publishing a session or attempting runtime effects.
+      const packageDiagnostics = await this.backend.validatePackage(environmentPackage);
+      if (packageDiagnostics.length > 0) {
+        agentSessionId = null;
+        throw new DeterministicAgentPreparationError(
+          packageDiagnostics.map((diagnostic) => diagnostic.message).join(' ')
+        );
+      }
       const workerLineage = {
         workspaceId: environmentPackage.scope.workspaceId,
         threadId: environmentPackage.scope.threadId,

@@ -24,7 +24,9 @@ import type {
   WorkerResidentSession,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import type { SandboxIntegrationClient } from '../integration-client.js';
 import type { RuntimeCaptureInput } from '../runtime-capture.js';
+import { runResidentTurn } from '../turn.js';
 import {
   CODEX_PRODUCTION_BINARY,
   CODEX_RESULT_MAX_BYTES,
@@ -76,6 +78,193 @@ afterEach(async () => {
 });
 
 describe('Codex App Server adapter', () => {
+  it.each([
+    false,
+    true,
+  ])('runs an admitted multi-route set through the Turn boundary with blocked external proxies and provenance %s', async (provenance) => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const mcp = await mcpServer();
+    const models: readonly [string, number, ('text' | 'image' | 'pdf')[]][] = [
+      ['model-alpha', 256000, ['text', 'image', 'pdf']],
+      ['model-beta', 256000, ['text', 'image', 'pdf']],
+      ['model-gamma', 256000, ['text', 'image', 'pdf']],
+      ['model-delta', 268000, ['text', 'image', 'pdf']],
+      ['model-epsilon', 111000, ['text']],
+      ['model-zeta', 200000, ['text', 'image']],
+    ];
+    const routes: WorkerAdapterLlmRoute[] = models.map(
+      ([model, contextWindow, inputModalities]) => ({
+        ...route(model),
+        id: model,
+        providerInstanceId: 'openkit-gateway',
+        endpoint: {
+          kind: 'openai-compatible',
+          upstream: { kind: 'nanocore-gateway', baseUrlRef: 'openkit-gateway' },
+        },
+        // Exercise complete model metadata with a bounded synthetic output limit.
+        modelParameters: {
+          contextWindow,
+          maxOutputTokens: 16384,
+          inputModalities,
+          reasoning: true,
+        },
+      })
+    );
+    const session = await testAdapter.openSession(
+      openInput(
+        roots,
+        {
+          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+          capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
+        },
+        {
+          // Reqwest and native Git fail at loopback without resolving remote services.
+          HTTP_PROXY: 'http://127.0.0.1:9',
+          HTTPS_PROXY: 'http://127.0.0.1:9',
+          ALL_PROXY: 'http://127.0.0.1:9',
+          http_proxy: 'http://127.0.0.1:9',
+          https_proxy: 'http://127.0.0.1:9',
+          all_proxy: 'http://127.0.0.1:9',
+          NO_PROXY: '127.0.0.1,localhost',
+          no_proxy: '127.0.0.1,localhost',
+          GIT_ALLOW_PROTOCOL: 'https',
+        }
+      )
+    );
+    sessions.push(session);
+    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+    const packagePath = join(roots.control, 'package.json');
+    const finalStatuses: unknown[] = [];
+    const startupFailures: unknown[] = [];
+    let started = false;
+    const lineage = {
+      agentSessionId: 'as_codex',
+      packageSnapshotId: 'pkg_codex',
+      threadId: 'th_codex',
+      turnId: 'turn_codex',
+      workspaceId: 'ws_codex',
+    };
+    await writeFile(
+      packagePath,
+      JSON.stringify({
+        capabilities: {
+          mode: 'enabled',
+          protocol: 'openkit-worker-capability-v1',
+          routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+        },
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
+          mode: 'sandbox-integration',
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+          ...(provenance
+            ? {
+                transcript: {
+                  runtimeProvenance: {
+                    rawStreamsRoot: '/openkit/session/runtime/raw',
+                    streamManifestPath: '/openkit/session/runtime/raw-streams.json',
+                    nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
+                    maxStreamCount: 64,
+                    maxTotalBytes: 256 * 1024 * 1024,
+                  },
+                },
+              }
+            : {}),
+        },
+        llm: { mode: 'gateway', preferredLogicalModelId: 'model-delta', routes },
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
+        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: roots.work } },
+        extensions: { openkit: { turnInput: 'Complete the runtime smoke test.' } },
+        supply: { skills: [], mcpServers: [{ id: 'openkit-generative' }, { id: 'openkit-work' }] },
+      })
+    );
+    const execution = runResidentTurn({
+      adapterId: 'codex',
+      credentialValues: [INFERENCE_SECRET, CAPABILITY_SECRET],
+      environment: {},
+      integration: {
+        ready: Promise.resolve(),
+        bindTurnRouteTokens() {},
+        clearTurnRouteTokens() {},
+        async drainTurn() {
+          return 0;
+        },
+      } as unknown as SandboxIntegrationClient,
+      fetch: async (url, init) => {
+        if (url.endsWith('/final-status')) finalStatuses.push(JSON.parse(init?.body ?? '{}'));
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+        };
+      },
+      lineage,
+      onStarted: () => {
+        started = true;
+      },
+      onStartupFailure: (failure) => {
+        startupFailures.push(failure);
+      },
+      packagePath,
+      resident: session,
+      runtimeEnvironmentNames: new Set(),
+      nativeEnvironment: null,
+      sessionDir: join(roots.control, 'session'),
+      signal: new AbortController().signal,
+      tokens: {
+        controlToken: 'synthetic-control',
+        inferenceToken: 'synthetic-inference',
+        capabilityToken: 'synthetic-capability',
+      },
+      turnDirectory: join(roots.control, 'turn'),
+    });
+    if (provenance) {
+      await expect(execution).rejects.toThrow(
+        'Codex App Server provenance is not implemented for this pin.'
+      );
+      expect(started).toBe(false);
+      expect(startupFailures).toEqual([{ stage: 'native_spawn', reason: 'failed' }]);
+      expect(finalStatuses).toEqual([
+        expect.objectContaining({
+          body: expect.objectContaining({
+            status: 'failed',
+            stopReason: 'error',
+            diagnostics: { native: 'Codex App Server provenance is not implemented for this pin.' },
+          }),
+        }),
+      ]);
+      expect(inference.bodies).toHaveLength(0);
+      expect(mcp.requests).toHaveLength(0);
+      expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+      expect(countRollouts(await walk(roots.state))).toBe(0);
+    } else {
+      await expect(execution).resolves.toEqual({ status: 'completed' });
+      expect(started).toBe(true);
+      expect(startupFailures).toEqual([]);
+      expect(finalStatuses).toEqual([
+        expect.objectContaining({
+          body: expect.objectContaining({ status: 'completed', stopReason: 'completed' }),
+        }),
+      ]);
+      expect(inference.bodies.length).toBeGreaterThan(0);
+      expect(JSON.parse(inference.bodies[0]!).model).toBe('model-delta');
+      for (const id of ['openkit-generative', 'openkit-work'])
+        expect(mcp.requests.some((request) => request.path?.includes(id))).toBe(true);
+    }
+    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
+  }, 30_000);
+
   it('resolves the pinned vendor binary and keeps launch arguments free of secrets', () => {
     const binary = vendorBinary;
     expect(binary).toContain(`${join('vendor')}`);

@@ -1529,6 +1529,7 @@ describe('worker MCP routes', () => {
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     seedWritableGitRepository(repositoryPath);
     const agentSetup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
       mcpIds: [repository ? 'openkit-repository' : 'echo'],
     });
     admitTestNativeEnvironment(coreDb, agentSetup.manifest);
