@@ -86,6 +86,14 @@ The live event stream is not a replayable transcript. A prompt response or an id
 
 No environment variable, AEP extension, test option, or image diagnostic may replace the adapter-produced client operations. Tests inject a runner or a static test adapter without creating a production command override. NanoCore never constructs an OpenCode command. There is no shell-built command.
 
+## Reasoning Effort Delivery
+
+For every Turn with recorded effort in its immutable AEP, the adapter uses V2 `session.switchModel` to select the admitted logical model and its declared effort variant on the exact retained session before the prompt is admitted. Native model metadata declares one variant per supported [canonical OpenKit effort level](../core/protocol.md#canonical-enums), carrying that level's exact Gateway wire value. Automatic native variants are not assumed to cover the admitted set. Selection must be applied and verified before prompting. Explicit `none` selects its declared variant, never omission, null, or a base/default variant. On a Turn without recorded effort the adapter does not reselect an unchanged admitted model, so the conversation's current variant stays in effect; a change of admitted model follows native selection and restores or reapplies no variant.
+
+Shared delivery, omission and retention, Turn authority, effective-level diagnostics, failure and lifecycle semantics, and acceptance are owned by [AEP delivery and retention](20260616-agent_environment_package.md#reasoning-effort-projection-and-delivery).
+
+OpenCode-specific acceptance proves that V2 `session.switchModel` selects the declared effort variant, that selection is applied and verified before prompting, and that supported canonical values, including explicit `none`, preserve their exact Gateway wire values.
+
 ## Native Output Mapping
 
 The adapter requires one correlated server terminal result for the admitted prompt. Native result content is limited to 16 MiB. Exceeding the bound fails collection closed. Unknown events are ignored and cannot complete a lifecycle predicate. Malformed records that prevent a trustworthy final result fail closed. A correlated success with no assistant text returns no assistant candidate. A native error outcome fails even when partial text exists.
@@ -193,6 +201,8 @@ Round-five results and guard mutations are recorded in `temp/comm-redesign/repor
 Image smoke and exact-product Sandbox qualification remain with their existing owners. The image must install glibc Linux arm64/x64 CLI builds and the client on the shim Node resolution path, keep `/etc/opencode` absent, and prove non-root execution. The client remains a devDependency because its Effect graph must not enter worker-common. Real-provider behavior, NanoCore restart adoption, Integration idle/sibling refusal, compaction recovery, and complete descendant-writer containment are not established by these adapter tests. Whole-volume bytes remain untouched; local readiness and graceful-close evidence do not replace those broader proofs.
 
 Native Local Configuration and fresh-home initialization are implemented and qualified with the pinned runtime and synthetic loopback providers in `opencode-native.test.ts`. Authored home and Workspace resources remain effective beside non-empty and empty managed projections, and exact successor resume reuses the retained configuration without reseeding. These host checks do not establish image smoke or exact-product Sandbox qualification.
+
+The Reasoning Effort Delivery contract above is an accepted target awaiting implementation. The current adapter does not deliver the recorded per-Turn override through a declared model variant. The current implementation reselects the model before every prompt without a variant; the absent-effort Turn rule above also awaits implementation.
 
 ## Acceptance
 
