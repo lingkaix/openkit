@@ -1,6 +1,19 @@
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
+/** Closed injection visibility classes shared by public, storage, and archive records. */
+export const InjectionVisibilitySchema = z.enum([
+  'gateway-only',
+  'backend-provider',
+  'runtime-file',
+  'runtime-env',
+  'runtime-token',
+  'external-handle',
+]);
+
+/** Injection visibility inferred from the shared closed schema. */
+export type InjectionVisibility = z.infer<typeof InjectionVisibilitySchema>;
+
 /** Non-secret workspace vault grant metadata exposed through the App API. */
 export const WorkspaceVaultGrantSchema = z
   .object({
@@ -31,7 +44,7 @@ export const WorkspaceVaultInjectionPlanSchema = z
     grantId: z.string().min(1),
     packageSnapshotId: z.string().min(1).nullable(),
     capabilityId: z.string().min(1).nullable(),
-    injectionVisibility: z.enum(['gateway-only', 'backend-provider', 'runtime-file']),
+    injectionVisibility: InjectionVisibilitySchema,
     targetPath: z.string().min(1).nullable(),
     targetEnvVarName: z.string().min(1).nullable(),
     expirationBehavior: z.string().min(1),
