@@ -120,6 +120,7 @@ import {
   createVaultProviderCredentialResolver,
   revokeVaultProviderCredential,
 } from './providers/vault-credential-resolver.js';
+import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
 import { registerRepositoryRoutes } from './repository-routes.js';
 import { registerReviewDecisionRoutes } from './review-decision-routes.js';
 import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-routes.js';
@@ -699,6 +700,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    * @returns Client channel label.
    */
   function requestAuditChannel(request: Request, pathname: string): string {
+    if (pathname === '/mcp') return 'remote-mcp';
     return (
       normalizeRequestAuditLabel(request.headers.get('x-openkit-client-channel')) ??
       (pathname.startsWith('/api/app/') ? 'app-api' : 'core-api')
@@ -713,6 +715,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    * @returns Client source label.
    */
   function requestAuditSource(request: Request, pathname: string): string {
+    if (pathname === '/mcp') return 'remote-mcp';
     return normalizeRequestAuditLabel(request.headers.get('x-openkit-client-source')) ?? pathname;
   }
 
@@ -1386,6 +1389,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/api/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
   app.use('/v1/*', browserCors);
   app.use('/v1/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
+  app.use('/mcp', browserCors);
+  app.use('/mcp', createAuthMiddleware(mode, auth, authMiddlewareOptions));
+  registerRemoteMcpRoutes({
+    app,
+    coreDb: options.coreDb,
+    store: sharedStore,
+    inflightCommands,
+    workspaceMutationAdmission,
+    mode,
+    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
+  });
 
   if (options.coreDb) {
     registerOperationAccessGuards({

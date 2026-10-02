@@ -34,6 +34,8 @@ Internal Chat, administration and Goal planning calls keep private cache scope a
 
 ## Scope
 
+NanoCore's App listener serves stateless Streamable HTTP at `/mcp`. This endpoint requires an ordinary `Authorization: Bearer` Token in both server and local mode, reuses the existing verifier and native invocation, and exposes only `search`, `describe`, `guide`, and `call` over the composed operation definitions. Its read-only discovery tools expose metadata rather than permission grants; the multiplexed call can mutate, and describe gives the selected operation's posture. Token issuance, rotation and bootstrap output contracts are refused before invocation. Token last-use and request audit record `remote-mcp`; no MCP session is product authority. The retained Skill covers operations not yet migrated. Run `pnpm --filter @openkit/nanocore exec vitest run src/remote-mcp-routes.test.ts src/auth/middleware.test.ts src/operation-projections.test.ts` for the focused endpoint, credential and native-seam regressions.
+
 - local-mode implicit single-user operation
 - server-mode registered-user small-team operation with HTTP-only session auth and bounded Workspace sharing
 - optional file-backed state through `OPENKIT_DATA_ROOT`

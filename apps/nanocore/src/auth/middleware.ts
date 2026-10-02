@@ -101,7 +101,8 @@ export function createAuthMiddleware(
       return;
     }
 
-    if (mode === 'local') {
+    // Remote MCP always requires a presented Token, including on a local-mode listener.
+    if (mode === 'local' && c.req.path !== '/mcp') {
       const actor = actorFromRequest(c.req.raw, mode);
       if (options.canonicalUserActive && !(await options.canonicalUserActive(actor.userId))) {
         return unauthorized(c);
@@ -134,6 +135,8 @@ export function createAuthMiddleware(
       await next();
       return;
     }
+
+    if (c.req.path === '/mcp') return unauthorized(c);
 
     const session = await auth?.api.getSession({ headers: c.req.raw.headers });
 
@@ -265,6 +268,7 @@ export function isLoopbackHost(hostname: string): boolean {
  * @returns JSON response.
  */
 function unauthorized(c: Parameters<MiddlewareHandler>[0]) {
+  if (c.req.path === '/mcp') c.header('WWW-Authenticate', 'Bearer');
   return c.json(
     ApiErrorSchema.parse({
       protocolVersion: PROTOCOL_VERSION,
