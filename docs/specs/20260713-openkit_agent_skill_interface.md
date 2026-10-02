@@ -2,15 +2,15 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-09-08
+updated: "2026-10-02"
 ---
 # OpenKit Agent Skill Interface
 
 ## Owns
 
-This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill, its progressively disclosed reference material, its bundled `openkit` CLI, and the transport-neutral operation catalog that maps the CLI to governed public NanoCore behavior.
+This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill and its progressively disclosed reference material. The bundled CLI's accepted owner is [Agent Operator Skill](20260910-agent_operator_skill.md). The CLI clauses in this specification are the current behavior and transfer to that owner when the move is implemented. They are not a second semantic definition.
 
-It owns the Skill audience and trigger boundary, Skill package shape, progressive disclosure model, CLI process contract, operation discovery and invocation contract, public capability coverage rule, agent-facing loop guidance, Skill/CLI version alignment, and removal of the former user-facing MCP and four-Skill model.
+It owns the Skill audience and trigger boundary, Skill package shape, progressive disclosure model, agent-facing loop guidance, and removal of the former user-facing MCP and four-Skill model. It records the current CLI process contract, operation discovery and invocation contract, public capability coverage rule, and Skill/CLI version alignment until those criteria transfer to the operator skill. The user-facing Skill is retired once the remote MCP endpoint covers it. It is not retired by this amendment. At that retirement, this specification's surviving criteria move to their owners.
 
 ## Does Not Own
 
@@ -18,7 +18,7 @@ This spec does not own NanoCore workflow state, App API routes, Core protocol re
 
 It does not own the general worker Skill Catalog in `docs/specs/20260711-skill_catalog_versioning_pinning.md`, MCP catalog management in `docs/specs/20260907-mcp_catalog_management.md`, Agent Plugin packaging and worker supply in `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`, Agent Environment Package Skill supply, public Skill marketplace design, generic shell access, arbitrary HTTP access, or a repository-developer workflow.
 
-It does not own the separately owned operations Skill, installation or offline host recovery in `docs/specs/20260910-agent_operator_skill.md`.
+It does not own the separately owned operations Skill, installation or offline host recovery in `docs/specs/20260910-agent_operator_skill.md`. It does not own the operator CLI. It does not own the remote MCP endpoint. It does not own credential eligibility for session-only operations; those amendments are pending in their credential owners.
 
 It does not own product-wide release identity, authorization, channels, retry, or completion, which are owned by `docs/specs/20260829-release_management.md`.
 
@@ -114,6 +114,8 @@ The Skill targets an agent helping an end user operate OpenKit. Its frontmatter 
 The Skill must not contain a developer audience switch, repository self-improvement mode, OpenKit source-checkout setup, package-development instructions, or developer-only fallback path.
 
 ### One bundled CLI
+
+The clauses under this heading are the current CLI contract. They stay in force until the move is implemented, and they transfer with the CLI. The accepted target is that the CLI moves under [Agent Operator Skill](20260910-agent_operator_skill.md), is used with an administrator token, derives its online commands from [Operation Definition](20261002-operation_definition.md), writes one-time secrets to local secret-safe sinks, and keeps bootstrap and offline host procedures separately authorized. Full bearer coverage is that target's credential-owner work and is pending. The user-facing Skill remains until the remote MCP endpoint covers it. The ruling is recorded in [Operation Definition Rulings](../decisions/20261002-operation_definition_rulings.md).
 
 The Skill distribution contains an executable `openkit` CLI entrypoint under its `scripts/` resources.
 

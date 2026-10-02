@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: concept
 date: 2026-09-08
-updated: 2026-09-09
+updated: "2026-10-02"
 ---
 # Generative Kernel Data And Operations
 
@@ -13,7 +13,7 @@ This specification owns each Light App's stable schema and data implementation: 
 
 ## Does Not Own
 
-Generative UI presentation and interaction belong to [Generative UI Interaction](20260908-generative_ui_interaction.md). Existing owners retain identity, Policy, Vault, Audit, work scheduling, Agent Runtime execution, capability access, Workspace recovery, and backup/export/import. Kernel adds no parallel authority in these domains. It does not supply a visual app builder, universal business ontology, full CRM/CMS platform, general workflow engine, public SQL service, or arbitrary code execution inside NanoCore.
+Generative UI presentation and interaction belong to [Generative UI Interaction](20260908-generative_ui_interaction.md). Existing owners retain identity, Policy, Vault, Audit, work scheduling, Agent Runtime execution, capability access, Workspace recovery, and backup/export/import. Kernel adds no parallel authority in these domains. It does not supply a visual app builder, universal business ontology, full CRM/CMS platform, general workflow engine, public SQL service, or arbitrary code execution inside NanoCore. Reserved admission of a data-defined operation is owned by [Operation Definition](20261002-operation_definition.md). This specification keeps the fixed operation's execution classes, activation, and retirement.
 
 ## Core References
 
@@ -108,6 +108,8 @@ Single-record updates and deletes require the expected record revision and the e
 The initial contract retains current records and immutable definition revisions, with audit and command lineage. It does not promise a full per-record version history or undo log. Destructive data removal therefore requires the accepted command-specific recovery contract above and current authorization; a UI confirmation alone is not authorization or a backup. Storage limits must fail before mutation, never silently discard fields or records.
 
 ### Optional Fixed Operations And Agent Plugins
+
+The fixed operation is the first reserved data-defined operation under [Operation Definition](20261002-operation_definition.md). This specification keeps its proposal, validation, activation, retirement, immutable versions, and execution classes. That specification owns the reserved admission rules and does not replace those classes. No data-defined source is built by this link.
 
 A fixed operation is packaged and selected through [Agent Plugin Packaging And Worker Supply](20260907-agent_plugin_packaging_and_worker_supply.md) and its existing component owners. Prefer one cohesive MCP server for an app's tool surface, plus Skills and any required CLI assets, rather than a server or runtime per function. A data-only app does not need its own Plugin. Agents can create, inspect, update, select, and remove these resources through admitted catalog operations; component installation is never automatic code execution or an authorization grant. Generic data commands remain available independently. A fixed operation has a stable ID and an exact component/implementation revision containing its input schema, output schema, effect class, exact implementation binding/version, required resource scope, and owner-defined failure and cancellation semantics. Labels and generated explanations do not determine effects. The server resolves the binding; callers cannot substitute executable code, credentials, targets, or actor identity through ordinary arguments. Publishing an operation requires validation of that exact binding. Revising its implementation uses the existing immutable component-version owner, and a stale caller must refresh rather than silently execute replacement code.
 

@@ -97,6 +97,7 @@ Kernel, protocol, and product surfaces:
 - [Generative UI Interaction](./20260908-generative_ui_interaction.md) — Accepted; initial native MVP contract, implementation Partial.
 
 - [`20260715-contract_stability_baseline.md`](./20260715-contract_stability_baseline.md)
+- [Operation Definition](20261002-operation_definition.md): one browser-safe declarative definition per operation, the typed implementation join, trusted invocation, and derived projections.
 - [`20260528-core_client_boundary.md`](./20260528-core_client_boundary.md)
 - [`20260628-nanocore_config_identity_contract.md`](./20260628-nanocore_config_identity_contract.md)
 - [`20260704-nanocore_bootstrap_readiness.md`](./20260704-nanocore_bootstrap_readiness.md)

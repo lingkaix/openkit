@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: process
 date: 2026-08-29
-updated: 2026-09-09
+updated: "2026-10-02"
 ---
 # Release Management
 
@@ -96,6 +96,8 @@ The current release bundle contains exactly these controlled assets:
 | NanoHost Distributions | GitHub Release attachments | `openkit-nanohost-<tag>-linux-amd64.tar.gz` and `openkit-nanohost-<tag>-linux-arm64.tar.gz`, each satisfying the exact target, tree, pin, installer, license, and reproducibility contract owned by the NanoHost specification |
 | Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over both attached Skill archives and the NanoHost archives |
 | Release record | GitHub Release | Tag, source commit, workflow run, image tags and digests, automatic gate result, manual-gate disposition, and portable-asset checksum |
+
+The assets above and the post-publication checks below are the current release procedure. Once the remote MCP endpoint covers the user-facing Skill, that Skill is retired under [OpenKit Agent Skill Interface](20260713-openkit_agent_skill_interface.md). The end-user Skill archive then leaves this composition, and the public Skill CLI local-operation-discovery check is replaced by verification of the operator CLI derived from the operation definitions in [Operation Definition](20261002-operation_definition.md). This amendment does not change the current assets, checksum, or verification steps.
 
 GitHub-generated source archives are convenience snapshots and are not controlled release artifacts or checksum authorities.
 

@@ -46,6 +46,8 @@ OpenKit should freeze durable product truth before release, but it should not fr
 
 The durable baseline covers promoted Core meaning, persisted and portable data, workspace ownership, identity and actor attribution, authorization and audit semantics, stable lineage, and the invariants needed to preserve history. NanoCore App API operations, `@openkit/core-client`, the bundled CLI, the unified `openkit` Skill, generated OpenAPI, and Web UI remain exact-release projections that may change together without deprecation windows or compatibility aliases.
 
+Until the launch boundary in the Operation Semantic Promise section of `docs/core/contract-evolution.md`, that freedom includes operation definitions. The boundary is not yet defined. At the launch boundary, settled operation semantic contracts become `Durable`, with Operation Semantic Promise as their evolution rule; their transport, packaging and user-interface projections remain at their existing stability classes. After it, only a settled operation's semantic contract changes by addition, deprecation, or retirement, and an operation id is never reused. Retained data continuity is unchanged, and an operation change before launch does not discard retained records or captured bindings. Deprecation and retirement behavior is owned by [Operation Definition](20261002-operation_definition.md).
+
 Business World Model and Meta-Skill theory must not shape or delay the OpenKit kernel baseline. Domain models belong in separately versioned Skills and catalogs and may consume OpenKit mechanisms without becoming a second owner of Core contracts.
 
 ## Goals
@@ -136,6 +138,8 @@ The following first-party surfaces are `Release-coupled` by default:
 
 These surfaces must satisfy same-release correctness, source-of-truth, security, and coverage requirements. They do not promise that a client from one OpenKit release works against NanoCore from another release.
 
+That cross-release silence covers transport, packaging, and user-interface details throughout, and it covers operation semantic contracts until the launch boundary. At the launch boundary, settled operation semantic contracts become `Durable`, with Operation Semantic Promise in `docs/core/contract-evolution.md` as their evolution rule; their transport, packaging and user-interface projections remain at their existing stability classes. A settled operation's semantic contract is not reshaped in place.
+
 The release gate for this class is:
 
 - one owning schema or operation source
@@ -144,6 +148,8 @@ The release gate for this class is:
 - risk-appropriate L2 contract and L3 process coverage for boundaries that cannot be proved at a lower layer
 - a typed incompatibility when identities do not match
 - no legacy route, alias, payload, Skill, CLI, or client path left behind
+
+That removal gate applies to operation semantic contracts only before the launch boundary. After the boundary, deprecation keeps the same operation invocable and is not a compatibility alias or a second route, and retirement removes it in a later release, as [Operation Definition](20261002-operation_definition.md) specifies. The exception does not keep a legacy route, alias, or client path for a transport or presentation change. The current release procedure is unchanged. Retained data continuity is unchanged.
 
 Publishing generated OpenAPI as a review or diagnostic artifact does not by itself promote the App API to a durable independently versioned public API.
 

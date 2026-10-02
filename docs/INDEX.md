@@ -110,7 +110,7 @@ and are not listed here.
 - `docs/specs/20260711-scheduler_recurring_event_triggers.md` — Accepted, Not Started — Durable fixed-interval schedule definitions and occurrence history for requesting the existing worker Turn admission operation.
 - `docs/specs/20260711-skill_catalog_versioning_pinning.md` — Accepted, Partial — Independent worker Skill identity, immutable content versions, provenance, candidate submission, exact selection, promotion, pinning, rollback, and removal.
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md` — Accepted, Partial — The boundary between one NanoCore-owned worker execution and runtime-internal sub-agents created by Codex or another Worker Agent runtime.
-- `docs/specs/20260713-openkit_agent_skill_interface.md` — Accepted, Partial — This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill, its progressively disclosed reference material, its bundle…
+- `docs/specs/20260713-openkit_agent_skill_interface.md` — Accepted, Partial — This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill and its progressively disclosed reference material.
 - `docs/specs/20260713-work_resource_interaction_model.md` — Accepted, Partial — This spec owns the implementation-facing interaction model that lets users express precise intent against work resources without requiring every interaction to…
 - `docs/specs/20260715-contract_stability_baseline.md` — Accepted, Partial — The current OpenKit stability classification for contract families that matter before a product release.
 - `docs/specs/20260715-multi_user_workspace_system.md` — Accepted, Partial — The target design for several authenticated users sharing one canonical Workspace inside one NanoCore deployment.
@@ -147,6 +147,7 @@ and are not listed here.
 - `docs/specs/20260922-delegated_worker_policy_maintenance.md` — Draft, Not Started — The proposed bounded class of non-secret worker sandbox/network configuration that an internal operator may inspect, compare, validate and apply under a respon…
 - `docs/specs/20260930-deepseek_worker_adapter.md` — Accepted, Partial — Native ACP session identity, prompt, cancellation, and close for one DeepSeek binding
 - `docs/specs/20260930-pending_requests.md` — Accepted, Not Started — The pending request concept for approval requests and user-input requests: its definition, its durable record, and its lifecycle of raise, resolve, end, and de…
+- `docs/specs/20261002-operation_definition.md` — Accepted, Not Started — The declarative definition of each public operation, the exact implementation join, and the derivation of its projections.
 
 ## Terminal Specifications
 

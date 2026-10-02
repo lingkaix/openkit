@@ -83,6 +83,7 @@ A schema is not automatically durable, and a durable semantic contract does not 
 - Accepted Core semantics and invariants are `Durable`.
 - Retained canonical data and authored configuration are `Durable` representations under Retained Data Continuity below. Portable formats, authority boundaries, and cross-release protocol families are `Durable` only when an owning document or accepted baseline explicitly identifies them and defines their evolution mechanism.
 - App APIs, generated API projections, first-party clients, bundled CLIs, unified Skills, Web projections, and other presentation or operation surfaces are `Release-coupled` by default.
+- Operation semantic contracts stay `Release-coupled` until the launch boundary in Operation Semantic Promise. At the launch boundary, settled operation semantic contracts become `Durable`, with Operation Semantic Promise as their evolution rule; their transport, packaging and user-interface projections remain at their existing stability classes.
 - A surface explicitly labeled experimental is `Experimental` until promotion.
 - Package layout, database engine details, provider-native payloads, adapter-native events, backend handles, local paths, process commands, caches, and diagnostics internals are `Private` unless deliberately promoted.
 - A surface without an intentional owner and classification must not be treated as a contract merely because a consumer can currently observe it.
@@ -96,6 +97,16 @@ OpenKit's compatibility obligations rest on retained data. Retained canonical da
 - An older reader ignores unknown additive fields, members, files, and entries outside the closed core, as Closed Core, Open Extension states, without an owner first declaring a tolerant location. Generated configuration, execution contracts, and record schemas follow that same rule for unknown additive content. Unknown core values, and unknown required or authority-bearing semantics, fail closed.
 - Opaque retained bytes, such as Worker volumes, native agent history, and retained images, survive under `docs/core/storage.md` without an OpenKit format promise. Rebuildable derivatives, caches, disposable diagnostic projections, and operational telemetry that its owner classifies as `Release-coupled` carry no continuity obligation.
 - This obligation is prospective: completed cutovers recorded by their owners stand. It does not relax closed-core validation or required-feature checks, does not extend a generated execution contract to older launches, does not authorize boot-time rewriting, automatic migration, or data-root replacement beyond what existing owners define, and does not override retention, deletion, revocation, or hold rules.
+
+## Operation Semantic Promise
+
+Before the launch boundary, an operation's semantic contract is `Release-coupled` and may change with the coordinated release under the release-coupled rules in this document. That boundary is the launch. It is not yet defined, and defining it is what starts the promise below. The ruling is recorded in [Operation Definition Rulings](../decisions/20261002-operation_definition_rulings.md).
+
+After that boundary, a settled operation's semantic contract is frozen. The frozen contract is the operation's input and output meaning, its effects, and its declared authority requirements. At the launch boundary, settled operation semantic contracts become `Durable`, with Operation Semantic Promise as their evolution rule; their transport, packaging and user-interface projections remain at their existing stability classes. This promise is that evolution rule. Transport placement, packaging, and user-interface details are not frozen by this promise and stay with their owners at their existing stability class. A settled operation is not modified in place. A later release may only add an operation, deprecate an operation, or retire an operation, and an operation id is never reused. Deprecation keeps that same operation invocable under its existing semantic contract, may name an optional replacement, and does not redirect the call or add a second shape. Retirement in a later release removes the operation from discovery and execution, and a call fails with a typed error rather than through a compatibility adapter. An implementation repair that restores the accepted semantic contract is not a new meaning. Current policy, resource state, revocation, and effect preconditions may still deny an unchanged operation.
+
+Retained Data Continuity is unchanged. Changing an operation before launch does not discard retained records or captured bindings that cite an operation id. Those records stay usable under their continuity owners. Deprecation and retirement, stated above, remain release decisions. Blocking is a deployment decision and is not a change to the operation definition. An operation the deployment cannot support is an availability condition its owner already reports, and that condition is not policy. An owner's or administrator's choice to keep users from an operation is a permission, deferred to the Policy Kernel implementation and later user-configurable. This document does not define that permission. The architecture keeps room for it by making the canonical operation id usable as a policy resource and by admitting every invocation once through its primary policy operation, and this document does not own those mechanisms.
+
+The release-coupled break rule in Principles still applies to operation semantic contracts before the launch boundary. It still applies to transport, packaging, and user-interface surfaces after that boundary.
 
 ## Stabilization Mechanisms
 
@@ -134,9 +145,11 @@ Promotion from `Experimental` or `Private` is a contract change. Existing accide
 - A `Private` surface may be changed or deleted inside its owner without a contract process.
 - A surface must not be relabeled to a weaker class merely to avoid the migration or verification obligations created by existing durable data.
 
+After the launch boundary, replacement of a settled operation's semantic contract follows Operation Semantic Promise. The release-coupled demotion rule still applies before that boundary, and it still applies to transport, packaging, and user-interface surfaces.
+
 ## Boundaries And Non-Goals
 
-This document owns stability classes, stabilization mechanisms, retained data continuity, the closed core and open extension of every owned data shape, promotion and demotion rules, strictness expectations, conformance dimensions, and the lifecycle of breaking changes.
+This document owns stability classes, stabilization mechanisms, retained data continuity, the closed core and open extension of every owned data shape, promotion and demotion rules, strictness expectations, conformance dimensions, the lifecycle of breaking changes, and the post-launch operation semantic promise.
 
 This document does not classify the current release's individual contract families. A baseline specification owns that inventory because implementation readiness and current scope change more frequently than Core doctrine.
 
@@ -145,6 +158,8 @@ This document does not define the canonical meaning of `Workspace`, `Thread`, `T
 This document does not require migration shims for old data. A one-time migration preserves durable truth without keeping an obsolete runtime reader.
 
 This document does not create a compatibility promise for independently versioned third-party clients. Such a promise requires a separately accepted support policy and an explicit promotion of the relevant API surface.
+
+This document does not promote transport placement, packaging, or user-interface details into the operation semantic promise, and that promise does not change Retained Data Continuity. It does not define the blocking permission or an availability report. Blocking remains the deployment decision stated in Operation Semantic Promise. An operation the deployment cannot support is an availability condition its owner already reports, and an owner's or administrator's choice to keep users from an operation is a permission deferred to the Policy Kernel. Neither case changes the operation definition.
 
 ## Invariants
 
@@ -156,6 +171,7 @@ This document does not create a compatibility promise for independently versione
 - Any change to a promoted aspect MUST update the owning document, matching schemas or fixtures, affected migrations, and the implementation tests that enforce the behavior.
 - A reader MUST ignore unknown additive fields, members, files, and entries outside the closed core and MUST NOT require a tolerant location before doing so. A writer SHOULD preserve those fields when it rewrites the same canonical record. An unknown core value MUST fail closed at admission and MUST NOT be coerced, defaulted, or passed on. An extension that changes how a core field is read, or that carries authority or security meaning, MUST be marked required by its owner, and a reader that does not understand it MUST fail closed rather than ignore or infer it. Ignored content from a producer outside the reader's trust boundary MUST NOT be persisted, forwarded, or displayed unless its owner defines that use.
 - Release-coupled consumers MUST fail with a typed incompatibility instead of guessing across an unknown contract identity.
+- Before the launch boundary, an operation semantic contract MUST remain `Release-coupled`. At the launch boundary, a settled operation semantic contract MUST become `Durable`, with Operation Semantic Promise as its evolution rule, and its transport, packaging, and user-interface projections MUST remain at their existing stability classes. After that boundary, a settled operation's semantic contract MUST change only by addition, deprecation, or retirement, an operation id MUST NOT be reused, and the freeze MUST cover input and output meaning, effects, and declared authority requirements. Retained Data Continuity MUST still hold for retained records and captured bindings, including when an operation changes before launch.
 
 ## Conformance Dimensions
 
@@ -210,7 +226,7 @@ Every fixture file that targets a versioned family MUST identify the version or 
 | Remove persisted durable shape | Requires a one-way migration or an explicit data-retirement decision with a migration report; a permanent legacy reader is not required. |
 | Change private implementation detail | Remains inside its owner and must continue to satisfy boundary tests. |
 
-Breaking changes to surfaces that ship with each release do not require deprecation windows or compatibility adapters unless a separately accepted contract explicitly creates that obligation. Retained data follows Retained Data Continuity.
+Breaking changes to surfaces that ship with each release do not require deprecation windows or compatibility adapters unless a separately accepted contract explicitly creates that obligation. Retained data follows Retained Data Continuity. A change to a settled operation's semantic contract after the launch boundary follows Operation Semantic Promise instead of an in-place reshape. Before that boundary, the release-coupled operation-shape row applies.
 
 ## Extension Namespaces
 
