@@ -132,4 +132,46 @@ describe('CapabilityCall route-lineage extension', () => {
       }).success
     ).toBe(false);
   });
+
+  it.each([
+    { requestedEffort: 'medium' },
+    { effectiveEffort: 'high' },
+    { effectiveEffortReason: 'model_without_reasoning' },
+    { effectiveEffortReason: 'provider_default_no_options' },
+    { effectiveEffortReason: 'provider_default_no_effort' },
+    {},
+  ])('retains each optional attempt effort fact: %j', (facts) => {
+    const parsed = CapabilityCallSchema.parse({
+      ...runningCapabilityCall(),
+      extensions: {
+        'openkit.gateway/routeLineage': {
+          ...lineage,
+          entries: [{ ...lineage.entries[0], ...facts }],
+        },
+      },
+    });
+    expect(parsed.extensions?.['openkit.gateway/routeLineage']?.entries).toEqual([
+      { ...lineage.entries[0], ...facts },
+    ]);
+  });
+
+  it.each([
+    { requestedEffort: 'turbo' },
+    { effectiveEffort: 'turbo' },
+    { requestedEffort: null },
+    { effectiveEffort: 7 },
+    { effectiveEffortReason: 'future_reason' },
+  ])('rejects unknown effort core values: %j', (facts) => {
+    expect(
+      CapabilityCallSchema.safeParse({
+        ...runningCapabilityCall(),
+        extensions: {
+          'openkit.gateway/routeLineage': {
+            ...lineage,
+            entries: [{ ...lineage.entries[0], ...facts }],
+          },
+        },
+      }).success
+    ).toBe(false);
+  });
 });

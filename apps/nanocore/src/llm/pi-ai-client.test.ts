@@ -85,6 +85,45 @@ function expectedAdapterCostTotal(
 }
 
 describe('PiAiGatewayClient', () => {
+  it.each([
+    false,
+    true,
+  ])('uses the same malformed metadata diagnostic on native and bridged Responses before Provider access; stream=%s', async (stream) => {
+    const faux = fauxProvider({
+      provider: 'openai-codex',
+      api: 'openai-responses',
+      models: [{ id: 'gpt-test', reasoning: true }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const client = new PiAiGatewayClient({ models });
+    for (const metadata of [null, [], false, 'not-an-object', 9]) {
+      for (const native of [false, true]) {
+        const config = providerConfig(
+          native ? { adapterId: 'openai-codex', subscriptionProviderId: 'openai-codex' } : {}
+        );
+        const request = {
+          model: 'gpt-test',
+          input: 'hello',
+          stream,
+          metadata,
+          ...(native
+            ? {}
+            : { tools: [{ type: 'function', name: 'declared', parameters: { type: 'object' } }] }),
+        };
+        const pending = stream
+          ? client.createResponsesStream(config, request)
+          : client.createResponses(config, request);
+        await expect(pending).rejects.toMatchObject({
+          code: 'unsupported_gateway_feature',
+          feature: 'pi-ai metadata',
+          status: 400,
+        });
+      }
+    }
+    expect(faux.state.callCount).toBe(0);
+  });
+
   it('observes admitted response deltas before native Responses defers public text', async () => {
     const faux = fauxProvider({
       api: 'openai-responses',

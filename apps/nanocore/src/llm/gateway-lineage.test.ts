@@ -187,7 +187,10 @@ describe('public durable logical Gateway lineage', () => {
       });
     }
   }
-  it('audit.read projects route explanation without Provider identity or raw extensions', async () => {
+  it.each([
+    { requestedEffort: 'medium', effectiveEffort: 'high' },
+    { requestedEffort: 'medium', effectiveEffortReason: 'model_without_reasoning' },
+  ])('audit.read projects route explanation without Provider identity, effort facts or raw extensions: %j', async (effortFacts) => {
     const f = fixture();
     f.primary.setResponses([fauxAssistantMessage('served')]);
     try {
@@ -197,15 +200,20 @@ describe('public durable logical Gateway lineage', () => {
         const row = db.sqlite.prepare('SELECT extensions_json FROM capability_calls').get() as {
           extensions_json: string;
         };
+        const extensions = JSON.parse(row.extensions_json);
+        Object.assign(extensions['openkit.gateway/routeLineage'].entries[0], effortFacts);
         db.sqlite.prepare('UPDATE capability_calls SET extensions_json = ?').run(
           JSON.stringify({
-            ...JSON.parse(row.extensions_json),
+            ...extensions,
             'future.example/evidence': { label: 'canonical-only-marker' },
           })
         );
       } finally {
         db.sqlite.close();
       }
+      expect(
+        f.read().calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries[0]
+      ).toMatchObject(effortFacts);
       const response = await f.app.request(`/api/app/workspaces/${f.workspaceId}/capability-usage`);
       expect(response.status, await response.clone().text()).toBe(200);
       const projection = await response.json();
@@ -223,6 +231,9 @@ describe('public durable logical Gateway lineage', () => {
         'accountSlotId',
         'usageRecordIds',
         'invalid_api_key',
+        'requestedEffort',
+        'effectiveEffort',
+        'effectiveEffortReason',
       ])
         expect(serialized).not.toContain(forbidden);
     } finally {

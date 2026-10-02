@@ -338,6 +338,38 @@
                           "type": "string",
                           "minLength": 1
                         }
+                      },
+                      "requestedEffort": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "minimal",
+                          "low",
+                          "medium",
+                          "high",
+                          "xhigh",
+                          "max"
+                        ]
+                      },
+                      "effectiveEffort": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "minimal",
+                          "low",
+                          "medium",
+                          "high",
+                          "xhigh",
+                          "max"
+                        ]
+                      },
+                      "effectiveEffortReason": {
+                        "type": "string",
+                        "enum": [
+                          "model_without_reasoning",
+                          "provider_default_no_options",
+                          "provider_default_no_effort"
+                        ]
                       }
                     },
                     "required": [

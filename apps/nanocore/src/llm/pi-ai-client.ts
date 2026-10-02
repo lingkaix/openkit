@@ -34,6 +34,7 @@ import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { zaiProvider } from '@earendil-works/pi-ai/providers/zai';
 import type { ProviderProfile } from '@openkit/config-schema';
+import { ReasoningEffortSchema } from '@openkit/protocol';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
   convertChatCompletionResponseToResponsesResponse,
@@ -161,6 +162,7 @@ function terminalPiAiFailure(message: AssistantMessage): Error | undefined {
  * @param options Existing provider options.
  * @param signal Owning request cancellation.
  * @param absoluteDeadline Original absolute Gateway deadline, shared across attempts and proofs.
+ * @param onProviderHandoff Optional private observer at stock entry after OpenKit admission/options.
  * @returns Stock model stream creation and an advisory terminal observer.
  */
 function prepareSubscriptionInference(
@@ -168,16 +170,25 @@ function prepareSubscriptionInference(
   model: Model<string>,
   options: StreamOptions & Record<string, unknown>,
   signal?: AbortSignal,
-  absoluteDeadline?: number
+  absoluteDeadline?: number,
+  onProviderHandoff?: () => void
 ) {
   const handle = subscriptionInferenceHandle(models);
   let presented: SubscriptionInferenceAuth | undefined;
   return {
     /** Uses stock lazy setup and transcript normalization, passing resolved auth directly to the selected Provider. */
     stream(context: Context, streamOptions = options) {
-      if (!handle) return models.stream(model, context, streamOptions);
+      const simple = usesSimpleEffort(model, streamOptions);
+      const { model: entryModel, options: entryOptions } = stockEffortRequest(model, streamOptions);
+      if (!handle) {
+        onProviderHandoff?.();
+        return simple
+          ? models.streamSimple(entryModel, context, entryOptions)
+          : models.stream(entryModel, context, entryOptions);
+      }
       const transcript = normalizeContext(context);
-      return lazyStream(model, async () => {
+      onProviderHandoff?.();
+      return lazyStream(entryModel, async () => {
         const resolved = await handle.resolveInferenceAuth(streamOptions.signal);
         if (!resolved)
           throw new ModelsError('auth', `Provider is not configured: ${model.provider}`);
@@ -194,22 +205,23 @@ function prepareSubscriptionInference(
             headers[name] = value;
           }
         }
-        const { transformHeaders, ...providerOptions } = streamOptions;
+        const { transformHeaders, ...providerOptions } = entryOptions;
         if (typeof transformHeaders === 'function') headers = await transformHeaders(headers ?? {});
         const provider = models.getProvider(model.provider);
         if (!provider) throw new ModelsError('provider', `Unknown provider: ${model.provider}`);
         const apiKey = streamOptions.apiKey ?? auth.apiKey;
-        return provider.stream(
-          auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
+        const requestOptions = {
+          ...providerOptions,
+          ...(apiKey === undefined ? {} : { apiKey }),
+          ...(headers === undefined ? {} : { headers }),
+          ...(resolved.env || streamOptions.env
+            ? { env: { ...resolved.env, ...streamOptions.env } }
+            : {}),
+        };
+        return provider[simple ? 'streamSimple' : 'stream'](
+          auth.baseUrl ? { ...entryModel, baseUrl: auth.baseUrl } : entryModel,
           transcript,
-          {
-            ...providerOptions,
-            ...(apiKey === undefined ? {} : { apiKey }),
-            ...(headers === undefined ? {} : { headers }),
-            ...(resolved.env || streamOptions.env
-              ? { env: { ...resolved.env, ...streamOptions.env } }
-              : {}),
-          }
+          requestOptions
         );
       });
     },
@@ -248,6 +260,55 @@ function prepareSubscriptionInference(
 }
 
 /**
+ * Uses canonical-level mapping only when the selected API lacks a proven native effort serializer.
+ * Native OpenAI entries preserve caller caps without the simple entry's context reserve or cap default.
+ * @param model Selected stock model whose API owns option serialization.
+ * @param options Constructed options; omitted effort keeps the existing native entry.
+ * @returns Whether this attempt needs stock simple mapping to deliver effort.
+ */
+function usesSimpleEffort(
+  model: Model<string>,
+  options: StreamOptions & Record<string, unknown>
+): boolean {
+  return (
+    options.reasoningEffort !== undefined &&
+    !['openai-completions', 'openai-responses', 'openai-codex-responses'].includes(model.api)
+  );
+}
+
+/**
+ * Constructs the attempt's stock model/options before handoff using stock's disabled representation.
+ * Native Completions omits disabled effort and lets stock read `thinkingLevelMap.off`; only an undefined
+ * mapping gains the canonical wire default on an attempt-local copy. String/null mappings remain stock-owned.
+ * Canonical attempt facts remain `none`; registered models and shared catalogs are never mutated.
+ * @param model Selected stock model whose API owns option serialization.
+ * @param options Existing options, preserved unchanged when no conversion is needed.
+ * @returns Attempt model/options with native off mapping or existing simple canonical reasoning.
+ */
+function stockEffortRequest(
+  model: Model<string>,
+  options: StreamOptions & Record<string, unknown>
+): { model: Model<string>; options: StreamOptions & Record<string, unknown> } {
+  const { reasoningEffort, ...rest } = options;
+  if (usesSimpleEffort(model, options)) {
+    return {
+      model,
+      options: { ...rest, reasoning: reasoningEffort === 'none' ? undefined : reasoningEffort },
+    };
+  }
+  if (model.api === 'openai-completions' && reasoningEffort === 'none') {
+    return {
+      model:
+        model.thinkingLevelMap?.off === undefined
+          ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: 'none' } }
+          : model,
+      options: rest,
+    };
+  }
+  return { model, options };
+}
+
+/**
  * Consumes one model stream incrementally even when the caller requested a final response.
  * Classifies terminal failure before forwarding usage or invoking terminal observers.
  */
@@ -264,14 +325,22 @@ async function completeObservedModel(
     model,
     options,
     transport.signal,
-    transport.deadline
+    transport.deadline,
+    transport.onProviderHandoff
   );
   if (!transport.onModelEvent) {
     let response: AssistantMessage;
     try {
-      response = subscriptionInferenceHandle(models)
-        ? await inference.stream(context).result()
-        : await models.complete(model, context, options);
+      if (subscriptionInferenceHandle(models)) {
+        response = await inference.stream(context).result();
+      } else {
+        const simple = usesSimpleEffort(model, options);
+        const { model: entryModel, options: entryOptions } = stockEffortRequest(model, options);
+        transport.onProviderHandoff?.();
+        response = simple
+          ? await models.completeSimple(entryModel, context, entryOptions)
+          : await models.complete(entryModel, context, entryOptions);
+      }
     } catch (error) {
       const failure = attachPiAiFailure(error) as Error;
       await inference.observe(failure);
@@ -467,7 +536,8 @@ export class PiAiGatewayClient {
       model,
       this.toStreamOptions(provider, request, { ...transport, signal }),
       signal,
-      transport.deadline
+      transport.deadline,
+      transport.onProviderHandoff
     );
     const events = inference.stream(this.toContext(request, model));
     const iterator = inference.iterator(events[Symbol.asyncIterator]());
@@ -615,7 +685,8 @@ export class PiAiGatewayClient {
           ? this.toCodexResponsesOptions(request, model, { ...transport, signal }, additionalTools)
           : this.toBridgedResponsesOptions(provider, request, { ...transport, signal }),
         signal,
-        transport.deadline
+        transport.deadline,
+        transport.onProviderHandoff
       );
       const events = inference.stream(
         toPiResponsesContext(
@@ -1008,6 +1079,9 @@ export class PiAiGatewayClient {
     }
     if (metadata) {
       options.metadata = metadata;
+    }
+    if (request.reasoning_effort !== undefined) {
+      options.reasoningEffort = request.reasoning_effort;
     }
     if (typeof request.prompt_cache_key === 'string') {
       options.sessionId = request.prompt_cache_key;
@@ -1586,7 +1660,7 @@ const CODEX_RESPONSES_REQUEST_FIELDS = new Set([
 ]);
 
 /**
- * Rejects native Codex request fields that stock pi-ai cannot preserve.
+ * Validates Gateway-only metadata, excluding it from native field admission, then rejects fields stock pi-ai cannot preserve.
  *
  * @param request Responses request admitted for Codex dispatch.
  * @param allowStream Whether this call owns a streaming response.
@@ -1596,7 +1670,12 @@ export function assertCodexResponsesRequestAdmission(
   request: OpenAICompatibleResponsesRequest,
   allowStream: boolean
 ): ResponsesAdditionalTools | undefined {
-  for (const key of Object.keys(request)) {
+  // Both dispatcher preflight and client admission use this boundary; native options never forward metadata.
+  const { metadata, ...nativeRequest } = request;
+  if (metadata !== undefined && !readRecord(metadata)) {
+    throw new GatewayUnsupportedFeatureError('pi-ai metadata');
+  }
+  for (const key of Object.keys(nativeRequest)) {
     if (!CODEX_RESPONSES_REQUEST_FIELDS.has(key)) {
       throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${key}`);
     }
@@ -1631,7 +1710,6 @@ export function assertCodexResponsesRequestAdmission(
     throw new GatewayUnsupportedFeatureError('pi-ai Responses text');
   }
   const reasoning = readRecord(request.reasoning);
-  const efforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
   const summaries = new Set(['auto', 'concise', 'detailed', 'off', 'on']);
   if (
     request.reasoning !== undefined &&
@@ -1641,7 +1719,8 @@ export function assertCodexResponsesRequestAdmission(
         (key) => key !== 'context' && key !== 'effort' && key !== 'summary'
       ) ||
       (reasoning.context !== undefined && reasoning.context !== 'all_turns') ||
-      (reasoning.effort !== undefined && !efforts.has(reasoning.effort as string)) ||
+      (reasoning.effort !== undefined &&
+        !ReasoningEffortSchema.safeParse(reasoning.effort).success) ||
       (reasoning.summary !== undefined &&
         reasoning.summary !== null &&
         !summaries.has(reasoning.summary as string)))
@@ -2040,10 +2119,7 @@ function admitPiResponsesNativeRequest(
     }
     const { bridgedFunctionTools, bridgeNames } =
       bridgedFunctionToolsFromAdditionalTools(declarations);
-    const { metadata, temperature: _temperature, ...nativeRequest } = request;
-    if (metadata !== undefined && !readRecord(metadata)) {
-      throw new GatewayUnsupportedFeatureError('pi-ai metadata');
-    }
+    const { temperature: _temperature, ...nativeRequest } = request;
     assertCodexResponsesRequestAdmission(nativeRequest, allowStream);
     assertResponsesToolHistoryDeclarations(request.input, declarations);
     return { additionalTools: undefined, bridgedFunctionTools, bridgeNames };

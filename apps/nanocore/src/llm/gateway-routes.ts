@@ -6,7 +6,13 @@ import {
   resolveProviderSubscriptionFamily,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
 } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import {
+  type ActorRef,
+  type GatewayRouteLineageEntry,
+  REASONING_EFFORT_LEVELS,
+  type ReasoningEffort,
+  ReasoningEffortSchema,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 
@@ -36,6 +42,7 @@ import {
 import { createWorkerRuntimeOriginRef } from '../runtime/worker-runtime-provenance.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
 import {
   executeGatewayPlan,
@@ -55,6 +62,7 @@ import {
   resolveEffectiveModelMetadata,
   resolveLogicalModel,
   resolveLogicalModelCatalog,
+  resolveProviderModelDiagnostic,
 } from './logical-models.js';
 import type { ModelCaptureContext } from './model-capture.js';
 import {
@@ -96,6 +104,7 @@ const GatewayChatCompletionRequestSchema = z
       )
       .min(1),
     stream: z.boolean().optional(),
+    reasoning_effort: ReasoningEffortSchema.optional(),
   })
   .passthrough();
 const GatewayResponsesRequestSchema = z
@@ -103,6 +112,11 @@ const GatewayResponsesRequestSchema = z
     model: z.string().min(1),
     input: z.union([z.string(), z.array(z.unknown())]),
     stream: z.boolean().optional(),
+    reasoning: z
+      .object({ effort: ReasoningEffortSchema.optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 const WORKER_INFERENCE_BODY_LIMIT_BYTES = 16 * 1024 * 1024;
@@ -237,6 +251,85 @@ function captureForCall(
     capabilityCallId: call.call.id,
     runtimeOriginRef: lineage.runtimeOriginRef ?? null,
   };
+}
+
+/** Reads only the exact persisted admission; current Agent defaults never supply bound inference effort. */
+function recordedEffortForCall(call: DurableLlmGatewayCall | null): ReasoningEffort | undefined {
+  const lineage = call?.call.context;
+  if (!call || !lineage?.threadId || !lineage.turnId) return undefined;
+  return readWorkObservationTurnBinding(call.workspaceDb, {
+    threadId: lineage.threadId,
+    turnId: lineage.turnId,
+  }).turn.reasoningEffort;
+}
+
+/** Replaces only the endpoint's effort control, preserving other admitted reasoning fields and omission. */
+function withGatewayEffort<T extends Record<string, unknown>>(
+  request: T,
+  endpoint: WorkerInferenceEndpoint,
+  effectiveEffort: ReasoningEffort | undefined
+): T {
+  if (
+    effectiveEffort === undefined &&
+    (endpoint === 'chat_completions'
+      ? request.reasoning_effort === undefined
+      : !request.reasoning ||
+        typeof request.reasoning !== 'object' ||
+        !('effort' in request.reasoning))
+  )
+    return request;
+  const output = { ...request };
+  if (endpoint === 'chat_completions') {
+    delete output.reasoning_effort;
+    if (effectiveEffort !== undefined) Object.assign(output, { reasoning_effort: effectiveEffort });
+  } else {
+    const reasoning = request.reasoning;
+    if (reasoning && typeof reasoning === 'object' && !Array.isArray(reasoning)) {
+      const rest = { ...reasoning } as Record<string, unknown>;
+      delete rest.effort;
+      if (effectiveEffort !== undefined) rest.effort = effectiveEffort;
+      if (Object.keys(rest).length) Object.assign(output, { reasoning: rest });
+      else delete output.reasoning;
+    } else if (effectiveEffort !== undefined)
+      Object.assign(output, { reasoning: { effort: effectiveEffort } });
+  }
+  return output;
+}
+
+/** Fits against the existing resolver's member levels; no control means a truthful Provider default. */
+function fitGatewayEffort(
+  provider: ResolvedLLMProviderConfig,
+  model: string,
+  effort: { requested?: ReasoningEffort; recorded?: ReasoningEffort }
+): Pick<
+  Extract<GatewayRouteLineageEntry, { kind: 'attempt' }>,
+  'requestedEffort' | 'effectiveEffort' | 'effectiveEffortReason'
+> {
+  const metadata = resolveProviderModelDiagnostic(
+    {
+      id: provider.id,
+      kind: 'direct',
+      displayName: provider.displayName,
+      models: [...provider.models],
+      ...(provider.vendor ? { vendor: provider.vendor } : {}),
+      ...(provider.modelMetadata ? { modelMetadata: provider.modelMetadata } : {}),
+    },
+    model
+  );
+  const chosen = effort.requested ?? effort.recorded;
+  const requested = effort.requested === undefined ? {} : { requestedEffort: effort.requested };
+  if (metadata.reasoning.value !== true)
+    return { ...requested, effectiveEffortReason: 'model_without_reasoning' };
+  const levels = metadata.reasoningEffortLevels.value;
+  if (!levels?.length)
+    return { ...requested, effectiveEffortReason: 'provider_default_no_options' };
+  if (chosen === undefined)
+    return { ...requested, effectiveEffortReason: 'provider_default_no_effort' };
+  const effectiveEffort =
+    levels.find(
+      (level) => REASONING_EFFORT_LEVELS.indexOf(level) >= REASONING_EFFORT_LEVELS.indexOf(chosen)
+    ) ?? levels[levels.length - 1]!;
+  return { ...requested, effectiveEffort };
 }
 
 /**
@@ -1705,8 +1798,17 @@ export function registerWorkerInferenceRoutes({
             503
           );
         }
+        const requestedEffort =
+          endpoint === 'chat_completions'
+            ? (input as z.infer<typeof GatewayChatCompletionRequestSchema>).reasoning_effort
+            : (input as z.infer<typeof GatewayResponsesRequestSchema>).reasoning?.effort;
+        const recordedEffort = environmentPackage.llm.reasoningEffort;
         const result = await dispatchLogicalModel<Response>({
           ledger: durableCall,
+          reasoningEffort: {
+            ...(requestedEffort === undefined ? {} : { requested: requestedEffort }),
+            ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
+          },
           logicalModel,
           requiredCapabilities: endpoint === 'responses' ? ['responses'] : ['chat-completions'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
@@ -1719,6 +1821,7 @@ export function registerWorkerInferenceRoutes({
             corr,
             attempt,
             execution,
+            effectiveEffort,
           }) => {
             const cache = resolveWorkerPromptCacheKey({
               accountSlotId: provider.accountSlotId ?? null,
@@ -1732,7 +1835,11 @@ export function registerWorkerInferenceRoutes({
               subscriptionProviderId: provider.subscriptionProviderId ?? null,
               workspaceId: environmentPackage.scope.workspaceId,
             });
-            const requestBody = { ...sanitized, prompt_cache_key: cache.promptCacheKey };
+            const requestBody = withGatewayEffort(
+              { ...sanitized, prompt_cache_key: cache.promptCacheKey },
+              endpoint,
+              effectiveEffort
+            );
             durableCall.workspaceDb.sqlite
               .prepare(
                 'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'
@@ -1760,6 +1867,9 @@ export function registerWorkerInferenceRoutes({
               ...(subscriptionModels ? { models: subscriptionModels } : {}),
               transport: {
                 deadline: execution.deadline,
+                ...(execution.onProviderHandoff
+                  ? { onProviderHandoff: execution.onProviderHandoff }
+                  : {}),
                 ...(requestTurnState ? { codexTurnState: requestTurnState } : {}),
                 onCodexTurnState: (value: string) => {
                   responseTurnState = value;
@@ -2011,6 +2121,8 @@ export async function dispatchLogicalModel<T>(input: {
   logicalModel: ResolvedLogicalModel;
   signal: AbortSignal;
   requiredCapabilities?: readonly string[];
+  /** Native request evidence and immutable bound-Turn fallback; absence leaves internal producers unchanged. */
+  reasoningEffort?: { requested?: ReasoningEffort; recorded?: ReasoningEffort };
   clock?: GatewayClock;
   resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
@@ -2021,6 +2133,8 @@ export async function dispatchLogicalModel<T>(input: {
     corr: string;
     attempt: number;
     execution: GatewayAttemptContext;
+    /** Member-fitted control; absent when dropped or left to the Provider default. */
+    effectiveEffort?: ReasoningEffort;
   }) => Promise<T>;
 }): Promise<T> {
   const corr = randomUUID();
@@ -2170,6 +2284,9 @@ export async function dispatchLogicalModel<T>(input: {
         }
         throw error;
       }
+      const effort = input.reasoningEffort
+        ? fitGatewayEffort(provider, route.providerModel, input.reasoningEffort)
+        : {};
       const entry: Extract<
         import('@openkit/protocol').GatewayRouteLineageEntry,
         { kind: 'attempt' }
@@ -2183,6 +2300,9 @@ export async function dispatchLogicalModel<T>(input: {
         retryIndex: execution.retryIndex,
         outputBegan: false,
         terminalResult: 'unknown',
+        ...(effort.requestedEffort === undefined
+          ? {}
+          : { requestedEffort: effort.requestedEffort }),
       };
       const entryIndex = writeEntry(entry);
       const retain = () => {
@@ -2191,6 +2311,11 @@ export async function dispatchLogicalModel<T>(input: {
       };
       const observedExecution: GatewayAttemptContext = {
         ...execution,
+        onProviderHandoff: () => {
+          if (!input.reasoningEffort) return;
+          Object.assign(entry, effort);
+          retain();
+        },
         get outputBegan() {
           return execution.outputBegan;
         },
@@ -2223,6 +2348,9 @@ export async function dispatchLogicalModel<T>(input: {
           corr,
           attempt: execution.attemptOrder,
           execution: observedExecution,
+          ...(effort.effectiveEffort === undefined
+            ? {}
+            : { effectiveEffort: effort.effectiveEffort }),
         });
         if (!execution.streamPrepared) {
           execution.commit();
@@ -2357,6 +2485,9 @@ export function registerLlmGatewayRoutes({
           owned_by: 'openkit',
           display_name: model.displayName,
           capabilities: model.capabilities,
+          ...(model.reasoningEffortLevels === undefined
+            ? {}
+            : { reasoningEffortLevels: model.reasoningEffortLevels }),
         }));
       return c.json({ object: 'list', data });
     } catch {
@@ -2433,8 +2564,13 @@ export function registerLlmGatewayRoutes({
         request,
       });
       try {
+        const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
+          reasoningEffort: {
+            ...(input.reasoning_effort === undefined ? {} : { requested: input.reasoning_effort }),
+            ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
+          },
           logicalModel,
           requiredCapabilities: ['chat-completions'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
@@ -2447,11 +2583,13 @@ export function registerLlmGatewayRoutes({
             corr,
             attempt,
             execution,
+            effectiveEffort,
           }) => {
+            const fittedRequest = withGatewayEffort(request, 'chat_completions', effectiveEffort);
             if (input.stream) {
               const stream = await llmGatewayDispatcher.createChatCompletionStream(
                 provider,
-                { ...request, model: providerModel, stream: true },
+                { ...fittedRequest, model: providerModel, stream: true },
                 {
                   capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
@@ -2464,7 +2602,13 @@ export function registerLlmGatewayRoutes({
                       })
                     ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: { signal: c.req.raw.signal, deadline: execution.deadline },
+                  transport: {
+                    signal: c.req.raw.signal,
+                    deadline: execution.deadline,
+                    ...(execution.onProviderHandoff
+                      ? { onProviderHandoff: execution.onProviderHandoff }
+                      : {}),
+                  },
                 }
               );
               return new Response(
@@ -2486,7 +2630,7 @@ export function registerLlmGatewayRoutes({
             const completion: OpenAICompatibleChatCompletionResponse =
               await llmGatewayDispatcher.createChatCompletion(
                 provider,
-                { ...request, model: providerModel, stream: false },
+                { ...fittedRequest, model: providerModel, stream: false },
                 {
                   capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
@@ -2499,7 +2643,13 @@ export function registerLlmGatewayRoutes({
                       })
                     ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: { signal: c.req.raw.signal, deadline: execution.deadline },
+                  transport: {
+                    signal: c.req.raw.signal,
+                    deadline: execution.deadline,
+                    ...(execution.onProviderHandoff
+                      ? { onProviderHandoff: execution.onProviderHandoff }
+                      : {}),
+                  },
                 }
               );
             return c.json({ ...completion, model: logicalModel.id });
@@ -2582,8 +2732,15 @@ export function registerLlmGatewayRoutes({
         request,
       });
       try {
+        const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
+          reasoningEffort: {
+            ...(input.reasoning?.effort === undefined
+              ? {}
+              : { requested: input.reasoning?.effort }),
+            ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
+          },
           logicalModel,
           requiredCapabilities: ['responses'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
@@ -2596,11 +2753,13 @@ export function registerLlmGatewayRoutes({
             corr,
             attempt,
             execution,
+            effectiveEffort,
           }) => {
+            const fittedRequest = withGatewayEffort(request, 'responses', effectiveEffort);
             if (input.stream) {
               const stream = await llmGatewayDispatcher.createResponsesStream(
                 provider,
-                { ...request, model: providerModel, stream: true },
+                { ...fittedRequest, model: providerModel, stream: true },
                 {
                   capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
@@ -2613,7 +2772,13 @@ export function registerLlmGatewayRoutes({
                       })
                     ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: { signal: c.req.raw.signal, deadline: execution.deadline },
+                  transport: {
+                    signal: c.req.raw.signal,
+                    deadline: execution.deadline,
+                    ...(execution.onProviderHandoff
+                      ? { onProviderHandoff: execution.onProviderHandoff }
+                      : {}),
+                  },
                 }
               );
               return new Response(
@@ -2635,7 +2800,7 @@ export function registerLlmGatewayRoutes({
             const response: OpenAICompatibleResponsesResponse =
               await llmGatewayDispatcher.createResponses(
                 provider,
-                { ...request, model: providerModel },
+                { ...fittedRequest, model: providerModel },
                 {
                   capture: captureForCall(durableCall, corr, attempt),
                   onUsage: (usage) =>
@@ -2648,7 +2813,13 @@ export function registerLlmGatewayRoutes({
                       })
                     ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: { signal: c.req.raw.signal, deadline: execution.deadline },
+                  transport: {
+                    signal: c.req.raw.signal,
+                    deadline: execution.deadline,
+                    ...(execution.onProviderHandoff
+                      ? { onProviderHandoff: execution.onProviderHandoff }
+                      : {}),
+                  },
                 }
               );
             return c.json({ ...response, model: logicalModel.id });

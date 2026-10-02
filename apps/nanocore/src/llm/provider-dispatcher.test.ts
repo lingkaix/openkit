@@ -658,7 +658,7 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
     } as Partial<ResolvedLLMProviderConfig>);
   }
 
-  it('rejects authored metadata on the Codex Chat Completions bridge before the adapter', async () => {
+  it('rejects malformed metadata on the Codex Chat Completions bridge before Provider access', async () => {
     const { faux, pairModels } = codexPair();
     const dispatcher = new LLMGatewayProviderDispatcher({
       piAiClient: new PiAiGatewayClient(),
@@ -673,9 +673,7 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
             { role: 'system', content: 'You are the OpenKit Assistant.' },
             { role: 'user', content: 'Hello' },
           ],
-          metadata: {
-            openkit: { sessionId: 'chat-mode:ws_probe:th_probe', workspaceId: 'ws_probe' },
-          },
+          metadata: [],
         },
         {
           models: pairModels,
@@ -688,12 +686,15 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
       )
     ).rejects.toMatchObject({
       code: 'unsupported_gateway_feature',
-      feature: 'pi-ai Responses metadata',
+      feature: 'pi-ai metadata',
     });
     expect(faux.state.callCount).toBe(0);
   });
 
-  it('admits a scope-only Codex Chat Completions bridge through real Responses admission', async () => {
+  it.each([
+    false,
+    true,
+  ])('admits a scoped Codex Chat Completions bridge through real Responses admission; metadata=%s', async (withMetadata) => {
     const { faux, pairModels } = codexPair();
     const dispatcher = new LLMGatewayProviderDispatcher({
       piAiClient: new PiAiGatewayClient(),
@@ -707,6 +708,13 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
           { role: 'system', content: 'You are the OpenKit Assistant.' },
           { role: 'user', content: 'Hello' },
         ],
+        ...(withMetadata
+          ? {
+              metadata: {
+                openkit: { sessionId: 'chat-mode:ws_probe:th_probe', workspaceId: 'ws_probe' },
+              },
+            }
+          : {}),
       },
       {
         models: pairModels,

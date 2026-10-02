@@ -46,6 +46,8 @@ export interface LLMGatewayTransportContext {
   readonly deadline?: number;
   /** Private observer for admitted semantic events, before public response conversion. */
   readonly onModelEvent?: (event: ModelSemanticEvent) => void;
+  /** Private observer after OpenKit admission/options, immediately before handing the attempt to stock pi-ai. */
+  readonly onProviderHandoff?: () => void;
   /** Optional caller signal used to abort provider work. */
   readonly signal?: AbortSignal;
   /** Opaque Codex turn state replayed to the next provider request. */

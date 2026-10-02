@@ -115,6 +115,8 @@ export interface GatewayAttemptContext {
   readonly attemptOrder: number;
   readonly retryIndex: number;
   readonly selectionReason: string;
+  /** Records optional effort facts at stock-adapter handoff after OpenKit admission, independently of output or commit. */
+  readonly onProviderHandoff?: () => void;
   /** True only after outward model content or a validated non-stream result is released. */
   readonly outputBegan: boolean;
   /** True once stream preparation succeeded; its terminal result arrives during consumption. */

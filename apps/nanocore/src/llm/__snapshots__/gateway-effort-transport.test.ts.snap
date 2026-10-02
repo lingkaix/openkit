@@ -1,0 +1,25 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`stock serialized canonical effort delivery > OpenAI Responses omitted effort preserves native serialization in 'chat' stream=false 1`] = `"{"model":"gpt-5.1","input":[{"role":"user","content":[{"type":"input_text","text":"Hello"}]}],"stream":true,"store":false,"max_output_tokens":1000,"temperature":0.5,"reasoning":{"effort":"none"}}"`;
+
+exports[`stock serialized canonical effort delivery > OpenAI Responses omitted effort preserves native serialization in 'chat' stream=true 1`] = `"{"model":"gpt-5.1","input":[{"role":"user","content":[{"type":"input_text","text":"Hello"}]}],"stream":true,"store":false,"max_output_tokens":1000,"temperature":0.5,"reasoning":{"effort":"none"}}"`;
+
+exports[`stock serialized canonical effort delivery > OpenAI Responses omitted effort preserves native serialization in 'responses' stream=false 1`] = `"{"model":"gpt-5.1","input":[{"role":"user","content":[{"type":"input_text","text":"Hello"}]}],"stream":true,"store":false,"max_output_tokens":1000,"temperature":0.5,"reasoning":{"effort":"none"}}"`;
+
+exports[`stock serialized canonical effort delivery > OpenAI Responses omitted effort preserves native serialization in 'responses' stream=true 1`] = `"{"model":"gpt-5.1","input":[{"role":"user","content":[{"type":"input_text","text":"Hello"}]}],"stream":true,"store":false,"max_output_tokens":1000,"temperature":0.5,"reasoning":{"effort":"none"}}"`;
+
+exports[`stock serialized canonical effort delivery > adaptive Anthropic omitted effort preserves native serialization in 'chat' stream=false 1`] = `"{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Hello"}],"max_tokens":1000,"stream":true,"temperature":0.5}"`;
+
+exports[`stock serialized canonical effort delivery > adaptive Anthropic omitted effort preserves native serialization in 'chat' stream=true 1`] = `"{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Hello"}],"max_tokens":1000,"stream":true,"temperature":0.5}"`;
+
+exports[`stock serialized canonical effort delivery > adaptive Anthropic omitted effort preserves native serialization in 'responses' stream=false 1`] = `"{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Hello"}],"max_tokens":1000,"stream":true,"temperature":0.5}"`;
+
+exports[`stock serialized canonical effort delivery > adaptive Anthropic omitted effort preserves native serialization in 'responses' stream=true 1`] = `"{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Hello"}],"max_tokens":1000,"stream":true,"temperature":0.5}"`;
+
+exports[`stock serialized canonical effort delivery > budget Anthropic omitted effort preserves native serialization in 'chat' stream=false 1`] = `"{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}],"max_tokens":1000,"stream":true,"temperature":0.5}"`;
+
+exports[`stock serialized canonical effort delivery > budget Anthropic omitted effort preserves native serialization in 'chat' stream=true 1`] = `"{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}],"max_tokens":1000,"stream":true,"temperature":0.5}"`;
+
+exports[`stock serialized canonical effort delivery > budget Anthropic omitted effort preserves native serialization in 'responses' stream=false 1`] = `"{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}],"max_tokens":1000,"stream":true,"temperature":0.5}"`;
+
+exports[`stock serialized canonical effort delivery > budget Anthropic omitted effort preserves native serialization in 'responses' stream=true 1`] = `"{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}],"max_tokens":1000,"stream":true,"temperature":0.5}"`;

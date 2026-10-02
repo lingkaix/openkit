@@ -10,6 +10,7 @@ import {
   TurnIdSchema,
   WorkspaceIdSchema,
 } from '../common/ids.js';
+import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
 import { TimestampSchema } from '../common/timestamps.js';
 
 /**
@@ -124,6 +125,18 @@ export const GatewayRouteLineageEntrySchema = z.discriminatedUnion('kind', [
       'refused',
     ]),
     usageRecordIds: z.array(z.string().min(1)).optional(),
+    /** Effort actually carried by the native request, independently of a recorded Turn fallback. */
+    requestedEffort: ReasoningEffortSchema.optional(),
+    /** Effort sent to this serving member after Gateway fitting. */
+    effectiveEffort: ReasoningEffortSchema.optional(),
+    /** Closed implementation reasons for dropping the control or using the Provider default. */
+    effectiveEffortReason: z
+      .enum([
+        'model_without_reasoning',
+        'provider_default_no_options',
+        'provider_default_no_effort',
+      ])
+      .optional(),
   }),
 ]);
 /** Optional call-owned route evidence; unknown namespaces and additive fields are ignored. */

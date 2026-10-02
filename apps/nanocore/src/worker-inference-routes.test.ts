@@ -2,9 +2,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
+import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -24,9 +26,10 @@ import {
   type OpenAICompatibleResponsesRequest,
   type OpenAICompatibleResponsesResponse,
 } from './llm/openai-compatible-client.js';
+import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { attachPiAiFailure } from './llm/pi-ai-failure.js';
-import type {
-  LLMGatewayDispatchContext,
+import {
+  type LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
 } from './llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
@@ -301,6 +304,8 @@ function createWorkerInferenceRouteFixture(
     readonly persistedTurn?: boolean;
     readonly adminBearer?: boolean;
     readonly autoFailover?: boolean;
+    readonly reasoningEffort?: ReasoningEffort;
+    readonly dispatcher?: LLMGatewayProviderDispatcher;
   } = {}
 ): WorkerInferenceRouteFixture {
   const providerProfileId =
@@ -325,10 +330,17 @@ function createWorkerInferenceRouteFixture(
     });
   }
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Call worker inference', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const turn = store.createTurn(
+    'ws_demo',
+    'th_demo',
+    'Call worker inference',
+    {
+      kind: 'user',
+      id: 'user_local',
+    },
+    null,
+    options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }
+  );
   if (options.persistedTurn && appCoreDb) {
     const persisted = new FsStore({ dataRoot: appCoreDb.dataRoot });
     persisted.importWorkspaceSnapshot({
@@ -492,7 +504,19 @@ function createWorkerInferenceRouteFixture(
             } as never,
           }
         : {}),
-      llmGatewayDispatcher: dispatcher as unknown as LLMGatewayProviderDispatcher,
+      llmGatewayDispatcher:
+        options.dispatcher ?? (dispatcher as unknown as LLMGatewayProviderDispatcher),
+      ...(options.dispatcher ? { providerCredentialResolver: () => 'synthetic-secret' } : {}),
+      ...(options.dispatcher
+        ? {
+            agentManifests: [
+              {
+                ...agentSetup.manifest,
+                models: { ...agentSetup.manifest.models, reasoningEffort: 'max' as const },
+              },
+            ],
+          }
+        : {}),
       mode: 'server',
       openKitConfig: {},
       providerRegistry: new ProviderRegistry([
@@ -523,6 +547,7 @@ function createWorkerInferenceRouteFixture(
                     displayName: 'Agent OpenRouter',
                     id: providerProfileId,
                     kind: 'gateway' as const,
+                    ...(options.dispatcher ? { secretRef: 'env:SYNTHETIC_EFFORT_KEY' } : {}),
                     models: [providerModel],
                     vendor: 'openrouter' as const,
                   },
@@ -2462,4 +2487,91 @@ describe('slice 1d round 2 terminal frame closeout', () => {
         db.sqlite.close();
       }
     });
+});
+
+describe('slice 3c Worker native effort and immutable package', () => {
+  it.each([
+    'responses',
+    'chat/completions',
+  ] as const)('refuses unknown %s effort without an effect', async (endpoint) => {
+    const f = createWorkerInferenceRouteFixture();
+    for (const effort of ['turbo', null, 4, {}]) {
+      const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: WORKER_LOGICAL_MODEL_ID,
+          ...(endpoint === 'responses'
+            ? { input: 'hello', reasoning: { effort } }
+            : { messages: [{ role: 'user', content: 'hello' }], reasoning_effort: effort }),
+        }),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(f.dispatcher.responseCalls).toHaveLength(0);
+    expect(f.dispatcher.chatCalls).toHaveLength(0);
+    expect(readWorkerInferenceCapabilityCalls(f)).toEqual([]);
+  });
+
+  it.each([
+    ['high', 'low', 'low'],
+    ['high', undefined, 'high'],
+    [undefined, 'low', 'low'],
+    [undefined, undefined, undefined],
+  ] as const)('request %s/%s uses %s through stock Models', async (recorded, requested, expected) => {
+    const faux = fauxProvider({
+      provider: 'openrouter',
+      models: [{ id: WORKER_PROVIDER_MODEL, reasoning: true }],
+    });
+    const received: unknown[] = [];
+    faux.setResponses([
+      (_context, options) => {
+        // Faux forwarding evidence; stock serialized bodies are covered in gateway-effort-transport.test.ts.
+        received.push(
+          (options as Record<string, unknown>).reasoning ??
+            (options as Record<string, unknown>).reasoningEffort
+        );
+        return fauxAssistantMessage('worker effort answer');
+      },
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const dispatcher = new LLMGatewayProviderDispatcher({
+      piAiClient: new PiAiGatewayClient({ models }),
+    });
+    const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      persistedTurn: true,
+      dispatcher,
+      ...(recorded ? { reasoningEffort: recorded } : {}),
+    });
+    const admittedPackage = structuredClone(f.environmentPackage);
+    expect(admittedPackage.llm.reasoningEffort).toBe(recorded);
+    const dispatched = vi.spyOn(dispatcher, 'createResponses');
+    const response = await postWorkerResponses(f, {
+      model: WORKER_LOGICAL_MODEL_ID,
+      input: 'hello',
+      ...(requested === undefined ? {} : { reasoning: { effort: requested } }),
+    });
+    expect(response.status, await response.text()).toBe(200);
+    const request = dispatched.mock.calls[0]?.[1];
+    if (expected === undefined) expect(request).not.toHaveProperty('reasoning');
+    else expect(request).toMatchObject({ reasoning: { effort: expected } });
+    expect(received).toEqual([expected]);
+    expect(f.environmentPackage).toEqual(admittedPackage);
+    const db = openWorkspaceDb(f.coreDb!.dataRoot, 'ws_demo');
+    applyScopedMigrations(db);
+    try {
+      const entries = listWorkspaceCapabilityCalls(db, 'ws_demo')[0]?.extensions?.[
+        'openkit.gateway/routeLineage'
+      ]?.entries;
+      expect(entries).toHaveLength(1);
+      if (requested === undefined) expect(entries?.[0]).not.toHaveProperty('requestedEffort');
+      else expect(entries?.[0]).toHaveProperty('requestedEffort', requested);
+      if (expected === undefined)
+        expect(entries?.[0]).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
+      else expect(entries?.[0]).toHaveProperty('effectiveEffort', expected);
+    } finally {
+      db.sqlite.close();
+    }
+  });
 });
