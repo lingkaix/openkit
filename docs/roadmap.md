@@ -9,6 +9,16 @@ The engineer reset the immediate priority on 2026-09-28: rapidly validate, fix, 
 
 Keep every R ID and its complete outcome. An unchecked item can be partly implemented or awaiting acceptance; it is not an instruction to rebuild it. Check an item only when its whole supported product outcome, proportionate regression and real-use evidence, and owning documentation agree. A verified slice does not close a broader parent outcome. Group related outcomes into one material development batch and PR where they share owners and integration seams; do not require one Task, plan, deployment or full L6 run per R ID. Preserve each outcome's acceptance obligations within the batch. Newly accepted scope adds explicit items rather than silently expanding existing ones.
 
+## Current Execution Priority — 2026-10-02
+
+The engineer set the first-release scope of the interface redesign on 2026-10-02, recorded in [first release interface scope](decisions/20261002-first_release_interface_scope.md). It refines the 2026-09-28 priority below, which continues to govern Chat Mode, Task Mode and retained-data stability.
+
+1. Finish the design of the remote MCP endpoint and the core Task-journey operation families, then implement them minimally through [Operation Definition](specs/20261002-operation_definition.md) to fix the architecture: Workspace discovery, shared Thread creation and reading, Turn reading, Task start and conversation, Pending Request discovery and decisions, Artifact reading, Knowledge lookup and preparation, and the repository push and workspace-sync review operations an external agent needs to carry an issue to a pull request.
+2. Before the first release, move every remaining existing operation mechanically into definition tables and delete its old route, client mapping, descriptor and hand-written CLI entry. The migration adds no feature; outcomes below that are not yet implemented stay open.
+3. Implement the accepted [Goal](specs/20261002-goal.md) and delete the old Goal implementation together. The engineer activated the Goal redesign on 2026-10-02, which ends the Goal freeze in item 3 of the 2026-09-28 priority; see [Goal redesign rulings](decisions/20261002-goal_redesign_rulings.md).
+4. Retire the user-facing Skill and its bundled CLI in the first release once remote MCP reaches the release's operations and serves its guide; keep the administrator CLI under [Agent Operator Skill](specs/20260910-agent_operator_skill.md).
+5. Remove or move every document, architecture statement and implementation written for the old interface design instead of leaving it beside the new one.
+
 ## Current Execution Priority — 2026-09-28
 
 1. Rapidly validate real Chat Mode and Task Mode journeys, fix observed defects, and improve everyday usability. Prioritize clear progress and results, understandable requests for user decisions, and reliable user intervention and recovery through the existing owners. Use focused regressions and relevant real-use evidence to guide short feedback loops; implementation alone does not establish excellent user experience.
