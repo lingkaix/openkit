@@ -337,6 +337,7 @@ const bootResult = await runBootPhases({
         const recoveryRuntime = workerLifecycleRuntime;
         const recoveryInput = {
           cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
+          isTurnExecutionActive: recoveryRuntime.isTurnExecutionActive,
           projectRecoveredTurn: async (subject) => {
             const admission = requireSchedulerSessionLeaseAdmissionContext(
               recoveryCoreDb,
@@ -348,8 +349,8 @@ const bootResult = await runBootPhases({
               completedAt: new Date().toISOString(),
               errorCode: 'worker_governance_restart_recovery',
               message: anchored
-                ? 'Worker execution was interrupted during NanoCore restart recovery.'
-                : 'Worker execution stopped during NanoCore restart recovery.',
+                ? 'Worker execution was interrupted during scheduler recovery.'
+                : 'Worker execution stopped during scheduler recovery.',
               outcome: anchored ? 'interrupted' : 'failed',
               requestId: admission.requestId,
               store: recoveryStore,

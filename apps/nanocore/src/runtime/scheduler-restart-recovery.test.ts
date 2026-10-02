@@ -3017,6 +3017,60 @@ describe('minimal scheduler reconnect contract', () => {
     }
   });
 
+  it.each([
+    'cleanup-pending',
+    'physical-cleaned',
+    'cleaned',
+  ] as const)('defers %s to a live lifecycle owner and resumes recovery after it exits', async (state) => {
+    const coreDb = createMigratedCoreDb();
+    const suffix = `live_owner_${state}`;
+    const leaseId = `lease_${suffix}`;
+    let active = true;
+    const cleanupBackendSession = vi.fn(async () => {});
+    const projectRecoveredTurn = vi.fn(async () => ({ status: 'completed' as const }));
+    try {
+      dispatchLease(coreDb, suffix);
+      recordBackendSession(coreDb, suffix, state);
+      markWorkerBackendWorkspaceHandoffComplete(coreDb, { leaseId });
+      markSchedulerSessionLeaseReleasing(coreDb, { leaseId, releaseReason: 'worker-final-status' });
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-07-05T00:00:07.000Z',
+        lineage: {
+          agentSessionId: `as_${suffix}`,
+          packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
+          requestId: `request_${suffix}`,
+          threadId: `thread_${suffix}`,
+          turnId: `turn_${suffix}`,
+          workspaceId: 'ws_demo',
+        },
+        operation: 'final_status',
+        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+        recordKey: '1',
+        sandboxBindingRef: `lease-binding:lease_${suffix}`,
+        sequence: 1,
+      });
+      const original = getWorkerBackendSession(coreDb, leaseId);
+      const input: RunSchedulerRestartRecoveryInput = {
+        cleanupBackendSession,
+        isTurnExecutionActive: (turnId) => active && turnId === `turn_${suffix}`,
+        projectRecoveredTurn,
+      };
+      await runSchedulerRecoveryMaintenance(coreDb, 7, input);
+      expect(getWorkerBackendSession(coreDb, leaseId)).toEqual(original);
+      expect(requireSchedulerSessionLease(coreDb, leaseId).status).toBe('releasing');
+      expect(cleanupBackendSession).not.toHaveBeenCalled();
+      expect(projectRecoveredTurn).not.toHaveBeenCalled();
+      active = false;
+      await runSchedulerRecoveryMaintenance(coreDb, 7, input);
+      expect(cleanupBackendSession).toHaveBeenCalledTimes(state === 'cleanup-pending' ? 1 : 0);
+      expect(projectRecoveredTurn).toHaveBeenCalledTimes(1);
+      expect(getWorkerBackendSession(coreDb, leaseId)?.state).toBe('cleaned');
+      expect(requireSchedulerSessionLease(coreDb, leaseId).status).toBe('released');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('fails closed instead of replaying an accepted completed final-status closeout', async () => {
     const coreDb = createMigratedCoreDb();
     let cleanupCalls = 0;

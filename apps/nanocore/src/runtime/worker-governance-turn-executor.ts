@@ -701,6 +701,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly vaultBackend: (() => VaultBackend) | null;
   private readonly workerControlGateway: WorkerControlGateway | null;
   private readonly workspaceMutationAdmission: WorkspaceMutationAdmission | null;
+  /** Live lifecycle ownership through cleanup and terminal publication; never restored. */
+  private readonly activeTurnExecutions = new Set<string>();
 
   /**
    * Creates the governance-backed turn executor.
@@ -1314,6 +1316,26 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     input: string,
     context?: TurnStartRuntimeContext
   ): Promise<void> {
+    this.activeTurnExecutions.add(turnId);
+    try {
+      await this.executeTurn(store, turnId, input, context);
+    } finally {
+      this.activeTurnExecutions.delete(turnId);
+    }
+  }
+
+  /** Reports whether the live lifecycle owner still owns cleanup and outcome publication. */
+  public isTurnExecutionActive(turnId: string): boolean {
+    return this.activeTurnExecutions.has(turnId);
+  }
+
+  /** Executes the governed lifecycle while startTurn holds process-local recovery exclusion. */
+  private async executeTurn(
+    store: FsStore,
+    turnId: string,
+    input: string,
+    context?: TurnStartRuntimeContext
+  ): Promise<void> {
     if (!context) {
       throw new Error('Governed worker execution requires exact turn-start runtime context.');
     }
@@ -1875,6 +1897,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @returns Product terminal status established by closeout.
    */
   public async resumeAcceptedFinalStatus(
+    store: FsStore,
+    environmentPackage: AgentEnvironmentPackage,
+    session: WorkerBackendSessionRecord
+  ): Promise<'cancelled' | 'completed' | 'failed' | 'interrupted'> {
+    const turnId = environmentPackage.scope.turnId;
+    this.activeTurnExecutions.add(turnId);
+    try {
+      return await this.closeAcceptedFinalStatus(store, environmentPackage, session);
+    } finally {
+      this.activeTurnExecutions.delete(turnId);
+    }
+  }
+
+  /** Finishes restored closeout under the same process-local exclusion as ordinary execution. */
+  private async closeAcceptedFinalStatus(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     session: WorkerBackendSessionRecord

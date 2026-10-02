@@ -78,6 +78,8 @@ export interface RunSchedulerRestartRecoveryInput {
   readonly cleanupBackendSession?: (
     session: WorkerGovernanceBackendSessionIdentity
   ) => Promise<void>;
+  /** Reports a live in-process lifecycle owner that maintenance must not take over. */
+  readonly isTurnExecutionActive?: (turnId: string) => boolean;
   /** Optional deterministic clock. */
   readonly now?: () => string;
   /** Registers exact cleanup result identities without awaiting or dispatching effects. */
@@ -220,6 +222,10 @@ export async function runSchedulerRecoveryMaintenance(
 
   for (const row of listNonTerminalLeaseRows(coreDb)) {
     try {
+      // Cleanup states also belong to ordinary closeout until its executor settles.
+      if (input.isTurnExecutionActive?.(row.turnId)) {
+        continue;
+      }
       const session = getWorkerBackendSession(coreDb, row.leaseId);
       if (!session) {
         continue;

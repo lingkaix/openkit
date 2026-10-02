@@ -195,6 +195,8 @@ export interface ConfiguredWorkerLifecycleRuntime {
   readonly cleanupBackendSession: (
     identity: WorkerGovernanceBackendSessionIdentity
   ) => Promise<void>;
+  /** Reports live lifecycle ownership before scheduler recovery can take over a Turn. */
+  readonly isTurnExecutionActive: (turnId: string) => boolean;
   /** Registers restart cleanup result identities before the transport listener exists. */
   readonly prepareBackendCleanup: (identity: WorkerGovernanceBackendSessionIdentity) => void;
   /** Restores and closes one worker whose final status is already durable. */
@@ -348,6 +350,9 @@ function createNanoHostWorkerLifecycleRuntime(
 
   return {
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
+    isTurnExecutionActive: (turnId) =>
+      turnExecutor instanceof WorkerGovernanceTurnExecutor &&
+      turnExecutor.isTurnExecutionActive(turnId),
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
     acceptNanoHostHarnessCommand: (command) => backend.acceptHarnessCommand(command),
     acceptNanoHostHarnessResult: (result) => backend.acceptHarnessResult(result),

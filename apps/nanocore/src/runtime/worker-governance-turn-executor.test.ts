@@ -56,8 +56,11 @@ import type {
 } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
+  completeSchedulerLeaseForTerminalTurn,
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
+  markSchedulerSessionLeaseReleasing,
+  requireSchedulerSessionLease,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
@@ -105,6 +108,7 @@ import {
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
+import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import {
   createWorkerCheckpointContextDiagnostics,
@@ -112,7 +116,10 @@ import {
   upsertWorkerCheckpoint,
 } from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  recordWorkerControlAcceptedRecord,
+} from './worker-control-records.js';
 import type {
   WorkerGovernanceBackend,
   WorkerGovernanceEvidenceRecord,
@@ -134,6 +141,7 @@ import {
 } from './worker-runtime-provenance.js';
 import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import { getFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
   acceptWorkspaceBaseline,
@@ -2997,8 +3005,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
         awaitedEnvironmentPackage,
         session
       );
+      expect(restartedExecutor.isTurnExecutionActive(turn.id)).toBe(true);
       if (projectionSpy) {
         await expect(recovery).rejects.toThrow('stable product outcome could not be persisted');
+        expect(restartedExecutor.isTurnExecutionActive(turn.id)).toBe(false);
         projectionSpy.mockRestore();
         expect(backend.calls).not.toContain('cleanupSession');
         const retrySession = getWorkerBackendSession(coreDb, `lease_${turn.id}`);
@@ -3033,6 +3043,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         return;
       }
       await expect(recovery).resolves.toBe('interrupted');
+      expect(restartedExecutor.isTurnExecutionActive(turn.id)).toBe(false);
       expect(backend.calls).toEqual([
         'materialize',
         'launch',
@@ -3070,9 +3081,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return;
     }
 
-    await expect(
-      restartedExecutor.resumeAcceptedFinalStatus(store, awaitedEnvironmentPackage, session)
-    ).resolves.toBe(turnStatus);
+    const recovery = restartedExecutor.resumeAcceptedFinalStatus(
+      store,
+      awaitedEnvironmentPackage,
+      session
+    );
+    expect(restartedExecutor.isTurnExecutionActive(turn.id)).toBe(true);
+    await expect(recovery).resolves.toBe(turnStatus);
+    expect(restartedExecutor.isTurnExecutionActive(turn.id)).toBe(false);
 
     expect(backend.calls).toEqual([
       'materialize',
@@ -4735,6 +4751,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       )
     ).rejects.toThrow('teardown failed');
 
+    expect(executor.isTurnExecutionActive(turn.id)).toBe(false);
     expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(2);
     expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
     const workspaceDb = openTestWorkspaceDb(coreDb);
@@ -6316,6 +6333,115 @@ describe('WorkerGovernanceTurnExecutor', () => {
     } finally {
       launchSpy.mockRestore();
       materializeSpy.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps recovery maintenance out of a live accepted-final-status closeout', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-live-closeout-race-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Complete without takeover');
+    const agentSessionId = 'as_live_closeout';
+    const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
+    const requestId = '00000000-0000-4000-8000-000000000254';
+    const sandboxBindingRef = 'lease-binding:live-closeout';
+    const leaseId = `lease_${turn.id}`;
+    const lineage = {
+      agentSessionId,
+      packageSnapshotId,
+      requestId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      workspaceId: turn.workspaceId,
+    };
+    dispatchExecutorLease(coreDb, {
+      ...lineage,
+      sandboxBindingRef,
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const cleanupEntered = Promise.withResolvers<void>();
+    const releaseCleanup = Promise.withResolvers<void>();
+    const cleanup = vi.spyOn(backend, 'cleanupSession').mockImplementationOnce(async () => {
+      cleanupEntered.resolve();
+      await releaseCleanup.promise;
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      awaitWorkerCompletion: async () => {
+        recordWorkerControlAcceptedRecord(coreDb, {
+          acceptedAt: '2026-07-15T00:00:04.000Z',
+          lineage,
+          operation: 'final_status',
+          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+          recordKey: '1',
+          sandboxBindingRef,
+          sequence: 1,
+        });
+        markSchedulerSessionLeaseReleasing(coreDb, {
+          leaseId,
+          now: () => '2026-07-15T00:00:04.000Z',
+          releaseReason: 'worker-final-status',
+        });
+        return getWorkerControlAcceptedFinalStatus(coreDb, lineage)!;
+      },
+      backend,
+      coreDb,
+      now: () => '2026-07-15T00:00:05.000Z',
+    });
+    const execution = executor.startTurn(store, turn.id, 'Complete without takeover', {
+      agentSessionId,
+      agentSetup: createTestAgentSetup(),
+      requestId,
+      sandboxBindingRef,
+      triggerActor: turn.triggerActor,
+      workspaceRoots: [],
+    });
+    const executionResult = execution.then(
+      () => null,
+      (error: unknown) => error
+    );
+    const projectRecoveredTurn = vi.fn(async () => {
+      const result = terminalizeGovernedWorkerTurn({
+        agentSessionId,
+        completedAt: '2026-07-15T00:01:00.000Z',
+        errorCode: 'worker_governance_restart_recovery',
+        message: 'Worker execution was interrupted during scheduler recovery.',
+        outcome: 'interrupted',
+        requestId,
+        store,
+        turnId: turn.id,
+      });
+      return { status: result.status as 'interrupted' };
+    });
+    try {
+      await Promise.race([cleanupEntered.promise, execution]);
+      expect(getWorkerBackendSession(coreDb, leaseId)?.state).toBe('cleanup-pending');
+      await runSchedulerRecoveryMaintenance(coreDb, 1, {
+        cleanupBackendSession: (identity) =>
+          (backend as WorkerGovernanceBackend).cleanupSession(identity),
+        isTurnExecutionActive: (turnId) => executor.isTurnExecutionActive(turnId),
+        now: () => '2026-07-15T00:01:00.000Z',
+        projectRecoveredTurn,
+      });
+      // The live owner still has to prove cleanup and publish its canonical outcome.
+      expect(store.getTurnById(turn.id).status).toBe('running');
+      expect(projectRecoveredTurn).not.toHaveBeenCalled();
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(requireSchedulerSessionLease(coreDb, leaseId).status).toBe('releasing');
+      expect(getWorkerBackendSession(coreDb, leaseId)?.physicalCleanedAt).toBeNull();
+      releaseCleanup.resolve();
+      expect(await executionResult).toBeNull();
+      expect(executor.isTurnExecutionActive(turn.id)).toBe(false);
+      expect(store.getTurnById(turn.id).status).toBe('completed');
+      expect(getWorkerBackendSession(coreDb, leaseId)?.state).toBe('cleaned');
+      completeSchedulerLeaseForTerminalTurn(coreDb, store.getTurnById(turn.id));
+      await runSchedulerRecoveryMaintenance(coreDb, 1, { projectRecoveredTurn });
+      expect(projectRecoveredTurn).not.toHaveBeenCalled();
+      expect(requireSchedulerSessionLease(coreDb, leaseId).status).toBe('released');
+    } finally {
+      releaseCleanup.resolve();
+      await executionResult;
+      cleanup.mockRestore();
       coreDb.sqlite.close();
     }
   });
