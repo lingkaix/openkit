@@ -20,6 +20,39 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   plugins: [react(), tailwindcss(), Icons({ compiler: 'jsx', jsx: 'react' })],
+  build: {
+    rollupOptions: {
+      output: {
+        // Vendor groups keep every chunk under the default limit and cache independently across releases.
+        // Route splitting was measured and rejected because it cannot clear the limit and changes render timing.
+        manualChunks(id) {
+          if (
+            /\/packages\/(?:app-api-schemas|core-client|protocol|config-schema)\//.test(id) ||
+            /\/node_modules\/zod\//.test(id)
+          ) {
+            return 'vendor-schemas';
+          }
+          if (
+            /\/node_modules\/(?:@react-aria\/|@react-stately\/|@react-types\/|@internationalized\/|react-aria\/|react-stately\/|react-aria-components\/)/.test(
+              id
+            )
+          ) {
+            return 'vendor-aria';
+          }
+          if (
+            /\/node_modules\/(?:react\/|react-dom\/|scheduler\/|react-router\/|react-router-dom\/|zustand\/|@tanstack\/)/.test(
+              id
+            )
+          ) {
+            return 'vendor-react';
+          }
+          if (/\/node_modules\/(?:@a2ui\/|markdown-it\/|jsonc-parser\/)/.test(id)) {
+            return 'vendor-rendering';
+          }
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       '/api': {
