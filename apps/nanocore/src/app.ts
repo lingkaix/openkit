@@ -116,6 +116,7 @@ import {
   resolveEnvSecretRef,
 } from './providers/registry.js';
 import {
+  createProviderCredentialConfigured,
   createVaultProviderCredentialResolver,
   revokeVaultProviderCredential,
 } from './providers/vault-credential-resolver.js';
@@ -646,6 +647,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       : null);
   const providerCredentialResolverFallback: ProviderCredentialResolver = (secretRef) =>
     options.providerCredentialResolver?.(secretRef) ?? resolveEnvSecretRef(secretRef);
+  const providerCredentialConfigured = createProviderCredentialConfigured({
+    ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    fallback: providerCredentialResolverFallback,
+  });
   const providerCredentialResolver =
     options.coreDb && vaultUnlockState
       ? createVaultProviderCredentialResolver({
@@ -755,6 +760,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     createRuntimeConfigManager({
       dataRoot,
       captureCoverage: sharedStore,
+      providerCredentialConfigured,
       ...(providerSubscriptionAccountManager
         ? { subscriptionAccounts: providerSubscriptionAccountManager }
         : {}),
@@ -1336,6 +1342,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/api/worker-inference/*', browserCors);
   registerWorkerInferenceRoutes({
     app,
+    providerCredentialConfigured,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     llmGatewayDispatcher,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
@@ -1466,7 +1473,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           models: resolveLogicalModelCatalog(
             runtimeConfig().gatewayConfig,
             runtimeConfig().providerRegistry,
-            providerSubscriptionAccountManager ?? undefined
+            providerSubscriptionAccountManager ?? undefined,
+            providerCredentialConfigured
           ).map(
             ({
               id,
@@ -1582,6 +1590,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerLlmGatewayRoutes({
     app,
+    providerCredentialConfigured,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     requestStore,
     llmGatewayDispatcher,
@@ -1592,6 +1601,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerAdministrationRoutes({
     app,
+    providerCredentialConfigured,
     coreDb: options.coreDb,
     environmentToolsForTurn: (context) => {
       if (!workerEnvironmentOperations || !workerEnvironmentPreparation) {
@@ -1623,6 +1633,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   const chatService = registerQuickAndChatModeRoutes({
     app,
+    providerCredentialConfigured,
     assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,

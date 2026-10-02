@@ -5,6 +5,7 @@ import {
   type GatewayCallContext,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { LogicalModelRoutesExhaustedError } from '../llm/gateway-execution.js';
 import { dispatchLogicalModel, projectGatewayFailure } from '../llm/gateway-routes.js';
 import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
@@ -24,7 +25,10 @@ import { InternalAgentProviderError } from './internal-agent-loop.js';
 export interface InternalAgentGatewayProviderOptions {
   /** Exact entry-admitted Turn; internal Agents never use public metadata as authority. */
   readonly capture: Omit<ModelCaptureContext, 'corr'>;
+  /** Entry-admitted model retained for pinned identity and context policy checks. */
   readonly logicalModel: ResolvedLogicalModel;
+  /** Resolves the pinned ID from the current snapshot and live availability at each Provider call. */
+  readonly resolveLogicalModel: (logicalModelId: string) => ResolvedLogicalModel | null;
   /** Entry-owned attribution for each logical model invocation; Turn and database come from admitted capture. */
   readonly callContext?: GatewayCallContext;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
@@ -91,10 +95,13 @@ export function createInternalAgentGatewayProvider(
       : undefined;
     let callFinished = false;
     try {
+      const logicalModel = options.resolveLogicalModel(options.logicalModel.id);
+      if (!logicalModel) throw new LogicalModelRoutesExhaustedError();
       const selected = await dispatchLogicalModel({
         ...(call ? { ledger: { workspaceDb, call } } : {}),
-        logicalModel: options.logicalModel,
+        logicalModel,
         requiredCapabilities: request.model.capabilities,
+        ...(options.logicalModel.contract ? { pinnedLimits: options.logicalModel.contract } : {}),
         signal: request.signal,
         resolveGatewayProvider: options.resolveGatewayProvider,
         ...(options.providerSubscriptionAccountManager

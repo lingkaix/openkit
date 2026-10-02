@@ -89,6 +89,7 @@ import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js'
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from './openapi.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
+import type { ProviderCredentialConfigured } from './providers/registry.js';
 import { getGoalRecord, listGoalRecordsForThread } from './runtime/goal-store.js';
 import {
   chatTaskModeTurnId,
@@ -2159,6 +2160,7 @@ export function registerQuickAndChatModeRoutes({
   inflightCommands,
   llmGatewayDispatcher,
   providerSubscriptionAccountManager,
+  providerCredentialConfigured,
   repositoryWorkspaceDb,
   requestStore,
   resolveGatewayProvider,
@@ -2175,6 +2177,8 @@ export function registerQuickAndChatModeRoutes({
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createChatCompletion'>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
+  /** Current API-key presence without resolving Vault material. */
+  readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
@@ -2223,6 +2227,8 @@ export function registerQuickAndChatModeRoutes({
       gatewayConfig: snapshot.gatewayConfig,
       profilesConfig: snapshot.internalRoleProfiles,
       providerRegistry: snapshot.providerRegistry,
+      providerSubscriptionAccountManager,
+      providerCredentialConfigured,
       ...(requestedLogicalModelId ? { requestedLogicalModelId } : {}),
       ...(findWorkspaceConfig(snapshot, workspaceId)?.config
         ? { workspaceConfig: findWorkspaceConfig(snapshot, workspaceId)!.config }

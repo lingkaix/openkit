@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -30,6 +30,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -2349,6 +2350,13 @@ describe('OpenAI-compatible agent gateway', () => {
         metadata: { ownerScope: 'server' },
         referenceId: 'vault_gateway',
       });
+      createVaultReference(coreDb, {
+        referenceId: 'vault_gateway',
+        ownerScope: 'server',
+        displayName: 'Test key',
+        secretKind: 'provider-api-key',
+        backendKind: 'encrypted-file',
+      });
 
       const profile = {
         defaultModel: 'gpt-5.1',
@@ -2437,6 +2445,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      createVaultReference(coreDb, {
+        referenceId: 'vault_locked_gateway',
+        ownerScope: 'server',
+        displayName: 'Test key',
+        secretKind: 'provider-api-key',
+        backendKind: 'encrypted-file',
+      });
       const profile = {
         defaultModel: 'gpt-5.1',
         displayName: 'Vault Locked Gateway',
@@ -3622,5 +3637,190 @@ describe('Round 2 public exhaustion cause', () => {
         }
       });
     }
+  }
+});
+
+describe('API key member availability', () => {
+  it.each([
+    'unset-env',
+    'absent-vault',
+    'revoked-vault',
+    'active-vault',
+    'set-env',
+    'injected',
+    'no-ref',
+    'keyless',
+    'subscription',
+  ] as const)('projects %s without resolving Vault material or recording use', async (kind) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-key-availability-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    const referenceId = 'availability_key';
+    if (kind === 'active-vault' || kind === 'revoked-vault') {
+      createVaultReference(coreDb, {
+        referenceId,
+        ownerScope: 'server',
+        displayName: 'Test key',
+        secretKind: 'provider-api-key',
+        backendKind: 'encrypted-file',
+      });
+      if (kind === 'revoked-vault') revokeVaultReference(coreDb, { referenceId });
+    }
+    // The Vault stays locked: configuration presence must not read its material.
+    const backend = vi.spyOn(vaultUnlockState, 'backend');
+    const envName = 'OPENKIT_GATEWAY_KEY_AVAIL_TEST';
+    const previous = process.env[envName];
+    delete process.env[envName];
+    if (kind === 'set-env') process.env[envName] = 'synthetic-env-key';
+    const profile: ProviderProfile & { defaultModel: string } = {
+      id: 'key-profile',
+      displayName: 'Key profile',
+      vendor: 'openai',
+      kind: 'direct',
+      models: ['gpt-5.1'],
+      defaultModel: 'gpt-5.1',
+      ...(kind === 'no-ref' || kind === 'keyless' || kind === 'subscription'
+        ? {}
+        : { secretRef: kind.includes('vault') ? `vault://${referenceId}` : `env:${envName}` }),
+      ...(kind === 'keyless' ? { kind: 'local' as const } : {}),
+      ...(kind === 'subscription'
+        ? {
+            kind: 'oauth' as const,
+            vendor: 'openai-codex',
+            extensions: { openkit: { subscriptionAccount: { accountSlotId: 'absent' } } },
+          }
+        : {}),
+    };
+    const providerOptions = createProviderOptions(profile);
+    const app = createApp({
+      ...providerOptions,
+      coreDb,
+      dataRoot,
+      vaultUnlockState,
+      ...(kind === 'injected'
+        ? { providerCredentialResolver: () => 'synthetic-injected-key' }
+        : {}),
+    });
+    const missing = ['unset-env', 'absent-vault', 'revoked-vault', 'no-ref'].includes(kind);
+    const unavailableReason = missing
+      ? 'provider_api_key_missing'
+      : kind === 'subscription'
+        ? 'subscription_vault_unavailable'
+        : null;
+    try {
+      const auditBefore = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get();
+      const response = await app.request('/api/app/diagnostics');
+      expect(response.status).toBe(200);
+      const diagnostics = await response.json();
+      expect(diagnostics.gateway.models[0].routes[0]).toMatchObject({
+        available: unavailableReason === null,
+        unavailableReason,
+      });
+      const models = await (await app.request('/v1/models')).json();
+      expect(models.data).toHaveLength(unavailableReason === null ? 1 : 0);
+      if (kind !== 'subscription') expect(backend).not.toHaveBeenCalled();
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
+      expect(coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()).toEqual(
+        auditBefore
+      );
+    } finally {
+      backend.mockRestore();
+      if (previous === undefined) delete process.env[envName];
+      else process.env[envName] = previous;
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('hides missing-key-only supply and refuses a request before the Provider callback', async () => {
+    const options = createOpenAIProviderOptions();
+    const synthetic = fauxProvider({ provider: 'openai', models: [{ id: 'gpt-5.1' }] });
+    const models = createModels();
+    models.setProvider(synthetic.provider);
+    const app = createApp({
+      ...options,
+      providerRegistry: new ProviderRegistry(
+        options.providerRegistry.list().map((p) => ({ ...p, secretRef: 'vault://missing_key' }))
+      ),
+      providerCredentialResolver: () => null,
+      llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient({ models }),
+      }),
+    });
+    expect(await (await app.request('/v1/models')).json()).toMatchObject({ data: [] });
+    const response = await app.request('/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.1', input: 'Hello' }),
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'gateway_logical_model_unavailable' },
+    });
+    expect(synthetic.state.callCount).toBe(0);
+  });
+});
+
+it('the API-key path restores the same member on next resolve without reload', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-key-activation-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const vaultUnlockState = createVaultUnlockState({
+    backendKind: 'encrypted-file',
+    storeDir: join(dataRoot, 'server', 'vault'),
+  });
+  const profile = {
+    ...createOpenAIProviderOptions().providerRegistry.list()[0]!,
+    secretRef: 'vault://provider_activation',
+    id: 'activation-profile',
+  } as ProviderProfile & { defaultModel: string };
+  mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
+  writeFileSync(
+    join(dataRoot, 'config', 'providers', 'openai.provider.jsonc'),
+    JSON.stringify(profile)
+  );
+  const options = createProviderOptions(profile);
+  const manager = createRuntimeConfigManager({
+    dataRoot,
+    initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+      ...options,
+      dataRoot,
+      agentManifests: [],
+    }),
+  });
+  const app = createApp({
+    ...options,
+    coreDb,
+    dataRoot,
+    vaultUnlockState,
+    runtimeConfigManager: manager,
+  });
+  const reload = vi.spyOn(manager, 'reload');
+  try {
+    expect((await (await app.request('/v1/models')).json()).data).toEqual([]);
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
+    const response = await app.request('/api/app/providers/activation-profile/api-key', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKey: 'synthetic-activation-key' }),
+    });
+    expect(response.status, await response.text()).toBe(200);
+    vaultUnlockState.lock();
+    const useBefore = listVaultUseRecords(coreDb);
+    expect((await (await app.request('/v1/models')).json()).data).toHaveLength(1);
+    const diagnostics = await (await app.request('/api/app/diagnostics')).json();
+    expect(diagnostics.gateway.models[0].routes[0]).toMatchObject({
+      id: 'primary',
+      available: true,
+      unavailableReason: null,
+    });
+    expect(listVaultUseRecords(coreDb)).toEqual(useBefore);
+    expect(reload).not.toHaveBeenCalled();
+  } finally {
+    reload.mockRestore();
+    coreDb.sqlite.close();
   }
 });

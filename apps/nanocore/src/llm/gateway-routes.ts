@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { constants as zlibConstants, zstdDecompress } from 'node:zlib';
-
 import {
   type AgentEnvironmentPackage,
   resolveProviderSubscriptionFamily,
@@ -15,7 +14,6 @@ import {
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
-
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
@@ -35,6 +33,7 @@ import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
@@ -1677,6 +1676,7 @@ function gatewayProviderFailureMessage(code: string): string {
  */
 export function registerWorkerInferenceRoutes({
   app,
+  providerCredentialConfigured,
   coreDb,
   llmGatewayDispatcher,
   providerSubscriptionAccountManager,
@@ -1692,6 +1692,8 @@ export function registerWorkerInferenceRoutes({
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
   /** Optional subscription-account supply used by private Gateway routes. */
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
+  /** Live API-key presence without Vault material resolution. */
+  readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Resolves a private Provider route selected by the current Gateway config. */
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   /** Returns the current hot-reloadable Gateway configuration snapshot. */
@@ -1775,7 +1777,8 @@ export function registerWorkerInferenceRoutes({
           snapshot.gatewayConfig,
           snapshot.providerRegistry,
           route.model,
-          providerSubscriptionAccountManager
+          providerSubscriptionAccountManager,
+          providerCredentialConfigured
         );
       } catch {
         logicalModel = null;
@@ -2111,8 +2114,8 @@ function assertGatewayModelAuthorized(provider: ResolvedLLMProviderConfig, model
 }
 
 /**
- * Plans and executes a logical request with shared retry, certainty and commit rules.
- * @param input Current tier, pinned capabilities, cancellation and validated consumer effect.
+ * Plans and executes a logical request with shared retry, certainty and commit rules. Known current member limits must meet optional entry-admitted minimums; unknown limits add no restriction and ineligible members use the existing pinned-capability selection reason.
+ * @param input Current tier, pinned capabilities and optional limits, cancellation and validated consumer effect.
  * @returns The selected result; authority and retention errors remain terminal.
  */
 export async function dispatchLogicalModel<T>(input: {
@@ -2123,6 +2126,8 @@ export async function dispatchLogicalModel<T>(input: {
   requiredCapabilities?: readonly string[];
   /** Native request evidence and immutable bound-Turn fallback; absence leaves internal producers unchanged. */
   reasoningEffort?: { requested?: ReasoningEffort; recorded?: ReasoningEffort };
+  /** Entry-admitted coherent minimums; absent or unknown limits constrain nothing. */
+  pinnedLimits?: Pick<NonNullable<ResolvedLogicalModel['contract']>, 'context' | 'output'>;
   clock?: GatewayClock;
   resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
@@ -2144,7 +2149,12 @@ export async function dispatchLogicalModel<T>(input: {
     input.logicalModel,
     input.requiredCapabilities ?? [],
     (route, required) => {
-      if (required.length === 0) return true;
+      if (
+        required.length === 0 &&
+        input.pinnedLimits?.context == null &&
+        input.pinnedLimits?.output == null
+      )
+        return true;
       let provider: ResolvedLLMProviderConfig;
       try {
         provider = input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
@@ -2164,6 +2174,15 @@ export async function dispatchLogicalModel<T>(input: {
         },
         route.providerModel
       );
+      if (
+        (input.pinnedLimits?.context != null &&
+          metadata.limit?.context != null &&
+          metadata.limit.context < input.pinnedLimits.context) ||
+        (input.pinnedLimits?.output != null &&
+          metadata.limit?.output != null &&
+          metadata.limit.output < input.pinnedLimits.output)
+      )
+        return false;
       return required.every((capability) => {
         if (capability === 'responses')
           return provider.gatewayCapabilities.responses !== 'unsupported';
@@ -2208,7 +2227,9 @@ export async function dispatchLogicalModel<T>(input: {
         failureKind:
           selection.reason === 'pinned_capability_unavailable'
             ? 'unsupported'
-            : 'provider_unavailable',
+            : selection.reason === 'provider_api_key_missing'
+              ? 'auth_rejected'
+              : 'provider_unavailable',
         unavailableReason: selection.reason,
       });
   }
@@ -2382,6 +2403,7 @@ export async function dispatchLogicalModel<T>(input: {
  */
 export function registerLlmGatewayRoutes({
   app,
+  providerCredentialConfigured,
   coreDb,
   requestStore,
   llmGatewayDispatcher,
@@ -2394,6 +2416,8 @@ export function registerLlmGatewayRoutes({
   readonly requestStore?: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
+  /** Live API-key presence without Vault material resolution. */
+  readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
@@ -2438,7 +2462,8 @@ export function registerLlmGatewayRoutes({
         snapshot.gatewayConfig,
         snapshot.providerRegistry,
         logicalModelId,
-        providerSubscriptionAccountManager
+        providerSubscriptionAccountManager,
+        providerCredentialConfigured
       );
       if (logicalModel) return logicalModel;
     } catch {
@@ -2476,7 +2501,8 @@ export function registerLlmGatewayRoutes({
       const data = resolveLogicalModelCatalog(
         snapshot.gatewayConfig,
         snapshot.providerRegistry,
-        providerSubscriptionAccountManager
+        providerSubscriptionAccountManager,
+        providerCredentialConfigured
       )
         .filter((model) => model.routes.some((route) => route.available))
         .map((model) => ({

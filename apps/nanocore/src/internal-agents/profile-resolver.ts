@@ -7,7 +7,8 @@ import type {
 } from '@openkit/config-schema';
 import type { z } from 'zod';
 import { type ResolvedLogicalModel, resolveLogicalModelCatalog } from '../llm/logical-models.js';
-import type { ProviderRegistry } from '../providers/registry.js';
+import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import type { ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 
 type InternalRoleProfile = z.infer<typeof InternalRoleExecutionProfileSchema>;
 
@@ -25,6 +26,12 @@ export function resolveInternalRoleProfile(input: {
   readonly gatewayConfig: GatewayConfig;
   readonly profilesConfig: InternalRoleProfilesConfig;
   readonly providerRegistry: ProviderRegistry;
+  /** Current network-free subscription supply for this role call. */
+  readonly providerSubscriptionAccountManager?:
+    | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+    | undefined;
+  /** Current API-key presence without resolving Vault material. */
+  readonly providerCredentialConfigured?: ProviderCredentialConfigured | undefined;
   readonly requestedLogicalModelId?: string;
   readonly userConfig?: UserConfig;
   readonly workspaceConfig?: WorkspaceConfig;
@@ -60,7 +67,12 @@ export function resolveInternalRoleProfile(input: {
     return null;
   }
 
-  const catalog = resolveLogicalModelCatalog(input.gatewayConfig, input.providerRegistry);
+  const catalog = resolveLogicalModelCatalog(
+    input.gatewayConfig,
+    input.providerRegistry,
+    input.providerSubscriptionAccountManager,
+    input.providerCredentialConfigured
+  );
   const admittedIds = [
     configuredPreferredLogicalModelId,
     ...(profile?.compatibleLogicalModelIds ?? []),

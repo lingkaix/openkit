@@ -22,7 +22,7 @@ import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 
 const requestId = '12345678-1234-4234-8234-123456789abc';
 /** Actual public routes, stock synthetic models and Workspace ledger; no ledger double. */
-function fixture() {
+function fixture(missingKey = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-lineage-'));
   const store = createDemoStore({ dataRoot });
   const workspaceId = store.createWorkspace('Lineage').id;
@@ -44,13 +44,42 @@ function fixture() {
     store,
     llmGatewayDispatcher: dispatcher,
     openKitConfig: {},
+    providerCredentialResolver: (ref) => (ref === 'test:backup' ? 'synthetic-backup-key' : null),
     providerRegistry: new ProviderRegistry([
-      { id: 'p', displayName: 'Primary', vendor: 'openai', kind: 'local', models: ['gpt-5.1'] },
+      {
+        id: 'p',
+        displayName: 'Primary',
+        vendor: 'openai',
+        kind: missingKey ? 'direct' : 'local',
+        models: ['gpt-5.1'],
+        ...(missingKey
+          ? {
+              secretRef: 'vault://absent_key',
+              modelMetadata: {
+                'gpt-5.1': {
+                  reasoning: true,
+                  reasoning_options: [{ type: 'effort', values: ['low'] }],
+                },
+              },
+            }
+          : {}),
+      },
       {
         id: 'b',
         displayName: 'Backup',
         vendor: 'anthropic',
-        kind: 'local',
+        kind: missingKey ? 'direct' : 'local',
+        ...(missingKey
+          ? {
+              secretRef: 'test:backup',
+              modelMetadata: {
+                'claude-sonnet-4-5': {
+                  reasoning: true,
+                  reasoning_options: [{ type: 'effort', values: ['high'] }],
+                },
+              },
+            }
+          : {}),
         models: ['claude-sonnet-4-5'],
       },
     ]),
@@ -460,4 +489,35 @@ describe('slice 1d round 2 terminal frame closeout', () => {
         f.close();
       }
     });
+});
+
+it('skips a missing API key with auth_rejected lineage and only backup effort levels', async () => {
+  const f = fixture(true);
+  f.backup.setResponses([fauxAssistantMessage('backup served')]);
+  try {
+    const diagnostics = await (await f.app.request('/api/app/diagnostics')).json();
+    expect(diagnostics.gateway.models[0].reasoningEffortLevels).toEqual(['high']);
+    const response = await f.post('responses');
+    expect(response.status, await response.text()).toBe(200);
+    expect(f.primary.state.callCount).toBe(0);
+    expect(f.backup.state.callCount).toBe(1);
+    const { calls, usage } = f.read();
+    expect(calls).toHaveLength(1);
+    const measured = usage.filter((record) => record.capabilityCallId === calls[0]?.id);
+    expect(measured.length).toBeGreaterThan(0);
+    expect(measured.every((record) => record.providerRef === 'b')).toBe(true);
+    expect(calls[0]?.extensions?.['openkit.gateway/routeLineage']).toMatchObject({
+      entries: [
+        {
+          kind: 'unavailable',
+          routeMemberId: 'primary',
+          failureKind: 'auth_rejected',
+          unavailableReason: 'provider_api_key_missing',
+        },
+        { kind: 'attempt', routeMemberId: 'backup', terminalResult: 'succeeded' },
+      ],
+    });
+  } finally {
+    f.close();
+  }
 });

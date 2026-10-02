@@ -7,7 +7,10 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
-import { createVaultProviderCredentialResolver } from './vault-credential-resolver.js';
+import {
+  createProviderCredentialConfigured,
+  createVaultProviderCredentialResolver,
+} from './vault-credential-resolver.js';
 
 /**
  * Creates a migrated Core DB and unlocked vault with one provider secret.
@@ -111,4 +114,28 @@ describe('vault provider credential resolver', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+it('credential presence uses fallback precedence without inspecting a shadowed Vault reference', () => {
+  const { coreDb, vaultUnlockState } = createVaultProviderFixture();
+  const configured = createProviderCredentialConfigured({
+    coreDb,
+    fallback: (ref) => (ref === 'vault://absent' ? 'synthetic-injected-key' : null),
+  });
+  try {
+    expect(configured('vault://absent')).toBe(true);
+    expect(configured('unsupported:ref')).toBe(false);
+    expect(configured('vault://')).toBe(false);
+    expect(configured(undefined)).toBe(false);
+    expect(createProviderCredentialConfigured({ fallback: () => null })('vault://absent')).toBe(
+      false
+    );
+    expect(
+      createProviderCredentialConfigured({ coreDb, fallback: () => '' })('vault://vault_provider')
+    ).toBe(false);
+    expect(listVaultUseRecords(coreDb)).toEqual([]);
+    expect(vaultUnlockState.backend().listReferences()).toHaveLength(1);
+  } finally {
+    coreDb.sqlite.close();
+  }
 });

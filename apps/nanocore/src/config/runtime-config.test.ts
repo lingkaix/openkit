@@ -878,3 +878,21 @@ describe('runtime config loading and reload planning', () => {
     expect(store.getTurnCaptureCoverage(next.id)).toEqual({ scope: 'server', value: 'on' });
   });
 });
+
+it('reload warns by route name when its required API key is missing', () => {
+  const dataRoot = createDataRoot();
+  writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+  writeGatewayConfig(dataRoot);
+  const manager = createRuntimeConfigManager({
+    dataRoot,
+    providerCredentialConfigured: () => false,
+  });
+  expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+  expect(manager.current().diagnostics).toContainEqual(
+    expect.objectContaining({
+      code: 'gateway.unavailable_member',
+      severity: 'warning',
+      message: 'Logical model route primary is unavailable: provider_api_key_missing.',
+    })
+  );
+});

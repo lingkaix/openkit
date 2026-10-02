@@ -39,7 +39,7 @@ import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscri
 import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
-import { ProviderRegistry } from '../providers/registry.js';
+import { type ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 import { loadAgentManifests } from './agents-loader.js';
 import { parseJsoncObject } from './jsonc.js';
 import {
@@ -201,6 +201,8 @@ interface LoadRuntimeConfigOptions {
   version?: number;
   /** Timestamp to assign for deterministic tests. */
   loadedAt?: string;
+  /** Live API-key presence, inspected without resolving Vault material. */
+  providerCredentialConfigured?: ProviderCredentialConfigured | undefined;
   /** Live subscription owner for network-free Gateway supply admission. */
   subscriptionAccounts?:
     | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
@@ -215,6 +217,8 @@ interface RuntimeConfigManagerOptions {
   dataRoot: string | null;
   /** Optional initial snapshot for tests or already-loaded startup state. */
   initialSnapshot?: RuntimeConfigSnapshot;
+  /** Live API-key presence, inspected without resolving Vault material. */
+  providerCredentialConfigured?: ProviderCredentialConfigured | undefined;
   /** Live subscription owner reused at initial load and candidate reload. */
   subscriptionAccounts?:
     | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
@@ -339,7 +343,8 @@ export function loadRuntimeConfig(
     for (const model of resolveLogicalModelCatalog(
       gatewayConfig,
       providerLoadResult.providerRegistry,
-      options.subscriptionAccounts
+      options.subscriptionAccounts,
+      options.providerCredentialConfigured
     )) {
       for (const route of model.routes) {
         if (!route.available)
@@ -455,6 +460,7 @@ export function createRuntimeConfigManager(
     options.initialSnapshot ??
     loadRuntimeConfig(requireDataRoot(options.dataRoot), {
       subscriptionAccounts: options.subscriptionAccounts,
+      providerCredentialConfigured: options.providerCredentialConfigured,
     });
   assertUnknownModelContext(current);
   let lastReload: RuntimeConfigReloadSummary | null = null;
@@ -482,6 +488,7 @@ export function createRuntimeConfigManager(
         const next = loadRuntimeConfig(requireDataRoot(options.dataRoot), {
           version: nextVersion,
           subscriptionAccounts: options.subscriptionAccounts,
+          providerCredentialConfigured: options.providerCredentialConfigured,
         });
         assertNoBlockingDiagnostics(next);
         const plan = diffRuntimeConfig(current, next);

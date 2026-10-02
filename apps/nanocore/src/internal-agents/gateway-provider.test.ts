@@ -96,6 +96,60 @@ function request(input = 'Read status.') {
 }
 
 describe('internal Agent Gateway provider', () => {
+  it('returns existing unavailable outcome when the pinned model no longer resolves', async () => {
+    const capture = captureBinding();
+    const createResponses = vi.fn().mockResolvedValue({
+      id: 'unexpected',
+      object: 'response',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'Unexpected dispatch.' }],
+        },
+      ],
+    });
+    const resolveGatewayProvider = vi.fn().mockReturnValue({
+      id: 'provider',
+      models: ['model'],
+      gatewayCapabilities: {},
+      modelMetadata: { model: { tool_call: true } },
+    });
+    const provider = createInternalAgentGatewayProvider({
+      capture,
+      logicalModel,
+      resolveLogicalModel: () => null,
+      dispatcher: { createResponses },
+      resolveGatewayProvider,
+      promptCacheScope: { sessionId: 'admin:missing', workspaceId: capture.turn.workspaceId },
+      usageEndpoint: 'responses',
+      callContext: {
+        authorityActor: { kind: 'user', id: 'user_local' },
+        agentId: 'assistant',
+        workspaceId: capture.turn.workspaceId,
+        family: 'llm',
+        operation: 'administration',
+        capabilityId: 'inference.local.administration',
+        providerRef: null,
+        requestId: null,
+        serviceRef: 'llm-gateway',
+        redactionClass: 'metadata-only',
+        summary: 'Missing pinned model regression.',
+      },
+    });
+    await expect(provider(request())).rejects.toMatchObject({
+      code: 'gateway_logical_model_unavailable',
+    });
+    expect(resolveGatewayProvider).not.toHaveBeenCalled();
+    expect(createResponses).not.toHaveBeenCalled();
+    expect(
+      listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId)
+    ).toMatchObject([{ status: 'failed', errorCode: 'gateway_logical_model_unavailable' }]);
+    expect(listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId)).toEqual([]);
+  });
+
   it('projects only fixed Tools and preserves provider output interleaving', async () => {
     const createResponses = vi.fn().mockResolvedValue({
       id: 'response',
@@ -118,6 +172,9 @@ describe('internal Agent Gateway provider', () => {
     });
     const onDispatch = vi.fn();
     const provider = createInternalAgentGatewayProvider({
+      resolveLogicalModel(): ResolvedLogicalModel {
+        return this.logicalModel;
+      },
       logicalModel,
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
       resolveGatewayProvider: () =>
@@ -173,6 +230,9 @@ describe('internal Agent Gateway provider', () => {
   it('fails before provider contact when unsupported compaction is required', async () => {
     const createResponses = vi.fn();
     const provider = createInternalAgentGatewayProvider({
+      resolveLogicalModel(): ResolvedLogicalModel {
+        return this.logicalModel;
+      },
       logicalModel,
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
       resolveGatewayProvider: () => ({}) as never,
@@ -225,6 +285,9 @@ describe('internal Agent Gateway provider', () => {
       async (admitted) => {
         admittedDb = admitted.workspaceDb;
         const provider = createInternalAgentGatewayProvider({
+          resolveLogicalModel(): ResolvedLogicalModel {
+            return this.logicalModel;
+          },
           ...providerOptions,
           capture: admitted,
         });
@@ -306,6 +369,9 @@ describe('internal Agent Gateway provider', () => {
     pairModels.checkAuth = async () => ({}) as never;
     faux.setResponses([fauxAssistantMessage('Codex admitted.')]);
     const provider = createInternalAgentGatewayProvider({
+      resolveLogicalModel(): ResolvedLogicalModel {
+        return this.logicalModel;
+      },
       logicalModel: {
         ...logicalModel,
         routes: [
@@ -351,6 +417,9 @@ describe('internal Agent Gateway provider', () => {
   it('fails before provider contact when Tool image content cannot be preserved', async () => {
     const createResponses = vi.fn();
     const provider = createInternalAgentGatewayProvider({
+      resolveLogicalModel(): ResolvedLogicalModel {
+        return this.logicalModel;
+      },
       logicalModel,
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
       resolveGatewayProvider: () => ({}) as never,
@@ -428,6 +497,9 @@ describe('internal role shares Gateway planning and replay rules', () => {
           };
         });
         const provider = createInternalAgentGatewayProvider({
+          resolveLogicalModel(): ResolvedLogicalModel {
+            return this.logicalModel;
+          },
           logicalModel: model,
           capture,
           dispatcher: { createResponses } as unknown as Pick<
@@ -468,6 +540,9 @@ describe('internal role shares Gateway planning and replay rules', () => {
   it('skips a member unable to satisfy the run-pinned tool capability without dispatch', async () => {
     const calls: string[] = [];
     const provider = createInternalAgentGatewayProvider({
+      resolveLogicalModel(): ResolvedLogicalModel {
+        return this.logicalModel;
+      },
       logicalModel: {
         ...logicalModel,
         routes: ['primary', 'backup'].map((id) => ({
@@ -515,6 +590,9 @@ describe('internal role shares Gateway planning and replay rules', () => {
     }));
     const onDispatch = vi.fn();
     const provider = createInternalAgentGatewayProvider({
+      resolveLogicalModel(): ResolvedLogicalModel {
+        return this.logicalModel;
+      },
       logicalModel: {
         ...logicalModel,
         routes: ['primary', 'backup'].map((id) => ({
@@ -577,6 +655,9 @@ describe('Round 2 internal-role exhaustion cause', () => {
         throw config.id === 'primary' ? primaryFailure : finalFailure;
       });
       const provider = createInternalAgentGatewayProvider({
+        resolveLogicalModel(): ResolvedLogicalModel {
+          return this.logicalModel;
+        },
         logicalModel: {
           ...logicalModel,
           autoFailover: !disabled,
@@ -634,6 +715,9 @@ describe('slice 1d internal logical call', () => {
     const createResponses = vi.fn();
     const resolveGatewayProvider = vi.fn();
     const provider = createInternalAgentGatewayProvider({
+      resolveLogicalModel(): ResolvedLogicalModel {
+        return this.logicalModel;
+      },
       capture,
       logicalModel: {
         ...logicalModel,
@@ -703,6 +787,9 @@ describe('slice 1d round 2 internal lifecycle', () => {
         };
       });
       const provider = createInternalAgentGatewayProvider({
+        resolveLogicalModel(): ResolvedLogicalModel {
+          return this.logicalModel;
+        },
         capture,
         logicalModel,
         dispatcher: { createResponses } as never,
@@ -767,6 +854,9 @@ describe('slice 1d round 2 internal lifecycle', () => {
       };
     });
     const provider = createInternalAgentGatewayProvider({
+      resolveLogicalModel(): ResolvedLogicalModel {
+        return this.logicalModel;
+      },
       capture,
       logicalModel: {
         ...logicalModel,

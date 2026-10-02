@@ -21192,6 +21192,7 @@
                                   "provider_profile_absent",
                                   "provider_model_delisted",
                                   "provider_not_dispatchable",
+                                  "provider_api_key_missing",
                                   "subscription_vault_unavailable",
                                   "subscription_account_absent",
                                   "subscription_account_logged_out",
@@ -70495,5 +70496,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:289e39209f622b963a83f2626b2286c999e883dedfb7d6bd8194c34bcadb26bb"
+  "x-openkit-source-digest": "sha256:6e205703d704ea327f376db3e79988a9c1d5ea11891db01a4df0583b307524ab"
 }

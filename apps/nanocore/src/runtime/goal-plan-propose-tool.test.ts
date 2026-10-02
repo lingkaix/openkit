@@ -14,8 +14,10 @@ import type {
   AgentAssistantMessage,
   InternalAgentProviderCall,
 } from '../internal-agents/internal-agent-loop.js';
+import { PiAiGatewayConfigurationError } from '../llm/pi-ai-client.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { createProviderCredentialConfigured } from '../providers/vault-credential-resolver.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -513,6 +515,559 @@ describe('pre-approval Goal Plan revision Turn', () => {
 });
 
 describe('pre-approval Goal Plan revision planner factory', () => {
+  it.each([
+    true,
+    false,
+  ])('recomputes missing API-key supply for internal-role calls with configured backup %s', async (backupConfigured) => {
+    const { snapshot, resolveGatewayProvider } = admittedOrchestratorBindings();
+    const baseProfile = snapshot.providerRegistry.list()[0]!;
+    snapshot.providerRegistry = new ProviderRegistry([
+      { ...baseProfile, id: 'primary', kind: 'direct', secretRef: 'test:missing-key' },
+      { ...baseProfile, id: 'backup', kind: 'direct', secretRef: 'test:backup-key' },
+    ]);
+    snapshot.gatewayConfig.logicalModels[0]!.routes = [
+      { id: 'primary', providerProfileId: 'primary', providerModel: 'model' },
+      { id: 'backup', providerProfileId: 'backup', providerModel: 'model' },
+    ];
+    const providerCredentialConfigured = createProviderCredentialConfigured({
+      fallback: (ref) =>
+        backupConfigured && ref === 'test:backup-key' ? 'synthetic-backup-key' : null,
+    });
+    const { coreDb, workspaceDb } = openRevisionUsageStorage();
+    const proposed = twoTaskPlan(PREVIOUS_PLAN);
+    let modelCalls = 0;
+    const createResponses = vi.fn(async (provider: ResolvedLLMProviderConfig) => {
+      if (!provider.apiKey) {
+        throw new PiAiGatewayConfigurationError('Provider requires an explicit API key.');
+      }
+      modelCalls += 1;
+      return {
+        id: 'resp_configured_backup',
+        object: 'response' as const,
+        status: 'completed' as const,
+        output:
+          modelCalls === 1
+            ? [
+                {
+                  type: 'function_call',
+                  call_id: 'call_propose',
+                  name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+                  arguments: JSON.stringify(proposed),
+                },
+              ]
+            : [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'Proposed.' }],
+                },
+              ],
+        usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+      };
+    });
+    try {
+      const planner = createGoalPlanPlanner({
+        runtimeConfig: () => snapshot,
+        llmGatewayDispatcher: { createResponses },
+        resolveGatewayProvider: (id) => ({
+          ...resolveGatewayProvider(),
+          id,
+          apiKey: backupConfigured && id === 'backup' ? 'synthetic-backup-key' : null,
+        }),
+        providerCredentialConfigured,
+        workspaceId: GOAL.workspaceId,
+        userId: REVISION_ACTOR.id,
+        authorityActor: REVISION_ACTOR,
+        signal: new AbortController().signal,
+      });
+      const result = planner({
+        goal: GOAL,
+        capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
+        previousPlan: PREVIOUS_PLAN,
+        previousPlanItemId: 'it_goal_plan_prior',
+        revisionText: REVISION,
+      });
+      if (backupConfigured) {
+        expect(await result).toEqual(proposed);
+        expect(createResponses).toHaveBeenCalledTimes(2);
+        expect(createResponses.mock.calls.every(([provider]) => provider.id === 'backup')).toBe(
+          true
+        );
+      } else {
+        await expect(result).rejects.toMatchObject({ code: 'goal_plan_revision_unavailable' });
+        expect(createResponses).not.toHaveBeenCalled();
+      }
+      const calls = listWorkspaceCapabilityCalls(workspaceDb, GOAL.workspaceId);
+      expect(calls).toHaveLength(backupConfigured ? 2 : 1);
+      for (const call of calls) {
+        expect(call.status).toBe(backupConfigured ? 'succeeded' : 'failed');
+        expect(call.extensions?.['openkit.gateway/routeLineage']).toMatchObject({
+          entries: [
+            {
+              kind: 'unavailable',
+              routeMemberId: 'primary',
+              unavailableReason: 'provider_api_key_missing',
+              failureKind: 'auth_rejected',
+            },
+            backupConfigured
+              ? { kind: 'attempt', routeMemberId: 'backup', terminalResult: 'succeeded' }
+              : {
+                  kind: 'unavailable',
+                  routeMemberId: 'backup',
+                  unavailableReason: 'provider_api_key_missing',
+                  failureKind: 'auth_rejected',
+                },
+          ],
+        });
+      }
+      const usage = listWorkspaceUsageRecords(workspaceDb, GOAL.workspaceId);
+      expect(usage).toHaveLength(backupConfigured ? 2 : 0);
+      expect(usage.every((record) => record.providerRef === 'backup')).toBe(true);
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'added',
+    'shrink',
+  ] as const)('preserves pinned limits across %s snapshot replacement', async (change) => {
+    let primaryConfigured = change === 'added';
+    const { snapshot, resolveGatewayProvider } = admittedOrchestratorBindings();
+    let currentSnapshot = snapshot;
+    const baseProfile = snapshot.providerRegistry.list()[0]!;
+    snapshot.providerRegistry = new ProviderRegistry([
+      { ...baseProfile, id: 'primary', kind: 'direct', secretRef: 'test:missing-key' },
+      { ...baseProfile, id: 'backup', kind: 'direct', secretRef: 'test:backup-key' },
+    ]);
+    snapshot.gatewayConfig.logicalModels[0]!.routes = [
+      { id: 'primary', providerProfileId: 'primary', providerModel: 'model' },
+      { id: 'backup', providerProfileId: 'backup', providerModel: 'model' },
+    ];
+    const providerCredentialConfigured = createProviderCredentialConfigured({
+      fallback: (ref) =>
+        ref === 'test:new-key' ||
+        ref === 'test:backup-key' ||
+        (primaryConfigured && ref === 'test:missing-key')
+          ? 'synthetic-key'
+          : null,
+    });
+    const { coreDb, workspaceDb } = openRevisionUsageStorage();
+    const proposed = twoTaskPlan(PREVIOUS_PLAN);
+    let modelCalls = 0;
+    const createResponses = vi.fn(
+      async (
+        provider: ResolvedLLMProviderConfig,
+        _request: unknown,
+        _context: { capture?: { capabilityCallId?: string } }
+      ) => {
+        if (!provider.apiKey) {
+          throw new PiAiGatewayConfigurationError('Provider requires an explicit API key.');
+        }
+        modelCalls += 1;
+        primaryConfigured = true;
+        currentSnapshot = {
+          ...snapshot,
+          gatewayConfig: {
+            ...snapshot.gatewayConfig,
+            logicalModels: snapshot.gatewayConfig.logicalModels.map((model) => ({
+              ...model,
+              contextManagement: [{ type: 'compaction' as const, compactThreshold: 8000 }],
+              routes:
+                change === 'added'
+                  ? [
+                      { id: 'new', providerProfileId: 'new', providerModel: 'model' },
+                      ...model.routes,
+                    ]
+                  : model.routes,
+            })),
+          },
+          providerRegistry: new ProviderRegistry(
+            change === 'added'
+              ? [
+                  ...snapshot.providerRegistry.list(),
+                  {
+                    ...baseProfile,
+                    id: 'new',
+                    kind: 'direct',
+                    secretRef: 'test:new-key',
+                    modelMetadata: {
+                      model: {
+                        ...baseProfile.modelMetadata.model,
+                        limit: { context: 20000, output: 1000 },
+                      },
+                    },
+                  },
+                ]
+              : snapshot.providerRegistry.list().map((profile) => ({
+                  ...profile,
+                  modelMetadata: {
+                    model: {
+                      ...baseProfile.modelMetadata.model,
+                      limit: { context: 20000, output: 1000 },
+                    },
+                  },
+                }))
+          ),
+        };
+        return {
+          id: 'resp_configured_backup',
+          object: 'response' as const,
+          status: 'completed' as const,
+          output:
+            modelCalls === 1
+              ? [
+                  {
+                    type: 'function_call',
+                    call_id: 'call_propose',
+                    name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+                    arguments: JSON.stringify(proposed),
+                  },
+                ]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    status: 'completed',
+                    content: [{ type: 'output_text', text: 'Proposed.' }],
+                  },
+                ],
+          usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+        };
+      }
+    );
+    try {
+      const planner = createGoalPlanPlanner({
+        runtimeConfig: () => currentSnapshot,
+        llmGatewayDispatcher: { createResponses },
+        resolveGatewayProvider: (id) => ({
+          ...resolveGatewayProvider(),
+          modelMetadata: currentSnapshot.providerRegistry.get(id)!.modelMetadata,
+          id,
+          apiKey:
+            id === 'new' || id === 'backup' || (primaryConfigured && id === 'primary')
+              ? 'synthetic-key'
+              : null,
+        }),
+        providerCredentialConfigured,
+        workspaceId: GOAL.workspaceId,
+        userId: REVISION_ACTOR.id,
+        authorityActor: REVISION_ACTOR,
+        signal: new AbortController().signal,
+      });
+      const result = planner({
+        goal: GOAL,
+        capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
+        previousPlan: PREVIOUS_PLAN,
+        previousPlanItemId: 'it_goal_plan_prior',
+        revisionText: REVISION,
+      });
+      if (change === 'added') await expect(result).resolves.toEqual(proposed);
+      else await expect(result).rejects.toMatchObject({ code: 'goal_plan_revision_unavailable' });
+      expect(createResponses.mock.calls.map(([provider]) => provider.id)).toEqual(
+        change === 'added' ? ['primary', 'primary'] : ['backup']
+      );
+      expect(
+        createResponses.mock.calls.every(
+          ([provider]) =>
+            provider.modelMetadata?.model?.limit?.context === 200000 &&
+            provider.modelMetadata?.model?.limit?.output === 8000
+        )
+      ).toBe(true);
+      expect(
+        snapshot.gatewayConfig.logicalModels[0]?.contextManagement?.[0]?.compactThreshold
+      ).toBe(50000);
+      expect(
+        currentSnapshot.gatewayConfig.logicalModels[0]?.contextManagement?.[0]?.compactThreshold
+      ).toBe(8000);
+      const calls = listWorkspaceCapabilityCalls(workspaceDb, GOAL.workspaceId);
+      const usage = listWorkspaceUsageRecords(workspaceDb, GOAL.workspaceId);
+      expect(calls).toHaveLength(2);
+      expect(usage).toHaveLength(change === 'added' ? 2 : 1);
+      expect(
+        usage.every((record) => record.providerRef === (change === 'added' ? 'primary' : 'backup'))
+      ).toBe(true);
+      const firstCallId = createResponses.mock.calls[0]?.[2]?.capture?.capabilityCallId;
+      const first = calls.find((call) => call.id === firstCallId);
+      const second = calls.find((call) => call.id !== firstCallId);
+      expect(first).toMatchObject({ status: 'succeeded' });
+      expect(first?.extensions?.['openkit.gateway/routeLineage']).toMatchObject({
+        entries: [
+          ...(change === 'shrink'
+            ? [
+                {
+                  kind: 'unavailable',
+                  routeMemberId: 'primary',
+                  unavailableReason: 'provider_api_key_missing',
+                  failureKind: 'auth_rejected',
+                },
+              ]
+            : []),
+          {
+            kind: 'attempt',
+            routeMemberId: change === 'added' ? 'primary' : 'backup',
+            terminalResult: 'succeeded',
+          },
+        ],
+      });
+      expect(usage.filter((record) => record.capabilityCallId === firstCallId)).toHaveLength(1);
+      expect(second).toMatchObject(
+        change === 'added'
+          ? { status: 'succeeded' }
+          : { status: 'failed', errorCode: 'gateway_logical_model_unavailable' }
+      );
+      const ineligible = (routeMemberId: string) => ({
+        kind: 'unavailable',
+        routeMemberId,
+        selectionReason: 'pinned_capability_unavailable',
+        unavailableReason: 'pinned_capability_unavailable',
+        failureKind: 'unsupported',
+      });
+      expect(second?.extensions?.['openkit.gateway/routeLineage']).toMatchObject({
+        entries:
+          change === 'added'
+            ? [
+                ineligible('new'),
+                { kind: 'attempt', routeMemberId: 'primary', terminalResult: 'succeeded' },
+              ]
+            : [ineligible('primary'), ineligible('backup')],
+      });
+      expect(usage.filter((record) => record.capabilityCallId === second?.id)).toHaveLength(
+        change === 'added' ? 1 : 0
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('restores primary between internal model calls', async () => {
+    let primaryConfigured = false;
+    const { snapshot, resolveGatewayProvider } = admittedOrchestratorBindings();
+    const baseProfile = snapshot.providerRegistry.list()[0]!;
+    snapshot.providerRegistry = new ProviderRegistry([
+      { ...baseProfile, id: 'primary', kind: 'direct', secretRef: 'test:missing-key' },
+      { ...baseProfile, id: 'backup', kind: 'direct', secretRef: 'test:backup-key' },
+    ]);
+    snapshot.gatewayConfig.logicalModels[0]!.routes = [
+      { id: 'primary', providerProfileId: 'primary', providerModel: 'model' },
+      { id: 'backup', providerProfileId: 'backup', providerModel: 'model' },
+    ];
+    const providerCredentialConfigured = createProviderCredentialConfigured({
+      fallback: (ref) =>
+        ref === 'test:backup-key' || (primaryConfigured && ref === 'test:missing-key')
+          ? 'synthetic-key'
+          : null,
+    });
+    const { coreDb, workspaceDb } = openRevisionUsageStorage();
+    const proposed = twoTaskPlan(PREVIOUS_PLAN);
+    let modelCalls = 0;
+    const createResponses = vi.fn(async (provider: ResolvedLLMProviderConfig) => {
+      if (!provider.apiKey) {
+        throw new PiAiGatewayConfigurationError('Provider requires an explicit API key.');
+      }
+      modelCalls += 1;
+      primaryConfigured = true;
+      return {
+        id: 'resp_configured_backup',
+        object: 'response' as const,
+        status: 'completed' as const,
+        output:
+          modelCalls === 1
+            ? [
+                {
+                  type: 'function_call',
+                  call_id: 'call_propose',
+                  name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+                  arguments: JSON.stringify(proposed),
+                },
+              ]
+            : [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'Proposed.' }],
+                },
+              ],
+        usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+      };
+    });
+    try {
+      const planner = createGoalPlanPlanner({
+        runtimeConfig: () => snapshot,
+        llmGatewayDispatcher: { createResponses },
+        resolveGatewayProvider: (id) => ({
+          ...resolveGatewayProvider(),
+          id,
+          apiKey:
+            id === 'backup' || (primaryConfigured && id === 'primary') ? 'synthetic-key' : null,
+        }),
+        providerCredentialConfigured,
+        workspaceId: GOAL.workspaceId,
+        userId: REVISION_ACTOR.id,
+        authorityActor: REVISION_ACTOR,
+        signal: new AbortController().signal,
+      });
+      const result = planner({
+        goal: GOAL,
+        capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
+        previousPlan: PREVIOUS_PLAN,
+        previousPlanItemId: 'it_goal_plan_prior',
+        revisionText: REVISION,
+      });
+      expect(await result).toEqual(proposed);
+      expect(createResponses).toHaveBeenCalledTimes(2);
+      const providerOrder = ['backup', 'primary'];
+      expect(createResponses.mock.calls.map(([provider]) => provider.id)).toEqual(providerOrder);
+      expect(createResponses.mock.calls.every(([provider]) => Boolean(provider.apiKey))).toBe(true);
+      const calls = listWorkspaceCapabilityCalls(workspaceDb, GOAL.workspaceId);
+      const usage = listWorkspaceUsageRecords(workspaceDb, GOAL.workspaceId);
+      expect(calls).toHaveLength(2);
+      expect(usage).toHaveLength(2);
+      for (const providerId of providerOrder) {
+        const record = usage.find((entry) => entry.providerRef === providerId);
+        expect(record).toBeDefined();
+        const call = calls.find((entry) => entry.id === record?.capabilityCallId);
+        expect(call?.status).toBe('succeeded');
+        expect(call?.extensions?.['openkit.gateway/routeLineage']).toMatchObject({
+          entries: [
+            ...(providerId === 'backup'
+              ? [
+                  {
+                    kind: 'unavailable',
+                    routeMemberId: 'primary',
+                    unavailableReason: 'provider_api_key_missing',
+                    failureKind: 'auth_rejected',
+                  },
+                ]
+              : []),
+            { kind: 'attempt', routeMemberId: providerId, terminalResult: 'succeeded' },
+          ],
+        });
+      }
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+  it('loses primary between internal model calls', async () => {
+    let primaryConfigured = true;
+    const { snapshot, resolveGatewayProvider } = admittedOrchestratorBindings();
+    const baseProfile = snapshot.providerRegistry.list()[0]!;
+    snapshot.providerRegistry = new ProviderRegistry([
+      { ...baseProfile, id: 'primary', kind: 'direct', secretRef: 'test:missing-key' },
+      { ...baseProfile, id: 'backup', kind: 'direct', secretRef: 'test:backup-key' },
+    ]);
+    snapshot.gatewayConfig.logicalModels[0]!.routes = [
+      { id: 'primary', providerProfileId: 'primary', providerModel: 'model' },
+      { id: 'backup', providerProfileId: 'backup', providerModel: 'model' },
+    ];
+    const providerCredentialConfigured = createProviderCredentialConfigured({
+      fallback: (ref) =>
+        ref === 'test:backup-key' || (primaryConfigured && ref === 'test:missing-key')
+          ? 'synthetic-key'
+          : null,
+    });
+    const { coreDb, workspaceDb } = openRevisionUsageStorage();
+    const proposed = twoTaskPlan(PREVIOUS_PLAN);
+    let modelCalls = 0;
+    const createResponses = vi.fn(async (provider: ResolvedLLMProviderConfig) => {
+      if (!provider.apiKey) {
+        throw new PiAiGatewayConfigurationError('Provider requires an explicit API key.');
+      }
+      modelCalls += 1;
+      primaryConfigured = false;
+      return {
+        id: 'resp_configured_backup',
+        object: 'response' as const,
+        status: 'completed' as const,
+        output:
+          modelCalls === 1
+            ? [
+                {
+                  type: 'function_call',
+                  call_id: 'call_propose',
+                  name: GOAL_PLAN_PROPOSE_TOOL_NAME,
+                  arguments: JSON.stringify(proposed),
+                },
+              ]
+            : [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'Proposed.' }],
+                },
+              ],
+        usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+      };
+    });
+    try {
+      const planner = createGoalPlanPlanner({
+        runtimeConfig: () => snapshot,
+        llmGatewayDispatcher: { createResponses },
+        resolveGatewayProvider: (id) => ({
+          ...resolveGatewayProvider(),
+          id,
+          apiKey:
+            id === 'backup' || (primaryConfigured && id === 'primary') ? 'synthetic-key' : null,
+        }),
+        providerCredentialConfigured,
+        workspaceId: GOAL.workspaceId,
+        userId: REVISION_ACTOR.id,
+        authorityActor: REVISION_ACTOR,
+        signal: new AbortController().signal,
+      });
+      const result = planner({
+        goal: GOAL,
+        capture: { workspaceDb, threadId: GOAL.threadId, turnId: 'tu_revision_capture' },
+        previousPlan: PREVIOUS_PLAN,
+        previousPlanItemId: 'it_goal_plan_prior',
+        revisionText: REVISION,
+      });
+      expect(await result).toEqual(proposed);
+      expect(createResponses).toHaveBeenCalledTimes(2);
+      const providerOrder = ['primary', 'backup'];
+      expect(createResponses.mock.calls.map(([provider]) => provider.id)).toEqual(providerOrder);
+      expect(createResponses.mock.calls.every(([provider]) => Boolean(provider.apiKey))).toBe(true);
+      const calls = listWorkspaceCapabilityCalls(workspaceDb, GOAL.workspaceId);
+      const usage = listWorkspaceUsageRecords(workspaceDb, GOAL.workspaceId);
+      expect(calls).toHaveLength(2);
+      expect(usage).toHaveLength(2);
+      for (const providerId of providerOrder) {
+        const record = usage.find((entry) => entry.providerRef === providerId);
+        expect(record).toBeDefined();
+        const call = calls.find((entry) => entry.id === record?.capabilityCallId);
+        expect(call?.status).toBe('succeeded');
+        expect(call?.extensions?.['openkit.gateway/routeLineage']).toMatchObject({
+          entries: [
+            ...(providerId === 'backup'
+              ? [
+                  {
+                    kind: 'unavailable',
+                    routeMemberId: 'primary',
+                    unavailableReason: 'provider_api_key_missing',
+                    failureKind: 'auth_rejected',
+                  },
+                ]
+              : []),
+            { kind: 'attempt', routeMemberId: providerId, terminalResult: 'succeeded' },
+          ],
+        });
+      }
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('resolves the Goal Orchestrator model and returns a revised Plan through the Gateway dispatcher', async () => {
     const proposed = twoTaskPlan(PREVIOUS_PLAN);
     const { snapshot, resolveGatewayProvider } = admittedOrchestratorBindings();

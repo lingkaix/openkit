@@ -25,6 +25,7 @@ import { readWorkObservations } from './storage/work-observations.js';
 import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -2017,6 +2018,13 @@ describe('quick chat app API', () => {
         metadata: { ownerScope: 'server' },
         referenceId: 'vault_quick_chat',
       });
+      createVaultReference(coreDb, {
+        referenceId: 'vault_quick_chat',
+        ownerScope: 'server',
+        displayName: 'Quick Chat test key',
+        secretKind: 'provider-api-key',
+        backendKind: 'encrypted-file',
+      });
 
       const app = createApp({
         coreDb,
@@ -2265,6 +2273,7 @@ describe('quick chat app API', () => {
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: piAiClient,
       providerSubscriptionAccountManager: {
+        gatewayUnavailableReason: () => null,
         getPairHandle,
       } as unknown as ProviderSubscriptionAccountManager,
     });

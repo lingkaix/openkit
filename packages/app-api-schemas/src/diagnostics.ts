@@ -86,6 +86,7 @@ const LogicalModelRouteDiagnosticSchema = z
         'provider_profile_absent',
         'provider_model_delisted',
         'provider_not_dispatchable',
+        'provider_api_key_missing',
         'subscription_vault_unavailable',
         'subscription_account_absent',
         'subscription_account_logged_out',

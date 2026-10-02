@@ -17,6 +17,7 @@ import type { ResolvedInternalRoleProfile } from '../internal-agents/profile-res
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { createProviderCredentialConfigured } from '../providers/vault-credential-resolver.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -58,7 +59,11 @@ afterEach(() => {
 });
 
 describe('administration conversation route', () => {
-  it('supplies server-authored private context for a two-round environment list call', async () => {
+  it.each([
+    false,
+    true,
+  ])('supplies server-authored private context for a two-round environment list call with key restoration %s', async (restorePrimary) => {
+    let primaryConfigured = false;
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-administration-private-context-'));
     const coreDb = openCoreDb(dataRoot);
     openDatabases.push(coreDb);
@@ -113,9 +118,12 @@ describe('administration conversation route', () => {
             displayName: 'Administration',
             // 10000 stays inside the 20000 physical context and leaves headroom for seven Tool schemas plus instructions.
             contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
-            routes: [
-              { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
-            ],
+            routes: restorePrimary
+              ? [
+                  { id: 'primary', providerProfileId: 'primary', providerModel: 'model' },
+                  { id: 'backup', providerProfileId: 'backup', providerModel: 'model' },
+                ]
+              : [{ id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' }],
           },
         ],
       },
@@ -124,7 +132,19 @@ describe('administration conversation route', () => {
         defaultLogicalModelId: 'administration',
         profiles: [],
       },
-      providerRegistry: new ProviderRegistry([providerProfile]),
+      providerRegistry: new ProviderRegistry(
+        restorePrimary
+          ? [
+              {
+                ...providerProfile,
+                id: 'primary',
+                kind: 'direct',
+                secretRef: 'test:admin-primary',
+              },
+              { ...providerProfile, id: 'backup', kind: 'direct', secretRef: 'test:admin-backup' },
+            ]
+          : [providerProfile]
+      ),
     });
     const listEnvironments = vi.fn(async () => ({
       content: [
@@ -171,6 +191,7 @@ describe('administration conversation route', () => {
         expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual([
           ...ADMINISTRATION_TOOL_NAMES,
         ]);
+        primaryConfigured = true;
         return {
           id: 'resp_administration_private_context_tool',
           object: 'response',
@@ -213,14 +234,20 @@ describe('administration conversation route', () => {
       quickChatWorkspaceIdForUser,
       requestStore: () => store,
       runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
-      resolveGatewayProvider: () =>
+      providerCredentialConfigured: createProviderCredentialConfigured({
+        fallback: (ref) =>
+          ref === 'test:admin-backup' || (primaryConfigured && ref === 'test:admin-primary')
+            ? 'synthetic-key'
+            : null,
+      }),
+      resolveGatewayProvider: (id) =>
         ({
           adapterId: 'provider',
-          apiKey: 'unused',
+          apiKey: !restorePrimary || id === 'backup' || primaryConfigured ? 'synthetic-key' : null,
           baseUrl: providerProfile.baseUrl,
           displayName: providerProfile.displayName,
           gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-          id: providerProfile.id,
+          id,
           models: providerProfile.models,
           modelMetadata: providerProfile.modelMetadata,
           requiresApiKey: true,
@@ -249,6 +276,9 @@ describe('administration conversation route', () => {
       expect.objectContaining({ callId: 'call_environment_list' })
     );
     expect(createResponses).toHaveBeenCalledTimes(2);
+    expect(createResponses.mock.calls.map(([provider]) => provider.id)).toEqual(
+      restorePrimary ? ['backup', 'primary'] : ['provider', 'provider']
+    );
   });
 
   it('does not republish a prior answer when the final provider response is empty', async () => {

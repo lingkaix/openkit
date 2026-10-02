@@ -11,7 +11,12 @@ import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-10-01/a
 import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@openkit/protocol';
 import type { ProviderProfile } from '../config/providers-loader.js';
 import { isProviderProfileDispatchable } from '../providers/llm-config.js';
-import { gatewayCapabilitiesForProfile, type ProviderRegistry } from '../providers/registry.js';
+import {
+  gatewayCapabilitiesForProfile,
+  type ProviderCredentialConfigured,
+  type ProviderRegistry,
+  providerRequiresCredentials,
+} from '../providers/registry.js';
 import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
 
 interface ModelsDevModel {
@@ -115,7 +120,8 @@ export interface ResolvedLogicalModel {
 export function resolveLogicalModelCatalog(
   config: GatewayConfig,
   providers: ProviderRegistry,
-  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>,
+  providerCredentialConfigured?: ProviderCredentialConfigured
 ): ResolvedLogicalModel[] {
   if (!config.enabled) {
     return [];
@@ -167,7 +173,11 @@ export function resolveLogicalModelCatalog(
             ? 'provider_model_delisted'
             : !isProviderProfileDispatchable(profile)
               ? 'provider_not_dispatchable'
-              : subscriptionUnavailableReason(profile, subscriptionAccounts);
+              : credentialUnavailableReason(
+                  profile,
+                  subscriptionAccounts,
+                  providerCredentialConfigured
+                );
       return { ...route, available: unavailableReason === null, unavailableReason };
     });
     const availableContracts = authoredContracts.filter(
@@ -211,16 +221,20 @@ export function resolveLogicalModel(
   config: GatewayConfig,
   providers: ProviderRegistry,
   logicalModelId?: string,
-  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>,
+  providerCredentialConfigured?: ProviderCredentialConfigured
 ): ResolvedLogicalModel | null {
   const selectedId = logicalModelId ?? config.defaultLogicalModelId;
   if (!selectedId) {
     return null;
   }
   return (
-    resolveLogicalModelCatalog(config, providers, subscriptionAccounts).find(
-      (model) => model.id === selectedId
-    ) ?? null
+    resolveLogicalModelCatalog(
+      config,
+      providers,
+      subscriptionAccounts,
+      providerCredentialConfigured
+    ).find((model) => model.id === selectedId) ?? null
   );
 }
 
@@ -562,14 +576,21 @@ function assignLeaf<T, K extends keyof T>(target: T, key: K, value: T[K] | undef
   }
 }
 
-/** Reuses the subscription owner's strict network-free availability check for bound profiles. */
-function subscriptionUnavailableReason(
+/** Checks bound subscription supply or required API-key presence without resolving Vault material. */
+function credentialUnavailableReason(
   profile: ProviderProfile,
-  accounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+  accounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>,
+  providerCredentialConfigured?: ProviderCredentialConfigured
 ): string | null {
   const family = resolveSubscriptionFamily(profile);
   const slot = profile.extensions?.openkit?.subscriptionAccount?.accountSlotId;
-  if (profile.kind !== 'oauth' || !family || !slot) return null;
+  if (profile.kind !== 'oauth' || !family || !slot) {
+    return providerCredentialConfigured &&
+      providerRequiresCredentials(profile) &&
+      !providerCredentialConfigured(profile.secretRef)
+      ? 'provider_api_key_missing'
+      : null;
+  }
   return accounts
     ? accounts.gatewayUnavailableReason({ subscriptionProviderId: family, accountSlotId: slot })
     : null;

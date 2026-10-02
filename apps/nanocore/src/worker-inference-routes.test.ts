@@ -306,6 +306,7 @@ function createWorkerInferenceRouteFixture(
     readonly autoFailover?: boolean;
     readonly reasoningEffort?: ReasoningEffort;
     readonly dispatcher?: LLMGatewayProviderDispatcher;
+    readonly missingApiKey?: boolean;
   } = {}
 ): WorkerInferenceRouteFixture {
   const providerProfileId =
@@ -519,6 +520,9 @@ function createWorkerInferenceRouteFixture(
         : {}),
       mode: 'server',
       openKitConfig: {},
+      // Successful fake dispatch still requires configured supply under the Gateway owner.
+      providerCredentialResolver: (ref) =>
+        !options.missingApiKey && ref === 'test:worker-api-key' ? 'synthetic-worker-key' : null,
       providerRegistry: new ProviderRegistry([
         ...(includeWorkerProvider
           ? [
@@ -538,7 +542,7 @@ function createWorkerInferenceRouteFixture(
                             },
                           },
                         }
-                      : {}),
+                      : { secretRef: 'test:worker-api-key' }),
                     models: [providerModel],
                     vendor: 'openai-codex' as const,
                   }
@@ -547,7 +551,7 @@ function createWorkerInferenceRouteFixture(
                     displayName: 'Agent OpenRouter',
                     id: providerProfileId,
                     kind: 'gateway' as const,
-                    ...(options.dispatcher ? { secretRef: 'env:SYNTHETIC_EFFORT_KEY' } : {}),
+                    secretRef: 'test:worker-api-key',
                     models: [providerModel],
                     vendor: 'openrouter' as const,
                   },
@@ -2574,4 +2578,19 @@ describe('slice 3c Worker native effort and immutable package', () => {
       db.sqlite.close();
     }
   });
+});
+
+it('Worker inference skips missing API-key supply without a Provider callback', async () => {
+  const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    missingApiKey: true,
+  });
+  const response = await postWorkerResponses(fixture, {
+    model: WORKER_LOGICAL_MODEL_ID,
+    input: 'Hello',
+  });
+  expect(response.status).toBe(503);
+  const body = await response.json();
+  expect(body).toMatchObject({ error: { code: 'gateway_logical_model_unavailable' } });
+  expect(body.error).not.toHaveProperty('cause');
+  expect(fixture.dispatcher.responseCalls).toEqual([]);
 });

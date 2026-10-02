@@ -7,7 +7,7 @@ import {
 } from '../vault/vault-backend.js';
 import { getVaultReference, revokeVaultReference } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
-import type { ProviderCredentialResolver } from './registry.js';
+import type { ProviderCredentialConfigured, ProviderCredentialResolver } from './registry.js';
 
 /** Input used to create a vault-backed provider credential resolver. */
 export interface CreateVaultProviderCredentialResolverInput {
@@ -70,6 +70,29 @@ export function createVaultProviderCredentialResolver(
 
       throw error;
     }
+  };
+}
+
+/**
+ * Creates the live credential-presence predicate without resolving Vault material or recording use.
+ *
+ * @param input Dispatch's same non-Vault fallback and optional Core reference authority.
+ * @returns Whether an explicit reference has a usable fallback value or active Vault metadata.
+ */
+export function createProviderCredentialConfigured(input: {
+  readonly coreDb?: CoreDb;
+  readonly fallback: ProviderCredentialResolver;
+}): ProviderCredentialConfigured {
+  return (secretRef) => {
+    if (!secretRef) return false;
+    const fallbackValue = input.fallback(secretRef);
+    if (fallbackValue != null) return Boolean(fallbackValue);
+    const referenceId = readVaultReferenceId(secretRef);
+    return Boolean(
+      referenceId &&
+        input.coreDb &&
+        getVaultReference(input.coreDb, referenceId)?.status === 'active'
+    );
   };
 }
 

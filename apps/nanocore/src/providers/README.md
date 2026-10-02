@@ -16,7 +16,7 @@ This directory owns configured provider instances, provider profiles, credential
 - `../config/providers-loader.ts` validates and loads provider profiles using the canonical `@openkit/config-schema` profile schema.
 - `data-root.ts` assembles the registry from the canonical file-backed Provider profiles.
 - `llm-config.ts` projects configured instances into the LLM dispatch shape.
-- `vault-credential-resolver.ts` owns explicit credential resolution and redaction boundaries.
+- `vault-credential-resolver.ts` owns explicit credential resolution, live configured-key presence and redaction boundaries. Its presence predicate uses the same injected/env fallback as dispatch, then active Core Vault reference metadata; it performs no Vault material resolution or audited use and adds no readiness state.
 
 ## Verification
 

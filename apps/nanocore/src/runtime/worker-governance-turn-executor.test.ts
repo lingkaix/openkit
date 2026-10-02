@@ -3158,6 +3158,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       gatewayConfig: createTestGatewayConfig(),
       llmGatewayDispatcher,
       mode: 'local',
+      providerCredentialResolver: (secretRef) =>
+        secretRef === 'test:provenance-api-key' ? 'synthetic-provenance-api-key' : null,
       providerRegistry: new ProviderRegistry([
         {
           defaultModel: 'openai/gpt-5.2',
@@ -3165,6 +3167,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           id: 'agent-openrouter',
           kind: 'gateway',
           models: ['openai/gpt-5.2'],
+          secretRef: 'test:provenance-api-key',
           vendor: 'openrouter',
         },
       ]),

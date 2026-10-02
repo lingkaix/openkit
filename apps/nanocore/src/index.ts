@@ -52,7 +52,10 @@ import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import { resolveEnvSecretRef } from './providers/registry.js';
-import { createVaultProviderCredentialResolver } from './providers/vault-credential-resolver.js';
+import {
+  createProviderCredentialConfigured,
+  createVaultProviderCredentialResolver,
+} from './providers/vault-credential-resolver.js';
 import { fenceNanoHostRuntimeTargetAfterRestart } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import {
@@ -471,6 +474,10 @@ const runtimeConfigManager = createRuntimeConfigManager({
   dataRoot,
   initialSnapshot: runtimeConfigSnapshot,
   subscriptionAccounts: providerSubscriptionAccountManager,
+  providerCredentialConfigured: createProviderCredentialConfigured({
+    coreDb,
+    fallback: resolveEnvSecretRef,
+  }),
 });
 
 if (mode === 'local') {

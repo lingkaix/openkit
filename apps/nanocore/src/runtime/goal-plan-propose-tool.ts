@@ -11,9 +11,11 @@ import {
   runInternalAgentLoop,
 } from '../internal-agents/internal-agent-loop.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
+import { resolveLogicalModel } from '../llm/logical-models.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import {
   assertGoalPlanTaskDispositions,
   assertValidGoalPlanGraph,
@@ -52,6 +54,8 @@ export interface GoalPlanPlannerOptions {
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   /** Optional subscription-backed account manager. */
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
+  /** Current API-key presence without resolving Vault material. */
+  readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Workspace that owns the Goal. */
   readonly workspaceId: string;
   /** Authenticated user whose internal-role preference is consulted. */
@@ -241,6 +245,8 @@ export function createGoalPlanPlanner(options: GoalPlanPlannerOptions): GoalPlan
       gatewayConfig: snapshot.gatewayConfig,
       profilesConfig: snapshot.internalRoleProfiles,
       providerRegistry: snapshot.providerRegistry,
+      providerSubscriptionAccountManager: options.providerSubscriptionAccountManager,
+      providerCredentialConfigured: options.providerCredentialConfigured,
       ...(workspaceConfig ? { workspaceConfig } : {}),
       ...(userConfig ? { userConfig } : {}),
     });
@@ -276,6 +282,16 @@ export function createGoalPlanPlanner(options: GoalPlanPlannerOptions): GoalPlan
       callProvider: createInternalAgentGatewayProvider({
         capture: input.capture,
         logicalModel: selection.logicalModel,
+        resolveLogicalModel: (logicalModelId) => {
+          const snapshot = options.runtimeConfig();
+          return resolveLogicalModel(
+            snapshot.gatewayConfig,
+            snapshot.providerRegistry,
+            logicalModelId,
+            options.providerSubscriptionAccountManager,
+            options.providerCredentialConfigured
+          );
+        },
         dispatcher: options.llmGatewayDispatcher,
         resolveGatewayProvider: options.resolveGatewayProvider,
         ...(options.providerSubscriptionAccountManager

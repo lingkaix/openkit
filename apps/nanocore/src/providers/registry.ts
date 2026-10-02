@@ -47,6 +47,9 @@ export interface ProviderRegistrySummary {
  */
 export type ProviderCredentialResolver = (secretRef: string) => string | null;
 
+/** Tests configured credential presence without resolving Vault material. */
+export type ProviderCredentialConfigured = (secretRef: string | undefined) => boolean;
+
 const unresolvedProviderCredential: ProviderCredentialResolver = () => null;
 
 /**

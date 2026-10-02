@@ -1052,3 +1052,54 @@ it('ignores pinned token-budget options without inventing effort levels', () => 
     []
   );
 });
+
+it('checks API-key presence after existing reasons and preserves keyless and subscription members', () => {
+  const providers = new ProviderRegistry([
+    profile({ id: 'delisted', kind: 'direct', models: ['other'] }),
+    profile({
+      id: 'disabled',
+      kind: 'direct',
+      models: ['model'],
+      readiness: { status: 'disabled' },
+    }),
+    profile({ id: 'missing-key', kind: 'direct', models: ['model'] }),
+    profile({ id: 'keyless', kind: 'custom', models: ['model'] }),
+    profile({
+      id: 'subscription',
+      kind: 'oauth',
+      vendor: 'openai-codex',
+      models: ['model'],
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'slot' } } },
+    }),
+  ]);
+  const config = gateway({
+    routes: ['absent', 'delisted', 'disabled', 'missing-key', 'keyless', 'subscription'].map(
+      (id) => ({ id, providerProfileId: id, providerModel: 'model' })
+    ),
+  });
+  const checked: (string | undefined)[] = [];
+  const [model] = resolveLogicalModelCatalog(
+    config,
+    providers,
+    { gatewayUnavailableReason: () => 'subscription_account_logged_out' },
+    (ref) => {
+      checked.push(ref);
+      return false;
+    }
+  );
+  expect(model?.routes.map((route) => route.unavailableReason)).toEqual([
+    'provider_profile_absent',
+    'provider_model_delisted',
+    'provider_not_dispatchable',
+    'provider_api_key_missing',
+    null,
+    'subscription_account_logged_out',
+  ]);
+  expect(checked).toEqual([undefined]);
+  expect(
+    resolveLogicalModel(config, providers, undefined, undefined, () => false)?.routes[3]
+      ?.unavailableReason
+  ).toBe('provider_api_key_missing');
+  // Agent setup and pure configuration tests may omit live credential admission; production internal-role calls supply it.
+  expect(resolveLogicalModelCatalog(config, providers)[0]?.routes[3]?.available).toBe(true);
+});

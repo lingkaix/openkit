@@ -34,6 +34,47 @@ function unavailablePrimary(autoFailover: boolean): ResolvedLogicalModel {
 
 describe('dispatchLogicalModel member selection', () => {
   it.each([
+    [undefined, { context: 20000, output: 1000 }, 'missing'],
+    [{ context: 200000, output: 8000 }, { context: 20000, output: 1000 }, 'ready'],
+    [{ context: 200000, output: null }, { context: 20000, output: 8000 }, 'ready'],
+    [{ context: null, output: 8000 }, { context: 200000, output: 1000 }, 'ready'],
+    [{ context: 200000, output: 8000 }, { context: 200000, output: 8000 }, 'missing'],
+    [{ context: 200000, output: 8000 }, {}, 'missing'],
+    [{ context: null, output: null }, { context: 20000, output: 1000 }, 'missing'],
+  ] as const)('applies optional pinned limits %j to current member limits %j', async (pinnedLimits, limits, expected) => {
+    const model = unavailablePrimary(true);
+    const attempt = vi.fn(
+      async ({ provider }: { provider: ResolvedLLMProviderConfig }) => provider.id
+    );
+    await expect(
+      dispatchLogicalModel({
+        logicalModel: {
+          ...model,
+          routes: model.routes.map((route) => ({
+            ...route,
+            available: true,
+            unavailableReason: null,
+          })),
+        },
+        signal: new AbortController().signal,
+        ...(pinnedLimits ? { pinnedLimits } : {}),
+        resolveGatewayProvider: (id) =>
+          ({
+            id,
+            models: ['model'],
+            gatewayCapabilities: {},
+            modelMetadata: {
+              model: { limit: id === 'missing' ? limits : { context: 200000, output: 8000 } },
+            },
+          }) as ResolvedLLMProviderConfig,
+        attempt,
+      })
+    ).resolves.toBe(expected);
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(attempt.mock.calls[0]?.[0].provider.id).toBe(expected);
+  });
+
+  it.each([
     true,
     false,
   ])('skips an unavailable primary without an attempt; failover=%s', async (autoFailover) => {

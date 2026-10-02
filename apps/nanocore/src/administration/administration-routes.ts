@@ -29,11 +29,13 @@ import { type AgentMessage, runInternalAgentLoop } from '../internal-agents/inte
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
+import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from '../openapi.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import {
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -80,6 +82,8 @@ export interface RegisterAdministrationRoutesInput {
   readonly mode: CoreMode;
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
+  /** Current API-key presence without resolving Vault material. */
+  readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   readonly quickChatWorkspaceIdForUser: (userId: string) => string;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly runtimeConfigFiles: (
@@ -232,6 +236,8 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
               gatewayConfig: snapshot.gatewayConfig,
               profilesConfig: snapshot.internalRoleProfiles,
               providerRegistry: snapshot.providerRegistry,
+              providerSubscriptionAccountManager: input.providerSubscriptionAccountManager,
+              providerCredentialConfigured: input.providerCredentialConfigured,
               ...(request.logicalModelId
                 ? { requestedLogicalModelId: request.logicalModelId }
                 : {}),
@@ -322,6 +328,16 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
                   createInternalAgentGatewayProvider({
                     capture,
                     logicalModel: selection.logicalModel,
+                    resolveLogicalModel: (logicalModelId) => {
+                      const snapshot = input.runtimeConfig();
+                      return resolveLogicalModel(
+                        snapshot.gatewayConfig,
+                        snapshot.providerRegistry,
+                        logicalModelId,
+                        input.providerSubscriptionAccountManager,
+                        input.providerCredentialConfigured
+                      );
+                    },
                     dispatcher: input.llmGatewayDispatcher,
                     resolveGatewayProvider: input.resolveGatewayProvider,
                     ...(input.providerSubscriptionAccountManager

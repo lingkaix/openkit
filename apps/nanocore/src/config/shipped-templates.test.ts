@@ -12,6 +12,7 @@ import {
   resolveLogicalModelCatalog,
 } from '../llm/logical-models.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { createProviderCredentialConfigured } from '../providers/vault-credential-resolver.js';
 import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
 import { loadRuntimeConfig } from './runtime-config.js';
 
@@ -31,8 +32,24 @@ afterEach(() => {
 
 describe('shipped tier templates', () => {
   it('resolves ordered explicit members with coherent runtime contracts and per-member compaction headroom', () => {
-    const snapshot = loadRuntimeConfig(freshDataRoot());
-    const catalog = resolveLogicalModelCatalog(snapshot.gatewayConfig, snapshot.providerRegistry);
+    const providerCredentialConfigured = createProviderCredentialConfigured({
+      fallback: () => null,
+    });
+    const snapshot = loadRuntimeConfig(freshDataRoot(), { providerCredentialConfigured });
+    const catalog = resolveLogicalModelCatalog(
+      snapshot.gatewayConfig,
+      snapshot.providerRegistry,
+      undefined,
+      providerCredentialConfigured
+    );
+    expect(
+      catalog.every((model) =>
+        model.routes.every(
+          (route) => !route.available && route.unavailableReason === 'provider_api_key_missing'
+        )
+      )
+    ).toBe(true);
+    expect(catalog.every((model) => model.reasoningEffortLevels === undefined)).toBe(true);
     expect(catalog.map((model) => model.id)).toEqual(['free', 'flash', 'smart', 'pro']);
     expect(catalog.map((model) => model.routes.map((route) => route.providerModel))).toEqual([
       ['poolside/laguna-s-2.1:free', 'poolside/laguna-xs-2.1:free', 'cohere/north-mini-code:free'],

@@ -130,3 +130,19 @@ describe('Round 2 full logical contract admission', () => {
     ).toEqual(inputModalities);
   });
 });
+
+it('admits missing API key supply as an unavailable route reason', () => {
+  const input = diagnosticsWithInputModalities(['text']);
+  Object.assign(input.gateway.models[0]!, {
+    routes: [
+      {
+        id: 'primary',
+        providerProfileId: 'key',
+        providerModel: 'model',
+        available: false,
+        unavailableReason: 'provider_api_key_missing',
+      },
+    ],
+  });
+  expect(AppDiagnosticsResponseSchema.safeParse(input).success).toBe(true);
+});
