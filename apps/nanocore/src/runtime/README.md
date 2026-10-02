@@ -82,6 +82,10 @@ An unavailable Worker observation may cite an earlier expected observation from 
 
 Run the nearest focused tests first, followed by NanoCore typecheck, lint, build, and the complete NanoCore test suite for runtime behavior changes. Governed-worker changes should also run worker-control, recovery, scheduler, and Server route coverage relevant to the changed lifecycle.
 
+The MCP concurrent credential-rejection regression holds the real upstream delayed response on an explicit fixture gate and observes tool-call ingress before triggering rejection. It preserves the call rejection, unknown-effect and degraded-health assertions without relying on wall-clock scheduling.
+
+The MCP Gateway's existing teardown-required fence refuses late tool and listing results and prevents health probes from restoring ready state while cleanup owns the cached session. A separate regression holds HTTP termination pending while another real response completes, proving typed rejection with known upstream contact and degraded health; failed cleanup retains its existing exact-retry ownership.
+
 ## Related Design
 
 - [AgentSession](../../../../docs/core/agent-session.md)

@@ -681,7 +681,6 @@ describe('OpenCode resident adapter', () => {
   });
 
   it('admits one conversation, rejects a direct route, and preserves the home at close', async () => {
-    mysteryReplies = 0;
     const inference = await startSyntheticInference((request) => scripted(request));
     servers.push(inference);
     const layout = plantAmbient(makeRoots());
@@ -754,7 +753,19 @@ describe('OpenCode resident adapter', () => {
     expect(existsSync(join(layout.stateRoot, 'xdg', 'opencode'))).toBe(true);
 
     const mysteryLayout = makeRoots();
-    const mystery = await opencodeAdapter.openSession(openInput(mysteryLayout, creds));
+    // Corrupt collected terminal evidence after native completion so auxiliary inference request order cannot choose its failure path.
+    const mysteryAdapter = createOpenCodeAdapter({
+      loadClient: () =>
+        transformingModule({
+          messages: (response) => ({
+            ...response,
+            data: response.data.map((row) =>
+              row.type === 'assistant' ? { ...row, finish: 'mystery' } : row
+            ),
+          }),
+        }),
+    });
+    const mystery = await mysteryAdapter.openSession(openInput(mysteryLayout, creds));
     sessions.push(mystery);
     const unknown = await mystery.startTurn(
       turnInput(mysteryLayout, creds, 'mystery-user', 'org/exact-model-a')
@@ -772,7 +783,9 @@ describe('OpenCode resident adapter', () => {
     const unknownResult = unknownOutcome.result;
     expect(unknownResult.status, unknownResult.diagnostics?.native ?? '').toBe('failed');
     expect(unknownResult.assistantText).toBeNull();
-    await mystery.close();
+    expect(unknownResult.diagnostics?.native).toBe('OpenCode assistant finish is unknown.');
+    expect(mystery.childState()).toBe('absent');
+    await expect(mystery.close()).rejects.toThrow(/drain or persistence flush was not proved/);
 
     const leaked = await session.startTurn(
       turnInput(layout, creds, 'secret-echo', 'org/exact-model-a')
@@ -1184,8 +1197,6 @@ const AMBIENT_MARKERS = [
   'ambient-config-marker',
   'ambient-skill-marker',
 ];
-
-let mysteryReplies = 0;
 
 /** A finite test observation; timeout fails without changing the adapter outcome. */
 async function nativeTestBound<T>(work: Promise<T>, timeout: number, detail: string): Promise<T> {
@@ -1861,11 +1872,7 @@ function scripted(request: CapturedInference) {
     'alpha-user',
   ]);
   if (marker === 'hang-user' || marker === 'hang-close') return { hang: true as const };
-  if (marker === 'mystery-user') {
-    mysteryReplies += 1;
-    if (mysteryReplies > 1) return { body: '{"error":{"message":"unknown finish"}}', status: 400 };
-    return { finish: 'mystery', text: 'mystery-answer' };
-  }
+  if (marker === 'mystery-user') return { text: 'mystery-answer' };
   if (marker === 'secret-echo') return { text: `leak ${request.headers.authorization ?? ''}` };
   if (marker === 'beta-user') return { text: 'beta-answer' };
   if (marker === 'after-interrupt') return { text: 'after-answer' };

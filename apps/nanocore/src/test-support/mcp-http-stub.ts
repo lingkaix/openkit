@@ -37,6 +37,8 @@ export async function createMcpHttpStub(
     readonly credentialEcho?: string;
     readonly credentialListEcho?: string;
     readonly delayMs?: number;
+    /** Holds the `delayed` tool response until the test explicitly releases it. */
+    readonly delayedResult?: Promise<void>;
     readonly hangDelete?: boolean;
     readonly listError?: boolean;
     /** `finite` returns two pages. `nonterminating` repeats one cursor forever. */
@@ -90,6 +92,9 @@ export async function createMcpHttpStub(
       return { tools: [echo] };
     });
     mcp.setRequestHandler('tools/call', async (request) => {
+      if (request.params.arguments?.message === 'delayed' && options.delayedResult) {
+        await options.delayedResult;
+      }
       if (request.params.arguments?.message === 'delayed' && options.delayMs) {
         await new Promise((resolve) => setTimeout(resolve, options.delayMs));
       }

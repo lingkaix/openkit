@@ -189,7 +189,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
             )
           : normalized;
       }
-      if (this.sessions.get(key) !== pending) {
+      if (this.sessions.get(key) !== pending || this.teardownRequired.has(key)) {
         throw new WorkerMcpGatewayCallError(
           'mcp-server-unavailable',
           'MCP server session closed during tool listing.',
@@ -306,7 +306,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         }
         throw normalized;
       }
-      if (this.sessions.get(key) !== pending) {
+      if (this.sessions.get(key) !== pending || this.teardownRequired.has(key)) {
         throw new WorkerMcpGatewayCallError(
           'mcp-call-failed',
           'MCP tool call completed after its session closed.',
@@ -578,7 +578,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     }
   }
 
-  /** Removes and closes one cached session, retaining ownership when cleanup fails. */
+  /** Fences and closes one cached session, retaining cleanup ownership until closure is proved. */
   private async discard(
     key: string,
     nextHealth?: Extract<WorkerMcpServerHealth, 'inactive'>,
@@ -595,6 +595,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     const timer = this.idleTimers.get(key);
     if (timer) clearTimeout(timer);
     this.idleTimers.delete(key);
+    // The cached promise retains cleanup ownership, but late results must not restore its authority or health.
     this.teardownRequired.add(key);
     const teardown = Promise.resolve().then(async () => {
       await pending?.catch(() => null);
@@ -634,7 +635,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       await this.discard(key, undefined, pending);
       return;
     }
-    if (this.sessions.get(key) === pending) {
+    if (this.sessions.get(key) === pending && !this.teardownRequired.has(key)) {
       this.transition(input, 'ready');
       this.scheduleHealthCheck(key, input, pending, client);
     }

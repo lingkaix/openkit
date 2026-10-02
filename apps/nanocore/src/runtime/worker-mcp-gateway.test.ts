@@ -929,7 +929,11 @@ describe('worker MCP gateway', () => {
 
   it('does not resurrect a session after a concurrent credential rejection', async () => {
     const credential = 'Bearer concurrent-private-value';
-    const upstream = await createMcpHttpStub({ credentialEcho: credential, delayMs: 100 });
+    const response = Promise.withResolvers<void>();
+    const upstream = await createMcpHttpStub({
+      credentialEcho: credential,
+      delayedResult: response.promise,
+    });
     const { coreDb, gateway } = createAuditedGateway();
     const server = httpTestServer(upstream.url, 2_000);
     const credentials = { headers: { authorization: credential } };
@@ -942,7 +946,14 @@ describe('worker MCP gateway', () => {
         toolName: 'echo',
         workspaceId: 'ws_demo',
       });
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      // Hold the delayed response until credential rejection closes its session; timers cannot establish this ordering under load.
+      const delayedRejection = expect(delayed).rejects.toMatchObject({
+        code: 'mcp-call-failed',
+        upstreamEffect: 'unknown',
+      });
+      await vi.waitFor(() =>
+        expect(upstream.observed.some((request) => request.endsWith('|tools/call'))).toBe(true)
+      );
       await expect(
         gateway.callTool({
           arguments: { message: 'key-leak' },
@@ -952,12 +963,68 @@ describe('worker MCP gateway', () => {
           workspaceId: 'ws_demo',
         })
       ).rejects.toMatchObject({ code: 'mcp-call-failed' });
-      await expect(delayed).rejects.toMatchObject({
-        code: 'mcp-call-failed',
-        upstreamEffect: 'unknown',
-      });
+      await delayedRejection;
       expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
     } finally {
+      response.resolve();
+      await gateway.close();
+      await upstream.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a completed tool result while credential teardown is pending', async () => {
+    const credential = 'Bearer concurrent-private-value';
+    const response = Promise.withResolvers<void>();
+    const teardown = Promise.withResolvers<void>();
+    const upstream = await createMcpHttpStub({
+      credentialEcho: credential,
+      delayedResult: response.promise,
+    });
+    const { coreDb, gateway } = createAuditedGateway();
+    const server = httpTestServer(upstream.url, 2_000);
+    const input = {
+      credentials: { headers: { authorization: credential } },
+      server,
+      workspaceId: 'ws_demo',
+    };
+    const nativeTerminate = StreamableHTTPClientTransport.prototype.terminateSession;
+    const terminate = vi.spyOn(StreamableHTTPClientTransport.prototype, 'terminateSession');
+    terminate.mockImplementation(async function () {
+      await teardown.promise;
+      await nativeTerminate.call(this);
+    });
+
+    try {
+      const delayed = gateway
+        .callTool({ ...input, arguments: { message: 'delayed' }, toolName: 'echo' })
+        .then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error })
+        );
+      await vi.waitFor(() =>
+        expect(upstream.observed.some((request) => request.endsWith('|tools/call'))).toBe(true)
+      );
+      const rejected = gateway
+        .callTool({ ...input, arguments: { message: 'key-leak' }, toolName: 'echo' })
+        .then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error })
+        );
+      await vi.waitFor(() => expect(terminate).toHaveBeenCalledOnce());
+      expect(gateway.getServerHealth(input)).toBe('degraded');
+      // Complete the other real HTTP response while the rejected session still owns cleanup.
+      response.resolve();
+      await expect(delayed).resolves.toMatchObject({
+        error: { code: 'mcp-call-failed', upstreamEffect: 'contacted' },
+      });
+      expect(gateway.getServerHealth(input)).toBe('degraded');
+      teardown.resolve();
+      await expect(rejected).resolves.toMatchObject({ error: { code: 'mcp-call-failed' } });
+    } finally {
+      response.resolve();
+      teardown.resolve();
+      terminate.mockRestore();
       await gateway.close();
       await upstream.close();
       coreDb.sqlite.close();
