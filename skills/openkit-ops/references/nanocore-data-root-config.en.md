@@ -16,7 +16,7 @@ OpenKit configuration has three composition scopes.
 | Workspace | Composes shared resources and defaults for one collaborative Workspace | `workspaces/<workspaceId>/config/workspace.jsonc`, `workspaces/<workspaceId>/config/data-sources.jsonc` |
 | User | Stores lightweight personal preferences inside Workspaces | `users/<userId>/config/user.jsonc` |
 
-Server supply is not a blanket restriction on Workspace composition. A Workspace may select, extend, or override Server-supplied Agent resources through its binding, and a User may select their own preference from the composed Workspace surface. Resolution priority is explicit request or Orchestrator choice, then User preference, then Workspace configuration, then Server fallback.
+Server supply is not a blanket restriction on Workspace composition. A Workspace may select, extend, or override Server-supplied Agent resources through its binding, and a User may select their own preference from the composed Workspace surface. Resolution priority is an explicit request or current Coordinator choice when admitted by the owning command, then User preference, then Workspace configuration, then Server fallback.
 
 ## Directory Layout
 
@@ -173,7 +173,7 @@ The Gateway maps stable logical model IDs to ordered private Provider routes. A 
 
 ## `config/internal-role-profiles.jsonc`
 
-This Server catalog configures NanoCore roles such as Assistant, Goal Orchestrator, Knowledge Manager, and future internal roles without placing model choices in `server.jsonc`.
+This Server catalog configures NanoCore roles such as Assistant, Coordinator, Knowledge Manager, and future internal roles without placing model choices in `server.jsonc`.
 
 ```jsonc
 {
@@ -319,7 +319,7 @@ User configuration stores personal preferences and never modifies shared Workspa
 }
 ```
 
-These values win over Workspace and Server defaults for the current User but lose to an explicit request or Orchestrator choice. User configuration cannot publish Provider routes, shared Agent extensions, Vault grants, or Workspace policy.
+These values win over Workspace and Server defaults for the current User but lose to an explicit request or current Coordinator choice when admitted by the owning command. User configuration cannot publish Provider routes, shared Agent extensions, Vault grants, or Workspace policy.
 
 ## Credential Requirements and Vault Scope
 

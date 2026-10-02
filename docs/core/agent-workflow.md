@@ -25,7 +25,7 @@ Workspace -> Thread -> Turn -> Item[]
 
 Agent workflow organizes that backbone into reusable mechanisms.
 
-Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's default workflow setup over those mechanisms. They are optimized for low-configuration, reviewable worker-agent work, but they are not the only valid workflow shape. [Architecture](architecture.md#app-and-channel) owns the App and Channel boundary, including remote MCP over the same operations and the operator CLI as the administrator channel.
+Goal Mode is OpenKit's default workflow setup over those mechanisms: the person keeps the intent, one approved Plan version authorizes the work, and the Coordinator admits ordinary Tasks. The unified `openkit` Skill's loop recipe remains a low-configuration channel over those same operations and does not advance a Goal by a step. That setup is optimized for low-configuration, reviewable worker-agent work, but it is not the only valid workflow shape. [Architecture](architecture.md#app-and-channel) owns the App and Channel boundary, including remote MCP over the same operations and the operator CLI as the administrator channel.
 
 ## Principles
 
@@ -95,7 +95,7 @@ Agent workflow owns:
 - workflow mode and recipe composition boundaries
 - default workflow setup semantics
 - planning and the human approval of one exact Plan version as workflow mechanisms, ordinary bounded Tasks, gate, decision, evidence, checkpoint, context compaction, handoff, retry, refinement, stop, and closeout semantics. This document does not own the Goal record or the person's approval record.
-- the relationship between workflow mechanisms, current Goal Mode, the unified Agent Skill loop recipe, worker execution, artifacts, evidence, and review
+- the relationship between workflow mechanisms, current Goal Mode, the unified Agent Skill loop recipe as a channel that does not advance a Goal by a step, worker execution, artifacts, evidence, and review
 - the rule that prevents premature `TaskRun`-style core concepts
 
 Agent workflow does not own:
@@ -175,7 +175,7 @@ Goal Mode
   + ordinary Tasks inside that version
   + Action Center projections for human attention
   + artifacts and evidence bundles
-  + the unified openkit Skill loop recipe for low-configuration operation
+  + the unified openkit Skill as a low-configuration channel over the same operations, not a Goal step
 ```
 
 This setup is recommended when the user wants reviewable worker-agent work without custom workflow configuration.
@@ -192,7 +192,7 @@ It binds one continuous outcome, work-intent cards, one approved Plan version, o
 
 Goal Mode must not become a hidden autonomous loop. The Coordinator admits ordinary Tasks inside the approved Plan version. The person approves that version and accepts completion.
 
-Goal Mode may be operated by Web UI, remote MCP over the same operations, the operator CLI as the administrator channel, the unified end-user Agent Skill Interface, the bundled CLI, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal state.
+Goal Mode may be operated by Web UI, remote MCP over the same operations, the operator CLI as the administrator channel, the unified end-user Agent Skill Interface, the bundled CLI, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal state. None of these channels advances a Goal by a step.
 
 The Goal is one continuous outcome, its work-intent cards, and immutable Plan versions. Existing Goal-owned data is removed with the new implementation. Records outside that ownership stay usable. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) records the decision.
 
@@ -284,7 +284,7 @@ They do not own workflow state and must not bypass Core-owned workflow mechanism
 
 The bundled CLI is a deterministic channel facade over public Core or App API contracts. It is separate from planned worker-side MCP capability supply, which belongs to Agent Capability.
 
-The Skill's loop guidance is a workflow recipe for the default setup. It should drive one bounded step at a time, read workflow state after each step, present evidence, and ask the human before continuing when a gate or external side effect is involved.
+The Skill's loop guidance is a workflow recipe for worker work in the default setup. It should drive one bounded worker step at a time, read workflow state after each step, present evidence, and ask the human before continuing when a gate or external side effect is involved. It does not advance a Goal by a step.
 
 ## Relationship To TaskRun
 
@@ -332,7 +332,7 @@ Agent-private task graphs should stay private unless Core needs to schedule, ret
 
 ## Default Setup Projection
 
-The built-in default setup combines one approved Plan version for a Goal, ordinary Tasks inside that version, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill loop operation. Its channels follow the [App and Channel boundary](architecture.md#app-and-channel). Approving the Plan version does not require a separate approval of each Task. An additional editorial review of Plan wording may be optional, and it never substitutes for the exact Plan approval.
+The built-in default setup combines one approved Plan version for a Goal, ordinary Tasks inside that version, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill operation over those same mechanisms. That Skill operation does not advance a Goal by a step. Its channels follow the [App and Channel boundary](architecture.md#app-and-channel). Approving the Plan version does not require a separate approval of each Task. An additional editorial review of Plan wording may be optional, and it never substitutes for the exact Plan approval.
 
 That setup is a recommended composition of Core workflow mechanisms, not the definition of Agent Workflow itself.
 

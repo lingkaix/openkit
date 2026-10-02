@@ -74,7 +74,7 @@ The Knowledge Store validates and persists knowledge, proposals, reviews, conten
 
 The Workflow Coordinator decides how authorized material combines with task instructions, workflow state, constraints, capabilities, stop conditions, and review policy.
 
-The owning Task or Goal boundary persists, materializes, and delivers the resulting Context Package through the separately owned delivery trace.
+The owning Task boundary persists, materializes, and delivers the resulting Context Package for a standalone Task and for a Task a Goal admitted, through the separately owned delivery trace. The Goal's Coordinator uses assembled input and reads, and does not use that package.
 
 A Knowledge selection or preparation result, workspace record, imported record, or diagnostic trace does not prove that a worker received or used knowledge.
 

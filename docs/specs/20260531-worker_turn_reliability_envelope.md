@@ -12,7 +12,7 @@ This spec owns the implementation-facing reliability envelope for internal-role 
 
 ## Does Not Own
 
-This spec does not own stable core workflow vocabulary, user-facing work labels, worker selection, semantic worker-request composition, user-input delivery semantics, worker-control wire commands or reconnect authorization, workspace synchronization, runtime lease adoption, agent manifest resolution, Agent Environment Package schemas, context-management policy or compaction algorithms, or UI recovery layouts. S15 owns worker selection and semantic request composition; S16 owns accepted active-Goal user input and its delivery proof; `docs/specs/20260902-agent_runtime_context_compaction.md` owns context-management policy and compaction authority.
+This spec does not own stable core workflow vocabulary, user-facing work labels, worker selection, semantic worker-request composition, user-input delivery semantics, worker-control wire commands or reconnect authorization, workspace synchronization, runtime lease adoption, agent manifest resolution, Agent Environment Package schemas, context-management policy or compaction algorithms, or UI recovery layouts. S15 owns worker selection and semantic request composition; [Pending Requests](20260930-pending_requests.md) owns worker user-input requests and outcome delivery, [Goal](20261002-goal.md) owns Goal intent and card edits, and `docs/specs/20260902-agent_runtime_context_compaction.md` owns context-management policy and compaction authority.
 
 ## Core References
 
@@ -233,7 +233,7 @@ No checkpoint row represents `idle`; absence of a row is idle. `reviewing` remai
 | `running_worker` | `completed`, `failed`, or `aborted` | The exact worker Turn and terminal evidence own the matching StopReason. A user-input or approval request does not change this stage. It is a pending request, as [Pending Requests](20260930-pending_requests.md) and [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md) define, and the Turn stays running. |
 | `completed`, `failed`, or `aborted` | no further stage | Worker execution is terminal, but the uncleared checkpoint remains discoverable until every durable owner required by the initiating mode, evidence, review, workspace handoff, AgentSession, backend, and lease contracts completes closeout. |
 
-Every uncleared checkpoint is a restart candidate, including a terminal-stage checkpoint. A terminal stage proves only that worker execution ended; it does not prove that Task or Goal closeout committed. Restart reuses the named owners to finish the already-authorized closeout when their complete tuple is deterministic, otherwise it returns `recovery_required`. It MUST NOT skip a terminal checkpoint, infer workflow completion, or create a settlement owner.
+Every uncleared checkpoint is a restart candidate, including a terminal-stage checkpoint. A terminal stage proves only that worker execution ended; it does not prove that Task closeout committed. A Goal-dispatched Task uses that ordinary Task closeout. Restart reuses the named owners to finish the already-authorized closeout when their complete tuple is deterministic, otherwise it returns `recovery_required`. It MUST NOT skip a terminal checkpoint, infer workflow completion, or create a settlement owner.
 
 Restart classification is derived from the existing records and is not persisted as another recovery lifecycle:
 
@@ -243,8 +243,8 @@ Restart classification is derived from the existing records and is not persisted
 | Releasing lease with an accepted final status | Finish generic Turn, AgentSession, evidence, backend, lease, and capacity closeout, then invoke the initiating mode's closeout against the same checkpoint. |
 | Nonterminal checkpoint whose exact Turn and AgentSession are interrupted after scheduler cleanup | Apply only the existing interrupted-worker recovery predicate; no terminal closeout or replacement is inferred. |
 | Terminal checkpoint with the complete initiating-mode tuple and command receipt | Validate the complete tuple, then perform only the exact checkpoint cleanup. |
-| Terminal checkpoint with the complete request-owned initiating-mode tuple but no command receipt | Only an unambiguous direct `task.start` or `goal.step` owner may publish its deterministic missing receipt after validating every tuple member against the checkpoint and immutable command input. A Chat or other outer-command handoff without its sole outer receipt is `recovery_required`; recovery never creates a nested Task or Goal receipt. |
-| Terminal checkpoint with no initiating-mode closeout writes, but complete request identity, canonical StopReason, evidence, and immutable mode inputs | Execute the original Task or Goal closeout transaction once. A direct command publishes its deterministic receipt; an outer-command handoff requires its already durable outer receipt and publishes no nested receipt. Clear the checkpoint only after that applicable receipt predicate holds. |
+| Terminal checkpoint with the complete request-owned initiating-mode tuple but no command receipt | Only an unambiguous direct `task.start` owner may publish its deterministic missing receipt after validating every tuple member against the checkpoint and immutable command input. A Chat or other outer-command handoff without its sole outer receipt is `recovery_required`; recovery never creates a nested Task or Goal receipt. |
+| Terminal checkpoint with no initiating-mode closeout writes, but complete request identity, canonical StopReason, evidence, and immutable mode inputs | Execute the original Task closeout transaction once. A Goal-dispatched Task uses that same closeout. A direct command publishes its deterministic receipt; an outer-command handoff requires its already durable outer receipt and publishes no nested receipt. Clear the checkpoint only after that applicable receipt predicate holds. |
 | Any partial mode tuple, identity conflict, missing required evidence, or non-canonical StopReason | Preserve the checkpoint as discoverable `recovery_required`; do not repair, clear, or launch work. |
 | `preparing` checkpoint without the immutable request trace required for first launch | Preserve the existing fail-closed `recovery_required` compromise; do not rerun Coordinator or launch a replacement. |
 
@@ -254,11 +254,11 @@ The initial terminal mapping is closed and does not depend on an adapter or mode
 
 | StopReason | Durable Turn status | Worker Checkpoint stage | Owning-mode interpretation |
 | --- | --- | --- | --- |
-| `completed` | `completed` | `completed` | Task or Goal applies its documented completion, review, or next-step predicate. |
+| `completed` | `completed` | `completed` | The Task applies its documented completion, review, or next-step predicate. A Goal-dispatched Task uses that ordinary Task predicate. |
 | `error` | `failed` | `failed` | Typed worker failure evidence remains authoritative. |
 | `aborted` | `interrupted` | `aborted` | The owning mode preserves the intentional stop cause and applies its documented cancellation or abort result. |
-| `length` | `completed` | `completed` | Worker execution ended without success; Task or Goal projects the documented blocked result from terminal evidence. |
-| `budget_exhausted` | `completed` | `completed` | Worker execution ended without success; Task or Goal projects the documented blocked result from terminal evidence. |
+| `length` | `completed` | `completed` | Worker execution ended without success; the Task projects the documented blocked result from terminal evidence. A Goal-dispatched Task uses that ordinary Task result. |
+| `budget_exhausted` | `completed` | `completed` | Worker execution ended without success; the Task projects the documented blocked result from terminal evidence. A Goal-dispatched Task uses that ordinary Task result. |
 
 Worker-control `status` and its product-safe `stopReason` string are transport facts, not Core StopReason authority. The existing immutable server-scope `worker_control_records` row with `operation=final_status` is the sole accepted-final-status owner; no checkpoint, evidence row, recovery record, or mode projection may replace it. Its record identity is the existing `(agentSessionId, packageSnapshotId, operation, recordKey)` key with `recordKey` equal to the decimal worker sequence. The indexed and parsed row must also match the exact Workspace, Thread, Turn, nullable command request, AgentSession, package snapshot, scheduler lease lineage, sequence, and corresponding canonical terminal event. The row retains raw wire `status`, raw product-safe `stopReason`, diagnostics, evidence-manifest digests, and `acceptedAt`. Exact same-sequence and same-fingerprint replay reuses that row; a changed payload at the sequence conflicts. This server runtime owner survives restart but is not portable Workspace product history.
 
@@ -277,7 +277,7 @@ Human requests do not pause worker execution, suspend the source AgentSession, o
 
 The envelope owns execution reliability after the owning mode service accepts a Coordinator decision. It does not own a second continuation or delegation decision.
 
-There is no separate `prepareNextTurn` semantic authority. The owning Task or Goal service supplies the exact Coordinator-selected worker and structured worker request, plus the Context Package materialized from that request. The envelope may validate, persist, deliver, and checkpoint those values but MUST NOT select another worker or model, rewrite the objective, add context references, or compose a continuation prompt.
+There is no separate `prepareNextTurn` semantic authority. The owning Task service supplies the exact Coordinator-selected worker and structured worker request, plus the Context Package materialized from that request, for both standalone and Goal-admitted Tasks. The envelope may validate, persist, deliver, and checkpoint those values but MUST NOT select another worker or model, rewrite the objective, add context references, or compose a continuation prompt.
 
 `shouldStopAfterTurn(context)` returns a `StopAfterTurnDecision` whose `outcome` is exactly `continue`, `review`, `block`, `abort`, or `complete`, whose `shouldStop` is false only for `continue`, and whose separate `stopReason` uses the protocol `StopReason` enum.
 

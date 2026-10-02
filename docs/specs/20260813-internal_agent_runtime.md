@@ -85,7 +85,7 @@ Output-token limits belong to the model request. Monetary and usage budgets belo
 
 Fuses are deliberately large emergency stops for ghost loops, runaway Tool use, and provider failure. They are not normal capacity targets, completion conditions, or evidence that any product operation succeeded.
 
-Initial conversational objectives are configuration values in the internal-role execution profile: first visible text within 2 seconds at p95 for a run with no Tool call, settled output within 10 seconds at p95 with no Tool call and within 30 seconds at p95 with at most two Tool calls, and ordinary Assistant model spend roughly one order of magnitude below the smallest per-Goal budget unit. The deadline fuse MUST be at least four times the applicable profile-owned settled-answer objective.
+Initial conversational objectives are configuration values in the internal-role execution profile: first visible text within 2 seconds at p95 for a run with no Tool call, settled output within 10 seconds at p95 with no Tool call and within 30 seconds at p95 with at most two Tool calls. A Goal has no budget, and this profile does not derive an objective from one. The deadline fuse MUST be at least four times the applicable profile-owned settled-answer objective.
 
 Objectives and fuse values are created or changed through the accepted execution-profile configuration rollout, never by branching runtime code or revising this design. A missed objective reports degraded performance, while a reached fuse terminates with `limit_reached`; restart selects the current accepted profile and does not inherit an exhausted counter.
 

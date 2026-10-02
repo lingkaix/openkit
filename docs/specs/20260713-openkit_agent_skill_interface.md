@@ -221,7 +221,7 @@ The first implementation must not add a large tree of hand-authored convenience 
 
 ### Operation identity and metadata
 
-Operation ids are transport-neutral product identifiers with a `<domain>.<verb>` shape, such as `workspace.list`, `goal.start`, `goal.step`, `attention.resolve`, `knowledge.retrieve`, or `vault.unlock`.
+Operation ids are transport-neutral product identifiers with a `<domain>.<verb>` shape, such as `workspace.list`, `attention.resolve`, `knowledge.retrieve`, or `vault.unlock`.
 
 Former MCP tool names are migration inputs, not compatibility contracts. Implementation may reuse a product verb only when it remains the clearest operation identity.
 
@@ -266,10 +266,10 @@ The initial operation groups cover:
 - access tokens and credential storage
 - NanoHost enrollment, redacted transport-token inventory and revocation, named-slot issue and rotation, rotation abort, and decommission
 - workspaces, resources, repositories, and Git operations
-- threads, Chat Mode, Task Mode, and the Goal operations. Steering, pause, resume, and step are not Goal operations
+- threads, Chat Mode, Task Mode, and the ten Goal operations named by [Goal](20261002-goal.md): create Goal, revise intent, create card, edit card, cancel card, propose Plan, approve Plan, cancel Goal, accept completion, and read. Their ids are derived under [Operation Definition](20261002-operation_definition.md) and are not chosen in this specification. Plan approval and completion acceptance are Pending Requests, as [Goal](20261002-goal.md) and [Pending Requests](20260930-pending_requests.md) define. Steering, pause, resume, and step are not Goal operations
 - Action Center, approvals, questions, reviews, artifacts, evidence, audit, and usage
 - knowledge sources, observations, claims, conflicts, retrieval, context packages, proposals, repair, and health
-- interrupted-worker inspection and checkpoint retry, scheduler admissions, and exact S16 Goal pending input only after its durable owner and delivery proof exist
+- interrupted-worker inspection and checkpoint retry, scheduler admissions, and the Pending Requests that approve one exact Plan version or accept one exact completion candidate, once [Operation Definition](20261002-operation_definition.md) admits the Goal operations those requests use
 - runtime configuration and product-safe runtime availability; AgentSession identity and replacement remain hidden internal behavior
 - vault status, unlock, lock, bootstrap, grants, injection records, use records, and rebind
 - provider-subscription inventory, account lifecycle and status, and quota
@@ -303,7 +303,7 @@ A successful operation uses:
 {
   "ok": true,
   "command": "ops.call",
-  "operation": "goal.start",
+  "operation": "workspace.list",
   "requestId": "...",
   "data": {}
 }
@@ -315,7 +315,7 @@ A failed operation uses:
 {
   "ok": false,
   "command": "ops.call",
-  "operation": "goal.start",
+  "operation": "workspace.list",
   "requestId": "...",
   "error": {
     "code": "...",
