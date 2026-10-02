@@ -113,7 +113,7 @@ The registry and image-catalog entries are static bookkeeping in existing owners
 - Do not let a Worker Agent write long-term knowledge, notes, or Knowledge Store records directly.
 - Do not make Sandbox Integration a second NanoCore, a product state owner, a review decision engine, or a generic shell daemon.
 - Do not mix the end-user Agent Skill Interface with worker-side MCP capability supply.
-- Do not allow sandbox workers to push, publish, tag, deploy, or mutate protected branches without NanoCore-owned review and apply gates.
+- Platform-managed external hosting calls use selected Gateway MCP and its current authorization, configured per-tool approval and audit. Local Git is worker-local work. Native Git push may be explicitly admitted user-space configuration; other external effects retain their own owners.
 - Do not keep historical host runtime configuration shapes as supported product behavior.
 
 ## Runtime Model
@@ -478,7 +478,7 @@ NanoCore must validate:
 - patch or bundle digest matches the collected payload
 - binary, delete, permission, and large-file changes are summarized
 - generated artifact paths are declared or explicitly reviewed
-- protected branch mutation is not attempted from the worker runtime
+- Collected Workspace output is not authority to mutate a hosted repository. Platform-managed hosted effects use their separately admitted Gateway MCP owner. Native Git push remains optional user-space configuration requiring a user-injected credential and admitted git-receive-pack egress; OpenKit adds no native-push mechanism.
 
 Invalid change records should create diagnostics and fail or block the turn according to AEP policy.
 

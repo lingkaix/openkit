@@ -1,5 +1,6 @@
 ---
-status: Accepted
+status: Superseded
+superseded-by: docs/decisions/20261002-first_release_interface_scope_revised.md
 date: "2026-10-02"
 decider: Engineer, on the coordinator's recommendation
 ---

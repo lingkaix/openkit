@@ -459,6 +459,5 @@ Mitigation: require an accepted public contract and reuse the owning provider or
 
 - [Communication Model](../core/communication.md)
 - [Core Protocol](../core/protocol.md)
-- [Git Write Workflow](./20260704-git_write_workflow.md)
 - [NanoHost Runtime And Transport](./20260802-nanohost_runtime_and_transport.md)
 - [Agent Runtime Context Management And Compaction](./20260902-agent_runtime_context_compaction.md)

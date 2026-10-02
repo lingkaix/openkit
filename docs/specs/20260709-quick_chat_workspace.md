@@ -10,7 +10,7 @@ kind: concept
 - The product and implementation contract for the built-in Quick Chat workspace kind.
 - The per-user seed rule that makes Quick Chat each user's initial owner-only Workspace.
 - The rule that the Quick Chat Workspace cannot be shared or converted to a project; explicitly selected conversation snapshots may be published under the Thread sharing owner.
-- The capability boundary that allows lightweight Chat Mode and workspace knowledge while refusing repository, data-source, Task Mode, Goal Mode, worker execution, and Git write flows.
+- The capability boundary that allows lightweight Chat Mode and workspace knowledge while refusing repository, data-source, Task Mode, Goal Mode, worker execution, and project-worker hosting flows.
 - The Quick Chat work-request transition that preserves that capability boundary while resolving or creating a separate executing Workspace through one confirmation.
 - The App API and Web behavior required to project the Work Model boundary for Quick Chat.
 
@@ -20,7 +20,7 @@ kind: concept
 - The Core Assistant and Chat Mode routing contract, which belongs to `docs/specs/20260704-chat_mode_assistant.md`.
 - Task Mode worker delegation, which belongs to `docs/specs/20260704-task_mode_worker_delegation.md`.
 - The Goal, which belongs to `docs/specs/20261002-goal.md`.
-- Workspace repository resources, data-source catalogs, workspace materialization, Git write workflow, or worker runtime behavior.
+- Workspace repository resources, data-source catalogs, workspace materialization, external hosting, or worker runtime behavior.
 - User preference storage for an arbitrary default workspace selection.
 
 ## Core References
@@ -38,7 +38,7 @@ kind: concept
 - `docs/specs/20260704-task_mode_worker_delegation.md`
 - `docs/specs/20261002-goal.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`
-- `docs/specs/20260704-git_write_workflow.md`
+- `docs/specs/20260704-worker_mcp_tool_supply.md`
 - `docs/specs/20260813-internal_agent_runtime.md`
 - `docs/specs/20260902-agent_runtime_context_compaction.md`
 
@@ -57,7 +57,7 @@ kind: concept
 - Seed Quick Chat as the only Workspace initially visible to each newly created user.
 - Represent Quick Chat through a product-visible workspace kind rather than a hard-coded workspace id branch.
 - Allow Chat Mode, ordinary threads, ordinary items, and Knowledge Store records in Quick Chat.
-- Reject repository resource binding, workspace data-source catalog use, direct Task Mode, direct Goal Mode, direct worker turn startup, and Git push flows in Quick Chat itself.
+- Reject repository resource binding, workspace data-source catalog use, direct Task Mode, direct Goal Mode, direct worker turn startup, and project-worker hosting in Quick Chat itself.
 - Ensure a work request made in Quick Chat either reaches an accepted Task or Goal in a separate eligible Workspace through one confirmation or leaves a durable refusal naming the exact missing authorization.
 - Keep project work in ordinary workspaces such as `code` or `general`.
 - Keep Web initial Workspace selection simple by honoring an authorized current selection, otherwise selecting Quick Chat by kind, then falling back to the first authorized Workspace.
@@ -105,7 +105,7 @@ Quick Chat is a `WorkspaceRecord` with `kind: "quick-chat"`, `status: "active"`,
 
 Quick Chat owns normal workspace threads, turns, items, knowledge entries, knowledge proposals, knowledge sources, audit rows, capability usage rows, and workspace-local Knowledge Store files.
 
-Quick Chat does not own repository resources, workspace-root data-source bindings, worker materialization records, worker checkpoints, Goal Mode records, Task Mode worker state, staged workspace reviews, workspace apply results, or Git push records.
+Quick Chat does not own repository resources, workspace-root data-source bindings, worker materialization records, worker checkpoints, Goal Mode records, Task Mode worker state, staged workspace reviews, or workspace apply results.
 
 ### Sharing Boundary
 
@@ -131,7 +131,7 @@ Quick Chat MUST reject the Goal operations, including create Goal, revise intent
 
 Quick Chat MUST reject direct Core turn startup when the route would start a worker turn.
 
-Quick Chat MUST reject Git push approval and execution routes.
+Quick Chat admits no project-worker hosting integration.
 
 Quick Chat MUST reject workspace data-source edits that would make repository or host-root material available to workers.
 
@@ -193,7 +193,7 @@ Give Quick Chat no Workspace-specific Worker default by omitting `workspace.json
 
 Add a small NanoCore helper that reads the workspace and rejects project-only operations for `quick-chat`.
 
-Use that helper in repository setup, Task Mode startup, Goal operation entry, Git push write routes, and direct worker-turn startup.
+Use that helper in repository setup, Task Mode startup, Goal operation entry, and direct worker-turn startup.
 
 Keep Chat Mode and Knowledge Store routes available in Quick Chat. Route model-backed Chat Mode work through the shared Internal Agent Loop even though ordinary short conversations will not reach its compaction threshold. For a Chat Mode Task or Goal handoff, keep the Quick Chat guard authoritative while the Assistant resolves or creates the separate executing Workspace through the combined confirmation; emit an exact durable missing-authorization refusal only when that transition cannot be authorized.
 
@@ -203,7 +203,7 @@ Keep Chat Mode and Knowledge Store routes available in Quick Chat. Route model-b
 
 `apps/nanocore/src/lib/store.ts` owns the explicit idempotent Quick Chat Workspace record constructor and the Demo Workspace fixture helper. Local app composition, the server active-session hook, and the actor-derived Quick Chat resolver for a presented usable server-admin bearer invoke the shared provisioning owner in `workspace-membership.ts`; the generic shared-store constructor creates no mode-specific or authority-free Workspace.
 
-Each active local or server user receives one deterministic top-level Quick Chat Workspace and canonical owner membership before product use; the shared process store no longer uses user-scoped physical ownership. The complete sharing lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery, and portable source-authority reuse for Quick Chat, while the centralized guard rejects repository setup, Task Mode, Goal Mode, Git push, and direct worker-Turn entry. The specification remains Partial only because the rebuilt Web must still project Quick Chat's project-only affordance boundary under S10; the kernel and App API ownership contract is implemented.
+Each active local or server user receives one deterministic top-level Quick Chat Workspace and canonical owner membership before product use; the shared process store no longer uses user-scoped physical ownership. The complete sharing lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery, and portable source-authority reuse for Quick Chat, while the centralized guard rejects repository setup, Task Mode, Goal Mode, project-worker hosting, and direct worker-Turn entry. The specification remains Partial only because the rebuilt Web must still project Quick Chat's project-only affordance boundary under S10; the kernel and App API ownership contract is implemented.
 
 `apps/nanocore/src/app.ts` owns repository setup, Task Mode, Goal Mode, Chat Mode, and worker-turn routes.
 

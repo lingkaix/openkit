@@ -39,7 +39,7 @@ updated: 2026-09-30
 
 OpenKit already has the correct security model for worker credentials: workers should consume tools, providers, local files, or endpoints, while NanoCore owns vault resolution, grants, injection records, receipts, and audit.
 
-The current implementation proves runtime-file upload, host-side Git push, and selected Worker MCP gateway-only credentials. It resolves sandbox-provider declarations and their durable grant lineage, but stock OpenShell provider attachment is fail-closed because Providers v2 would otherwise add profile-owned endpoints that are absent from the immutable AEP network policy. The MCP Gateway separately resolves only catalog-declared Workspace Vault grants into bounded stdio environment or HTTP header/query sinks and never exposes the material to the worker.
+The current implementation proves runtime-file upload and selected Worker MCP gateway-only credentials. It resolves sandbox-provider declarations and their durable grant lineage, but stock OpenShell provider attachment is fail-closed because Providers v2 would otherwise add profile-owned endpoints that are absent from the immutable AEP network policy. The MCP Gateway separately resolves only catalog-declared Workspace Vault grants into bounded stdio environment or HTTP header/query sinks and never exposes the material to the worker.
 
 This spec generalizes the worker launch-time credential path without adding a new secret system.
 

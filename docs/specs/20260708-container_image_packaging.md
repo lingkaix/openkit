@@ -264,7 +264,7 @@ Worker images must not:
 - publish product API endpoints,
 - advertise or execute an OpenKit-managed capability route or an OpenKit-managed integrated external system absent exact selected AEP supply and the separately authenticated governed Gateway path. Worker-configured in-Sandbox MCP is outside that supply plane and is not a packaging failure merely for lacking a catalog selection or Gateway hop. An exactly granted credential-free non-LLM public endpoint follows [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#manifest-shape) and is not a packaging failure merely for lacking a Gateway hop; the rationale is recorded in [Public Endpoints By Admitted Grant](../decisions/20260930-public_endpoints_by_admitted_grant.md). Image contents confer no external authority,
 - make final authorization decisions,
-- push, tag, deploy, or mutate protected branches without NanoCore-approved review and apply gates,
+- treat image availability as external authority. Platform-managed external hosting calls use selected Gateway MCP and its current authorization, configured per-tool approval and audit. Local Git is worker-local work. Native Git push may be explicitly admitted user-space configuration; other external effects retain their own owners.
 - treat OpenShell-native ids or logs as canonical product state.
 
 ### Worker Base Image Policy

@@ -77,7 +77,6 @@ This guide does not own the semantic contracts, executable route facts, package 
 - `docs/specs/20260704-app_api_openapi_projection.md`
 - `docs/specs/20260704-capability_usage_gateway_foundation.md`
 - `docs/specs/20260704-chat_mode_assistant.md`
-- `docs/specs/20260704-git_write_workflow.md`
 - `docs/specs/20261002-goal.md`
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md`

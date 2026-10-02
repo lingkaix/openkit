@@ -122,7 +122,7 @@ The decision and its reason are recorded in [a decision record](../decisions/202
 
 The three repository-owned AgentManifest templates explicitly grant GitHub Smart HTTP clone and fetch, read-only GitHub REST access through `gh`, read-only npm registry access through the declared Node package binaries, and read-only PyPI index and artifact access through the declared uv, Python, and pip binaries. `docs/specs/20260721-worker_execution_environment_images.md` owns the exact endpoints, binary paths, and image correspondence.
 
-GitHub Smart HTTP uses `GET /**/info/refs*` and `POST /**/git-upload-pack`; it omits `POST /**/git-receive-pack`, so the baseline does not grant push. These entries are ordinary manifest-authored AEP rules, not backend defaults or image policy.
+GitHub Smart HTTP uses `GET /**/info/refs*` and `POST /**/git-upload-pack`; it omits `POST /**/git-receive-pack`, so the baseline does not grant push. These entries are ordinary manifest-authored AEP rules, not backend defaults or image policy. An explicit user-injected credential together with an admitted `git-receive-pack` grant may authorize native Git push. That path is user-space configuration. OpenKit adds no platform mechanism for it. Credentials delivered for platform-managed hosting remain gateway-only and are not this baseline. The decision and its reason are recorded in [a decision record](../decisions/20261002-hosting_through_gateway_mcp.md).
 
 Trusted worker inference requires its exact control and inference routes and excludes direct provider authority, but it may coexist with unrelated manifest-authored development grants. A validator must distinguish the LLM route boundary from the package's complete network list rather than requiring a relay-only list.
 

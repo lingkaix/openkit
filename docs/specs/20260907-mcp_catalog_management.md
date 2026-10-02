@@ -31,7 +31,7 @@ updated: 2026-09-08
 
 An MCP resource can be created directly or imported from a plugin and managed independently. Immutable configuration revisions make changes and rollback inspectable; the existing Gateway remains the only executor. A configuration digest identifies what OpenKit configured, not the current implementation of a remotely maintained third-party service.
 
-This contract extends management of the existing Workspace MCP catalog. The Gateway owner defines its effective-entry projection and execution behavior; immutable configuration history and catalog management remain Not Started.
+This contract extends management of the existing Workspace MCP catalog. The Gateway owner defines its effective-entry projection and execution behavior. Immutable configuration history and catalog version and binding management are implemented. Raw restricted package inspection and original-package export remain deferred.
 
 ## Goals / Non-goals
 

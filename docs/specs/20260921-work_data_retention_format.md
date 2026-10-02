@@ -354,7 +354,7 @@ Missing evidence stays unknown.
 
 **Failure.** Aggregating only `status === 'unknown'` on effect records is insufficient; other statuses are not proof of no effect. Absence of a matching CapabilityCall does not prove absence of effect risk.
 
-**Existing-owner obligations (not a new UI workflow).** Cancellation of a Turn by itself does not require human attention; unresolved unconfirmed calls on that Turn still do. An unresolved unknown effect is evidence the person sees before accepting completion. It does not by itself write the completion disposition. Effect-specific duplicate-effect and replay checks remain with their owners (for example git-push recovery). These are pending implementation checks on those owners, not new format fields.
+**Existing-owner obligations (not a new UI workflow).** Cancellation of a Turn by itself does not require human attention; unresolved unconfirmed calls on that Turn still do. An unresolved unknown effect is evidence the person sees before accepting completion. It does not by itself write the completion disposition. Effect-specific duplicate-effect and replay checks remain with their owners (for example claimed MCP effects). These are pending implementation checks on those owners, not new format fields.
 
 **Acceptance.** `docs/core/agent-session.md` (`Replacement`) preserves the Turn's truthful lifecycle result and leaves effect/recovery uncertainty with those owners.
 

@@ -84,26 +84,6 @@ DATA_ROOT/
 
 Server mode requires a `BETTER_AUTH_SECRET` of at least 32 characters. The encrypted Vault store lives under `DATA_ROOT/server/vault/`, while its key file should live outside `DATA_ROOT` and must never be regenerated for an existing store.
 
-### Auto-allow host push on a trusted Workspace
-
-As a deployment administrator, inspect `repository.list` and obtain the exact trusted Workspace ID. Preserve the existing `server.jsonc` fields and add this policy entry, substituting that ID for `ws_trusted`:
-
-```jsonc
-"policy": {
-  "workspaceApprovalModes": {
-    "ws_trusted": { "repo.push": "auto_allow" }
-  }
-}
-```
-
-Validate through Settings Configuration or the public configuration operations, save, and restart the App using the deployment's existing restart procedure. This deployment-owned setting is not part of Workspace export/import. Omitted Workspaces and actions remain `require_human_approval`; unsupported actions and mode names are rejected. Set the entry to `require_human_approval` or remove it and restart to restore human approval for new requests. Existing grants and pending requests retain their original mode and target.
-
-Enroll the GitHub credential with `vault.secret-create` using secret stdin, create a host-push grant with `vault.grant-create`, and bind the returned grant ID through `repository.set-default` as `git.vaultGrantRef`. Keep the existing repository settings and explicitly configure the intended `allowedPushTargets`; protected branches require the literal target, not just a matching wildcard. Keep `requireReviewLinkage` and protected patterns intact. Host App API / ops pushes receive a host-session linkage exemption so dogfood operators do not need to flip `requireReviewLinkage` off; worker-selected `openkit-repository` publication still requires review linkage when enabled. See the public Skill's [Vault host-push recipe](https://github.com/lingkaix/openkit/blob/main/skills/openkit/references/administration.md#store-a-github-token-for-approved-host-push) for credential handling.
-
-Use `repository.push-request-approval` with a fresh request ID, running Turn, exact repository, source ref, target branch, and commit IDs. In automatic mode it returns `approval.status: granted`, `approval.id`, `approvalItemId`, and `policyDecisionId`; no `approval.respond` is needed. Invoke `repository.push-execute` with a different fresh request ID and that `approval.id` as `approvalRequestId`. Verify the returned push record and inspect `permission.workspace-list` and `audit.workspace-list` for the decision and audit. The policy request itself never pushes. In human mode, use `attention.list` and `approval.respond` or Web Action Center, then execute only after the request reads `granted`.
-
-Replay the same request ID and input to inspect an existing request. If receipt or interrupted-attempt evidence is incomplete, inspect it before requesting fresh target authority; do not retry Git directly. Automatic mode keeps Vault grants, current membership, target rules, review linkage, imported-authority refusal, and host-only credential injection in force.
-
 ## `config/providers/*.provider.jsonc`
 
 Each Provider file declares one Server-supplied Provider profile. `server.jsonc.providers` is invalid, and defining the same Provider `id` in more than one Provider file rejects every duplicate instance from the runtime registry.
@@ -292,7 +272,7 @@ The Workspace file owns shared editable composition.
 
 `workspace.name` is required. `workspace.defaultAgentId` is the shared default for warm Sandbox supply and task launch when no explicit or User choice exists; `null` explicitly declines a Workspace default so Server fallback may apply. An Agent binding may select a profile, override model preference and admission, add Skills and MCP entries, extend sandbox declarations, and bind reusable credential requirements. Workspace sandbox extensions may declare only reusable requirements, never a direct concrete grant.
 
-Workspace roots are relative `host-dir` declarations with `read-only` or `read-write` access. `createIfMissing` is valid only for a read-write root. Repository inspection configuration is under `workspace.assistant.repositoryInspection`.
+Workspace roots are relative `host-dir` declarations with `read-only` or `read-write` access. `createIfMissing` is valid only for a read-write root. `workspace.assistant.repositoryInspection` configures the legacy Assistant host repository reader, which retires. The Assistant's repository inspection target is a selected Gateway vendor MCP read or a Task handoff.
 
 ## `users/<userId>/config/user.jsonc`
 

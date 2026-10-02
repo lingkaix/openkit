@@ -87,7 +87,7 @@ and are not listed here.
 - `docs/specs/20260704-app_api_openapi_projection.md` — Accepted, Implemented — The rule that the shared Zod schema packages remain the single contract source for the App API, and that OpenAPI is a generated projection, never a source.
 - `docs/specs/20260704-capability_usage_gateway_foundation.md` — Accepted, Partial — The shared ledger foundation used by every current NanoCore `CapabilityCall` producer, including the selected Worker MCP producer.
 - `docs/specs/20260704-chat_mode_assistant.md` — Accepted, Partial — Chat Mode as the lightweight user interaction path before delegated worker work starts.
-- `docs/specs/20260704-git_write_workflow.md` — Accepted, Partial — The commit-on-apply contract: creating commits in linked repositories from accepted workspace reviews.
+- `docs/specs/20260704-git_write_workflow.md` — Deprecated, Partial — The commit-on-apply contract: creating commits in linked repositories from accepted workspace reviews.
 - `docs/specs/20260704-goal_mode_coordination.md` — Deprecated, Partial — Goal Mode as the V1 long-running objective-driven workflow mode.
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` — Accepted, Partial — The deterministic app-local service interface for the Knowledge Manager Internal Core Role.
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md` — Accepted, Partial — The ordered NanoCore boot phase contract, including which phases fail closed and which degrade.

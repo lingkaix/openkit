@@ -153,7 +153,6 @@ Worker runtime, supply, and synchronization:
 - [`20260704-worker_mcp_tool_supply.md`](./20260704-worker_mcp_tool_supply.md)
 - [`20260704-agent_session_continuity.md`](./20260704-agent_session_continuity.md)
 - [`20260703-workspace_synchronization.md`](./20260703-workspace_synchronization.md)
-- [`20260704-git_write_workflow.md`](./20260704-git_write_workflow.md)
 - [`20260709-worker_credential_access_declarations.md`](./20260709-worker_credential_access_declarations.md)
 - [`20260709-worker_sandbox_freedom_policy.md`](./20260709-worker_sandbox_freedom_policy.md)
 - [`20260711-scheduler_recurring_event_triggers.md`](./20260711-scheduler_recurring_event_triggers.md)
@@ -182,6 +181,7 @@ Deprecated transition specifications remain at the root only while their documen
 
 - [`20260715-openshell_disposable_cell_lifecycle.md`](./20260715-openshell_disposable_cell_lifecycle.md) — legacy per-session Cell implementation pending Runtime Epoch cutover and deletion
 - [`20260704-goal_mode_coordination.md`](./20260704-goal_mode_coordination.md) — legacy Goal coordination pending the new implementation and the one-way deletion
+- [`20260704-git_write_workflow.md`](./20260704-git_write_workflow.md) — legacy host Git publication pending removal; not current guidance
 
 Capability and provider slices:
 

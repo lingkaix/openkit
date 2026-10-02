@@ -22,7 +22,7 @@ Goal progression, Goal Plan decisions, Goal stop decisions, and the model Coordi
 - User-facing mode semantics. `docs/core/work-model.md` and the mode specs own those projections.
 - Core Assistant direct replies. `docs/specs/20260704-chat_mode_assistant.md` owns those.
 - Knowledge Manager service behavior. `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` owns that role.
-- Worker runtime control, scheduler, AEP, context package file format, workspace sync, or Git write execution.
+- Worker runtime control, scheduler, AEP, context package file format, workspace sync, or external hosting effect execution.
 - Durable Chat or Task owner tuples, Goal state, workflow progression effects, or context persistence, materialization, and delivery.
 - Future Task Evaluator behavior.
 - Goal truth, Plan versions, the wake marker, Goal completion, scheduling, worker execution, or terminal transition authority. `docs/specs/20261002-goal.md` owns the Goal and the model Coordinator role.

@@ -1,10 +1,35 @@
 ---
-status: Accepted
+status: Deprecated
 implementation: Partial
 kind: concept
-updated: 2026-09-30
+updated: 2026-10-02
+status-changed: 2026-10-02
+current-guidance: docs/specs/20260704-worker_mcp_tool_supply.md
+decision-evidence: docs/decisions/20261002-hosting_through_gateway_mcp.md
 ---
 # Git Write Workflow
+
+## Lifecycle Reason
+
+[Hosting Goes Through The Gateway MCP](../decisions/20261002-hosting_through_gateway_mcp.md) retires this specification as current guidance. The NanoCore host Git publication path is discontinued: commit-on-apply, ephemeral review branches, `workspace.git.push`, `GitPushRecord`, the host GitHub provider adapter, protected-branch host policy, the deployment `repo.push` approval mode, and the built-in `openkit-repository` tool are not current rules. Platform-managed hosting is an explicitly selected vendor MCP server through the Gateway. Local Git and user-space native push belong to [Worker Sandbox Freedom Policy](20260709-worker_sandbox_freedom_policy.md). Private source reads belong to [Workspace Data Source Catalog](20260704-workspace_data_source_catalog.md). Gateway-only hosting credentials belong to [Vault Backend Implementation](20260704-vault_backend_implementation.md). This file remains at the root only while the legacy host implementation still exists. It is not current guidance and it must not be extended.
+
+## Current Guidance
+
+`docs/specs/20260704-worker_mcp_tool_supply.md` is the current authority for platform-managed external hosting calls. `docs/specs/20260709-worker_sandbox_freedom_policy.md` is the current authority for local Sandbox Git and for user-space native push. `docs/specs/20260704-workspace_data_source_catalog.md` is the current authority for private source reads. `docs/specs/20260704-vault_backend_implementation.md` is the current authority for gateway-only hosting credentials.
+
+## Criterion Disposition
+
+Private source reads that require explicitly scoped read authority are received by `docs/specs/20260704-workspace_data_source_catalog.md`, qualified by the ruling that the first release uses a user-injected read-only runtime-env token and adds no platform source-credential mechanism. Platform-managed hosting credentials that stay gateway-only are received by `docs/specs/20260704-vault_backend_implementation.md`. The default Smart HTTP omission of `git-receive-pack`, and the rule that explicit user-space credentials plus admitted receive-pack may authorize native push without a platform mechanism, are received by `docs/specs/20260709-worker_sandbox_freedom_policy.md`. The body below keeps the historical wording of every other criterion until an auditor archives this file. Criteria the ruling ends are not restated as current rules.
+
+## Rollout / Migration Plan
+
+The legacy host publication implementation remains until a later change removes it. That change deletes the host publication routes, the reserved repository tool, and the host repository resource, and it leaves the non-Git Workspace apply path in place. Exit condition: platform-managed GitHub writes are Gateway vendor MCP calls, the host publication implementation is gone, and non-Git apply still has its owner. An auditor then moves this file to `docs/specs/retired/` together with a terminal-archive audit, with current guidance `None` for the ended host contract. Until that exit is proved, this file stays Deprecated at the root.
+
+## Retention Reason
+
+The body preserves the historical host publication shape: commit-on-apply, review-branch staging, the push record, protected-target matching, the human and automatic approval mode, the worker read-token attempt, and the interrupted-call barrier. Those details explain which host behaviors the ruling refused to carry forward and which constraints were moved before the file stopped governing. Deleting the body before the archive audit would make the criterion inventory unrecoverable. The body is historical evidence, not a contract to implement.
+
+The sections below are the historical contract. They are not current guidance.
 
 ## Owns
 
