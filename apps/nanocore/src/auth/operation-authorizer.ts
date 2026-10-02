@@ -1,6 +1,7 @@
 import {
   CreateAutomationRequestSchema,
   ExecuteGitPushRequestSchema,
+  KERNEL_OPERATION_DEFINITIONS,
   RequestGitPushApprovalRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -1045,7 +1046,7 @@ function guardedOperationRoutes(): OperationRoute[] {
   const routes: OperationRoute[] = [];
 
   for (const [operationKey, access] of Object.entries(PUBLIC_OPERATION_ACCESS)) {
-    if (access.scope === 'server') {
+    if (access.scope === 'server' || Object.hasOwn(KERNEL_OPERATION_DEFINITIONS, operationKey)) {
       continue;
     }
     const direct = directOperationRoute(operationKey);

@@ -3757,6 +3757,18 @@ export const operationCatalog = [
       return { deleted: credentialStore.deleteToken({ baseUrl: endpoint }) };
     },
   },
+  ...Object.entries(appSchemas.KERNEL_OPERATION_DEFINITIONS).map(([id, definition]) => ({
+    ...STANDARD,
+    id,
+    source: 'app-api',
+    appOperationId: id,
+    clientMethod: `operations.${id}`,
+    group: 'kernel',
+    summary: definition.description,
+    mutating: definition.mutating,
+    inputSchema: definition.inputSchema,
+    handler: ({ client }, input) => client.operations[id](input),
+  })),
   {
     ...STANDARD,
     id: 'kernel.apps-list',
@@ -3782,18 +3794,7 @@ export const operationCatalog = [
     handler: ({ client }, input) =>
       client.app.createLightApp(input.workspaceId, bodyWithout(input, 'workspaceId')),
   },
-  {
-    ...STANDARD,
-    id: 'kernel.apps-get',
-    source: 'app-api',
-    appOperationId: 'getLightApp',
-    clientMethod: 'app.getLightApp',
-    group: 'kernel',
-    summary: 'Read one Light App schema and capabilities.',
-    mutating: false,
-    inputSchema: strictScope({ ...workspaceScope, appId: z.string().uuid() }),
-    handler: ({ client }, input) => client.app.getLightApp(input.workspaceId, input.appId),
-  },
+
   {
     ...STANDARD,
     id: 'kernel.schema-update',
@@ -3891,28 +3892,7 @@ export const operationCatalog = [
         input.fields
       ),
   },
-  {
-    ...STANDARD,
-    id: 'kernel.records-create',
-    source: 'app-api',
-    appOperationId: 'createLightAppRecord',
-    clientMethod: 'app.createLightAppRecord',
-    group: 'kernel',
-    summary: 'Create one Light App record.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.CreateLightAppRecordRequestSchema, {
-      ...workspaceScope,
-      appId: z.string().uuid(),
-      collection: IDENTIFIER,
-    }),
-    handler: ({ client }, input) =>
-      client.app.createLightAppRecord(
-        input.workspaceId,
-        input.appId,
-        input.collection,
-        bodyWithout(input, 'workspaceId', 'appId', 'collection')
-      ),
-  },
+
   {
     ...STANDARD,
     id: 'kernel.records-update',

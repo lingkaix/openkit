@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
@@ -19,6 +20,8 @@ const physicalEpoch = 'a'.repeat(64);
 function toolFor(coreDb: ReturnType<typeof openCoreDb> | undefined) {
   return createAdministrationNanoHostRuntimeTargetTool({
     coreDb,
+    actor: { kind: 'local', userId: 'user_local' },
+    lineage: { workspaceId: 'ws_admin', threadId: 'th_admin', turnId: 'turn_admin' },
     mode: 'server',
     nanoHostConfig: { deploymentId, identityId },
   });
@@ -42,6 +45,7 @@ describe('administration nanohost.runtime-target Tool', () => {
 
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-admin-nanohost-tool-')));
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const tool = toolFor(coreDb);
     const context = { callId: 'call_target', signal: new AbortController().signal };
 

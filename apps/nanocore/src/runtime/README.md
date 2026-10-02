@@ -76,6 +76,8 @@ Worker observation ingress retains structural facts and restricted chunks throug
 
 An unavailable Worker observation may cite an earlier expected observation from the same authenticated package and Turn; ingress validates that anchor before persisting the parent reference.
 
+`openkit-generative-mcp.ts` derives the migrated Kernel descriptors and canonical Tool spelling from the shared operation table. Its dispatch passes authenticated package actor, Workspace, Thread, Turn, AgentSession, package snapshot and owner-derived request identity to native invocation. Model input omits bound fields; conflicts fail before effects. Selected supply, capability-call evidence and generic Tool admission remain in `worker-mcp-routes.ts` and their existing owners.
+
 ## Verification
 
 Run the nearest focused tests first, followed by NanoCore typecheck, lint, build, and the complete NanoCore test suite for runtime behavior changes. Governed-worker changes should also run worker-control, recovery, scheduler, and Server route coverage relevant to the changed lifecycle.

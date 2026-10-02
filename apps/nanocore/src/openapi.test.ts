@@ -1,9 +1,9 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-
 import {
   CapabilityUsageResponseSchema,
   CreateProviderSubscriptionAccountRequestSchema,
+  KERNEL_OPERATION_DEFINITIONS,
   SubscriptionProviderIdSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -3364,7 +3364,8 @@ describe('app api openapi projection', () => {
       .filter(
         ({ operation }) =>
           typeof operation.operationId !== 'string' ||
-          !/^[a-z][A-Za-z0-9]*$/.test(operation.operationId)
+          (!/^[a-z][A-Za-z0-9]*$/.test(operation.operationId) &&
+            !Object.hasOwn(KERNEL_OPERATION_DEFINITIONS, operation.operationId))
       )
       .map(({ route }) => route);
     const duplicateOperationIds = operationIds.filter(
@@ -3616,14 +3617,13 @@ describe('app api openapi projection', () => {
       'unbindThreadMaterial',
       'excludeThreadMaterial',
       'restoreThreadMaterial',
+      ...Object.keys(KERNEL_OPERATION_DEFINITIONS),
       'listLightApps',
       'createLightApp',
-      'getLightApp',
       'updateLightAppSchema',
       'retireLightApp',
       'listLightAppRecords',
       'getLightAppRecord',
-      'createLightAppRecord',
       'updateLightAppRecord',
       'batchLightAppRecords',
       'publishGenerativePresentation',

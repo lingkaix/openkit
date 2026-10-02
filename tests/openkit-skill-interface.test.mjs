@@ -701,7 +701,11 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.equal(operationCatalog.filter((entry) => entry.id.startsWith('oauth.')).length, 0);
 
   for (const entry of operationCatalog) {
-    assert.match(entry.id, /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/);
+    if (Object.hasOwn(appSchemas.KERNEL_OPERATION_DEFINITIONS, entry.id)) {
+      assert.match(entry.id, /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/);
+    } else {
+      assert.match(entry.id, /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/);
+    }
     assert.ok(['app-api', 'core-projection', 'local-only'].includes(entry.source));
     assert.equal(typeof entry.group, 'string');
     assert.equal(typeof entry.summary, 'string');
@@ -719,7 +723,10 @@ test('one catalog covers the checked App API and public Core projection', async 
     } else {
       assert.equal(typeof resolvePath(client, entry.clientMethod), 'function');
       assert.ok(
-        String(entry.handler).includes(`client.${entry.clientMethod}`),
+        Object.hasOwn(appSchemas.KERNEL_OPERATION_DEFINITIONS, entry.id)
+          ? entry.clientMethod === `operations.${entry.id}` &&
+              entry.inputSchema === appSchemas.KERNEL_OPERATION_DEFINITIONS[entry.id].inputSchema
+          : String(entry.handler).includes(`client.${entry.clientMethod}`),
         `${entry.id} handler must invoke ${entry.clientMethod}`
       );
     }
@@ -2797,7 +2804,10 @@ function readAppOperationIds() {
  * @returns {unknown} Resolved value.
  */
 function resolvePath(value, path) {
-  return path.split('.').reduce((current, key) => current?.[key], value);
+  const [owner, ...parts] = path.split('.');
+  const member = parts.join('.');
+  if (value?.[owner] && Object.hasOwn(value[owner], member)) return value[owner][member];
+  return path.split('.').reduce((current, segment) => current?.[segment], value);
 }
 
 /**

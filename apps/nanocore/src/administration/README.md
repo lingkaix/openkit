@@ -13,6 +13,8 @@ This directory owns the private administration conversation entry and its fixed 
 - `nanohost.runtime-target` is the seventh fixed Tool. It reuses `readConfiguredNanoHostRuntimeTargetStatus` with the public GET, accepts only an empty object, and never infers unreadiness from Provider catalog or Worker environment absence. The result is Core's stored projection at `observedAt`, not a live host probe. NanoHost is the execution host, not an LLM Provider.
 - Persist ordinary Turn and Item records. Do not introduce a private run ledger, Worker lease, shell, Docker socket, or arbitrary MCP/Skill surface.
 
+The configured RuntimeTarget Tool derives its descriptor from the shared administration operation table and executes through `../operation-invocation.ts`. Invocation rechecks current deployment-administrator authority on every call; the other six Tools retain their existing closure check. The actual assembly supplies authenticated actor and private Workspace/Thread/Turn lineage, returned in non-secret Tool details. `operation-invocation.test.ts` proves that provenance and next-call revocation through the seventh assembled Tool.
+
 ## Verification
 
 Run the focused administration tests together with `internal-agent-loop.test.ts` and `gateway-provider.test.ts`, then the NanoCore package checks described in the [source guide](../README.md).

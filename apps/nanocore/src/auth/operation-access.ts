@@ -1,3 +1,4 @@
+import { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { ProductOperation } from '../policy/workspace-access.js';
 
 /** Public authorization scope declared by one canonical operation. */
@@ -390,7 +391,6 @@ registerOperations(
     'GET /api/workspaces/:workspaceId',
     'GET /api/workspaces/:workspaceId/resources',
     'listLightApps',
-    'getLightApp',
     'listLightAppRecords',
     'getLightAppRecord',
   ],
@@ -461,7 +461,6 @@ registerOperations(
     'createWorkspaceMaterial',
     'POST /api/workspaces/:workspaceId/threads',
     'retireLightApp',
-    'createLightAppRecord',
     'updateLightAppRecord',
     'batchLightAppRecords',
     'publishGenerativePresentation',
@@ -810,6 +809,16 @@ registerOperations(catalog, ['requestGitPushApproval', 'executeGitPush'], {
   resolver: 'workspace-child-lineage',
   scope: 'workspace',
 });
+
+// Migrated declarations are projections, never a second contract or admission path.
+for (const [id, definition] of Object.entries(KERNEL_OPERATION_DEFINITIONS)) {
+  registerOperations(catalog, [id], {
+    mutating: definition.mutating,
+    policyOperation: definition.policyOperation,
+    resolver: definition.scope.kind,
+    scope: 'workspace',
+  });
+}
 
 /** Canonical access metadata for every public App API and direct Core/Gateway operation. */
 export const PUBLIC_OPERATION_ACCESS: Readonly<Record<string, PublicOperationAccess>> =

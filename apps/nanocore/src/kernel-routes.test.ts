@@ -80,26 +80,26 @@ describe('Kernel App API', () => {
         appId: string;
         schemaRevision: number;
       };
-      const recordResponse = await app.request(
-        `/api/app/workspaces/ws_demo/light-apps/${created.appId}/collections/mappings/records`,
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-openkit-request-id': randomUUID(),
+      const recordResponse = await app.request('/api/app/operations/kernel.records.create', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-openkit-request-id': randomUUID(),
+        },
+        body: JSON.stringify({
+          workspaceId: 'ws_demo',
+          appId: created.appId,
+          collection: 'mappings',
+          schemaRevision: created.schemaRevision,
+          data: {
+            membership_id: 'mem_1',
+            crm_id: 'crm_1',
+            annotation: 'note',
+            active: true,
           },
-          body: JSON.stringify({
-            schemaRevision: created.schemaRevision,
-            data: {
-              membership_id: 'mem_1',
-              crm_id: 'crm_1',
-              annotation: 'note',
-              active: true,
-            },
-          }),
-        }
-      );
-      expect(recordResponse.status).toBe(201);
+        }),
+      });
+      expect(recordResponse.status).toBe(200);
       const listed = await app.request(
         `/api/app/workspaces/ws_demo/light-apps/${created.appId}/collections/mappings/records?schemaRevision=${created.schemaRevision}`
       );

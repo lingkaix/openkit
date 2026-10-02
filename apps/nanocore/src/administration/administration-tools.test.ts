@@ -75,7 +75,7 @@ describe('administration Tool assembly', () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
-  it('denies nanohost.runtime-target after administrator authority is revoked', async () => {
+  it('retains the per-call authority check for an unmigrated configuration Tool', async () => {
     const execute = vi.fn(async () => ({ content: [] }));
     const requireCurrentAdministrator = vi
       .fn()
@@ -84,15 +84,15 @@ describe('administration Tool assembly', () => {
         throw new Error('Current deployment administrator authority is required.');
       });
     const tools = createAdministrationTools({
-      configurationTools: configurationTools(),
+      configurationTools: configurationTools(execute),
       requireCurrentAdministrator,
       environmentTools: environmentTools(),
-      runtimeTargetTool: runtimeTargetTool(execute),
+      runtimeTargetTool: runtimeTargetTool(),
     });
 
-    await tools[6]!.execute({}, { callId: 'call_ready', signal: new AbortController().signal });
+    await tools[0]!.execute({}, { callId: 'call_ready', signal: new AbortController().signal });
     await expect(
-      tools[6]!.execute({}, { callId: 'call_revoked', signal: new AbortController().signal })
+      tools[0]!.execute({}, { callId: 'call_revoked', signal: new AbortController().signal })
     ).rejects.toThrow('Current deployment administrator authority is required.');
     expect(execute).toHaveBeenCalledOnce();
   });

@@ -1668,6 +1668,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerKernelRoutes({
     app,
     coreDb: options.coreDb,
+    workspaceMutationAdmission,
     inflightCommands,
     openWorkspaceDb: repositoryWorkspaceDb,
     requestStore,

@@ -19,6 +19,8 @@ Package and app unit, contract, integration, and browser tests remain with their
 
 The finite governance contract tests project declared document and role seams. They check registration and instruction consistency, not semantic completeness, live dispatch, fresh attention, or operational effectiveness; independent artifact review supplies the relevant engineering judgment.
 
+The Skill catalog and Web operation disposition tests consume the shared Kernel definition keys for the migrated slice. They preserve their whole-catalog coverage and duplicate checks without maintaining a second handwritten slice list. Cross-projection result and stored-record behavior belongs to NanoCore's `src/operation-projections.test.ts`; root catalog checks do not replace that composition proof.
+
 ## Commands
 
 Run root JavaScript unit tests, including Story parser tests, through the root unit gate:

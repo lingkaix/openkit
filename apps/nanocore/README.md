@@ -28,6 +28,10 @@ Chat Mode distinguishes explicit external search or browsing requests from ordin
 
 Internal Chat, administration and Goal planning calls keep private cache scope and usage attribution in Gateway dispatch context. They do not send duplicate internal metadata fields to provider-native endpoints; unsupported external request fields still fail admission.
 
+## Native Operation Slice
+
+[`src/operation-invocation.ts`](src/operation-invocation.ts) joins the shared release-authored operation definitions to existing domain handlers and performs native admission and output validation. The migrated Kernel pair derives HTTP, Core Client, selected Worker MCP and retained CLI projections from one table. The existing Kernel receipt, audit and replay owners remain authoritative. [`src/operation-projections.test.ts`](src/operation-projections.test.ts) composes those real projections over isolated SQLite records and checks the result, replay, credential, child and lineage invariants. The administration provenance proof uses the actual fixed internal Tool assembly in `src/administration/operation-invocation.test.ts`.
+
 ## Scope
 
 - local-mode implicit single-user operation

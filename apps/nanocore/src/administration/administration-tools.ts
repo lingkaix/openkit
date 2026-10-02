@@ -1,3 +1,4 @@
+import { ADMINISTRATION_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { AgentTool, AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 import type { AdministrationConfigurationTools } from './configuration-tools.js';
 
@@ -58,7 +59,8 @@ export function createAdministrationTools(
   ].map((tool) => ({
     ...tool,
     execute: async (input: unknown, context): Promise<AgentToolResult> => {
-      options.requireCurrentAdministrator();
+      if (!Object.hasOwn(ADMINISTRATION_OPERATION_DEFINITIONS, tool.name))
+        options.requireCurrentAdministrator();
       return tool.execute(input, context);
     },
   }));

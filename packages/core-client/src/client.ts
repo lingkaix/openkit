@@ -12,6 +12,7 @@ import type { ResourceCatalogClient } from './catalog.js';
 import { createResourceCatalogClient } from './catalog.js';
 import type { CoreProjectionClient } from './core.js';
 import { createCoreProjectionClient } from './core.js';
+import { createOperationClient, type OperationClient } from './operations.js';
 import type { ProviderSubscriptionsClient } from './provider-subscriptions.js';
 import { createProviderSubscriptionsClient } from './provider-subscriptions.js';
 import type { WorkspaceRepositoryClient } from './repository.js';
@@ -32,6 +33,8 @@ export interface CreateCoreClientOptions extends ClientTransportOptions {
 
 /** Composed OpenKit client with protocol and App API surfaces separated by ownership. */
 export interface CoreClient {
+  /** Canonical operation methods generated from migrated definitions. */
+  readonly operations: OperationClient;
   /** Stable Core protocol projection routes and turn event streams. */
   readonly core: CoreProjectionClient;
   /** NanoCore App API read models and app-local commands. */
@@ -72,6 +75,7 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   const repositories = createWorkspaceRepositoryClient(transport);
 
   return {
+    operations: createOperationClient(transport),
     actionCenter,
     agents,
     app,

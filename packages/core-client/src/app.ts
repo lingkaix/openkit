@@ -51,8 +51,6 @@ import {
   ConvertGoalSteeringToFollowUpResponseSchema,
   type CreateAutomationRequest,
   CreateAutomationRequestSchema,
-  type CreateLightAppRecordRequest,
-  CreateLightAppRecordRequestSchema,
   type CreateLightAppRequest,
   CreateLightAppRequestSchema,
   type CreateLightAppResponse,
@@ -107,8 +105,6 @@ import {
   GetGenerativePresentationResponseSchema,
   type GetLightAppRecordResponse,
   GetLightAppRecordResponseSchema,
-  type GetLightAppResponse,
-  GetLightAppResponseSchema,
   type GetThreadMaterialResponse,
   GetThreadMaterialResponseSchema,
   type GetWorkerEnvironmentStatusResponse,
@@ -784,8 +780,6 @@ export interface AppApiClient {
     input: CreateLightAppRequest,
     requestId?: string
   ): Promise<CreateLightAppResponse>;
-  /** Reads one Light App. */
-  getLightApp(workspaceId: string, appId: string): Promise<GetLightAppResponse>;
   /** Updates one Light App schema. */
   updateLightAppSchema(
     workspaceId: string,
@@ -822,14 +816,6 @@ export interface AppApiClient {
     recordId: string,
     schemaRevision: number,
     fields?: string
-  ): Promise<GetLightAppRecordResponse>;
-  /** Creates one Light App record. */
-  createLightAppRecord(
-    workspaceId: string,
-    appId: string,
-    collection: string,
-    input: CreateLightAppRecordRequest,
-    requestId?: string
   ): Promise<GetLightAppRecordResponse>;
   /** Updates one Light App record. */
   updateLightAppRecord(
@@ -1603,11 +1589,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         CreateLightAppResponseSchema,
         { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
-    getLightApp: (workspaceId, appId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/light-apps/${appId}`,
-        GetLightAppResponseSchema
-      ),
     updateLightAppSchema: (workspaceId, appId, input, requestId) =>
       transport.putJson(
         `/api/app/workspaces/${workspaceId}/light-apps/${appId}/schema`,
@@ -1642,13 +1623,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         GetLightAppRecordResponseSchema
       );
     },
-    createLightAppRecord: (workspaceId, appId, collection, input, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records`,
-        CreateLightAppRecordRequestSchema.parse(input),
-        GetLightAppRecordResponseSchema,
-        { 'x-openkit-request-id': requestId ?? createRequestId() }
-      ),
     updateLightAppRecord: (workspaceId, appId, collection, recordId, input, requestId) =>
       transport.patchJson(
         `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records/${recordId}`,

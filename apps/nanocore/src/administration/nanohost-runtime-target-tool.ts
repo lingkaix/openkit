@@ -1,78 +1,63 @@
+import { ADMINISTRATION_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
-
+import { z } from 'zod';
+import type { Actor } from '../auth/identity.js';
 import type { CoreMode } from '../config/mode.js';
 import type { AgentTool, AgentToolResult } from '../internal-agents/internal-agent-loop.js';
-import { readConfiguredNanoHostRuntimeTargetStatus } from '../runtime/nanohost-runtime-target.js';
+import { createOperationInvocation, OperationInvocationError } from '../operation-invocation.js';
 import type { CoreDb } from '../storage/db.js';
 
-/** Dependencies for the read-only NanoHost RuntimeTarget administration Tool. */
+/** Trusted dependencies for the configured RuntimeTarget read. */
 export interface CreateAdministrationNanoHostRuntimeTargetToolInput {
-  /** Open Core database, when server storage is available. */
   readonly coreDb: CoreDb | undefined;
-  /** Startup Core mode used by the public RuntimeTarget GET. */
   readonly mode: CoreMode;
-  /** Startup NanoHost config used by the public RuntimeTarget GET. */
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
-}
-
-/**
- * Creates the empty-input NanoHost RuntimeTarget readiness Tool.
- *
- * @param input Startup mode, config, and storage used by the public observation.
- * @returns One read-only Tool that cannot select a host.
- */
-export function createAdministrationNanoHostRuntimeTargetTool(
-  input: CreateAdministrationNanoHostRuntimeTargetToolInput
-): AgentTool {
-  return {
-    name: 'nanohost.runtime-target',
-    description:
-      "Read the configured NanoHost execution-host RuntimeTarget readiness. NanoHost is not an LLM Provider. Input must be an empty object; this Tool cannot select a host, deployment, or scope. The result is Core's stored projection at observedAt, not a live host probe.",
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {},
-    },
-    execute: async (value) => observeRuntimeTarget(input, value),
+  /** Authenticated administrator; never supplied by the model. */
+  readonly actor: Actor;
+  /** Actual private administration Turn supplied by entry assembly. */
+  readonly lineage: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
   };
 }
 
-/** Returns the shared redacted observation or a typed scope/owner failure. */
-function observeRuntimeTarget(
-  input: CreateAdministrationNanoHostRuntimeTargetToolInput,
-  value: unknown
-): AgentToolResult {
-  if (!isEmptyObject(value)) {
-    return observationFailure(
-      'nanohost_runtime_target_scope_rejected',
-      'nanohost.runtime-target accepts only an empty object; the model cannot select a host.'
-    );
-  }
-  const observation = readConfiguredNanoHostRuntimeTargetStatus({
-    coreDb: input.coreDb,
-    mode: input.mode,
-    ...(input.nanoHostConfig ? { nanoHostConfig: input.nanoHostConfig } : {}),
-  });
-  if (!observation.ok) {
-    return observationFailure(observation.code, observation.message);
-  }
-  return { content: [{ type: 'text', text: JSON.stringify(observation.status) }] };
-}
-
-/** Rejects any model-selected scope or non-object Tool input. */
-function isEmptyObject(value: unknown): boolean {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.keys(value).length === 0
-  );
-}
-
-/** Encodes a redacted owner failure for the internal Agent loop. */
-function observationFailure(code: string, message: string): AgentToolResult {
+/** Derives the fixed administration read Tool and routes each call through native invocation. */
+export function createAdministrationNanoHostRuntimeTargetTool(
+  input: CreateAdministrationNanoHostRuntimeTargetToolInput
+): AgentTool {
+  const [id, definition] = Object.entries(ADMINISTRATION_OPERATION_DEFINITIONS)[0]!;
+  const invoke = createOperationInvocation(input);
   return {
-    content: [{ type: 'text', text: JSON.stringify({ code, message }) }],
-    isError: true,
+    name: id,
+    description: definition.description,
+    inputSchema: z.toJSONSchema(definition.inputSchema),
+    execute: async (value): Promise<AgentToolResult> => {
+      try {
+        const output = await invoke(
+          id as keyof typeof ADMINISTRATION_OPERATION_DEFINITIONS,
+          value,
+          { kind: 'public', actor: input.actor }
+        );
+        return {
+          content: [{ type: 'text', text: JSON.stringify(output) }],
+          details: {
+            operationId: id,
+            actor: { kind: 'user', id: input.actor.userId },
+            ...input.lineage,
+          },
+        };
+      } catch (error) {
+        if (!(error instanceof OperationInvocationError)) throw error;
+        const code =
+          error.code === 'invalid_request' || error.code === 'bound_input_conflict'
+            ? 'nanohost_runtime_target_scope_rejected'
+            : error.code;
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ code, message: error.message }) }],
+          isError: true,
+        };
+      }
+    },
   };
 }

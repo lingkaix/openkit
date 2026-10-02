@@ -294,6 +294,8 @@ export function registerAdministrationRoutes(input: RegisterAdministrationRoutes
                 store,
               }),
               runtimeTargetTool: createAdministrationNanoHostRuntimeTargetTool({
+                actor,
+                lineage: { workspaceId, threadId: thread.id, turnId: turn.id },
                 coreDb: input.coreDb,
                 mode: input.mode,
                 ...(input.nanoHostConfig ? { nanoHostConfig: input.nanoHostConfig } : {}),

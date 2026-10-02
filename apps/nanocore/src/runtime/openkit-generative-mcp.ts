@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import {
-  CreateLightAppRecordRequestSchema,
   CreateLightAppRequestSchema,
   GenerativeUiA2uiActionSchema,
+  KERNEL_OPERATION_DEFINITIONS,
+  type KernelOperationId,
   LightAppBatchRequestSchema,
+  operationModelInput,
+  operationToolName,
   PublishGenerativePresentationRequestSchema,
   RetireLightAppRequestSchema,
   UpdateLightAppRecordRequestSchema,
@@ -16,8 +19,6 @@ import { z } from 'zod';
 import {
   batchRecords,
   createLightApp,
-  createRecord,
-  getLightApp,
   getRecord,
   listLightApps,
   listRecords,
@@ -34,8 +35,10 @@ import {
   submitGenerativePresentationAction,
 } from '../generative-ui/commands.js';
 import type { FsStore } from '../lib/store.js';
+import { createOperationInvocation } from '../operation-invocation.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 /** Reserved built-in Worker MCP server id. */
 export const OPENKIT_GENERATIVE_MCP_ID = 'openkit-generative';
@@ -44,7 +47,6 @@ const AppIdSchema = z.string().uuid();
 const CollectionSelectorSchema = z.string().min(1);
 const PresentationIdSchema = z.string().uuid();
 
-const KernelAppsGetArgsSchema = z.object({ appId: AppIdSchema }).strict();
 const KernelSchemaUpdateArgsSchema = UpdateLightAppSchemaRequestSchema.extend({
   appId: AppIdSchema,
 });
@@ -72,10 +74,6 @@ const KernelRecordsGetArgsSchema = z
     fields: z.string().optional(),
   })
   .strict();
-const KernelRecordsCreateArgsSchema = CreateLightAppRecordRequestSchema.extend({
-  appId: AppIdSchema,
-  collection: CollectionSelectorSchema,
-});
 const KernelRecordsUpdateArgsSchema = UpdateLightAppRecordRequestSchema.extend({
   appId: AppIdSchema,
   collection: CollectionSelectorSchema,
@@ -97,6 +95,13 @@ function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
 
 /** Built-in tool descriptors used for ListTools and catalog digest. */
 export const OPENKIT_GENERATIVE_TOOLS = [
+  ...Object.entries(KERNEL_OPERATION_DEFINITIONS).map(([id, definition]) => ({
+    name: operationToolName(id),
+    description: definition.description,
+    inputSchema: mcpInputSchema(
+      operationModelInput(definition.inputSchema, ['workspaceId', 'requestId'])
+    ),
+  })),
   {
     name: 'kernel_apps_list',
     description: 'List Light Apps in the current Workspace.',
@@ -107,11 +112,7 @@ export const OPENKIT_GENERATIVE_TOOLS = [
     description: 'Create one Light App from a file-authored schema.',
     inputSchema: mcpInputSchema(CreateLightAppRequestSchema),
   },
-  {
-    name: 'kernel_apps_get',
-    description: 'Read one Light App schema and capabilities.',
-    inputSchema: mcpInputSchema(KernelAppsGetArgsSchema),
-  },
+
   {
     name: 'kernel_schema_update',
     description: 'Update one Light App schema within the initial evolution ceiling.',
@@ -132,11 +133,7 @@ export const OPENKIT_GENERATIVE_TOOLS = [
     description: 'Read one Light App record.',
     inputSchema: mcpInputSchema(KernelRecordsGetArgsSchema),
   },
-  {
-    name: 'kernel_records_create',
-    description: 'Create one Light App record.',
-    inputSchema: mcpInputSchema(KernelRecordsCreateArgsSchema),
-  },
+
   {
     name: 'kernel_records_update',
     description: 'Update one Light App record.',
@@ -175,15 +172,16 @@ export const OPENKIT_GENERATIVE_TOOLS = [
 ] as const;
 
 /** App API operations authorized for each built-in generative tool. */
-export const OPENKIT_GENERATIVE_TOOL_OPERATIONS = {
+export const OPENKIT_GENERATIVE_TOOL_OPERATIONS: Readonly<Record<string, string>> = {
+  ...Object.fromEntries(
+    Object.keys(KERNEL_OPERATION_DEFINITIONS).map((id) => [operationToolName(id), id])
+  ),
   kernel_apps_list: 'listLightApps',
   kernel_apps_create: 'createLightApp',
-  kernel_apps_get: 'getLightApp',
   kernel_schema_update: 'updateLightAppSchema',
   kernel_apps_retire: 'retireLightApp',
   kernel_records_list: 'listLightAppRecords',
   kernel_records_get: 'getLightAppRecord',
-  kernel_records_create: 'createLightAppRecord',
   kernel_records_update: 'updateLightAppRecord',
   kernel_records_batch: 'batchLightAppRecords',
   generative_ui_publish: 'publishGenerativePresentation',
@@ -192,6 +190,14 @@ export const OPENKIT_GENERATIVE_TOOL_OPERATIONS = {
   generative_ui_refresh: 'refreshGenerativePresentation',
   generative_ui_action: 'submitGenerativePresentationAction',
 } as const;
+
+// A derived spelling is valid only when it cannot collide with another supplied Tool.
+if (
+  new Set(OPENKIT_GENERATIVE_TOOLS.map((tool) => tool.name)).size !==
+  OPENKIT_GENERATIVE_TOOLS.length
+) {
+  throw new Error('Generative Tool spelling collision.');
+}
 
 /** SHA-256 digest of the built-in tool-schema descriptor. */
 export const OPENKIT_GENERATIVE_CATALOG_DIGEST = `sha256:${createHash('sha256')
@@ -217,6 +223,11 @@ export function createOpenkitGenerativeMcpSupply(): AgentEnvironmentPackage['sup
 
 /** In-process built-in MCP dispatch context. */
 export interface OpenkitGenerativeMcpContext {
+  /** Current record and mutation owners, required for migrated operations. */
+  readonly coreDb?: CoreDb;
+  readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
+  /** Immutable selected package identity proved at the relay boundary. */
+  readonly packageSnapshotId?: string;
   /** Store that owns Thread/Turn/Item history. */
   readonly store: FsStore;
   /** In-flight command map. */
@@ -255,6 +266,28 @@ export async function dispatchOpenkitGenerativeTool(
   structuredContent: unknown;
   _meta?: Record<string, unknown>;
 }> {
+  const operationId = Object.keys(KERNEL_OPERATION_DEFINITIONS).find(
+    (id) => operationToolName(id) === toolName
+  ) as KernelOperationId | undefined;
+  if (operationId) {
+    if (!context.coreDb || !context.workspaceMutationAdmission || !context.packageSnapshotId) {
+      throw new KernelCommandError('unavailable', 'Invocation authority is unavailable.');
+    }
+    const invoke = createOperationInvocation({
+      coreDb: context.coreDb,
+      store: context.store,
+      inflightCommands: context.inflightCommands,
+      workspaceMutationAdmission: context.workspaceMutationAdmission,
+    });
+    return textResult(
+      await invoke(operationId, args, {
+        kind: 'worker',
+        actor: context.actor,
+        lineage: { ...context.scope, packageSnapshotId: context.packageSnapshotId },
+        requestId: requestIdFrom({}, context),
+      })
+    );
+  }
   assertScope(args, context);
   const kernelContext = {
     store: context.store,
@@ -274,10 +307,6 @@ export async function dispatchOpenkitGenerativeTool(
           kernelContext,
           parseTool(CreateLightAppRequestSchema, withoutScope(args))
         )
-      );
-    case 'kernel_apps_get':
-      return textResult(
-        getLightApp(context.dataRoot, context.workspaceId, stringArg(args, 'appId'))
       );
     case 'kernel_schema_update': {
       const body = parseTool(UpdateLightAppSchemaRequestSchema, {
@@ -332,21 +361,6 @@ export async function dispatchOpenkitGenerativeTool(
           optionalString(args.fields)
         )
       );
-    case 'kernel_records_create': {
-      const body = parseTool(CreateLightAppRecordRequestSchema, {
-        schemaRevision: args.schemaRevision,
-        data: args.data,
-      });
-      return textResult(
-        await createRecord(
-          kernelContext,
-          stringArg(args, 'appId'),
-          stringArg(args, 'collection'),
-          body.schemaRevision,
-          body.data
-        )
-      );
-    }
     case 'kernel_records_update': {
       const body = parseTool(UpdateLightAppRecordRequestSchema, {
         schemaRevision: args.schemaRevision,

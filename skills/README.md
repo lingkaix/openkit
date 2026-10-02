@@ -18,6 +18,8 @@ Generic access-token creation and rotation are exposed as `token.create` and `to
 
 Conversation submission can forward the existing explicit retained Worker storage choice for new Task work. The public loop reference and Web Advanced settings share the same selection, authority and send-time admission rules; omitting the choice keeps the default new environment.
 
+The migrated Kernel CLI entries derive their canonical ids, descriptions, input schemas and mutation posture from `KERNEL_OPERATION_DEFINITIONS`. Their handlers use `client.operations[id]`, reaching native invocation through the canonical JSON binding. The source catalog retains no old alias for those entries. Regenerate `openkit/scripts/openkit` with `pnpm build:openkit`; the interface tests exercise both the catalog and bundled executable. Other online operations keep their existing client projection until cutover.
+
 ## Operations Interface
 
 The operations package contains its entrypoint, directly linked canonical operator references and any bounded support scripts required by an accepted operation owner. It works from outside the source checkout and can guide recovery while NanoCore is unavailable. Procedures name required host tools and explicitly acquire source when needed. Credentials and host authority come from the user's Agent environment, not the Skill. NanoCore/Web updates and separately authorized NanoHost work remain distinct.

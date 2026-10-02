@@ -31,7 +31,6 @@ import {
   ConvertGoalSteeringToFollowUpRequestSchema,
   ConvertGoalSteeringToFollowUpResponseSchema,
   CreateAutomationRequestSchema,
-  CreateLightAppRecordRequestSchema,
   CreateLightAppRequestSchema,
   CreateLightAppResponseSchema,
   CreateMcpConfigRequestSchema,
@@ -68,7 +67,6 @@ import {
   GetGenerativePresentationResponseSchema,
   GetGitPushRecordResponseSchema,
   GetLightAppRecordResponseSchema,
-  GetLightAppResponseSchema,
   GetThreadMaterialResponseSchema,
   GetWorkerEnvironmentStatusResponseSchema,
   GetWorkspaceApplyResultResponseSchema,
@@ -86,6 +84,8 @@ import {
   IntroduceWorkspaceArtifactResponseSchema,
   IssueNanoHostTransportTokenRequestSchema,
   IssueNanoHostTransportTokenResponseSchema,
+  KERNEL_OPERATION_DEFINITIONS,
+  type KernelOperationId,
   KnowledgeDerivedIndexesResponseSchema,
   KnowledgeManagerAnswerRequestSchema,
   KnowledgeManagerAnswerResponseSchema,
@@ -152,6 +152,8 @@ import {
   ListWorkspaceVaultInjectionReceiptsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
   NanoHostRuntimeTargetStatusResponseSchema,
+  operationHttpPath,
+  operationModelInput,
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
   PrepareAppUpdateRequestSchema,
@@ -680,6 +682,30 @@ function getAppApiRouteDefinition<OperationId extends AppApiRouteDefinition['ope
   return definition as AppApiRouteDefinitionFor<OperationId>;
 }
 
+/** Derives the migrated JSON bindings and their contract references. */
+function kernelOperationPaths() {
+  return Object.fromEntries(
+    Object.entries(KERNEL_OPERATION_DEFINITIONS).map(([id, definition]) => [
+      operationHttpPath(id),
+      {
+        post: appJsonOperation({
+          operationId: id,
+          tag: 'light-apps',
+          summary: definition.description,
+          requestSchema: `${id}.input`,
+          responseSchema: `${id}.output`,
+          responseStatus: '200',
+          ...(definition.mutating ? { parameters: [REQUEST_ID_HEADER] } : {}),
+        }),
+      },
+    ])
+  ) as {
+    [K in KernelOperationId as `/api/app/operations/${K}`]: {
+      post: ReturnType<typeof appJsonOperation<K>>;
+    };
+  };
+}
+
 /**
  * Creates the current App API OpenAPI projection from shared Zod schemas.
  *
@@ -696,6 +722,7 @@ export function createAppOpenApiDocument() {
     },
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
+      ...kernelOperationPaths(),
       '/api/app/workspaces': {
         get: appJsonOperation({
           operationId: 'listAuthorizedWorkspaces',
@@ -3893,16 +3920,6 @@ export function createAppOpenApiDocument() {
           responseSchema: 'CreateLightAppResponse',
         }),
       },
-      '/api/app/workspaces/{workspaceId}/light-apps/{appId}': {
-        get: appJsonOperation({
-          operationId: 'getLightApp',
-          tag: 'light-apps',
-          summary: 'Read one Light App schema and capabilities.',
-          parameters: [WORKSPACE_ID_PARAMETER, APP_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'GetLightAppResponse',
-        }),
-      },
       '/api/app/workspaces/{workspaceId}/light-apps/{appId}/schema': {
         put: appJsonOperation({
           operationId: 'updateLightAppSchema',
@@ -3958,20 +3975,6 @@ export function createAppOpenApiDocument() {
           ],
           responseStatus: '200',
           responseSchema: 'ListLightAppRecordsResponse',
-        }),
-        post: appJsonOperation({
-          operationId: 'createLightAppRecord',
-          tag: 'light-apps',
-          summary: 'Create one Light App record.',
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            APP_ID_PARAMETER,
-            COLLECTION_PARAMETER,
-            REQUEST_ID_HEADER,
-          ],
-          requestSchema: 'CreateLightAppRecordRequest',
-          responseStatus: '201',
-          responseSchema: 'CreateLightAppRecordResponse',
         }),
       },
       '/api/app/workspaces/{workspaceId}/light-apps/{appId}/collections/{collection}/records/{recordId}':
@@ -6396,6 +6399,15 @@ export function createAppOpenApiDocument() {
         },
       },
       schemas: {
+        ...Object.fromEntries(
+          Object.entries(KERNEL_OPERATION_DEFINITIONS).flatMap(([id, definition]) => [
+            [
+              `${id}.input`,
+              toJsonSchema(operationModelInput(definition.inputSchema, ['requestId'])),
+            ],
+            [`${id}.output`, toJsonSchema(definition.outputSchema)],
+          ])
+        ),
         AbortNanoHostTransportRotationResponse: toJsonSchema(
           AbortNanoHostTransportRotationResponseSchema
         ),
@@ -6434,9 +6446,6 @@ export function createAppOpenApiDocument() {
         CreateWorkspaceMaterialResponse: toJsonSchema(CreateWorkspaceMaterialResponseSchema),
         CreateLightAppRequest: toJsonSchema(CreateLightAppRequestSchema),
         CreateLightAppResponse: toJsonSchema(CreateLightAppResponseSchema),
-        CreateLightAppRecordRequest: toJsonSchema(CreateLightAppRecordRequestSchema),
-        CreateLightAppRecordResponse: toJsonSchema(GetLightAppRecordResponseSchema),
-        GetLightAppResponse: toJsonSchema(GetLightAppResponseSchema),
         GetLightAppRecordResponse: toJsonSchema(GetLightAppRecordResponseSchema),
         LightAppBatchRequest: toJsonSchema(LightAppBatchRequestSchema),
         LightAppBatchResponse: toJsonSchema(LightAppBatchResponseSchema),

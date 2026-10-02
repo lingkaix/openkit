@@ -10,6 +10,7 @@ import {
   Server,
   WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
+import { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import { ItemSchema, responsibleUserIdForActor } from '@openkit/protocol';
@@ -27,7 +28,9 @@ import {
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
+import { KernelCommandError } from './generative-kernel/errors.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
+import { OperationInvocationError } from './operation-invocation.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
@@ -523,6 +526,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 }
                 const result = await dispatchOpenkitGenerativeTool(
                   {
+                    coreDb: input.coreDb!,
+                    workspaceMutationAdmission: input.workspaceMutationAdmission,
+                    packageSnapshotId: environmentPackage.snapshotId,
                     store: input.store,
                     inflightCommands: builtinInflight,
                     dataRoot: input.coreDb!.dataRoot,
@@ -543,6 +549,20 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 return mcp.projectCallToolResult(result, undefined);
               } catch (error) {
                 if (repositoryTerminal) throw error;
+                const operationId = OPENKIT_GENERATIVE_TOOL_OPERATIONS[request.params.name];
+                if (
+                  serverId === OPENKIT_GENERATIVE_MCP_ID &&
+                  operationId &&
+                  Object.hasOwn(KERNEL_OPERATION_DEFINITIONS, operationId) &&
+                  (error instanceof OperationInvocationError || error instanceof KernelCommandError)
+                ) {
+                  // Preserve the migrated owner's typed failure through the existing MCP publisher.
+                  throw finishMcpHandlerFailure(
+                    new WorkerControlGatewayError(error.code, error.message, error.status),
+                    call,
+                    activeWorkspaceDb
+                  );
+                }
                 throw finishMcpHandlerFailure(error, call, activeWorkspaceDb);
               }
             } finally {
@@ -2107,6 +2127,7 @@ function requireGenerativeToolPolicy(
 ): void {
   const operation =
     OPENKIT_GENERATIVE_TOOL_OPERATIONS[toolName as keyof typeof OPENKIT_GENERATIVE_TOOL_OPERATIONS];
+  if (operation && Object.hasOwn(KERNEL_OPERATION_DEFINITIONS, operation)) return;
   const access = operation ? PUBLIC_OPERATION_ACCESS[operation] : undefined;
   if (!access) {
     throw mcpDeniedError();

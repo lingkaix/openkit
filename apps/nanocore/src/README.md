@@ -24,6 +24,8 @@ This directory contains NanoCore's composition root and feature owners. `app.ts`
 - `worker-mcp-routes.ts` dispatches the always-supplied `openkit-work` tools through its existing package admission and capability ledger. The [runtime guide](runtime/README.md) describes pending input requests and read-only same-Sandbox peer projections.
 - `lib/store.ts` exposes the app-local product store while `storage/` owns durable record placement. After a Turn is a sealed terminal, `updateTurn`, `createItem`, `emitTurnEvent`, and `updateItem` admit only completion of an already-decided publication or a named field-limited display-projection refresh, judged by identity and content.
 
+`operation-invocation.ts` is the transport-free seam for the shared operation-definition slice. Its exact-key handler join adds executable bindings only; existing authorizers, mutation admission and domain effects remain their current owners. The Kernel owner resolves children inside the authorized Workspace and preserves its unavailable read entry or unavailable mutation error for missing authority; invocation does not preclassify child availability. `kernel-routes.ts` and `openapi.ts` derive canonical JSON bindings for that slice, while the remaining operations retain their current projections. `operation-projections.test.ts` checks one invariant across HTTP, typed client, actual selected Worker MCP and CLI catalog execution, including wrong-child and missing-app owner outcomes and admitted Worker credential revocation.
+
 ## Supporting Directories
 
 - `capability/` owns capability-call and usage-ledger operations.

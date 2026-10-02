@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
@@ -93,11 +94,15 @@ const WEB_OPERATION_GROUPS = {
   'Generative apps': {
     batchLightAppRecords: { disposition: 'workflow', surface: 'Chat' },
     createLightApp: { disposition: 'workflow', surface: 'Chat' },
-    createLightAppRecord: { disposition: 'workflow', surface: 'Chat' },
     getGenerativePresentation: { disposition: 'live', surface: 'Chat' },
     getGenerativePresentationResource: { disposition: 'live', surface: 'Chat' },
-    getLightApp: { disposition: 'workflow', surface: 'Chat' },
     getLightAppRecord: { disposition: 'workflow', surface: 'Chat' },
+    ...Object.fromEntries(
+      Object.keys(KERNEL_OPERATION_DEFINITIONS).map((id) => [
+        id,
+        { disposition: 'workflow', surface: 'Chat' },
+      ])
+    ),
     listLightAppRecords: { disposition: 'workflow', surface: 'Chat' },
     listLightApps: { disposition: 'workflow', surface: 'Chat' },
     publishGenerativePresentation: { disposition: 'workflow', surface: 'Chat' },

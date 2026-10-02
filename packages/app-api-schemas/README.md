@@ -50,6 +50,10 @@ Workspace Sync Review patch schemas scan metadata and ordinary file contents for
 
 `ThreadDashboard.runtimeActivity` is an optional bounded per-Turn projection with structural coverage and separate `contentCapture` off/on/unknown. Its exported timeline bounds are shared by storage projection and response validation. It contains display-safe text and source sequence only, not body references, native identities, execution authority or approval controls.
 
+## Operation Definition Slice
+
+[`src/operation-definitions.ts`](src/operation-definitions.ts) holds the release-authored Generative Kernel slice and the one administration read descriptor. It reuses existing domain payload schemas and exports inferred operation ids, inputs and outputs. HTTP placement, Tool spelling and model views derive from that table; executable handlers and current authority facts stay in NanoCore. Model views omit trusted fields without replacing the remaining schema objects. The built browser import-graph regression in Web covers this package transitively.
+
 ## Commands
 
 - `pnpm --filter @openkit/app-api-schemas test`
