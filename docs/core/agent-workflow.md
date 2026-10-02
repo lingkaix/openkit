@@ -25,7 +25,7 @@ Workspace -> Thread -> Turn -> Item[]
 
 Agent workflow organizes that backbone into reusable mechanisms.
 
-Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's default workflow setup over those mechanisms. They are optimized for low-configuration, reviewable worker-agent work, but they are not the only valid workflow shape.
+Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's default workflow setup over those mechanisms. They are optimized for low-configuration, reviewable worker-agent work, but they are not the only valid workflow shape. [Architecture](architecture.md#app-and-channel) owns the App and Channel boundary, including remote MCP over the same operations and the operator CLI as the administrator channel.
 
 ## Principles
 
@@ -36,7 +36,7 @@ Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's d
 - Move work forward in bounded, reviewable steps. A worker step should produce observable items, artifacts, evidence, pending human attention, or a terminal state before the next step begins.
 - Deliver the accepted worker request itself. A Turn-owned worker input must preserve the exact Coordinator-composed request; routing summaries, dashboard projections, context summaries, and checkpoints cannot substitute for that request or prove its delivery.
 - Keep human decisions explicit. Plan approval, user input, sensitive action approval, review, retry, refinement, acceptance, and stop decisions must be visible and auditable.
-- Treat channels as projections. Web UI, the unified end-user Agent Skill Interface, desktop apps, automations, and future integrations may operate the same workflow mechanisms, but they do not redefine them.
+- Treat channels as projections. Web UI, remote MCP over the same operations, the operator CLI as the administrator channel, the unified end-user Agent Skill Interface, the bundled CLI, desktop apps, automations, and future integrations may operate the same workflow mechanisms, but they do not redefine them.
 - Keep agent-private loops private until Core needs them. Tool retries, model self-reflection, private planner traces, and runtime-native task graphs should not become core records unless Core must schedule, retry, show, approve, audit, or attach artifacts to them.
 - Avoid a `Core Agent` concept by default. Workflow orchestration is a Core responsibility, not a separate canonical agent unless a future design proves that abstraction is necessary.
 - Delegated work is a tree, not a mesh ([decision](../decisions/20260929-delegated_work_is_a_tree.md)). Threads are its nodes and delegations its edges. Control, such as dispatching work, answering a pending request, or cancelling, flows only between a parent and its child through Core. Each scope has one orchestrator, which today is a person in Task Mode. Worker execution is always a leaf: a worker cannot spawn Threads, start other workers, or control a sibling. Read-only views of peers create no control edge.
@@ -192,7 +192,7 @@ It binds one continuous outcome, work-intent cards, one approved Plan version, o
 
 Goal Mode must not become a hidden autonomous loop. The Coordinator admits ordinary Tasks inside the approved Plan version. The person approves that version and accepts completion.
 
-Goal Mode may be operated by Web UI, the unified end-user Agent Skill Interface, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal state.
+Goal Mode may be operated by Web UI, remote MCP over the same operations, the operator CLI as the administrator channel, the unified end-user Agent Skill Interface, the bundled CLI, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal state.
 
 The Goal is one continuous outcome, its work-intent cards, and immutable Plan versions. Existing Goal-owned data is removed with the new implementation. Records outside that ownership stay usable. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) records the decision.
 
@@ -332,7 +332,7 @@ Agent-private task graphs should stay private unless Core needs to schedule, ret
 
 ## Default Setup Projection
 
-The built-in default setup combines one approved Plan version for a Goal, ordinary Tasks inside that version, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill loop operation. Approving the Plan version does not require a separate approval of each Task. An additional editorial review of Plan wording may be optional, and it never substitutes for the exact Plan approval.
+The built-in default setup combines one approved Plan version for a Goal, ordinary Tasks inside that version, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill loop operation. Its channels follow the [App and Channel boundary](architecture.md#app-and-channel). Approving the Plan version does not require a separate approval of each Task. An additional editorial review of Plan wording may be optional, and it never substitutes for the exact Plan approval.
 
 That setup is a recommended composition of Core workflow mechanisms, not the definition of Agent Workflow itself.
 

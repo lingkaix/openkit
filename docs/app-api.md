@@ -47,6 +47,7 @@ This guide does not own the semantic contracts, executable route facts, package 
 - Typed Core Client projection: `packages/core-client/README.md`
 - Web consumer: `apps/web/README.md`
 - Change execution evidence: `docs/changes/`
+- Accepted channel design: [Remote MCP Interface](specs/20261002-remote_mcp_interface.md) owns the user-facing agent endpoint over the same operations, not an App API consumer; [OpenKit Agent Skill Interface](specs/20260713-openkit_agent_skill_interface.md) owns Skill retirement after endpoint coverage; [Agent Operator Skill](specs/20260910-agent_operator_skill.md) owns retention and relocation of the bundled CLI as the administrator channel.
 
 ## Receiving Contract Owners
 

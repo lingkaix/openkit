@@ -1,6 +1,6 @@
 # OpenKit Skills
 
-OpenKit maintains two complementary packages. The [public `openkit` Skill](openkit/SKILL.md) operates running NanoCore through the bundled public CLI under [Agent Skill Interface](../docs/specs/20260713-openkit_agent_skill_interface.md). The independent [`openkit-ops` Skill](openkit-ops/SKILL.md) packages installation, configuration, upgrade, diagnosis and offline recovery guidance under [Agent Operator Skill](../docs/specs/20260910-agent_operator_skill.md).
+OpenKit maintains two complementary packages. The [public `openkit` Skill](openkit/SKILL.md) operates running NanoCore through the bundled public CLI under [Agent Skill Interface](../docs/specs/20260713-openkit_agent_skill_interface.md). The independent [`openkit-ops` Skill](openkit-ops/SKILL.md) packages installation, configuration, upgrade, diagnosis and offline recovery guidance under [Agent Operator Skill](../docs/specs/20260910-agent_operator_skill.md). [Remote MCP Interface](../docs/specs/20261002-remote_mcp_interface.md) defines the accepted user-facing agent channel over the same operations. [Agent Skill Interface](../docs/specs/20260713-openkit_agent_skill_interface.md) owns retirement of the user-facing Skill once that endpoint covers it. [Agent Operator Skill](../docs/specs/20260910-agent_operator_skill.md) owns retention and relocation of the bundled CLI as the administrator channel.
 
 ## Public Product Interface
 
@@ -26,9 +26,9 @@ The operations package contains its entrypoint, directly linked canonical operat
 
 ## Maintenance And Packaging
 
-Keep one maintained source per topic. `docs/manual/` points to the operations package; release packaging includes each complete Skill tree and license with matching checksums. Changes to supported behavior update the affected reference in the same slice. Skill metadata and package checks do not replace a real-use proof.
+Keep one maintained source per topic. `docs/manual/` points to the operations package; release packaging includes each complete Skill tree and license with matching checksums. Changes to supported behavior update the affected reference in the same slice. Skill metadata and package checks do not replace a real-use proof. Packaging of the public Skill tree continues until the remote MCP endpoint covers that Skill.
 
-Worker-side MCP and Skill supply retain their Agent Capability and catalog owners. Neither package introduces a user-facing MCP server, developer-mode product client, fleet, daemon or self-improvement harness.
+Worker-side MCP and Skill supply retain their Agent Capability and catalog owners. Neither package introduces the deleted user-facing stdio MCP server, and neither introduces a developer-mode product client, fleet, daemon or self-improvement harness. That stdio prohibition does not forbid the remote MCP endpoint named above.
 
 The operations package's dogfood recipe distinguishes external-coordinator `repository.push-*` App API calls from the explicitly selected built-in worker `openkit-repository` tools. Worker publication uses the existing authenticated capability relay and retains the host-linked commit prerequisite, repository approval and Vault checks. The Skill CLI does not acquire a worker App API tunnel or bearer credential.
 

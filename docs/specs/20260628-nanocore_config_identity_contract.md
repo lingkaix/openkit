@@ -93,7 +93,7 @@ The authored schema accepts only fields with a current runtime owner. Startup ne
 
 ## Configuration Scope And Files
 
-Server is the shared resource and baseline-configuration provider, Workspace is the durable shared authored-composition scope, and User is the personal preference subject defined by Core Concepts and Identity. Ordinary persistent preference resolves User first, then Workspace, then Server. A request or current Orchestrator choice is more specific only when the owning command admits it.
+Server is the shared resource and baseline-configuration provider, Workspace is the durable shared authored-composition scope, and User is the personal preference subject defined by Core Concepts and Identity. Ordinary persistent preference resolves User first, then Workspace, then Server. A request or current Coordinator choice is more specific only when the owning command admits it.
 
 The clean target uses these canonical authored files:
 
@@ -157,7 +157,7 @@ Acceptance requires contained and revision-protected profile deletion despite li
 
 ## Selection, Composition, And Resolution
 
-Worker Agent selection resolves explicit request or Orchestrator `agentId`, User preference for the Workspace, `workspace.jsonc.defaultAgentId`, then `server.jsonc.defaults.defaultAgentId`. Missing or unavailable final fallback returns a typed configuration or readiness error; file order never selects an Agent.
+Worker Agent selection resolves explicit request or Coordinator `agentId`, User preference for the Workspace, `workspace.jsonc.defaultAgentId`, then `server.jsonc.defaults.defaultAgentId`. Missing or unavailable final fallback returns a typed configuration or readiness error; file order never selects an Agent.
 
 Profile and logical-model preference resolve independently from Agent identity. The request may select `profileId` and logical `modelId`; otherwise User preference, Workspace Agent or role binding, the selected profile or Server execution profile, and the Gateway final logical default apply in that order where each field exists. A model value never derives or changes `agentId`.
 
@@ -221,7 +221,7 @@ The following items remain outside this config and identity contract:
 - Runtime config editing must go through NanoCore-owned routes and schemas, not raw file browsing through the bundled CLI.
 - Server supplies resources and fallback defaults, Workspace composes shared behavior, and User supplies the most specific persistent preference without any of those defaults becoming a generic resource ceiling.
 - `gateway.jsonc`, `internal-role-profiles.jsonc`, `user.jsonc`, and `workspace.jsonc` are distinct authored owners; `server.jsonc` contains its own deployment fields, Server notebook maintenance setting and final Agent fallback.
-- User → Workspace → Server is the ordinary persistent-preference order, explicit request or Orchestrator selection is more specific when admitted, and model preference never selects an Agent.
+- User → Workspace → Server is the ordinary persistent-preference order, explicit request or Coordinator selection is more specific when admitted, and model preference never selects an Agent.
 - NanoCore bearer tokens used by the bundled CLI are credential material and must not be printed, logged, persisted in documentation, or exposed in artifacts.
 - Historical identity, auth, config, and data-layout specs are supporting detail, not active guidance.
 - One configured NanoHost uses an `IntegrationIdentity` and a distinct scoped `Token`; configuration stores only the identity, NanoCore rendezvous endpoint, and non-secret credential reference, never raw route or OpenShell credentials.

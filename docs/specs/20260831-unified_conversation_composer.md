@@ -127,7 +127,7 @@ Target dispatch is a synchronous branch over existing services, not a durable di
 
 - `assistant` invokes the Core Assistant in the originating Thread.
 - `knowledge-manager` invokes the Workspace Knowledge Manager in the originating Thread and projects its answer through ordinary Turn and Item history.
-- `goal-orchestrator` uses the existing Goal steering owner for the named Goal Thread.
+- `goal-orchestrator` is the legacy discriminator for the Goal target. Steering submission returns unavailable before writes until the new Goal implementation lands; steering is not carried into the accepted [Goal](20261002-goal.md) contract. This discriminator does not authorize a separate Goal execution path.
 - `warm-worker` starts the next Task Turn in the Thread selected or created under the existing Task and AgentSession continuity rules.
 - `running-worker` addresses only its owning Thread. If the owning workflow already accepts steering, NanoCore uses that command. If the target cannot accept input while its Turn is active, submission returns `target_busy` with no effects and the client retains the draft for an explicit retry.
 - `new-task-worker` creates one linked Task execution Thread from the originating Thread and enters the existing Task Mode start path with the selected Agent profile and logical-model preference. It creates no Shard entity.

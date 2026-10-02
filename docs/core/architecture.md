@@ -35,7 +35,7 @@ App / Channel
 
 ### App And Channel
 
-An App or Channel is a user, operator, integration, or automation interaction surface. This layer includes user interfaces, API clients, end-user Skills and CLIs, messaging channels, and automation entry points.
+An App or Channel is a user, operator, integration, or automation interaction surface. This layer includes user interfaces, API clients, remote MCP as the user-facing agent channel over the same operations, the operator CLI as the administrator channel, end-user Skills and CLIs, messaging channels, and automation entry points. These are governed projections under [Foundation](foundation.md), not independent operation owners.
 
 Apps and channels submit intent and commands through public Core contracts and render Core-owned records and projections. They must not reach into storage, adapters, or runtimes; redefine Core concepts; or maintain private workflow truth.
 

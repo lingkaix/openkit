@@ -256,7 +256,7 @@ Restricted trace evidence MUST remain redacted or access-controlled under the ow
 
 The current V1 implements portable governed page projection, the default Workspace Schema, pre-write validation and secret-like-field rejection, source identity and first text-derived metadata, observation and claim ledgers, conflict recording and resolution, derived indexes, deterministic retrieval traces, proposal review and application, and explicit Knowledge context preparation. The retrieval path does not yet consume the latest conflict ledger, so it cannot satisfy the required unresolved-conflict selection and trace decision; this bounded implementation defect remains scheduled under S60/S61 before the next generated-Knowledge release claim.
 
-The transport-neutral operation catalog, bundled CLI, and public App API project those existing owners; no user-facing MCP facade remains.
+The transport-neutral operation catalog, bundled CLI, and public App API project those existing owners. No user-facing stdio MCP facade remains. That absence is the deleted stdio package and is not a prohibition of the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md).
 
 Worker-facing Knowledge capability routes remain disabled and are not current product behavior.
 
