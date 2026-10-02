@@ -40,8 +40,8 @@ Treat SIGINT and transport abort as stopping only the local wait. Confirm produc
 2. Select or create a workspace and inspect its resources.
 3. Link or verify required repositories and data sources after the user confirms them.
 4. Create or resume a thread.
-5. Select Chat Mode for a lightweight answer, Task Mode for one bounded delegated task, or Goal Mode for planned multi-step work.
-6. Draft the Goal Mode plan and obtain required human approval before execution.
+5. Select Chat Mode for a lightweight answer or Task Mode for one bounded delegated task. Goal work uses immutable Plan approval and completion acceptance through Pending Requests.
+6. New Goal execution is unavailable until the Goal implementation lands.
 7. Execute one bounded action or step.
 8. Read durable thread state, Action Center, artifacts, evidence, and relevant audit or usage summaries.
 9. Present required decisions and resolve them only from explicit user direction.

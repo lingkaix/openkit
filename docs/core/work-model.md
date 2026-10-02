@@ -39,7 +39,7 @@ Core Concepts owns the canonical meanings of Workspace, Thread, Turn, Item, Arti
 
 A product projection may summarize or reorganize these records, but it must preserve their identity, order, lineage, and owning authority.
 
-Product surfaces present parallel work as related execution Threads linked from the originating or Goal Main Thread. They keep worker Items in the execution narrative that produced them instead of interleaving several agents' work into one conversation, while still making status, results, evidence, and navigation understandable from the parent surface.
+Product surfaces present parallel work as related execution Threads linked from the originating or Coordinator Thread. They keep worker Items in the execution narrative that produced them instead of interleaving several agents' work into one conversation, while still making status, results, evidence, and navigation understandable from the parent surface.
 
 ## Quick Chat Workspace
 
@@ -67,7 +67,7 @@ Product modes are user-facing projections over the same Core work backbone.
 | --- | --- |
 | Chat Mode | Immediate answers, clarification, and lightweight state lookup inside Core. It does not start worker execution unless an explicit visible handoff enters another mode. |
 | Task Mode | Bounded, near-term delegated work with worker execution when needed. It does not require plan negotiation by default and escalates when work becomes multi-step, ambiguous, high-risk, multi-agent, or long-running. |
-| Goal Mode | Durable objective-driven work for long-running, ambiguous, high-risk, multi-step, or multi-agent outcomes. Every V1 worker step belongs to one explicitly approved Plan, which may be a one-Task lightweight Plan for low-risk work; Goal Mode then advances through bounded steps, evidence, human attention, review, and explicit stop decisions rather than an invisible autonomous loop. |
+| Goal Mode | One continuous outcome. The person states the outcome and its work-intent cards, approves one exact Plan version, and accepts an evidence-backed completion. A Coordinator admits ordinary Tasks inside that version. The board is a projection. There is no invisible autonomous loop. |
 | Plan Mode | A product label for planning-heavy interaction. It does not require every workflow to begin with a plan or create a separate runtime. |
 
 Transitions between modes must remain visible in Thread history. Workflow mechanisms such as plans, bounded steps, gates, decisions, evidence, and checkpoints belong to the workflow owner.
@@ -82,12 +82,12 @@ OpenKit uses four composable product modes for human attention:
 | --- | --- |
 | Approval Gate | A pending authorization decision for safety, policy, budget, credential use, irreversible operations, or external side effects. The governed effect waits for it; the requesting work does not pause. |
 | Elicitation Gate | A pending answer to a question, missing input, planning choice, or recovery choice. It is not authorization. |
-| Steering Input | Non-terminal user input that corrects or extends active work only through a delivery contract accepted by the owning workflow. Unsupported active-work input is rejected rather than assigned an inferred delivery behavior. |
+| Steering Input | Non-terminal user input that corrects or extends active work only through a delivery contract accepted by the owning workflow. Unsupported active-work input is rejected rather than assigned an inferred delivery behavior. A Goal work-intent edit is recorded on the Goal and does not by itself change a running worker. |
 | Review And Acceptance | Human or agent evaluation of plans, artifacts, diffs, knowledge proposals, evidence, or outcomes that may lead to acceptance, refinement, redo, rejection, deferral, escalation, or stop. |
 
 Only Approval Gate and Elicitation Gate are pending human requests. Neither pauses a Turn or expires by time. A request is blocking only when the requesting agent ended its Turn while the request was outstanding and no later Turn has run, and its outcome reaches the agent on a later Turn, as `docs/core/protocol.md` defines. The four modes may compose without becoming four new Core objects or a parallel workflow engine.
 
-Action Center is a product and App API projection over pending human attention across these modes. It helps users find required attention but must not replace Thread narrative, Item history, or the owning decision records.
+Action Center is a product and App API projection over pending human attention across these modes. Plan approval and completion acceptance appear as pending requests. It helps users find required attention but must not replace Thread narrative, Item history, or the owning decision records.
 
 Concrete gate fields, Item types, delivery policies, row kinds, actions, and API shapes belong to implementation-facing contracts.
 
@@ -148,7 +148,7 @@ When exact continuation cannot be proved, preserving an interrupted attempt and 
 - Product projections MUST preserve canonical identity, order, lineage, and owning authority; they MUST NOT independently accept, apply, recover, or terminalize work.
 - Quick Chat MUST remain an owner-only lightweight Workspace and MUST NOT silently become a project or worker-execution boundary.
 - Chat Mode MUST NOT hide worker execution; entry into Task Mode or Goal Mode MUST be explicit in Thread history.
-- Task Mode MUST remain bounded delegated work, while Goal Mode MUST remain durable governed objective work.
+- Task Mode MUST remain bounded delegated work. Goal Mode MUST remain one durable outcome whose completion is a human decision.
 - Parallel worker activity MUST appear as linked execution narratives rather than several agents writing inside one Thread.
 - Product surfaces MUST express conversation continuity as continuing a Thread or creating a new Thread and MUST NOT expose AgentSession as a user-selectable conversation concept.
 - Conversation target and logical-model controls MUST remain independent product selections and MUST NOT expose or derive Provider routes, account slots, AgentSessions, Harnesses, Sandboxes, RuntimeTargets, or native processes.

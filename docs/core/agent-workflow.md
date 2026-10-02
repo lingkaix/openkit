@@ -85,7 +85,7 @@ Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's d
 
 `Workflow Evidence` is the item-backed, artifact-backed, review-backed, checkpoint-backed, or external-check-backed material used to decide whether the workflow may continue or close. Audit may project or reference that evidence, but an audit row does not authorize progression, recovery, or terminalization.
 
-`Goal Mode` is the current built-in workflow mode for objective-driven, reviewable worker-agent work.
+`Goal Mode` is the built-in workflow mode for one continuous outcome. The person keeps the intent and accepts completion. A Coordinator admits ordinary Tasks inside one approved Plan version.
 
 ## Boundaries And Non-Goals
 
@@ -94,7 +94,7 @@ Agent workflow owns:
 - reusable workflow mechanisms for Core-led worker-agent work
 - workflow mode and recipe composition boundaries
 - default workflow setup semantics
-- planning, plan approval, bounded step, gate, decision, evidence, checkpoint, context compaction, handoff, retry, refinement, stop, and closeout semantics
+- planning and the human approval of one exact Plan version as workflow mechanisms, ordinary bounded Tasks, gate, decision, evidence, checkpoint, context compaction, handoff, retry, refinement, stop, and closeout semantics. This document does not own the Goal record or the person's approval record.
 - the relationship between workflow mechanisms, current Goal Mode, the unified Agent Skill loop recipe, worker execution, artifacts, evidence, and review
 - the rule that prevents premature `TaskRun`-style core concepts
 
@@ -143,9 +143,9 @@ Agent Workflow coordinates internal Core roles without turning those roles into 
 
 `architecture.md` owns the internal role definitions for Core Assistant, Workflow Coordinator, Knowledge Manager, and the future Task Evaluator.
 
-The Core Assistant may handle quick replies, clarification, simple state reads, and triage. When the request becomes non-trivial worker-agent work, it should hand the workflow to the Workflow Coordinator instead of directly calling worker agents.
+The Core Assistant may handle quick replies, clarification, simple state reads, and triage. When the request becomes bounded worker work, it should hand the workflow to the Workflow Coordinator instead of directly calling worker agents. When the request becomes a Goal, it calls the Goal owner's create operation.
 
-The Workflow Coordinator owns bounded structured decisions for workflow progression. It selects a mode and worker, semantically composes the worker request and context from authorized inputs, produces plan and delegation decisions, and decides the workflow-level stop outcome. It does not persist mode state, execute progression effects, or materialize and deliver worker context; the owning workflow boundary performs those effects through Core-owned records and services.
+The Workflow Coordinator classifies requests, selects a worker, and composes the semantic worker request for Chat and Task. It does not own Goal truth, a Goal Plan, or a Goal stop. It does not persist mode state, execute progression effects, or materialize and deliver worker context. The owning workflow boundary performs those effects through Core-owned records and services.
 
 The Knowledge Manager owns knowledge retrieval support and knowledge maintenance. Before a bounded step, the owning workflow boundary may ask the Knowledge Manager for relevant knowledge or source material and supply the authorized result to the Workflow Coordinator. The Knowledge Manager returns source-traceable material, exclusions, uncertainty, or proposals; the Coordinator owns semantic inclusion and composition, while the workflow boundary owns persistence, materialization, and delivery.
 
@@ -171,10 +171,10 @@ The current default workflow setup is:
 
 ```text
 Goal Mode
-  + one approved Plan before every V1 worker step, lightweight when sufficient
-  + one bounded worker step at a time
+  + one approved Plan version before the Coordinator admits Tasks
+  + ordinary Tasks inside that version
   + Action Center projections for human attention
-  + artifacts and evidence bundles for review
+  + artifacts and evidence bundles
   + the unified openkit Skill loop recipe for low-configuration operation
 ```
 
@@ -188,13 +188,13 @@ Future workflows may reuse these mechanisms only after an accepted specification
 
 Goal Mode is the current built-in workflow mode over Agent Workflow mechanisms.
 
-It binds a Thread to an objective, an approved plan for every V1 worker step, bounded steps, review state, evidence, human attention, and terminal status.
+It binds one continuous outcome, work-intent cards, one approved Plan version, ordinary Tasks, and a human completion decision.
 
-Goal Mode must not become a hidden autonomous loop. It should advance through explicit gates, bounded worker steps, visible review state, and human decisions.
+Goal Mode must not become a hidden autonomous loop. The Coordinator admits ordinary Tasks inside the approved Plan version. The person approves that version and accepts completion.
 
-Goal Mode may be operated by Web UI, the unified end-user Agent Skill Interface, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal Mode state.
+Goal Mode may be operated by Web UI, the unified end-user Agent Skill Interface, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal state.
 
-Goal Mode entry, and each Goal operation that reaches a mechanism this redesign removed, is unavailable until the Goal redesign ([decision](../decisions/20260930-goal_entry_unavailable_until_redesign.md)). Existing Goal data stays readable. The Goal Mode specifications remain the frozen record of the earlier design, and this redesign gives them no execution path.
+The Goal is one continuous outcome, its work-intent cards, and immutable Plan versions. Existing Goal-owned data is removed with the new implementation. Records outside that ownership stay usable. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) records the decision.
 
 ## Chat And Task Modes
 
@@ -202,7 +202,7 @@ Chat Mode and Task Mode are product or channel projections over workflow decisio
 
 Chat Mode is the quick-reply path. It may be handled by the Core Assistant when the request only needs lightweight response, clarification, or state lookup.
 
-Task Mode is a non-trivial work path. It should route to a Workflow Coordinator, choose a workflow mode or recipe, and use bounded worker steps when worker-agent execution is required. A Task is its Thread and all of its Turns: a pending request's outcome, or a later user message, continues the same Task on a new Turn.
+Task Mode is a non-trivial work path. It should route to a Workflow Coordinator and use bounded worker steps when worker-agent execution is required. A Task is its Thread and all of its Turns. A pending request's outcome, a later user message, or, when the Task was admitted under a Goal, an authorized Coordinator request, continues the same Task on a new Turn. Standalone Task Mode does not gain a loop.
 
 Core should keep the routing decision explicit enough to explain why a request stayed in quick reply or moved into worker-agent workflow.
 
@@ -332,7 +332,7 @@ Agent-private task graphs should stay private unless Core needs to schedule, ret
 
 ## Default Setup Projection
 
-The built-in default setup combines Goal Mode's mandatory explicit Plan approval before every V1 worker step with bounded worker steps, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill loop operation. An additional editorial review of Plan wording or presentation may be optional, but it never substitutes for or weakens the approval gate.
+The built-in default setup combines one approved Plan version for a Goal, ordinary Tasks inside that version, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill loop operation. Approving the Plan version does not require a separate approval of each Task. An additional editorial review of Plan wording may be optional, and it never substitutes for the exact Plan approval.
 
 That setup is a recommended composition of Core workflow mechanisms, not the definition of Agent Workflow itself.
 

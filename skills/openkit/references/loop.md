@@ -20,22 +20,18 @@ Read `thread.dashboard` for `taskInputs`: each `{ itemId, objective }` summarize
 
 - Use Chat Mode for a lightweight answer that does not need delegated execution or a negotiated plan.
 - Use Task Mode for one bounded delegated task that needs worker execution but not plan negotiation.
-- Use Goal Mode for tracked multi-step work that needs a plan, approval, bounded steps, and review.
+- Goal work uses immutable Plan approval and completion acceptance through Pending Requests; the Coordinator dispatches ordinary Tasks within the approved version through the shared operations, and card edits do not steer a running worker.
 
 Do not promote work to a heavier mode merely because that mode exists. Let NanoCore report when an accepted handoff or transition is required.
 
-Goal planning continues throughout the same Goal. The bounded Goal Orchestrator drafts the initial Plan or a material revision using only its admitted proposal Tool; it cannot approve, launch Workers, or acquire repository, MCP, or secret access. Before an approved Plan, worker research needs its own approved bounded research Plan. Review scope, assumptions, risks, remaining-work dispositions and verification before asking the user to approve an exact candidate.
+New Goal execution is unavailable until the Goal implementation lands. The legacy Goal interface, including its proposal-only planning tool, affected-Task holds, planning gates, successor Task dispositions, and the old step and review path, is legacy implementation only and is unavailable for new Goal execution.
 
-Use `goal.intent-revise` to record an authorized change to the same Goal objective and revision reason. Omitted `affectedTaskIds` holds all remaining work, an empty array holds none, and a named set holds those Tasks and their dependents. That intent change grants no derived method, cost, permission or external effect. Use `goal.revise` for a material Plan change under unchanged intent, then `goal.plan` to draft from that recorded instruction. Authorized execution refinements stay within the approved Plan and are retained through the existing step or Review path; they do not authorize new Task facts.
-
-Use `goal.plan-read` after reconnect or mutation. It returns the active approved Plan separately from the pending candidate, along with the next planning action and current approval eligibility. Reading never invokes planning. A question outcome uses the existing exact user-input Gate; after the user's answer, `continue_planning` calls for a new planning request. A failed attempt retains its Turn and evidence: replay its existing request to inspect that outcome, or explicitly use a new request to retry. Never treat a missing successful Plan as proof that no model attempt occurred.
-
-Present the exact pending Plan identity for human approval, including each unfinished predecessor Task carried into a successor or ended with its reason. A stale intent, predecessor or source evidence requires a fresh proposal. Unaffected valid work may continue while a candidate waits; an affected active Turn remains pinned to its admitted context and stops through its existing cancellation owner. An old candidate remains visible after a failed revision, but approve it only when the server still reports it eligible. Use `usage.read` for durably recorded model usage; process-local diagnostics are not the Workspace ledger.
+Use `usage.read` for durably recorded model usage; process-local diagnostics are not the Workspace ledger.
 
 ## Run bounded work
 
 1. Search and describe the required operation when its contract is not already known.
-2. For Goal Mode, draft a narrow objective and plan, then obtain required human approval.
+2. Goal work uses immutable Plan approval and completion acceptance through Pending Requests; the Coordinator dispatches ordinary Tasks within the approved version through the shared operations, and card edits do not steer a running worker. New Goal execution is unavailable until the Goal implementation lands.
 3. Invoke one mutation through stdin.
 4. Re-read the thread, mode state, Action Center, artifacts, and evidence.
 5. Explain the durable result and any pending human decision.
@@ -55,7 +51,7 @@ Workspace review staging and application support linked Git checkouts owned by a
 
 For a reusable document or report, discover `artifact.import`, `artifact.read`, and `artifact.introduce`. Import preserves one immutable content version and its origin. Introduction into an idle Thread adds a reference only; it does not ask an agent to read the file or start work. To request a bounded answer from its contents, submit `conversation.submit` with the exact `{ artifactId, artifactVersion }` in `artifactRefs` and the selected logical model. Compare the answer with the read-back content rather than inferring delivery from a title or reference Item. The Assistant must answer from the admitted attachment rather than substitute an unrelated Knowledge result. A local report query or a topic such as Web testing does not itself request external browsing; actual external search remains unavailable in Chat Mode. Likewise, mentioning Goal or roadmap as a topic does not request planning; explicit planning and actionable multi-step work retain the Goal handoff. Automatic inference uses bounded English phrases, so select the explicit Goal operation when planning intent is not recognized.
 
-Use an accepted refine, redo, steering, pause, resume, interrupt, or stop operation only when CLI discovery exposes it and the durable state permits it. Never claim that an active-turn input was delivered merely because a local call completed; report the durable delivery outcome returned by NanoCore.
+Use an accepted refine, redo, interrupt, or stop operation only when CLI discovery exposes it and the durable state permits it. Goal steering, pause, and resume belong only to the legacy implementation and are not operations of the new Goal contract. Never claim that an active-turn input was delivered merely because a local call completed; report the durable delivery outcome returned by NanoCore.
 
 ## Close or hand off
 

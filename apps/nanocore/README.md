@@ -245,7 +245,9 @@ Read repository diagnostics with:
 curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/repositories/diagnostics
 ```
 
-During the communication redesign, Goal entry, plan creation and revision, worker step, and steering submission return `409 goal_mode_unavailable` before any write. Existing Goal reads, pause, resume, and plan approval retain their owners in [Goal Mode Coordination](../../docs/specs/20260704-goal_mode_coordination.md).
+During the communication redesign, Goal entry, plan creation and revision, worker step, and steering submission return `409 goal_mode_unavailable` before any write. The legacy implementation retains pause, resume, Plan approval, and Goal reads until the new Goal implementation removes or replaces those paths; they are not the new Goal contract.
+
+The Goal owner changed, and the code follows with the Goal implementation.
 
 Approve an existing pending Plan using its returned `planItemId` and a fresh `requestId` at `POST /api/app/workspaces/:workspaceId/threads/:threadId/goal/plan/approve`. NanoCore loads the immutable Plan and does not accept caller Plan content.
 
@@ -268,7 +270,7 @@ curl -s -X POST http://127.0.0.1:3000/api/app/workspaces/ws_demo/threads/th_demo
 
 Pause is accepted only for a running Goal when the Thread has no non-terminal Turn; resume applies the same safe-boundary check to a paused Goal. Each response separates the historical command result from current resource truth through `outcome: "paused" | "resumed"` and the current `goal` projection, so replay after a later opposite transition remains truthful. While the Goal is paused, `/goal/step` returns `goal_mode_unavailable`; explicit resume changes only the same durable Goal to `running` and does not resume a Turn, AgentSession, Sandbox, lease, or worker.
 
-The accepted design keeps pause, resume, plan approval, and Goal reads, as [Goal Mode Coordination](../../docs/specs/20260704-goal_mode_coordination.md) states. Goal entry, planning, step, and steering submission return `409 goal_mode_unavailable` before any write.
+The legacy implementation retains pause, resume, Plan approval, and Goal reads until the new Goal implementation removes or replaces those paths; they are not the new Goal contract. Goal entry, planning, step, and steering submission return `409 goal_mode_unavailable` before any write.
 
 Terminal follow-up and cancellation of previously queued steering retain their original Goal lineage. New steering and execution admissions remain unavailable during the redesign.
 

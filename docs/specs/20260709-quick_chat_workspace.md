@@ -19,7 +19,7 @@ kind: concept
 - The canonical `Workspace` concept, which belongs to `docs/core/core-concepts.md`.
 - The Core Assistant and Chat Mode routing contract, which belongs to `docs/specs/20260704-chat_mode_assistant.md`.
 - Task Mode worker delegation, which belongs to `docs/specs/20260704-task_mode_worker_delegation.md`.
-- Goal Mode coordination, which belongs to `docs/specs/20260704-goal_mode_coordination.md`.
+- The Goal, which belongs to `docs/specs/20261002-goal.md`.
 - Workspace repository resources, data-source catalogs, workspace materialization, Git write workflow, or worker runtime behavior.
 - User preference storage for an arbitrary default workspace selection.
 
@@ -35,7 +35,7 @@ kind: concept
 
 - `docs/specs/20260704-chat_mode_assistant.md`
 - `docs/specs/20260704-task_mode_worker_delegation.md`
-- `docs/specs/20260704-goal_mode_coordination.md`
+- `docs/specs/20261002-goal.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`
 - `docs/specs/20260704-git_write_workflow.md`
 - `docs/specs/20260813-internal_agent_runtime.md`
@@ -126,7 +126,7 @@ Quick Chat MUST reject workspace repository resource setup.
 
 Quick Chat MUST reject direct Task Mode start in the Quick Chat Workspace.
 
-Quick Chat MUST reject direct Goal Mode start, planning, approval, steering, pause, resume, and step routes in the Quick Chat Workspace.
+Quick Chat MUST reject the Goal operations, including create Goal, revise intent, card create, edit, and cancel, Plan proposal, Plan approval, Goal cancel, completion acceptance, and Goal reads, in the Quick Chat Workspace. Quick Chat itself gains no Goal execution.
 
 Quick Chat MUST reject direct Core turn startup when the route would start a worker turn.
 
@@ -192,7 +192,7 @@ Give Quick Chat no Workspace-specific Worker default by omitting `workspace.json
 
 Add a small NanoCore helper that reads the workspace and rejects project-only operations for `quick-chat`.
 
-Use that helper in repository setup, Task Mode startup, Goal Mode startup, Git push write routes, and direct worker-turn startup.
+Use that helper in repository setup, Task Mode startup, Goal operation entry, Git push write routes, and direct worker-turn startup.
 
 Keep Chat Mode and Knowledge Store routes available in Quick Chat. Route model-backed Chat Mode work through the shared Internal Agent Loop even though ordinary short conversations will not reach its compaction threshold. For a Chat Mode Task or Goal handoff, keep the Quick Chat guard authoritative while the Assistant resolves or creates the separate executing Workspace through the combined confirmation; emit an exact durable missing-authorization refusal only when that transition cannot be authorized.
 

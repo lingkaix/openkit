@@ -113,7 +113,7 @@ Workflow, human attention, and verification:
 - [`20260909-thread_visibility_and_sharing.md`](./20260909-thread_visibility_and_sharing.md)
 - [`20260909-personal_memory_and_knowledge_learning.md`](./20260909-personal_memory_and_knowledge_learning.md)
 - [`20260704-task_mode_worker_delegation.md`](./20260704-task_mode_worker_delegation.md)
-- [`20260704-goal_mode_coordination.md`](./20260704-goal_mode_coordination.md)
+- [`20261002-goal.md`](./20261002-goal.md)
 - [`20260704-workflow_coordinator_internal_agent.md`](./20260704-workflow_coordinator_internal_agent.md)
 - [`20260709-quick_chat_workspace.md`](./20260709-quick_chat_workspace.md)
 - [`20260704-knowledge_manager_internal_agent_runtime.md`](./20260704-knowledge_manager_internal_agent_runtime.md)
@@ -180,6 +180,7 @@ Storage, knowledge, policy, vault, audit, and metering:
 Deprecated transition specifications remain at the root only while their documented legacy behavior is still implemented. Load their `Current Guidance` before reading historical contract text, do not extend them, and move them to the matching terminal directory only after their migration exit condition is proved.
 
 - [`20260715-openshell_disposable_cell_lifecycle.md`](./20260715-openshell_disposable_cell_lifecycle.md) — legacy per-session Cell implementation pending Runtime Epoch cutover and deletion
+- [`20260704-goal_mode_coordination.md`](./20260704-goal_mode_coordination.md) — legacy Goal coordination pending the new implementation and the one-way deletion
 
 Capability and provider slices:
 

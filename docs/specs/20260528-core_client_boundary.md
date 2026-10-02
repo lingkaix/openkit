@@ -66,7 +66,7 @@ It also forced the Web UI to consume a flat API surface where stable Core semant
 The public client is grouped by boundary:
 
 - `client.core`: meta, workspaces, knowledge, threads, turns, items, approvals, artifacts, and turn SSE.
-- `client.app`: dashboards, Goal Mode, workspace synchronization read models, search, quick chat, automations, diagnostics, setup diagnostics, Goal Review, and feedback.
+- `client.app`: dashboards, Goal reads and the Goal operations, workspace synchronization read models, search, quick chat, automations, diagnostics, setup diagnostics, and feedback.
 - `client.runtimeConfig`: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
 - `client.providerSubscriptions`: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
@@ -81,7 +81,7 @@ There is no `getMeta`, `createMemoryEntry`, `updateMemoryEntry`, `respondToAppro
 
 ## App API Schema Package
 
-`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, repository resources, workspace synchronization, Goal Mode read models and decisions, Agent Catalog, Action Center, and the unified conversation target catalog and submission.
+`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, repository resources, workspace synchronization, Goal reads and Goal operations, Agent Catalog, Action Center, and the unified conversation target catalog and submission.
 
 `@openkit/app-api-schemas` is runtime-neutral and browser-safe: no module reachable from its entry may import Node built-ins or use Node globals. The built-graph regression enforces this invariant. The reason is recorded in [App API Schemas Browser-Safe Subpaths](../decisions/20261001-app_api_schemas_browser_safe_subpaths.md).
 
@@ -166,15 +166,15 @@ The client exposes `client.repositories.list(workspaceId)`, `client.repositories
 
 ## Workspace Synchronization And Goal Mode Slices
 
-Workspace synchronization read models and Goal Mode workflow routes are App API projections over stable Core workspace, thread, turn, item, artifact, and human-attention semantics.
+Workspace synchronization read models and Goal operation projections are App API projections over stable Core workspace, thread, turn, item, artifact, and human-attention semantics.
 
 The client exposes these routes through `client.app` because they are workflow/product projections, not standalone Core protocol objects.
 
 Workspace synchronization client methods include review listing, review retrieval, input snapshots, materialization records, change sets, staged reviews, apply-result listing, and apply-result retrieval.
 
-Goal Mode client methods include summary retrieval, start, plan creation, plan approval, bounded step execution, steering, and Goal Review decision submission.
+Goal client operations are create Goal, revise intent, card create, card edit, card cancel, Plan propose, Plan approval through a Pending Request, Goal cancel, completion acceptance through a Pending Request, and reads. This specification does not define their transport, catalog shape, or wire names. The current implementation may still expose the legacy summary, start, plan, approval, step, steering, and Goal Review methods until the Goal implementation; that exposure is current implementation, not this contract.
 
-The deterministic test supervise-step route remains outside the public product client surface.
+The current implementation's deterministic test supervise-step route remains outside the public product client surface until the Goal implementation removes it.
 
 ## Alias Cleanup Policy
 

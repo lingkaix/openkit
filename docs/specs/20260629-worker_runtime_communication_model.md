@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-09-30
+updated: "2026-10-02"
 ---
 # Worker Runtime Communication Model
 
@@ -584,7 +584,7 @@ The communication model is implemented only when:
 - no App API, NanoCore route, gateway method, or Sandbox Integration interface accepts or executes caller-supplied arbitrary argv, cwd, environment, or shell input
 - tests prove token, lineage, schema, sequence, idempotency, digest, workspace path, and policy validation
 - tests prove pre-readiness failure launches no worker, retryable post-readiness interruption preserves the same worker within the bounded budget, exact process-key/lineage/sequence adoption creates no replacement worker or session, and budget expiry enters the existing interrupted recovery path
-- e2e smoke proves one configured NanoHost can run two Turns on one non-Goal resident binding without relaunching the native engine, produce reviewable evidence, leave the binding open across those Turns, close it with `session.close` while preserving resumable native context and retained working roots, and preserve the compatible shared Sandbox and healthy Runtime Epoch. Goal worker execution is not the acceptance path for this change; [Goal Mode Coordination](20260704-goal_mode_coordination.md#availability-during-the-agent-communication-redesign) states which Goal operations are unavailable
+- e2e smoke proves one configured NanoHost can run two Turns on one non-Goal resident binding without relaunching the native engine, produce reviewable evidence, leave the binding open across those Turns, close it with `session.close` while preserving resumable native context and retained working roots, and preserve the compatible shared Sandbox and healthy Runtime Epoch. Goal worker execution is not the acceptance path for this change. That limit is current implementation that the Goal implementation replaces, as [Goal](20261002-goal.md) defines
 - real-host fault acceptance proves the same NanoHost and Sandbox Integration contract, stock RelayStream carriage, Sandbox materialization, separately governed data transport, and fresh-empty readiness after Runtime Epoch recovery
 - real Codex provenance acceptance proves the attributed remote inference path; that gate has passed on A1, while the selected MCP slice requires its separate R058 acceptance and the broader non-MCP capability plane remains partial
 - Agent-Skill-driven dogfood loops prove the coordinator can inspect runtime status, run bounded steps, review evidence, and continue/refine/reject/accept without bypassing review gates

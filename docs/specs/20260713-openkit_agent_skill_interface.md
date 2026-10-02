@@ -266,7 +266,7 @@ The initial operation groups cover:
 - access tokens and credential storage
 - NanoHost enrollment, redacted transport-token inventory and revocation, named-slot issue and rotation, rotation abort, and decommission
 - workspaces, resources, repositories, and Git operations
-- threads, Chat Mode, Task Mode, Goal Mode, plans, and bounded steps; steering without an accepted durable delivery contract remains an explicit exclusion with a typed fail-closed result
+- threads, Chat Mode, Task Mode, and the Goal operations. Steering, pause, resume, and step are not Goal operations
 - Action Center, approvals, questions, reviews, artifacts, evidence, audit, and usage
 - knowledge sources, observations, claims, conflicts, retrieval, context packages, proposals, repair, and health
 - interrupted-worker inspection and checkpoint retry, scheduler admissions, and exact S16 Goal pending input only after its durable owner and delivery proof exist
@@ -363,7 +363,7 @@ The Skill teaches one default end-user loop:
 2. Select or create a workspace and inspect its resources.
 3. Link or verify required repositories and data sources with the user's confirmation.
 4. Create or resume a thread.
-5. Select Chat Mode for a lightweight answer, Task Mode for one bounded delegated task, or Goal Mode for planned multi-step work.
+5. Select Chat Mode for a lightweight answer, Task Mode for one bounded delegated task, or Goal Mode for one continuous outcome.
 6. For Goal Mode, draft the plan and obtain the required human approval before execution.
 7. Execute one bounded action or step.
 8. Read durable thread state, Action Center, artifacts, evidence, and relevant audit or usage summaries.

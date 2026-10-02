@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-updated: 2026-09-21
+updated: "2026-10-02"
 ---
 # Storage Layout And Record Ownership
 
@@ -193,7 +193,6 @@ SQLite source-of-truth records:
 - the S49 Workspace synchronization owner graph in `workspace.sqlite`: input snapshots, materialization records, backend handles, output manifests, change sets, staged Workspace Reviews, apply plans and results, reconciliation records, and quarantine records; exported files are non-authoritative portable projections or manifests
 - `WorkspaceMaterial`, immutable `WorkspaceMaterialRevision`, and `ThreadMaterialBinding` rows plus their command receipts in `workspace.sqlite`
 - version-keyed `ArtifactReview` rows in `workspace.sqlite`
-- one Thread-unique `PendingUserTurnRecord` and immutable `SteeringTerminalOutcome` rows for the exact S16 Goal-steering boundary in `workspace.sqlite`
 
 Audit-family rows home in the database of their `ownerScope` per the Storage Scope Homing decision in `docs/specs/20260703-audit_usage_evidence_records.md`: workspace-lineage rows in `workspace.sqlite`, server control-plane rows in `core.sqlite`, user-identity rows in `user.sqlite`. Workspace deletion produces a sealed server-owned audit closure export under `server/exports/` before removal.
 
@@ -268,13 +267,7 @@ S51 exports these four authoritative row families as strict line-oriented record
 
 ## Goal Steering Transaction Boundary
 
-S16 permits exactly one mutable `PendingUserTurnRecord` per `(workspaceId, threadId)`. It stores the original Goal, active Turn, send request, content Item, input kind, nullable exact Material tuple, queue mode, receipt time, and nullable `terminalClaimKind`, `terminalClaimId`, and `terminalClaimedAt`. The claim timestamp equals `acceptedAt` for follow-up or cancellation; an applied claimant captures it at its claim transaction without redefining Turn acceptance time. It is a bounded delivery owner, not a general queue: a second row cannot coexist, no priority or ordering field exists, and the row is deleted only by its exact applied, follow-up, or cancelled winner.
-
-Follow-up and cancellation use one immutable `SteeringTerminalOutcome` keyed by `(workspaceId, threadId, pendingTurnId)` with a deterministic unique `outcomeId`. It stores exactly `workspaceId`, `threadId`, `outcomeId`, terminal `state`, `pendingTurnId`, `sendRequestId`, `terminalRequestId`, `contentItemId`, `goalId`, `activeTurnId`, `inputKind`, nullable `materialId`, `revisionId`, and `contentDigest`, nullable deterministic `followUpTurnId` and `followUpItemId`, and `acceptedAt` defined by S16. The record has no status, retry counter, cleanup state, or mutable lifecycle. Applied delivery uses the accepted S39 Context Package trace and creates no outcome row.
-
-For cancellation, the terminal claim, outcome, command receipt, and pending-row deletion commit in one Workspace transaction. For follow-up, the pending claim is durable before the deterministic Core-local Turn and Item are written; after that exact pair verifies, the outcome, receipt, and pending-row deletion commit in one Workspace transaction. A complete receipt stores only the outcome resource kind and id under C07, never the outcome body. An identical still-pending follow-up claim may finish only that reserved pair and final transaction. After the pending row is absent, an outcome without its same-transaction receipt, a receipt without its outcome, or a mismatched Turn, Item, claim, or Material tuple is `recovery_required`; no receipt or outcome is reconstructed from projection or audit data.
-
-Pending and terminal steering rows are deployment-local execution proof and are not part of portable Workspace transfer. Import does not resume an active Goal or retain pre-export command replay; exported immutable Thread, Turn, and Item history remains portable under its existing owners. This exclusion does not authorize deleting an active source row or weakening restart proof before export.
+`PendingUserTurnRecord` and `SteeringTerminalOutcome` leave with the one-way Goal removal defined by [Goal](20261002-goal.md). They are not storage authority for Material, Artifact Review, or an ordinary worker Turn. The current implementation may still contain those tables until that removal. Import does not resume a deleted Goal. A missing deleted Goal is known absence. Exported Thread, Turn, and Item history remains portable under its existing owners.
 
 ## Structure Evolution Rules
 
@@ -319,7 +312,7 @@ The owner-independent V2 Workspace root and most scoped record-family ownership 
 - `rebuildWorkspaceDerivedIndexes` rebuilds the first workspace-derived index file at `indexes/search.json` from file-backed workspace projections and authoritative workspace snapshot records, deleting stale derived index files before writing the rebuilt index.
 - `rebuildExistingWorkspaceDerivedIndexes` runs the derived-index rebuild at boot only for existing Workspace directories with a canonical `workspace-record.json` projection and skips genuinely incomplete directories without it. The removed `workspace.json` name is rejected by layout validation and is never treated as an authoritative or compatibility input.
 - The server-scope database currently holds Better Auth or auth implementation rows, server settings, users, scheduler coordination, worker-control ledgers, and durable backend-session lifecycle rows. Restart closeout reuses those owners and adds no settlement table.
-- Workspace repository resources, worker-turn checkpoints, Goal Mode records, workspace synchronization owners, workspace filesystem staging roots, workspace-scoped permission decisions, `PendingUserTurnRecord`, and `SteeringTerminalOutcome` now live in workspace-owned `workspace.sqlite` files with workspace-scoped migration ledgers. The two steering families are deployment-local command proof and are intentionally excluded from portable Workspace export.
+- Workspace repository resources, worker-turn checkpoints, workspace synchronization owners, workspace filesystem staging roots, and workspace-scoped permission decisions now live in workspace-owned `workspace.sqlite` files with workspace-scoped migration ledgers. `PendingUserTurnRecord`, `SteeringTerminalOutcome`, and Goal Mode records leave with the one-way Goal removal defined by [Goal](20261002-goal.md). The current implementation may still contain them until that removal. They are not part of portable Workspace export.
 - `TURN_STREAM_EVENT_WINDOW_SIZE` in `apps/nanocore/src/storage/workspace-file-records.ts` is 100. `FsStore` applies that same limit on live append and reload, `turn-event-routes.ts` returns `core.stream.cursor_expired` for an older cursor, and focused reload and route tests prove the retained-window behavior.
 - Worker checkpoint rows carry workspace/thread/turn lineage, context package digest, stage, stop reason, and redacted diagnostics.
 - `WorkspaceMaterial`, immutable `WorkspaceMaterialRevision`, singular `ThreadMaterialBinding`, and version-keyed `ArtifactReview` are implemented in `workspace.sqlite`; their public routes, Action Center projection, and portable export/import use those existing owners rather than a second workflow or filesystem authority.

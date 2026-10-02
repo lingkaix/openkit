@@ -140,7 +140,7 @@ Follow the current design-to-code loop in [`docs/cookbooks/claude-design-web-ui-
 
 `docs/specs/20260831-unified_conversation_composer.md` (Composer Interaction Contract, Advanced Worker Environment Choice, and Target Catalog) owns Composer layout, keyboard behavior, the advanced Worker environment choice, and per-Thread Worker targets.
 
-`docs/specs/20260704-goal_mode_coordination.md` (the `planningAction` paragraph under Goal plan authority) owns Goal plan recovery actions.
+`docs/specs/20261002-goal.md` is the Goal owner; the current `planningAction` path is current implementation that the Goal implementation replaces.
 
 `DESIGN.md` (§9.5) owns the Draft › Plan › Execute › Review strip.
 

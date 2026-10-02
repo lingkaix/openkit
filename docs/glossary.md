@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Engineering Glossary
 
-This glossary is the Ubiquitous Language of the engineering process: the words that root AGENTS.md, the governance documents, the role contracts, and change records use for how this repository is built. Product words such as Workspace, Thread, Turn, and Orchestrator belong to a different bounded context, owned by docs/core/core-concepts.md. The decision and its reason are recorded in [a decision record](decisions/20260923-engineering_vocabulary_and_writer.md).
+This glossary is the Ubiquitous Language of the engineering process: the words that root AGENTS.md, the governance documents, the role contracts, and change records use for how this repository is built. Product words such as Workspace, Thread, Turn, and Coordinator belong to a different bounded context, owned by docs/core/core-concepts.md. The decision and its reason are recorded in [a decision record](decisions/20260923-engineering_vocabulary_and_writer.md).
 
 ## Owns
 
@@ -102,7 +102,7 @@ Use the fixed phrase for the meaning you intend. A bare word is acceptable only 
 | Word | Engineering context | Product context | Resolution |
 | --- | --- | --- | --- |
 | epoch | Former name of an Intent Revision | Runtime, physical, and execution epochs in NanoHost and storage | Renamed to Intent Revision in engineering text |
-| Orchestrator | Not used | The built-in Goal Mode coordinating agent | In engineering text, a dispatcher; say "the product Orchestrator" when the product component is meant |
+| Orchestrator | Not used | Not used here. The product role is the Coordinator in docs/core/core-concepts.md. | Do not say the product Orchestrator. Use Coordinator for that role. |
 | audit record | A dated observation record under docs/audits/ | A product audit record owned by docs/core/audit.md | Say "repository audit record" when the product one could be meant |
 | projection | Document projection | Read projection | Use the fixed phrases above |
 

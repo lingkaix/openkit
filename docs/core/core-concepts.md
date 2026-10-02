@@ -9,6 +9,8 @@ It owns their stable relationships, common scope semantics, identifier semantics
 
 It does not own specialized aspect terms, product modes, complete record fields, lifecycle enums, API routes, storage layouts, runtime placement, adapter payloads, provider configuration, or schema-evolution mechanics. Those decisions belong to their aspect owners or implementation-facing design records.
 
+Naming boundary: the product agent that pursues one Goal is the Coordinator, and the Thread addressed to that agent is the Coordinator Thread. Orchestrator is not that name. Work Model owns the Goal Mode composition. This document does not own that mode.
+
 ## Principles
 
 - Each concept has one canonical owner. Other documents may project it but must not redefine it.

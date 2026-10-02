@@ -17,7 +17,7 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 - `docs/core/agent-workflow.md` owns durable workflow progression, bounded worker steps, gates, decisions, evidence, retry, and closeout.
 - The loop does not own or know product records, role selection, durable state, scheduling, recovery, provider configuration, capability catalogs, authorization policy, budgets, credentials, output audiences, or external-effect settlement.
 - This specification does not redefine Worker Agent execution, Worker runtime continuity, Harnesses, Sandboxes, or worker capability supply.
-- This specification owns no Sandbox, pinning, or placement. `docs/specs/20260704-goal_mode_coordination.md` owns Goal worker ordinary-Sandbox pin policy, and `docs/specs/20260703-runtime_scheduling_scale.md` owns its NanoCore-private scheduling and binding projection.
+- This specification owns no Sandbox pin. Ordinary Sandbox selection stays with runtime scheduling.
 - `docs/specs/20260902-agent_runtime_context_compaction.md` owns the logical-model context policy, OpenKit compactor, compaction item, and selection of one compaction authority per execution; this runtime only consumes that resolved policy and applies returned checkpoints to its transient transcript.
 
 ## Core References
@@ -333,6 +333,6 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 
 ## Implementation Reference
 
-`apps/nanocore/src/internal-agents/builtin-prompts.ts` owns the current fixed assemblies for Quick Chat, Administration, and Goal Orchestrator. Their production callers assemble these texts before model dispatch; the catalog test enforces the fixed-text bound, and caller tests inspect the actual provider input. The Goal caller currently admits the bounded planning proposal Tool, not the full autonomous progression Tool set specified by its role owner.
+`apps/nanocore/src/internal-agents/builtin-prompts.ts` owns the current fixed assemblies for Quick Chat, Administration, and the Coordinator. Their production callers assemble these texts before model dispatch; the catalog test enforces the fixed-text bound, and caller tests inspect the actual provider input. That assembly is current implementation that the Goal implementation replaces. The bounded planning proposal Tool is not the Goal contract.
 
 Pi source at `6160683a4a8012f0d1cd30c145df18b4ca6f5176`, especially [message types](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/ai/src/types.ts#L422) and [agent-loop ordering](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/src/agent-loop.ts#L215), informs the small content union and ordered execution. Its harness/session exports, generic hooks, default parallel Tools, argument normalization and raw error feedback are not part of this contract. Existing role-profile helpers and pi-ai transport are implementation foundations; the shared bounded loop and these resource-aware callers remain work to implement, not proof supplied by upstream source.

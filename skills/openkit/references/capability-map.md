@@ -5,7 +5,7 @@ Load this reference when the user's intent does not clearly identify a capabilit
 ## Discover an operation
 
 1. Run `scripts/openkit doctor` before networked product work.
-2. Search with a short product noun and verb, such as `workspace list`, `goal start`, or `vault status`.
+2. Search with a short product noun and verb, such as `workspace list` or `vault status`.
 3. Search a broader capability-group term when the first query returns no suitable match.
 4. Describe the selected operation and inspect its source, mutation flag, sensitivity, required access, and strict flat input schema.
 5. Call it with one JSON object through stdin, then re-read the owning durable state.
@@ -19,7 +19,7 @@ Use this intent map to choose search terms; do not treat it as the authoritative
 | Link repositories or perform Git work | `repository`, `git`, `push`, `sync` | [loop.md](loop.md) or [administration.md](administration.md) |
 | Converse or delegate bounded work | `chat`, `task`, `thread`, `turn`, `navigation` | [loop.md](loop.md) |
 | Inspect current Workspace Workers | `worker.list`, `worker` | [loop.md](loop.md) |
-| Plan and execute multi-step work | `goal`, `plan`, `step`, `review` | [loop.md](loop.md) |
+| Plan and execute multi-step work | New Goal execution is unavailable until the Goal implementation lands | [loop.md](loop.md) |
 | Resolve human attention | `attention`, `approval`, `question`, `decision` | [loop.md](loop.md) |
 | Inspect outputs and proof | `artifact`, `evidence`, `audit`, `usage` | [loop.md](loop.md) |
 | Retrieve or govern knowledge | `knowledge`, `claim`, `conflict`, `context`, `proposal` | [knowledge.md](knowledge.md) |

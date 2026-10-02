@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: concept
 date: "2026-09-21"
-updated: "2026-09-30"
+updated: "2026-10-02"
 ---
 # Work Data Retention Format
 
@@ -58,7 +58,7 @@ The unique first-release criterion is: for every class of information that will 
 - `docs/specs/20260704-workspace_backup_export_import.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
-- `docs/specs/20260704-goal_mode_coordination.md`
+- `docs/specs/20261002-goal.md`
 - `docs/specs/20260908-generative_kernel_data_operations.md`
 - `docs/specs/20260703-runtime_scheduling_scale.md`
 
@@ -354,7 +354,7 @@ Missing evidence stays unknown.
 
 **Failure.** Aggregating only `status === 'unknown'` on effect records is insufficient; other statuses are not proof of no effect. Absence of a matching CapabilityCall does not prove absence of effect risk.
 
-**Existing-owner obligations (not a new UI workflow).** Cancellation of a Turn by itself does not require human attention; unresolved unconfirmed calls on that Turn still do. Unresolved unknown effects still block Goal `completed` (`docs/specs/20260704-goal_mode_coordination.md`, Goal completion predicate). Effect-specific duplicate-effect and replay checks remain with their owners (for example git-push recovery). These are pending implementation checks on those owners, not new format fields.
+**Existing-owner obligations (not a new UI workflow).** Cancellation of a Turn by itself does not require human attention; unresolved unconfirmed calls on that Turn still do. An unresolved unknown effect is evidence the person sees before accepting completion. It does not by itself write the completion disposition. Effect-specific duplicate-effect and replay checks remain with their owners (for example git-push recovery). These are pending implementation checks on those owners, not new format fields.
 
 **Acceptance.** `docs/core/agent-session.md` (`Replacement`) preserves the Turn's truthful lifecycle result and leaves effect/recovery uncertainty with those owners.
 
@@ -600,7 +600,7 @@ Listing an alignment is not approval of a change to another owner's document. Ea
 ## Open Questions
 
 - AgentSession-axis `unknown` has no accepted owner; this spec does not decide it.
-- Whether Goal plan-revision failure handling (preserve scene, fail the Turn, do not fail the Goal) is admitted by `docs/specs/20260704-goal_mode_coordination.md` is implementation work under the change plan, not a format gap.
+- A failed Plan proposal leaves the Goal open and does not clear a still-valid active version, as `docs/specs/20261002-goal.md` defines. That is not an open format question.
 - Whether the two live denial paths that write Turn `cancelled` versus `interrupted` should unify is a product-owner decision, not a format field.
 - Whether a mandatory UUIDv7 filter helper plus failing test is required, versus a review checklist, is not closed; this spec states the consumption rules and the present lack of a parser.
 - Adding `actor` to `StatusItem` was proposed so "who interrupted" is on the narrative axis; it is not authority to implement now. Until protocol admits it, structured interrupter identity stays on the observation row or an existing owner, not a silently dropped requirement.

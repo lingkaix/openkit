@@ -32,7 +32,7 @@ Workspace -> Thread -> Turn -> Item[]
 
 AgentSession is an internal continuity dimension that intersects this model when a worker executes a Turn. It does not contain a Turn and a Turn does not contain an AgentSession.
 
-Internal roles such as Assistant and Goal Orchestrator run no worker runtime and have no AgentSession.
+Internal roles such as Assistant and Coordinator run no worker runtime and have no AgentSession.
 
 ## Product Boundary
 

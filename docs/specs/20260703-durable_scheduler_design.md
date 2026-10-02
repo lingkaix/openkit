@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: topology
-updated: 2026-09-30
+updated: 2026-10-02
 ---
 # Durable Scheduler Design
 
@@ -12,12 +12,12 @@ updated: 2026-09-30
 - Durable admission and lease authority sufficient to prevent untracked or duplicate worker launch.
 - Bounded active-Turn units across compatibility-keyed Harnesses, bounded lease timing, exact same-worker reconnect after a transport loss or a NanoCore restart, terminal release, and safe interruption. This change admits one active Turn per Harness.
 - The scheduler boundary with end-to-end worker control, NanoHost readiness, sandbox cleanup, and Runtime Epoch invalidation.
-- The physical home of nullable `pinnedGoalId` on the existing `SandboxRuntimeRecord` / `sandbox_runtime_records` placement and lifecycle projection.
+- No Goal-to-Sandbox pin. The legacy nullable `pinnedGoalId` column is removed with the Goal implementation. Until then it must not gain a Goal-aware writer.
 
 ## Does Not Own
 
 - Product workflow progression, Goal or Task lifecycle, review, Gate, Item, Artifact, or Workspace-apply decisions.
-- Goal pin semantics and lifecycle. `docs/specs/20260703-runtime_scheduling_scale.md` owns those; this specification owns only the physical home of `pinnedGoalId` on the existing `SandboxRuntimeRecord`.
+- Goal state and the Coordinator wake. The scheduler admits worker Turns. It does not wake the Coordinator and does not pin a Sandbox to a Goal. `docs/specs/20261002-goal.md` owns the Goal.
 - Worker-control envelopes, process-key transport, message sequencing, or final-status schema.
 - Storage layout or table DDL.
 - Dynamic multi-target placement, fairness, aging, affinity, warm pools, per-scope scale policy, high availability, multi-process Core, or distributed takeover.
@@ -68,7 +68,7 @@ The V1 contract requires only these durable facts:
 - proof of whether worker launch has not occurred, is live, is inside the bounded reconnect window, is cleanup-owned, or is terminal
 - the last accepted worker sequence and process-key hash needed for exact reconnect
 
-NanoHost identity, connection generation, readiness, predecessor fence, and redacted cleanup result may be referenced only as the current target projection needed to gate admission and preserve a wider cleanup fence. Runtime Epoch identity, Gateway identity, container-runtime identity, host paths, and Sandbox inventory remain NanoHost-private and MUST NOT become scheduler capacity records. NanoCore's existing `SandboxRuntimeRecord` (`sandbox_runtime_records`) is the durable placement and lifecycle projection, not NanoHost inventory. Its nullable `pinnedGoalId` is the physical durable home of the Goal-to-ordinary-Sandbox pin: the field survives between ordinary worker AgentSessions until ordinary terminal release, grants no capacity, effect, or execution authority, and its semantics and lifecycle are owned by `docs/specs/20260703-runtime_scheduling_scale.md`. Goal worker admission is unavailable, as [Goal Mode Coordination](20260704-goal_mode_coordination.md#availability-during-the-agent-communication-redesign) defines. This change must not add a Goal-aware writer for `pinnedGoalId`.
+NanoHost identity, connection generation, readiness, predecessor fence, and redacted cleanup result may be referenced only as the current target projection needed to gate admission and preserve a wider cleanup fence. Runtime Epoch identity, Gateway identity, container-runtime identity, host paths, and Sandbox inventory remain NanoHost-private and MUST NOT become scheduler capacity records. NanoCore's existing `SandboxRuntimeRecord` (`sandbox_runtime_records`) is the durable placement and lifecycle projection, not NanoHost inventory. The scheduler does not pin a Sandbox to a Goal. Every worker Turn performs fresh authority, AEP, context, and lease checks. The legacy `pinnedGoalId` column is removed with the Goal implementation. Until then it must not gain a Goal-aware writer.
 
 Existing placement-plan, pool, scheduler capacity, target-health, priority, and related rows are Private implementation projections. The active scheduler leases and scheduler capacity rows are the sole active-Turn grant graph. Each live lease consumes exactly one unit under its selected Harness and Sandbox capacity keys. A RuntimeTarget `active_lease_id` or mutable `capacity_state` duplicates that authority and MUST NOT exist; fixed Harness and Sandbox declarations plus the current readiness projection may remain. `HarnessInstanceRecord.active_turn_count` is a runtime occupancy projection and cannot grant or release a scheduler unit. A writer that sets the whole Harness count as if one `turn.start` filled the only legal slot is the current gap. This change's rule is one active Turn per Harness.
 
@@ -144,7 +144,7 @@ Proof is exactly one of these tuples. Anything else, including a missing or ambi
 
 The command does not create, update, or synthesize a Turn, receipt, lease, admission, or capacity row. It does not retry work, repair product history, clean runtime state, or release scheduler capacity. Deletion removes only the proved checkpoint. A later apply that no longer finds that checkpoint is a no-op. A row that changes between classification and deletion is left in place. Lock loss, backup failure, or an unreadable dependency refuses the invocation before deletion.
 
-This exception does not apply to Goal checkpoints, nonterminal checkpoints, checkpoints with a durable Turn, or any boot path.
+This exception does not apply to nonterminal checkpoints, checkpoints with a durable Turn, or any boot path. Goal-affiliated checkpoints are closed or dropped with the Goal implementation, not by this exception.
 
 ## Backpressure And Failure Semantics
 
@@ -160,7 +160,7 @@ This exception does not apply to Goal checkpoints, nonterminal checkpoints, chec
 
 ## Current Implementation Projection
 
-NanoCore currently persists admission entries, placement plans, leases, pool and scheduler capacity rows, target-health summaries, worker-control bindings, and scheduler epochs. Dispatch, lease maintenance, health probing, and restart scanning run as in-process services. Ordinary successful NanoHost Turns release scheduler capacity after Turn-local backend cleanup while retaining the shared Sandbox. The current path admits multiple compatibility-keyed Harness records inside one Sandbox and retains one active-Turn unit per Harness; scheduler authorization for concurrent active Turns across those Harnesses remains unimplemented. That per-Harness cap of one is this change's rule and the implementation gap versus the still-accepted concurrent-Turns acceptance, which stays. The duplicate RuntimeTarget `active_lease_id`, mutable `capacity_state`, and test-only claim or settle helpers have been deleted through the strict current migration; scheduler leases and capacity rows remain the only active-Turn grant. The nullable `sandbox_runtime_records.pinned_goal_id` column now exists as this specification's physical home; current scheduler and placement code has no Goal-aware reader, writer, or selector for it, and no Goal pin behavior is implemented.
+NanoCore currently persists admission entries, placement plans, leases, pool and scheduler capacity rows, target-health summaries, worker-control bindings, and scheduler epochs. Dispatch, lease maintenance, health probing, and restart scanning run as in-process services. Ordinary successful NanoHost Turns release scheduler capacity after Turn-local backend cleanup while retaining the shared Sandbox. The current path admits multiple compatibility-keyed Harness records inside one Sandbox and retains one active-Turn unit per Harness; scheduler authorization for concurrent active Turns across those Harnesses remains unimplemented. That per-Harness cap of one is this change's rule and the implementation gap versus the still-accepted concurrent-Turns acceptance, which stays. The duplicate RuntimeTarget `active_lease_id`, mutable `capacity_state`, and test-only claim or settle helpers have been deleted through the strict current migration; scheduler leases and capacity rows remain the only active-Turn grant. The legacy nullable `sandbox_runtime_records.pinned_goal_id` column is removed with the Goal implementation. Until then it must not gain a Goal-aware writer, and no Goal pin behavior is implemented.
 
 The current admission insert is not request-idempotent, and `startProductTurn` may return `scheduler_admission_deferred` after its queue row already committed. The recurring occurrence transaction above is therefore unimplemented. Synchronous and background dispatch share the in-process preparation claim in Admission And Launch: the dispatch loop keeps one claim set per Core data root, so a synchronous caller joins an in-flight attempt for its own admission and background dispatch skips a claimed one.
 

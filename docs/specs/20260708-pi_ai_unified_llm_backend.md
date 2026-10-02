@@ -32,7 +32,7 @@ Related specs:
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260704-chat_mode_assistant.md`
 - `docs/specs/20260704-task_mode_worker_delegation.md`
-- `docs/specs/20260704-goal_mode_coordination.md`
+- `docs/specs/20261002-goal.md`
 - `docs/specs/20260704-workflow_coordinator_internal_agent.md`
 
 ## Summary

@@ -177,7 +177,7 @@ Retained whole-volume mounts, inherited layout admission, scoped storage associa
 ## Related Specifications
 
 - `docs/specs/20260704-workspace_backup_export_import.md`
-- `docs/specs/20260704-goal_mode_coordination.md`
+- `docs/specs/20261002-goal.md`
 
 - `docs/specs/20260801-nanohost_workspace_data_boundary.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`

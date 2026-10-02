@@ -1,10 +1,35 @@
 ---
-status: Accepted
+status: Deprecated
 implementation: Partial
 kind: concept
-updated: 2026-09-30
+updated: 2026-10-02
+status-changed: 2026-10-02
+current-guidance: docs/specs/20261002-goal.md
+decision-evidence: docs/decisions/20261002-goal_redesign_rulings.md
 ---
 # Goal Mode Coordination
+
+## Lifecycle Reason
+
+[Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) replaces this specification as the active Goal contract. The continuing rules are continuous intent, exact Plan-version approval, a failed proposal leaving the Goal open, human acceptance of completion, and the boundaries with Task Mode and the scheduler. They now live in [Goal](20261002-goal.md). Autonomy class, Goal budget, verification records, the wake timer, the repeated-work breaker, Goal task rows as execution state, pause and resume, safe-point steering, and the Sandbox pin are ended by those rulings. This file remains at the root only while the legacy implementation still exists. It is not current guidance and it must not be extended.
+
+## Current Guidance
+
+`docs/specs/20261002-goal.md` is the current authority for the Goal, its work-intent cards, its Plan versions, the wake marker, the completion disposition, and the Goal operations.
+
+## Criterion Disposition
+
+Continuous intent, exact approval, failed proposals leaving the Goal open, and the Task Mode and scheduler boundaries are received by `docs/specs/20261002-goal.md`. The body below keeps the historical wording of every other criterion until an auditor archives this file. Criteria the rulings end are not restated as current rules. The writer report for this change lists each removed criterion and each moved criterion.
+
+## Rollout / Migration Plan
+
+The legacy implementation remains until the new Goal implementation lands. That change also performs the one-way removal of Goal-owned data named by the current Goal specification. Exit condition: the new operations are the live path, the named Goal-owned stores are gone, and non-Goal records that mention a Goal stay readable. An auditor then moves this file to `docs/specs/superseded/` together with a terminal-archive audit. Until that exit is proved, this file stays Deprecated at the root.
+
+## Retention Reason
+
+The body preserves the historical Goal record shape, plan digest, task graph, steering lineage, pin policy, and closure path that the redesign replaced. Those details explain why the old stores existed and which behaviors the rulings refused to carry forward. Deleting the body before the archive audit would make the criterion inventory unrecoverable. The body is historical evidence, not a contract to implement.
+
+The sections below are the historical contract. They are not current guidance.
 
 ## Goal Development Freeze
 
