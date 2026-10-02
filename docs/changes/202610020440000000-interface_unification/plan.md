@@ -46,7 +46,7 @@ Amendments still to be drafted, after the open questions below are settled where
 - [Remote auth credential bootstrap](../../specs/20260704-remote_auth_credential_bootstrap.md), for bearer use by remote MCP clients.
 - [Pending Requests](../../specs/20260930-pending_requests.md) and [Chat Mode Assistant](../../specs/20260704-chat_mode_assistant.md), for the Task proposal and the Assistant tool loop.
 - The knowledge owners, for retrieve and propose in every tool set and capture on Task completion.
-- [Goal Mode Coordination](../../specs/20260704-goal_mode_coordination.md) is frozen; decision 9 is recorded as input to the Goal redesign, not as an amendment.
+- [Goal Mode Coordination](../../specs/superseded/20260704-goal_mode_coordination.md) is frozen; decision 9 is recorded as input to the Goal redesign, not as an amendment.
 - [Agent Operator Skill](../../specs/20260910-agent_operator_skill.md) stays.
 
 The primary is the single writer of this bundle and coordinates the owner amendments through writer and verifier agents.

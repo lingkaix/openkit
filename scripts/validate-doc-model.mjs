@@ -226,7 +226,7 @@ export function validateDocModel(repoRoot) {
     const content = readFileSync(join(repoRoot, path), 'utf8');
     const links = resolveRepositoryDocLinks(repoRoot, path, content);
 
-    validateDocumentationLinkExistence(repoRoot, path, links, errors);
+    validateDocumentationLinkExistence(repoRoot, path, type, links, errors);
 
     if (type === 'spec' || type === 'spec-terminal') {
       validateSpecificationCoreReferences(repoRoot, path, content, errors);
@@ -549,12 +549,15 @@ function validateAuthorityChangeRecordLinks(path, links, errors) {
 /**
  * Rejects documentation links whose targets escape or are absent from the repository.
  *
+ * Frozen terminal specifications cannot be repointed, so only their missing active-root specification links may resolve to a same-name file in a terminal specification directory.
+ *
  * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative documentation path.
+ * @param {string} type Classified documentation type.
  * @param {string[]} links Resolved whole-document links in source order, including repeats.
  * @param {string[]} errors Mutable validation error list.
  */
-function validateDocumentationLinkExistence(repoRoot, path, links, errors) {
+function validateDocumentationLinkExistence(repoRoot, path, type, links, errors) {
   for (const resolvedPath of links) {
     if (resolvedPath.startsWith('../')) {
       errors.push(
@@ -568,7 +571,20 @@ function validateDocumentationLinkExistence(repoRoot, path, links, errors) {
       ? target?.isDirectory()
       : target?.isFile();
 
-    if (!validTarget) {
+    const name = resolvedPath.split('/').at(-1);
+    const archivedTarget =
+      !target &&
+      type === 'spec-terminal' &&
+      resolvedPath.startsWith('docs/specs/') &&
+      resolvedPath.split('/').length === 3 &&
+      SPEC_FILE_PATTERN.test(name) &&
+      [...TERMINAL_SPEC_DIRECTORIES].some((directory) =>
+        lstatSync(join(repoRoot, 'docs/specs', directory, name), {
+          throwIfNoEntry: false,
+        })?.isFile()
+      );
+
+    if (!validTarget && !archivedTarget) {
       errors.push(`${path}: ${MISSING_LINK_TARGET_ERROR}: \`${resolvedPath}\`.`);
     }
   }

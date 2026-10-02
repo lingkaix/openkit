@@ -13,7 +13,7 @@ The engineer also requested centralized fixed System Prompt text for every NanoC
 
 ## Owners And Seams
 
-[Goal Mode Coordination](../../specs/20260704-goal_mode_coordination.md) owns Goal intent, immutable Plans, approval, Task admission, replay and recovery. Workflow Coordinator Internal Agent owns the semantic Orchestrator and deterministic Coordinator boundary. Internal Agent Runtime owns fixed prompt assembly. Their rules land before dependent implementation. The existing Work Model, App API, Worker Turn and storage owners continue to govern identity, authorization, execution and retention.
+[Goal Mode Coordination](../../specs/superseded/20260704-goal_mode_coordination.md) owns Goal intent, immutable Plans, approval, Task admission, replay and recovery. Workflow Coordinator Internal Agent owns the semantic Orchestrator and deterministic Coordinator boundary. Internal Agent Runtime owns fixed prompt assembly. Their rules land before dependent implementation. The existing Work Model, App API, Worker Turn and storage owners continue to govern identity, authorization, execution and retention.
 
 Named seams are user commands through Goal persistence and exact Plan approval to Worker admission; model Tool calls through the bounded internal loop to those same Goal owners; and centralized fixed role text plus dynamic context through provider assembly. A separate test author derives behavioral checks across these seams. An independent reviewer inspects the actual final diff, including criterion preservation in owner amendments.
 

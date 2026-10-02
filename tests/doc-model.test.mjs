@@ -245,6 +245,95 @@ describe('documentation model validator', () => {
     );
   });
 
+  for (const directory of ['superseded', 'retired', 'rejected']) {
+    for (const form of ['Markdown', 'code-span']) {
+      it(
+        "resolves a frozen archive's " +
+          form +
+          ' link to a later-archived root spec in ' +
+          directory,
+        () => {
+          const root = createFixture();
+          const name = '20260102-later_design.md';
+          mkdirSync(join(root, 'docs/specs/superseded'), { recursive: true });
+          mkdirSync(join(root, 'docs/specs', directory), { recursive: true });
+          writeFileSync(join(root, 'docs/specs', directory, name), '# Later Design\n');
+          writeFileSync(
+            join(root, 'docs/specs/superseded/20260101-frozen_design.md'),
+            '# Frozen Design\n\n' +
+              (form === 'Markdown'
+                ? 'See [later](../' + name + ').\n'
+                : 'See `docs/specs/' + name + '`.\n')
+          );
+
+          assert.deepEqual(validateDocModel(root), []);
+        }
+      );
+    }
+  }
+
+  for (const form of ['Markdown', 'code-span']) {
+    for (const source of [
+      { kind: 'active spec', path: 'docs/specs/20260101-sample_design.md' },
+      { kind: 'change record', path: 'docs/changes/202601010000000001-sample_change.md' },
+      { kind: 'decision record', path: 'docs/decisions/20260103-sample_decision.md' },
+    ]) {
+      it(
+        'rejects the ' + source.kind + "'s " + form + ' link to a later-archived root spec',
+        () => {
+          const root = createFixture();
+          const name = '20260102-later_design.md';
+          mkdirSync(join(root, 'docs/specs/superseded'), { recursive: true });
+          writeFileSync(join(root, 'docs/specs/superseded', name), '# Later Design\n');
+          if (source.kind === 'decision record') {
+            mkdirSync(join(root, 'docs/decisions'), { recursive: true });
+            writeFileSync(
+              join(root, source.path),
+              '---\nstatus: Accepted\ndate: 2026-01-03\ndecider: Engineer\n---\n# Sample Decision\n\n' +
+                '## Decision\n\nChosen.\n\n## Reason\n\nNeeded.\n\n' +
+                '## Rejected Alternatives\n\nNone.\n\n## Revisit When\n\nNew evidence.\n\n' +
+                '## Affected Owners\n\n'
+            );
+          }
+          writeFileSync(
+            join(root, source.path),
+            readFileSync(join(root, source.path), 'utf8') +
+              (form === 'Markdown'
+                ? '\nSee [later](../specs/' + name + ').\n'
+                : '\nSee `docs/specs/' + name + '`.\n')
+          );
+
+          assert.deepEqual(validateDocModel(root), [
+            source.path + ': documentation link target does not exist: `docs/specs/' + name + '`.',
+          ]);
+        }
+      );
+    }
+
+    it(
+      "rejects a frozen archive's " +
+        form +
+        ' link to a root spec absent from all terminal directories',
+      () => {
+        const root = createFixture();
+        const name = '20260102-missing_design.md';
+        const path = 'docs/specs/superseded/20260101-frozen_design.md';
+        mkdirSync(join(root, 'docs/specs/superseded'), { recursive: true });
+        writeFileSync(
+          join(root, path),
+          '# Frozen Design\n\n' +
+            (form === 'Markdown'
+              ? 'See [missing](../' + name + ').\n'
+              : 'See `docs/specs/' + name + '`.\n')
+        );
+
+        assert.deepEqual(validateDocModel(root), [
+          path + ': documentation link target does not exist: `docs/specs/' + name + '`.',
+        ]);
+      }
+    );
+  }
+
   it('preserves repeated link diagnostics across whole-document rules', () => {
     const root = createFixture();
     writeFileSync(

@@ -45,7 +45,7 @@ Absorption is distillation, not copying. `[DOC-015]` binds it: no criterion that
 - [`docs/specs/20260529-test_strategy.md`](../../specs/20260529-test_strategy.md)
 - [`docs/specs/20260704-chat_mode_assistant.md`](../../specs/20260704-chat_mode_assistant.md)
 - [`docs/specs/20260704-task_mode_worker_delegation.md`](../../specs/20260704-task_mode_worker_delegation.md)
-- [`docs/specs/20260704-goal_mode_coordination.md`](../../specs/20260704-goal_mode_coordination.md)
+- [`docs/specs/superseded/20260704-goal_mode_coordination.md`](../../specs/superseded/20260704-goal_mode_coordination.md)
 - [`docs/specs/20260704-workflow_coordinator_internal_agent.md`](../../specs/20260704-workflow_coordinator_internal_agent.md)
 - [`docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`](../../specs/20260704-knowledge_manager_internal_agent_runtime.md)
 - [`docs/specs/20260704-agent_session_continuity.md`](../../specs/20260704-agent_session_continuity.md)
@@ -124,7 +124,7 @@ The accepted Chat-subordinate Gate identity carries forward unchanged — a non-
 | Conversation record model | `docs/core/work-model.md`, `docs/core/agent-session.md` |
 | Agent mechanism and Tool boundary | `docs/core/agent-workflow.md`, `docs/core/agent-capability.md` |
 | Assistant and interaction semantics | `docs/specs/20260704-chat_mode_assistant.md`, `docs/specs/20260709-quick_chat_workspace.md`, `docs/core/communication.md`, `docs/core/permissions.md` |
-| Goal orchestration | `docs/specs/20260704-goal_mode_coordination.md`, `docs/specs/20260704-workflow_coordinator_internal_agent.md`, `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` |
+| Goal orchestration | `docs/specs/superseded/20260704-goal_mode_coordination.md`, `docs/specs/20260704-workflow_coordinator_internal_agent.md`, `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` |
 | Runtime topology | `docs/core/sandbox.md`, `docs/core/runtime-model.md`, `docs/specs/20260802-nanohost_runtime_and_transport.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-worker_control_protocol.md` |
 | Continuity, materialization, retention | `docs/specs/20260704-agent_session_continuity.md`, `docs/specs/20260704-session_static_workspace_materialization.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260704-workspace_data_source_catalog.md`, `docs/core/storage.md`, `docs/specs/20260703-audit_usage_evidence_records.md` |
 | NanoCore internal roles | `apps/nanocore/src/internal-agents/**`, `apps/nanocore/src/mode-entry-routes.ts`, `apps/nanocore/src/turn-routes.ts` |
@@ -240,7 +240,7 @@ Non-authorizing until a later change record admits it. Each names an owner and a
 | --- | --- | --- |
 | `web.search` bounded external observation | A new accepted external-observation specification | An accepted capability contract covering provider selection, query and content bounds, citation, freshness, untrusted-content treatment, usage, failure, and Knowledge promotion |
 | Realtime voice Channel | A future accepted realtime Assistant Channel specification | An accepted Side Chat contract is implemented and verified, so text Thread, scope, Side Chat, addressing, interruption, and command semantics are stable |
-| Goal Supervisor Turn | `docs/specs/20260704-goal_mode_coordination.md` | Goal traces show planning drift or missed anomalies that deterministic breakers and independent completion verification do not catch |
+| Goal Supervisor Turn | `docs/specs/superseded/20260704-goal_mode_coordination.md` | Goal traces show planning drift or missed anomalies that deterministic breakers and independent completion verification do not catch |
 | Cross-Goal Program or Portfolio owner | None today | One accepted cross-Goal objective needs its own lifecycle, budget, dependencies, verification, and recovery |
 | Personal and Deployment Knowledge scopes | `docs/core/knowledge.md` | An accepted ownership, visibility, retrieval, storage, export, and deletion contract |
 | Work Overview product surface and cross-Workspace discovery | A new accepted work-discovery specification | WP-8 shows the bounded `work.search` and `work.read` reads insufficient for the Assistant journey |
@@ -470,9 +470,9 @@ Four files, roughly 250 to 400 added lines.
 
 ### WP-4 — Goal Orchestration And Delegation Authority
 
-- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/specs/20260704-goal_mode_coordination.md`; `docs/specs/20260704-workflow_coordinator_internal_agent.md`; `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`; `docs/core/agent-workflow.md` as amended by WP-2
+- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/specs/superseded/20260704-goal_mode_coordination.md`; `docs/specs/20260704-workflow_coordinator_internal_agent.md`; `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`; `docs/core/agent-workflow.md` as amended by WP-2
 - **Seam:** the boundary between deterministic Goal control and bounded semantic judgement, and the record of what a Goal may do unattended
-- **Artifact inventory:** `docs/specs/20260704-goal_mode_coordination.md`; `docs/specs/20260704-workflow_coordinator_internal_agent.md`; `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`; `docs/specs/20260704-task_mode_worker_delegation.md`, added 2026-08-13 to settle `F-1`, which found that this file was in no package's lease while holding a live contradiction against WP-1; the Goal owner that must carry `autonomyClass`, `budget`, and `completionVerification`
+- **Artifact inventory:** `docs/specs/superseded/20260704-goal_mode_coordination.md`; `docs/specs/20260704-workflow_coordinator_internal_agent.md`; `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`; `docs/specs/20260704-task_mode_worker_delegation.md`, added 2026-08-13 to settle `F-1`, which found that this file was in no package's lease while holding a live contradiction against WP-1; the Goal owner that must carry `autonomyClass`, `budget`, and `completionVerification`
 - **Scope:** the nine admitted WP-4 decisions, plus `F-1` and `F-2` from `findings.md`, which are the two places where accepted Goal and Task delegation still derive a worker Turn from the originating Thread and therefore contradict what WP-1 accepted. Excludes the Goal Supervisor and any cross-Goal owner
 - **Mode and permitted writes:** implementation
 - **Risk tier:** Tier 3. This package changes governing documentation for Goal delegation and narrows existing permission through autonomy fields but does not itself enforce authorization, run an unattended effect, handle credentials, alter containment, delete data, or cause an irreversible external effect; WP-11 owns enforcement at Tier 4. New evidence may raise this classification under `[TIER-005]`, but the entry gate does not delegate tier discovery to the reviewer
@@ -594,7 +594,7 @@ Six files, roughly 200 to 300 added lines. `agent_session_continuity.md` is wher
 
 ### WP-11 — Goal-Scoped Orchestrator And Bounded Progression
 
-- **Authority:** `docs/specs/20260704-goal_mode_coordination.md` and `docs/specs/20260704-workflow_coordinator_internal_agent.md` as amended by WP-4
+- **Authority:** `docs/specs/superseded/20260704-goal_mode_coordination.md` and `docs/specs/20260704-workflow_coordinator_internal_agent.md` as amended by WP-4
 - **Seam:** the Goal control path, from a wake condition to one bounded Orchestrator Turn to an admitted Goal Task
 - **Artifact inventory:** `apps/nanocore/src/internal-agents/**`; the Goal service and its record; the Goal step and progression route
 - **Scope:** the three Goal autonomy fields; the eight Goal Tools; wake conditions, coalescing, and `nextTurnAt`; single-flight through ordinary Turn admission on the Goal Main Thread; each concurrent worker execution in its own Thread with a reference Item in the Main Thread; the Goal-owned repeated-work breaker. Excludes the Supervisor

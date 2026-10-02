@@ -88,7 +88,6 @@ and are not listed here.
 - `docs/specs/20260704-capability_usage_gateway_foundation.md` — Accepted, Partial — The shared ledger foundation used by every current NanoCore `CapabilityCall` producer, including the selected Worker MCP producer.
 - `docs/specs/20260704-chat_mode_assistant.md` — Accepted, Partial — Chat Mode as the lightweight user interaction path before delegated worker work starts.
 - `docs/specs/20260704-git_write_workflow.md` — Deprecated, Partial — The commit-on-apply contract: creating commits in linked repositories from accepted workspace reviews.
-- `docs/specs/20260704-goal_mode_coordination.md` — Deprecated, Partial — Goal Mode as the V1 long-running objective-driven workflow mode.
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` — Accepted, Partial — The deterministic app-local service interface for the Knowledge Manager Internal Core Role.
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md` — Accepted, Partial — The ordered NanoCore boot phase contract, including which phases fail closed and which degrade.
 - `docs/specs/20260704-remote_auth_credential_bootstrap.md` — Accepted, Partial — The human remote-access token format, lifecycle, and closed v1 scope set.
@@ -179,6 +178,7 @@ and are not listed here.
 - `docs/specs/superseded/20260628-agent_setup_runtime_supply_contract.md` — Superseded
 - `docs/specs/superseded/20260628-protocol_contract_consolidation.md` — Superseded
 - `docs/specs/superseded/20260702-worker_context_taxonomy.md` — Superseded
+- `docs/specs/superseded/20260704-goal_mode_coordination.md` — Superseded
 - `docs/specs/superseded/20260921-delayed_user_input.md` — Superseded
 - `docs/specs/superseded/agent-setup-runtime-supply/20260416-unified_agent_setup_manifest.md` — Superseded
 - `docs/specs/superseded/agent-setup-runtime-supply/20260517-agent_manifest_loader.md` — Superseded
@@ -229,6 +229,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20260821-agent_coordination_playbook.md` — Agent Coordination Playbook Audit
 - `docs/audits/20260905-delegated_engineering_governance.md` — Delegated Engineering Governance Audit
 - `docs/audits/20260930-delayed_user_input_terminal_archive.md` — Delayed User Input Terminal Archive
+- `docs/audits/20261003-goal_mode_coordination_terminal_archive.md` — Goal Mode Coordination Terminal Archive
 
 ## Platform References
 
