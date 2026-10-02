@@ -5,9 +5,7 @@ import {
   createSecureServer as createSecureHttp2Server,
 } from 'node:http2';
 import { createServer as createHttpsServer } from 'node:https';
-
 import { serve } from '@hono/node-server';
-
 import {
   createApp,
   createDefaultVaultUnlockState,

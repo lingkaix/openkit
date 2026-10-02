@@ -21,6 +21,7 @@ import {
   dispatchNextSchedulerEntry,
   findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
+  type SchedulerAdmissionEntryRecord,
   type SchedulerDispatchResult,
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -49,6 +50,8 @@ export interface RunSchedulerDispatchLoopInput {
   agentManifests: AgentManifest[];
   /** Open Core database handle. */
   coreDb: CoreDb;
+  /** Exact synchronous caller admission whose in-flight outcome may be joined. */
+  callerQueueEntryId?: string;
   /** Deterministic AgentSession id factory for tests. */
   createAgentSessionId?: () => string;
   /** Deterministic lease id factory for tests. */
@@ -100,7 +103,7 @@ export interface RunSchedulerDispatchLoopInput {
     readonly catalog: WorkspaceMcpServerCatalog;
   }[];
   /**
-   * Optional callback after Turn and resolved setup are durable and before executor start.
+   * Optional callback once Turn and resolved setup are durable; the owning dispatcher invokes it before executor start, and a late join observes the already-created Turn immediately.
    *
    * Product callers must filter this to the exact requested admission Turn.
    */
@@ -132,6 +135,65 @@ interface LoopLimitResult {
   readonly reason: 'max-dispatches';
 }
 
+/** Outcome of one exact admission attempt, including shared-acquisition attribution. */
+type SchedulerPreparationOutcome =
+  | {
+      readonly result: SchedulerDispatchLoopResult;
+      readonly error?: never;
+      readonly attributedQueueEntryId: string | null;
+    }
+  | {
+      readonly result?: never;
+      readonly error: unknown;
+      readonly attributedQueueEntryId: string | null;
+    };
+
+/** In-flight attempt and Turn-created subscribers for its synchronous caller. */
+interface SchedulerPreparationClaim {
+  readonly outcome: Promise<SchedulerPreparationOutcome>;
+  readonly turnCreatedListeners: Set<NonNullable<RunSchedulerDispatchLoopInput['onTurnCreated']>>;
+  createdTurn?: z.infer<typeof TurnSchema>;
+}
+
+/** Non-durable preparation ownership shared by all dispatch paths for one data root. */
+export type SchedulerPreparationClaims = Map<string, SchedulerPreparationClaim>;
+
+const preparationClaimsByDataRoot = new Map<string, SchedulerPreparationClaims>();
+
+/**
+ * Returns the one process-local claim owner for an absolute Core data root.
+ *
+ * Every dispatch run uses this data-root accessor as its sole claim owner. Distinct test databases have distinct data roots and cannot share claims.
+ * @param coreDb Core database whose data root owns dispatch.
+ * @returns In-flight claims only; no result or claim survives its attempt.
+ */
+export function getSchedulerPreparationClaims(coreDb: CoreDb): SchedulerPreparationClaims {
+  let claims = preparationClaimsByDataRoot.get(coreDb.dataRoot);
+  if (!claims) {
+    claims = new Map();
+    preparationClaimsByDataRoot.set(coreDb.dataRoot, claims);
+  }
+  return claims;
+}
+
+/**
+ * Joins only the synchronous caller's exact admission and preserves the attempt's error attribution.
+ */
+async function waitForSchedulerPreparation(
+  input: RunSchedulerDispatchLoopInput,
+  claim: SchedulerPreparationClaim
+): Promise<SchedulerDispatchLoopResult> {
+  input.onDispatchAttribution?.(input.callerQueueEntryId ?? null);
+  if (input.onTurnCreated) {
+    if (claim.createdTurn) input.onTurnCreated(claim.createdTurn);
+    else claim.turnCreatedListeners.add(input.onTurnCreated);
+  }
+  const outcome = await claim.outcome;
+  input.onDispatchAttribution?.(outcome.attributedQueueEntryId);
+  if ('error' in outcome) throw outcome.error;
+  return outcome.result;
+}
+
 /**
  * Dispatches queued scheduler entries and starts their worker turns through the normal orchestrator.
  *
@@ -145,12 +207,20 @@ export async function runSchedulerDispatchLoop(
   const maxDispatches = input.maxDispatches ?? 1;
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
 
+  const claims = getSchedulerPreparationClaims(input.coreDb);
   while (startedTurns.length < maxDispatches) {
+    const ownClaim = input.callerQueueEntryId ? claims.get(input.callerQueueEntryId) : undefined;
+    if (ownClaim) return waitForSchedulerPreparation(input, ownClaim);
     const queuedEntries = listQueuedSchedulerAdmissionEntries(input.coreDb);
     const staleEntry = queuedEntries.find(
       (entry) =>
         !currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true)
     );
+    const selectedEntry = staleEntry ?? findNextDispatchableSchedulerAdmissionEntry(input.coreDb);
+    if (selectedEntry && claims.has(selectedEntry.queueEntryId)) {
+      // A scheduled pass leaves the claimed FIFO head to its owner and retries on the existing timer.
+      return { startedTurns, terminalResult: { status: 'queued', reason: 'thread-busy' } };
+    }
     if (staleEntry) {
       return {
         startedTurns,
@@ -163,7 +233,7 @@ export async function runSchedulerDispatchLoop(
         },
       };
     }
-    const entry = findNextDispatchableSchedulerAdmissionEntry(input.coreDb);
+    const entry = selectedEntry;
     if (!entry) {
       return {
         startedTurns,
@@ -173,6 +243,59 @@ export async function runSchedulerDispatchLoop(
         },
       };
     }
+    let complete!: (outcome: SchedulerPreparationOutcome) => void;
+    const outcome = new Promise<SchedulerPreparationOutcome>((resolve) => {
+      complete = resolve;
+    });
+    const claim: SchedulerPreparationClaim = {
+      outcome,
+      turnCreatedListeners: new Set(),
+    };
+    claims.set(entry.queueEntryId, claim);
+    let attributedQueueEntryId: string | null = null;
+    try {
+      const result = await dispatchSchedulerAdmission(
+        {
+          ...input,
+          onDispatchAttribution: (queueEntryId) => {
+            attributedQueueEntryId = queueEntryId;
+            input.onDispatchAttribution?.(queueEntryId);
+          },
+          onTurnCreated: (turn) => {
+            claim.createdTurn = turn;
+            input.onTurnCreated?.(turn);
+            for (const listener of claim.turnCreatedListeners) listener(turn);
+            claim.turnCreatedListeners.clear();
+          },
+        },
+        entry,
+        claims
+      );
+      complete({ result, attributedQueueEntryId });
+      startedTurns.push(...result.startedTurns);
+      if (
+        result.terminalResult.status !== 'queued' ||
+        result.terminalResult.reason !== 'max-dispatches'
+      ) {
+        return { startedTurns, terminalResult: result.terminalResult };
+      }
+    } catch (error) {
+      // Resolve rather than reject: a background failure need not have a synchronous waiter.
+      complete({ error, attributedQueueEntryId });
+      throw error;
+    }
+  }
+  return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
+}
+
+/** Runs one claimed admission through the existing preparation, durable lease, and Turn-start owners. */
+async function dispatchSchedulerAdmission(
+  input: RunSchedulerDispatchLoopInput,
+  entry: SchedulerAdmissionEntryRecord,
+  claims: SchedulerPreparationClaims
+): Promise<SchedulerDispatchLoopResult> {
+  try {
+    const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
     input.onDispatchAttribution?.(entry.queueEntryId);
     const freshAgentSessionId = (input.createAgentSessionId ?? generateUuidV7)();
     const timestamp = input.now?.() ?? new Date().toISOString();
@@ -391,9 +514,10 @@ export async function runSchedulerDispatchLoop(
       });
       throw error;
     }
+    return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
+  } finally {
+    claims.delete(entry.queueEntryId);
   }
-
-  return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
 }
 
 /**

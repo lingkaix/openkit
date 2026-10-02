@@ -44,7 +44,8 @@ import {
 } from './nanohost-runtime-target.js';
 import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn } from './product-turn-start.js';
-import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
+import { getSchedulerPreparationClaims, runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
+import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -325,6 +326,431 @@ function localProviderRegistry(): ProviderRegistry {
 }
 
 describe('scheduler dispatch loop', () => {
+  it.each(
+    [true, false].flatMap((cancelDeferredAdmission) =>
+      (
+        [
+          'leased',
+          'transient',
+          'deterministic',
+          'post-lease',
+          'deferred',
+          'denied',
+          'acquisition',
+        ] as const
+      ).map((outcome) => ({ cancelDeferredAdmission, outcome }))
+    )
+  )('shares background preparation with its own caller: $outcome, cancellation $cancelDeferredAdmission', async ({
+    cancelDeferredAdmission,
+    outcome,
+  }) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const executor = new RecordingTurnExecutor();
+    const manifest = agentManifest();
+    const gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const errors: unknown[] = [];
+    const failure =
+      outcome === 'deterministic'
+        ? new DeterministicAgentPreparationError(
+            'Shared deterministic failure',
+            'agent_not_ready',
+            409
+          )
+        : new Error(`Shared ${outcome} failure`);
+    const prepare = executor.prepareAgentSessionForTurn.bind(executor);
+    let preparations = 0;
+    executor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
+      preparations += 1;
+      entered.resolve();
+      await gate.promise;
+      if (outcome === 'transient' || outcome === 'deterministic') throw failure;
+      if (outcome === 'deferred') throw new WorkerGovernanceCapacityUnavailableError();
+      const prepared = await prepare(ownerStore, preparation);
+      if (outcome === 'denied') {
+        coreDb.sqlite
+          .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'user_local'")
+          .run(Date.now());
+      }
+      return prepared;
+    };
+    if (outcome === 'post-lease')
+      executor.startTurn = async () => {
+        throw failure;
+      };
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [manifest],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: localProviderRegistry(),
+    });
+    seedLocalSchedulerTarget(coreDb);
+    const service = startSchedulerDispatchRetryService({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      leaseDurationMs: 900_000,
+      schedulerEpoch: 1,
+      startupTimeoutMs: 120_000,
+      intervalMs: 60_000,
+      runtimeConfigSnapshot: () => snapshot,
+      onError: (error) => errors.push(error),
+      setInterval: () => 'test-timer',
+      clearInterval: () => {},
+    });
+    const createAdmission = schedulerRecords.createSchedulerAdmissionEntry;
+    let background: ReturnType<typeof service.runOnce> | undefined;
+    // Dispatch immediately after the caller commits its own admission, before its loop selects.
+    const admissionSpy = vi
+      .spyOn(schedulerRecords, 'createSchedulerAdmissionEntry')
+      .mockImplementation((db, input) => {
+        const entry = createAdmission(db, input);
+        background = service.runOnce();
+        return entry;
+      });
+    const dispatchSpy =
+      outcome === 'acquisition'
+        ? vi.spyOn(schedulerRecords, 'dispatchNextSchedulerEntry').mockImplementation(() => {
+            throw failure;
+          })
+        : undefined;
+    const cancelSpy = vi.spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry');
+    const onTurnCreated = vi.fn();
+    const caller = startProductTurn({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      snapshot,
+      schedulerEpoch: 1,
+      cancelDeferredAdmission,
+      onTurnCreated,
+      workerPlacement: 'local',
+      providerCredentialResolver: () => null,
+      triggerActor: { kind: 'user', id: 'user_local' },
+      input: {
+        agentId: manifest.id,
+        input: 'Shared admission',
+        requestId: '00000000-0000-4000-8000-00000000f201',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+      },
+    }).then(
+      (handle) => ({ handle }),
+      (error: unknown) => ({ error })
+    );
+    try {
+      await entered.promise;
+      const [admission] = listQueuedSchedulerAdmissionEntries(coreDb);
+      expect(admission).toBeDefined();
+      expect(preparations).toBe(1);
+      const before = coreDb.sqlite.prepare('SELECT total_changes() AS count').get();
+      // A background overlap ends its pass; it cannot enter a second preparation or write claim state.
+      const overlapPending = service.runOnce();
+      expect(preparations).toBe(1);
+      const overlap = await overlapPending;
+      expect(overlap?.startedTurns).toEqual([]);
+      expect(coreDb.sqlite.prepare('SELECT total_changes() AS count').get()).toEqual(before);
+      expect(coreDb.sqlite.prepare('SELECT lease_id FROM scheduler_session_leases').all()).toEqual(
+        []
+      );
+      gate.resolve();
+      const [backgroundResult, callerResult] = await Promise.all([background, caller]);
+      expect(preparations).toBe(1);
+      expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
+      if (outcome === 'leased') {
+        expect(backgroundResult?.startedTurns).toHaveLength(1);
+        expect(callerResult).toHaveProperty('handle');
+        if ('handle' in callerResult)
+          expect(callerResult.handle).toBe(backgroundResult?.startedTurns[0]?.handle);
+        expect(onTurnCreated).toHaveBeenCalledTimes(1);
+        expect(onTurnCreated.mock.calls[0]?.[0].id).toBe(admission?.turnId);
+        expect(errors).toEqual([]);
+      } else if (
+        outcome === 'transient' ||
+        outcome === 'deterministic' ||
+        outcome === 'post-lease'
+      ) {
+        expect(callerResult).toHaveProperty('error');
+        if ('error' in callerResult) expect(callerResult.error).toBe(failure);
+        expect(backgroundResult).toBeNull();
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toBe(failure);
+        expect(
+          schedulerRecords.requireSchedulerAdmissionEntry(coreDb, admission!.queueEntryId).status
+        ).toBe(outcome === 'post-lease' ? 'admitted' : 'cancelled');
+        if (outcome === 'deterministic') expect(cancelSpy).toHaveBeenCalledTimes(1);
+        if (outcome === 'post-lease') {
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT status, release_reason FROM scheduler_session_leases')
+              .get()
+          ).toEqual({ status: 'failed', release_reason: 'turn-start-failed' });
+        }
+        expect((await service.runOnce())?.startedTurns).toEqual([]);
+        expect(preparations).toBe(1);
+      } else {
+        expect(callerResult).toMatchObject({
+          error: { code: `scheduler_admission_${outcome === 'denied' ? 'denied' : 'deferred'}` },
+        });
+        if (outcome === 'acquisition') {
+          expect(backgroundResult).toBeNull();
+          expect(errors).toHaveLength(1);
+          expect(errors[0]).toBe(failure);
+          expect('error' in callerResult ? callerResult.error : undefined).not.toBe(failure);
+        } else {
+          expect(backgroundResult?.terminalResult.status).toBe(
+            outcome === 'denied' ? 'denied' : 'queued'
+          );
+          expect(errors).toEqual([]);
+        }
+        expect(
+          schedulerRecords.requireSchedulerAdmissionEntry(coreDb, admission!.queueEntryId).status
+        ).toBe(cancelDeferredAdmission ? 'cancelled' : outcome === 'denied' ? 'denied' : 'queued');
+        if (outcome === 'deferred' && !cancelDeferredAdmission) {
+          expect((await service.runOnce())?.terminalResult).toMatchObject({
+            reason: 'capacity-saturated',
+          });
+          expect(preparations).toBe(2);
+        }
+      }
+    } finally {
+      gate.resolve();
+      await Promise.all([background, caller]);
+      service.stop();
+      admissionSpy.mockRestore();
+      cancelSpy.mockRestore();
+      dispatchSpy?.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    true,
+    false,
+  ])('does not wait for or disclose a foreign claimed admission, cancellation %s', async (cancelDeferredAdmission) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const manifest = agentManifest();
+    const executor = new RecordingTurnExecutor();
+    const gate = Promise.withResolvers<void>();
+    const failure = new Error('FOREIGN-PRIVATE preparation diagnostics');
+    let preparations = 0;
+    executor.prepareAgentSessionForTurn = async () => {
+      preparations += 1;
+      await gate.promise;
+      throw failure;
+    };
+    const foreignWorkspace = store.createWorkspace('Foreign Workspace');
+    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Thread');
+    coreDb.sqlite
+      .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
+      VALUES ('user_claim_foreign', 'Foreign', 'claim-foreign@example.invalid', false, ?, ?, 'human')`)
+      .run(Date.now(), Date.now());
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_claim_foreign',
+      workspaceId: foreignWorkspace.id,
+    });
+    seedLocalSchedulerTarget(coreDb);
+    createSchedulerAdmissionEntry(coreDb, {
+      queueEntryId: 'queue_claim_foreign',
+      turnId: 'turn_claim_foreign',
+      workspaceId: foreignWorkspace.id,
+      threadId: foreignThread.id,
+      turnInput: 'Private foreign work',
+      requestedAgentId: manifest.id,
+      priorityClass: 'interactive',
+      requiredPoolConstraints: ['openshell.local'],
+      triggerActor: { kind: 'user', id: 'user_claim_foreign' },
+      now: () => '2026-07-05T00:00:00.000Z',
+    });
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [manifest],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: localProviderRegistry(),
+    });
+    const background = runSchedulerDispatchLoop({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      agentManifests: [manifest],
+      providerRegistry: snapshot.providerRegistry,
+      gatewayConfig: snapshot.gatewayConfig,
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      leaseDurationMs: 900_000,
+      schedulerEpoch: 1,
+      startupTimeoutMs: 120_000,
+    }).catch((error: unknown) => error);
+    const caller = startProductTurn({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      snapshot,
+      schedulerEpoch: 1,
+      cancelDeferredAdmission,
+      workerPlacement: 'local',
+      providerCredentialResolver: () => null,
+      triggerActor: { kind: 'user', id: 'user_local' },
+      input: {
+        agentId: manifest.id,
+        input: 'Own work',
+        requestId: '00000000-0000-4000-8000-00000000f202',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+      },
+    }).catch((error: unknown) => error);
+    try {
+      expect(preparations).toBe(1);
+      const error = await caller;
+      expect(error).toMatchObject({ code: 'scheduler_admission_deferred', status: 409 });
+      expect(JSON.stringify(error)).not.toContain('FOREIGN-PRIVATE');
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['queued', 'cancelled'],
+        })
+      ).toMatchObject([{ status: cancelDeferredAdmission ? 'cancelled' : 'queued' }]);
+      gate.resolve();
+      expect(await background).toBe(failure);
+      expect(
+        schedulerRecords.requireSchedulerAdmissionEntry(coreDb, 'queue_claim_foreign').status
+      ).toBe('queued');
+      expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
+    } finally {
+      gate.resolve();
+      await Promise.all([background, caller]);
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keys preparation owners by data root, including separate handles for the same root', () => {
+    const first = createMigratedCoreDb();
+    const second = createMigratedCoreDb();
+    const sameRoot = openCoreDb(first.dataRoot);
+    try {
+      expect(getSchedulerPreparationClaims(first)).not.toBe(getSchedulerPreparationClaims(second));
+      expect(getSchedulerPreparationClaims(sameRoot)).toBe(getSchedulerPreparationClaims(first));
+      expect(getSchedulerPreparationClaims(first).size).toBe(0);
+    } finally {
+      sameRoot.sqlite.close();
+      second.sqlite.close();
+      first.sqlite.close();
+    }
+  });
+
+  it('ends overlapping background passes and later dispatches queued admissions in FIFO order', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const executor = new RecordingTurnExecutor();
+    const manifest = agentManifest();
+    const gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const prepare = executor.prepareAgentSessionForTurn.bind(executor);
+    let preparations = 0;
+    executor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
+      preparations += 1;
+      if (preparation.turn.id === 'turn_claim_first') {
+        entered.resolve();
+        await gate.promise;
+      }
+      return prepare(ownerStore, preparation);
+    };
+    seedLocalSchedulerTarget(coreDb);
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [manifest],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: localProviderRegistry(),
+    });
+    const errors: unknown[] = [];
+    let timerTick: (() => void) | undefined;
+    const service = startSchedulerDispatchRetryService({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      leaseDurationMs: 900_000,
+      schedulerEpoch: 1,
+      startupTimeoutMs: 120_000,
+      intervalMs: 60_000,
+      runtimeConfigSnapshot: () => snapshot,
+      onError: (error) => errors.push(error),
+      setInterval: (callback) => {
+        timerTick = callback;
+        return 'test-timer';
+      },
+      clearInterval: () => {},
+    });
+    for (const [index, suffix] of ['first', 'second', 'third'].entries()) {
+      const thread = store.createThread('ws_demo', suffix);
+      createSchedulerAdmissionEntry(coreDb, {
+        queueEntryId: `queue_claim_${suffix}`,
+        turnId: `turn_claim_${suffix}`,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnInput: suffix,
+        requestedAgentId: manifest.id,
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+        triggerActor: { kind: 'user', id: 'user_local' },
+        now: () => `2026-07-05T00:00:0${index}.000Z`,
+      });
+    }
+    const firstRun = service.runOnce();
+    try {
+      await entered.promise;
+      timerTick?.();
+      const overlapPending = service.runOnce();
+      expect(preparations).toBe(1);
+      const overlap = await overlapPending;
+      expect(overlap?.startedTurns).toEqual([]);
+      expect(errors).toEqual([]);
+      gate.resolve();
+      await firstRun;
+      const [firstLease] = coreDb.sqlite
+        .prepare('SELECT lease_id FROM scheduler_session_leases')
+        .all() as { lease_id: string }[];
+      completeSchedulerSessionLease(coreDb, {
+        leaseId: firstLease!.lease_id,
+        releaseReason: 'turn-completed',
+        terminalStatus: 'released',
+      });
+      for (const suffix of ['second', 'third']) {
+        const result = await service.runOnce();
+        expect(result?.startedTurns[0]?.dispatch.entry.queueEntryId).toBe(`queue_claim_${suffix}`);
+        completeSchedulerSessionLease(coreDb, {
+          leaseId: result!.startedTurns[0]!.dispatch.lease.leaseId,
+          releaseReason: 'turn-completed',
+          terminalStatus: 'released',
+        });
+      }
+      expect(preparations).toBe(3);
+      expect(executor.calls.map((call) => call.turnId)).toEqual([
+        'turn_claim_first',
+        'turn_claim_second',
+        'turn_claim_third',
+      ]);
+      expect(errors).toEqual([]);
+    } finally {
+      gate.resolve();
+      await firstRun;
+      service.stop();
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each(
     [true, false].flatMap((cancelDeferredAdmission) =>
       (['queue-race', 'malformed-row'] as const).map((failureStage) => ({
